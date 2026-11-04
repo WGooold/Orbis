@@ -43,7 +43,7 @@ internal fun latestChatQuestion(messages: List<ChatMessage>, excludedMessageIds:
         else message.content.mapNotNull { block ->
             when {
                 block.type == "text" -> block.text?.takeIf { it.isNotBlank() }
-                block.type == "artifact" -> block.artifact?.let { "附件：${it.fileName}" }
+                block.type == "artifact" -> block.artifact?.let { L10n.tr("附件：{0}", it.fileName) }
                 else -> null
             }
         }.joinToString("\n").trim().takeIf { it.isNotEmpty() }?.let { ChatQuestion(message.messageId, it) }
@@ -58,11 +58,11 @@ internal fun ChatQuestionReminder(question: ChatQuestion, onClick: () -> Unit, m
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("最近提问", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium,
+                Text(L10n.tr("最近提问"), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(question.text, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Icon(Icons.Rounded.NorthWest, contentDescription = "定位到原消息",
+            Icon(Icons.Rounded.NorthWest, contentDescription = L10n.tr("定位到原消息"),
                 modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
         }
     }

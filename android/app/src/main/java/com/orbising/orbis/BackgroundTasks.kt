@@ -21,16 +21,16 @@ internal fun BackgroundTasksPanel(tasks: BackgroundTaskInventory) {
     var expanded by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding)) {
         NeumorphTextButton(
-            text = tasks.activityTitle ?: "子任务 · ${tasks.items.size} 项",
+            text = tasks.activityTitle ?: L10n.tr("子任务 · {0} 项", tasks.items.size),
             icon = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
             onClick = { expanded = !expanded },
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("background-tasks-toggle")
-                .semantics { stateDescription = if (expanded) "已展开" else "已收起" },
+                .semantics { stateDescription = if (expanded) L10n.tr("已展开") else L10n.tr("已收起") },
         )
         OrbisCollapse(expanded = expanded) {
             Column(Modifier.fillMaxWidth().heightIn(max = 160.dp).verticalScroll(rememberScrollState()).padding(bottom = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (!tasks.confirmed) Text("正在核对子任务状态，以下为最后已知信息", style = MaterialTheme.typography.labelSmall)
+                if (!tasks.confirmed) Text(L10n.tr("正在核对子任务状态，以下为最后已知信息"), style = MaterialTheme.typography.labelSmall)
                 tasks.items.forEach { task ->
                     key(task.id) {
                         Column(Modifier.fillMaxWidth().testTag("background-task-${task.id}")) {
@@ -40,7 +40,7 @@ internal fun BackgroundTasksPanel(tasks: BackgroundTaskInventory) {
                             }
                             Text(task.kind, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             tasks.items.firstOrNull { it.id == task.parentId }?.let { parent ->
-                                Text("来自：${parent.title}", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                Text(L10n.tr("来自：{0}", parent.title), style = MaterialTheme.typography.labelSmall, maxLines = 1)
                             }
                         }
                     }

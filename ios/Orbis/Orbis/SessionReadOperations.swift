@@ -90,13 +90,13 @@ struct SessionReadOperations {
             return SessionReadAcceptance(operationId: existing.id, merged: true, rejection: nil)
         }
         guard !owner.sessionId.isEmpty, !owner.hostKey.isEmpty, operations.values.filter({ $0.phase.active }).count < activeLimit else {
-            return SessionReadAcceptance(operationId: nil, merged: false, rejection: "会话读取归属无效或任务已满")
+            return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("会话读取归属无效或任务已满"))
         }
-        if kind == .history, beforeEntryId == nil { return SessionReadAcceptance(operationId: nil, merged: false, rejection: "历史首屏尚未就绪") }
+        if kind == .history, beforeEntryId == nil { return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("历史首屏尚未就绪")) }
         let operation = SessionReadOperation(id: id, kind: kind, owner: owner, targetLeafId: targetLeafId, beforeEntryId: beforeEntryId,
             demandGeneration: demands[owner.historyKey] ?? 0, startedAt: now,
             phase: kind == .history || kind == .firstPage ? .local : .queued)
-        guard ownerValid(operation, current: owner), operations[id] == nil else { return SessionReadAcceptance(operationId: nil, merged: false, rejection: "读取归属已经失效") }
+        guard ownerValid(operation, current: owner), operations[id] == nil else { return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("读取归属已经失效")) }
         operations[id] = operation; order.append(id); prune()
         return SessionReadAcceptance(operationId: id, merged: false, rejection: nil)
     }
@@ -118,7 +118,7 @@ struct SessionReadOperations {
         reconcile(current)
         guard owns(id, current: current), operations[id]?.phase == .local, let operation = operations[id] else { return .none }
         guard page.graph.sessionId == operation.owner.sessionId, operation.owner.cacheEpoch == nil || page.graph.epoch == operation.owner.cacheEpoch else { finish(id, phase: .superseded); return .none }
-        if page.status == .cycleDetected { finish(id, phase: .failed, error: "本地历史父节点形成循环"); return .none }
+        if page.status == .cycleDetected { finish(id, phase: .failed, error: L10n.tr("本地历史父节点形成循环")); return .none }
         if page.displayComplete && !page.entries.isEmpty {
             finish(id, phase: .succeeded); return .apply(page)
         }
@@ -141,18 +141,18 @@ struct SessionReadOperations {
             return .apply(page)
         }
         if operation.kind == .catchup {
-            guard let target = operation.targetLeafId else { finish(id, phase: .failed, error: "补齐目标缺失"); return .none }
+            guard let target = operation.targetLeafId else { finish(id, phase: .failed, error: L10n.tr("补齐目标缺失")); return .none }
             let gap = page.targetCovered ? nil : (page.coverageGap ?? sessionCatchupGap(in: page.graph, targetLeafId: target))
             if let gap {
-                if operation.lastGap == gap { finish(id, phase: .failed, error: "补齐范围未推进，请重试"); return .none }
+                if operation.lastGap == gap { finish(id, phase: .failed, error: L10n.tr("补齐范围未推进，请重试")); return .none }
                 operations[id]?.lastGap = gap; operations[id]?.phase = .waiting; operations[id]?.commandId = nil
                 return .requestCatchup(gap)
             }
             finish(id, phase: .succeeded); return .apply(page)
         }
-        guard page.displayComplete, page.status == .complete || page.status == .olderAvailable else { finish(id, phase: .failed, error: "历史范围或显示结果不完整"); return .none }
-        if operation.kind == .history, page.entries.first?.entryId == operation.beforeEntryId { finish(id, phase: .failed, error: "历史范围未推进，请重试"); return .none }
-        if page.entries.isEmpty && (!page.complete || page.hasOlder) { finish(id, phase: .failed, error: "历史范围未推进，请重试"); return .none }
+        guard page.displayComplete, page.status == .complete || page.status == .olderAvailable else { finish(id, phase: .failed, error: L10n.tr("历史范围或显示结果不完整")); return .none }
+        if operation.kind == .history, page.entries.first?.entryId == operation.beforeEntryId { finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none }
+        if page.entries.isEmpty && (!page.complete || page.hasOlder) { finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none }
         finish(id, phase: page.entries.isEmpty && operation.kind == .history ? .endReached : .succeeded)
         return .apply(page)
     }

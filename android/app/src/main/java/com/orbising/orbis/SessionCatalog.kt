@@ -139,10 +139,10 @@ internal fun sessionTimeText(
     val today = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
     val day = time.toLocalDate()
     val pattern = when {
-        day == today -> "今天 HH:mm"
-        day == today.minusDays(1) -> "昨天 HH:mm"
-        day.year == today.year -> "M月d日"
-        else -> "yyyy年M月d日"
+        day == today -> L10n.tr("今天 HH:mm")
+        day == today.minusDays(1) -> L10n.tr("昨天 HH:mm")
+        day.year == today.year -> L10n.tr("M月d日")
+        else -> L10n.tr("yyyy年M月d日")
     }
-    return java.time.format.DateTimeFormatter.ofPattern(pattern, java.util.Locale.SIMPLIFIED_CHINESE).format(time)
+    return java.time.format.DateTimeFormatter.ofPattern(pattern, L10n.locale).format(time)
 }

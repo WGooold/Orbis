@@ -59,7 +59,7 @@ final class ToolInventories: ObservableObject {
     func require(_ reference: ToolReference, runtime: String) {
         guard reference.projectionVersion == 1, (0...4096).contains(reference.totalCount), (0...8_388_608).contains(reference.summaryBytes),
               validToolId(reference.version.epoch), (1...9_007_199_254_740_991).contains(reference.version.revision),
-              validToolId(reference.source.epoch), (0...9_007_199_254_740_991).contains(reference.source.seq) else { failed(runtime, "工具清单版本或大小无效。", reference: reference); return }
+              validToolId(reference.source.epoch), (0...9_007_199_254_740_991).contains(reference.source.seq) else { failed(runtime, L10n.tr("工具清单版本或大小无效。"), reference: reference); return }
         var replica = replicas[runtime] ?? Replica()
         if replica.verified.contains(reference) {
             if replica.target == nil, replica.confirmed == reference,
@@ -73,7 +73,7 @@ final class ToolInventories: ObservableObject {
             if replica.retired.contains(reference.version.epoch) { return }
             if previous.version.epoch == reference.version.epoch, reference.version.revision < previous.version.revision { return }
             if previous.version.epoch != reference.version.epoch {
-                guard replica.retired.count < 64 else { failed(runtime, "工具清单代次超限。", reference: reference); return }
+                guard replica.retired.count < 64 else { failed(runtime, L10n.tr("工具清单代次超限。"), reference: reference); return }
                 replica.retired.insert(previous.version.epoch)
             }
         }
@@ -95,7 +95,7 @@ final class ToolInventories: ObservableObject {
         if type == "session.tools.opened", event["requestId"] as? String == replica.requestId,
            let raw = event["snapshot"] as? [String: Any], let snapshot: ToolSnapshot = decode(raw), let target = replica.target {
             guard event["runtimeId"] as? String == runtime, validToolId(snapshot.snapshotId), snapshot.agent == target.agent,
-                  snapshot.source == target.source, snapshot.version == target.version, snapshot.totalCount == target.totalCount else { failed(runtime, "工具清单身份不匹配。"); return }
+                  snapshot.source == target.source, snapshot.version == target.version, snapshot.totalCount == target.totalCount else { failed(runtime, L10n.tr("工具清单身份不匹配。")); return }
             replica.snapshot = snapshot; replica.requestId = UUID().uuidString
             replicas[runtime] = replica; issue(runtime); return
         }
@@ -106,19 +106,19 @@ final class ToolInventories: ObservableObject {
             guard page.startIndex == replica.incoming.count, page.endIndex == all.count, page.tools.count <= 128,
                   page.nextCursor == nil || (page.nextCursor != replica.cursor && !page.tools.isEmpty),
                   all.count <= target.totalCount, bytes <= target.summaryBytes, Set(all.compactMap { $0.tool?.toolCallId }).count == all.count,
-                  all == all.sorted(by: toolOrdered), page.tools.allSatisfy({ validSummary($0, agent: target.agent) }) else { failed(runtime, "工具清单分页无效。"); return }
+                  all == all.sorted(by: toolOrdered), page.tools.allSatisfy({ validSummary($0, agent: target.agent) }) else { failed(runtime, L10n.tr("工具清单分页无效。")); return }
             if page.nextCursor != nil {
                 replica.incoming = all; replica.bytes = bytes; replica.cursor = page.nextCursor; replica.requestId = UUID().uuidString
                 replicas[runtime] = replica; issue(runtime); return
             }
-            guard all.count == target.totalCount, bytes == target.summaryBytes else { failed(runtime, "工具清单未完整接收。"); return }
+            guard all.count == target.totalCount, bytes == target.summaryBytes else { failed(runtime, L10n.tr("工具清单未完整接收。")); return }
             replica.confirmed = target; replica.tools = all; replica.target = nil; replica.requestId = nil; replica.snapshot = nil; replica.incoming = []
             var verified: [ToolReference] = []
             if rememberVerified(target, in: &replica) { verified.append(target) }
             for patch in replica.patches {
                 guard apply(patch, to: &replica), let reference = replica.confirmed else {
                     replicas[runtime] = replica
-                    failed(runtime, "工具清单版本不连续。")
+                    failed(runtime, L10n.tr("工具清单版本不连续。"))
                     notifyCovered(runtime, references: verified)
                     return
                 }
@@ -144,11 +144,11 @@ final class ToolInventories: ObservableObject {
                       patch.baseRevision == latestVersion.revision, latestVersion.revision < 9_007_199_254_740_991,
                       patch.version.revision == latestVersion.revision + 1, patch.source.seq <= 9_007_199_254_740_991,
                       patch.source.seq > latestSource.seq, patch.upserts.count + patch.removes.count <= 128,
-                      replica.patches.count < 63, replica.bufferedBytes + data.count <= 1_048_576 else { failed(runtime, "工具清单更新需要重新读取。"); return }
+                      replica.patches.count < 63, replica.bufferedBytes + data.count <= 1_048_576 else { failed(runtime, L10n.tr("工具清单更新需要重新读取。")); return }
                 replica.patches.append(patch); replica.bufferedBytes += data.count; replicas[runtime] = replica
             } else {
                 if let confirmed = replica.confirmed, confirmed.version.epoch == patch.version.epoch && patch.version.revision <= confirmed.version.revision { return }
-                guard apply(patch, to: &replica), let reference = replica.confirmed else { failed(runtime, "工具清单版本不连续。"); return }
+                guard apply(patch, to: &replica), let reference = replica.confirmed else { failed(runtime, L10n.tr("工具清单版本不连续。")); return }
                 let verified = rememberVerified(reference, in: &replica)
                 replicas[runtime] = replica; publish(runtime)
                 if verified { notifyCovered(runtime, references: [reference]) }
@@ -163,7 +163,7 @@ final class ToolInventories: ObservableObject {
             if notice.version.epoch == latest.1.epoch, notice.source.epoch == latest.2.epoch,
                notice.version.revision <= latest.1.revision { return }
             // A missing delta invalidates this read. A following chat checkpoint supplies the exact replacement reference.
-            failed(runtime, "工具清单已更新，等待会话同步。")
+            failed(runtime, L10n.tr("工具清单已更新，等待会话同步。"))
         } else if type == "session.tool.read.failed", event["requestId"] as? String == replica.requestId {
             failed(runtime, toolReadFailureTitle(event["reason"] as? String))
         }
@@ -204,13 +204,13 @@ final class ToolInventories: ObservableObject {
         var command: [String: Any] = ["type": replica.snapshot == nil ? "session.tools.open" : "session.tools.read", "runtimeId": runtime, "requestId": request]
         if let snapshot = replica.snapshot { command["snapshot"] = encode(snapshot); command["cursor"] = replica.cursor as Any? ?? NSNull(); command["maxItems"] = 128 }
         else { command["reference"] = encode(target) }
-        guard send(runtime, command) else { failed(runtime, "工具清单读取未送达。"); return }
+        guard send(runtime, command) else { failed(runtime, L10n.tr("工具清单读取未送达。")); return }
         timeouts[runtime]?.cancel()
         let delay = readTimeoutNanoseconds
         timeouts[runtime] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: delay) } catch { return }
             guard let self, self.replicas[runtime]?.requestId == request else { return }
-            self.failed(runtime, "工具清单读取超时，请重试。")
+            self.failed(runtime, L10n.tr("工具清单读取超时，请重试。"))
         }
     }
     private func failed(_ runtime: String, _ message: String, reference: ToolReference? = nil) {

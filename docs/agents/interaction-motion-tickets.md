@@ -28,6 +28,7 @@
 | MOT-22 | 宣传片配额硬币原生实体投影 | S19 / SC27 / r37 | 已接入，验证中 | 双端几何、配额设备、帧审阅及全量门禁；R58 |
 | MOT-23 | 官网 Agent 转盘与宣传片式交互演示 | X07–X10 / SC44 / r41 | 已接入，验证中 | 浏览器功能 / 响应式 / CSP / 减少动画与截图；R60 |
 | MOT-24 | Claude 后台子任务活动与折叠区 | 01、08 / ADR-0062 | r44 已接入 | 设备、帧与人工待验证；R61 / SC45 |
+| MOT-25 | 全 App 语言选择与即时更新 | 01、08 / ADR-0063 | r45 已接入 | 语言设备专项通过；全量残余失败 / 人工未验收；R62 / SC46 |
 
 执行顺序：01 → 02 / 03 / 04 / 06 / 07 / 08 → 05 / 09 → 10。允许在单一任务中顺序开发；此表不要求创建并行 agent。每项保持双端同一语义，不改变 Host 协议或 r27 在途业务功能。
 
@@ -232,3 +233,12 @@ MOT-01–09 表中的“已接入”表示代码已落地，不表示所有验�
 **验收**：R61、C01–C18、A1–A4、双端L1–L4；主 idle + 子 running、未知 / 重连、同名嵌套、展开后更新、键盘与草稿、取消 / 连点 / 减少动画；双端生产组件与关闭能力门禁已接入，L1 / L2 通过；共享池阻塞，设备、帧与人工尚未验收。证据 `.artifacts/ui-regression/20261103-claude-background-agents/summary.md`。
 
 MOT-24 / R61 2026-11-04 无设备补验：独立候选的 Node / Mod / Swift / Android 单元测试、双端 App 与设备测试包构建通过，具体计数与首次构建范围修正见 ADR-0062 和 `.artifacts/ui-regression/20261104-claude-background-validation/summary.md`。用户选择保留无法终止的旧模拟器现场，设备、帧、人工与真实原生联动仍未验收；没有调整动画参数或放宽用例。
+
+## MOT-25：语言选择（SC46 / S27，r45）
+
+- 实施：双端设置追加语言选项，复用普通按钮轻压和选中状态；不新增运动参数，切换不重建导航 / 草稿 / 连接。规则 [ADR-0063](../adr/0063-mobile-app-language.md)。
+- 单元：iOS `LocalizationTests`、Android `LocalizationTest` 和 `ConfigLedgerTest.prerequisiteFailureDoesNotParseTheLanguageOfTheWaitingLabel`；语言选择 / 回退、持久化、模板参数及原文、英文单复数、状态判定与语言独立。
+- 设备：iOS `testLanguageSwitchIsImmediateAndPersistsAcrossLaunches`、`testLanguageFollowsSystemAndEnglishFallback`、`testEnglishChatKeepsOriginalContentAndDraft`；Android `SettingsEntryInstrumentedTest.languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage`、`englishSettingsFitNarrowLargeTypeAndKeepLanguageTargets`。
+- 门禁：R62、C01–C18、A1–A4 / A5、双端 L1–L4及同设备基点比较；设备未运行不能记为通过。证据 `.artifacts/ui-regression/20261104-app-language/summary.md`。
+
+2026-11-04 模拟器结果：SE / iPad 语言各 3 / 3，Android 设置四组整类 32 / 32，iOS 滚动与本地化辅助功能选择器修正后 4 / 4；SE 历史英文两行、Android 权限等待按钮大字完整换行已核对。同设备全量存在残余失败，详见 ADR-0063 实施记录；所有原断言保留，未将 pending 当成功。最终全量图片与设置矩阵已审阅，完整 C01–C18 / 系统前后台现场变化 / 屏幕阅读器 / 真机仍未验收，MOT-25 不关单。

@@ -36,7 +36,7 @@ final class SecureStore: SecureStorage {
         if status == errSecSuccess { return }
         guard status == errSecItemNotFound,
               SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil) == errSecSuccess else {
-            throw PairingError.relay("无法保存安全凭据，请解锁设备后重试。")
+            throw PairingError.relay(L10n.tr("无法保存安全凭据，请解锁设备后重试。"))
         }
     }
 
@@ -45,7 +45,7 @@ final class SecureStore: SecureStorage {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess else { throw PairingError.relay("无法读取安全凭据，请解锁设备后重新启动 App。") }
+        guard status == errSecSuccess else { throw PairingError.relay(L10n.tr("无法读取安全凭据，请解锁设备后重新启动 App。")) }
         return result as? Data
     }
 }

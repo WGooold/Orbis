@@ -95,14 +95,14 @@ internal fun QuestionnairePanel(
             Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(request.title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                    NeumorphTextButton("取消回答", enabled = enabled, onClick = onCancel)
+                    NeumorphTextButton(L10n.tr("取消回答"), enabled = enabled, onClick = onCancel)
                 }
                 if (questions.size > 1) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         questions.forEachIndexed { index, item ->
                             val answered = answers.any { it.id == item.id }
                             NeumorphTextButton(
-                                text = "${index + 1}. ${item.header?.takeIf(String::isNotBlank) ?: "问题"}${if (answered) " ✓" else ""}",
+                                text = "${index + 1}. ${item.header?.takeIf(String::isNotBlank) ?: L10n.tr("问题")}${if (answered) " ✓" else ""}",
                                 filled = current == index,
                                 onClick = { setPage(index) },
                             )
@@ -110,7 +110,7 @@ internal fun QuestionnairePanel(
                     }
                 }
                 Text(
-                    "第 ${current + 1} / ${questions.size} 题，${if (question.options.isEmpty()) "填写回答" else if (question.multiSelect) "可多选" else "单选"}",
+                    L10n.tr("第 {0} / {1} 题，{2}", current + 1, questions.size, if (question.options.isEmpty()) L10n.tr("填写回答") else if (question.multiSelect) L10n.tr("可多选") else L10n.tr("单选")),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -135,7 +135,7 @@ internal fun QuestionnairePanel(
                         }
                         if (question.allowOther) {
                             if (question.options.isNotEmpty()) QuestionnaireOption(
-                                label = "其他答案", description = null, selected = draft.otherSelected,
+                                label = L10n.tr("其他答案"), description = null, selected = draft.otherSelected,
                                 multiple = question.multiSelect, enabled = enabled,
                                 onClick = { update(draft.toggleOther(question)) },
                             )
@@ -144,12 +144,12 @@ internal fun QuestionnairePanel(
                                     value = draft.other, onValueChange = { update(draft.copy(other = it)) },
                                     modifier = Modifier.fillMaxWidth().testTag("questionnaire-answer-${question.id}"),
                                     enabled = !submitting && !request.submitted && !expired,
-                                    label = { Text(if (question.options.isEmpty()) "填写回答" else "填写其他答案") },
+                                    label = { Text(if (question.options.isEmpty()) L10n.tr("填写回答") else L10n.tr("填写其他答案")) },
                                     minLines = if (question.secret) 1 else 2, maxLines = if (question.secret) 1 else 5,
                                     visualTransformation = if (question.secret) PasswordVisualTransformation() else VisualTransformation.None,
                                     keyboardOptions = if (question.secret) androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Password) else androidx.compose.foundation.text.KeyboardOptions.Default,
                                     isError = draft.other.length > 4_000,
-                                    supportingText = { if (draft.other.length > 4_000) Text("最多 4000 个字符") },
+                                    supportingText = { if (draft.other.length > 4_000) Text(L10n.tr("最多 4000 个字符")) },
                                 )
                             }
                         }
@@ -157,28 +157,28 @@ internal fun QuestionnairePanel(
                             OutlinedTextField(
                                 value = draft.notes, onValueChange = { update(draft.copy(notes = it)) },
                                 modifier = Modifier.fillMaxWidth(), enabled = enabled,
-                                label = { Text("补充说明（可选）") }, minLines = 2, maxLines = 5,
+                                label = { Text(L10n.tr("补充说明（可选）")) }, minLines = 2, maxLines = 5,
                                 isError = draft.notes.length > 4_000,
-                                supportingText = { if (draft.notes.length > 4_000) Text("最多 4000 个字符") },
+                                supportingText = { if (draft.notes.length > 4_000) Text(L10n.tr("最多 4000 个字符")) },
                             )
                         }
                     }
                 }
-                if (expired) Text("此提问已超时", color = MaterialTheme.colorScheme.error)
+                if (expired) Text(L10n.tr("此提问已超时"), color = MaterialTheme.colorScheme.error)
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text(
-                    if (submitting || request.submitted) "已提交，等待电脑确认…" else if (answers.size == questions.size) "答案已填好，可继续修改或提交"
-                    else "已回答 ${answers.size} / ${questions.size} 题",
+                    if (submitting || request.submitted) L10n.tr("已提交，等待电脑确认…") else if (answers.size == questions.size) L10n.tr("答案已填好，可继续修改或提交")
+                    else L10n.tr("已回答 {0} / {1} 题", answers.size, questions.size),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (current > 0) NeumorphTextButton("上一题", onClick = { setPage(current - 1) })
+                    if (current > 0) NeumorphTextButton(L10n.tr("上一题"), onClick = { setPage(current - 1) })
                     if (current < questions.lastIndex) {
-                        NeumorphTextButton("下一题", modifier = Modifier.weight(1f), filled = true, onClick = { setPage(current + 1) })
+                        NeumorphTextButton(L10n.tr("下一题"), modifier = Modifier.weight(1f), filled = true, onClick = { setPage(current + 1) })
                     } else {
                         NeumorphTextButton(
-                            if (submitting) "正在提交…" else "提交答案", modifier = Modifier.weight(1f), filled = true,
+                            if (submitting) L10n.tr("正在提交…") else L10n.tr("提交答案"), modifier = Modifier.weight(1f), filled = true,
                             enabled = enabled && answers.size == questions.size,
                             onClick = { onSubmit(answers) },
                         )

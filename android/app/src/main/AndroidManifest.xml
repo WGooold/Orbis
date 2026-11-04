@@ -19,6 +19,7 @@
              from the composer's imePadding(). -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="locale|layoutDirection"
             android:exported="true"
             android:windowSoftInputMode="adjustResize" />
         <!-- Keep the installed launcher component so existing shortcuts and notifications survive upgrades. -->

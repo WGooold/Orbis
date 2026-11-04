@@ -103,7 +103,7 @@ internal fun renderMarkdownInline(
         fun linked(destination: String, image: Boolean = false) {
             val start = length
             children()
-            if (image && length == start) append("图片")
+            if (image && length == start) append(L10n.tr("图片"))
             val filePath = markdownFileLinkPath(destination)
             val target = filePath ?: markdownExternalLinkUrl(destination)
             if (target != null && start < length) {

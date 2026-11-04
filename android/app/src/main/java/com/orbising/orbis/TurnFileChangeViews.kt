@@ -61,14 +61,14 @@ internal fun ChangeFileName(name: String, modifier: Modifier = Modifier) {
 }
 
 internal fun changeScopeLabel(scope: String) = when (scope) {
-    "native-file-tools" -> "Codex 文件工具"
-    "git-visible-files" -> "已跟踪及非忽略文件"
-    "bounded-directory" -> "当前目录（已排除缓存）"
-    else -> "记录范围未确认"
+    "native-file-tools" -> L10n.tr("Codex 文件工具")
+    "git-visible-files" -> L10n.tr("已跟踪及非忽略文件")
+    "bounded-directory" -> L10n.tr("当前目录（已排除缓存）")
+    else -> L10n.tr("记录范围未确认")
 }
 
 private fun changeKindLabel(kind: String) = when (kind) {
-    "added" -> "新增"; "deleted" -> "删除"; "renamed" -> "重命名"; "type-changed" -> "类型变化"; "modified" -> "修改"; else -> "未知"
+    "added" -> L10n.tr("新增"); "deleted" -> L10n.tr("删除"); "renamed" -> L10n.tr("重命名"); "type-changed" -> L10n.tr("类型变化"); "modified" -> L10n.tr("修改"); else -> L10n.tr("未知")
 }
 
 /** Only known numbers; files without text counts show a short status instead of "+? −?". */
@@ -87,7 +87,7 @@ private fun ChangeCounts(additions: Long?, deletions: Long?, status: String? = "
 }
 
 internal fun changeShortStatus(detail: String) = when (detail) {
-    "binary" -> "二进制"; "too-large" -> "过大"; "unsupported" -> "不支持"; "not-captured" -> "未保存"; "busy" -> "未统计"; else -> "—"
+    "binary" -> L10n.tr("二进制"); "too-large" -> L10n.tr("过大"); "unsupported" -> L10n.tr("不支持"); "not-captured" -> L10n.tr("未保存"); "busy" -> L10n.tr("未统计"); else -> "—"
 }
 
 @Composable
@@ -172,10 +172,10 @@ internal fun TurnChangeSummaryView(
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val opens = ready && files.isNotEmpty()
     val title = when {
-        pending -> "正在统计文件变化"
-        summary.state == "unavailable" -> "本轮文件变化未记录"
-        count == 0 -> if (summary.coverage == "complete") "本轮没有文件变化" else "未发现文件变化"
-        else -> "$count 个文件已更改"
+        pending -> L10n.tr("正在统计文件变化")
+        summary.state == "unavailable" -> L10n.tr("本轮文件变化未记录")
+        count == 0 -> if (summary.coverage == "complete") L10n.tr("本轮没有文件变化") else L10n.tr("未发现文件变化")
+        else -> L10n.tr("{0} 个文件已更改", count)
     }
     val caveat = turnChangeCoverageNote(summary)
     Column(Modifier.fillMaxWidth().testTag("turn-file-changes-${summary.reviewTurnId}"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -183,7 +183,7 @@ internal fun TurnChangeSummaryView(
             Column(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp)
                     .then(if (opens) Modifier.clickable(enabled = canRead) { openActivation++; onOpenFile(files.first()) }
-                        .semantics { contentDescription = "查看详情，$title" } else Modifier)
+                        .semantics { contentDescription = L10n.tr("查看详情，{0}", title) } else Modifier)
                     .testTag("turn-changes-open-${summary.reviewTurnId}"),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(if (summary.state == "unavailable") Icons.Rounded.ErrorOutline else Icons.Rounded.Description,
@@ -206,7 +206,7 @@ internal fun TurnChangeSummaryView(
                         expanded = !expanded
                         if (expanded && !manifest.loaded) onReadManifest()
                     }, verticalAlignment = Alignment.CenterVertically) {
-                        Text(if (expanded) "收起" else "还有 ${count - 4} 个文件", Modifier.weight(1f),
+                        Text(if (expanded) L10n.tr("收起") else L10n.tr("还有 {0} 个文件", count - 4), Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall, color = muted)
                         if (manifest.requestId != null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                         Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null,
@@ -215,7 +215,7 @@ internal fun TurnChangeSummaryView(
                 }
                 if (expanded && manifest.requestId == null && (manifest.loaded && !manifest.complete || manifest.error != null)) {
                     ChangeHairline()
-                    Text(if (manifest.error != null) "重新读取文件清单" else "加载更多文件",
+                    Text(if (manifest.error != null) L10n.tr("重新读取文件清单") else L10n.tr("加载更多文件"),
                         Modifier.fillMaxWidth().clickable(enabled = canRead, onClick = onReadManifest).heightIn(min = 40.dp)
                             .wrapContentHeight(Alignment.CenterVertically),
                         style = MaterialTheme.typography.bodySmall,
@@ -278,9 +278,9 @@ internal fun FileChangeViewerSheet(
                     .background(MaterialTheme.colorScheme.outlineVariant, CircleShape))
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = "关闭文件差异")
+                    NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭文件差异"))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("本轮文件差异", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                        Text(L10n.tr("本轮文件差异"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                         Text(changeScopeLabel(viewer.summary.scope), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                     }
@@ -299,15 +299,15 @@ internal fun FileChangeViewerSheet(
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 NeumorphIconButton(onClick = { scope.launch { pager.animateScrollToPage(pager.settledPage - 1) } }, icon = Icons.Rounded.ChevronLeft,
-                    contentDescription = "上一个文件", enabled = pager.settledPage > 0)
+                    contentDescription = L10n.tr("上一个文件"), enabled = pager.settledPage > 0)
                 Text("${pager.settledPage + 1} / ${summaryCount(manifest)}", Modifier.weight(1f).testTag("file-change-page"),
                     style = MaterialTheme.typography.labelLarge, fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 NeumorphIconButton(onClick = { scope.launch { pager.animateScrollToPage(pager.settledPage + 1) } }, icon = Icons.Rounded.ChevronRight,
-                    contentDescription = "下一个文件", enabled = pager.settledPage < files.lastIndex)
+                    contentDescription = L10n.tr("下一个文件"), enabled = pager.settledPage < files.lastIndex)
             }
             if (!manifest.complete || manifest.error != null) {
-                NeumorphTextButton(if (manifest.requestId != null) "正在读取文件清单…" else "加载更多文件",
+                NeumorphTextButton(if (manifest.requestId != null) L10n.tr("正在读取文件清单…") else L10n.tr("加载更多文件"),
                     onClick = onReadManifest, enabled = manifest.requestId == null,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp))
                 manifest.error?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.error,
@@ -342,7 +342,7 @@ private fun DiffFileHeader(file: FileChangeMetadata) {
         }
         if (directory.isNotEmpty()) Text(directory, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (file.oldPath != null) Text("原路径 ${file.oldPath}", style = MaterialTheme.typography.bodySmall,
+        if (file.oldPath != null) Text(L10n.tr("原路径 {0}", file.oldPath), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -374,9 +374,9 @@ private fun FileDiffPage(file: FileChangeMetadata, cache: FileDiffCache?, select
             if (rows.isEmpty()) Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                 Text(when {
                     file.detail != "available" -> changeFailureText(file.detail)
-                    cache?.requestId != null -> "正在读取差异…"
-                    cache?.loaded == true && cache.eof -> "没有文本差异"
-                    else -> "停留在此文件后读取差异"
+                    cache?.requestId != null -> L10n.tr("正在读取差异…")
+                    cache?.loaded == true && cache.eof -> L10n.tr("没有文本差异")
+                    else -> L10n.tr("停留在此文件后读取差异")
                 }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else LazyColumn(state = state, modifier = Modifier.fillMaxSize().testTag("file-diff-lines-${file.fileId}"), contentPadding = PaddingValues(vertical = 8.dp)) {
                 itemsIndexed(rows, key = { index, _ -> index }) { _, line -> DiffLineRow(line, gutterWidth) }
@@ -386,11 +386,11 @@ private fun FileDiffPage(file: FileChangeMetadata, cache: FileDiffCache?, select
             when {
                 cache?.error != null -> Column {
                     Text(cache.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    if (file.detail == "available" && !cache.error.contains("显示上限")) NeumorphTextButton("重新读取", onClick = onRead, enabled = selected)
+                    if (file.detail == "available" && !L10n.matches(cache.error, "已读取差异达到 2 MiB 显示上限")) NeumorphTextButton(L10n.tr("重新读取"), onClick = onRead, enabled = selected)
                 }
                 cache?.requestId != null -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                cache?.loaded == true && !cache.eof -> NeumorphTextButton("读取下一段差异", onClick = onRead, enabled = selected)
-                cache?.eof == true -> Text("已读取全部差异", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                cache?.loaded == true && !cache.eof -> NeumorphTextButton(L10n.tr("读取下一段差异"), onClick = onRead, enabled = selected)
+                cache?.eof == true -> Text(L10n.tr("已读取全部差异"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

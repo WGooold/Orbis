@@ -902,6 +902,7 @@ fun NeumorphTextButton(
     danger: Boolean = false,
     filled: Boolean = false,
     icon: ImageVector? = null,
+    maxLines: Int = 1,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
@@ -929,7 +930,7 @@ fun NeumorphTextButton(
                 Spacer(Modifier.width(5.dp))
             }
             Text(text, color = contentColor, style = MaterialTheme.typography.labelLarge,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                maxLines = maxLines, overflow = TextOverflow.Ellipsis)
         }
     }
 }

@@ -335,7 +335,7 @@ struct OperationLedger<Payload: Equatable>: Equatable {
         let goneIds = Set(gone.map(\.opId))
         return step { ledger in
             ledger.operations.removeAll { goneIds.contains($0.opId) }
-            return gone.map(Event.expired) + gone.flatMap { ledger.dependentsFailed(on: $0.opId, reason: "前置操作已失效") }
+            return gone.map(Event.expired) + gone.flatMap { ledger.dependentsFailed(on: $0.opId, reason: L10n.tr("前置操作已失效")) }
         }
     }
 

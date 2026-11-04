@@ -24,6 +24,8 @@ Approval requests continue through structured interactions and are not automatic
 
 The existing raw `permissions` metadata remains available for diagnostics and existing backend tests. It is not the presentation or edit contract. Native slash commands may remain for the general command menu, but the permission page never discovers or applies settings through `slash.execute`. This qualifies ADR-0003: permission management is a dedicated typed runtime operational control rather than a second catalog for invoking arbitrary slash commands.
 
+2026-11-04 localization ([ADR-0063](0063-mobile-app-language.md), S27 / R62): clients may render known Host-owned UI wording in the selected app language using a finite shared text catalog. Known full templates keep dynamic arguments opaque, and unknown backend text is retained. This is presentation only: clients still do not interpret native permission values or derive semantics from setting IDs, and setting / option identities, disabled reasons, confirmation and command routing remain unchanged. English device coverage checks that translated permission controls submit the original opaque identities.
+
 ## Consequences and verification
 
 Adding a permission-capable backend requires a backend adapter and does not require phone-specific mappings. Native semantics, explanatory text, and supported options have one computer-side source. APP and Host must be updated together for the new command; missing management metadata never implies full access.

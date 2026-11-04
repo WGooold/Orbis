@@ -16,7 +16,7 @@ class InteractionNotifier(private val context: Context) {
     init {
         notifications.createNotificationChannel(NotificationChannel(
             CHANNEL_ID,
-            "Orbis 交互请求",
+            L10n.tr("Orbis 交互请求"),
             NotificationManager.IMPORTANCE_HIGH,
         ))
     }

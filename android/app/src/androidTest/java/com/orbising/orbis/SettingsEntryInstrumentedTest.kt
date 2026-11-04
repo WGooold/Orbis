@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
@@ -82,6 +84,123 @@ class SettingsEntryInstrumentedTest {
     @Test fun insetFocusAppearanceSwitchUpdatesSelectionWithoutLeavingSettings() = appearanceSwitch(dark = false)
     @Test fun darkInsetFocusAppearanceSwitchKeepsSelection() = appearanceSwitch(dark = true)
 
+    @Test fun languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage() {
+        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val owner = ViewModelStore()
+        val model = RemoteViewModel(app)
+        owner.put("language", model)
+        var back = 0
+        try {
+            AppLocalization.configure(app)
+            AppLocalization.select(AppLanguage.Chinese)
+            compose.setContent {
+                OrbisTheme { StatusScreen(RemoteState(hostId = "host", hostName = "设置 / 原文"), model,
+                    model.pairingStatus(), onBack = { back++ }) }
+            }
+            compose.onNodeWithTag("language-en").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithText("Settings").assertIsDisplayed()
+            compose.onNodeWithText("Follow system").assertIsDisplayed()
+            assertEquals(0, back)
+            compose.runOnIdle {
+                assertEquals("en", app.getSharedPreferences(AppLocalization.PREFERENCES, Context.MODE_PRIVATE)
+                    .getString(AppLocalization.PREFERENCE_KEY, null))
+                AppLocalization.configure(app)
+                assertEquals(AppLanguage.English, AppLocalization.language)
+            }
+            capture("language-settings-english")
+            compose.onNodeWithText("设置 / 原文").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("language-zh-Hans").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithText("设置").assertIsDisplayed()
+            compose.onNodeWithText("跟随系统").assertIsDisplayed()
+            capture("language-settings-chinese")
+        } finally {
+            AppLocalization.select(AppLanguage.Chinese)
+            owner.clear()
+            app.dispose()
+        }
+    }
+
+    @Test fun englishSettingsFitNarrowLargeTypeAndKeepLanguageTargets() {
+        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val owner = ViewModelStore()
+        val model = RemoteViewModel(app)
+        owner.put("language-layout", model)
+        try {
+            AppLocalization.configure(app)
+            AppLocalization.select(AppLanguage.English)
+            compose.setContent {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, 1.5f)
+                ) {
+                    androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(360.dp)) {
+                        OrbisTheme(darkTheme = true) {
+                            StatusScreen(RemoteState(hostId = "host", hostName = "Original computer", e2eReady = true,
+                                connection = RelayConnection.ONLINE, path = "relay"), model, model.pairingStatus(), onBack = {})
+                        }
+                    }
+                }
+            }
+            compose.onNodeWithText("End-to-end encryption").performScrollTo().assertIsDisplayed()
+            for (key in listOf("system", "zh-Hans", "en")) {
+                val choice = compose.onNodeWithTag("language-$key").performScrollTo()
+                choice.assertIsDisplayed()
+                assertTrue(choice.fetchSemanticsNode().boundsInRoot.height >= 48)
+            }
+            capture("language-english-dark-large-type")
+        } finally {
+            AppLocalization.select(AppLanguage.Chinese)
+            owner.clear()
+            app.dispose()
+        }
+    }
+
+    @Test fun englishPermissionsKeepOpaqueSettingAndOptionIdentities() {
+        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        var applied: Pair<String, String>? = null
+        val permissions = RuntimePermissionManagement(
+            summary = "工作区可写 · 按需询问", details = "网络：允许联网。\nVendor-only detail", tone = "restricted",
+            settings = listOf(RuntimePermissionSetting(id = "vendor-scope", label = "文件访问范围", currentValue = "opaque-A",
+                options = listOf(RuntimePermissionOption("opaque-A", "只读"), RuntimePermissionOption("opaque-B", "工作区可写"))))
+        )
+        try {
+            AppLocalization.configure(app)
+            AppLocalization.select(AppLanguage.English)
+            compose.setContent {
+                OrbisTheme { RuntimePermissionsStatus(permissions, onApply = { setting, value ->
+                    applied = setting to value
+                    "isolated-command"
+                }) }
+            }
+            compose.onNodeWithText("Workspace write · Ask when needed").performClick()
+            compose.onNodeWithText("File access scope").assertIsDisplayed()
+            compose.onNodeWithText("Network: access allowed.\nVendor-only detail").assertIsDisplayed()
+            compose.onNodeWithText("○ Workspace write").performClick()
+            compose.onNodeWithText(L10n.tr("应用到当前会话")).performClick()
+            compose.runOnIdle { assertEquals("vendor-scope" to "opaque-B", applied) }
+            compose.onNodeWithText("Current session permissions").assertIsDisplayed()
+            val pending = compose.onNodeWithText(L10n.tr("正在应用，等待电脑确认…"))
+            pending.assertIsDisplayed().assertIsNotEnabled()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            pending.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            capture("language-permissions-english", wholeWindow = true)
+            val layout = layouts.single()
+            // Compose can retain the wider paragraph constraint after measuring a shorter line.
+            // Check the rendered lines and final character, rather than that unused paragraph width.
+            assertTrue("The pending permission message must remain fully readable", !layout.didOverflowHeight)
+            for (line in 0 until layout.lineCount) {
+                assertTrue("Permission line $line must not be ellipsized", !layout.isLineEllipsized(line))
+                assertTrue("Permission line $line must fit its text bounds",
+                    layout.getLineLeft(line) >= 0 && layout.getLineRight(line) <= layout.size.width)
+            }
+            assertEquals("The complete pending message must be laid out", layout.layoutInput.text.length,
+                layout.getLineEnd(layout.lineCount - 1, visibleEnd = true))
+        } finally {
+            AppLocalization.select(AppLanguage.Chinese)
+            app.dispose()
+        }
+    }
+
     private fun appearanceSwitch(dark: Boolean) {
         val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
         val owner = ViewModelStore()
@@ -149,11 +268,16 @@ class SettingsEntryInstrumentedTest {
         }
     }
 
-    private fun capture(name: String) {
-        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+    private fun capture(name: String, wholeWindow: Boolean = false) {
+        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        compose.waitForIdle()
+        // Bottom sheets own a separate window; a Compose root bitmap can omit that window.
+        val bitmap = if (wholeWindow) checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+            else compose.onRoot().captureToImage().asAndroidBitmap()
         val directory = java.io.File(context.getExternalFilesDir(null), "r15").apply { mkdirs() }
         java.io.File(directory, "$name.png").outputStream().use {
-            compose.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
         }
     }
 }

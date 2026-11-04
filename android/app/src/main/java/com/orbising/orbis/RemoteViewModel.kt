@@ -42,7 +42,7 @@ data class HostSnapshot(
         get() = sequenceOf(pairing.hostName, state.hostName)
             .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
             .firstOrNull()
-            ?: "已配对电脑"
+            ?: L10n.tr("已配对电脑")
 }
 
 /**
@@ -209,16 +209,16 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val qr = qrRaw?.let(::parsePairingQrV2)
                 if (qr == null) {
-                    pairingErrors.value = "二维码缺少端到端加密材料或格式无效：请在电脑上重新执行 orbis pair，扫描新二维码"
+                    pairingErrors.value = L10n.tr("二维码缺少端到端加密材料或格式无效：请在电脑上重新执行 orbis pair，扫描新二维码")
                     return@launch
                 }
                 if (qr.exp * 1000 < System.currentTimeMillis()) {
-                    pairingErrors.value = "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）"
+                    pairingErrors.value = L10n.tr("配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）")
                     return@launch
                 }
                 val relay = RelayClient()
                 val paired = runCatching { relay.pair(relayUrl.trim(), code, Build.MODEL) }.getOrElse { error ->
-                    pairingErrors.value = localizedError(error, "配对失败，请检查中继服务器地址、配对码和网络连接")
+                    pairingErrors.value = localizedError(error, L10n.tr("配对失败，请检查中继服务器地址、配对码和网络连接"))
                     return@launch
                 }
                 val keyPair = legacyIdentity.loadOrCreateDeviceKeyPair()
@@ -230,7 +230,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         deviceKeyPair = keyPair,
                     )
                 }.getOrElse { error ->
-                    pairingErrors.value = localizedError(error, "配对材料无效，请重新扫码")
+                    pairingErrors.value = localizedError(error, L10n.tr("配对材料无效，请重新扫码"))
                     return@launch
                 }
                 val accepted = CompletableDeferred<Unit>()
@@ -238,7 +238,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     device = paired,
                     onMessage = { _, _ -> },
                     onOpen = {},
-                    onClosed = { accepted.completeExceptionally(IllegalStateException("配对连接已断开")) },
+                    onClosed = { accepted.completeExceptionally(IllegalStateException(L10n.tr("配对连接已断开"))) },
                     e2eOptions = E2eConnectOptions(
                         hostId = qr.hostId,
                         deviceId = paired.deviceId,
@@ -265,8 +265,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     )
                     onSuccess?.invoke()
                 }.onFailure {
-                    pairingErrors.value = "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" +
-                        "请确认电脑上的配对窗口还开着，再扫一次二维码"
+                    pairingErrors.value = L10n.tr("配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。") +
+                        L10n.tr("请确认电脑上的配对窗口还开着，再扫一次二维码")
                 }
             } finally {
                 pairingProgress.value = false
@@ -358,7 +358,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun selectOfflineSession(sessionId: String?) = active()?.selectOfflineSession(sessionId)
 
     fun loadOlderHistory(runtimeId: String? = null): HistoryReadAcceptance {
-        val connection = active() ?: return HistoryReadAcceptance(rejection = "没有选中的历史窗口")
+        val connection = active() ?: return HistoryReadAcceptance(rejection = L10n.tr("没有选中的历史窗口"))
         return if (runtimeId == null) connection.loadOlderHistory() else connection.loadOlderHistory(runtimeId)
     }
 
@@ -499,18 +499,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun diagnosticReport(): String = buildString {
         val order = pairingOrder.value
-        appendLine("已配对电脑 ${order.size} 台")
+        appendLine(L10n.tr("已配对电脑 {0} 台", order.size))
         order.forEachIndexed { index, pairing ->
             val snapshot = hosts.value.firstOrNull { it.hostId == pairing.hostId }
             val current = snapshot?.state
             appendLine(
                 "  ${index + 1}. ${pairing.hostName ?: pairing.hostId}" +
-                    " [${pairing.hostId}] 连接 ${current?.connection ?: RelayConnection.OFFLINE}" +
-                    if (activeHostId.value == pairing.hostId) "（当前）" else "",
+                    L10n.tr(" [{0}] 连接 {1}", pairing.hostId, current?.connection ?: RelayConnection.OFFLINE) +
+                    if (activeHostId.value == pairing.hostId) L10n.tr("（当前）") else "",
             )
         }
-        appendLine("──── 当前电脑 ────")
-        append(active()?.diagnosticReport() ?: "未选择电脑")
+        appendLine(L10n.tr("──── 当前电脑 ────"))
+        append(active()?.diagnosticReport() ?: L10n.tr("未选择电脑"))
     }
 
     private fun localizedError(error: Throwable, fallback: String): String {

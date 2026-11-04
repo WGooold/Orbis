@@ -18,12 +18,12 @@ internal fun codexProviderOptions(
 ): List<CodexProviderOption> {
     val rows = tree.flatMap { it.directories }.flatMap { it.sessions }.filter { it.agentKind == agentKind }
     return buildList {
-        add(CodexProviderOption(CURRENT_CODEX_PROVIDER, currentProvider?.let { "$it（当前使用）" } ?: "当前 provider（尚未获取）"))
-        add(CodexProviderOption(ALL_CODEX_PROVIDERS, "全部 provider"))
+        add(CodexProviderOption(CURRENT_CODEX_PROVIDER, currentProvider?.let { L10n.tr("{0}（当前使用）", it) } ?: L10n.tr("当前 provider（尚未获取）")))
+        add(CodexProviderOption(ALL_CODEX_PROVIDERS, L10n.tr("全部 provider")))
         rows.mapNotNull { it.modelProvider }.distinct().sorted().filter { it != currentProvider }.forEach {
             add(CodexProviderOption(providerFilterKey(it), it))
         }
-        if (rows.any { it.modelProvider == null }) add(CodexProviderOption(UNKNOWN_CODEX_PROVIDER, "未知 provider"))
+        if (rows.any { it.modelProvider == null }) add(CodexProviderOption(UNKNOWN_CODEX_PROVIDER, L10n.tr("未知 provider")))
     }
 }
 
@@ -40,7 +40,7 @@ internal fun RemoteState.codexProviderMismatch(sessionId: String): String? {
     if (session.agentKind != "codex") return null
     val provider = session.modelProvider?.takeIf(String::isNotBlank) ?: return null
     val current = currentProviders["codex"] ?: return null
-    return if (provider != current) "此会话属于 $provider，当前使用 $current。请在设置页切换到 $provider，再打开会话。" else null
+    return if (provider != current) L10n.tr("此会话属于 {0}，当前使用 {1}。请在设置页切换到 {2}，再打开会话。", provider, current, provider) else null
 }
 
 /** A Codex session owned by a provider other than the current one; null when it matches or either is unknown. */

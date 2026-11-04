@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C06300010000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
+		C06300010000000000000002 /* LocalizationCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000002; };
+		C06300010000000000000003 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C06320010000000000000001; };
 		C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03710010000000000000001 /* QuotaCoinGeometry.swift */; };
 		A00100010000000000000001 /* OrbisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* OrbisApp.swift */; };
 		A00100010000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000002 /* Models.swift */; };
@@ -55,6 +58,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C06310010000000000000001 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
+		C06310010000000000000002 /* LocalizationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalog.swift; sourceTree = "<group>"; };
+		C06310010000000000000003 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		C06310010000000000000004 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		C03710010000000000000001 /* QuotaCoinGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaCoinGeometry.swift; sourceTree = "<group>"; };
 		A00110010000000000000001 /* OrbisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisApp.swift; sourceTree = "<group>"; };
 		A00110010000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -128,6 +135,9 @@
 			isa = PBXGroup;
 			children = (
 				A00110010000000000000001 /* OrbisApp.swift */,
+				C06310010000000000000001 /* Localization.swift */,
+				C06310010000000000000002 /* LocalizationCatalog.swift */,
+				C06320010000000000000001 /* InfoPlist.strings */,
 				A00110010000000000000002 /* Models.swift */,
 				A00110010000000000000003 /* Base64URL.swift */,
 				A00110010000000000000004 /* Crypto.swift */,
@@ -265,6 +275,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A0010001000000000000000C /* Assets.xcassets in Resources */,
+				C06300010000000000000003 /* InfoPlist.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,6 +288,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00100010000000000000001 /* OrbisApp.swift in Sources */,
+				C06300010000000000000001 /* Localization.swift in Sources */,
+				C06300010000000000000002 /* LocalizationCatalog.swift in Sources */,
 				A00100010000000000000002 /* Models.swift in Sources */,
 				A00100010000000000000003 /* Base64URL.swift in Sources */,
 				A00100010000000000000004 /* Crypto.swift in Sources */,
@@ -324,6 +337,15 @@
 		};
         B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXVariantGroup section */
+		C06320010000000000000001 /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (C06310010000000000000003, C06310010000000000000004);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
         B00160010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = A00130010000000000000001; remoteInfo = Orbis; };
         B00160010000000000000002 = {isa = PBXTargetDependency; target = A00130010000000000000001; targetProxy = B00160010000000000000001; };
 

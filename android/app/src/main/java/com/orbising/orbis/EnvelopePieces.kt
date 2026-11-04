@@ -50,9 +50,9 @@ object EnvelopePieces {
      * 与 TS 侧一致：`ct` 不超过上限就不切；握手帧永远不切。
      */
     fun fragment(envelope: EnvelopeV2, mid: String = newMid()): List<EnvelopeV2> {
-        require(!isPiece(envelope)) { "片帧不能再被切片" }
+        require(!isPiece(envelope)) { L10n.tr("片帧不能再被切片") }
         if (envelope.hdr.k !in FRAGMENTABLE) return listOf(envelope)
-        val channel = envelope.hdr.ch ?: error("加密帧 ${envelope.hdr.k} 缺少 hdr.ch，无法判断它的 channel")
+        val channel = envelope.hdr.ch ?: error(L10n.tr("加密帧 {0} 缺少 hdr.ch，无法判断它的 channel", envelope.hdr.k))
         val ct = envelope.ct
         if (ct.length <= MAX_CT_CHARS) return listOf(envelope)
 

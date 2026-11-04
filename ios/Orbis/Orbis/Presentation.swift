@@ -1,7 +1,7 @@
 import Foundation
 
 func connectionLatencyText(_ rttMs: Double?, connected: Bool) -> String {
-    guard connected, let rttMs, rttMs.isFinite, rttMs >= 0 else { return "暂不可用" }
+    guard connected, let rttMs, rttMs.isFinite, rttMs >= 0 else { return L10n.tr("暂不可用") }
     return String(format: "%.0f ms", locale: Locale(identifier: "en_US_POSIX"), rttMs.rounded())
 }
 
@@ -22,12 +22,12 @@ struct SessionProviderOption: Identifiable {
 
 func sessionProviderOptions(_ sessions: [SessionSummary], kind: String, current: String?) -> [SessionProviderOption] {
     let rows = sessions.filter { $0.agentKind == kind }
-    var result = [SessionProviderOption(key: "current", label: current.map { "\($0)（当前使用）" } ?? "当前 provider（尚未获取）"),
-                  SessionProviderOption(key: "all", label: "全部 provider")]
+    var result = [SessionProviderOption(key: "current", label: current.map { L10n.tr("{0}（当前使用）", $0) } ?? L10n.tr("当前 provider（尚未获取）")),
+                  SessionProviderOption(key: "all", label: L10n.tr("全部 provider"))]
     let providers = Set(rows.compactMap(\.modelProvider).filter { !$0.isEmpty }).sorted()
     result += providers.filter { $0 != current }.map { SessionProviderOption(key: "provider:" + $0, label: $0) }
     if rows.contains(where: { $0.modelProvider == nil || $0.modelProvider?.isEmpty == true }) {
-        result.append(SessionProviderOption(key: "unknown", label: "未知 provider"))
+        result.append(SessionProviderOption(key: "unknown", label: L10n.tr("未知 provider")))
     }
     return result
 }
@@ -46,11 +46,11 @@ func matchesSessionProvider(_ session: SessionSummary, filter: String, current: 
 func sessionTimeTitle(_ milliseconds: Int64, now: Date = Date(), calendar: Calendar = .current) -> String {
     let date = Date(timeIntervalSince1970: Double(milliseconds) / 1000)
     let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN"); formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
-    if calendar.isDate(date, inSameDayAs: now) { formatter.dateFormat = "今天 HH:mm" }
-    else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { formatter.dateFormat = "昨天 HH:mm" }
-    else if calendar.isDate(date, equalTo: now, toGranularity: .year) { formatter.dateFormat = "M月d日" }
-    else { formatter.dateFormat = "yyyy年M月d日" }
+    formatter.locale = L10n.locale; formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+    if calendar.isDate(date, inSameDayAs: now) { formatter.dateFormat = L10n.tr("今天 HH:mm") }
+    else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { formatter.dateFormat = L10n.tr("昨天 HH:mm") }
+    else if calendar.isDate(date, equalTo: now, toGranularity: .year) { formatter.dateFormat = L10n.tr("M月d日") }
+    else { formatter.dateFormat = L10n.tr("yyyy年M月d日") }
     return formatter.string(from: date)
 }
 
@@ -65,28 +65,28 @@ func sessionOtherProvider(_ session: SessionSummary, current: String?) -> String
 func slashSourceTitle(_ source: String?) -> String? {
     switch source {
     case nil, "builtin": return nil
-    case "extension": return "扩展"
-    case "prompt": return "模板"
+    case "extension": return L10n.tr("扩展")
+    case "prompt": return L10n.tr("模板")
     case "skill": return "Skill"
     default: return source
     }
 }
 
 /// How a message sent during a running turn is delivered; the same words on Android.
-func deliveryTitle(_ delivery: String) -> String { delivery == "steer" ? "插入当前任务" : "完成后发送" }
+func deliveryTitle(_ delivery: String) -> String { delivery == "steer" ? L10n.tr("插入当前任务") : L10n.tr("完成后发送") }
 
 func runtimeStatusTitle(_ status: String) -> String {
     switch status {
-    case "running": return "运行中"
-    case "compacting": return "压缩中"
-    case "background": return "子任务运行中"
-    case "tasks_unknown": return "子任务状态待核对"
-    case "waiting", "waiting_interaction", "waiting_local_interaction": return "等待确认"
-    case "error": return "异常"
-    case "idle": return "空闲"
-    case "unknown": return "状态待核对"
-    case "starting": return "启动中"
-    case "launch_unconfirmed": return "启动未确认"
+    case "running": return L10n.tr("运行中")
+    case "compacting": return L10n.tr("压缩中")
+    case "background": return L10n.tr("子任务运行中")
+    case "tasks_unknown": return L10n.tr("子任务状态待核对")
+    case "waiting", "waiting_interaction", "waiting_local_interaction": return L10n.tr("等待确认")
+    case "error": return L10n.tr("异常")
+    case "idle": return L10n.tr("空闲")
+    case "unknown": return L10n.tr("状态待核对")
+    case "starting": return L10n.tr("启动中")
+    case "launch_unconfirmed": return L10n.tr("启动未确认")
     default: return status
     }
 }
@@ -113,7 +113,7 @@ func sessionTitle(runtime: RuntimeSummary?, session: SessionSummary?, messages: 
     for message in messages where message.role == "user" {
         if let preview = sessionMessagePreview(message.content.filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n")) { return preview }
     }
-    return session?.sessionId ?? runtime?.sessionId ?? runtime?.runtimeId ?? "Session 已离线"
+    return session?.sessionId ?? runtime?.sessionId ?? runtime?.runtimeId ?? L10n.tr("Session 已离线")
 }
 
 func directoryTitle(_ path: String) -> String {
@@ -222,7 +222,7 @@ struct ChatQuestion: Equatable {
         guard message.role == "user", message.isError != true else { return nil }
         let text = message.content.compactMap { block -> String? in
             if block.type == "text", let text = block.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
-            if block.type == "artifact", let file = block.artifact { return "附件：\(file.fileName)" }
+            if block.type == "artifact", let file = block.artifact { return L10n.tr("附件：{0}", file.fileName) }
             return nil
         }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
@@ -315,14 +315,14 @@ func toolArgumentsText(_ content: ChatContent) -> String? {
 func fullMessageText(_ message: ChatMessage) -> String {
     message.content.compactMap { content in
         if ["tool_call", "toolCall"].contains(content.type) {
-            return "[工具] " + (content.toolName ?? message.toolName ?? "工具") + "\n" + (toolArgumentsText(content) ?? "")
+            return "[工具] " + (content.toolName ?? message.toolName ?? L10n.tr("工具")) + "\n" + (toolArgumentsText(content) ?? "")
         }
         return content.text
     }.joined(separator: "\n\n")
 }
 
 func desktopAttachTitle(_ state: String?) -> String {
-    ["attached": "已接入", "closed": "未接入", "notInstalled": "未安装", "unsupported": "不可用", "error": "接入失败"][state ?? ""] ?? "未知"
+    ["attached": L10n.tr("已接入"), "closed": L10n.tr("未接入"), "notInstalled": L10n.tr("未安装"), "unsupported": L10n.tr("不可用"), "error": L10n.tr("接入失败")][state ?? ""] ?? L10n.tr("未知")
 }
 
 /// Everything the chat list derives from messages and turn timings. It is built once per change
@@ -547,7 +547,7 @@ func contextUsagePercent(_ usage: RuntimeContextUsage?) -> Double? {
 }
 
 func queueStateTitle(_ state: String) -> String {
-    ["unconfirmed": "未确认", "accepted": "已排队", "queued": "排队中", "submitting": "提交中", "sending": "正在发送", "delivered": "已送达", "applied": "已应用", "cancelled": "已撤回", "rejected": "已拒绝", "not_cancelable": "无法撤回", "failed": "发送失败", "expired": "已过期"][state] ?? state
+    ["unconfirmed": L10n.tr("未确认"), "accepted": L10n.tr("已排队"), "queued": L10n.tr("排队中"), "submitting": L10n.tr("提交中"), "sending": L10n.tr("正在发送"), "delivered": L10n.tr("已送达"), "applied": L10n.tr("已应用"), "cancelled": L10n.tr("已撤回"), "rejected": L10n.tr("已拒绝"), "not_cancelable": L10n.tr("无法撤回"), "failed": L10n.tr("发送失败"), "expired": L10n.tr("已过期")][state] ?? state
 }
 
 func interactionDraftKey(host: HostPairing?, sessionId: String?, request: InteractionRequest) -> String {

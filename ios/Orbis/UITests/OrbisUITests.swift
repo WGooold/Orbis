@@ -60,6 +60,9 @@ final class OrbisUITests: XCTestCase {
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--preview-screen=" + screen] + arguments
+        if !arguments.contains(where: { $0.hasPrefix("--preview-language=") }) {
+            app.launchArguments.append("--preview-language=zh-Hans")
+        }
         if dark { app.launchArguments.append("--preview-dark") }
         app.launch()
         return app
@@ -543,8 +546,8 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(waitUntilEnabled(send, timeout: 2), "附件上传中也可以发送")
         send.tap()
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
-        // 气泡的标识会覆盖子元素的标识，附件按合并后的辅助功能标签查找（“文件名, 状态”）。
-        let chip = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png, ")).firstMatch
+        // 气泡的标识会覆盖子元素的标识；简体中文下系统以顿号合并“文件名、状态”。
+        let chip = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png、")).firstMatch
         XCTAssertTrue(chip.waitForExistence(timeout: 1))
         XCTAssertTrue(chip.label.contains("截图.png"), chip.label)
         XCTAssertTrue(chip.label.contains("上传中"), chip.label)
@@ -646,7 +649,7 @@ final class OrbisUITests: XCTestCase {
             let send = chat.buttons["发送消息"].firstMatch
             XCTAssertTrue(waitUntilEnabled(send, timeout: 2), name)
             send.tap()
-            let chip = chat.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png, ")).firstMatch
+            let chip = chat.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "截图.png、")).firstMatch
             XCTAssertTrue(chip.waitForExistence(timeout: 2), name)
             XCTAssertTrue(chip.frame.width > 0 && chip.frame.maxX <= chat.frame.maxX + 1, name)
             capture("optimistic-upload-waiting-" + name, app: chat)
@@ -743,7 +746,7 @@ final class OrbisUITests: XCTestCase {
             app.buttons["打开会话目录"].tap()
             XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3), name)
             app.buttons["新会话"].tap()
-            let deepSeek = app.buttons.matching(NSPredicate(format: "label == %@", "DeepSeek, DeepSeek")).firstMatch
+            let deepSeek = app.buttons.matching(NSPredicate(format: "label == %@", "DeepSeek、DeepSeek")).firstMatch
             XCTAssertTrue(deepSeek.waitForExistence(timeout: 3), name)
             XCTAssertTrue(deepSeek.isEnabled, name)
             deepSeek.tap()
@@ -1227,6 +1230,67 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(drawer.buttons["添加电脑"].waitForExistence(timeout: 3))
         XCTAssertTrue(drawer.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "取消配对")).firstMatch.exists)
         capture("drawer-computer-menu", app: drawer)
+    }
+
+    func testLanguageSwitchIsImmediateAndPersistsAcrossLaunches() {
+        let app = launch("status")
+        let page = app.descendants(matching: .any)["settings-page"].firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 8))
+        let english = app.buttons["language-en"]
+        for _ in 0..<10 where !english.isHittable { page.swipeUp() }
+        XCTAssertTrue(english.isHittable)
+        english.tap()
+        XCTAssertTrue(english.isSelected)
+        XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["language-system"].label.contains("Follow system"))
+        capture("language-settings-english", app: app)
+        app.buttons["Back"].tap()
+        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["home-settings"].label, "Settings")
+        app.terminate()
+
+        let reopened = launch("status", arguments: ["--preview-language=preserve"])
+        XCTAssertTrue(reopened.staticTexts["Settings"].waitForExistence(timeout: 8))
+        let reopenedPage = reopened.descendants(matching: .any)["settings-page"].firstMatch
+        let chinese = reopened.buttons["language-zh-Hans"]
+        for _ in 0..<10 where !chinese.isHittable { reopenedPage.swipeUp() }
+        chinese.tap()
+        XCTAssertTrue(chinese.isSelected)
+        XCTAssertTrue(reopened.staticTexts["设置"].waitForExistence(timeout: 3))
+        capture("language-settings-chinese", app: reopened)
+    }
+
+    func testLanguageFollowsSystemAndEnglishFallback() {
+        for (tag, expected) in [("zh-Hant", "设置"), ("en-GB", "Settings"), ("ja-JP", "Settings")] {
+            let app = launch("status", arguments: ["--preview-language=system", "-AppleLanguages", "(\(tag))"])
+            XCTAssertTrue(app.staticTexts[expected].waitForExistence(timeout: 8), tag)
+            app.terminate()
+        }
+    }
+
+    func testEnglishChatKeepsOriginalContentAndDraft() {
+        let app = launch("chat", arguments: ["--preview-language=en"])
+        let input = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "草稿按电脑和会话隔离")).firstMatch.exists)
+        input.tap()
+        input.typeText("Draft {1} /repo/file.swift")
+        XCTAssertTrue((input.value as? String)?.contains("Draft {1} /repo/file.swift") == true)
+        XCTAssertTrue(app.buttons["Send message"].exists)
+        XCTAssertTrue(app.staticTexts["Workspace write"].exists)
+        XCTAssertFalse(app.staticTexts["工作区写入"].exists)
+        capture("language-chat-english-original-draft", app: app)
+        app.terminate()
+
+        let history = launch("history", arguments: ["--preview-language=en"])
+        let title = history.staticTexts["History and branches"]
+        XCTAssertTrue(title.waitForExistence(timeout: 8))
+        if history.frame.width <= 430 {
+            XCTAssertGreaterThan(title.frame.height, 30, "The English title must wrap instead of truncating")
+        }
+        XCTAssertTrue(history.buttons["Filter history"].isHittable)
+        XCTAssertTrue(history.buttons["history-downloads"].isHittable)
+        capture("language-history-english-full-title", app: history)
     }
 
     func testInsetFocusAppearanceSwitchPersistsAcrossLaunches() {
@@ -2091,9 +2155,16 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts["当前连接"].waitForExistence(timeout: 8))
             // Providers now come first (ADR-0053 §4); the connection and pairing facts follow below them.
             let page = app.descendants(matching: .any)["settings-page"].firstMatch
-            for _ in 0..<4 where !app.staticTexts["配对状态"].firstMatch.isHittable { page.swipeUp() }
             for label in ["已连接", "连接方式", "连接延迟", "42 ms", "端到端加密", "电脑", "配对状态"] {
-                XCTAssertTrue(app.staticTexts[label].firstMatch.isHittable)
+                let fact = app.staticTexts[label].firstMatch
+                // The language section extends the page; a full swipe can pass the connection facts.
+                for _ in 0..<8 where !fact.isHittable {
+                    let upwards = fact.frame.midY > page.frame.midY
+                    page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upwards ? 0.65 : 0.35))
+                        .press(forDuration: 0.05, thenDragTo: page.coordinate(withNormalizedOffset:
+                            CGVector(dx: 0.5, dy: upwards ? 0.35 : 0.65)))
+                }
+                XCTAssertTrue(fact.isHittable, label)
             }
             for label in ["电脑端诊断记录", "电脑端会话目录", "电脑端供应商", "统一状态模型", "电脑 Agent 服务", "本机 deviceId", "Host hostId", "Host 公钥指纹", "配对根密钥"] {
                 XCTAssertFalse(app.staticTexts[label].exists)
@@ -2107,7 +2178,13 @@ final class OrbisUITests: XCTestCase {
             let noSample = launch("status", dark: dark, arguments: ["--preview-no-rtt"])
             let noSamplePage = noSample.descendants(matching: .any)["settings-page"].firstMatch
             XCTAssertTrue(noSamplePage.waitForExistence(timeout: 8))
-            for _ in 0..<4 where !noSample.staticTexts["连接延迟"].firstMatch.isHittable { noSamplePage.swipeUp() }
+            let latency = noSample.staticTexts["连接延迟"].firstMatch
+            for _ in 0..<8 where !latency.isHittable {
+                let upwards = latency.frame.midY > noSamplePage.frame.midY
+                noSamplePage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upwards ? 0.65 : 0.35))
+                    .press(forDuration: 0.05, thenDragTo: noSamplePage.coordinate(withNormalizedOffset:
+                        CGVector(dx: 0.5, dy: upwards ? 0.35 : 0.65)))
+            }
             XCTAssertTrue(noSample.staticTexts["连接延迟"].firstMatch.isHittable)
             XCTAssertTrue(noSample.staticTexts["暂不可用"].firstMatch.isHittable)
             capture(dark ? "status-no-rtt-dark" : "status-no-rtt-light", app: noSample)

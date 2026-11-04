@@ -35,7 +35,7 @@ internal fun SessionControlDialog(title: String, onClose: () -> Unit, content: @
         Column(Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().imePadding().padding(top = topInset, bottom = 12.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                NeumorphTextButton("收起", onClick = onClose)
+                NeumorphTextButton(L10n.tr("收起"), onClick = onClose)
             }
             content()
         }
@@ -113,16 +113,16 @@ internal fun InteractionWorkspace(
             request, request.responseCommandId in pendingCommands, respondConfirm = { respondConfirm(request, it) },
             respondValue = { respondValue(request, it) }, respondValues = { respondValues(request, it) },
             modifier = Modifier.fillMaxWidth(), connected = connected,
-            error = if (!connected) "连接已断开，连接后可重试" else request.responseError ?: error,
+            error = if (!connected) L10n.tr("连接已断开，连接后可重试") else request.responseError ?: error,
             draftState = draft, compact = true,
         )
         return
     }
     NeumorphTextButton(
-        text = "待处理 ${requests.size} 项，${request.title}", filled = true,
+        text = L10n.tr("待处理 {0} 项，{1}", requests.size, request.title), filled = true,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), onClick = { open = true },
     )
-    if (open) SessionControlDialog("待处理 ${requests.size} 项", onClose = { open = false }) {
+    if (open) SessionControlDialog(L10n.tr("待处理 {0} 项", requests.size), onClose = { open = false }) {
         if (requests.size > 1) Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -133,7 +133,7 @@ internal fun InteractionWorkspace(
             }
         }
         val submitting = request.responseCommandId in pendingCommands
-        val message = if (!connected) "连接已断开，草稿已保留，连接后可重试" else request.responseError ?: error
+        val message = if (!connected) L10n.tr("连接已断开，草稿已保留，连接后可重试") else request.responseError ?: error
         val draft = drafts.getOrPut(request.requestId) { InteractionDraft(InteractionDraftValue(input = request.initialValue.orEmpty())) }
         key(request.requestId) {
             if (request.kind == "questionnaire") QuestionnairePanel(

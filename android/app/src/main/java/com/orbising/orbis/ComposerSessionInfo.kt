@@ -68,17 +68,17 @@ internal fun ComposerSessionInfo(
 private fun ComposerLocation(path: String?, branch: WorkingBranch?, modifier: Modifier = Modifier) {
     val branchLabel = when {
         branch?.branch != null -> branch.branch
-        branch?.commit != null -> "HEAD，${branch.commit}（分离）"
-        branch?.loaded == true -> "未获取到 Git 分支"
-        else -> "分支信息待同步"
+        branch?.commit != null -> L10n.tr("HEAD，{0}（分离）", branch.commit)
+        branch?.loaded == true -> L10n.tr("未获取到 Git 分支")
+        else -> L10n.tr("分支信息待同步")
     }
     // A long branch can use at most half the line; the directory must keep a readable tail.
     BoxWithConstraints(modifier) {
         val branchWidth = maxWidth / 2
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            LocationFact(Icons.Rounded.Folder, "运行目录", path?.takeIf(String::isNotBlank) ?: "运行路径待同步",
+            LocationFact(Icons.Rounded.Folder, L10n.tr("运行目录"), path?.takeIf(String::isNotBlank) ?: L10n.tr("运行路径待同步"),
                 Modifier.weight(1f, fill = false), middleEllipsis = true)
-            LocationFact(Icons.Rounded.AccountTree, "当前 Git 工作分支", branchLabel, Modifier.widthIn(max = branchWidth))
+            LocationFact(Icons.Rounded.AccountTree, L10n.tr("当前 Git 工作分支"), branchLabel, Modifier.widthIn(max = branchWidth))
         }
     }
 }

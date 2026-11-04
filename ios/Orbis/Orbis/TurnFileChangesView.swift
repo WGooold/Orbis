@@ -42,7 +42,7 @@ private struct TurnChangeCard: View {
                         if expanded && !manifest.started { changes.loadFiles(summary) }
                     } label: {
                         HStack(spacing: 6) {
-                            Text(expanded ? "收起" : "还有 \(count - 4) 个文件")
+                            Text(expanded ? L10n.tr("收起") : L10n.tr("还有 {0} 个文件", count - 4))
                             Spacer(minLength: 0)
                             if manifest.loading { ProgressView().controlSize(.mini) }
                             OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).rotationEffect(.degrees(expanded ? 180 : 0))
@@ -52,7 +52,7 @@ private struct TurnChangeCard: View {
                 if expanded && !manifest.complete && !manifest.loading && (manifest.started || manifest.error != nil) {
                     ChangeHairline()
                     OrbisMotionButton { changes.loadFiles(summary) } label: {
-                        Text(manifest.error == nil ? "载入更多文件" : "重新读取文件清单")
+                        Text(manifest.error == nil ? L10n.tr("载入更多文件") : L10n.tr("重新读取文件清单"))
                             .font(.orbisCaption()).foregroundStyle(manifest.error == nil ? p.accent : p.error)
                             .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
@@ -68,8 +68,8 @@ private struct TurnChangeCard: View {
 
     @ViewBuilder private func header(_ p: OrbisPalette, ready: Bool, count: Int, opens: Bool) -> some View {
         let pending = summary.state == "collecting" || summary.state == "finalizing"
-        let title = pending ? "正在统计文件变化" : summary.state == "unavailable" ? "本轮文件变化未记录"
-            : count == 0 ? (summary.coverage == "complete" ? "本轮没有文件变化" : "未发现文件变化") : "\(count) 个文件已更改"
+        let title = pending ? L10n.tr("正在统计文件变化") : summary.state == "unavailable" ? L10n.tr("本轮文件变化未记录")
+            : count == 0 ? (summary.coverage == "complete" ? L10n.tr("本轮没有文件变化") : L10n.tr("未发现文件变化")) : L10n.tr("{0} 个文件已更改", count)
         let row = HStack(spacing: 8) {
             OrbisActionSymbol(systemName: opens ? "doc.on.doc" : summary.state == "unavailable" ? "exclamationmark.circle" : "doc")
             Text(title).fontWeight(.medium).foregroundStyle(opens ? p.text : p.secondary).lineLimit(1)
@@ -82,7 +82,7 @@ private struct TurnChangeCard: View {
         }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
         if opens {
             OrbisMotionButton { changes.open(summary) } label: { row }.buttonStyle(.plain)
-                .accessibilityLabel("查看详情，" + title).accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
+                .accessibilityLabel(L10n.tr("查看详情，") + title).accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
         } else {
             row.accessibilityElement(children: .combine)
         }
@@ -179,8 +179,8 @@ private struct ChangeLineCounts: View {
             }
         }.font(.orbisCaption(mono: true)).fixedSize()
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(additions == nil && deletions == nil ? (status ?? "行数未知")
-                : "新增 \(additions.map(String.init) ?? "未知") 行，删除 \(deletions.map(String.init) ?? "未知") 行")
+            .accessibilityLabel(additions == nil && deletions == nil ? (status ?? L10n.tr("行数未知"))
+                : L10n.tr("新增 {0} 行，删除 {1} 行", additions.map(String.init) ?? L10n.tr("未知"), deletions.map(String.init) ?? L10n.tr("未知")))
     }
 }
 
@@ -221,30 +221,30 @@ struct TurnFileReviewView: View {
         let index = files.firstIndex { $0.fileId == changes.selectedFileId } ?? 0
         VStack(spacing: 8) {
             header(p)
-            if changes.newerVersionAvailable { OrbisNotice(text: "本轮概况已更新，当前保持打开时的版本。").padding(.horizontal, 16) }
+            if changes.newerVersionAvailable { OrbisNotice(text: L10n.tr("本轮概况已更新，当前保持打开时的版本。")).padding(.horizontal, 16) }
             if changes.suspended {
-                OrbisActionButton(title: "继续读取", symbol: "play") { changes.resume() }.padding(.horizontal, 16)
+                OrbisActionButton(title: L10n.tr("继续读取"), symbol: "play") { changes.resume() }.padding(.horizontal, 16)
             }
             if !files.isEmpty {
                 SettledFilePager(changes: changes, files: files, requestedFile: requestedFile, navigation: navigation, reduceMotion: pageReduceMotion)
                     .accessibilityIdentifier("turn-change-pager")
             } else if let summary = changes.opened, let error = changes.manifest(summary).error {
                 OrbisNotice(text: error, error: true).padding(.horizontal, 16)
-                OrbisActionButton(title: "重新读取文件清单", symbol: "arrow.clockwise") { changes.loadFiles(summary) }.padding(.horizontal, 16)
+                OrbisActionButton(title: L10n.tr("重新读取文件清单"), symbol: "arrow.clockwise") { changes.loadFiles(summary) }.padding(.horizontal, 16)
                 Spacer()
             } else {
-                OrbisEmptyState(symbol: "doc", title: "正在读取文件清单").frame(maxHeight: .infinity)
+                OrbisEmptyState(symbol: "doc", title: L10n.tr("正在读取文件清单")).frame(maxHeight: .infinity)
             }
             HStack {
-                OrbisIconButton(symbol: "chevron.left", label: "上一个文件", size: 44) { request(files[index - 1].fileId) }.disabled(index == 0)
+                OrbisIconButton(symbol: "chevron.left", label: L10n.tr("上一个文件"), size: 44) { request(files[index - 1].fileId) }.disabled(index == 0)
                 Spacer()
-                Text(files.isEmpty ? "没有文件" : "\(index + 1) / \(changes.opened?.fileCount ?? files.count)")
+                Text(files.isEmpty ? L10n.tr("没有文件") : "\(index + 1) / \(changes.opened?.fileCount ?? files.count)")
                     .font(.orbisLabel(.semibold, mono: true)).foregroundStyle(p.secondary).accessibilityIdentifier("turn-change-page")
                 Spacer()
-                OrbisIconButton(symbol: "chevron.right", label: "下一个文件", size: 44) { request(files[index + 1].fileId) }.disabled(index + 1 >= files.count)
+                OrbisIconButton(symbol: "chevron.right", label: L10n.tr("下一个文件"), size: 44) { request(files[index + 1].fileId) }.disabled(index + 1 >= files.count)
             }.padding(.horizontal, 20)
             if let summary = changes.opened, index + 1 >= files.count, !changes.manifest(summary).complete, (summary.fileCount ?? 0) > files.count {
-                OrbisTextButton(title: "载入更多文件", symbol: "doc", loading: changes.manifest(summary).loading) { changes.loadFiles(summary) }
+                OrbisTextButton(title: L10n.tr("载入更多文件"), symbol: "doc", loading: changes.manifest(summary).loading) { changes.loadFiles(summary) }
             }
         }.padding(.bottom, 4)
             .foregroundStyle(p.text)
@@ -269,10 +269,10 @@ struct TurnFileReviewView: View {
                 .neuSurface(inset: true, radius: 3, intensity: 0.35, concentric: false)
                 .padding(.top, 7).accessibilityHidden(true)
             OrbisHeader {
-                OrbisIconButton(symbol: "xmark", label: "关闭", action: { dismiss() })
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭"), action: { dismiss() })
             } title: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("本轮文件差异").font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
+                    Text(L10n.tr("本轮文件差异")).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
                     if let summary = changes.opened {
                         Text(turnChangeScopeTitle(summary.scope)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                     }
@@ -395,15 +395,15 @@ private struct DiffFilePage: View {
                     VStack(spacing: 10) {
                         if let error = detail.error {
                             OrbisNotice(text: error, error: file.detail == "available")
-                            if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { changes.loadNext() }.disabled(!selected || changes.suspended) }
+                            if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { changes.loadNext() }.disabled(!selected || changes.suspended) }
                         } else if detail.loading {
-                            ProgressView("读取差异…").font(.orbisLabel())
+                            ProgressView(L10n.tr("读取差异…")).font(.orbisLabel())
                         } else if detail.eof {
-                            Text(detail.lines.isEmpty ? "此文件没有文本差异" : "已显示完整差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            Text(detail.lines.isEmpty ? L10n.tr("此文件没有文本差异") : L10n.tr("已显示完整差异")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         } else if selected {
-                            OrbisActionButton(title: "继续读取", symbol: "arrow.down") { changes.loadNext() }.disabled(changes.suspended)
+                            OrbisActionButton(title: L10n.tr("继续读取"), symbol: "arrow.down") { changes.loadNext() }.disabled(changes.suspended)
                         } else {
-                            Text("切换到此文件后读取差异").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            Text(L10n.tr("切换到此文件后读取差异")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
                     }.padding(16).frame(maxWidth: .infinity, minHeight: 80)
                         .onAppear {
@@ -444,11 +444,11 @@ private struct DiffFileHeader: View {
                 Text(directory).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).truncationMode(.middle)
             }
             if let old = file.oldPath {
-                Text("原路径：" + old).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).truncationMode(.middle)
+                Text(L10n.tr("原路径：") + old).font(.orbisCaption(mono: true)).foregroundStyle(p.secondary).lineLimit(1).truncationMode(.middle)
             }
         }.padding(.horizontal, 4).padding(.top, 2)
             .contentShape(Rectangle())
-            .contextMenu { OrbisMotionButton { UIPasteboard.general.string = file.path } label: { Label("复制路径", systemImage: "doc.on.doc") } }
+            .contextMenu { OrbisMotionButton { UIPasteboard.general.string = file.path } label: { Label(L10n.tr("复制路径"), systemImage: "doc.on.doc") } }
     }
 }
 
@@ -501,7 +501,7 @@ private struct DiffLineView: View {
         }.font(.orbisCaption(mono: true))
             .accessibilityElement(children: .combine)
             .accessibilityLabel(line.text)
-            .accessibilityValue([line.oldLine.map { "旧 \($0)" }, line.newLine.map { "新 \($0)" }].compactMap { $0 }.joined(separator: "，"))
+            .accessibilityValue([line.oldLine.map { L10n.tr("旧 {0}", $0) }, line.newLine.map { L10n.tr("新 {0}", $0) }].compactMap { $0 }.joined(separator: L10n.tr("，")))
     }
 }
 

@@ -169,19 +169,19 @@ final class HostConnection: ObservableObject {
     }
     var homeRuntimesError: String? {
         guard homeRuntimesUpdating else { return nil }
-        if connection == .offline || connection == .error { return "电脑未连接，请重新连接" }
+        if connection == .offline || connection == .error { return L10n.tr("电脑未连接，请重新连接") }
         let closing = closingRuntimeIds
         for runtime in runtimes where !closing.contains(runtime.runtimeId) {
             guard let session = runtime.sessionId, !session.isEmpty else {
-                return "会话身份尚未就绪，请重新加载"
+                return L10n.tr("会话身份尚未就绪，请重新加载")
             }
             guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId else { continue }
             if let error = snapshot.error { return error }
             if Self.homeDomains.contains(where: { snapshot.missing[$0] != nil }) {
-                return "会话信息未能完整读取，请重新加载"
+                return L10n.tr("会话信息未能完整读取，请重新加载")
             }
             if Self.homeDomains.allSatisfy({ !snapshot.pending.contains($0) }) && !homeFactsComplete(runtime) {
-                return "会话信息未能完整读取，请重新加载"
+                return L10n.tr("会话信息未能完整读取，请重新加载")
             }
         }
         return nil
@@ -375,7 +375,7 @@ final class HostConnection: ObservableObject {
                 let uncovered = self.toolAcknowledgements.filter { $0.value.runtimeId == runtime }.map(\.key)
                 for id in uncovered {
                     self.toolAcknowledgements[id] = nil; self.pendingAppliedBaselines[id] = nil; self.pendingReadPages[id] = nil
-                    if let read = self.syncReads.removeValue(forKey: id) { self.sessionReads.finish(read, phase: .failed, error: "工具清单已更新，请重新同步。") }
+                    if let read = self.syncReads.removeValue(forKey: id) { self.sessionReads.finish(read, phase: .failed, error: L10n.tr("工具清单已更新，请重新同步。")) }
                     self.acknowledge(runtimeId: runtime, syncId: id, result: "rejected")
                 }
             }
@@ -562,7 +562,7 @@ final class HostConnection: ObservableObject {
             self.connection = state
             if state != .secured { self.pathRTT = nil }
             if state != .secured { self.homeDirectoryReceived = false }
-            self.recordConnectionEvent("连接：\(state.rawValue)")
+            self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
             if state == .offline || state == .connecting {
@@ -612,7 +612,7 @@ final class HostConnection: ObservableObject {
                 guard generation == self.connectionGeneration, self.entryPreview?.requestId == id else { return }
                 self.entryPreview?.message = page?.messages.last
                 self.entryPreview?.loading = false
-                if self.entryPreview?.message == nil { self.entryPreview?.error = "此节点没有可显示的缓存内容。" }
+                if self.entryPreview?.message == nil { self.entryPreview?.error = L10n.tr("此节点没有可显示的缓存内容。") }
             }
             return
         }
@@ -622,12 +622,12 @@ final class HostConnection: ObservableObject {
         entryPreview = EntryPreview(requestId: id, runtimeId: runtime.runtimeId, sessionId: sessionId, entryId: entryId)
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "session.entry.request", "requestId": id,
                      "sessionId": sessionId, "entryId": entryId]) else {
-            entryPreview?.loading = false; entryPreview?.error = "预览请求未送达。"; return
+            entryPreview?.loading = false; entryPreview?.error = L10n.tr("预览请求未送达。"); return
         }
         previewTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.entryPreview?.requestId == id else { return }
-            self.entryPreview?.loading = false; self.entryPreview?.error = "预览读取超时，请重试。"
+            self.entryPreview?.loading = false; self.entryPreview?.error = L10n.tr("预览读取超时，请重试。")
         }
     }
 
@@ -670,7 +670,7 @@ final class HostConnection: ObservableObject {
         guard sendCommand(runtimeId: request.runtimeId, commandId: id, command: ["type": "interaction.respond", "requestId": request.requestId,
                         "extensionId": request.extensionId, "response": response]) else {
             ledger.remove(id); handleLedger([])
-            errorMessage = "交互响应未送达，请连接后重试。"; return false
+            errorMessage = L10n.tr("交互响应未送达，请连接后重试。"); return false
         }
         handleLedger(ledger.written(id, now: Date()))
         return true
@@ -686,7 +686,7 @@ final class HostConnection: ObservableObject {
     /// 回答已结算：在原位短暂显示结果，约 2.5 秒后消失（V16）。成功回执显示摘要；只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
     private func showInteractionOutcome(_ op: AppLedger.Operation) {
         guard case .respond(let runtimeId, _, let summary) = op.payload else { return }
-        let outcome = InteractionOutcome(id: UUID(), text: op.succeeded ? summary : "已处理")
+        let outcome = InteractionOutcome(id: UUID(), text: op.succeeded ? summary : L10n.tr("已处理"))
         interactionOutcomes[runtimeId] = outcome
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -739,7 +739,7 @@ final class HostConnection: ObservableObject {
         guard let sessionId = runtime.sessionId, let owner = readOwner(runtime), pendingSyncs.count < 32,
               sessionReads.bindRemote(readId, commandId: commandId, current: owner),
               sendCommand(runtimeId: runtime.runtimeId, commandId: commandId, command: command) else {
-            sessionReads.finish(readId, phase: .failed, error: "读取请求未送达。"); return
+            sessionReads.finish(readId, phase: .failed, error: L10n.tr("读取请求未送达。")); return
         }
         syncReads[syncId] = readId
         let now = Date()
@@ -763,7 +763,7 @@ final class HostConnection: ObservableObject {
             task.exhausted = false; task.attempts = 1; task.firstSentAt = now; task.sentAt = now; task.deadline = now.addingTimeInterval(150)
             pendingSyncs[id] = task
             guard sendCommand(runtimeId: task.runtimeId, commandId: task.commandId, command: task.command) else {
-                finishSync(id); historyErrors[runtime.runtimeId] = "历史读取请求未送达。"; return false
+                finishSync(id); historyErrors[runtime.runtimeId] = L10n.tr("历史读取请求未送达。"); return false
             }
             historyLoading.insert(runtime.runtimeId); historyErrors[runtime.runtimeId] = nil
             armSyncTimeout(id, seconds: 30); updateSyncing(); return true
@@ -779,7 +779,7 @@ final class HostConnection: ObservableObject {
                 guard let current = self.readOwner(runtime), self.sessionReads.owns(operation, current: current) else { return }
                 let effect = self.sessionReads.localResult(operation, page: page, current: current)
                 self.applyReadEffect(effect, operation: operation, runtime: runtime)
-            } catch { self.failRead(operation, runtime: runtime, message: "本地历史读取失败，请重试。") }
+            } catch { self.failRead(operation, runtime: runtime, message: L10n.tr("本地历史读取失败，请重试。")) }
         }
         return true
     }
@@ -793,7 +793,7 @@ final class HostConnection: ObservableObject {
         startSync(sync, runtime: runtime, commandId: command, range: "history", boundary: boundary,
                   leaf: leaf, command: body, known: nil, readId: operation)
         guard pendingSyncs[sync] != nil else {
-            historyLoading.remove(runtime.runtimeId); historyErrors[runtime.runtimeId] = "历史读取请求未送达。"; return
+            historyLoading.remove(runtime.runtimeId); historyErrors[runtime.runtimeId] = L10n.tr("历史读取请求未送达。"); return
         }
         historyErrors[runtime.runtimeId] = nil; historyLoading.insert(runtime.runtimeId)
     }
@@ -848,12 +848,12 @@ final class HostConnection: ObservableObject {
             }
         case .requestHistory(let before, _):
             if canSend { requestOlderHistory(runtime, sessionId: session, boundary: before, operation: operation) }
-            else { failRead(operation, runtime: runtime, message: "更早的历史尚未缓存，连接原会话后可继续同步。") }
+            else { failRead(operation, runtime: runtime, message: L10n.tr("更早的历史尚未缓存，连接原会话后可继续同步。")) }
         case .requestSource:
             if kind == .firstPage { sessionReads.finish(operation, phase: .succeeded) }
             if selectedOfflineSession == nil, connection == .secured,
                !pendingSyncs.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.range == "preview" && !$0.exhausted }) { syncSession(runtime, force: true) }
-            else if selectedOfflineSession != nil { errorMessage = "这份会话还没有完整的本地历史缓存。" }
+            else if selectedOfflineSession != nil { errorMessage = L10n.tr("这份会话还没有完整的本地历史缓存。") }
         case .requestCatchup(let gap): requestCatchup(runtime, operation: operation, gap: gap)
         case .none: break
         }
@@ -900,8 +900,8 @@ final class HostConnection: ObservableObject {
                 guard let current = self.readOwner(runtime), self.sessionReads.owns(operation, current: current) else { return }
                 if page.targetCovered { self.sessionReads.finish(operation, phase: .succeeded) }
                 else if let gap = page.coverageGap { self.requestCatchup(runtime, operation: operation, gap: gap) }
-                else { self.failRead(operation, runtime: runtime, message: "历史补齐范围无法确认。") }
-            } catch { self.failRead(operation, runtime: runtime, message: "历史补齐读取失败。") }
+                else { self.failRead(operation, runtime: runtime, message: L10n.tr("历史补齐范围无法确认。")) }
+            } catch { self.failRead(operation, runtime: runtime, message: L10n.tr("历史补齐读取失败。")) }
         }
     }
 
@@ -1057,7 +1057,7 @@ final class HostConnection: ObservableObject {
             let index = pendingEvents.firstIndex { $0.channel != "ctl" } ?? 0
             let old = pendingEvents.remove(at: index); pendingEventBytes -= old.bytes; dropped = true
             if let event = old.message["event"] as? [String: Any], let syncId = event["syncId"] as? String,
-               let runtimeId = old.message["runtimeId"] as? String { rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史读取队列繁忙，正在重新同步。") }
+               let runtimeId = old.message["runtimeId"] as? String { rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史读取队列繁忙，正在重新同步。")) }
         }
         if dropped, let selectedRuntime { syncSession(selectedRuntime, force: true) }
         pendingEvents.append((message, channel, cost, payload)); pendingEventBytes += cost
@@ -1115,7 +1115,7 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
                               "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
             ledger.remove(requestId); handleLedger([])
-            errorMessage = "端到端加密连接尚未就绪，请连接成功后重试。"; return
+            errorMessage = L10n.tr("端到端加密连接尚未就绪，请连接成功后重试。"); return
         }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
@@ -1123,7 +1123,7 @@ final class HostConnection: ObservableObject {
         let resumed = target["type"] as? String == "resume" ? sessionId : nil
         let cwd = target["cwd"] as? String ?? resumed.flatMap { sessionIndex[$0]?.cwd } ?? ""
         let title = resumed.flatMap { id in sessionIndex[id].map { displayName($0) } }
-            ?? (cwd.split(separator: "/").last.map(String.init) ?? "新会话")
+            ?? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话"))
         launching = LaunchState(requestId: requestId, placeholder: placeholder,
                                 target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
                                 agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed)
@@ -1185,7 +1185,7 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.archive", "protocolVersion": orbisProtocolVersion, "requestId": requestId,
                               "sessionId": session.sessionId, "agentKind": kind, "archived": archived]) else {
             ledger.remove(requestId); handleLedger([])
-            errorMessage = "操作未送达，请连接后重试。"; return
+            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return
         }
         handleLedger(ledger.written(requestId, now: Date()))
     }
@@ -1205,7 +1205,7 @@ final class HostConnection: ObservableObject {
 
     func browseDirectory(_ path: String? = nil) {
         guard connection == .secured else {
-            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: "未连接到电脑，连接恢复后可重试。")
+            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"))
             return
         }
         browseTimeout?.cancel()
@@ -1213,11 +1213,11 @@ final class HostConnection: ObservableObject {
         browse = DirectoryBrowse(requestId: requestId, path: path)
         var request: [String: Any] = ["type": "session.browse", "protocolVersion": orbisProtocolVersion, "requestId": requestId]
         if let path { request["path"] = path }
-        guard transport.send(request) else { browse?.loading = false; browse?.error = "目录读取请求未送达。"; return }
+        guard transport.send(request) else { browse?.loading = false; browse?.error = L10n.tr("目录读取请求未送达。"); return }
         browseTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.browse?.requestId == requestId else { return }
-            self.browse?.loading = false; self.browse?.error = "目录读取超时，请重试。"
+            self.browse?.loading = false; self.browse?.error = L10n.tr("目录读取超时，请重试。")
         }
     }
 
@@ -1254,7 +1254,7 @@ final class HostConnection: ObservableObject {
         let text = args.isEmpty ? "/" + name : "/\(name) \(args)"
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId,
                           command: ["type": "slash.execute", "name": name, "args": args, "messageId": id]) else {
-            errorMessage = "命令未送达，请连接后重试。"; return false
+            errorMessage = L10n.tr("命令未送达，请连接后重试。"); return false
         }
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
@@ -1285,7 +1285,7 @@ final class HostConnection: ObservableObject {
         guard creation == .created else { return false }
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "slash.execute", "name": setting, "args": value]) else {
             ledger.remove(id); handleLedger([])
-            errorMessage = "操作未送达，请连接后重试。"; return false
+            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return false
         }
         handleLedger(ledger.written(id, now: Date()))
         return true
@@ -1302,7 +1302,7 @@ final class HostConnection: ObservableObject {
 
     /// 顶栏与选择器显示的值：(名字, 标记)；没有进行中的切换时为 nil，显示确认值。
     func configStatus(_ runtimeId: String, setting: String) -> (label: String, mark: String)? {
-        if let next = configSelections[OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)] { return (next.label, "切换中") }
+        if let next = configSelections[OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)] { return (next.label, L10n.tr("切换中")) }
         return OperationKinds.configStatus(ledger, runtimeId: runtimeId, setting: setting)
     }
 
@@ -1313,13 +1313,13 @@ final class HostConnection: ObservableObject {
 
     func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
         guard connection == .secured else {
-            errorMessage = "关闭会话未发送：请先连接电脑。"; return []
+            errorMessage = L10n.tr("关闭会话未发送：请先连接电脑。"); return []
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
             guard canCloseRuntime(runtime.runtimeId) else {
                 agentState.subscribe(runtime: runtime, force: true)
-                errorMessage = "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"
+                errorMessage = L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")
                 continue
             }
             if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
@@ -1337,11 +1337,11 @@ final class HostConnection: ObservableObject {
         case .created: break
         case .conflict: return true // 同一会话的关闭尚未结算，卡片已隐藏（L9）。
         case .duplicate, .full:
-            errorMessage = "关闭会话未发送：待确认的操作过多，请稍后重试。"; return false
+            errorMessage = L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"); return false
         }
         guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: ["type": "slash.execute", "name": "quit", "args": ""]) else {
             ledger.remove(commandId)
-            errorMessage = "关闭会话未发送：请连接电脑后重试。"; return false
+            errorMessage = L10n.tr("关闭会话未发送：请连接电脑后重试。"); return false
         }
         handleLedger(ledger.written(commandId, now: Date()))
         return true
@@ -1468,19 +1468,29 @@ final class HostConnection: ObservableObject {
                 if case .send(_, _, let messageId) = op.payload, case .rejected(let rejection) = op.phase {
                     // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
                     var reason = rejection.reason
-                    if rejection.code == "prerequisite", case .waiting(let label) = pendingSends.item(messageId)?.state,
-                       label.hasPrefix("等待"), label.hasSuffix("切换") || label.hasSuffix("启动") { reason = label.dropFirst(2) + "未完成，消息未发送" }
+                    if rejection.code == "prerequisite" {
+                        // Use the failed operation identity, never the language of a stored status label.
+                        for event in events {
+                            guard case .rejected(let prerequisite) = event, op.prerequisites.contains(prerequisite.opId) else { continue }
+                            switch prerequisite.payload {
+                            case .config(_, let setting, _, _): reason = L10n.tr("{0}切换未完成，消息未发送", OperationKinds.configTitle(setting))
+                            case .launch: reason = L10n.tr("会话启动未完成，消息未发送")
+                            default: break
+                            }
+                            break
+                        }
+                    }
                     pendingSends.failWaiting(messageId, reason: reason); publishMessages()
                 }
                 configSettled(op)
                 if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId, case .rejected(let rejection) = op.phase {
                     // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
-                    launching?.failure = rejection.reason.isEmpty ? "启动失败" : rejection.reason
+                    launching?.failure = rejection.reason.isEmpty ? L10n.tr("启动失败") : rejection.reason
                     activationRequestId = nil; pendingActivation = nil; activatingSessionId = nil
                     if launching?.following == false { launching = nil }
                 }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
-                if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? "\(archiveRejections) 个会话" + text : text }
+                if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? L10n.tr("{0} 个会话", archiveRejections) + text : text }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed(let op): showInteractionOutcome(op); configSettled(op)
@@ -1549,7 +1559,7 @@ final class HostConnection: ObservableObject {
         guard canSend, let runtime = selectedRuntime, runtime.status == "idle", (interactions[runtime.runtimeId] ?? []).isEmpty, pendingActionIds.isEmpty,
               let setting = runtime.permissionManagement?.settings.first(where: { $0.id == settingId }),
               setting.disabledReason == nil, setting.options.contains(where: { $0.value == value }) else { return }
-        _ = performAction(runtimeId: runtime.runtimeId, name: "权限", command: ["type": "permissions.update", "settingId": settingId, "value": value])
+        _ = performAction(runtimeId: runtime.runtimeId, name: L10n.tr("权限"), command: ["type": "permissions.update", "settingId": settingId, "value": value])
     }
 
     private func performAction(runtimeId: String, name: String, command: [String: Any]) -> Bool {
@@ -1559,13 +1569,13 @@ final class HostConnection: ObservableObject {
     private func performActionId(runtimeId: String, name: String, command: [String: Any]) -> String? {
         let id = UUID().uuidString
         guard sendCommand(runtimeId: runtimeId, commandId: id, command: command) else {
-            errorMessage = "操作未送达，请连接后重试。"; return nil
+            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return nil
         }
         runtimeActions[id] = (runtimeId, name); pendingActionIds.insert(id); setActionFeedback(nil); updateSyncing()
         actionTimeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             guard let self, self.runtimeActions[id] != nil else { return }
-            self.finishAction(id, succeeded: false, message: "操作尚未确认，请刷新查看电脑端状态。")
+            self.finishAction(id, succeeded: false, message: L10n.tr("操作尚未确认，请刷新查看电脑端状态。"))
         }
         return id
     }
@@ -1593,7 +1603,7 @@ final class HostConnection: ObservableObject {
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
         if succeeded {
-            setActionFeedback("\(action.name) 已完成")
+            setActionFeedback(L10n.tr("{0} 已完成", action.name))
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
                 let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? branchEditorText ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
                 if let sessionId = result?["sessionId"] as? String, sessionId != runtime.sessionId {
@@ -1607,18 +1617,18 @@ final class HostConnection: ObservableObject {
                 }
                 historyRevision += 1; branchEditorNode = nil
             }
-        } else { errorMessage = message ?? "\(action.name) 未完成，请重试。" }
+        } else { errorMessage = message ?? L10n.tr("{0} 未完成，请重试。", action.name) }
     }
 
     @discardableResult
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool {
         guard canSend, let runtime = selectedRuntime, delivery == nil || ["followUp", "steer"].contains(delivery!) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = trimmed.isEmpty && !attachmentIds.isEmpty ? "已发送 \(attachmentIds.count) 个附件" : trimmed
+        let body = trimmed.isEmpty && !attachmentIds.isEmpty ? L10n.tr("已发送 {0} 个附件", attachmentIds.count) : trimmed
         guard !body.isEmpty else { return false }
-        guard body.utf16.count <= 100_000 else { errorMessage = "消息不能超过 100,000 个字符。"; return false }
+        guard body.utf16.count <= 100_000 else { errorMessage = L10n.tr("消息不能超过 100,000 个字符。"); return false }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else {
-            errorMessage = "请从命令菜单选择斜杠命令。"
+            errorMessage = L10n.tr("请从命令菜单选择斜杠命令。")
             return false
         }
         let attachments = transfers.currentTasks.filter { attachmentIds.contains($0.id) && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.direction == "upload" }
@@ -1643,7 +1653,7 @@ final class HostConnection: ObservableObject {
         if !attachments.isEmpty { command["attachments"] = attachments }
         if let delivery { command["delivery"] = delivery }
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId, command: command) else {
-            errorMessage = "消息未送达，请连接后重试。"; return false
+            errorMessage = L10n.tr("消息未送达，请连接后重试。"); return false
         }
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
@@ -1667,15 +1677,15 @@ final class HostConnection: ObservableObject {
                                      conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
                                      prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
-        guard creation == .created else { errorMessage = "待发送的消息过多，请稍后重试。"; return false }
+        guard creation == .created else { errorMessage = L10n.tr("待发送的消息过多，请稍后重试。"); return false }
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
                                delivery: delivery, createdAt: Date(), anchorMessageId: anchor)
         let config: String? = configs.first.flatMap { if case .config(_, let setting, _, _) = $0.payload { return OperationKinds.configTitle(setting) }; return nil }
         let launch = configs.contains { if case .launch = $0.payload { return true }; return false }
-        send.state = .waiting(!pending.isEmpty ? "上传中：" + pending.map(\.name).joined(separator: "、")
-                              : launch ? "等待会话启动" : config.map { "等待\($0)切换" } ?? "等待前一条发送")
+        send.state = .waiting(!pending.isEmpty ? L10n.tr("上传中：") + pending.map(\.name).joined(separator: L10n.tr("、"))
+                              : launch ? L10n.tr("等待会话启动") : config.map { L10n.tr("等待{0}切换", $0) } ?? L10n.tr("等待前一条发送"))
         send.uploadIds = uploads.map(\.id)
         pendingSends.add(send)
         saveWaitingCopy(id, text: body, runtime: runtime)
@@ -1715,9 +1725,9 @@ final class HostConnection: ObservableObject {
     }
 
     private func uploadSettled(_ id: String, path: String?, error: String?) {
-        let name = transfers.tasks.first { $0.id == id }?.name ?? "附件"
+        let name = transfers.tasks.first { $0.id == id }?.name ?? L10n.tr("附件")
         handleLedger(ledger.prerequisite(OperationKinds.uploadPrerequisite(id), succeeded: path != nil,
-                                         reason: "附件上传失败：\(name)" + (error.map { "（\($0)）" } ?? "")))
+                                         reason: L10n.tr("附件上传失败：{0}", name) + (error.map { L10n.tr("（{0}）", $0) } ?? "")))
         flushReadySends()
     }
 
@@ -1876,7 +1886,7 @@ final class HostConnection: ObservableObject {
     func stopRuntime() -> Bool {
         guard let runtime = selectedRuntime else { return false }
         guard sendCommand(runtimeId: runtime.runtimeId, command: ["type": "stop"]) else {
-            errorMessage = "端到端加密连接尚未就绪。"; return false
+            errorMessage = L10n.tr("端到端加密连接尚未就绪。"); return false
         }
         return true
     }
@@ -1947,7 +1957,7 @@ final class HostConnection: ObservableObject {
     func providerMismatch(_ session: SessionSummary) -> String? {
         guard session.agentKind == "codex", let provider = session.modelProvider, !provider.isEmpty,
               let current = currentProvider(for: "codex"), current != provider else { return nil }
-        return "此会话属于 \(provider)，当前使用 \(current)。请在设置页切换到 \(provider)，再打开会话。"
+        return L10n.tr("此会话属于 {0}，当前使用 {1}。请在设置页切换到 {2}，再打开会话。", provider, current, provider)
     }
 
     private func recordConnectionEvent(_ event: String) {
@@ -1959,12 +1969,12 @@ final class HostConnection: ObservableObject {
     private func receive(_ message: [String: Any], channel: String?) {
         guard let type = message["type"] as? String else { return }
         guard channel != nil else {
-            if type == "protocol.error" { errorMessage = message["message"] as? String ?? "中继认证失败，请重新连接。"; connection = .error }
+            if type == "protocol.error" { errorMessage = message["message"] as? String ?? L10n.tr("中继认证失败，请重新连接。"); connection = .error }
             return
         }
         defer { commitHomePresentation() }
         if let version = message["protocolVersion"] as? Int, version != orbisProtocolVersion {
-            errorMessage = "Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。"
+            errorMessage = L10n.tr("Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。")
             return
         }
         transfers.consume(message)
@@ -1996,7 +2006,7 @@ final class HostConnection: ObservableObject {
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
             let next: [RuntimeSummary] = values.compactMap(jsonDecode)
             guard next.count == values.count, Set(next.map(\.runtimeId)).count == next.count else {
-                errorMessage = "会话目录格式无法识别，请重新连接。"; return
+                errorMessage = L10n.tr("会话目录格式无法识别，请重新连接。"); return
             }
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
@@ -2137,13 +2147,13 @@ final class HostConnection: ObservableObject {
             if message["code"] as? String == "session_sync_device_rejected", let commandId,
                handledSyncRejections.contains(commandId) { return }
             if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
-                let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? "电脑端无法完成操作。")
+                let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? L10n.tr("电脑端无法完成操作。"))
                 handleLedger(ledger.receipt(opId, connection: ledger.connection, .failed(rejection), now: Date())); return
             }
             if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
                 let pending = pendingSyncs[syncId]
                 finishSync(syncId)
-                if let pending, pending.range == "history" { historyErrors[pending.runtimeId] = message["message"] as? String ?? "历史读取失败，请重试。"; return }
+                if let pending, pending.range == "history" { historyErrors[pending.runtimeId] = message["message"] as? String ?? L10n.tr("历史读取失败，请重试。"); return }
             }
             if let commandId { finishAction(commandId, succeeded: false, message: message["message"] as? String) }
             if let requestId = message["requestId"] as? String, requestId == activationRequestId { clearActivation() }
@@ -2152,7 +2162,7 @@ final class HostConnection: ObservableObject {
                 return
             }
             if commandId == nil && message["requestId"] == nil { connection = .error }
-            errorMessage = message["message"] as? String ?? "电脑端无法完成操作。"
+            errorMessage = message["message"] as? String ?? L10n.tr("电脑端无法完成操作。")
         default: break
         }
     }
@@ -2203,7 +2213,7 @@ final class HostConnection: ObservableObject {
         if type == "command.result" || type == "runtime.error", let commandId = event["commandId"] as? String, let op = ledger.operation(commandId),
            OperationKinds.runtimeId(of: op).map({ $0 == runtimeId }) ?? true {
             let receipt = type == "runtime.error"
-                ? AppLedger.Receipt.failed(.init("runtime_error", event["message"] as? String ?? "电脑端无法完成操作。"))
+                ? AppLedger.Receipt.failed(.init("runtime_error", event["message"] as? String ?? L10n.tr("电脑端无法完成操作。")))
                 : OperationKinds.receipt(ok: event["ok"] as? Bool == true, status: event["status"] as? String, error: event["error"] as? String)
             handleLedger(ledger.receipt(commandId, connection: ledger.connection, receipt, now: Date())); return
         }
@@ -2261,9 +2271,9 @@ final class HostConnection: ObservableObject {
         if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false) {
             if let commandId = event["commandId"] as? String, let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId && $0.value.runtimeId == runtimeId })?.key {
                 let pending = pendingSyncs[syncId]; finishSync(syncId, readPhase: .failed)
-                if pending?.range == "history" { historyErrors[runtimeId] = event["error"] as? String ?? event["message"] as? String ?? "历史读取失败，请重试。"; return }
+                if pending?.range == "history" { historyErrors[runtimeId] = event["error"] as? String ?? event["message"] as? String ?? L10n.tr("历史读取失败，请重试。"); return }
             }
-            errorMessage = event["message"] as? String ?? event["error"] as? String ?? "电脑端无法完成操作。"
+            errorMessage = event["message"] as? String ?? event["error"] as? String ?? L10n.tr("电脑端无法完成操作。")
             return
         }
         if type == "session.sync.pending", let syncId = event["syncId"] as? String, var task = pendingSyncs[syncId], task.runtimeId == runtimeId {
@@ -2357,27 +2367,27 @@ final class HostConnection: ObservableObject {
         }
         guard let pending else { return }
         guard recoverRead(syncId, runtime: runtime) else {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话读取归属已经改变，请重试。"); return
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话读取归属已经改变，请重试。")); return
         }
         guard event["range"] == nil || event["range"] as? String == pending.range,
               event["beforeEntryId"] as? String == pending.boundary,
               validSnapshotSelection(event, pending: pending, runtimeId: runtimeId) else {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话同步范围或检查点无效，请重试。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话同步范围或检查点无效，请重试。"))
             return
         }
         guard let source = event["source"] as? [String: Any], let epoch = source["epoch"] as? String, !epoch.isEmpty,
               epoch.utf16.count <= 256, integer(source["seq"]) != nil, source["ready"] as? Bool == true else {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话来源版本无效，请重试。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话来源版本无效，请重试。"))
             return
         }
         if let source = event["source"] as? [String: Any], let epoch = source["epoch"] as? String,
            retiredEpochs[runtimeId]?.contains(epoch) == true {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话同步来自已替换的来源。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话同步来自已替换的来源。"))
             return
         }
         if pending.range == "history", let source = event["source"] as? [String: Any],
            let current = sourcePositions[runtimeId], source["epoch"] as? String != current.epoch {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史来源已经改变，请刷新会话。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史来源已经改变，请刷新会话。"))
             return
         }
         if let fingerprint = sessionSnapshotFingerprint(event) {
@@ -2386,7 +2396,7 @@ final class HostConnection: ObservableObject {
         if event["selection"] as? String == "unchanged" {
             guard let known = pending.known, let applied = appliedBaselines[runtimeId], applied.epoch == known.epoch,
                   applied.seq >= known.seq, applied.seq > known.seq || applied.leaf == known.leaf else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话已应用状态发生变化，请重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话已应用状态发生变化，请重试。"))
                 return
             }
             if let host = selectedHost, let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, limit: 30), generation == historyGeneration {
@@ -2403,7 +2413,7 @@ final class HostConnection: ObservableObject {
             return
         }
         guard validToolDependency(event, runtime: runtime) else {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话工具清单的归属或版本无效，请刷新重试。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话工具清单的归属或版本无效，请刷新重试。"))
             return
         }
         var dependency: ToolReference?
@@ -2413,12 +2423,12 @@ final class HostConnection: ObservableObject {
                   reference.agent.agentKind == runtime.agentKind || runtime.agentKind == nil,
                   reference.projectionVersion == 1, (0...4096).contains(reference.totalCount), (0...8_388_608).contains(reference.summaryBytes) else {
                 finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
-                errorMessage = "会话工具清单的归属或版本无效，请刷新重试。"; return
+                errorMessage = L10n.tr("会话工具清单的归属或版本无效，请刷新重试。"); return
             }
             dependency = reference
         }
         if let status = event["rangeStatus"] as? String, !["complete", "older_available", "limit_reached"].contains(status) {
-            historyErrors[runtimeId] = "历史范围不可用，请刷新会话后重试。"
+            historyErrors[runtimeId] = L10n.tr("历史范围不可用，请刷新会话后重试。")
             finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected"); return
         }
         if pending.range == "preview", let source = event["source"] as? [String: Any],
@@ -2431,7 +2441,7 @@ final class HostConnection: ObservableObject {
                 finishSync(syncId, readPhase: .superseded)
                 acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
             } else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话同步响应已落后于当前更新，请刷新重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话同步响应已落后于当前更新，请刷新重试。"))
             }
             return
         }
@@ -2442,7 +2452,7 @@ final class HostConnection: ObservableObject {
                 finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected"); return
             }
             guard !(event["hasOlder"] as? Bool == false && event["complete"] as? Bool == false) else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史范围尚未完整，请重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史范围尚未完整，请重试。"))
                 return
             }
             let entries = event["entries"] as? [[String: Any]] ?? []
@@ -2450,7 +2460,7 @@ final class HostConnection: ObservableObject {
             guard event["hasOlder"] as? Bool != true || (first != nil && first != pending.boundary),
                   !(entries.isEmpty && event["hasOlder"] as? Bool == true),
                   entries.last?["entryId"] as? String != pending.boundary else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史范围未推进，请重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史范围未推进，请重试。"))
                 return
             }
             var parent: String?
@@ -2462,15 +2472,15 @@ final class HostConnection: ObservableObject {
             guard let host = selectedHost, let boundary = pending.boundary,
                   let persistedBoundary = try? await historyWorker.entry(host: host, sessionId: pending.sessionId, entryId: boundary),
                   generation == historyGeneration, recoverRead(syncId, runtime: runtime) else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史请求边界已经失效，请重试。"); return
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史请求边界已经失效，请重试。")); return
             }
             if parent != persistedBoundary.parentId { connected = false }
             guard connected else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史条目与请求边界不连续，请重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史条目与请求边界不连续，请重试。"))
                 return
             }
             guard await commitHistory(event, runtime: runtime, activate: false, rawEnvelope: rawEnvelope) != nil else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史记录无法保存，请重试。")
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史记录无法保存，请重试。"))
                 return
             }
             guard generation == historyGeneration, let host = selectedHost,
@@ -2478,7 +2488,7 @@ final class HostConnection: ObservableObject {
                     leafId: pending.leaf, beforeEntryId: pending.boundary, limit: max(1, entries.count)),
                   generation == historyGeneration else { return }
             guard page.displayComplete, [.complete, .olderAvailable].contains(page.status) else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史范围或显示结果不完整，请重试。"); return
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史范围或显示结果不完整，请重试。")); return
             }
             finishSync(syncId, readPhase: nil)
             completeRemoteRead(syncId, runtime: runtime, page: page)
@@ -2491,10 +2501,10 @@ final class HostConnection: ObservableObject {
                   event["checkpoint"] == nil, event["live"] == nil,
                   (event["source"] as? [String: Any])?["epoch"] as? String == sourcePositions[runtimeId]?.epoch,
                   let operation = syncReads[syncId], let target = sessionReads.operations[operation]?.targetLeafId else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "历史补齐范围已经失效。"); return
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史补齐范围已经失效。")); return
             }
             guard await commitHistory(event, runtime: runtime, activate: false, rawEnvelope: rawEnvelope) != nil else {
-                rejectSnapshot(syncId, runtimeId: runtimeId, message: "补齐历史无法保存，请重试。"); return
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("补齐历史无法保存，请重试。")); return
             }
             guard generation == historyGeneration, let host = selectedHost,
                   let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, leafId: target, limit: 1),
@@ -2506,7 +2516,7 @@ final class HostConnection: ObservableObject {
             return
         }
         guard let committed = await commitHistory(event, runtime: runtime, activate: true, rawEnvelope: rawEnvelope) else {
-            rejectSnapshot(syncId, runtimeId: runtimeId, message: "会话历史无法保存，请重试。")
+            rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话历史无法保存，请重试。"))
             return
         }
         guard generation == historyGeneration, pendingSyncs[syncId]?.commandId == pending.commandId,
@@ -2551,7 +2561,7 @@ final class HostConnection: ObservableObject {
             }
             else if toolAcknowledgements.count < 8, toolInventories.loading.contains(runtimeId) { toolAcknowledgements[syncId] = (runtimeId, reference); pendingAppliedBaselines[syncId] = baseline; pendingReadPages[syncId] = committed.page }
             else {
-                if let read = syncReads.removeValue(forKey: syncId) { sessionReads.finish(read, phase: .failed, error: "工具清单等待任务已满。") }
+                if let read = syncReads.removeValue(forKey: syncId) { sessionReads.finish(read, phase: .failed, error: L10n.tr("工具清单等待任务已满。")) }
                 acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
             }
         } else {
@@ -2916,10 +2926,10 @@ final class HostConnection: ObservableObject {
             }
             if now >= task.deadline {
                 task.exhausted = true; pendingSyncs[id] = task
-                if let read = syncReads[id] { sessionReads.finish(read, phase: .failed, error: "同步暂未完成，请重试。") }
+                if let read = syncReads[id] { sessionReads.finish(read, phase: .failed, error: L10n.tr("同步暂未完成，请重试。")) }
                 historyLoading.remove(task.runtimeId)
-                if task.range == "history" { historyErrors[task.runtimeId] = "历史读取暂未完成，请重试。" }
-                else { errorMessage = "会话同步暂未完成，请重试。" }
+                if task.range == "history" { historyErrors[task.runtimeId] = L10n.tr("历史读取暂未完成，请重试。") }
+                else { errorMessage = L10n.tr("会话同步暂未完成，请重试。") }
                 armSyncTimeout(id, seconds: 150); continue
             }
             let delay: Double = task.attempts < 3 ? 30 : 60

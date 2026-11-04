@@ -14,22 +14,22 @@ struct DownloadsView: View {
     private var downloads: [FileTransfer] { transfers.currentTasks.filter { $0.direction == "download" } }
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: selected.isEmpty ? "下载" : "已选择 \(selected.count) 项", closes: !selected.isEmpty, backLabel: selected.isEmpty ? "返回" : "退出多选", back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
+            OrbisPageHeader(title: selected.isEmpty ? L10n.tr("下载") : L10n.tr("已选择 {0} 项", selected.count), closes: !selected.isEmpty, backLabel: selected.isEmpty ? L10n.tr("返回") : L10n.tr("退出多选"), back: { if selected.isEmpty { onBack() } else { selected = [] } }) {
                 OrbisSelectionToolbar(selecting: !selected.isEmpty) { _ in
                     Color.clear.frame(width: 48, height: 48)
                 } selected: {
-                    OrbisIconButton(symbol: "trash", label: "删除所选下载", tint: OrbisPalette(scheme).error, action: confirmDelete)
+                    OrbisIconButton(symbol: "trash", label: L10n.tr("删除所选下载"), tint: OrbisPalette(scheme).error, action: confirmDelete)
                 }
             }
             HStack(spacing: 10) {
-                TextField("电脑文件的完整路径", text: $path).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField(L10n.tr("电脑文件的完整路径"), text: $path).textInputAutocapitalization(.never).autocorrectionDisabled()
                     .font(.orbisBody()).focused($pathFocused).orbisInput(focused: pathFocused).accessibilityIdentifier("download-path")
-                OrbisIconButton(symbol: "arrow.down.to.line", label: "按路径下载") { transfers.download(path: path.trimmingCharacters(in: .whitespacesAndNewlines)); path = "" }
+                OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("按路径下载")) { transfers.download(path: path.trimmingCharacters(in: .whitespacesAndNewlines)); path = "" }
                     .disabled(store.connection != .secured || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(.horizontal, 24).padding(.top, 8)
-            OrbisActionButton(title: "浏览电脑文件", symbol: "folder") { browserOpen = true }
+            OrbisActionButton(title: L10n.tr("浏览电脑文件"), symbol: "folder") { browserOpen = true }
                 .disabled(store.connection != .secured).padding(.horizontal, 24).padding(.vertical, 12)
-            if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: "暂无下载") }
+            if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: L10n.tr("暂无下载")) }
             else {
                 ScrollView {
                     LazyVStack(spacing: 18) {
@@ -55,9 +55,9 @@ struct DownloadsView: View {
 
     private func confirmDelete() {
         let ids = selected
-        overlay.showDialog("删除下载记录与本机文件？", message: "电脑上的原文件不受影响。", actions: [
-            OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "删除 \(ids.count) 项", role: .destructive) { transfers.remove(ids); selected = [] }
+        overlay.showDialog(L10n.tr("删除下载记录与本机文件？"), message: L10n.tr("电脑上的原文件不受影响。"), actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: L10n.tr("删除 {0} 项", ids.count), role: .destructive) { transfers.remove(ids); selected = [] }
         ])
     }
 
@@ -83,9 +83,9 @@ struct DownloadsView: View {
         .buttonStyle(OrbisSelectionButtonStyle(selected: selected.contains(task.id), selecting: !selected.isEmpty))
         .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(task.id) })
         .accessibilityIdentifier("download-card-\(task.id)")
-        .accessibilityHint(selected.isEmpty ? "长按进入多选" : "轻点切换选择")
+        .accessibilityHint(selected.isEmpty ? L10n.tr("长按进入多选") : L10n.tr("轻点切换选择"))
         .accessibilityAddTraits(selected.contains(task.id) ? .isSelected : [])
-        .accessibilityAction(named: "选择下载") { beginSelection(task.id) }
+        .accessibilityAction(named: L10n.tr("选择下载")) { beginSelection(task.id) }
     }
 
     private func transferCardContent(_ task: FileTransfer) -> some View {
@@ -94,11 +94,11 @@ struct DownloadsView: View {
         let active = ["queued", "downloading", "verifying"].contains(task.status)
         let stopped = ["paused", "cancelled"].contains(task.status)
         let actionHint: String = {
-            if !selected.isEmpty { return selected.contains(task.id) ? "已选择" : "轻点选择" }
-            if active { return "轻点暂停" }
-            if task.status == "completed" { return task.localPath == nil ? "" : "轻点分享" }
-            if store.connection != .secured { return "连接电脑后继续" }
-            return failed ? "轻点重试" : "轻点继续"
+            if !selected.isEmpty { return selected.contains(task.id) ? L10n.tr("已选择") : L10n.tr("轻点选择") }
+            if active { return L10n.tr("轻点暂停") }
+            if task.status == "completed" { return task.localPath == nil ? "" : L10n.tr("轻点分享") }
+            if store.connection != .secured { return L10n.tr("连接电脑后继续") }
+            return failed ? L10n.tr("轻点重试") : L10n.tr("轻点继续")
         }()
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -107,7 +107,7 @@ struct DownloadsView: View {
                     .frame(width: 44, height: 44).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     FileNameText(name: task.name).font(.orbisBody(.semibold)).foregroundStyle(p.text)
-                    Text(task.status == "cancelled" ? "已暂停" : task.error ?? transferStatusTitle(task.status))
+                    Text(task.status == "cancelled" ? L10n.tr("已暂停") : task.error ?? transferStatusTitle(task.status))
                         .font(.orbisCaption()).foregroundStyle(failed ? p.error : p.secondary).lineLimit(2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 OrbisSelectionIndicator(selected: selected.contains(task.id), selecting: !selected.isEmpty)
@@ -136,22 +136,22 @@ private struct DownloadBrowserView: View {
     @State private var selected: BrowseEntry?
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "浏览电脑文件", closes: true, back: onDismiss) { EmptyView() }
+            OrbisPageHeader(title: L10n.tr("浏览电脑文件"), closes: true, back: onDismiss) { EmptyView() }
             ScrollView {
                 VStack(spacing: 14) {
                     HStack {
-                        Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? "电脑根目录").font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录")).font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
                         ZStack {
                             if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                            else { OrbisIconButton(symbol: "arrow.clockwise", label: "刷新目录") { store.browseDirectory(store.browse?.path) } }
+                            else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { store.browseDirectory(store.browse?.path) } }
                         }.frame(width: 48, height: 48)
                     }
                     if store.browse?.path?.isEmpty == false {
-                        OrbisActionButton(title: "上一级", symbol: "arrow.up") { selected = nil; store.browseDirectory(store.browse?.parent) }.disabled(store.browse?.loading == true)
+                        OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { selected = nil; store.browseDirectory(store.browse?.parent) }.disabled(store.browse?.loading == true)
                     }
                     if let error = store.browse?.error {
                         OrbisNotice(text: error, error: true)
-                        OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
+                        OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
                     } else if store.browse?.loading == false {
                         ForEach((store.browse?.entries ?? []).sorted { ($0.isDir ? 0 : 1, $0.name) < ($1.isDir ? 0 : 1, $1.name) }) { entry in
                             OrbisMotionButton {
@@ -169,11 +169,11 @@ private struct DownloadBrowserView: View {
                                 }.padding(14).frame(minHeight: 52)
                             }.buttonStyle(NeuButtonStyle(selected: selected?.id == entry.id))
                         }
-                        if store.browse?.entries.isEmpty == true { Text("此目录没有可浏览的文件或子目录").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(24) }
+                        if store.browse?.entries.isEmpty == true { Text(L10n.tr("此目录没有可浏览的文件或子目录")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(24) }
                     }
                 }.padding(.horizontal, 24).padding(.vertical, 10)
             }.disabled(store.connection != .secured)
-            OrbisActionButton(title: "下载到手机", symbol: "arrow.down.to.line") {
+            OrbisActionButton(title: L10n.tr("下载到手机"), symbol: "arrow.down.to.line") {
                 if let selected {
                     transfers.download(path: remoteBrowsePath(parent: store.browse?.path, name: selected.name)); onDismiss()
                 }
@@ -191,7 +191,7 @@ struct AttachmentStrip: View {
     let runtime: RuntimeSummary
     var body: some View {
         let tasks = transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
-        if transfers.preparing { ProgressView("正在准备附件…").font(.orbisCaption()).padding(.top, 10) }
+        if transfers.preparing { ProgressView(L10n.tr("正在准备附件…")).font(.orbisCaption()).padding(.top, 10) }
         if !tasks.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -201,14 +201,14 @@ struct AttachmentStrip: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 FileNameText(name: task.name).font(.orbisCaption(.medium))
                                 HStack(spacing: 6) {
-                                    Text(task.error ?? (task.status == "completed" ? "已上传" : transferStatusTitle(task.status))).lineLimit(1)
+                                    Text(task.error ?? (task.status == "completed" ? L10n.tr("已上传") : transferStatusTitle(task.status))).lineLimit(1)
                                     if task.error == nil && task.status != "completed" { Text(byteCount(task.received)).fixedSize() }
                                 }.font(.orbisCaption())
                             }.frame(maxWidth: 180, alignment: .leading)
                             if ["paused", "failed"].contains(task.status) {
-                                OrbisIconButton(symbol: "arrow.clockwise", label: "重试上传", size: 28) { transfers.restart(task.id) }
+                                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重试上传"), size: 28) { transfers.restart(task.id) }
                             }
-                            OrbisIconButton(symbol: "xmark", label: "移除附件 \(task.name)", size: 28) { transfers.detach([task.id]) }
+                            OrbisIconButton(symbol: "xmark", label: L10n.tr("移除附件 {0}", task.name), size: 28) { transfers.detach([task.id]) }
                         }.padding(.horizontal, 12).padding(.vertical, 6).neuSurface(inset: true, radius: 14, intensity: 0.45)
                     }
                 }.padding(.horizontal, 16).padding(.vertical, 6).padding(.top, 4)
@@ -220,13 +220,13 @@ struct AttachmentStrip: View {
 func byteCount(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .file) }
 func transferStatusTitle(_ status: String) -> String {
     switch status {
-    case "queued": return "等待传输"
-    case "downloading": return "下载中"
-    case "uploading": return "上传中"
-    case "verifying": return "正在校验"
-    case "completed": return "已完成"
-    case "paused": return "已暂停"
-    case "cancelled": return "已取消"
-    default: return "失败"
+    case "queued": return L10n.tr("等待传输")
+    case "downloading": return L10n.tr("下载中")
+    case "uploading": return L10n.tr("上传中")
+    case "verifying": return L10n.tr("正在校验")
+    case "completed": return L10n.tr("已完成")
+    case "paused": return L10n.tr("已暂停")
+    case "cancelled": return L10n.tr("已取消")
+    default: return L10n.tr("失败")
     }
 }

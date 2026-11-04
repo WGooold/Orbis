@@ -159,7 +159,7 @@ struct SessionDrawerView: View {
         sessionProviderOptions(store.sessions, kind: state.kind ?? "codex", current: store.currentProvider(for: state.kind ?? "codex"))
     }
     private var effectiveProviderKey: String { providerOptions.contains { $0.key == state.providerKey } ? state.providerKey : "current" }
-    private var providerLabel: String { providerOptions.first { $0.key == effectiveProviderKey }?.label ?? "当前 provider" }
+    private var providerLabel: String { providerOptions.first { $0.key == effectiveProviderKey }?.label ?? L10n.tr("当前 provider") }
 
     private var directories: [SessionDirectory] {
         let catalog = store.visibleSessions
@@ -176,51 +176,51 @@ struct SessionDrawerView: View {
         let selectedSessions = directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
             HStack(spacing: 12) {
-                OrbisMotionText(selecting ? "已选择 \(selectedSessions.count) 项" : "会话目录").font(.orbisTitle()).accessibilityAddTraits(.isHeader)
+                OrbisMotionText(selecting ? L10n.tr("已选择 {0} 项", selectedSessions.count) : L10n.tr("会话目录")).font(.orbisTitle()).accessibilityAddTraits(.isHeader)
                 Spacer()
-                OrbisIconButton(symbol: "xmark", label: selecting ? "退出多选" : "关闭会话目录") {
+                OrbisIconButton(symbol: "xmark", label: selecting ? L10n.tr("退出多选") : L10n.tr("关闭会话目录")) {
                     if selecting { selectedSessionIds = [] } else { onClose() }
                 }
             }.padding(.top, 8)
             HStack(spacing: 12) {
                 OrbisSelectionToolbar(selecting: selecting) { progress in
                     HStack(spacing: 12) {
-                        OrbisActionButton(title: "新会话", symbol: "plus") { onNewSession(nil) }
+                        OrbisActionButton(title: L10n.tr("新会话"), symbol: "plus") { onNewSession(nil) }
                             .disabled(store.connection != .secured || store.activatingSessionId != nil)
                             .offset(x: 12 * progress)
-                        OrbisIconButton(symbol: "arrow.clockwise", label: "刷新会话目录", action: store.refresh)
+                        OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新会话目录"), action: store.refresh)
                             .disabled(store.selectedHost == nil).offset(x: -12 * progress)
                     }
                 } selected: {
                     HStack(spacing: 12) {
-                        OrbisActionButton(title: state.archived ? "恢复选中会话" : "归档选中会话",
+                        OrbisActionButton(title: state.archived ? L10n.tr("恢复选中会话") : L10n.tr("归档选中会话"),
                                           symbol: state.archived ? "tray.and.arrow.up" : "archivebox", action: archiveSelection)
                             .disabled(selectedSessions.contains { archiveUnavailableReason($0) != nil })
                         if selectedSessions.count == 1, let session = selectedSessions.first, !state.archived {
-                            OrbisIconButton(symbol: "play", label: "在电脑继续会话") {
+                            OrbisIconButton(symbol: "play", label: L10n.tr("在电脑继续会话")) {
                                 if let problem = store.providerMismatch(session) { showMismatch(problem) }
                                 else { store.activate(session) }
                             }.disabled(store.connection != .secured || store.activatingSessionId != nil)
                         }
                     }
                 }
-                OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: "筛选会话：\(state.kind.map(filterTitle) ?? "全部")",
+                OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: L10n.tr("筛选会话：{0}", state.kind.map(filterTitle) ?? L10n.tr("全部")),
                                     tint: state.kind == nil ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).accent,
                                     selected: state.kind != nil) { filterMenuItems }
             }
             HStack(spacing: 8) {
                 OrbisActionSymbol(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
-                TextField("搜索会话或目录", text: $state.query).font(.orbisBody())
+                TextField(L10n.tr("搜索会话或目录"), text: $state.query).font(.orbisBody())
                     .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
                     .autocorrectionDisabled().textInputAutocapitalization(.never)
                 // The clear button keeps its slot so the field never changes width while typing.
-                OrbisIconButton(symbol: "xmark", label: "清除搜索", size: 28) { state.query = "" }
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { state.query = "" }
                     .opacity(state.query.isEmpty ? 0 : 1).disabled(state.query.isEmpty)
                     .accessibilityHidden(state.query.isEmpty)
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused)
             // One fixed row carries the title, the active filter and the counts; filtering never inserts a row.
             HStack(spacing: 8) {
-                OrbisMotionText(searching ? "搜索结果" : state.archived ? "已归档" : "工作目录")
+                OrbisMotionText(searching ? L10n.tr("搜索结果") : state.archived ? L10n.tr("已归档") : L10n.tr("工作目录"))
                     .font(.orbisLabel(.semibold)).accessibilityAddTraits(.isHeader)
                 if let kind = state.kind {
                     OrbisMotionText(filterTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).accent).lineLimit(1)
@@ -229,7 +229,7 @@ struct SessionDrawerView: View {
                     }
                 }
                 Spacer(minLength: 4)
-                Text("\(directories.count) 个目录，\(directories.reduce(0) { $0 + $1.sessions.count }) 个会话")
+                Text(L10n.tr("{0} 个目录，{1} 个会话", directories.count, directories.reduce(0) { $0 + $1.sessions.count }))
                     .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
             }.frame(minHeight: 28)
             ScrollView {
@@ -287,15 +287,15 @@ struct SessionDrawerView: View {
     }
 
     private func archiveUnavailableReason(_ session: SessionSummary) -> String? {
-        guard store.connection == .secured else { return "连接电脑后可操作" }
-        guard let kind = session.agentKind else { return "尚未获取会话类型" }
-        guard !store.isArchiving(session.sessionId) else { return "处理中…" }
+        guard store.connection == .secured else { return L10n.tr("连接电脑后可操作") }
+        guard let kind = session.agentKind else { return L10n.tr("尚未获取会话类型") }
+        guard !store.isArchiving(session.sessionId) else { return L10n.tr("处理中…") }
         guard session.archived != true else { return nil }
         let runtimes = store.runtimes.filter { $0.sessionId == session.sessionId }
         guard !runtimes.isEmpty else { return nil }
-        if kind == "pi" { return "请先退出 Pi 会话" }
-        if kind == "claude" { return "请先退出 Claude Code 会话" }
-        return runtimes.allSatisfy { $0.status == "idle" } ? nil : "等待任务完成后归档"
+        if kind == "pi" { return L10n.tr("请先退出 Pi 会话") }
+        if kind == "claude" { return L10n.tr("请先退出 Claude Code 会话") }
+        return runtimes.allSatisfy { $0.status == "idle" } ? nil : L10n.tr("等待任务完成后归档")
     }
 
     private func archiveSelection() {
@@ -308,15 +308,15 @@ struct SessionDrawerView: View {
     private var filterMenuItems: [OrbisMenuItem] {
         var items: [OrbisMenuItem] = []
         if state.kind != nil || state.archived {
-            items.append(OrbisMenuItem(title: "清除筛选", symbol: "arrow.uturn.backward") { state.kind = nil; state.archived = false; state.providerKey = "current" })
+            items.append(OrbisMenuItem(title: L10n.tr("清除筛选"), symbol: "arrow.uturn.backward") { state.kind = nil; state.archived = false; state.providerKey = "current" })
             items.append(.divider)
         }
-        items.append(OrbisMenuItem(title: "全部", checked: state.kind == nil) { state.kind = nil })
+        items.append(OrbisMenuItem(title: L10n.tr("全部"), checked: state.kind == nil) { state.kind = nil })
         items += ["pi", "codex", "codexDesktop", "dsh", "claude"].map { kind in
             OrbisMenuItem(title: filterTitle(kind), checked: state.kind == kind) { state.kind = kind }
         }
         items.append(.divider)
-        items.append(OrbisMenuItem(title: state.archived ? "查看未归档会话" : "查看已归档会话", symbol: state.archived ? "tray.full" : "archivebox") {
+        items.append(OrbisMenuItem(title: state.archived ? L10n.tr("查看未归档会话") : L10n.tr("查看已归档会话"), symbol: state.archived ? "tray.full" : "archivebox") {
             state.archived.toggle()
         })
         if hasProviderFilter {
@@ -326,7 +326,7 @@ struct SessionDrawerView: View {
             }
         }
         items.append(.divider)
-        items.append(OrbisMenuItem(title: "设置", symbol: "gearshape", action: onProviders))
+        items.append(OrbisMenuItem(title: L10n.tr("设置"), symbol: "gearshape", action: onProviders))
         return items
     }
 
@@ -359,9 +359,9 @@ struct SessionDrawerView: View {
     }
 
     private var emptyTitle: String {
-        if !state.query.isEmpty { return "没有匹配的会话" }
-        if hasProviderFilter && effectiveProviderKey == "current" && store.currentProvider(for: state.kind ?? "codex") == nil { return "尚未获取当前 provider" }
-        return state.archived ? "没有已归档的会话" : "暂无会话"
+        if !state.query.isEmpty { return L10n.tr("没有匹配的会话") }
+        if hasProviderFilter && effectiveProviderKey == "current" && store.currentProvider(for: state.kind ?? "codex") == nil { return L10n.tr("尚未获取当前 provider") }
+        return state.archived ? L10n.tr("没有已归档的会话") : L10n.tr("暂无会话")
     }
 
     private func directoryGroup(_ directory: SessionDirectory) -> some View {
@@ -382,12 +382,12 @@ struct SessionDrawerView: View {
                             .rotationEffect(.degrees(expanded ? 90 : 0)).animation(.orbisCollapse, value: expanded)
                     }.padding(12).frame(minHeight: 60).contentShape(Rectangle())
                 }.buttonStyle(NeuButtonStyle(selected: expanded))
-                    .accessibilityLabel("\(expanded ? "收起" : "展开")目录 \(directory.path)，\(directory.sessions.count) 个会话")
+                    .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
                     .accessibilityIdentifier("drawer-directory-" + directory.path)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
                         viewport.record("directory:" + directory.path, frame: $0)
                     }
-                OrbisIconButton(symbol: "plus", label: "在此目录新建会话", compact: true) { onNewSession(directory.path) }
+                OrbisIconButton(symbol: "plus", label: L10n.tr("在此目录新建会话"), compact: true) { onNewSession(directory.path) }
                     .disabled(store.connection != .secured || store.activatingSessionId != nil)
             }
             OrbisCollapse(expanded: expanded) {
@@ -403,7 +403,7 @@ struct SessionDrawerView: View {
                             }
                     }
                     if hidden > 0 && !searching {
-                        OrbisTextButton(title: state.showAllSessions ? "收起较早会话" : "再显示 \(hidden) 个会话",
+                        OrbisTextButton(title: state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("再显示 {0} 个会话", hidden),
                                         symbol: state.showAllSessions ? "chevron.up" : "chevron.down", fill: true) {
                             state.showAllSessions.toggle()
                         }.padding(.leading, 12)
@@ -435,11 +435,11 @@ struct SessionDrawerView: View {
                     ZStack(alignment: .leading) {
                         HStack(spacing: 8) {
                             if let runtime { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }
-                            else { Text("缓存历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                            else { Text(L10n.tr("缓存历史")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                             Text(sessionTimeTitle(session.modifiedAt))
                                 .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                             if session.agentKind == "codexDesktop" {
-                                Text("桌面版").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
+                                Text(L10n.tr("桌面版")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
                             }
                             if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
                                 Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
@@ -460,26 +460,26 @@ struct SessionDrawerView: View {
             .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(session.sessionId) })
             .accessibilityIdentifier("drawer-session-" + session.sessionId)
             .accessibilityAddTraits(selected ? .isSelected : [])
-            .accessibilityAction(named: "选择会话") { beginSelection(session.sessionId) }
+            .accessibilityAction(named: L10n.tr("选择会话")) { beginSelection(session.sessionId) }
     }
 
     private func showMismatch(_ problem: String) {
-        overlay.showDialog("需要切换 provider", message: problem, actions: [
-            OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "设置", action: onProviders)
+        overlay.showDialog(L10n.tr("需要切换 provider"), message: problem, actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: L10n.tr("设置"), action: onProviders)
         ])
     }
 
     private var hostSelector: some View {
         HStack(spacing: 10) {
             // The only place to add or unpair a computer (ADR-0053 §4).
-            OrbisMenuButton(accessibilityLabel: "电脑，当前 \(store.selectedHost?.hostName ?? "未选择")",
+            OrbisMenuButton(accessibilityLabel: L10n.tr("电脑，当前 {0}", store.selectedHost?.hostName ?? L10n.tr("未选择")),
                             items: { hostSwitchMenuItems(store, onAddHost: onAddHost, onUnpair: onUnpair) }) {
                 HStack(spacing: 10) {
                     OrbisActionSymbol(systemName: "desktopcomputer").foregroundStyle(OrbisPalette(scheme).accent)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("电脑").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        Text(store.selectedHost?.hostName ?? "选择电脑").font(.orbisBody(.semibold)).lineLimit(1)
+                        Text(L10n.tr("电脑")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        Text(store.selectedHost?.hostName ?? L10n.tr("选择电脑")).font(.orbisBody(.semibold)).lineLimit(1)
                     }
                     Spacer()
                     OrbisActionSymbol(systemName: "chevron.up.chevron.down").imageScale(.small).foregroundStyle(OrbisPalette(scheme).secondary)
@@ -491,8 +491,8 @@ struct SessionDrawerView: View {
 
 private func filterTitle(_ kind: String) -> String {
     switch kind {
-    case "codex": return "Codex 终端"
-    case "codexDesktop": return "Codex 桌面版"
+    case "codex": return L10n.tr("Codex 终端")
+    case "codexDesktop": return L10n.tr("Codex 桌面版")
     case "dsh": return "DeepSeek"
     case "claude": return "Claude Code"
     default: return "Pi"
@@ -517,8 +517,8 @@ struct NewSessionView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "新建会话", closes: true, back: onDismiss) {
-                Label(store.selectedHost?.hostName ?? "电脑", systemImage: "desktopcomputer").font(.orbisCaption())
+            OrbisPageHeader(title: L10n.tr("新建会话"), closes: true, back: onDismiss) {
+                Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "desktopcomputer").font(.orbisCaption())
                     .foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
             }
             ScrollView {
@@ -540,10 +540,10 @@ struct NewSessionView: View {
                         Label(presetCwd, systemImage: "folder").font(.orbisLabel(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
                             .neuSurface(inset: true, radius: 16, intensity: 0.45, padding: 16)
                     } else { RemoteDirectoryView() }
-                    if store.connection != .secured { OrbisNotice(text: "未连接到电脑") }
+                    if store.connection != .secured { OrbisNotice(text: L10n.tr("未连接到电脑")) }
                 }.padding(.horizontal, 24).padding(.vertical, 8)
             }
-            OrbisActionButton(title: "在这里新建 \(agentTitle(kind)) 会话", symbol: "plus", tint: OrbisPalette(scheme).agent(kind)) {
+            OrbisActionButton(title: L10n.tr("在这里新建 {0} 会话", agentTitle(kind)), symbol: "plus", tint: OrbisPalette(scheme).agent(kind)) {
                 if let cwd = presetCwd ?? store.browse?.path {
                     store.createSession(agentKind: kind, cwd: cwd)
                     if store.activatingSessionId != nil {
@@ -569,31 +569,31 @@ struct RemoteDirectoryView: View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {
                 OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
-                Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? "电脑根目录")
+                Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
                     .font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
                 // Spinner and refresh share one fixed slot so the path never reflows while loading.
                 ZStack {
                     if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                    else { OrbisIconButton(symbol: "arrow.clockwise", label: "刷新目录") { store.browseDirectory(store.browse?.path) }.disabled(store.connection != .secured) }
+                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { store.browseDirectory(store.browse?.path) }.disabled(store.connection != .secured) }
                 }.frame(width: 48, height: 48)
             }
             if store.browse?.path?.isEmpty == false {
-                OrbisActionButton(title: "上一级", symbol: "arrow.up") { store.browseDirectory(store.browse?.parent) }
+                OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { store.browseDirectory(store.browse?.parent) }
                     .disabled(store.browse?.loading == true || store.connection != .secured)
             }
             if let error = store.browse?.error {
                 OrbisNotice(text: error, error: true)
-                OrbisActionButton(title: "重新读取", symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
+                OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
                     .disabled(store.connection != .secured)
             } else if store.browse?.loading == false {
                 let entries = (store.browse?.entries ?? []).filter(\.isDir).sorted { ($0.hasSessions ? 0 : 1, $0.name) < ($1.hasSessions ? 0 : 1, $1.name) }
-                if entries.isEmpty { Text("此目录没有子目录").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(16) }
+                if entries.isEmpty { Text(L10n.tr("此目录没有子目录")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(16) }
                 ForEach(entries) { entry in
                     OrbisMotionButton { store.browseDirectory(remoteBrowsePath(parent: store.browse?.path, name: entry.name)) } label: {
                         HStack(spacing: 10) {
                             OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
                             Text(entry.name).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
-                            if entry.hasSessions { Text("有历史").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).accent) }
+                            if entry.hasSessions { Text(L10n.tr("有历史")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).accent) }
                             OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
                         }.padding(14).frame(minHeight: 52)
                     }.buttonStyle(NeuButtonStyle()).disabled(store.connection != .secured)

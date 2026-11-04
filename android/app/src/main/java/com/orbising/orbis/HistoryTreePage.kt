@@ -153,17 +153,17 @@ internal fun HistoryTreePage(
                     NeumorphIconButton(
                         onClick = onBack,
                         icon = Icons.Rounded.ArrowBack,
-                        contentDescription = "返回聊天",
+                        contentDescription = L10n.tr("返回聊天"),
                         size = RemoteUi.IconButtonSize,
                     )
                 },
                 title = {
                     Column {
-                        Text("历史与分支", fontWeight = FontWeight.SemiBold)
+                        Text(L10n.tr("历史与分支"), fontWeight = FontWeight.SemiBold)
                         Text(
                             graph?.firstUserMessageTitle()
                                 ?: sessionId?.let(state.sessions::get)?.name?.takeIf(String::isNotBlank)
-                                ?: "当前会话",
+                                ?: L10n.tr("当前会话"),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -199,7 +199,7 @@ internal fun HistoryTreePage(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Box {
-                    NeumorphTextButton(text = "显示：${filter.title}", onClick = { filterMenuOpen = true })
+                    NeumorphTextButton(text = L10n.tr("显示：{0}", filter.title), onClick = { filterMenuOpen = true })
                     DropdownMenu(expanded = filterMenuOpen, onDismissRequest = { filterMenuOpen = false }) {
                         HistoryTreeFilter.entries.forEach { candidate ->
                             DropdownMenuItem(text = { Text(candidate.title) }, onClick = {
@@ -212,16 +212,16 @@ internal fun HistoryTreePage(
                 }
                 Text(
                     if (query.isBlank()) {
-                        "${rows.count { it is HistoryTurnRow }} 轮，${rows.count { it is HistoryBranchRow }} 个分支"
+                        L10n.tr("{0} 轮，{1} 个分支", rows.count { it is HistoryTurnRow }, rows.count { it is HistoryBranchRow })
                     } else {
-                        "${rows.size} 个匹配节点"
+                        L10n.tr("{0} 个匹配节点", rows.size)
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 NeumorphTextButton(
-                    text = "当前位置",
+                    text = L10n.tr("当前位置"),
                     enabled = query.isBlank() && rows.isNotEmpty(),
                     onClick = {
                         expandedBranches = emptySet()
@@ -233,7 +233,7 @@ internal fun HistoryTreePage(
             }
             if (olderUnread && query.isBlank()) {
                 Text(
-                    "更早的记录还没有读到：在聊天页往上翻，读到的部分会自动补进这张树",
+                    L10n.tr("更早的记录还没有读到：在聊天页往上翻，读到的部分会自动补进这张树"),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 2.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -241,7 +241,7 @@ internal fun HistoryTreePage(
             }
             if (rows.isEmpty()) {
                 Text(
-                    if (treeOptions.isEmpty()) "这个会话还没有可显示的分支记录" else "没有匹配的节点",
+                    if (treeOptions.isEmpty()) L10n.tr("这个会话还没有可显示的分支记录") else L10n.tr("没有匹配的节点"),
                     modifier = Modifier.padding(RemoteUi.PagePadding),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -310,7 +310,7 @@ private fun HistorySearchField(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier.fillMaxWidth(),
-        placeholder = { Text("搜索消息、分支或书签", style = MaterialTheme.typography.bodyMedium) },
+        placeholder = { Text(L10n.tr("搜索消息、分支或书签"), style = MaterialTheme.typography.bodyMedium) },
         leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
         trailingIcon = if (query.isEmpty()) {
             null
@@ -319,7 +319,7 @@ private fun HistorySearchField(
                 NeumorphIconButton(
                     onClick = { onQueryChange("") },
                     icon = Icons.Rounded.Close,
-                    contentDescription = "清除搜索",
+                    contentDescription = L10n.tr("清除搜索"),
                     size = 28.dp,
                 )
             }
@@ -348,20 +348,20 @@ private fun HistoryTurnCard(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (row.showTurnIndex) {
                 Text(
-                    "第 ${row.turnIndex} 轮",
+                    L10n.tr("第 {0} 轮", row.turnIndex),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (row.hasCurrent) {
-                Text("当前位置", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Text(L10n.tr("当前位置"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.weight(1f))
             row.collapseBranchId?.let { branchId ->
                 NeumorphIconButton(
                     onClick = { onCollapseBranch(branchId) },
                     icon = Icons.Rounded.ExpandLess,
-                    contentDescription = "收起这个分支",
+                    contentDescription = L10n.tr("收起这个分支"),
                     size = 30.dp,
                 )
             }
@@ -384,12 +384,12 @@ private fun HistoryTurnCard(
                 ) {
                     Icon(
                         if (row.detailsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                        contentDescription = if (row.detailsExpanded) "收起细节" else "展开细节",
+                        contentDescription = if (row.detailsExpanded) L10n.tr("收起细节") else L10n.tr("展开细节"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
                     Text(
-                        "${row.details.size} 项工具与设置",
+                        L10n.tr("{0} 项工具与设置", row.details.size),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -444,11 +444,11 @@ private fun HistoryNodeCard(node: HistoryNode, selected: Boolean, onClick: () ->
                     color = if (node.isOnActivePath) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (node.isCurrent) {
-                    Text("当前位置", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(L10n.tr("当前位置"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
                 node.bookmark?.let {
                     Text(
-                        "书签：$it",
+                        L10n.tr("书签：{0}", it),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
@@ -456,7 +456,7 @@ private fun HistoryNodeCard(node: HistoryNode, selected: Boolean, onClick: () ->
                     )
                 }
                 if (selected) {
-                    Text("正在预览", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(L10n.tr("正在预览"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 }
             }
             Text(
@@ -486,7 +486,7 @@ private fun HistoryBranchCard(row: HistoryBranchRow, onExpand: () -> Unit) {
         ) {
             Icon(
                 Icons.Rounded.ChevronRight,
-                contentDescription = "展开分支",
+                contentDescription = L10n.tr("展开分支"),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp),
             )
@@ -535,23 +535,23 @@ private fun HistoryPreviewPanel(
         Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "正在预览",
+                    L10n.tr("正在预览"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
-                    "不会改变电脑端会话",
+                    L10n.tr("不会改变电脑端会话"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                NeumorphTextButton(text = "退出预览", onClick = onExitPreview)
+                NeumorphTextButton(text = L10n.tr("退出预览"), onClick = onExitPreview)
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(node.kind.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     node.bookmark?.let {
-                        Text("书签：$it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+                        Text(L10n.tr("书签：{0}", it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
                     }
                 }
                 Text(node.title, style = MaterialTheme.typography.bodyMedium, maxLines = 3, overflow = TextOverflow.Ellipsis)
@@ -562,20 +562,20 @@ private fun HistoryPreviewPanel(
             ) {
                 when {
                     preview.unavailable -> Text(
-                        "本机还没有这个节点的对话缓存",
+                        L10n.tr("本机还没有这个节点的对话缓存"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     preview.messages.isEmpty() -> Text(
-                        "这是一条还没有对话内容的记录。",
+                        L10n.tr("这是一条还没有对话内容的记录。"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     else -> {
                         Text(
-                            "附近的对话",
+                            L10n.tr("附近的对话"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -629,14 +629,14 @@ private fun HistoryPreviewActions(
     onEditAndRestart: () -> Unit,
 ) {
     val hint = when {
-        node.isCurrent -> "当前位置就是这条记录"
-        busy -> "运行中：切换分支要等这一轮结束"
+        node.isCurrent -> L10n.tr("当前位置就是这条记录")
+        busy -> L10n.tr("运行中：切换分支要等这一轮结束")
         else -> null
     }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         when (node.action) {
             HistoryNodeAction.EditAndRestart -> NeumorphTextButton(
-                text = "编辑这条消息并重新开始",
+                text = L10n.tr("编辑这条消息并重新开始"),
                 icon = Icons.Rounded.Edit,
                 filled = true,
                 enabled = !busy && !pending,
@@ -645,7 +645,7 @@ private fun HistoryPreviewActions(
             )
 
             HistoryNodeAction.ContinueFromHere -> NeumorphTextButton(
-                text = "从这条回复后继续",
+                text = L10n.tr("从这条回复后继续"),
                 icon = Icons.Rounded.ArrowDownward,
                 filled = true,
                 enabled = !busy && !pending,
@@ -654,7 +654,7 @@ private fun HistoryPreviewActions(
             )
 
             null -> Text(
-                hint ?: "这条记录只能预览",
+                hint ?: L10n.tr("这条记录只能预览"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -662,10 +662,10 @@ private fun HistoryPreviewActions(
         if (node.action != null) {
             Text(
                 when {
-                    isPendingNode -> "正在跳转…"
+                    isPendingNode -> L10n.tr("正在跳转…")
                     hint != null -> hint
-                    node.action == HistoryNodeAction.EditAndRestart -> "分支会移到这条消息之前，原文回到输入框"
-                    else -> "分支会停在这条回复之后，接着往下聊"
+                    node.action == HistoryNodeAction.EditAndRestart -> L10n.tr("分支会移到这条消息之前，原文回到输入框")
+                    else -> L10n.tr("分支会停在这条回复之后，接着往下聊")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

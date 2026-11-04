@@ -45,7 +45,7 @@ object EnvelopeV2Contract {
      */
     fun nonce(channel: String, n: Long): ByteArray {
         val slot = CHANNEL_SLOT[channel]
-            ?: throw Crypto.E2eCryptoException("malformed", "未知 channel：$channel")
+            ?: throw Crypto.E2eCryptoException("malformed", L10n.tr("未知 channel：{0}", channel))
         val bytes = ByteArray(12)
         bytes[0] = ((slot ushr 24) and 0xFF).toByte()
         bytes[1] = ((slot ushr 16) and 0xFF).toByte()
@@ -134,12 +134,12 @@ object E2eJson {
 
     inline fun <reified T> decode(value: String, label: String): T =
         runCatching { json.decodeFromString<T>(value) }.getOrElse {
-            throw Crypto.E2eCryptoException("malformed", "$label 解析失败：${it.message ?: it::class.simpleName}")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 解析失败：{1}", label, it.message ?: it::class.simpleName))
         }
 
     inline fun <reified T> decodeElement(element: kotlinx.serialization.json.JsonElement, label: String): T =
         runCatching { json.decodeFromJsonElement<T>(element) }.getOrElse {
-            throw Crypto.E2eCryptoException("malformed", "$label 解析失败：${it.message ?: it::class.simpleName}")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 解析失败：{1}", label, it.message ?: it::class.simpleName))
         }
 }
 
@@ -147,7 +147,7 @@ object E2eJson {
 object PlaintextEnvelope {
     inline fun <reified T> build(kind: String, room: String, from: String, to: String, body: T): EnvelopeV2 {
         if (kind != "pair" && kind != "hs") {
-            throw Crypto.E2eCryptoException("malformed", "$kind 帧不属于明文帧")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 帧不属于明文帧", kind))
         }
         return EnvelopeV2(
             v = EnvelopeV2Contract.VERSION,
@@ -159,7 +159,7 @@ object PlaintextEnvelope {
     /** 解开明文帧并要求 `hdr.k` 匹配——收到别的种类属于协议违规，直接报错。 */
     inline fun <reified T> read(envelope: EnvelopeV2, expected: String): T {
         if (envelope.hdr.k != expected) {
-            throw Crypto.E2eCryptoException("malformed", "期望 $expected 帧，收到 ${envelope.hdr.k}")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("期望 {0} 帧，收到 {1}", expected, envelope.hdr.k))
         }
         val raw = Crypto.fromBase64Url(envelope.ct, "${expected}.ct").toString(Charsets.UTF_8)
         return E2eJson.decode(raw, "${expected}.ct")

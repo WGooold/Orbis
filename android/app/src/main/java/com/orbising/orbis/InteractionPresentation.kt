@@ -9,9 +9,9 @@ internal fun isInteractionInputValid(value: String, request: PendingInteraction)
 
 internal fun interactionInputConstraintText(request: PendingInteraction): String? = when {
     request.minLength != null && request.maxLength != null ->
-        "请输入 ${request.minLength}–${request.maxLength} 个字符"
-    request.minLength != null -> "至少输入 ${request.minLength} 个字符"
-    request.maxLength != null -> "最多输入 ${request.maxLength} 个字符"
+        L10n.tr("请输入 {0}–{1} 个字符", request.minLength, request.maxLength)
+    request.minLength != null -> L10n.tr("至少输入 {0} 个字符", request.minLength)
+    request.maxLength != null -> L10n.tr("最多输入 {0} 个字符", request.maxLength)
     else -> null
 }
 
@@ -25,9 +25,9 @@ internal fun isInteractionMultiSelectValid(selectedCount: Int, request: PendingI
 
 internal fun interactionMultiSelectConstraintText(request: PendingInteraction): String? = when {
     request.minSelections != null && request.maxSelections != null ->
-        "请选择 ${request.minSelections}–${request.maxSelections} 项"
-    request.minSelections != null -> "至少选择 ${request.minSelections} 项"
-    request.maxSelections != null -> "最多选择 ${request.maxSelections} 项"
+        L10n.tr("请选择 {0}–{1} 项", request.minSelections, request.maxSelections)
+    request.minSelections != null -> L10n.tr("至少选择 {0} 项", request.minSelections)
+    request.maxSelections != null -> L10n.tr("最多选择 {0} 项", request.maxSelections)
     else -> null
 }
 

@@ -139,7 +139,7 @@ fun QrScannerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("扫描配对二维码") },
+        title = { Text(L10n.tr("扫描配对二维码")) },
         text = {
             if (hasPermission) {
                 QrCameraPreview(
@@ -149,16 +149,16 @@ fun QrScannerDialog(
                 )
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("需要相机权限才能扫描配对二维码。")
+                    Text(L10n.tr("需要相机权限才能扫描配对二维码。"))
                     NeumorphActionButton(
                         onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                        text = "允许相机权限",
+                        text = L10n.tr("允许相机权限"),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         },
-        confirmButton = { NeumorphTextButton(text = "取消", onClick = onDismiss) },
+        confirmButton = { NeumorphTextButton(text = L10n.tr("取消"), onClick = onDismiss) },
     )
 }
 

@@ -79,9 +79,9 @@ struct AgentProvider: Identifiable, Hashable {
     var official = false
     var removable: Bool { kind == "pi" && enabled && additive }
     var confirmation: String {
-        let explanation = additive ? (enabled ? "从 Pi 配置移除；Host 中的卡片和配置仍保留。" : "添加到 Pi 配置，可与其他供应商同时启用。") :
-            "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"
-        return name + "\n" + explanation + (enabled && globalDefault ? "\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : "")
+        let explanation = additive ? (enabled ? L10n.tr("从 Pi 配置移除；Host 中的卡片和配置仍保留。") : L10n.tr("添加到 Pi 配置，可与其他供应商同时启用。")) :
+            L10n.tr("将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。")
+        return name + "\n" + explanation + (enabled && globalDefault ? L10n.tr("\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。") : "")
     }
 }
 
@@ -91,7 +91,7 @@ struct SubscriptionQuota: Decodable {
         let remainingPercent: Double?
         let resetsAt: Int64?
         var id: String { name }
-        var title: String { name == "five_hour" ? "5 小时配额" : "周配额" }
+        var title: String { name == "five_hour" ? L10n.tr("5 小时配额") : L10n.tr("周配额") }
     }
     let checkedAt: Int64
     let windows: [Window]
@@ -205,7 +205,7 @@ final class HostState: ObservableObject {
     }
 
     func refresh(_ requested: [String] = HostState.domainNames) {
-        guard connected else { modelError = "请先连接已配对的电脑"; return }
+        guard connected else { modelError = L10n.tr("请先连接已配对的电脑"); return }
         let wanted = Set(requested).intersection(Self.domainNames)
         subscribedDomains.formUnion(wanted)
         let id = UUID().uuidString
@@ -217,12 +217,12 @@ final class HostState: ObservableObject {
         modelTimeout?.cancel()
         guard send?(["type": "agent.state.request", "protocolVersion": orbisProtocolVersion, "requestId": id,
                      "scope": "host", "subscribe": true, "domains": subscribedDomains.sorted(), "known": known]) == true else {
-            subscriptionId = nil; pendingDomains = []; modelError = "状态读取未发送，请重新连接"; return
+            subscriptionId = nil; pendingDomains = []; modelError = L10n.tr("状态读取未发送，请重新连接"); return
         }
         modelTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.subscriptionId == id, !self.pendingDomains.isEmpty else { return }
-            self.pendingDomains = []; self.modelError = "状态读取超时，请重新读取"
+            self.pendingDomains = []; self.modelError = L10n.tr("状态读取超时，请重新读取")
         }
     }
 
@@ -257,9 +257,9 @@ final class HostState: ObservableObject {
     var providerCatalogProblem: String? { providerCatalogProblem(for: providerKind) }
     func providerCatalogProblem(for kind: String) -> String? {
         if let problem = problem(for: "providers") { return problem }
-        guard let summary = providerSummary(for: kind) else { return "电脑没有报告此 Agent 的供应商配置" }
-        if let availability = summary["availability"].string, availability != "ready" { return "电脑尚未核对此 Agent 的供应商配置" }
-        if summary["profiles"] == .null { return "尚未读取到供应商清单，请刷新后重试" }
+        guard let summary = providerSummary(for: kind) else { return L10n.tr("电脑没有报告此 Agent 的供应商配置") }
+        if let availability = summary["availability"].string, availability != "ready" { return L10n.tr("电脑尚未核对此 Agent 的供应商配置") }
+        if summary["profiles"] == .null { return L10n.tr("尚未读取到供应商清单，请刷新后重试") }
         let profiles = summary["profiles"]
         guard profiles.isArray, profiles.array.count <= 64, Set(profiles.array.compactMap { $0["id"].string }).count == profiles.array.count,
               profiles.array.allSatisfy({ profile in
@@ -267,8 +267,8 @@ final class HostState: ObservableObject {
                         let name = profile["name"].string, name.count <= 256, profile["enabled"].bool != nil,
                         profile["globalDefault"].bool != nil else { return false }
                   return profile["mode"] == .null || ["additive", "exclusive"].contains(profile["mode"].string ?? "")
-              }) else { return "供应商清单格式无法识别，请刷新后重试" }
-        if summary["profilesTruncated"].bool == true { return "供应商清单不完整，请在电脑端检查配置" }
+              }) else { return L10n.tr("供应商清单格式无法识别，请刷新后重试") }
+        if summary["profilesTruncated"].bool == true { return L10n.tr("供应商清单不完整，请在电脑端检查配置") }
         return nil
     }
     var canChangeProvider: Bool { canChangeProvider(for: providerKind) }
@@ -283,9 +283,9 @@ final class HostState: ObservableObject {
     }
     func providerName(for kind: String) -> String {
         if let current = currentProvider(for: kind) { return current.name }
-        if providerCatalogProblem(for: kind) != nil { return "尚未读取" }
+        if providerCatalogProblem(for: kind) != nil { return L10n.tr("尚未读取") }
         let enabled = providers(for: kind).filter(\.enabled)
-        return enabled.isEmpty ? "未启用供应商" : enabled.map(\.name).joined(separator: "、")
+        return enabled.isEmpty ? L10n.tr("未启用供应商") : enabled.map(\.name).joined(separator: L10n.tr("、"))
     }
     func subscriptionQuota(for kind: String) -> ProviderQuotaSnapshot? {
         guard let snapshot = subscriptionQuotas[kind], currentProvider(for: kind)?.id == snapshot.providerId else { return nil }
@@ -302,7 +302,7 @@ final class HostState: ObservableObject {
 
     func changeProvider(_ provider: AgentProvider, expectedHostKey: String) {
         guard hostKey == expectedHostKey, canChangeProvider(for: provider.kind), providers(for: provider.kind).contains(provider),
-              !provider.enabled || provider.additive else { providerError = "目标电脑或供应商列表已变化，请刷新后重试"; return }
+              !provider.enabled || provider.additive else { providerError = L10n.tr("目标电脑或供应商列表已变化，请刷新后重试"); return }
         clearQuota(for: provider.kind); providerKind = provider.kind
         sendProviderChange(provider, expectedHostKey: expectedHostKey)
     }
@@ -318,12 +318,12 @@ final class HostState: ObservableObject {
         quotaProviderId = provider.id; quotaKind = provider.kind; queryingQuota = true
         guard send?(["type": "provider.subscription", "protocolVersion": orbisProtocolVersion, "requestId": id,
                      "kind": provider.kind, "id": provider.id]) == true else {
-            finishQuota(error: "配额查询未发送，请重新连接"); return
+            finishQuota(error: L10n.tr("配额查询未发送，请重新连接")); return
         }
         quotaTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 45_000_000_000) } catch { return }
             guard let self, self.quotaRequest?.id == id else { return }
-            self.finishQuota(error: "配额查询超时，请稍后重试")
+            self.finishQuota(error: L10n.tr("配额查询超时，请稍后重试"))
         }
     }
 
@@ -344,7 +344,7 @@ final class HostState: ObservableObject {
         guard hostKey == expectedHostKey, canChangeProvider, !selected.isEmpty,
               Set(selected.map(\.id)).count == selected.count,
               selected.allSatisfy({ $0.removable && providers.contains($0) }) else {
-            providerError = "目标电脑或供应商列表已变化，请刷新后重试"; return
+            providerError = L10n.tr("目标电脑或供应商列表已变化，请刷新后重试"); return
         }
         pendingProviderRemovals = selected
         providerRemovalCount = selected.count
@@ -353,26 +353,26 @@ final class HostState: ObservableObject {
 
     private func stopProviderChange(_ error: String) {
         providerTimeout?.cancel(); providerRequest = nil; changingProvider = false
-        providerError = (providerRemovalCount > 0 ? "批量移除已停止：" : "") + error
+        providerError = (providerRemovalCount > 0 ? L10n.tr("批量移除已停止：") : "") + error
         pendingProviderRemovals = []; providerRemovalCount = 0
     }
 
     private func sendProviderChange(_ provider: AgentProvider, expectedHostKey: String) {
         guard connected, hostKey == expectedHostKey, providers(for: provider.kind).contains(provider) else {
-            stopProviderChange("目标电脑或供应商列表已变化，请刷新确认结果"); return
+            stopProviderChange(L10n.tr("目标电脑或供应商列表已变化，请刷新确认结果")); return
         }
         let id = UUID().uuidString
         providerRequest = (id, provider.kind, expectedHostKey)
         changingProvider = true; providerError = nil; providerNotice = nil
         guard send?(["type": "provider.switch", "protocolVersion": orbisProtocolVersion, "requestId": id,
                      "kind": provider.kind, "id": provider.id, "enabled": !provider.enabled]) == true else {
-            stopProviderChange("供应商操作未发送，请重新连接"); return
+            stopProviderChange(L10n.tr("供应商操作未发送，请重新连接")); return
         }
         providerTimeout?.cancel()
         providerTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 90_000_000_000) } catch { return }
             guard let self, self.providerRequest?.id == id else { return }
-            self.stopProviderChange("操作超时，请刷新以确认实际状态")
+            self.stopProviderChange(L10n.tr("操作超时，请刷新以确认实际状态"))
         }
     }
 
@@ -382,12 +382,12 @@ final class HostState: ObservableObject {
         diagnosticRequest = id; diagnosticsLoading = true; diagnosticsError = nil
         var payload: [String: Any] = ["type": "diagnostics.request", "protocolVersion": orbisProtocolVersion, "requestId": id, "limit": 500]
         if let cursor { payload["cursor"] = cursor }
-        guard send?(payload) == true else { finishDiagnostics(error: "记录读取未发送，请重新连接"); return }
+        guard send?(payload) == true else { finishDiagnostics(error: L10n.tr("记录读取未发送，请重新连接")); return }
         diagnosticTimeout?.cancel()
         diagnosticTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.diagnosticRequest == id else { return }
-            self.finishDiagnostics(error: "记录读取超时，请重试")
+            self.finishDiagnostics(error: L10n.tr("记录读取超时，请重试"))
         }
     }
 
@@ -403,7 +403,7 @@ final class HostState: ObservableObject {
                   providers(for: request.kind).contains(where: { $0.id == request.providerId && $0.enabled && $0.subscriptionSupported }) else { return true }
             if let error = message["error"] as? String { finishQuota(error: error); return true }
             guard let raw = message["quota"] as? [String: Any], let result: SubscriptionQuota = decode(raw), result.valid else {
-                finishQuota(error: "配额数据格式无法识别，请升级 Host 后重试"); return true
+                finishQuota(error: L10n.tr("配额数据格式无法识别，请升级 Host 后重试")); return true
             }
             quota = result; finishQuota(); return true
         case "agent.state.snapshot":
@@ -423,7 +423,7 @@ final class HostState: ObservableObject {
             } else {
                 changingProvider = false
                 let notice = (message["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                providerNotice = providerRemovalCount > 0 ? "已移除 \(providerRemovalCount) 个供应商。" + (notice ?? "") : notice
+                providerNotice = providerRemovalCount > 0 ? L10n.tr("已移除 {0} 个供应商。", providerRemovalCount) + (notice ?? "") : notice
                 providerRemovalCount = 0
                 refresh(["providers"]); didChangeProviders?()
             }
@@ -437,12 +437,12 @@ final class HostState: ObservableObject {
             guard let raw = message["page"] as? [String: Any], let page: HostDiagnosticPage = decode(raw), page.records.count <= 500,
                   Set(page.records.map(\.recordId)).count == page.records.count,
                   page.records.allSatisfy({ !$0.recordId.isEmpty && $0.at >= 0 && ["info", "warning", "error"].contains($0.severity) && ($0.hostId == nil || $0.hostId == hostId) }) else {
-                finishDiagnostics(error: "电脑端记录格式无法识别，请重新读取"); return true
+                finishDiagnostics(error: L10n.tr("电脑端记录格式无法识别，请重新读取")); return true
             }
             diagnosticPage = page; finishDiagnostics(); return true
         case "protocol.error":
             let id = message["requestId"] as? String
-            let error = message["message"] as? String ?? "电脑端无法完成读取"
+            let error = message["message"] as? String ?? L10n.tr("电脑端无法完成读取")
             if let id, id == diagnosticRequest { finishDiagnostics(error: error); return true }
             if let id, id == providerRequest?.id {
                 stopProviderChange(error); return true
@@ -455,18 +455,18 @@ final class HostState: ObservableObject {
     }
 
     func problem(for name: String) -> String? {
-        if !connected { return "电脑已离线，以下为最后读取的状态" }
+        if !connected { return L10n.tr("电脑已离线，以下为最后读取的状态") }
         if let modelError { return modelError }
-        if let reason = missing[name] { return reason == "unknown_domain" ? "此 Host 不支持这个状态领域" : "电脑尚未报告这个状态领域" }
-        guard let domain = domains[name] else { return pendingDomains.contains(name) ? "正在读取" : "尚未读取" }
-        if domain.availability != "ready" { return domain.availability == "unavailable" ? "电脑端暂不支持" : "电脑尚未核对" }
+        if let reason = missing[name] { return reason == "unknown_domain" ? L10n.tr("此 Host 不支持这个状态领域") : L10n.tr("电脑尚未报告这个状态领域") }
+        guard let domain = domains[name] else { return pendingDomains.contains(name) ? L10n.tr("正在读取") : L10n.tr("尚未读取") }
+        if domain.availability != "ready" { return domain.availability == "unavailable" ? L10n.tr("电脑端暂不支持") : L10n.tr("电脑尚未核对") }
         if name == "catalog", let range = catalogRange, range.modelEpoch == domain.modelEpoch, range.revision == domain.revision {
-            if let error = range.error { return "会话目录分页失败：" + error }
-            if range.nextCursor != nil { return "正在读取会话目录（已读取 \(range.sessions.count) / \(range.totalSessions)）" }
-            if range.truncated || !range.complete { return "会话目录不完整" }
+            if let error = range.error { return L10n.tr("会话目录分页失败：") + error }
+            if range.nextCursor != nil { return L10n.tr("正在读取会话目录（已读取 {0} / {1}）", range.sessions.count, range.totalSessions) }
+            if range.truncated || !range.complete { return L10n.tr("会话目录不完整") }
         }
-        if domain.completeness != "complete" && domain.projectionComplete != true { return "状态清单不完整" }
-        if truncated { return "状态清单被截断，请重新读取" }
+        if domain.completeness != "complete" && domain.projectionComplete != true { return L10n.tr("状态清单不完整") }
+        if truncated { return L10n.tr("状态清单被截断，请重新读取") }
         return nil
     }
 
@@ -517,7 +517,7 @@ final class HostState: ObservableObject {
     }
 
     private func rejectModel() {
-        modelError = "电脑端状态格式无法识别，请重新读取"; pendingDomains = []; modelTimeout?.cancel()
+        modelError = L10n.tr("电脑端状态格式无法识别，请重新读取"); pendingDomains = []; modelTimeout?.cancel()
     }
     private func finishDiagnostics(error: String? = nil) {
         diagnosticTimeout?.cancel(); diagnosticRequest = nil; diagnosticsLoading = false; diagnosticsError = error
@@ -526,8 +526,8 @@ final class HostState: ObservableObject {
         clearQuota()
         modelTimeout?.cancel(); providerTimeout?.cancel(); diagnosticTimeout?.cancel(); catalogTimeout?.cancel()
         catalogRequest = nil
-        if changingProvider { stopProviderChange("连接已断开，请刷新以确认操作结果") }
-        if diagnosticsLoading { diagnosticsError = "连接已断开，请重新读取" }
+        if changingProvider { stopProviderChange(L10n.tr("连接已断开，请刷新以确认操作结果")) }
+        if diagnosticsLoading { diagnosticsError = L10n.tr("连接已断开，请重新读取") }
         subscriptionId = nil; subscribedDomains = []; pendingDomains = []
         providerRequest = nil; changingProvider = false; diagnosticRequest = nil; diagnosticsLoading = false
     }
@@ -555,13 +555,13 @@ final class HostState: ObservableObject {
         catalogRequest = request
         guard send?(["type": "agent.state.range.request", "protocolVersion": orbisProtocolVersion,
                      "requestId": request.id, "scope": "host", "domain": "catalog", "cursor": cursor, "limit": 200]) == true else {
-            rejectCatalog("目录分页请求未发送，请重新连接"); return
+            rejectCatalog(L10n.tr("目录分页请求未发送，请重新连接")); return
         }
         catalogTimeout?.cancel()
         catalogTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
             guard let self, self.catalogRequest?.id == request.id else { return }
-            self.rejectCatalog("目录分页读取超时，请刷新重试")
+            self.rejectCatalog(L10n.tr("目录分页读取超时，请刷新重试"))
         }
     }
 

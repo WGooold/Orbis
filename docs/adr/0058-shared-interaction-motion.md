@@ -260,3 +260,13 @@ iOS 的确认退场不再复用取消回弹并等待弹簧 `.removed`：统一�
 ## SC45：Claude 后台子任务区（2026-11-03 / r44）
 
 S26 / [ADR-0062](0062-claude-background-agents-and-session-activity.md) 归入既有 Disclosure / M03、ActionGlyph / M20；复用自然高度与按钮反馈，无新参数。后台更新不自动展开 / 滚动，不重置同会话展开状态；面板有界，保留 composer 与阅读锚点。MOT-24 / R61 覆盖双端中帧、键盘、明暗 / 大字 / 减少动画；尚未验收。
+
+## 2026-11-04 / r45：语言选择（SC46 / MOT-25）
+
+| 场景编号 | 实际入口与操作 | iOS | Android | 家族 / ticket |
+| --- | --- | --- | --- | --- |
+| SC46 | 设置语言：跟随系统 / 简体中文 / English，即时选择与重启持久化 | `StatusViews.swift / languageChoice`、`AppLocalization` | `MainActivity.kt / StatusScreen`、`AppLocalization` | 普通按钮轻压 M11 / M20，MOT-25 |
+
+复用既有按钮和选中材质，不新增动画参数；语言更新不重建页面、返回层、输入和消息。减少动画遵从现有共用按钮。S27 / ADR-0063 / R62 维护中英文、窄屏、辅助功能、系统变化及状态保留。完整双端门禁尚未完成，证据见 `.artifacts/ui-regression/20261104-app-language/summary.md`。
+
+2026-11-04 设备补验：SE / iPad 语言各 3 / 3、Android 设置 A1–A4 共 32 / 32，语言相关 iOS 测试驱动修正后 4 / 4；未新增运动参数。全量残余失败、实际系统前后台语言变化与人工门禁仍未完成，按 ADR-0063 和 MOT-25 分开记录，不能以定向通过关单。

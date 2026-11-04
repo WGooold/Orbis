@@ -22,10 +22,10 @@ struct DevicePairingSession {
     func verifyAccept(_ body: [String: Any], expectedHostId: String) throws {
         guard body["type"] as? String == "pair-accept",
               let hostId = body["hostId"] as? String, hostId == expectedHostId,
-              let nonceH = body["nonceH"] as? String, let macText = body["macH"] as? String else { throw PairingError.handshake("配对响应格式无效或主机身份不匹配") }
+              let nonceH = body["nonceH"] as? String, let macText = body["macH"] as? String else { throw PairingError.handshake(L10n.tr("配对响应格式无效或主机身份不匹配")) }
         _ = try Base64URL.decodeFixed(nonceH, bytes: 32, label: "nonceH")
         let expected = E2ECrypto.hmac(confirmKey, parts: "host|", nonceD, nonceH)
         let actual = try Base64URL.decode(macText, label: "macH")
-        guard E2ECrypto.constantTimeEqual(expected, actual) else { throw PairingError.handshake("配对确认失败：电脑身份不匹配") }
+        guard E2ECrypto.constantTimeEqual(expected, actual) else { throw PairingError.handshake(L10n.tr("配对确认失败：电脑身份不匹配")) }
     }
 }

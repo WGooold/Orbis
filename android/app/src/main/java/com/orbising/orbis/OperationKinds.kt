@@ -55,7 +55,7 @@ object OperationKinds {
      * `launch`：同一 requestId 的 `session.activated` 表示 Host 已受理并给出 Session，该 Session 的 Runtime 上线才落地；
      * 失败在聊天页原位显示；超时后显示“启动未确认”，以随后的会话列表为准（ADR-0049 §6.8）。
      */
-    val launchPolicy = LedgerPolicy(
+    val launchPolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         afterSuccessMs = LEDGER_RECEIPT_BUDGET_MS,
@@ -66,19 +66,19 @@ object OperationKinds {
     /** 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。 */
     fun modelDomain(runtimeId: String) = "model:$runtimeId"
     fun isConfigSetting(name: String) = name == "model" || name == "thinking"
-    fun configTitle(setting: String) = if (setting == "model") "模型" else "思考级别"
+    fun configTitle(setting: String) = if (setting == "model") L10n.tr("模型") else L10n.tr("思考级别")
     fun configTarget(runtimeId: String, setting: String) = "config:$runtimeId:$setting"
 
     /**
      * `config`：成功回执后仍等 model 领域发布确认值（确认值与所选不同时显示确认值），15 秒未见就转结果不明核对；
      * 核对后与所选不一致按切换失败处理（ADR-0049 §6.7）。
      */
-    val configPolicy = LedgerPolicy(
+    val configPolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         afterSuccessMs = 15_000,
         afterSuccess = LedgerTimeout.Unknown,
-        whenUnresolved = LedgerTimeout.Reject(LedgerRejection("unconfirmed", "未生效")),
+        whenUnresolved = LedgerTimeout.Reject(LedgerRejection("unconfirmed", L10n.tr("未生效"))),
         deviceReceipts = true,
     )
 
@@ -101,15 +101,15 @@ object OperationKinds {
             val payload = op.payload as? LedgerPayload.Config ?: continue
             if (payload.runtimeId != runtimeId || payload.setting != setting) continue
             when (op.phase) {
-                LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.label to "切换中"
-                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return payload.label to "未确认"
+                LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.label to L10n.tr("切换中")
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return payload.label to L10n.tr("未确认")
                 is LedgerPhase.Rejected -> continue
             }
         }
         return null
     }
     /** `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。 */
-    val sendPolicy = LedgerPolicy(successLands = true, acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS, deviceReceipts = true)
+    val sendPolicy get() = LedgerPolicy(successLands = true, acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS, deviceReceipts = true)
     fun sendGroup(sessionId: String) = "session:$sessionId"
     fun uploadPrerequisite(uploadId: String) = "upload:$uploadId"
     /** 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。 */
@@ -119,7 +119,7 @@ object OperationKinds {
      * `respond`：成功回执后面板保持收起，直到交互清单不再含该请求（避免闪回），15 秒仍在就转结果不明核对。
      * 明确失败且请求仍有效时面板回到原位并保留答案；核对后请求仍在则静默恢复面板，已不在则显示“已处理”。
      */
-    val respondPolicy = LedgerPolicy(
+    val respondPolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         afterSuccessMs = 15_000,
@@ -132,11 +132,11 @@ object OperationKinds {
 
     /** 回答摘要：确认结果、选项名或“已提交”；自由文本与敏感输入不回显（ADR-0049 §6.5）。 */
     fun confirmSummary(request: PendingInteraction, approved: Boolean) =
-        if (approved) "已${request.confirmLabel ?: "允许"}" else "已${request.cancelLabel ?: "拒绝"}"
+        if (approved) L10n.tr("已{0}", request.confirmLabel ?: L10n.tr("允许")) else L10n.tr("已{0}", request.cancelLabel ?: L10n.tr("拒绝"))
     fun valueSummary(request: PendingInteraction, value: String) =
-        if (request.kind != "select" || request.secret) "已提交" else "已选择：${request.options.firstOrNull { it.value == value }?.label ?: value}"
+        if (request.kind != "select" || request.secret) L10n.tr("已提交") else L10n.tr("已选择：{0}", request.options.firstOrNull { it.value == value }?.label ?: value)
     fun valuesSummary(request: PendingInteraction, values: List<String>) =
-        if (request.secret || values.isEmpty()) "已提交" else "已选择：" + values.joinToString("、") { value -> request.options.firstOrNull { it.value == value }?.label ?: value }
+        if (request.secret || values.isEmpty()) L10n.tr("已提交") else L10n.tr("已选择：") + values.joinToString(L10n.tr("、")) { value -> request.options.firstOrNull { it.value == value }?.label ?: value }
 
     /** 正在回答、尚未结算的请求：面板收起（L3），草稿保留。 */
     fun respondingRequestIds(ledger: AppLedger, runtimeId: String): Set<String> = ledger.operations
@@ -150,7 +150,7 @@ object OperationKinds {
             if (payload.runtimeId != runtimeId) continue
             when (op.phase) {
                 LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.summary to true
-                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return "${payload.summary} · 未确认" to false
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return L10n.tr("{0} · 未确认", payload.summary) to false
                 is LedgerPhase.Rejected -> continue
             }
         }
@@ -168,11 +168,11 @@ object OperationKinds {
     /** 账本发起的核对读取（L5）使用的 requestId 前缀。 */
     const val VERIFY_REQUEST_PREFIX = "ledger-verify:"
 
-    val quitStillRunning = LedgerRejection("still_running", "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。")
-    val quitUnconfirmed = LedgerRejection("unconfirmed", "关闭会话未确认：会话仍在运行。")
+    val quitStillRunning get() = LedgerRejection("still_running", L10n.tr("电脑上的会话仍在运行，请稍后重试或在电脑上关闭。"))
+    val quitUnconfirmed get() = LedgerRejection("unconfirmed", L10n.tr("关闭会话未确认：会话仍在运行。"))
 
     /** `quit`：成功回执只表示受理，Runtime 离线才算落地；成功后 15 秒仍在线或结果不明核对后仍在线，都恢复卡片。 */
-    val quitPolicy = LedgerPolicy(
+    val quitPolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         afterSuccessMs = 15_000,
@@ -185,7 +185,7 @@ object OperationKinds {
     fun quitTarget(runtimeId: String) = "runtime:$runtimeId"
 
     /** `dismiss`：没有回执；Host 处理关闭时同步生效，之后发起的读取已能反映结果。权威清单仍含它就静默重新显示。 */
-    val dismissPolicy = LedgerPolicy(
+    val dismissPolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         whenUnresolved = LedgerTimeout.Reject(LedgerRejection("not_dismissed", "")),
@@ -208,14 +208,14 @@ object OperationKinds {
         return if (projection.complete) LedgerEvidence.NOT_APPLIED else LedgerEvidence.NONE
     }
 
-    val archiveUnconfirmed = LedgerRejection("unconfirmed", "电脑上的会话目录仍是原状态")
+    val archiveUnconfirmed get() = LedgerRejection("unconfirmed", L10n.tr("电脑上的会话目录仍是原状态"))
 
     /**
      * `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 表示 Host 已完成原生归档；
      * 卡片留在目标列表直到目录体现结果（避免目录刷新前闪回），15 秒仍未体现就转结果不明核对。
      * 带同一 requestId 的 `protocol.error` 为拒绝；核对后目录仍为原状态时恢复并提示。
      */
-    val archivePolicy = LedgerPolicy(
+    val archivePolicy get() = LedgerPolicy(
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
         afterSuccessMs = 15_000,
@@ -238,13 +238,13 @@ object OperationKinds {
         return if ((sessions[payload.sessionId]?.archived == true) == payload.archived) LedgerEvidence.LANDED else LedgerEvidence.NONE
     }
 
-    val queueAlreadyDelivered = LedgerRejection("already_delivered", "消息已交给 Agent")
+    val queueAlreadyDelivered get() = LedgerRejection("already_delivered", L10n.tr("消息已交给 Agent"))
 
     /**
      * `queueCancel`：成功回执（`cancelled`）或队列项转为 `cancelled` 即落地；`already_delivered`、`not_cancelable` 等为拒绝。
      * 结果不明且核对后：仍在队列就静默放回、可再撤回；已不在完整队列中就以权威队列为准不再显示（ADR-0049 §6.3）。
      */
-    val queueCancelPolicy = LedgerPolicy(
+    val queueCancelPolicy get() = LedgerPolicy(
         // 成功回执后队列项保持退场，直到 Host 队列体现结果（避免闪回），15 秒仍未体现就转结果不明核对。
         successLands = false,
         acceptedBudgetMs = LEDGER_RECEIPT_BUDGET_MS,
@@ -313,7 +313,7 @@ object OperationKinds {
     fun receipt(ok: Boolean, status: String?, error: String?): LedgerReceipt = when {
         ok -> if (status == "pending") LedgerReceipt.Accepted else LedgerReceipt.Succeeded
         status == "cancelled" || status == "unconfirmed" -> LedgerReceipt.Uncertain
-        else -> LedgerReceipt.Failed(LedgerRejection(status ?: "failure", error.nonBlank() ?: "请重试。"))
+        else -> LedgerReceipt.Failed(LedgerRejection(status ?: "failure", error.nonBlank() ?: L10n.tr("请重试。")))
     }
 
     /** 设备作用域 `operations` 领域的值（`{operationId: AgentOperationItem}`）→ 回执。查不到的不出现在结果里。 */
@@ -327,7 +327,7 @@ object OperationKinds {
                 "accepted", "pending" -> LedgerReceipt.Accepted
                 "success" -> LedgerReceipt.Succeeded
                 "cancelled", "unconfirmed" -> LedgerReceipt.Uncertain
-                else -> LedgerReceipt.Failed(LedgerRejection(state, item.text("detail").nonBlank() ?: "请重试。"))
+                else -> LedgerReceipt.Failed(LedgerRejection(state, item.text("detail").nonBlank() ?: L10n.tr("请重试。")))
             }
         }
         return receipts
@@ -337,24 +337,27 @@ object OperationKinds {
     fun message(op: LedgerOperation<LedgerPayload>): String? {
         val rejection = (op.phase as? LedgerPhase.Rejected)?.rejection ?: return null
         return when (op.payload) {
-            is LedgerPayload.Quit ->
-                if (rejection == quitStillRunning || rejection == quitUnconfirmed) rejection.reason else "关闭会话未完成：${rejection.reason}"
+            is LedgerPayload.Quit -> when {
+                rejection.code == quitStillRunning.code && L10n.matches(rejection.reason, "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。") -> quitStillRunning.reason
+                rejection.code == quitUnconfirmed.code && L10n.matches(rejection.reason, "关闭会话未确认：会话仍在运行。") -> quitUnconfirmed.reason
+                else -> L10n.tr("关闭会话未完成：{0}", rejection.reason)
+            }
             is LedgerPayload.Dismiss -> null // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
-            is LedgerPayload.Archive -> (if ((op.payload as LedgerPayload.Archive).archived) "归档未完成：" else "恢复未完成：") +
-                rejection.reason.ifBlank { "请重试" }
+            is LedgerPayload.Archive -> (if ((op.payload as LedgerPayload.Archive).archived) L10n.tr("归档未完成：") else L10n.tr("恢复未完成：")) +
+                rejection.reason.ifBlank { L10n.tr("请重试") }
             // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
             is LedgerPayload.QueueCancel -> when (rejection.code) {
                 "not_cancelled", "not_applied" -> null
-                "already_delivered" -> "撤回未完成：${queueAlreadyDelivered.reason}"
-                else -> "撤回未完成：${rejection.reason.ifBlank { "请重试" }}"
+                "already_delivered" -> L10n.tr("撤回未完成：{0}", queueAlreadyDelivered.reason)
+                else -> L10n.tr("撤回未完成：{0}", rejection.reason.ifBlank { L10n.tr("请重试") })
             }
             is LedgerPayload.Send -> null // 失败显示在气泡原位（outbox 的失败行）。
             is LedgerPayload.Launch -> null // 失败在聊天页原位显示原因及“重试”“返回”。
-            is LedgerPayload.Config -> "${configTitle((op.payload as LedgerPayload.Config).setting)}切换未完成：${rejection.reason.ifBlank { "请重试" }}"
+            is LedgerPayload.Config -> L10n.tr("{0}切换未完成：{1}", configTitle((op.payload as LedgerPayload.Config).setting), rejection.reason.ifBlank { L10n.tr("请重试") })
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             is LedgerPayload.Respond -> when (rejection.code) {
                 "unresolved", "not_applied" -> null
-                else -> "回答未提交：${rejection.reason.ifBlank { "请重试" }}"
+                else -> L10n.tr("回答未提交：{0}", rejection.reason.ifBlank { L10n.tr("请重试") })
             }
         }
     }
@@ -397,22 +400,26 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
                 sends[send.messageId]?.let { it to it.state }?.let { (row, state) ->
                     if (state !is PendingSendState.Waiting) return@let
                     // 配置切换失败：等它的消息一起转失败（“模型切换未完成，消息未发送”），可按当前配置重新发送。
-                    val reason = if (rejection?.code == "prerequisite" && state.label.startsWith("等待") &&
-                        (state.label.endsWith("切换") || state.label.endsWith("启动")))
-                        state.label.removePrefix("等待") + "未完成，消息未发送" else rejection?.reason.orEmpty()
+                    val failedPrerequisite = event.operation.prerequisites.mapNotNull(step.ledger::operation)
+                        .firstOrNull { it.phase is LedgerPhase.Rejected }?.payload
+                    val reason = if (rejection?.code == "prerequisite") when (failedPrerequisite) {
+                        is LedgerPayload.Config -> L10n.tr("{0}切换未完成，消息未发送", OperationKinds.configTitle(failedPrerequisite.setting))
+                        is LedgerPayload.Launch -> L10n.tr("会话启动未完成，消息未发送")
+                        else -> rejection.reason
+                    } else rejection?.reason.orEmpty()
                     sends = sends + (send.messageId to row.copy(state = PendingSendState.Failed(reason)))
                 }
             }
             // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
             (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
                 if (launch?.requestId == payload.requestId) {
-                    val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty().ifBlank { "启动失败" }
+                    val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty().ifBlank { L10n.tr("启动失败") }
                     launch = launch?.copy(failure = reason)?.takeIf { it.following }
                 }
                 activateRequests = activateRequests - payload.requestId
             }
             // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
-            OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) "$archiveRejections 个会话$it" else it }
+            OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) L10n.tr("{0} 个会话{1}", archiveRejections, it) else it }
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
         }
         is LedgerEvent.Verify -> verify = true
@@ -431,7 +438,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         } ?: (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
             // 回答已结算：原位短暂显示结果（约 2.5 秒，V16）。只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
             outcomes = outcomes + (respond.runtimeId to InteractionOutcome(event.operation.opId,
-                if (event.operation.succeeded) respond.summary else "已处理"))
+                if (event.operation.succeeded) respond.summary else L10n.tr("已处理")))
         }
         else -> Unit
     }
@@ -665,10 +672,10 @@ internal fun RemoteState.createWaitingSend(
     if (creation !is LedgerCreation.Created) return this to creation
     val config = configs.firstNotNullOfOrNull { it.payload as? LedgerPayload.Config }?.let { OperationKinds.configTitle(it.setting) }
     val label = when {
-        pendingUploads.isNotEmpty() -> "上传中：" + pendingUploads.joinToString("、") { it.displayName }
-        configs.any { it.payload is LedgerPayload.Launch } -> "等待会话启动"
-        config != null -> "等待${config}切换"
-        else -> "等待前一条发送"
+        pendingUploads.isNotEmpty() -> L10n.tr("上传中：") + pendingUploads.joinToString(L10n.tr("、")) { it.displayName }
+        configs.any { it.payload is LedgerPayload.Launch } -> L10n.tr("等待会话启动")
+        config != null -> L10n.tr("等待{0}切换", config)
+        else -> L10n.tr("等待前一条发送")
     }
     val anchor = conversations[runtimeId]?.messages?.lastOrNull()?.messageId
     val send = PendingSend(messageId, commandId, sessionId, text, emptyList(), delivery, now, anchor,
@@ -703,7 +710,7 @@ internal fun RemoteState.createConfig(commandId: String, runtimeId: String, sett
 
 /** 顶栏与选择器显示的值：(名字, 标记)；没有进行中的切换时为 null，显示确认值。 */
 internal fun RemoteState.configStatus(runtimeId: String, setting: String): Pair<String, String>? =
-    configSelections[OperationKinds.configTarget(runtimeId, setting)]?.let { it.second to "切换中" }
+    configSelections[OperationKinds.configTarget(runtimeId, setting)]?.let { it.second to L10n.tr("切换中") }
         ?: OperationKinds.configStatus(ledger, runtimeId, setting)
 
 

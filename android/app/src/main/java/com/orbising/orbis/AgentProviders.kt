@@ -39,9 +39,9 @@ internal fun RemoteState.currentProviderForKind(kind: String): AgentProvider? {
 
 internal fun RemoteState.providerNameForKind(kind: String): String {
     currentProviderForKind(kind)?.let { return it.name }
-    if (providerCatalogProblems[kind] != null || providersForKind(kind).isEmpty()) return "尚未读取"
+    if (providerCatalogProblems[kind] != null || providersForKind(kind).isEmpty()) return L10n.tr("尚未读取")
     val enabled = providersForKind(kind).filter { it.enabled }
-    return if (enabled.isEmpty()) "未启用供应商" else enabled.joinToString("、") { it.name }
+    return if (enabled.isEmpty()) L10n.tr("未启用供应商") else enabled.joinToString(L10n.tr("、")) { it.name }
 }
 
 internal fun RemoteState.canUseProviders(kind: String): Boolean = e2eReady && connection == RelayConnection.ONLINE &&
@@ -98,7 +98,7 @@ internal fun RemoteState.withSubscriptionResult(message: JsonObject): RemoteStat
         providersForKind(kind).none { it.id == id && it.enabled && it.subscriptionSupported }) return this
     val failure = message["error"]?.jsonPrimitive?.contentOrNull
     val quota = (message["quota"] as? JsonObject)?.let(::parseSubscriptionQuota)
-    val error = failure ?: if (quota == null) "配额数据格式无法识别，请升级 Host 后重试" else null
+    val error = failure ?: if (quota == null) L10n.tr("配额数据格式无法识别，请升级 Host 后重试") else null
     if (error != null) return failSubscriptionQuery(request, error)
     return copy(subscriptionQuotas = subscriptionQuotas + (kind to ProviderQuotaSnapshot(id, quota)),
         agentProviders = current.copy(quotaRequestId = null, quota = if (failure == null) quota else null, quotaError = error))
@@ -112,7 +112,7 @@ internal fun RemoteState.clearProviderQuota(kind: String? = null): RemoteState =
 
 internal fun AgentProvidersState.stopOperation(error: String): AgentProvidersState = copy(
     requestId = null, loading = false, pendingRemovals = emptyList(), removalCount = 0,
-    error = if (removalCount > 0) "批量移除已停止：$error" else error,
+    error = if (removalCount > 0) L10n.tr("批量移除已停止：{0}", error) else error,
 )
 
 internal fun AgentProvidersState.canRemove(providers: List<AgentProvider>, expectedHostId: String?): Boolean =
@@ -131,6 +131,6 @@ internal fun RemoteState.withProviderResult(message: JsonObject): RemoteState {
     val notice = message["notice"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
     return copy(agentProviders = current.copy(requestId = null, loading = remaining.isNotEmpty(), pendingRemovals = remaining,
         error = null, notice = if (current.removalCount > 0 && remaining.isEmpty())
-            "已移除 ${current.removalCount} 个供应商。" + notice.orEmpty() else notice,
+            L10n.tr("已移除 {0} 个供应商。", current.removalCount) + notice.orEmpty() else notice,
         removalCount = if (remaining.isEmpty()) 0 else current.removalCount))
 }

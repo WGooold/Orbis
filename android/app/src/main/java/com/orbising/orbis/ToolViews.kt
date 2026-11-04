@@ -33,9 +33,9 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 
 internal fun toolPartTitle(part: String): String = when (part) {
-    "arguments" -> "参数"
-    "result" -> "结果"
-    else -> "输出"
+    "arguments" -> L10n.tr("参数")
+    "result" -> L10n.tr("结果")
+    else -> L10n.tr("输出")
 }
 
 /** Expanding a summary is local; full content is read only after choosing a part. */
@@ -43,9 +43,9 @@ internal fun toolPartTitle(part: String): String = when (part) {
 internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onReadPart: (String) -> Unit) {
     var expanded by rememberSaveable(summary.tool) { mutableStateOf(false) }
     val phase = when (summary.phase) {
-        "started", "running" -> "执行中"
-        "cancelled" -> "已取消"
-        else -> if (summary.isError == true) "执行失败" else "已完成"
+        "started", "running" -> L10n.tr("执行中")
+        "cancelled" -> L10n.tr("已取消")
+        else -> if (summary.isError == true) L10n.tr("执行失败") else L10n.tr("已完成")
     }
     val rotation by animateFloatAsState(if (expanded) 180f else 0f, tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "tool-disclosure")
     var glyphActivation by remember { mutableStateOf(0) }
@@ -56,7 +56,7 @@ internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onRea
         Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
             Row(
                 Modifier.fillMaxWidth()
-                    .semantics { contentDescription = "${if (expanded) "收起" else "展开"}${summary.toolName}，$phase" }
+                    .semantics { contentDescription = L10n.tr("{0}{1}，{2}", if (expanded) L10n.tr("收起") else L10n.tr("展开"), summary.toolName, phase) }
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button) { glyphActivation++; expanded = !expanded }
                     .heightIn(min = RemoteUi.TouchTarget),
                 verticalAlignment = Alignment.CenterVertically,
@@ -77,25 +77,25 @@ internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onRea
                 Column(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (summary.durationMs != null || summary.exitCode != null) {
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            summary.durationMs?.let { SummaryCaption("耗时 ${String.format(Locale.getDefault(), "%.1f", it / 1000.0)} 秒") }
-                            summary.exitCode?.let { SummaryCaption("退出码 $it") }
+                            summary.durationMs?.let { SummaryCaption(L10n.tr("耗时 {0} 秒", String.format(L10n.locale, "%.1f", it / 1000.0))) }
+                            summary.exitCode?.let { SummaryCaption(L10n.tr("退出码 {0}", it)) }
                         }
                     }
                     listOfNotNull(summary.inputSummary, summary.resultSummary, summary.errorSummary).forEach { part ->
                         SelectionContainer {
                             Text(part.text, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
                         }
-                        if (part.omitted) SummaryCaption("已省略部分内容")
+                        if (part.omitted) SummaryCaption(L10n.tr("已省略部分内容"))
                     }
                     summary.contents.filter { it.availability != "absent" }.forEach { part ->
                         NeumorphActionButton(
-                            text = "查看" + toolPartTitle(part.part), icon = Icons.Rounded.FindInPage,
+                            text = L10n.tr("查看") + toolPartTitle(part.part), icon = Icons.Rounded.FindInPage,
                             onClick = { onReadPart(part.part) }, modifier = Modifier.fillMaxWidth(),
                             enabled = canRead && part.readCapability != "none" && part.availability in setOf("readable", "pending"),
                         )
                         when (part.availability) {
-                            "temporarily-unavailable" -> SummaryCaption("来源暂时无法提供此部分内容")
-                            "unrecoverable" -> SummaryCaption("此部分内容已无法恢复")
+                            "temporarily-unavailable" -> SummaryCaption(L10n.tr("来源暂时无法提供此部分内容"))
+                            "unrecoverable" -> SummaryCaption(L10n.tr("此部分内容已无法恢复"))
                         }
                     }
                 }
@@ -135,18 +135,18 @@ internal fun ToolDetailSheet(
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = "关闭")
+                NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭"))
                 Text(detail.summary.toolName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                CopyIconButton("复制已读取内容", size = 40.dp, enabled = detail.text.isNotEmpty()) { detail.text }
+                CopyIconButton(L10n.tr("复制已读取内容"), size = 40.dp, enabled = detail.text.isNotEmpty()) { detail.text }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(toolPartTitle(detail.part), Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                SummaryCaption("已读取至 ${formatByteCount(detail.offset)}")
+                SummaryCaption(L10n.tr("已读取至 {0}", formatByteCount(detail.offset)))
             }
             if (detail.gaps.isNotEmpty()) {
-                Text("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。",
+                Text(L10n.tr("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。"),
                     Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             key(detail.viewerId) {
@@ -156,7 +156,7 @@ internal fun ToolDetailSheet(
                 ) {
                     Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(18.dp)) {
                         SelectionContainer {
-                            Text(detail.text.ifEmpty { if (loading) "读取中…" else "当前范围没有文本内容。" },
+                            Text(detail.text.ifEmpty { if (loading) L10n.tr("读取中…") else L10n.tr("当前范围没有文本内容。") },
                                 style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
                         }
                     }
@@ -166,33 +166,33 @@ internal fun ToolDetailSheet(
                 when {
                     detail.error != null -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(detail.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                        NeumorphActionButton(text = "重新读取", icon = Icons.Rounded.Refresh, onClick = onRetry,
+                        NeumorphActionButton(text = L10n.tr("重新读取"), icon = Icons.Rounded.Refresh, onClick = onRetry,
                             modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting)
-                        if (detail.error.contains("缓存上限")) {
-                            NeumorphTextButton("清空已读并继续", onClick = onClear, modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting)
+                        if (L10n.matches(detail.error, "已读取内容达到 2 MiB 缓存上限，可清空已读内容后继续")) {
+                            NeumorphTextButton(L10n.tr("清空已读并继续"), onClick = onClear, modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting)
                         }
                     }
                     detail.nextCursor != null -> NeumorphActionButton(
-                        text = if (loading) "正在读取…" else "读取下一页", icon = Icons.Rounded.ArrowDownward, onClick = onReadNext,
+                        text = if (loading) L10n.tr("正在读取…") else L10n.tr("读取下一页"), icon = Icons.Rounded.ArrowDownward, onClick = onReadNext,
                         modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting,
                     )
                     loading -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    else -> SummaryCaption(if (detail.contentFinal) "已到当前读取范围末尾" else "已到当前末尾，工具可能仍在运行")
+                    else -> SummaryCaption(if (detail.contentFinal) L10n.tr("已到当前读取范围末尾") else L10n.tr("已到当前末尾，工具可能仍在运行"))
                 }
             }
             if (detail.exporting) {
                 Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(Modifier.size(20.dp).testTag("tool-export-progress"), strokeWidth = 2.dp)
-                    SummaryCaption("正在导出，${formatByteCount(detail.exportedBytes)}")
+                    SummaryCaption(L10n.tr("正在导出，{0}", formatByteCount(detail.exportedBytes)))
                     Spacer(Modifier.weight(1f))
-                    NeumorphTextButton("取消导出", onClick = onClose)
+                    NeumorphTextButton(L10n.tr("取消导出"), onClick = onClose)
                 }
             } else {
-                NeumorphActionButton(text = "导出当前部分", icon = Icons.Rounded.Download, onClick = onExport,
+                NeumorphActionButton(text = L10n.tr("导出当前部分"), icon = Icons.Rounded.Download, onClick = onExport,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag("tool-export"), enabled = !loading)
                 if (detail.exportComplete) {
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SummaryCaption("已导出 ${formatByteCount(detail.exportedBytes)}") }
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SummaryCaption(L10n.tr("已导出 {0}", formatByteCount(detail.exportedBytes))) }
                 }
             }
             val canFollow = !detail.exporting && !(detail.contentFinal && detail.nextCursor == null)
@@ -212,7 +212,7 @@ private fun ToolFollowToggle(checked: Boolean, enabled: Boolean, onCheckedChange
             .heightIn(min = RemoteUi.TouchTarget),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("跟随输出", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        Text(L10n.tr("跟随输出"), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
         Box(Modifier.size(52.dp, 30.dp)) {
             NeumorphSurface(modifier = Modifier.fillMaxSize(), style = NeumorphStyle.Pressed,
                 shape = RoundedCornerShape(15.dp), shadowScale = 0.5f) {

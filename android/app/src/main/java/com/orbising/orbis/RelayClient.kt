@@ -118,7 +118,7 @@ data class E2eConnectOptions(
 ) {
     init {
         require((pskRoot != null) xor (pairingSession != null)) {
-            "E2eConnectOptions 必须且只能选择普通连接或配对模式之一"
+            L10n.tr("E2eConnectOptions 必须且只能选择普通连接或配对模式之一")
         }
     }
 }
@@ -214,8 +214,8 @@ class RelayClient(
                     json.parseToJsonElement(responseText).jsonObject["error"]?.jsonPrimitive?.contentOrNull
                 }.getOrNull()
                 val message = when (relayError) {
-                    "invalid_pairing_code" -> "配对码已失效、已被使用或电脑端账号已停用：请确认电脑端可用并重新生成二维码"
-                    else -> "配对失败（HTTP ${response.code}${relayError?.let { "：$it" }.orEmpty()}）"
+                    "invalid_pairing_code" -> L10n.tr("配对码已失效、已被使用或电脑端账号已停用：请确认电脑端可用并重新生成二维码")
+                    else -> L10n.tr("配对失败（HTTP {0}{1}）", response.code, relayError?.let { L10n.tr("：{0}", it) }.orEmpty())
                 }
                 error(message)
             }
@@ -231,7 +231,7 @@ class RelayClient(
             .delete()
             .build()
         http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful && response.code != 401) error("撤销设备失败（HTTP ${response.code}）")
+            if (!response.isSuccessful && response.code != 401) error(L10n.tr("撤销设备失败（HTTP {0}）", response.code))
         }
     }
 
@@ -331,7 +331,7 @@ class RelayClient(
                     } else {
                         startHandshake(state)
                     }
-                } ?: trace("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）")
+                } ?: trace(L10n.tr("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）"))
                 if (!hasE2eChannel()) onOpen()
             }
 
@@ -786,10 +786,10 @@ class RelayClient(
         when (envelope.hdr.k) {
             "pair" -> {
                 val session = state.options.pairingSession
-                    ?: throw Crypto.E2eCryptoException("malformed", "非配对连接收到 pair 帧")
+                    ?: throw Crypto.E2eCryptoException("malformed", L10n.tr("非配对连接收到 pair 帧"))
                 val accept = PlaintextEnvelope.read<PairAcceptBody>(envelope, "pair")
                 if (accept.type != "pair-accept") {
-                    throw Crypto.E2eCryptoException("malformed", "期望 pair-accept，收到 ${accept.type}")
+                    throw Crypto.E2eCryptoException("malformed", L10n.tr("期望 pair-accept，收到 {0}", accept.type))
                 }
                 session.verifyAccept(accept)
                 trace("e2e.pair.accepted hostId=${accept.hostId}")
@@ -797,10 +797,10 @@ class RelayClient(
             }
             "hs" -> {
                 val handshake = synchronized(state.lock) { state.handshake }
-                    ?: throw Crypto.E2eCryptoException("not_ready", "收到 hs2 但没有进行中的握手")
+                    ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("收到 hs2 但没有进行中的握手"))
                 val hs2 = PlaintextEnvelope.read<HandshakeAcceptBody>(envelope, "hs")
                 if (hs2.type != "hs2") {
-                    throw Crypto.E2eCryptoException("malformed", "期望 hs2，收到 ${hs2.type}")
+                    throw Crypto.E2eCryptoException("malformed", L10n.tr("期望 hs2，收到 {0}", hs2.type))
                 }
                 val hs3 = handshake.accept(hs2)
                 sendV2Frame(
@@ -822,7 +822,7 @@ class RelayClient(
             }
             "ping" -> {
                 val channel = synchronized(state.lock) { state.channel }
-                    ?: throw Crypto.E2eCryptoException("not_ready", "握手尚未完成，收到 ping")
+                    ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("握手尚未完成，收到 ping"))
                 // open() 返回 null = 重放（n <= last），按幂等丢弃，不是故障。
                 val echo = synchronized(state.lock) { channel.open(envelope) } ?: return
                 val reply = synchronized(state.lock) {
@@ -839,7 +839,7 @@ class RelayClient(
             }
             "data" -> {
                 val channel = synchronized(state.lock) { state.channel }
-                    ?: throw Crypto.E2eCryptoException("not_ready", "握手尚未完成，收到 data")
+                    ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("握手尚未完成，收到 data"))
                 val plaintext = synchronized(state.lock) { channel.open(envelope) } ?: return
                 val text = plaintext.toString(Charsets.UTF_8)
                 if (handlePathControl(text)) return
@@ -849,11 +849,11 @@ class RelayClient(
             // artifact 分片：裸字节，不经过 JSON 解析，直接交给下载流水线。
             "bin" -> {
                 val channel = synchronized(state.lock) { state.channel }
-                    ?: throw Crypto.E2eCryptoException("not_ready", "握手尚未完成，收到 bin")
+                    ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("握手尚未完成，收到 bin"))
                 val bytes = synchronized(state.lock) { channel.open(envelope) } ?: return
                 binarySink?.invoke(bytes)
             }
-            else -> throw Crypto.E2eCryptoException("malformed", "不认识的帧种类：${envelope.hdr.k}")
+            else -> throw Crypto.E2eCryptoException("malformed", L10n.tr("不认识的帧种类：{0}", envelope.hdr.k))
         }
     }
 
@@ -906,7 +906,7 @@ class RelayClient(
         val queued = synchronized(state.lock) { state.channel == null }
         return if (queued) {
             synchronized(state.lock) { state.pending.add(payload) }
-            trace("e2e.data.queued $traceLabel（握手未完成，已排队）")
+            trace(L10n.tr("e2e.data.queued {0}（握手未完成，已排队）", traceLabel))
             true
         } else {
             sealAndSend(state, payload)
@@ -918,7 +918,7 @@ class RelayClient(
         val queued = synchronized(state.lock) { state.channel == null }
         return if (queued) {
             synchronized(state.lock) { state.pending.add(payload) }
-            trace("e2e.data.queued type=${payload["type"]?.jsonPrimitive?.contentOrNull ?: "<missing>"}（握手未完成，已排队）")
+            trace(L10n.tr("e2e.data.queued type={0}（握手未完成，已排队）", payload["type"]?.jsonPrimitive?.contentOrNull ?: "<missing>"))
             true
         } else {
             sealAndSend(state, payload)
@@ -1023,7 +1023,7 @@ class RelayClient(
 
     private fun requireSupportedRelay(relayUrl: String) {
         require(isSupportedRelayUrl(relayUrl)) {
-            "中继服务器地址必须使用 wss://，或使用本地/局域网 ws:// 地址"
+            L10n.tr("中继服务器地址必须使用 wss://，或使用本地/局域网 ws:// 地址")
         }
     }
 }

@@ -72,11 +72,11 @@ enum PairingError: LocalizedError {
     case unsupported
     var errorDescription: String? {
         switch self {
-        case .invalidQR: return "二维码格式无效或缺少端到端加密材料。"
-        case .expired: return "二维码已过期，请在电脑端重新生成。"
+        case .invalidQR: return L10n.tr("二维码格式无效或缺少端到端加密材料。")
+        case .expired: return L10n.tr("二维码已过期，请在电脑端重新生成。")
         case .relay(let message): return message
         case .handshake(let message): return message
-        case .unsupported: return "当前系统不支持这项加密能力。"
+        case .unsupported: return L10n.tr("当前系统不支持这项加密能力。")
         }
     }
 }
@@ -112,8 +112,8 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         guard ["idle", "running"].contains(status), let tasks = backgroundTasks, let summary = tasks.activityTitle else {
             return runtimeStatusTitle(presentationStatus)
         }
-        if presentationStatus == "compacting" { return "压缩中 · \(summary)" }
-        if status == "running" { return tasks.confirmed ? "运行中 · \(tasks.activeCount) 个子任务" : "运行中 · 子任务待核对" }
+        if presentationStatus == "compacting" { return L10n.tr("压缩中 · {0}", summary) }
+        if status == "running" { return tasks.confirmed ? L10n.tr("运行中 · {0} 个子任务", tasks.activeCount) : L10n.tr("运行中 · 子任务待核对") }
         return summary
     }
     func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
@@ -128,8 +128,8 @@ struct BackgroundTask: Codable, Hashable, Identifiable {
     var kind: String
     var status: String
     var statusTitle: String {
-        ["pending": "启动中", "running": "运行中", "waiting": "等待中", "idle": "空闲", "completed": "已完成",
-         "failed": "失败", "killed": "已停止", "unknown": "状态待核对"][status] ?? "状态待核对"
+        ["pending": L10n.tr("启动中"), "running": L10n.tr("运行中"), "waiting": L10n.tr("等待中"), "idle": L10n.tr("空闲"), "completed": L10n.tr("已完成"),
+         "failed": L10n.tr("失败"), "killed": L10n.tr("已停止"), "unknown": L10n.tr("状态待核对")][status] ?? L10n.tr("状态待核对")
     }
 }
 
@@ -150,10 +150,10 @@ struct BackgroundTaskInventory: Codable, Hashable {
     var allowsQuit: Bool { confirmed && activeCount == 0 }
     var visible: Bool { !confirmed || !items.isEmpty }
     var activityTitle: String? {
-        guard confirmed else { return "子任务状态待核对" }
-        let labels = [("running", "运行中"), ("pending", "启动中"), ("waiting", "等待中")].compactMap { state, title -> String? in
+        guard confirmed else { return L10n.tr("子任务状态待核对") }
+        let labels = [("running", L10n.tr("运行中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待中"))].compactMap { state, title -> String? in
             let count = items.filter { $0.status == state }.count
-            return count > 0 ? "\(count) 个子任务\(title)" : nil
+            return count > 0 ? L10n.tr("{0} 个子任务{1}", count, title) : nil
         }
         return labels.isEmpty ? nil : labels.joined(separator: " · ")
     }
@@ -388,8 +388,8 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var text: String {
         content.compactMap { item -> String? in
             if let text = item.text, !text.isEmpty { return text }
-            if item.type == "tool_call" { return "使用工具：\(item.toolName ?? "工具")" }
-            if item.type == "artifact", let file = item.artifact?.fileName { return "附件：\(file)" }
+            if item.type == "tool_call" { return L10n.tr("使用工具：{0}", item.toolName ?? L10n.tr("工具")) }
+            if item.type == "artifact", let file = item.artifact?.fileName { return L10n.tr("附件：{0}", file) }
             return nil
         }.joined(separator: "\n")
     }

@@ -292,7 +292,7 @@ internal fun projectSessionGraph(graph: SessionGraph): SessionProjectionResult {
     val path = pathResult.entries
     // 版本不匹配时如实说出来：内容为空不是「没有历史」，而是本机认不出对方的显示语义。
     val projectionError = graph.displayVersion?.takeIf { it != DISPLAY_PROJECTION_VERSION }
-        ?.let { "显示投影版本不匹配（Host：$it），请更新 App" }
+        ?.let { L10n.tr("显示投影版本不匹配（Host：{0}），请更新 App", it) }
         ?: graph.cursor.leafId?.let {
             pathResult.status.takeUnless { status ->
                 status == SessionGraphRangeStatus.COMPLETE || status == SessionGraphRangeStatus.LIMIT_REACHED

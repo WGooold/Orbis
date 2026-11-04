@@ -74,7 +74,7 @@ class DevicePairingSession(
             nonceD: String = Crypto.toBase64Url(Crypto.randomBytes(PairingE2e.NONCE_BYTES)),
         ): DevicePairingSession {
             if (deviceKeyPair.publicRaw.size != Crypto.X25519_KEY_BYTES) {
-                throw Crypto.E2eCryptoException("invalid_key_length", "设备公钥长度不对")
+                throw Crypto.E2eCryptoException("invalid_key_length", L10n.tr("设备公钥长度不对"))
             }
             val sharedSecret = Crypto.deriveSharedSecret(deviceKeyPair.privateRaw, hostPublicRaw)
             val pskRoot = PairingE2e.derivePskRoot(sharedSecret, hostPublicRaw, deviceKeyPair.publicRaw)
@@ -100,12 +100,12 @@ class DevicePairingSession(
      */
     fun verifyAccept(accept: PairAcceptBody) {
         if (accept.hostId.isEmpty()) {
-            throw Crypto.E2eCryptoException("malformed", "PAIR_ACCEPT 缺少 hostId")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("PAIR_ACCEPT 缺少 hostId"))
         }
         val expected = PairingE2e.pairMacFromHost(confirmKey, nonceD, accept.nonceH)
         val actual = Crypto.fromBase64Url(accept.macH, "macH")
         if (!Crypto.constantTimeEqual(expected, actual)) {
-            throw Crypto.E2eCryptoException("mac_mismatch", "mac_h 校验失败：对面不是持有 hostPub 对应私钥的那台电脑")
+            throw Crypto.E2eCryptoException("mac_mismatch", L10n.tr("mac_h 校验失败：对面不是持有 hostPub 对应私钥的那台电脑"))
         }
     }
 }

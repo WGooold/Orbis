@@ -41,30 +41,30 @@ enum OperationKinds {
     static let launch = "launch"
     /// `launch`：同一 requestId 的 `session.activated` 表示 Host 已受理并给出 Session，该 Session 的 Runtime 上线才落地；
     /// 失败在聊天页原位显示；超时后显示“启动未确认”，以随后的会话列表为准（ADR-0049 §6.8）。
-    static let launchPolicy = AppLedger.Policy(
+    static var launchPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (AppLedger.receiptBudget, .unknown),
         whenUnresolved: .unknown,
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
     /// 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。
     static func modelDomain(_ runtimeId: String) -> String { "model:" + runtimeId }
     static func isConfigSetting(_ name: String) -> Bool { name == "model" || name == "thinking" }
-    static func configTitle(_ setting: String) -> String { setting == "model" ? "模型" : "思考级别" }
+    static func configTitle(_ setting: String) -> String { setting == "model" ? L10n.tr("模型") : L10n.tr("思考级别") }
     static func configTarget(runtimeId: String, setting: String) -> String { "config:\(runtimeId):\(setting)" }
 
     /// `config`：成功回执后仍等 model 领域发布确认值（确认值与所选不同时显示确认值），15 秒未见就转结果不明核对；
     /// 核对后与所选不一致按切换失败处理（ADR-0049 §6.7）。
-    static let configPolicy = AppLedger.Policy(
+    static var configPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (15, .unknown),
-        whenUnresolved: .reject(.init("unconfirmed", "未生效")),
+        whenUnresolved: .reject(.init("unconfirmed", L10n.tr("未生效"))),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
 
     static func confirmedValue(_ runtime: RuntimeSummary, setting: String) -> String? {
         setting == "model" ? runtime.model?.id : runtime.thinkingLevel
@@ -90,16 +90,16 @@ enum OperationKinds {
         for op in ledger.operations.reversed() {
             guard case .config(let owner, let name, _, let label) = op.payload, owner == runtimeId, name == setting else { continue }
             switch op.phase {
-            case .waiting, .sent, .accepted: return (label, "切换中")
-            case .unknown, .unconfirmed: return (label, "未确认")
+            case .waiting, .sent, .accepted: return (label, L10n.tr("切换中"))
+            case .unknown, .unconfirmed: return (label, L10n.tr("未确认"))
             case .rejected: continue
             }
         }
         return nil
     }
     /// `send` 在账本里只经历 `waiting`：前置完成、轮到它时写入通道并交给 outbox，账本随即删除记录。
-    static let sendPolicy = AppLedger.Policy(successLands: true, acceptedBudget: AppLedger.receiptBudget, afterSuccess: nil,
-                                             whenUnresolved: .unknown, deviceReceipts: true, appliesBeforeLaterReads: false)
+    static var sendPolicy: AppLedger.Policy { AppLedger.Policy(successLands: true, acceptedBudget: AppLedger.receiptBudget, afterSuccess: nil,
+                                             whenUnresolved: .unknown, deviceReceipts: true, appliesBeforeLaterReads: false) }
     static func sendGroup(_ sessionId: String) -> String { "session:" + sessionId }
     static func uploadPrerequisite(_ uploadId: String) -> String { "upload:" + uploadId }
     /// 某个 Runtime 的交互清单（interactions 领域）在账本里的领域名。
@@ -107,14 +107,14 @@ enum OperationKinds {
 
     /// `respond`：成功回执后面板保持收起，直到交互清单不再含该请求（避免闪回），15 秒仍在就转结果不明核对。
     /// 明确失败且请求仍有效时面板回到原位并保留答案；核对后请求仍在则静默恢复面板，已不在则显示“已处理”。
-    static let respondPolicy = AppLedger.Policy(
+    static var respondPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (15, .unknown),
         whenUnresolved: .reject(.init("unresolved", "")),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
 
     static func respondTarget(runtimeId: String, requestId: String) -> String { "interaction:\(runtimeId):\(requestId)" }
 
@@ -122,15 +122,15 @@ enum OperationKinds {
     static func respondSummary(_ request: InteractionRequest, response: [String: Any]) -> String {
         let label: (String) -> String = { value in request.options?.first { $0.value == value }?.label ?? value }
         switch response["kind"] as? String {
-        case "cancel": return "已取消"
-        case "confirm": return response["value"] as? Bool == true ? "已" + (request.confirmLabel ?? "允许") : "已" + (request.cancelLabel ?? "拒绝")
+        case "cancel": return L10n.tr("已取消")
+        case "confirm": return L10n.tr("已{0}", response["value"] as? Bool == true ? (request.confirmLabel ?? L10n.tr("允许")) : (request.cancelLabel ?? L10n.tr("拒绝")))
         case "select":
-            guard request.secret != true, let value = response["value"] as? String else { return "已提交" }
-            return "已选择：" + label(value)
+            guard request.secret != true, let value = response["value"] as? String else { return L10n.tr("已提交") }
+            return L10n.tr("已选择：") + label(value)
         case "multi-select":
-            guard request.secret != true, let values = response["values"] as? [String], !values.isEmpty else { return "已提交" }
-            return "已选择：" + values.map(label).joined(separator: "、")
-        default: return "已提交"
+            guard request.secret != true, let values = response["values"] as? [String], !values.isEmpty else { return L10n.tr("已提交") }
+            return L10n.tr("已选择：") + values.map(label).joined(separator: L10n.tr("、"))
+        default: return L10n.tr("已提交")
         }
     }
 
@@ -148,7 +148,7 @@ enum OperationKinds {
             guard case .respond(let owner, _, let summary) = op.payload, owner == runtimeId else { continue }
             switch op.phase {
             case .waiting, .sent, .accepted: return (summary, true)
-            case .unknown, .unconfirmed: return (summary + " · 未确认", false)
+            case .unknown, .unconfirmed: return (summary + L10n.tr(" · 未确认"), false)
             case .rejected: continue
             }
         }
@@ -166,30 +166,30 @@ enum OperationKinds {
     /// 账本发起的核对读取（L5）使用的 requestId 前缀。
     static let verifyRequestPrefix = "ledger-verify:"
 
-    static let quitStillRunning = AppLedger.Rejection("still_running", "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。")
-    static let quitUnconfirmed = AppLedger.Rejection("unconfirmed", "关闭会话未确认：会话仍在运行。")
+    static var quitStillRunning: AppLedger.Rejection { AppLedger.Rejection("still_running", L10n.tr("电脑上的会话仍在运行，请稍后重试或在电脑上关闭。")) }
+    static var quitUnconfirmed: AppLedger.Rejection { AppLedger.Rejection("unconfirmed", L10n.tr("关闭会话未确认：会话仍在运行。")) }
 
     /// `quit`：成功回执只表示受理，Runtime 离线才算落地；成功后 15 秒仍在线或结果不明核对后仍在线，都恢复卡片。
-    static let quitPolicy = AppLedger.Policy(
+    static var quitPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (15, .reject(quitStillRunning)),
         whenUnresolved: .reject(quitUnconfirmed),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
 
     static func quitTarget(_ runtimeId: String) -> String { "runtime:" + runtimeId }
 
     /// `dismiss`：没有回执；Host 处理关闭时同步生效，之后发起的读取已能反映结果。权威清单仍含它就静默重新显示。
-    static let dismissPolicy = AppLedger.Policy(
+    static var dismissPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: nil,
         whenUnresolved: .reject(.init("not_dismissed", "")),
         deviceReceipts: false,
         appliesBeforeLaterReads: true
-    )
+    ) }
 
     static func dismissTarget(runtimeId: String, hostEpoch: String, notificationId: String) -> String {
         "notification:\(runtimeId):\(hostEpoch):\(notificationId)"
@@ -211,19 +211,19 @@ enum OperationKinds {
         return projection.complete ? .notApplied : .none
     }
 
-    static let archiveUnconfirmed = AppLedger.Rejection("unconfirmed", "电脑上的会话目录仍是原状态")
+    static var archiveUnconfirmed: AppLedger.Rejection { AppLedger.Rejection("unconfirmed", L10n.tr("电脑上的会话目录仍是原状态")) }
 
     /// `archive`：同一 requestId 的 `session.archive.changed` 或设备回执 success 表示 Host 已完成原生归档；
     /// 卡片留在目标列表直到目录体现结果（避免目录刷新前闪回），15 秒仍未体现就转结果不明核对。
     /// 带同一 requestId 的 `protocol.error` 为拒绝；核对后目录仍为原状态时恢复并提示。
-    static let archivePolicy = AppLedger.Policy(
+    static var archivePolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (15, .unknown),
         whenUnresolved: .reject(archiveUnconfirmed),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
 
     static func archiveTarget(agentKind: String, sessionId: String) -> String { "session:\(agentKind):\(sessionId)" }
 
@@ -241,19 +241,19 @@ enum OperationKinds {
         return (sessions[sessionId]?.archived == true) == archived ? .landed : .none
     }
 
-    static let queueAlreadyDelivered = AppLedger.Rejection("already_delivered", "消息已交给 Agent")
+    static var queueAlreadyDelivered: AppLedger.Rejection { AppLedger.Rejection("already_delivered", L10n.tr("消息已交给 Agent")) }
 
     /// `queueCancel`：成功回执（`cancelled`）或队列项转为 `cancelled` 即落地；`already_delivered`、`not_cancelable` 等为拒绝。
     /// 结果不明且核对后：仍在队列就静默放回、可再撤回；已不在完整队列中就以权威队列为准不再显示（ADR-0049 §6.3）。
     /// 成功回执后队列项保持退场，直到 Host 队列体现结果（避免闪回），15 秒仍未体现就转结果不明核对。
-    static let queueCancelPolicy = AppLedger.Policy(
+    static var queueCancelPolicy: AppLedger.Policy { AppLedger.Policy(
         successLands: false,
         acceptedBudget: AppLedger.receiptBudget,
         afterSuccess: (15, .unknown),
         whenUnresolved: .reject(.init("not_cancelled", "")),
         deviceReceipts: true,
         appliesBeforeLaterReads: false
-    )
+    ) }
 
     static func queueCancelTarget(runtimeId: String, queueId: String) -> String { "queue:\(runtimeId):\(queueId)" }
 
@@ -322,7 +322,7 @@ enum OperationKinds {
         if ok { return status == "pending" ? .accepted : .succeeded }
         switch status {
         case "cancelled", "unconfirmed": return .uncertain
-        default: return .failed(.init(status ?? "failure", nonEmpty(error) ?? "请重试。"))
+        default: return .failed(.init(status ?? "failure", nonEmpty(error) ?? L10n.tr("请重试。")))
         }
     }
 
@@ -336,7 +336,7 @@ enum OperationKinds {
             case "accepted", "pending": receipts[id] = .accepted
             case "success": receipts[id] = .succeeded
             case "cancelled", "unconfirmed": receipts[id] = .uncertain
-            default: receipts[id] = .failed(.init(state, nonEmpty(item["detail"] as? String) ?? "请重试。"))
+            default: receipts[id] = .failed(.init(state, nonEmpty(item["detail"] as? String) ?? L10n.tr("请重试。")))
             }
         }
         return receipts
@@ -347,27 +347,30 @@ enum OperationKinds {
         guard case .rejected(let rejection) = op.phase else { return nil }
         switch op.payload {
         case .quit:
-            if rejection == quitStillRunning || rejection == quitUnconfirmed { return rejection.reason }
-            return "关闭会话未完成：" + rejection.reason
+            if rejection.code == quitStillRunning.code,
+               L10n.matches(rejection.reason, source: "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。") { return quitStillRunning.reason }
+            if rejection.code == quitUnconfirmed.code,
+               L10n.matches(rejection.reason, source: "关闭会话未确认：会话仍在运行。") { return quitUnconfirmed.reason }
+            return L10n.tr("关闭会话未完成：") + rejection.reason
         case .dismiss: return nil // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
         case .archive(_, _, let archived):
-            return (archived ? "归档未完成：" : "恢复未完成：") + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            return (archived ? L10n.tr("归档未完成：") : L10n.tr("恢复未完成：")) + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
         case .queueCancel:
             // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
             switch rejection.code {
             case "not_cancelled", "not_applied": return nil
-            case "already_delivered": return "撤回未完成：" + queueAlreadyDelivered.reason
-            default: return "撤回未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            case "already_delivered": return L10n.tr("撤回未完成：") + queueAlreadyDelivered.reason
+            default: return L10n.tr("撤回未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
             }
         case .send: return nil // 失败显示在气泡原位（outbox 的失败行）。
         case .launch: return nil // 失败在聊天页原位显示原因及“重试”“返回”。
         case .config(_, let setting, _, _):
-            return configTitle(setting) + "切换未完成：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            return configTitle(setting) + L10n.tr("切换未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
         case .respond:
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             switch rejection.code {
             case "unresolved", "not_applied": return nil
-            default: return "回答未提交：" + (rejection.reason.isEmpty ? "请重试" : rejection.reason)
+            default: return L10n.tr("回答未提交：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
             }
         }
     }

@@ -16,10 +16,10 @@ private final class TransferDiskFence: @unchecked Sendable {
     private let lock = NSLock()
     private var generation: UUID?
     func set(_ value: UUID?) { lock.lock(); generation = value; lock.unlock() }
-    func check(_ value: UUID) throws { lock.lock(); defer { lock.unlock() }; guard generation == value else { throw transferDiskError("文件操作已经失效") } }
+    func check(_ value: UUID) throws { lock.lock(); defer { lock.unlock() }; guard generation == value else { throw transferDiskError(L10n.tr("文件操作已经失效")) } }
     func commit<T>(_ value: UUID, _ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard generation == value else { throw transferDiskError("文件操作已经失效") }
+        guard generation == value else { throw transferDiskError(L10n.tr("文件操作已经失效")) }
         return try body()
     }
 }
@@ -43,11 +43,11 @@ actor TransferDiskWorker {
         try fence.check(generation)
         try closeHandle()
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: file.path) { guard FileManager.default.createFile(atPath: file.path, contents: nil) else { throw transferDiskError("下载临时文件无法创建") } }
+        if !FileManager.default.fileExists(atPath: file.path) { guard FileManager.default.createFile(atPath: file.path, contents: nil) else { throw transferDiskError(L10n.tr("下载临时文件无法创建")) } }
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
               let size = (attributes[.size] as? NSNumber)?.int64Value, size >= 0,
-              expectedSize.map({ $0 >= size && $0 <= 9_007_199_254_740_991 }) != false else { throw transferDiskError("下载临时文件长度无效") }
+              expectedSize.map({ $0 >= size && $0 <= 9_007_199_254_740_991 }) != false else { throw transferDiskError(L10n.tr("下载临时文件长度无效")) }
         self.expectedSize = expectedSize
         handle = try FileHandle(forUpdating: file); openGeneration = generation
         return try fence.commit(generation) { TransferDiskSnapshot(generation: generation, durableOffset: size, path: file.path) }
@@ -57,14 +57,14 @@ actor TransferDiskWorker {
         try fence.check(generation)
         guard offset >= 0, offset <= 9_007_199_254_740_991, !bytes.isEmpty, bytes.count <= 1_048_576,
               Int64(bytes.count) <= 9_007_199_254_740_991 - offset,
-              expectedSize.map({ offset + Int64(bytes.count) <= $0 }) != false else { throw transferDiskError("下载分片偏移或长度无效") }
-        guard let handle else { throw transferDiskError("下载文件尚未打开") }
+              expectedSize.map({ offset + Int64(bytes.count) <= $0 }) != false else { throw transferDiskError(L10n.tr("下载分片偏移或长度无效")) }
+        guard let handle else { throw transferDiskError(L10n.tr("下载文件尚未打开")) }
         let durable = try handle.seekToEnd()
-        guard UInt64(offset) <= durable else { throw transferDiskError("下载分片尚未连续") }
+        guard UInt64(offset) <= durable else { throw transferDiskError(L10n.tr("下载分片尚未连续")) }
         if UInt64(offset) < durable {
-            guard UInt64(offset) + UInt64(bytes.count) <= durable else { throw transferDiskError("下载分片与已写范围重叠") }
+            guard UInt64(offset) + UInt64(bytes.count) <= durable else { throw transferDiskError(L10n.tr("下载分片与已写范围重叠")) }
             try handle.seek(toOffset: UInt64(offset))
-            guard try handle.read(upToCount: bytes.count) == bytes else { throw transferDiskError("重复下载分片内容冲突") }
+            guard try handle.read(upToCount: bytes.count) == bytes else { throw transferDiskError(L10n.tr("重复下载分片内容冲突")) }
             return try fence.commit(generation) { TransferDiskSnapshot(generation: generation, durableOffset: Int64(durable), path: file.path) }
         }
         do {
@@ -82,21 +82,21 @@ actor TransferDiskWorker {
 
     func read(offset: Int64, length: Int, generation: UUID) throws -> Data {
         try fence.check(generation)
-        guard offset >= 0, length > 0, length <= 1_048_576 else { throw transferDiskError("上传读取范围无效") }
+        guard offset >= 0, length > 0, length <= 1_048_576 else { throw transferDiskError(L10n.tr("上传读取范围无效")) }
         let reader = try FileHandle(forReadingFrom: file); defer { try? reader.close() }
         let size = try reader.seekToEnd()
-        guard UInt64(offset) < size else { throw transferDiskError("上传读取偏移超出文件") }
+        guard UInt64(offset) < size else { throw transferDiskError(L10n.tr("上传读取偏移超出文件")) }
         try reader.seek(toOffset: UInt64(offset))
         let bytes = try reader.read(upToCount: min(length, Int(size - UInt64(offset)))) ?? Data()
-        guard !bytes.isEmpty else { throw transferDiskError("上传文件读取未推进") }
+        guard !bytes.isEmpty else { throw transferDiskError(L10n.tr("上传文件读取未推进")) }
         return try fence.commit(generation) { bytes }
     }
 
     func truncate(to offset: Int64, generation: UUID) throws -> TransferDiskSnapshot {
         try fence.check(generation)
-        guard offset >= 0, let handle else { throw transferDiskError("下载文件尚未打开") }
+        guard offset >= 0, let handle else { throw transferDiskError(L10n.tr("下载文件尚未打开")) }
         let size = try handle.seekToEnd()
-        guard UInt64(offset) <= size else { throw transferDiskError("下载截断偏移无效") }
+        guard UInt64(offset) <= size else { throw transferDiskError(L10n.tr("下载截断偏移无效")) }
         try fence.commit(generation) { try handle.truncate(atOffset: UInt64(offset)) }
         try handle.synchronize()
         return TransferDiskSnapshot(generation: generation, durableOffset: offset, path: file.path)
@@ -106,10 +106,10 @@ actor TransferDiskWorker {
         try fence.check(generation)
         try handle?.synchronize(); try closeHandle()
         let inspected = try inspect(file, generation: generation)
-        guard inspected.size == size, expectedHash.map({ $0.lowercased() == inspected.sha256 }) != false else { throw transferDiskError("下载长度或 SHA-256 校验失败") }
+        guard inspected.size == size, expectedHash.map({ $0.lowercased() == inspected.sha256 }) != false else { throw transferDiskError(L10n.tr("下载长度或 SHA-256 校验失败")) }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         return try fence.commit(generation) {
-            guard !FileManager.default.fileExists(atPath: destination.path) else { throw transferDiskError("下载目标文件已存在") }
+            guard !FileManager.default.fileExists(atPath: destination.path) else { throw transferDiskError(L10n.tr("下载目标文件已存在")) }
             try FileManager.default.moveItem(at: file, to: destination)
             return TransferDiskSnapshot(generation: generation, durableOffset: size, path: destination.path)
         }
@@ -124,10 +124,10 @@ actor TransferDiskWorker {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular,
               let size = (attributes[.size] as? NSNumber)?.int64Value, size >= 0,
-              maximumBytes.map({ size <= $0 }) != false else { throw transferDiskError("上传源文件格式或大小无效") }
+              maximumBytes.map({ size <= $0 }) != false else { throw transferDiskError(L10n.tr("上传源文件格式或大小无效")) }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let staging = file.deletingLastPathComponent().appendingPathComponent(file.lastPathComponent + ".prepare-" + UUID().uuidString)
-        guard FileManager.default.createFile(atPath: staging.path, contents: nil) else { throw transferDiskError("上传缓存无法创建") }
+        guard FileManager.default.createFile(atPath: staging.path, contents: nil) else { throw transferDiskError(L10n.tr("上传缓存无法创建")) }
         do {
             let input = try FileHandle(forReadingFrom: source), output = try FileHandle(forWritingTo: staging)
             defer { try? input.close(); try? output.close() }
@@ -135,14 +135,14 @@ actor TransferDiskWorker {
             while let bytes = try input.read(upToCount: 1_048_576), !bytes.isEmpty {
                 try fence.check(generation)
                 copied += Int64(bytes.count)
-                guard copied <= size else { throw transferDiskError("上传源文件在复制期间改变") }
+                guard copied <= size else { throw transferDiskError(L10n.tr("上传源文件在复制期间改变")) }
                 hasher.update(data: bytes); try output.write(contentsOf: bytes)
             }
-            guard copied == size else { throw transferDiskError("上传源文件在复制期间改变") }
+            guard copied == size else { throw transferDiskError(L10n.tr("上传源文件在复制期间改变")) }
             try output.synchronize()
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             return try fence.commit(generation) {
-                guard !FileManager.default.fileExists(atPath: file.path) else { throw transferDiskError("上传缓存已存在") }
+                guard !FileManager.default.fileExists(atPath: file.path) else { throw transferDiskError(L10n.tr("上传缓存已存在")) }
                 try FileManager.default.moveItem(at: staging, to: file)
                 return TransferPreparedUpload(generation: generation, path: file.path, size: size, sha256: digest)
             }

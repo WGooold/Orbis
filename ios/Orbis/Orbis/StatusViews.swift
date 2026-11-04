@@ -11,36 +11,41 @@ struct ConnectionStatusView: View {
     @EnvironmentObject private var host: HostState
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: "设置", back: onBack) {
+            OrbisPageHeader(title: L10n.tr("设置"), back: onBack) {
                 // Always in the header, so a connection change never inserts or removes page content.
-                OrbisIconButton(symbol: "arrow.clockwise", label: "重新连接", action: store.reconnectSelectedHost)
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重新连接"), action: store.reconnectSelectedHost)
                     .disabled(store.selectedHost == nil || store.connection == .connecting)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    StatusSection(title: "Agent 供应商") {
+                    StatusSection(title: L10n.tr("Agent 供应商")) {
                         ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
                             AgentStatusProviderCard(kind: kind)
                         }
                     }
-                    StatusSection(title: "当前连接") {
-                        StatusRow(label: "连接状态", value: store.connection == .secured ? "已连接" : connectionTitle(store.connection),
+                    StatusSection(title: L10n.tr("当前连接")) {
+                        StatusRow(label: L10n.tr("连接状态"), value: store.connection == .secured ? L10n.tr("已连接") : connectionTitle(store.connection),
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
-                        StatusRow(label: "连接方式", value: pathTitle(store.activePath),
+                        StatusRow(label: L10n.tr("连接方式"), value: pathTitle(store.activePath),
                                   tone: store.activePath == "lan" ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
-                        StatusRow(label: "连接延迟", value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured), tone: OrbisPalette(scheme).secondary)
-                        StatusRow(label: "端到端加密", value: store.connection == .secured ? "已启用" : "未建立",
+                        StatusRow(label: L10n.tr("连接延迟"), value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured), tone: OrbisPalette(scheme).secondary)
+                        StatusRow(label: L10n.tr("端到端加密"), value: store.connection == .secured ? L10n.tr("已启用") : L10n.tr("未建立"),
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
                     }
-                    StatusSection(title: "配对信息") {
-                        StatusRow(label: "电脑", value: store.selectedHost?.hostName ?? "已配对的电脑")
-                        StatusRow(label: "配对状态", value: store.selectedHost == nil ? "未配对" : "已配对",
+                    StatusSection(title: L10n.tr("配对信息")) {
+                        StatusRow(label: L10n.tr("电脑"), value: store.selectedHost?.hostName ?? L10n.tr("已配对的电脑"))
+                        StatusRow(label: L10n.tr("配对状态"), value: store.selectedHost == nil ? L10n.tr("未配对") : L10n.tr("已配对"),
                                   tone: store.selectedHost == nil ? OrbisPalette(scheme).error : OrbisPalette(scheme).success)
                     }
-                    StatusSection(title: "外观") {
+                    StatusSection(title: L10n.tr("外观")) {
                         HStack(spacing: 10) {
-                            appearanceChoice("经典", value: "classic")
-                            appearanceChoice("雾蓝", value: "insetFocus")
+                            appearanceChoice(L10n.tr("经典"), value: "classic")
+                            appearanceChoice(L10n.tr("雾蓝"), value: "insetFocus")
+                        }
+                    }
+                    StatusSection(title: L10n.tr("语言")) {
+                        ForEach(AppLanguage.allCases, id: \.rawValue) { choice in
+                            languageChoice(choice)
                         }
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
@@ -66,6 +71,27 @@ struct ConnectionStatusView: View {
         .accessibilityIdentifier("appearance-\(value)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
+
+    private func languageChoice(_ choice: AppLanguage) -> some View {
+        let selected = AppLocalization.shared.preference == choice
+        let title = choice == .system ? L10n.tr("跟随系统") : choice == .chinese ? "简体中文" : "English"
+        let palette = OrbisPalette(scheme)
+        return OrbisMotionButton { AppLocalization.shared.select(choice) } label: {
+            HStack(spacing: 12) {
+                Text(title).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .accessibilityHidden(true)
+            }
+            .font(.orbisBody(.medium))
+            .foregroundStyle(selected ? palette.accent : palette.text)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NeuButtonStyle(selected: selected))
+        .accessibilityIdentifier("language-\(choice.rawValue)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 private struct AgentStatusProviderCard: View {
@@ -81,12 +107,12 @@ private struct AgentStatusProviderCard: View {
     private var quota: SubscriptionQuota? { quotaSnapshot?.quota }
     private var loading: Bool { current?.id == host.quotaProviderId && host.quotaKind == kind && host.queryingQuota }
     private var quotaAccessibilityValue: String {
-        if loading { return "正在查询配额" }
+        if loading { return L10n.tr("正在查询配额") }
         guard let quota else { return "" }
         return quota.windows.map { window in
-            let remaining = window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? "暂不可用"
+            let remaining = window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? L10n.tr("暂不可用")
             return window.title + " " + remaining
-        }.joined(separator: "，")
+        }.joined(separator: L10n.tr("，"))
     }
     var body: some View {
         let palette = OrbisPalette(scheme)
@@ -111,7 +137,7 @@ private struct AgentStatusProviderCard: View {
                 }
                 overlay.showMenu(items, from: switchAnchor.frame)
             } label: {
-                Label { Text("切换") } icon: { OrbisActionSymbol(systemName: "arrow.triangle.2.circlepath") }
+                Label { Text(L10n.tr("切换")) } icon: { OrbisActionSymbol(systemName: "arrow.triangle.2.circlepath") }
                     .font(.orbisLabel(.semibold)).foregroundStyle(palette.secondary)
                     .frame(minWidth: 64, minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(ProviderInlineButtonStyle()).orbisAnchor(switchAnchor)
@@ -152,7 +178,7 @@ private struct AgentStatusProviderCard: View {
                                 .foregroundStyle(palette.secondary).lineLimit(2)
                             if current?.official == true {
                                 Image(systemName: "checkmark.seal.fill").font(.orbisCaption(.semibold))
-                                    .foregroundStyle(palette.agent(kind)).accessibilityLabel("官方供应商")
+                                    .foregroundStyle(palette.agent(kind)).accessibilityLabel(L10n.tr("官方供应商"))
                             }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -172,7 +198,7 @@ private struct AgentStatusProviderCard: View {
         }.buttonStyle(ProviderQuotaCardButtonStyle())
             .disabled(current?.subscriptionSupported != true || !host.canChangeProvider(for: kind) || loading)
             .accessibilityIdentifier("provider-quota-\(kind)")
-            .accessibilityHint(current?.subscriptionSupported == true ? "查询或刷新订阅剩余配额" : "")
+            .accessibilityHint(current?.subscriptionSupported == true ? L10n.tr("查询或刷新订阅剩余配额") : "")
             .accessibilityValue(quotaAccessibilityValue)
     }
 }
@@ -197,24 +223,24 @@ struct AgentProvidersView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisHeader {
-                OrbisIconButton(symbol: selecting ? "xmark" : "arrow.left", label: selecting ? "退出多选" : "返回", morphFrom: "arrow.left") {
+                OrbisIconButton(symbol: selecting ? "xmark" : "arrow.left", label: selecting ? L10n.tr("退出多选") : L10n.tr("返回"), morphFrom: "arrow.left") {
                     if selecting { exitSelection() } else { onBack() }
                 }
             } title: {
-                OrbisMotionText(selecting ? "已选择 \(effectiveSelection.count) 项" : "供应商")
+                OrbisMotionText(selecting ? L10n.tr("已选择 {0} 项", effectiveSelection.count) : L10n.tr("供应商"))
                     .font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
             } trailing: {
                 OrbisSelectionToolbar(selecting: selecting) { _ in
-                    OrbisIconButton(symbol: "arrow.clockwise", label: "刷新供应商") { exitSelection(); host.loadProviders(host.providerKind) }
+                    OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新供应商")) { exitSelection(); host.loadProviders(host.providerKind) }
                         .disabled(host.providersLoading || host.changingProvider || !host.connected)
                 } selected: {
-                    OrbisIconButton(symbol: "trash", label: "移除所选供应商", tint: OrbisPalette(scheme).error, action: confirmRemoval)
+                    OrbisIconButton(symbol: "trash", label: L10n.tr("移除所选供应商"), tint: OrbisPalette(scheme).error, action: confirmRemoval)
                         .disabled(!host.canChangeProvider || effectiveSelection.isEmpty)
                 }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(store.selectedHost?.hostName ?? "已配对的电脑").font(.orbisBody(.medium))
+                    Text(store.selectedHost?.hostName ?? L10n.tr("已配对的电脑")).font(.orbisBody(.medium))
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         ForEach(["pi", "codex", "claude", "dsh"], id: \.self) { kind in
                             OrbisMotionButton { exitSelection(); overlay.dismissDialog(); host.loadProviders(kind) } label: {
@@ -224,21 +250,21 @@ struct AgentProvidersView: View {
                                 }.frame(maxWidth: .infinity, minHeight: 48)
                             }.buttonStyle(NeuButtonStyle(selected: host.providerKind == kind))
                                 .disabled(host.providersLoading || host.changingProvider)
-                                .accessibilityLabel("\(agentTitle(kind))供应商").accessibilityAddTraits(host.providerKind == kind ? .isSelected : [])
+                                .accessibilityLabel(L10n.tr("{0}供应商", agentTitle(kind))).accessibilityAddTraits(host.providerKind == kind ? .isSelected : [])
                         }
                     }
                     ProgressView().progressViewStyle(.linear)
                         .opacity(host.providersLoading || host.changingProvider ? 1 : 0)
                         .accessibilityHidden(!(host.providersLoading || host.changingProvider))
-                        .accessibilityLabel(host.changingProvider ? "正在更新供应商" : "正在读取供应商")
+                        .accessibilityLabel(host.changingProvider ? L10n.tr("正在更新供应商") : L10n.tr("正在读取供应商"))
                     if let problem = host.providerCatalogProblem, !host.providersLoading { OrbisNotice(text: problem, error: host.connected) }
                     if let notice = host.providerNotice { OrbisNotice(text: notice) }
-                    if host.providerSummary?["switching"].bool == true { OrbisNotice(text: "电脑正在切换供应商，请等待完成后再操作。") }
+                    if host.providerSummary?["switching"].bool == true { OrbisNotice(text: L10n.tr("电脑正在切换供应商，请等待完成后再操作。")) }
                     if !host.providersLoading && host.providerCatalogProblem == nil && host.providers.isEmpty {
-                        OrbisEmptyState(symbol: "shippingbox", title: "还没有供应商")
+                        OrbisEmptyState(symbol: "shippingbox", title: L10n.tr("还没有供应商"))
                     }
                     if !removable.isEmpty {
-                        Text(selecting ? "轻点卡片选择，完成后点击右上角移除" : "长按已启用的供应商可多选移除")
+                        Text(selecting ? L10n.tr("轻点卡片选择，完成后点击右上角移除") : L10n.tr("长按已启用的供应商可多选移除"))
                             .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                     }
                     ForEach(host.providers) { provider in providerRow(provider) }
@@ -289,7 +315,7 @@ struct AgentProvidersView: View {
                         }
                         VStack(alignment: .leading, spacing: 5) {
                             Text(provider.name).font(.orbisBody(.semibold)).foregroundStyle(palette.text)
-                            Text((provider.official ? "官方 · " : "") + (provider.enabled ? (provider.additive ? "已启用" : "当前使用") : "未启用"))
+                            Text((provider.official ? L10n.tr("官方 · ") : "") + (provider.enabled ? (provider.additive ? L10n.tr("已启用") : L10n.tr("当前使用")) : L10n.tr("未启用")))
                                 .font(.orbisCaption()).foregroundStyle(provider.enabled ? palette.success : palette.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         if hasQuota {
@@ -315,10 +341,10 @@ struct AgentProvidersView: View {
                 .highPriorityGesture(LongPressGesture().onEnded { _ in select(provider) })
                 .accessibilityIdentifier("provider-card-\(provider.id)")
                 .accessibilityAddTraits(effectiveSelection.contains(provider) ? .isSelected : [])
-                .accessibilityHint(hasQuota ? (loading ? "正在查询" : "轻点查询当前订阅剩余配额") : provider.removable ? (selecting ? "轻点切换选择" : "长按进入多选移除") : "")
-                .accessibilityAction(named: "选择供应商") { select(provider) }
+                .accessibilityHint(hasQuota ? (loading ? L10n.tr("正在查询") : L10n.tr("轻点查询当前订阅剩余配额")) : provider.removable ? (selecting ? L10n.tr("轻点切换选择") : L10n.tr("长按进入多选移除")) : "")
+                .accessibilityAction(named: L10n.tr("选择供应商")) { select(provider) }
             if !provider.enabled {
-                OrbisTextButton(title: "启用", tint: palette.accent) {
+                OrbisTextButton(title: L10n.tr("启用"), tint: palette.accent) {
                     if let key = host.hostKey { confirm(provider, hostKey: key) }
                 }.disabled(!host.canChangeProvider || selecting).accessibilityIdentifier("provider-action-\(provider.id)")
                     .frame(width: 64, height: 48)
@@ -327,9 +353,9 @@ struct AgentProvidersView: View {
     }
 
     private func confirm(_ provider: AgentProvider, hostKey: String) {
-        overlay.showDialog("启用供应商", message: provider.confirmation, actions: [
-            OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "确认") { host.changeProvider(provider, expectedHostKey: hostKey) }
+        overlay.showDialog(L10n.tr("启用供应商"), message: provider.confirmation, actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: L10n.tr("确认")) { host.changeProvider(provider, expectedHostKey: hostKey) }
         ])
     }
 
@@ -337,11 +363,11 @@ struct AgentProvidersView: View {
         guard host.canChangeProvider, let key = host.hostKey else { return }
         let providers = host.providers.filter { effectiveSelection.contains($0) }
         guard !providers.isEmpty else { return }
-        let message = providers.map(\.name).joined(separator: "\n") + "\n从 Pi 配置移除；Host 中的卡片和配置仍保留。" +
-            (providers.contains(where: \.globalDefault) ? "\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" : "")
-        overlay.showDialog("移除 \(providers.count) 个供应商？", message: message, actions: [
-            OrbisDialogAction(title: "取消", role: .cancel),
-            OrbisDialogAction(title: "移除 \(providers.count) 项", role: .destructive) {
+        let message = providers.map(\.name).joined(separator: "\n") + L10n.tr("\n从 Pi 配置移除；Host 中的卡片和配置仍保留。") +
+            (providers.contains(where: \.globalDefault) ? L10n.tr("\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。") : "")
+        overlay.showDialog(L10n.tr("移除 {0} 个供应商？", providers.count), message: message, actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: L10n.tr("移除 {0} 项", providers.count), role: .destructive) {
                 host.removeProviders(providers, expectedHostKey: key); exitSelection()
             }
         ])
@@ -371,21 +397,21 @@ private struct SubscriptionQuotaCoin: View {
     private var hasReadings: Bool { quota?.windows.contains { $0.remainingPercent != nil } == true }
 
     private var spokenValue: String {
-        let title = weekly ? "周配额" : "5 小时配额"
+        let title = weekly ? L10n.tr("周配额") : L10n.tr("5 小时配额")
         let status: String
-        if let remaining { status = "剩余 " + String(format: "%.0f%%", remaining) }
-        else { status = loading ? "查询中" : hasReadings ? "暂不可用" : "待查询" }
-        return title + "，" + status
+        if let remaining { status = L10n.tr("剩余 ") + String(format: "%.0f%%", remaining) }
+        else { status = loading ? L10n.tr("查询中") : hasReadings ? L10n.tr("暂不可用") : L10n.tr("待查询") }
+        return title + L10n.tr("，") + status
     }
     private var spokenHint: String {
-        let action = hasReadings ? "轻点翻面查看" + (weekly ? "5 小时配额" : "周配额") : "查询订阅配额"
+        let action = hasReadings ? L10n.tr("轻点翻面查看") + (weekly ? L10n.tr("5 小时配额") : L10n.tr("周配额")) : L10n.tr("查询订阅配额")
         guard let reset = window?.resetsAt else { return action }
-        return action + "，重置 " + Date(timeIntervalSince1970: Double(reset) / 1000).formatted(date: .abbreviated, time: .shortened)
+        return action + L10n.tr("，重置 ") + Date(timeIntervalSince1970: Double(reset) / 1000).formatted(.dateTime.locale(L10n.locale).month(.abbreviated).day().hour().minute())
     }
     private var coinButton: some View {
         Button(action: tapCoin) { coinFace }
             .buttonStyle(ProviderInlineButtonStyle()).disabled(!enabled || loading)
-            .accessibilityLabel("\(agentTitle(kind)) 配额")
+            .accessibilityLabel(L10n.tr("{0} 配额", agentTitle(kind)))
             .accessibilityValue(spokenValue)
             .accessibilityHint(spokenHint)
             .accessibilityIdentifier("quota-coin-\(kind)")
@@ -424,7 +450,7 @@ private struct SubscriptionQuotaCoin: View {
                     .background { AgentIconRecess().frame(width: 56, height: 56) }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing) {
-                    Text(weekly ? "周" : "5h").foregroundStyle(palette.secondary)
+                    Text(weekly ? L10n.tr("周") : "5h").foregroundStyle(palette.secondary)
                     Spacer(minLength: 0)
                     Text(remaining.map { String(format: "%.0f%%", $0) } ?? "—")
                         .foregroundStyle(remaining == nil ? palette.secondary : color).monospacedDigit()
@@ -565,7 +591,7 @@ private struct SubscriptionQuotaRing: View {
     let window: SubscriptionQuota.Window?
     let loading: Bool
     let tint: Color
-    private var title: String { name == "five_hour" ? "5 小时配额" : "周配额" }
+    private var title: String { name == "five_hour" ? L10n.tr("5 小时配额") : L10n.tr("周配额") }
     private var remaining: Double? { window?.remainingPercent }
     var body: some View {
         let palette = OrbisPalette(scheme)
@@ -590,7 +616,7 @@ private struct SubscriptionQuotaRing: View {
                     .font(.orbisTitle()).foregroundStyle(remaining == nil ? palette.secondary : palette.text)
                     .contentTransition(.numericText()).minimumScaleFactor(0.7).lineLimit(1).padding(.horizontal, 3)
             }.frame(width: 64, height: 64).frame(width: 76, height: 76)
-            Text(name == "five_hour" ? "5h" : "周")
+            Text(name == "five_hour" ? "5h" : L10n.tr("周"))
                 .font(.orbisCaption(.medium)).foregroundStyle(palette.secondary)
         }
         .task(id: "\(loading)-\(remaining ?? -1)") {
@@ -602,8 +628,8 @@ private struct SubscriptionQuotaRing: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .accessibilityValue(remaining.map { "剩余 " + String(format: "%.1f", $0) + "%" } ?? (loading ? "查询中" : window == nil ? "待查询" : "暂不可用"))
-        .accessibilityHint(window?.resetsAt.map { "重置 " + Date(timeIntervalSince1970: Double($0) / 1000).formatted(date: .abbreviated, time: .shortened) } ?? "")
+        .accessibilityValue(remaining.map { L10n.tr("剩余 ") + String(format: "%.1f", $0) + "%" } ?? (loading ? L10n.tr("查询中") : window == nil ? L10n.tr("待查询") : L10n.tr("暂不可用")))
+        .accessibilityHint(window?.resetsAt.map { L10n.tr("重置 ") + Date(timeIntervalSince1970: Double($0) / 1000).formatted(.dateTime.locale(L10n.locale).month(.abbreviated).day().hour().minute()) } ?? "")
         .accessibilityIdentifier("quota-ring-\(name)")
     }
 }
@@ -703,18 +729,28 @@ struct StatusRow: View {
     let value: String
     var tone: Color? = nil
     var body: some View {
-        HStack(spacing: 12) {
-            Text(label).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 6) {
-                if let tone { Circle().fill(tone).frame(width: 7, height: 7) }
-                Text(value).font(.orbisLabel(.medium)).lineLimit(1)
-                    .foregroundStyle(tone ?? OrbisPalette(scheme).text).textSelection(.enabled)
-            }.padding(.horizontal, tone == nil ? 0 : 10).frame(minHeight: 30)
-                .background { if tone != nil { Capsule().fill(OrbisPalette(scheme).well) } }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(label).font(.orbisBody()).fixedSize()
+                Spacer(minLength: 0)
+                valueBadge.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(label).font(.orbisBody()).fixedSize(horizontal: false, vertical: true)
+                valueBadge
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+    private var valueBadge: some View {
+        HStack(spacing: 6) {
+            if let tone { Circle().fill(tone).frame(width: 7, height: 7) }
+            Text(value).font(.orbisLabel(.medium)).fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(tone ?? OrbisPalette(scheme).text).textSelection(.enabled)
+        }.padding(.horizontal, tone == nil ? 0 : 10).frame(minHeight: 30)
+            .background { if tone != nil { Capsule().fill(OrbisPalette(scheme).well) } }
     }
 }
 
 func pathTitle(_ path: String?) -> String {
-    switch path { case "lan": return "局域网"; case "relay": return "中继"; default: return "尚未确认" }
+    switch path { case "lan": return L10n.tr("局域网"); case "relay": return L10n.tr("中继"); default: return L10n.tr("尚未确认") }
 }

@@ -84,8 +84,8 @@ internal fun SubscriptionQuotaCoin(
     val window = quota?.windows?.firstOrNull { it.name == if (weekly) "seven_day" else "five_hour" }
     val remaining = window?.remainingPercent
     val hasReadings = quota?.windows?.any { it.remainingPercent != null } == true
-    val title = if (weekly) "周配额" else "5 小时配额"
-    val percent = remaining?.let { String.format(Locale.getDefault(), "%.0f%%", it) } ?: "—"
+    val title = if (weekly) L10n.tr("周配额") else L10n.tr("5 小时配额")
+    val percent = remaining?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—"
     val color = if ((remaining ?: 100.0) <= 20.0) MaterialTheme.colorScheme.error else tint
     val secondary = MaterialTheme.colorScheme.onSurfaceVariant
     val rotation = quotaRotation(loading && motionEnabled)
@@ -124,18 +124,18 @@ internal fun SubscriptionQuotaCoin(
             }
         }
     }
-    val reset = window?.resetsAt?.let { "，重置 " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it)) }.orEmpty()
+    val reset = window?.resetsAt?.let { L10n.tr("，重置 ") + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it)) }.orEmpty()
     Box(Modifier.size(width = 64.dp, height = 56.dp).testTag("quota-coin-$kind")
         .clickable(interactionSource = interactions, indication = null, enabled = enabled && !loading,
-            role = Role.Button, onClickLabel = if (hasReadings) "翻面查看" + if (weekly) "5 小时配额" else "周配额" else "查询订阅配额") {
+            role = Role.Button, onClickLabel = if (hasReadings) L10n.tr("翻面查看") + if (weekly) L10n.tr("5 小时配额") else L10n.tr("周配额") else L10n.tr("查询订阅配额")) {
             if (!hasReadings) refresh() else {
                 demonstrated = true
                 flipJob?.cancel()
                 flipJob = scope.launch { angle.snapTo(0f); flip() }
             }
         }.semantics(mergeDescendants = true) {
-            contentDescription = "${agentBrand(kind).title} 配额"
-            stateDescription = "$title，" + if (remaining != null) "剩余 $percent$reset" else if (loading) "查询中" else if (hasReadings) "暂不可用" else "待查询"
+            contentDescription = L10n.tr("{0} 配额", agentBrand(kind).title)
+            stateDescription = L10n.tr("{0}，", title) + if (remaining != null) L10n.tr("剩余 {0}{1}", percent, reset) else if (loading) L10n.tr("查询中") else if (hasReadings) L10n.tr("暂不可用") else L10n.tr("待查询")
         }.graphicsLayer {
             alpha = if (!enabled) 0.4f else if (pressed) 0.6f else 1f
         }, contentAlignment = Alignment.CenterStart) {
@@ -162,7 +162,7 @@ internal fun SubscriptionQuotaCoin(
             }
             AgentIcon(agentBrand(kind), Modifier.size(26.dp))
         }
-        Text(if (weekly) "周" else "5h", modifier = Modifier.align(Alignment.TopEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(QuotaCoinGeometry.angle(angle.value)))).toFloat() }.clearAndSetSemantics {},
+        Text(if (weekly) L10n.tr("周") else "5h", modifier = Modifier.align(Alignment.TopEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(QuotaCoinGeometry.angle(angle.value)))).toFloat() }.clearAndSetSemantics {},
             style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = secondary)
         Text(percent, modifier = Modifier.align(Alignment.BottomEnd).graphicsLayer { alpha = 1 - 0.55f * abs(sin(Math.toRadians(QuotaCoinGeometry.angle(angle.value)))).toFloat() }.clearAndSetSemantics {},
             style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),

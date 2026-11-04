@@ -1,6 +1,6 @@
 package com.orbising.orbis
 
-internal const val SESSION_CACHE_UPDATED_NOTICE = "聊天记录已更新，正在重新同步"
+internal val SESSION_CACHE_UPDATED_NOTICE get() = L10n.tr("聊天记录已更新，正在重新同步")
 
 /** A format migration invalidates one canonical graph, not its independent local interactions. */
 internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteState {
@@ -27,7 +27,7 @@ internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteStat
             tools = emptyMap(),
             isChatSyncing = runtimeId in runtimes,
             chatSyncError = null,
-            systemNotice = if (runtimeId == offlineKey) "聊天记录已更新，请连接后重新同步" else SESSION_CACHE_UPDATED_NOTICE,
+            systemNotice = if (runtimeId == offlineKey) L10n.tr("聊天记录已更新，请连接后重新同步") else SESSION_CACHE_UPDATED_NOTICE,
             revision = (conversations[runtimeId]?.revision ?: 0) + 1,
         )
     }

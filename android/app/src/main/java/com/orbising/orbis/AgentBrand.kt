@@ -101,7 +101,7 @@ internal fun AgentLabel(brand: AgentBrand, modifier: Modifier = Modifier, suffix
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         AgentIcon(brand, Modifier.size(16.dp).orbisIconBaseline(MaterialTheme.typography.labelMedium.fontSize))
         Text(
-            if (suffix == null) brand.title else "${brand.title}，$suffix",
+            if (suffix == null) brand.title else L10n.tr("{0}，{1}", brand.title, suffix),
             color = brand.accent(),
             style = MaterialTheme.typography.labelMedium,
         )

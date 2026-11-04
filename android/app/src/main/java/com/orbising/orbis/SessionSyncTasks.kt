@@ -14,7 +14,7 @@ private const val SLOW_AFTER_MS = 8_000L
 private const val EXHAUST_AFTER_MS = 150_000L
 private const val RETAIN_UNTIL_MS = 300_000L
 private val RETRY_DELAY_MS = listOf(30_000L, 30_000L, 60_000L)
-internal const val SESSION_SYNC_TIMEOUT_MESSAGE = "同步暂未完成，请重试"
+internal val SESSION_SYNC_TIMEOUT_MESSAGE get() = L10n.tr("同步暂未完成，请重试")
 /** preview 失败最多挡这么久（调度节拍，1 秒一发）：失败不是判决，必须自己过期（ADR-0036 §8）。 */
 internal const val SYNC_FAILURE_COOLDOWN_TICKS = 10
 /** 协调者连续回 pending 的上限：超过就不再延长耗尽窗口，避免它永久 pending 时我们无限等待。 */
@@ -181,7 +181,7 @@ internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessio
     }
     if (next.sessionSyncCommands.size >= SESSION_SYNC_TASK_LIMIT) {
         val conversation = next.conversations[task.runtimeId] ?: RuntimeConversation()
-        val message = "同步任务已满，请稍后重试"
+        val message = L10n.tr("同步任务已满，请稍后重试")
         if (task.range != "preview") return next.finishHistoryRead(
             task.historyOperationId ?: "", HistoryReadPhase.FAILED, message,
         ).copy(sessionRangeFailures = next.sessionRangeFailures + (sessionRangeFailureKey(task.runtimeId, task.range) to message))

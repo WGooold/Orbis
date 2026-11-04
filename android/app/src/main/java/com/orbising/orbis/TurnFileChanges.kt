@@ -30,16 +30,16 @@ import java.util.UUID
 
 private fun changeId() = UUID.randomUUID().toString()
 internal fun changeFailureText(reason: String?) = when (reason) {
-    "expired" -> "轮次差异已超过电脑端保留期限"
-    "version-mismatch" -> "差异版本已变化，请关闭后重新打开"
-    "scope-mismatch" -> "差异所属会话已变化，请重新打开"
-    "binary" -> "二进制文件不提供文本差异"
-    "too-large" -> "文件超过文本差异大小上限"
-    "unsupported" -> "此文件类型不支持文本差异"
-    "not-captured" -> "未捕获完整的轮次前后版本"
-    "busy" -> "电脑端正在统计，请稍后重试"
-    "invalid-cursor" -> "读取位置已失效，请关闭后重新打开"
-    else -> "暂时无法读取轮次差异，请稍后重试"
+    "expired" -> L10n.tr("轮次差异已超过电脑端保留期限")
+    "version-mismatch" -> L10n.tr("差异版本已变化，请关闭后重新打开")
+    "scope-mismatch" -> L10n.tr("差异所属会话已变化，请重新打开")
+    "binary" -> L10n.tr("二进制文件不提供文本差异")
+    "too-large" -> L10n.tr("文件超过文本差异大小上限")
+    "unsupported" -> L10n.tr("此文件类型不支持文本差异")
+    "not-captured" -> L10n.tr("未捕获完整的轮次前后版本")
+    "busy" -> L10n.tr("电脑端正在统计，请稍后重试")
+    "invalid-cursor" -> L10n.tr("读取位置已失效，请关闭后重新打开")
+    else -> L10n.tr("暂时无法读取轮次差异，请稍后重试")
 }
 private fun validChangeFile(file: FileChangeMetadata): Boolean = file.fileId.isNotBlank() && file.path.isNotBlank() &&
     file.path.length <= 4096 && file.contentVersion.isNotBlank() &&
@@ -67,7 +67,7 @@ data class ChangeManifest(
             value.totalCount != summary.fileCount || value.files.size > 100 || value.files.any { !validChangeFile(it) } ||
             incoming.map { it.fileId }.distinct().size != incoming.size || incoming.size > 20_000 || incoming.size > value.totalCount ||
             value.nextCursor != null && (value.nextCursor == nextCursor || value.files.isEmpty()) ||
-            value.nextCursor == null && incoming.size.toLong() != value.totalCount) return copy(requestId = null, error = "文件清单版本或分页无效")
+            value.nextCursor == null && incoming.size.toLong() != value.totalCount) return copy(requestId = null, error = L10n.tr("文件清单版本或分页无效"))
         return copy(files = incoming, loaded = true, nextCursor = value.nextCursor, requestId = null, error = null)
     }
 }
@@ -108,10 +108,10 @@ data class TurnChangesState(
 }
 
 internal fun turnChangeCoverageNote(summary: TurnChangeSummary): String {
-    if (summary.attribution == "native-tool") return "仅记录 Codex 文件工具变更"
+    if (summary.attribution == "native-tool") return L10n.tr("仅记录 Codex 文件工具变更")
     return listOfNotNull(
-        "仅记录部分范围".takeIf { summary.coverage != "complete" && summary.state != "unavailable" },
-        "含同期工作区修改，归属未确认".takeIf { summary.reasons.any { it.contains("concurrent") } },
+        L10n.tr("仅记录部分范围").takeIf { summary.coverage != "complete" && summary.state != "unavailable" },
+        L10n.tr("含同期工作区修改，归属未确认").takeIf { summary.reasons.any { it.contains("concurrent") } },
     ).joinToString("；")
 }
 
@@ -161,8 +161,8 @@ data class FileChangeViewer(
             page.readId.isNotBlank() && (detail.readId == null || detail.readId == page.readId) && count <= 48 * 1024 &&
             page.eof == (page.nextCursor == null) && (page.eof || count > 0 && page.nextCursor != detail.nextCursor)
         val next = when {
-            !valid -> detail.copy(requestId = null, error = "差异范围或版本无效")
-            detail.text.toByteArray(Charsets.UTF_8).size + count > 2 * 1024 * 1024 -> detail.copy(requestId = null, error = "已读取差异达到 2 MiB 显示上限")
+            !valid -> detail.copy(requestId = null, error = L10n.tr("差异范围或版本无效"))
+            detail.text.toByteArray(Charsets.UTF_8).size + count > 2 * 1024 * 1024 -> detail.copy(requestId = null, error = L10n.tr("已读取差异达到 2 MiB 显示上限"))
             else -> detail.copy(text = detail.text + page.text, nextCursor = page.nextCursor, readId = page.readId,
                 loaded = true, eof = page.eof, requestId = null, error = null)
         }

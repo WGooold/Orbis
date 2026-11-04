@@ -73,7 +73,7 @@ internal fun RemoteDirectoryBrowser(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Text(
-                browse?.path?.takeIf(String::isNotBlank) ?: "电脑根目录",
+                browse?.path?.takeIf(String::isNotBlank) ?: L10n.tr("电脑根目录"),
                 fontFamily = FontFamily.Monospace,
                 style = MaterialTheme.typography.labelMedium,
                 maxLines = 2,
@@ -85,20 +85,20 @@ internal fun RemoteDirectoryBrowser(
             } else {
                 NeumorphIconButton(
                     onClick = { onBrowse(browse?.path) }, icon = Icons.Rounded.Refresh,
-                    contentDescription = "刷新目录", enabled = connected,
+                    contentDescription = L10n.tr("刷新目录"), enabled = connected,
                 )
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (!browse?.path.isNullOrBlank()) {
-            NeumorphTextButton("上一级", onClick = onBrowseUp, enabled = enabled,
+            NeumorphTextButton(L10n.tr("上一级"), onClick = onBrowseUp, enabled = enabled,
                 icon = Icons.Rounded.ArrowUpward, modifier = Modifier.fillMaxWidth())
         }
         if (browse?.error != null) {
             Text(browse.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            NeumorphTextButton("重新读取", onClick = { onBrowse(browse.path) }, enabled = enabled)
+            NeumorphTextButton(L10n.tr("重新读取"), onClick = { onBrowse(browse.path) }, enabled = enabled)
         } else if (connected && !loading && browse != null && entries.isEmpty()) {
-            Text(if (showFiles) "此目录没有可浏览的文件或子目录" else "此目录没有子目录",
+            Text(if (showFiles) L10n.tr("此目录没有可浏览的文件或子目录") else L10n.tr("此目录没有子目录"),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         // The 8dp content padding only keeps the soft shadows; the list bleeds by the same amount,
@@ -123,14 +123,14 @@ internal fun RemoteDirectoryBrowser(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(if (entry.isDir) Icons.Rounded.Folder else Icons.Rounded.Description,
-                            contentDescription = if (entry.isDir) "目录" else "文件",
+                            contentDescription = if (entry.isDir) L10n.tr("目录") else L10n.tr("文件"),
                             tint = if (entry.hasSessions || selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp))
                         if (entry.isDir) Text(entry.name, style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         else FileNameText(entry.name, Modifier.weight(1f))
                         if (entry.isDir && entry.hasSessions) {
-                            Text("有历史", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text(L10n.tr("有历史"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                         if (entry.isDir || selected) {
                             Icon(if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight,
@@ -174,7 +174,7 @@ internal fun DownloadFileSheet(
         Column(Modifier.fillMaxWidth().navigationBarsPadding()
             .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("选择电脑上的文件", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             RemoteDirectoryBrowser(
                 browse, connected, onBrowse, onBrowseInto, onBrowseUp,
                 modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
@@ -183,7 +183,7 @@ internal fun DownloadFileSheet(
             FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
                 style = MaterialTheme.typography.labelSmall)
             NeumorphActionButton(
-                text = "下载到手机", icon = Icons.Rounded.Download, modifier = Modifier.fillMaxWidth(),
+                text = L10n.tr("下载到手机"), icon = Icons.Rounded.Download, modifier = Modifier.fillMaxWidth(),
                 enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
                 onClick = {
                     selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }

@@ -559,7 +559,7 @@ struct NeuToggleStyle: ToggleStyle {
                     .animation(reduced ? nil : .orbisPop, value: on)
             }.frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(.plain).opacity(enabled ? 1 : 0.4)
-            .accessibilityAddTraits(.isToggle).accessibilityValue(on ? "开" : "关")
+            .accessibilityAddTraits(.isToggle).accessibilityValue(on ? L10n.tr("开") : L10n.tr("关"))
     }
 }
 
@@ -587,7 +587,7 @@ struct OrbisCopyButton: View {
                 .animation(reduced ? nil : .orbisPop, value: copied)
         }
         .buttonStyle(NeuIconButtonStyle(selected: false, size: size))
-        .accessibilityLabel(copied ? "已复制" : label)
+        .accessibilityLabel(copied ? L10n.tr("已复制") : label)
         .onDisappear { reset?.cancel() }
     }
 
@@ -687,7 +687,7 @@ final class OrbisOverlay: ObservableObject {
     }
     func showDialog(_ title: String, message: String? = nil, actions: [OrbisDialogAction]) {
         menu = nil
-        dialog = DialogRequest(title: title, message: message, actions: actions.isEmpty ? [OrbisDialogAction(title: "知道了", role: .cancel)] : actions)
+        dialog = DialogRequest(title: title, message: message, actions: actions.isEmpty ? [OrbisDialogAction(title: L10n.tr("知道了"), role: .cancel)] : actions)
     }
     func dismissMenu() { menu = nil }
     func dismissMenu(owner: String) { if menu?.owner == owner { menu = nil } }
@@ -1038,7 +1038,7 @@ private struct OrbisMenuRow: View {
                 if let symbol = item.symbol {
                     OrbisMotionGlyph(symbol: copied ? "checkmark" : symbol, size: 20, activation: activation)
                 }
-                Text(copied ? "已复制" : item.title).lineLimit(2)
+                Text(copied ? L10n.tr("已复制") : item.title).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !item.children.isEmpty { Image(systemName: "chevron.right") }
                 else if item.checked { Image(systemName: "checkmark").fontWeight(.bold) }
@@ -1047,7 +1047,7 @@ private struct OrbisMenuRow: View {
                 .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(MenuRowStyle(selected: item.checked))
             .disabled(item.disabled)
-            .accessibilityLabel(copied ? "已复制" : item.title)
+            .accessibilityLabel(copied ? L10n.tr("已复制") : item.title)
             .accessibilityIdentifier(item.identifier ?? "")
             .onDisappear { reset?.cancel() }
             .accessibilityAddTraits(item.checked ? .isSelected : [])
@@ -1172,13 +1172,14 @@ struct OrbisPageHeader<Trailing: View>: View {
     /// Sheets close with ×; pushed pages go back with ←.
     var closes = false
     var backLabel: String? = nil
+    var titleLineLimit = 1
     let back: () -> Void
     @ViewBuilder var trailing: Trailing
     var body: some View {
         OrbisHeader {
-            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? "关闭" : "返回"), morphFrom: "arrow.left", action: back)
+            OrbisIconButton(symbol: closes ? "xmark" : "arrow.left", label: backLabel ?? (closes ? L10n.tr("关闭") : L10n.tr("返回")), morphFrom: "arrow.left", action: back)
         } title: {
-            OrbisMotionText(title).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
+            OrbisMotionText(title).font(.orbisTitle()).lineLimit(titleLineLimit).accessibilityAddTraits(.isHeader)
         } trailing: { trailing }
     }
 }
@@ -1253,7 +1254,7 @@ struct RuntimeStatusLabel: View {
                 .opacity(syncing ? 0 : 1)
                 .frame(width: 14, height: 14)
                 .overlay {
-                    if syncing { ProgressView().controlSize(.mini).accessibilityLabel("正在刷新") }
+                    if syncing { ProgressView().controlSize(.mini).accessibilityLabel(L10n.tr("正在刷新")) }
                 }
             OrbisMotionText(title ?? runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
         }.foregroundStyle(OrbisPalette(scheme).secondary)

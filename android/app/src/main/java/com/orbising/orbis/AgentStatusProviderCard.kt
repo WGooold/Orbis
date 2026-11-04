@@ -106,7 +106,7 @@ internal fun AgentStatusProviderCard(
                         Text(state.providerNameForKind(kind), modifier = Modifier.weight(1f, fill = false),
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        if (current?.official == true) Icon(Icons.Rounded.CheckCircle, contentDescription = "官方供应商",
+                        if (current?.official == true) Icon(Icons.Rounded.CheckCircle, contentDescription = L10n.tr("官方供应商"),
                             tint = accent, modifier = Modifier.size(16.dp))
                     }
                 }
@@ -118,19 +118,19 @@ internal fun AgentStatusProviderCard(
                         .heightIn(min = 48.dp).widthIn(min = 64.dp)
                         .alpha(if (!available) 0.4f else if (pressed) 0.55f else 1f)
                         .clickable(interactionSource = interactions, indication = null, enabled = available, role = Role.Button) { glyphActivation++; menuOpen = true }
-                        .semantics { contentDescription = "切换 ${agentBrand(kind).title} 供应商" },
+                        .semantics { contentDescription = L10n.tr("切换 {0} 供应商", agentBrand(kind).title) },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)) {
                         Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp).actionGlyphMotion(glyphActivation), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("切换", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(L10n.tr("切换"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     NeumorphMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         providers.forEach { provider ->
                             NeumorphMenuItem(text = { Text(provider.name) },
                                 leadingIcon = {
-                                    if (provider.official) AgentIcon(agentBrand(kind), description = "官方供应商")
+                                    if (provider.official) AgentIcon(agentBrand(kind), description = L10n.tr("官方供应商"))
                                     else Icon(Icons.Rounded.Dns, contentDescription = null, modifier = Modifier.size(18.dp))
                                 },
-                                trailingIcon = { if (provider.enabled) Icon(Icons.Rounded.Check, contentDescription = "已启用", modifier = Modifier.size(18.dp)) },
+                                trailingIcon = { if (provider.enabled) Icon(Icons.Rounded.Check, contentDescription = L10n.tr("已启用"), modifier = Modifier.size(18.dp)) },
                                 enabled = available && (!provider.enabled || provider.additive),
                                 onClick = { menuOpen = false; onSwitch(provider, state.hostId) })
                         }

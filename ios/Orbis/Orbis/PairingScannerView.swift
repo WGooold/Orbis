@@ -17,7 +17,7 @@ struct PairingEntryView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisHeader {
-                if let onCancel { OrbisIconButton(symbol: "xmark", label: "取消添加电脑", action: onCancel) }
+                if let onCancel { OrbisIconButton(symbol: "xmark", label: L10n.tr("取消添加电脑"), action: onCancel) }
             } title: {
                 Text("Orbis").font(.orbisTitle())
             } trailing: { EmptyView() }
@@ -26,20 +26,20 @@ struct PairingEntryView: View {
                     VStack(spacing: 0) {
                         Image("OrbisMark").resizable().scaledToFit().frame(width: 52, height: 52)
                             .frame(width: 76, height: 76).neuSurface(inset: true, radius: 20)
-                        Text("连接你的电脑").font(.orbisTitle()).padding(.top, 18).padding(.bottom, 28)
+                        Text(L10n.tr("连接你的电脑")).font(.orbisTitle()).padding(.top, 18).padding(.bottom, 28)
                             .accessibilityAddTraits(.isHeader)
-                        OrbisActionButton(title: "扫码配对", symbol: "qrcode.viewfinder") {
+                        OrbisActionButton(title: L10n.tr("扫码配对"), symbol: "qrcode.viewfinder") {
                             codeFocused = false; validationError = nil; scannerOpen = true
                         }.disabled(store.isPairing)
                         HStack(spacing: 12) {
                             OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
-                            Text("手动输入").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
+                            Text(L10n.tr("手动输入")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize()
                             OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule())
                         }.padding(.vertical, 22)
                         OrbisMotionButton { manualOpen.toggle() } label: {
                             HStack {
                                 OrbisActionSymbol(systemName: "doc.on.clipboard")
-                                Text("粘贴配对二维码内容").fontWeight(.medium)
+                                Text(L10n.tr("粘贴配对二维码内容")).fontWeight(.medium)
                                 Spacer()
                                 Image(systemName: "chevron.down").imageScale(.small)
                                     .rotationEffect(.degrees(manualOpen ? 180 : 0)).animation(reduced ? nil : .orbisCollapse, value: manualOpen)
@@ -47,11 +47,11 @@ struct PairingEntryView: View {
                         }.buttonStyle(NeuButtonStyle(selected: manualOpen))
                         OrbisCollapse(expanded: manualOpen) {
                             VStack(spacing: 16) {
-                                TextField("粘贴电脑端二维码的 JSON 内容", text: $code, axis: .vertical)
+                                TextField(L10n.tr("粘贴电脑端二维码的 JSON 内容"), text: $code, axis: .vertical)
                                     .font(.orbisLabel(mono: true)).lineLimit(5...9)
                                     .textInputAutocapitalization(.never).autocorrectionDisabled().focused($codeFocused)
-                                    .orbisInput(focused: codeFocused).accessibilityLabel("配对二维码 JSON 内容")
-                                OrbisActionButton(title: "连接", symbol: "link") { submit(code) }
+                                    .orbisInput(focused: codeFocused).accessibilityLabel(L10n.tr("配对二维码 JSON 内容"))
+                                OrbisActionButton(title: L10n.tr("连接"), symbol: "link") { submit(code) }
                                     .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPairing)
                             }.padding(.top, 16).padding(.horizontal, 4).padding(.bottom, 4)
                         }
@@ -84,7 +84,7 @@ struct PairingScannerView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            OrbisPageHeader(title: "扫描配对二维码", closes: true, back: { dismiss() }) { EmptyView() }
+            OrbisPageHeader(title: L10n.tr("扫描配对二维码"), closes: true, back: { dismiss() }) { EmptyView() }
             QRScannerRepresentable(onCode: { code in
                 do { _ = try PairingQR.parse(code); onCode(code) }
                 catch { failure = error.localizedDescription }
@@ -92,18 +92,18 @@ struct PairingScannerView: View {
                 .id(scannerID).aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .neuSurface(inset: true, radius: 20, padding: 6).padding(.horizontal, 24)
-                .accessibilityLabel("二维码相机取景框")
+                .accessibilityLabel(L10n.tr("二维码相机取景框"))
             if let failure {
                 OrbisNotice(text: failure, error: true).padding(.horizontal, 24)
                 HStack(spacing: 12) {
-                    OrbisActionButton(title: "重新扫描", symbol: "arrow.clockwise") { self.failure = nil; scannerID = UUID() }
-                    OrbisActionButton(title: "相机设置", symbol: "gearshape") {
+                    OrbisActionButton(title: L10n.tr("重新扫描"), symbol: "arrow.clockwise") { self.failure = nil; scannerID = UUID() }
+                    OrbisActionButton(title: L10n.tr("相机设置"), symbol: "gearshape") {
                         if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                     }
                 }.padding(.horizontal, 24)
             }
             Spacer(minLength: 12)
-            OrbisActionButton(title: "取消", action: { dismiss() }).padding(.horizontal, 24).padding(.bottom, 20)
+            OrbisActionButton(title: L10n.tr("取消"), action: { dismiss() }).padding(.horizontal, 24).padding(.bottom, 20)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 }
@@ -143,7 +143,7 @@ private final class QRScannerController: UIViewController {
             DispatchQueue.main.async {
                 guard let self, self.viewIfLoaded?.window != nil else { return }
                 if granted { self.capture.start() }
-                else { self.onFailure("请在系统设置中允许相机权限，或返回粘贴配对内容。") }
+                else { self.onFailure(L10n.tr("请在系统设置中允许相机权限，或返回粘贴配对内容。")) }
             }
         }
     }
@@ -176,10 +176,10 @@ private final class QRCapture: NSObject, AVCaptureMetadataOutputObjectsDelegate 
                 if !configured {
                     session.beginConfiguration()
                     defer { session.commitConfiguration() }
-                    guard let device = AVCaptureDevice.default(for: .video) else { throw PairingError.relay("当前设备没有可用相机，可返回粘贴配对内容。") }
+                    guard let device = AVCaptureDevice.default(for: .video) else { throw PairingError.relay(L10n.tr("当前设备没有可用相机，可返回粘贴配对内容。")) }
                     let input = try AVCaptureDeviceInput(device: device)
                     let output = AVCaptureMetadataOutput()
-                    guard session.canAddInput(input), session.canAddOutput(output) else { throw PairingError.relay("无法启动相机，可返回粘贴配对内容。") }
+                    guard session.canAddInput(input), session.canAddOutput(output) else { throw PairingError.relay(L10n.tr("无法启动相机，可返回粘贴配对内容。")) }
                     session.addInput(input)
                     session.addOutput(output)
                     output.setMetadataObjectsDelegate(self, queue: queue)

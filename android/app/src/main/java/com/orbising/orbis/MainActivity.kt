@@ -208,8 +208,19 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.JsonArray
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        AppLocalization.refreshSystemLanguage()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        AppLocalization.refreshSystemLanguage()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLocalization.configure(this)
         val appearancePreferences = getSharedPreferences("orbis-appearance", MODE_PRIVATE)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -234,6 +245,7 @@ class MainActivity : ComponentActivity() {
                     if (uri != null && detail != null) model.exportToolDetail(uri, detail)
                 }
                 CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr,
                     LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
@@ -383,8 +395,8 @@ internal fun RemoteApp(
             val kind = agentBrand(activation.agentKind).title
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
-            val suffix = if (activation.spawnMode == "headless" && activation.agentKind != "codexDesktop") "，此会话无头（电脑上无窗口）" else ""
-            Toast.makeText(context, "已在电脑上拉起 $kind 进程$suffix，等待会话上线…", Toast.LENGTH_LONG).show()
+            val suffix = if (activation.spawnMode == "headless" && activation.agentKind != "codexDesktop") L10n.tr("，此会话无头（电脑上无窗口）") else ""
+            Toast.makeText(context, L10n.tr("已在电脑上拉起 {0} 进程{1}，等待会话上线…", kind, suffix), Toast.LENGTH_LONG).show()
             model.clearActivationNotice()
         }
     }
@@ -527,7 +539,7 @@ private fun PairingScreen(
                         NeumorphIconButton(
                             onClick = onCancel,
                             icon = Icons.Rounded.Close,
-                            contentDescription = "取消添加电脑",
+                            contentDescription = L10n.tr("取消添加电脑"),
                         )
                     }
                 },
@@ -550,14 +562,14 @@ private fun PairingScreen(
                 }
             }
             Spacer(Modifier.height(18.dp))
-            Text("连接你的电脑", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(L10n.tr("连接你的电脑"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(24.dp))
             NeumorphActionButton(
                 onClick = {
                     scanError = null
                     scannerOpen = true
                 },
-                text = if (pairingInProgress) "正在连接…" else "扫码配对",
+                text = if (pairingInProgress) L10n.tr("正在连接…") else L10n.tr("扫码配对"),
                 icon = Icons.Rounded.QrCodeScanner,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !pairingInProgress,
@@ -577,9 +589,9 @@ private fun PairingScreen(
                 if (v2 == null) {
                     val v1 = parsePairingQrPayload(raw)
                     if (v1 == null) {
-                        scanError = "二维码无效或不是 Orbis 配对二维码"
+                        scanError = L10n.tr("二维码无效或不是 Orbis 配对二维码")
                     } else {
-                        scanError = "这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair"
+                        scanError = L10n.tr("这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair")
                     }
                 } else {
                     scanError = null
@@ -733,13 +745,13 @@ internal fun RuntimeListScreen(
                             onClick = { if (selecting) selectedRuntimeIds = emptySet() else scope.launch { drawerState.open() } },
                             icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.Menu,
                             menuMorph = selecting,
-                            contentDescription = if (selecting) "退出多选" else "打开会话目录",
+                            contentDescription = if (selecting) L10n.tr("退出多选") else L10n.tr("打开会话目录"),
                             size = 40.dp,
                         )
                     },
                     title = {
                         if (selecting) {
-                            MotionText("已选择 ${selectedIds.size} 项", style = MaterialTheme.typography.titleLarge)
+                            MotionText(L10n.tr("已选择 {0} 项", selectedIds.size), style = MaterialTheme.typography.titleLarge)
                         } else Column {
                             OrbisWordmark()
                             Text(
@@ -770,13 +782,13 @@ internal fun RuntimeListScreen(
                             NeumorphIconButton(
                                 onClick = onOpenStatus,
                                 icon = Icons.Rounded.Settings,
-                                contentDescription = "设置",
+                                contentDescription = L10n.tr("设置"),
                                 modifier = Modifier.testTag("home-settings").graphicsLayer { translationX = -24.dp.toPx() * progress },
                             )
 
                         }, selected = {
                             NeumorphTextButton(
-                                text = "关闭",
+                                text = L10n.tr("关闭"),
                                 onClick = {
                                     activeHostId?.let { hostId ->
                                         val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) && it.state.canCloseRuntime(it.runtime.runtimeId) }
@@ -786,7 +798,7 @@ internal fun RuntimeListScreen(
                                 },
                                 enabled = state.e2eReady,
                                 danger = true,
-                                modifier = Modifier.semantics { contentDescription = "关闭选中会话" },
+                                modifier = Modifier.semantics { contentDescription = L10n.tr("关闭选中会话") },
                             )
                         })
                     },
@@ -812,7 +824,7 @@ internal fun RuntimeListScreen(
                         NeumorphIconButton(
                             onClick = onRetryHome,
                             icon = Icons.Rounded.Refresh,
-                            contentDescription = if (state.e2eReady) "重新加载会话" else "重新连接",
+                            contentDescription = if (state.e2eReady) L10n.tr("重新加载会话") else L10n.tr("重新连接"),
                             tint = MaterialTheme.colorScheme.error,
                             compact = true,
                             modifier = Modifier.semantics { stateDescription = backgroundSync.message },
@@ -869,7 +881,7 @@ internal fun RuntimeListScreen(
                                 Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(44.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.height(14.dp))
-                                Text("暂无在线会话", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                                Text(L10n.tr("暂无在线会话"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
@@ -973,7 +985,7 @@ internal fun RuntimeListScreen(
                                                     Icon(if (armed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
                                                         tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(18.dp))
                                                     Spacer(Modifier.width(6.dp))
-                                                    Text(if (armed) "松手关闭" else "关闭", color = MaterialTheme.colorScheme.onError,
+                                                    Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"), color = MaterialTheme.colorScheme.onError,
                                                         style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                                         }
                                                     }
@@ -1050,7 +1062,7 @@ internal fun RuntimeListScreen(
                                                     if (row.card.hasPendingInteraction) {
                                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                                             Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                                                            Text("待确认", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                                            Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                                         }
                                                     } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
                                                 }
@@ -1092,15 +1104,15 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
             Spacer(Modifier.height(20.dp))
             NeumorphActionButton(
                 onClick = onRetry,
-                text = if (e2eReady) "重新加载" else "重新连接",
+                text = if (e2eReady) L10n.tr("重新加载") else L10n.tr("重新连接"),
                 icon = Icons.Rounded.Refresh,
                 modifier = Modifier.fillMaxWidth()
-                    .semantics { contentDescription = if (e2eReady) "重新加载会话" else "重新连接" },
+                    .semantics { contentDescription = if (e2eReady) L10n.tr("重新加载会话") else L10n.tr("重新连接") },
             )
         } else {
             CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
             Spacer(Modifier.height(14.dp))
-            Text("正在加载会话…", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+            Text(L10n.tr("正在加载会话…"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -1171,20 +1183,20 @@ internal fun NewSessionSheet(
         ) {
             // 标题与 iOS 一致：「新建会话」，目标电脑作为右侧说明，不再写成一整句。
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("新建会话", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                Text(L10n.tr("新建会话"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f).semantics { heading() })
                 Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(state.sessionHost?.name ?: "电脑", style = MaterialTheme.typography.labelMedium,
+                Text(state.sessionHost?.name ?: L10n.tr("电脑"), style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             // 固定两列网格，每格同宽（与 iOS 一致）。
             Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     AgentChoice(AgentBrand.Pi, agentKind == "pi", { agentKind = "pi" }, Modifier.weight(1f))
-                    AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported, "Codex 终端")
+                    AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported, L10n.tr("Codex 终端"))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.weight(1f), codexDesktopSupported, "Codex 桌面版")
+                    AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.weight(1f), codexDesktopSupported, L10n.tr("Codex 桌面版"))
                     AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.weight(1f), dshSupported)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1194,7 +1206,7 @@ internal fun NewSessionSheet(
             }
             if (!codexSupported) {
                 Text(
-                    "这台电脑没启用 Codex 后端",
+                    L10n.tr("这台电脑没启用 Codex 后端"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1202,7 +1214,7 @@ internal fun NewSessionSheet(
             val offline = !state.canOperateSessions
             if (offline) {
                 Text(
-                    "未连接到电脑",
+                    L10n.tr("未连接到电脑"),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1226,7 +1238,7 @@ internal fun NewSessionSheet(
                 }
                 NeumorphActionButton(
                     onClick = { onCreate(agentKind, preset) },
-                    text = "在此目录新建 ${agentBrand(agentKind).title} 会话",
+                    text = L10n.tr("在此目录新建 {0} 会话", agentBrand(agentKind).title),
                     enabled = state.canCreateSessionOn(state.hostId),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1245,7 +1257,7 @@ internal fun NewSessionSheet(
                         val cwd = browse?.path.orEmpty()
                         if (cwd.isNotBlank()) onCreate(agentKind, cwd)
                     },
-                    text = "在这里新建 ${agentBrand(agentKind).title} 会话",
+                    text = L10n.tr("在这里新建 {0} 会话", agentBrand(agentKind).title),
                     enabled = state.canCreateSessionOn(state.hostId) && browse != null && !browse.isLoading &&
                         browse.error == null && !browse.path.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
@@ -1268,7 +1280,7 @@ private fun HistoryPagingHeader(
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(
-                "正在加载更早的历史…",
+                L10n.tr("正在加载更早的历史…"),
                 modifier = Modifier.padding(top = 8.dp),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1286,12 +1298,12 @@ private fun HistoryPagingHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(
-            if (phase == SessionReadPhase.FAILED) "历史加载失败" else "还有更早的历史",
+            if (phase == SessionReadPhase.FAILED) L10n.tr("历史加载失败") else L10n.tr("还有更早的历史"),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         TextButton(onClick = onLoad) {
-            Text(if (phase == SessionReadPhase.FAILED) "重试" else "加载")
+            Text(if (phase == SessionReadPhase.FAILED) L10n.tr("重试") else L10n.tr("加载"))
         }
     }
 }
@@ -1306,7 +1318,7 @@ internal fun OfflineHistoryScreen(
 ) {
     val graph = sessionId?.let(state.sessionGraphs::get)
     val projection = remember(graph) {
-        graph?.let(::projectSessionGraph) ?: SessionProjectionResult(emptyList(), "本地没有可用的历史缓存")
+        graph?.let(::projectSessionGraph) ?: SessionProjectionResult(emptyList(), L10n.tr("本地没有可用的历史缓存"))
     }
     val presentation = remember(projection.messages) { buildConversationPresentation(projection.messages) }
     val messageTurnTimings = remember(projection) {
@@ -1334,7 +1346,7 @@ internal fun OfflineHistoryScreen(
         val count = listState.layoutInfo.totalItemsCount
         val accepted = model.loadOlderHistory(key)
         if (accepted.operationId == null) {
-            historyPagingFeedback = accepted.rejection ?: "历史加载请求未启动，请重试"
+            historyPagingFeedback = accepted.rejection ?: L10n.tr("历史加载请求未启动，请重试")
             return
         }
         historyPagingFeedback = null
@@ -1375,7 +1387,7 @@ internal fun OfflineHistoryScreen(
                     NeumorphIconButton(
                         onClick = onBack,
                         icon = Icons.Rounded.ArrowBack,
-                        contentDescription = "返回会话目录",
+                        contentDescription = L10n.tr("返回会话目录"),
                         size = 40.dp,
                     )
                 },
@@ -1387,7 +1399,7 @@ internal fun OfflineHistoryScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        AgentLabel(LocalAgentBrand.current, suffix = "只读历史")
+                        AgentLabel(LocalAgentBrand.current, suffix = L10n.tr("只读历史"))
                     }
                 },
             ) }
@@ -1410,12 +1422,12 @@ internal fun OfflineHistoryScreen(
             }
             if (firstRead?.phase?.active == true) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (firstRead?.phase == SessionReadPhase.FAILED) item {
-                WarningCard(firstRead.error ?: "本地首屏读取失败")
-                TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text("重试读取") }
-            } else if (firstRead?.phase?.active != true) projection.error?.let { item { WarningCard("历史记录加载失败：$it") } }
+                WarningCard(firstRead.error ?: L10n.tr("本地首屏读取失败"))
+                TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text(L10n.tr("重试读取")) }
+            } else if (firstRead?.phase?.active != true) projection.error?.let { item { WarningCard(L10n.tr("历史记录加载失败：{0}", it)) } }
             if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
-                WarningCard(historyPagingFeedback ?: historyRead.error ?: "历史记录加载失败")
-                TextButton(onClick = { loadHistoryPage() }) { Text("重试历史加载") }
+                WarningCard(historyPagingFeedback ?: historyRead.error ?: L10n.tr("历史记录加载失败"))
+                TextButton(onClick = { loadHistoryPage() }) { Text(L10n.tr("重试历史加载")) }
             }
             if (historyPagingFeedback != null && historyState?.hasOlder != true && historyRead?.phase != HistoryReadPhase.FAILED) {
                 item { WarningCard(historyPagingFeedback!!) }
@@ -1647,7 +1659,7 @@ internal fun ChatScreen(
         historyActionError = null
         val commandId = model.executeSlashCommand("tree", action.nodeId)
         if (commandId == null) {
-            historyActionError = "跳转未送达：当前会话没有提供 /tree 命令"
+            historyActionError = L10n.tr("跳转未送达：当前会话没有提供 /tree 命令")
             return
         }
         actionHaptic()
@@ -1682,7 +1694,7 @@ internal fun ChatScreen(
         }
         if (uris.size > MAX_ATTACHMENTS_PER_MESSAGE) {
             commandFeedbackTransient = false
-            commandFeedback = "一次最多发送 $MAX_ATTACHMENTS_PER_MESSAGE 个文件"
+            commandFeedback = L10n.tr("一次最多发送 {0} 个文件", MAX_ATTACHMENTS_PER_MESSAGE)
         }
     }
     // Refresh replaces the visible conversation with a fresh projection. Remember the row the
@@ -1743,7 +1755,7 @@ internal fun ChatScreen(
         val offset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
         val accepted = model.loadOlderHistory(runtimeId)
         if (accepted.operationId == null) {
-            historyPagingFeedback = accepted.rejection ?: "历史加载请求未启动，请重试"
+            historyPagingFeedback = accepted.rejection ?: L10n.tr("历史加载请求未启动，请重试")
             return
         }
         historyPagingFeedback = null
@@ -1795,7 +1807,7 @@ internal fun ChatScreen(
         historyActionCommandId = null
         historyAction = null
         if (!result.ok) {
-            historyActionError = "跳转失败：${result.status}"
+            historyActionError = L10n.tr("跳转失败：{0}", result.status)
             return@LaunchedEffect
         }
         // DSH 的「跳到某一轮」是原生 fork：后端回传新分支的会话 ID，编辑重发的原文属于那个
@@ -2009,7 +2021,7 @@ internal fun ChatScreen(
                     NeumorphIconButton(
                         onClick = { model.selectRuntime(null) },
                         icon = Icons.Rounded.ArrowBack,
-                        contentDescription = "返回",
+                        contentDescription = L10n.tr("返回"),
                         size = 40.dp,
                     )
                 },
@@ -2023,7 +2035,7 @@ internal fun ChatScreen(
                             historyOpen = true
                         },
                         icon = Icons.Rounded.History,
-                        contentDescription = "历史与分支",
+                        contentDescription = L10n.tr("历史与分支"),
                         size = 40.dp,
                     )
                     DownloadStatusButton(
@@ -2146,7 +2158,7 @@ internal fun ChatScreen(
                         NeumorphIconButton(
                             onClick = { filePicker.launch(arrayOf("*/*")) },
                             icon = Icons.Rounded.AttachFile,
-                            contentDescription = "发送文件到电脑",
+                            contentDescription = L10n.tr("发送文件到电脑"),
                             enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
@@ -2162,7 +2174,7 @@ internal fun ChatScreen(
                             }
                         },
                         modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
-                        placeholder = { Text("发给 ${LocalAgentBrand.current.title}，/ 命令", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text(L10n.tr("发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         enabled = runtime != null || launchOpen,
                         minLines = 1,
                         maxLines = 5,
@@ -2245,7 +2257,7 @@ internal fun ChatScreen(
                                 composerMode == ComposerAction.Abort ->
                                     OrbisMotionIcon(
                                         Icons.Rounded.StopCircle,
-                                        description = "打断当前任务",
+                                        description = L10n.tr("打断当前任务"),
                                         tint = if (sendEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
                                         size = 22.dp, activation = composerActivation,
                                     )
@@ -2253,7 +2265,7 @@ internal fun ChatScreen(
                                 else ->
                                     OrbisMotionIcon(
                                         Icons.Rounded.Send,
-                                        description = "发送",
+                                        description = L10n.tr("发送"),
                                         tint = if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
                                         size = 22.dp, activation = composerActivation,
                                     )
@@ -2281,7 +2293,7 @@ internal fun ChatScreen(
                         }
                     },
                     icon = Icons.Rounded.KeyboardArrowDown,
-                    contentDescription = "回到最新消息",
+                    contentDescription = L10n.tr("回到最新消息"),
                     size = 44.dp,
                 )
             }
@@ -2299,10 +2311,10 @@ internal fun ChatScreen(
             ) {
                 item(key = "chat-status") {
                     val errors = listOfNotNull(
-                        if (runtime == null && launch == null) "会话已离线" else null,
+                        if (runtime == null && launch == null) L10n.tr("会话已离线") else null,
                         historyPagingFeedback, historyActionError, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
                         firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
-                        if (conversation.waitingLocalInteraction) "请在电脑端完成交互" else null,
+                        if (conversation.waitingLocalInteraction) L10n.tr("请在电脑端完成交互") else null,
                         conversation.interactionNotice, conversation.systemNotice,
                     ).distinct()
                     var detailsOpen by remember { mutableStateOf(false) }
@@ -2314,25 +2326,25 @@ internal fun ChatScreen(
                         }
                         when {
                             errors.isNotEmpty() -> NeumorphTextButton(errors.first(), { detailsOpen = true }, Modifier.weight(1f))
-                            historyState?.hasOlder == true -> NeumorphTextButton("更早的消息", { loadHistoryPage() },
+                            historyState?.hasOlder == true -> NeumorphTextButton(L10n.tr("更早的消息"), { loadHistoryPage() },
                                 Modifier.weight(1f), enabled = historyRead?.phase?.active != true)
                             else -> Spacer(Modifier.weight(1f))
                         }
-                        if (truncatedContent != null) NeumorphTextButton("完整内容", {
+                        if (truncatedContent != null) NeumorphTextButton(L10n.tr("完整内容"), {
                             model.requestFullEntry(runtimeId, truncatedContent.first)
                             detailsOpen = true
                         })
                     }
                     if (detailsOpen) AlertDialog(onDismissRequest = { detailsOpen = false },
-                        title = { Text(if (errors.isEmpty()) "完整内容" else "会话状态") },
+                        title = { Text(if (errors.isEmpty()) L10n.tr("完整内容") else L10n.tr("会话状态")) },
                         text = {
                             val full = truncatedContent?.let { state.fullEntries[it.first] }?.let(::fullEntryText)
                             Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                                SelectionContainer { Text(full ?: errors.joinToString("\n").ifEmpty { "正在读取…" }) }
+                                SelectionContainer { Text(full ?: errors.joinToString("\n").ifEmpty { L10n.tr("正在读取…") }) }
                             }
                         },
-                        confirmButton = { NeumorphTextButton("关闭", { detailsOpen = false }) },
-                        dismissButton = { if (errors.isNotEmpty()) NeumorphTextButton("重试", {
+                        confirmButton = { NeumorphTextButton(L10n.tr("关闭"), { detailsOpen = false }) },
+                        dismissButton = { if (errors.isNotEmpty()) NeumorphTextButton(L10n.tr("重试"), {
                             detailsOpen = false
                             if (historyRead?.phase == HistoryReadPhase.FAILED) loadHistoryPage()
                             else model.refreshRuntime(runtimeId, explicitRetry = true)
@@ -2526,7 +2538,7 @@ private fun SlashCommandPicker(
                     option.label.lowercase().contains(query) ||
                     option.description?.lowercase()?.contains(query) == true
             }
-        SlashOptionList(options = options) { option ->
+        SlashOptionList(options = options, localizeDescription = selected.source == "builtin") { option ->
             onCommandSelected(selected, "/${selected.name} ${option.value}")
         }
         return
@@ -2570,8 +2582,9 @@ private fun SlashCommandPicker(
                         if (command.source != "builtin") Text(slashSourceText(command.source, isCodex), color = MaterialTheme.colorScheme.primary)
                     }
                     command.description?.let {
+                        val description = if (command.source == "builtin") L10n.hostText(it) else it
                         Text(
-                            if (command.argument?.hint == null) it else "$it ${command.argument.hint}",
+                            if (command.argument?.hint == null) description else "$description ${command.argument.hint}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -2587,11 +2600,12 @@ private fun SlashCommandPicker(
 @Composable
 private fun SlashOptionList(
     options: List<RuntimeSlashCommandOption>,
+    localizeDescription: Boolean = false,
     onSelect: (RuntimeSlashCommandOption) -> Unit,
 ) {
     if (options.isEmpty()) {
         Text(
-            "当前 ${LocalAgentBrand.current.title} 没有匹配的可选项",
+            L10n.tr("当前 {0} 没有匹配的可选项", LocalAgentBrand.current.title),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2621,7 +2635,7 @@ private fun SlashOptionList(
                     )
                     option.description?.let {
                         Text(
-                            it,
+                            if (localizeDescription) L10n.hostText(it) else it,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
@@ -2668,17 +2682,17 @@ internal fun parseSlashInvocation(input: String): Pair<String, String>? {
 private fun slashCommandFeedback(input: String, result: CommandResult): String {
     val name = parseSlashInvocation(input)?.first ?: "command"
     val detail = result.result?.toString()?.takeIf { it != "{}" && it != "null" }
-    return if (detail == null) "/$name 已完成" else "/$name 已完成：$detail"
+    return if (detail == null) L10n.tr("/{0} 已完成", name) else L10n.tr("/{0} 已完成：{1}", name, detail)
 }
 
 private fun slashCommandError(input: String, result: CommandResult): String {
     val name = parseSlashInvocation(input)?.first ?: "command"
     val detail = result.error?.takeIf { it.isNotBlank() } ?: when (result.status) {
-        "cancelled" -> "请求已取消"
-        "failure" -> "电脑端执行失败"
+        "cancelled" -> L10n.tr("请求已取消")
+        "failure" -> L10n.tr("电脑端执行失败")
         else -> result.status
     }
-    return "/$name 失败：$detail"
+    return L10n.tr("/{0} 失败：{1}", name, detail)
 }
 
 /**
@@ -2688,8 +2702,8 @@ private fun slashCommandError(input: String, result: CommandResult): String {
  */
 internal fun slashSourceText(source: String, isCodex: Boolean = false): String = when (source) {
     "builtin" -> if (isCodex) "Codex" else "Pi"
-    "extension" -> "扩展"
-    "prompt" -> "模板"
+    "extension" -> L10n.tr("扩展")
+    "prompt" -> L10n.tr("模板")
     "skill" -> "Skill"
     else -> source
 }
@@ -2706,7 +2720,7 @@ internal fun DownloadStatusButton(
         NeumorphIconButton(
             onClick = onClick,
             icon = Icons.Rounded.Download,
-            contentDescription = if (activeCount > 0) "$activeCount 个文件正在下载" else "打开下载",
+            contentDescription = if (activeCount > 0) L10n.tr("{0} 个文件正在下载", activeCount) else L10n.tr("打开下载"),
             enabled = enabled,
             size = 40.dp,
         )
@@ -2754,7 +2768,7 @@ internal fun AllDownloadsScreen(
                 // 进行中的任务各自显示进度；标题不再重复一行「0 个任务进行中」（与 iOS 一致）。
                 title = {
                     Text(
-                        if (selectionMode) "已选择 ${effectiveSelectedTaskIds.size} 项" else "下载",
+                        if (selectionMode) L10n.tr("已选择 {0} 项", effectiveSelectedTaskIds.size) else L10n.tr("下载"),
                         fontWeight = FontWeight.SemiBold,
                     )
                 },
@@ -2763,7 +2777,7 @@ internal fun AllDownloadsScreen(
                         onClick = { if (selectionMode) selectedTaskIds = emptySet() else onBack() },
                         icon = if (selectionMode) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
                         backMorph = selectionMode,
-                        contentDescription = if (selectionMode) "退出多选" else "返回",
+                        contentDescription = if (selectionMode) L10n.tr("退出多选") else L10n.tr("返回"),
                         size = 40.dp,
                     )
                 },
@@ -2773,7 +2787,7 @@ internal fun AllDownloadsScreen(
                             onClick = { pendingDeletion = effectiveSelectedTaskIds },
                             icon = Icons.Rounded.Delete,
                             tint = MaterialTheme.colorScheme.error,
-                            contentDescription = "删除所选下载",
+                            contentDescription = L10n.tr("删除所选下载"),
                             size = 40.dp,
                         )
                     })
@@ -2783,7 +2797,7 @@ internal fun AllDownloadsScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             NeumorphActionButton(
-                text = "浏览电脑文件",
+                text = L10n.tr("浏览电脑文件"),
                 icon = Icons.Rounded.Folder,
                 onClick = { onDismissBrowse(); filePickerOpen = true },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(top = 12.dp, bottom = 20.dp),
@@ -2797,7 +2811,7 @@ internal fun AllDownloadsScreen(
                 ) {
                     Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
-                    Text("暂无下载", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(L10n.tr("暂无下载"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 LazyColumn(
@@ -2835,16 +2849,16 @@ internal fun AllDownloadsScreen(
         val ids = pendingDeletion.intersect(visibleTaskIds)
         AlertDialog(
             onDismissRequest = { pendingDeletion = emptySet() },
-            title = { Text("删除下载记录与本机文件？") },
-            text = { Text("电脑上的原文件不受影响。") },
+            title = { Text(L10n.tr("删除下载记录与本机文件？")) },
+            text = { Text(L10n.tr("电脑上的原文件不受影响。")) },
             confirmButton = {
                 TextButton(enabled = ids.isNotEmpty(), onClick = {
                     onDelete(ids)
                     selectedTaskIds = selectedTaskIds - ids
                     pendingDeletion = emptySet()
-                }) { Text("删除 ${ids.size} 项", color = MaterialTheme.colorScheme.error) }
+                }) { Text(L10n.tr("删除 {0} 项", ids.size), color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { pendingDeletion = emptySet() }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { pendingDeletion = emptySet() }) { Text(L10n.tr("取消")) } },
         )
     }
     if (filePickerOpen) {
@@ -2879,10 +2893,10 @@ private fun DownloadTaskCard(
         (task.sourcePath != null || task.sourceArtifactId != null)
     val actionHint = when {
         !active && !canRetry -> null
-        active -> "轻点暂停"
-        !connected -> "连接电脑后继续"
-        task.status == "failed" -> "轻点重试"
-        else -> "轻点继续"
+        active -> L10n.tr("轻点暂停")
+        !connected -> L10n.tr("连接电脑后继续")
+        task.status == "failed" -> L10n.tr("轻点重试")
+        else -> L10n.tr("轻点继续")
     }
     val statusColor = when (task.status) {
         "completed" -> MaterialTheme.colorScheme.tertiary
@@ -2943,7 +2957,7 @@ private fun DownloadTaskCard(
             }
             task.savedLocation?.let { location ->
                 Text(
-                    "保存到：${savedLocationText(task, location)}",
+                    L10n.tr("保存到：{0}", savedLocationText(task, location)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2958,18 +2972,18 @@ private fun DownloadTaskCard(
 }
 
 private fun savedLocationText(task: ArtifactDownload, location: String): String =
-    if (location.startsWith("content://")) "手机系统“下载”目录，${task.displayName}" else location
+    if (location.startsWith("content://")) L10n.tr("手机系统“下载”目录，{0}", task.displayName) else location
 
 private fun downloadStatusText(task: ArtifactDownload): String = when (task.status) {
-    "queued" -> "正在请求文件"
+    "queued" -> L10n.tr("正在请求文件")
     "downloading" -> task.artifact?.size?.let { size ->
         "${formatByteCount(task.receivedBytes)} / ${formatByteCount(size)}"
-    } ?: "正在下载"
-    "completed" -> "下载完成"
-    "paused" -> "已暂停，${formatByteCount(task.receivedBytes)}"
+    } ?: L10n.tr("正在下载")
+    "completed" -> L10n.tr("下载完成")
+    "paused" -> L10n.tr("已暂停，{0}", formatByteCount(task.receivedBytes))
     // User-stopped transfers keep their partial file and only resume on an explicit tap.
-    "cancelled" -> "已暂停，${formatByteCount(task.receivedBytes)}"
-    "failed" -> "下载失败，${formatByteCount(task.receivedBytes)}"
+    "cancelled" -> L10n.tr("已暂停，{0}", formatByteCount(task.receivedBytes))
+    "failed" -> L10n.tr("下载失败，{0}", formatByteCount(task.receivedBytes))
     else -> task.status
 }
 
@@ -2981,7 +2995,7 @@ private fun HomeHostSwitcher(
     onSelectHost: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val name = hosts.firstOrNull { it.hostId == activeHostId }?.name ?: "选择电脑"
+    val name = hosts.firstOrNull { it.hostId == activeHostId }?.name ?: L10n.tr("选择电脑")
     var expanded by remember { mutableStateOf(false) }
     val label: @Composable () -> Unit = {
         Row(
@@ -2995,9 +3009,9 @@ private fun HomeHostSwitcher(
             // 其他电脑上有待确认：列表只显示当前电脑后，这里提醒去切换（菜单里写明是哪台）。
             if (hosts.any { it.hostId != activeHostId && it.state.hasAnyPendingInteraction() }) {
                 Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error)
-                    .semantics { contentDescription = "其他电脑有待确认" })
+                    .semantics { contentDescription = L10n.tr("其他电脑有待确认") })
             }
-            if (hosts.size > 1) Icon(Icons.Rounded.UnfoldMore, contentDescription = "切换电脑", modifier = Modifier.size(16.dp),
+            if (hosts.size > 1) Icon(Icons.Rounded.UnfoldMore, contentDescription = L10n.tr("切换电脑"), modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -3008,14 +3022,14 @@ private fun HomeHostSwitcher(
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             hosts.forEach { host ->
                 DropdownMenuItem(
-                    text = { Text(host.name + if (host.state.hasAnyPendingInteraction()) "，有待确认" else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    text = { Text(host.name + if (host.state.hasAnyPendingInteraction()) L10n.tr("，有待确认") else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     onClick = { expanded = false; if (host.hostId != activeHostId) onSelectHost(host.hostId) },
                     leadingIcon = {
-                        if (host.hostId == activeHostId) Icon(Icons.Rounded.Check, contentDescription = "当前电脑", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        if (host.hostId == activeHostId) Icon(Icons.Rounded.Check, contentDescription = L10n.tr("当前电脑"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         else Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(18.dp))
                     },
                     trailingIcon = {
-                        Text(if (host.state.e2eReady) "在线" else "离线", style = MaterialTheme.typography.labelSmall,
+                        Text(if (host.state.e2eReady) L10n.tr("在线") else L10n.tr("离线"), style = MaterialTheme.typography.labelSmall,
                             color = if (host.state.e2eReady) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant)
                     },
                 )
@@ -3049,10 +3063,10 @@ private fun ConnectionStatus(
     }
     // 加密通道建立后先说同步进度，再说连接方式；之前说连接阶段；颜色始终表达状态（与 iOS 一致）。
     val label = when {
-        syncing -> "正在同步"
-        failed -> "同步失败"
-        secured -> transportPathLabel(path) ?: "中继"
-        connection == RelayConnection.ONLINE -> "正在建立安全通道"
+        syncing -> L10n.tr("正在同步")
+        failed -> L10n.tr("同步失败")
+        secured -> transportPathLabel(path) ?: L10n.tr("中继")
+        connection == RelayConnection.ONLINE -> L10n.tr("正在建立安全通道")
         else -> relayConnectionText(connection)
     }
     NeumorphSurface(
@@ -3076,7 +3090,7 @@ private fun ConnectionStatus(
         MotionText(label, color = color, style = MaterialTheme.typography.labelMedium)
         if (secured) {
             // 同步失败不影响加密：锁保持已加密的颜色，不把失败画成通道不安全。
-            Icon(Icons.Rounded.Lock, contentDescription = "端到端加密", tint = securedColor, modifier = Modifier.size(13.dp))
+            Icon(Icons.Rounded.Lock, contentDescription = L10n.tr("端到端加密"), tint = securedColor, modifier = Modifier.size(13.dp))
         }
     }
 }
@@ -3096,12 +3110,12 @@ internal fun StatusScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("设置", fontWeight = FontWeight.SemiBold) },
+                title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
                         icon = Icons.Rounded.ArrowBack,
-                        contentDescription = "返回",
+                        contentDescription = L10n.tr("返回"),
                         size = 40.dp,
                     )
                 },
@@ -3116,35 +3130,35 @@ internal fun StatusScreen(
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            StatusSectionTitle("Agent 供应商")
+            StatusSectionTitle(L10n.tr("Agent 供应商"))
             AgentStatusProvidersCard(state, model::switchAgentProvider, model::querySubscription)
 
             statusAdvice(state, pairing)?.let { WarningCard(it) }
-            StatusSectionTitle("当前连接")
+            StatusSectionTitle(L10n.tr("当前连接"))
             StatusCard {
                 StatusRow(
-                    "连接状态",
+                    L10n.tr("连接状态"),
                     connectionStatusText(state),
                     if (state.e2eReady) StatusTone.Good
                     else if (state.connection == RelayConnection.ONLINE) StatusTone.Warn
                     else relayConnectionTone(state.connection),
                 )
-                StatusRow("连接方式", connectionMethodText(state), connectionMethodTone(state))
-                StatusRow("连接延迟", connectionLatencyText(state), StatusTone.Neutral)
-                StatusRow("端到端加密", if (state.e2eReady) "已启用" else "未建立", e2eTone(state))
+                StatusRow(L10n.tr("连接方式"), connectionMethodText(state), connectionMethodTone(state))
+                StatusRow(L10n.tr("连接延迟"), connectionLatencyText(state), StatusTone.Neutral)
+                StatusRow(L10n.tr("端到端加密"), if (state.e2eReady) L10n.tr("已启用") else L10n.tr("未建立"), e2eTone(state))
             }
 
-            StatusSectionTitle("配对信息")
+            StatusSectionTitle(L10n.tr("配对信息"))
             StatusCard {
-                StatusValueRow("电脑", state.hostName?.takeIf(String::isNotBlank) ?: "已配对的电脑")
-                StatusRow("配对状态", pairingText(pairing), pairingTone(pairing))
+                StatusValueRow(L10n.tr("电脑"), state.hostName?.takeIf(String::isNotBlank) ?: L10n.tr("已配对的电脑"))
+                StatusRow(L10n.tr("配对状态"), pairingText(pairing), pairingTone(pairing))
             }
 
-            StatusSectionTitle("外观")
+            StatusSectionTitle(L10n.tr("外观"))
             val visualStyle = LocalOrbisVisualStyle.current
             val changeVisualStyle = LocalOrbisVisualStyleChange.current
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                listOf(OrbisVisualStyle.Classic to "经典", OrbisVisualStyle.InsetFocus to "雾蓝").forEach { (choice, label) ->
+                listOf(OrbisVisualStyle.Classic to L10n.tr("经典"), OrbisVisualStyle.InsetFocus to L10n.tr("雾蓝")).forEach { (choice, label) ->
                     val selected = visualStyle == choice
                     NeumorphSurface(
                         modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("appearance-${choice.key}")
@@ -3166,6 +3180,31 @@ internal fun StatusScreen(
                             Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.labelLarge, maxLines = 1)
                         }
+                    }
+                }
+            }
+            StatusSectionTitle(L10n.tr("语言"))
+            AppLanguage.entries.forEach { choice ->
+                val selected = AppLocalization.preference == choice
+                val label = when (choice) {
+                    AppLanguage.System -> L10n.tr("跟随系统")
+                    AppLanguage.Chinese -> "简体中文"
+                    AppLanguage.English -> "English"
+                }
+                NeumorphSurface(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .testTag("language-${choice.key}").semantics { this.selected = selected },
+                    shape = RemoteUi.ControlShape,
+                    style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                    onClick = { AppLocalization.select(choice) },
+                ) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                        if (selected) Icon(Icons.Rounded.Check, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        else Spacer(Modifier.size(22.dp))
                     }
                 }
             }
@@ -3213,24 +3252,24 @@ internal fun AgentProvidersContent(
     }
     SelectionBackPriority(selecting) { exitSelection() }
     Scaffold(topBar = {
-        TopAppBar(title = { MotionText(if (selecting) "已选择 ${selected.size} 项" else "供应商") }, navigationIcon = {
+        TopAppBar(title = { MotionText(if (selecting) L10n.tr("已选择 {0} 项", selected.size) else L10n.tr("供应商")) }, navigationIcon = {
             NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },
                 icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
                 backMorph = selecting,
-                contentDescription = if (selecting) "退出多选" else "返回", size = 40.dp)
+                contentDescription = if (selecting) L10n.tr("退出多选") else L10n.tr("返回"), size = 40.dp)
         }, actions = {
             SelectionToolbar(selecting = selecting, normal = {
                 NeumorphIconButton(onClick = { exitSelection(); onLoad(catalog.kind) },
-                    icon = Icons.Rounded.Refresh, contentDescription = "刷新", enabled = connected && !catalog.loading)
+                    icon = Icons.Rounded.Refresh, contentDescription = L10n.tr("刷新"), enabled = connected && !catalog.loading)
             }, selected = {
                 NeumorphIconButton(onClick = { pendingRemoval = catalog.providers.filter { it in selected } },
-                    icon = Icons.Rounded.Delete, contentDescription = "移除所选供应商", size = 40.dp, tint = MaterialTheme.colorScheme.error,
+                    icon = Icons.Rounded.Delete, contentDescription = L10n.tr("移除所选供应商"), size = 40.dp, tint = MaterialTheme.colorScheme.error,
                     enabled = available && selected.isNotEmpty())
             })
         })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text(state.hostName ?: "已配对的电脑", style = MaterialTheme.typography.titleMedium)
+            Text(state.hostName ?: L10n.tr("已配对的电脑"), style = MaterialTheme.typography.titleMedium)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("pi" to "Pi", "codex" to "Codex", "claude" to "Claude Code", "dsh" to "DeepSeek").forEach { (kind, label) ->
                     FilterChip(selected = catalog.kind == kind, onClick = { exitSelection(); pending = null; onLoad(kind) },
@@ -3240,8 +3279,8 @@ internal fun AgentProvidersContent(
             if (catalog.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             catalog.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             catalog.notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-            if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text("还没有供应商")
-            if (removable.isNotEmpty()) Text(if (selecting) "轻点卡片选择，完成后点击右上角移除" else "长按已启用的供应商可多选移除", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+            if (!catalog.loading && catalog.error == null && catalog.providers.isEmpty()) Text(L10n.tr("还没有供应商"))
+            if (removable.isNotEmpty()) Text(if (selecting) L10n.tr("轻点卡片选择，完成后点击右上角移除") else L10n.tr("长按已启用的供应商可多选移除"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             catalog.providers.forEach { provider ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -3260,33 +3299,33 @@ internal fun AgentProvidersContent(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(provider.name, fontWeight = FontWeight.SemiBold)
-                                Text(if (provider.enabled) (if (provider.additive) "已启用" else "当前使用") else "未启用", style = MaterialTheme.typography.bodySmall)
+                                Text(if (provider.enabled) (if (provider.additive) L10n.tr("已启用") else L10n.tr("当前使用")) else L10n.tr("未启用"), style = MaterialTheme.typography.bodySmall)
                             }
                             OrbisSelectionIndicator(provider in selected, selecting && provider.removable)
                         }
                     }
                     if (!provider.enabled) {
                         Box(Modifier.width(64.dp).heightIn(min = RemoteUi.TouchTarget), contentAlignment = Alignment.Center) {
-                            NeumorphTextButton(text = "启用", onClick = { pending = provider }, enabled = available && !selecting)
+                            NeumorphTextButton(text = L10n.tr("启用"), onClick = { pending = provider }, enabled = available && !selecting)
                         }
                     }
                 }
                 if (provider.enabled && provider.subscriptionSupported) {
                     TextButton(onClick = { onQuerySubscription(provider, catalog.hostId) }, enabled = available && !selecting,
                         modifier = Modifier.testTag("provider-quota-${provider.id}")) {
-                        Text(if (catalog.quotaRequestId != null && catalog.quotaProviderId == provider.id) "查询中…" else "查询订阅配额")
+                        Text(if (catalog.quotaRequestId != null && catalog.quotaProviderId == provider.id) L10n.tr("查询中…") else L10n.tr("查询订阅配额"))
                     }
                     if (catalog.quotaProviderId == provider.id) {
                         catalog.quotaError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                         catalog.quota?.let { quota ->
-                            val dateFormat = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                            val dateFormat = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT, L10n.locale)
                             quota.windows.forEach { window ->
-                                val label = if (window.name == "five_hour") "5 小时配额" else "周配额"
-                                Text(label + "：" + (window.remainingPercent?.let { "剩余 " + String.format(java.util.Locale.getDefault(), "%.1f", it) + "%" } ?: "暂不可用"))
+                                val label = if (window.name == "five_hour") L10n.tr("5 小时配额") else L10n.tr("周配额")
+                                Text(label + L10n.tr("：") + (window.remainingPercent?.let { L10n.tr("剩余 ") + String.format(L10n.locale, "%.1f", it) + "%" } ?: L10n.tr("暂不可用")))
                                 window.remainingPercent?.let { remaining -> LinearProgressIndicator(progress = { (remaining / 100).toFloat() }, modifier = Modifier.fillMaxWidth()) }
-                                window.resetsAt?.let { Text("重置时间：" + dateFormat.format(java.util.Date(it)), style = MaterialTheme.typography.bodySmall) }
+                                window.resetsAt?.let { Text(L10n.tr("重置时间：") + dateFormat.format(java.util.Date(it)), style = MaterialTheme.typography.bodySmall) }
                             }
-                            Text("查询时间：" + dateFormat.format(java.util.Date(quota.checkedAt)), style = MaterialTheme.typography.bodySmall)
+                            Text(L10n.tr("查询时间：") + dateFormat.format(java.util.Date(quota.checkedAt)), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -3294,18 +3333,18 @@ internal fun AgentProvidersContent(
         }
     }
     pending?.let { provider ->
-        AlertDialog(onDismissRequest = { pending = null }, title = { Text("启用供应商") },
-            text = { Text("${provider.name}\n${if (provider.additive) "添加到 Pi 配置，可与其他供应商同时启用。" else "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。"}") },
-            confirmButton = { TextButton(enabled = available && provider in catalog.providers, onClick = { onEnable(provider, catalog.hostId); pending = null }) { Text("确认") } },
-            dismissButton = { TextButton(onClick = { pending = null }) { Text("取消") } })
+        AlertDialog(onDismissRequest = { pending = null }, title = { Text(L10n.tr("启用供应商")) },
+            text = { Text("${provider.name}\n${if (provider.additive) L10n.tr("添加到 Pi 配置，可与其他供应商同时启用。") else L10n.tr("将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。")}") },
+            confirmButton = { TextButton(enabled = available && provider in catalog.providers, onClick = { onEnable(provider, catalog.hostId); pending = null }) { Text(L10n.tr("确认")) } },
+            dismissButton = { TextButton(onClick = { pending = null }) { Text(L10n.tr("取消")) } })
     }
     pendingRemoval?.let { providers ->
-        AlertDialog(onDismissRequest = { pendingRemoval = null }, title = { Text("移除 ${providers.size} 个供应商？") },
-            text = { Text(providers.joinToString("\n") { it.name } + "\n从 Pi 配置移除；Host 中的卡片和配置仍保留。" +
-                if (providers.any { it.globalDefault }) "\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。" else "") },
+        AlertDialog(onDismissRequest = { pendingRemoval = null }, title = { Text(L10n.tr("移除 {0} 个供应商？", providers.size)) },
+            text = { Text(providers.joinToString("\n") { it.name } + L10n.tr("\n从 Pi 配置移除；Host 中的卡片和配置仍保留。") +
+                if (providers.any { it.globalDefault }) L10n.tr("\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。") else "") },
             confirmButton = { TextButton(enabled = available && catalog.canRemove(providers, state.hostId),
-                onClick = { onRemove(providers, catalog.hostId); exitSelection() }) { Text("移除 ${providers.size} 项", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text("取消") } })
+                onClick = { onRemove(providers, catalog.hostId); exitSelection() }) { Text(L10n.tr("移除 {0} 项", providers.size), color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { pendingRemoval = null }) { Text(L10n.tr("取消")) } })
     }
 }
 
@@ -3315,17 +3354,17 @@ internal fun AgentProvidersContent(
  */
 internal fun statusAdvice(state: RemoteState, pairing: PairingStatus): String? = when {
     pairing.hostId == null || !pairing.pskRootPresent ->
-        "配对不完整：请打开侧边栏，点底部的电脑取消配对，再扫电脑上的新二维码"
+        L10n.tr("配对不完整：请打开侧边栏，点底部的电脑取消配对，再扫电脑上的新二维码")
     state.e2eReady -> null
     state.connection == RelayConnection.ONLINE ->
-        "正在等待电脑连接：请确认电脑上的 Orbis Host 已打开，APP 会自动重连"
-    state.connection == RelayConnection.OFFLINE -> "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开"
+        L10n.tr("正在等待电脑连接：请确认电脑上的 Orbis Host 已打开，APP 会自动重连")
+    state.connection == RelayConnection.OFFLINE -> L10n.tr("暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开")
     else -> null
 }
 
 internal fun transportPathLabel(path: String?): String? = when (path) {
-    "lan" -> "局域网"
-    "relay" -> "中继"
+    "lan" -> L10n.tr("局域网")
+    "relay" -> L10n.tr("中继")
     else -> null
 }
 
@@ -3335,7 +3374,7 @@ internal fun transportPathLabel(path: String?): String? = when (path) {
  */
 internal fun connectionMethodText(state: RemoteState): String =
     transportPathLabel(state.path)
-        ?: if (state.connection == RelayConnection.ONLINE) "中继" else "尚未确认"
+        ?: if (state.connection == RelayConnection.ONLINE) L10n.tr("中继") else L10n.tr("尚未确认")
 
 /** 局域网路径使用成功色，中继使用普通状态色。 */
 internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.path) {
@@ -3344,19 +3383,19 @@ internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.
 }
 
 internal fun connectionLatencyText(state: RemoteState): String =
-    state.pathRttMs?.takeIf { state.e2eReady && it >= 0 }?.let { "$it ms" } ?: "暂不可用"
+    state.pathRttMs?.takeIf { state.e2eReady && it >= 0 }?.let { "$it ms" } ?: L10n.tr("暂不可用")
 
 internal fun connectionStatusText(state: RemoteState): String = when {
-    state.e2eReady -> "已连接"
-    state.connection == RelayConnection.ONLINE -> "正在连接电脑"
+    state.e2eReady -> L10n.tr("已连接")
+    state.connection == RelayConnection.ONLINE -> L10n.tr("正在连接电脑")
     else -> relayConnectionText(state.connection)
 }
 
 private fun relayConnectionText(connection: RelayConnection): String = when (connection) {
-    RelayConnection.OFFLINE -> "未连接"
-    RelayConnection.CONNECTING -> "正在连接"
-    RelayConnection.ONLINE -> "已连接"
-    RelayConnection.RECONNECTING -> "正在重新连接"
+    RelayConnection.OFFLINE -> L10n.tr("未连接")
+    RelayConnection.CONNECTING -> L10n.tr("正在连接")
+    RelayConnection.ONLINE -> L10n.tr("已连接")
+    RelayConnection.RECONNECTING -> L10n.tr("正在重新连接")
 }
 
 internal enum class StatusTone { Good, Warn, Bad, Neutral }
@@ -3376,9 +3415,9 @@ internal fun e2eTone(state: RemoteState): StatusTone = when {
 }
 
 internal fun pairingText(pairing: PairingStatus): String = when {
-    pairing.hostId == null -> "未配对"
-    !pairing.pskRootPresent -> "需要重新配对"
-    else -> "已配对"
+    pairing.hostId == null -> L10n.tr("未配对")
+    !pairing.pskRootPresent -> L10n.tr("需要重新配对")
+    else -> L10n.tr("已配对")
 }
 
 /**
@@ -3388,12 +3427,12 @@ internal fun pairingText(pairing: PairingStatus): String = when {
  * 会让人去重开桌面版，而真正的问题在别处。
  */
 internal fun codexDesktopText(attach: CodexDesktopAttach?): String = when (attach?.state) {
-    "attached" -> "已接入"
-    "closed" -> "未接入"
-    "notInstalled" -> "未安装"
-    "unsupported" -> "不可用"
-    "error" -> "接入失败"
-    else -> "未知"
+    "attached" -> L10n.tr("已接入")
+    "closed" -> L10n.tr("未接入")
+    "notInstalled" -> L10n.tr("未安装")
+    "unsupported" -> L10n.tr("不可用")
+    "error" -> L10n.tr("接入失败")
+    else -> L10n.tr("未知")
 }
 
 internal fun codexDesktopTone(attach: CodexDesktopAttach?): StatusTone = when (attach?.state) {
@@ -3428,15 +3467,16 @@ private fun StatusCard(content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun StatusRow(label: String, value: String, tone: StatusTone) {
     val color = statusToneColor(tone)
-    Row(
+    androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(end = 12.dp).align(Alignment.CenterVertically))
         NeumorphSurface(style = NeumorphStyle.Pressed, shape = CircleShape, shadowScale = 0.25f) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -3451,13 +3491,14 @@ private fun StatusRow(label: String, value: String, tone: StatusTone) {
 }
 
 /** A plain value on the same line as its label, aligned with the toned rows of the card (iOS `StatusRow`). */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun StatusValueRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(end = 12.dp).align(Alignment.CenterVertically))
         SelectionContainer {
-            Text(value, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(value, style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -3473,10 +3514,10 @@ private fun statusToneColor(tone: StatusTone): Color = when (tone) {
 @Composable
 private fun TurnStartLabel(startedAt: Long) {
     val startTime = remember(startedAt) {
-        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(startedAt))
+        SimpleDateFormat("HH:mm:ss", L10n.locale).format(Date(startedAt))
     }
     Text(
-        text = "开始 $startTime",
+        text = L10n.tr("开始 {0}", startTime),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -3488,7 +3529,7 @@ private fun TurnDurationLabel(timing: TurnTiming, nowMs: Long) {
     val active = timing.durationMs == null
     val durationMs = timing.durationMs ?: max(0L, nowMs - timing.startedAt)
     Text(
-        text = "耗时 ${formatTurnDuration(durationMs)}${if (active) "，进行中" else ""}",
+        text = L10n.tr("耗时 {0}{1}", formatTurnDuration(durationMs), if (active) L10n.tr("，进行中") else ""),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -3543,7 +3584,7 @@ private fun ComposerContextNotice(status: ComposerStatus) {
     val label = status.contextLabel ?: return
     if (status.severity == ContextUsageSeverity.Normal) return
     Text(
-        "上下文 $label",
+        L10n.tr("上下文 {0}", label),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Medium,
@@ -3698,7 +3739,7 @@ internal fun UserMessageCard(
                 style = NeumorphStyle.Pressed, shadowScale = 0.55f, contentPadding = 14.dp,
                 onClick = {}, onLongClick = openActions) {
                 Column(Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (message.isError == true) Text("发送异常", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    if (message.isError == true) Text(L10n.tr("发送异常"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     MessageBlocks(
                         runtimeId = runtimeId,
                         message = message,
@@ -3727,7 +3768,7 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
         when (state) {
             PendingSendState.Sending, PendingSendState.Accepted -> {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
-                Text("发送中", style = MaterialTheme.typography.labelSmall, color = muted)
+                Text(L10n.tr("发送中"), style = MaterialTheme.typography.labelSmall, color = muted)
             }
             is PendingSendState.Waiting -> {
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
@@ -3735,28 +3776,28 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
                 Text(state.label, style = MaterialTheme.typography.labelSmall, color = muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             PendingSendState.Queued -> {
-                Text("已排队", style = MaterialTheme.typography.labelSmall, color = muted)
+                Text(L10n.tr("已排队"), style = MaterialTheme.typography.labelSmall, color = muted)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Cancel) }, icon = Icons.Rounded.Close,
-                    contentDescription = "撤回排队消息", size = 28.dp, enabled = canResend)
+                    contentDescription = L10n.tr("撤回排队消息"), size = 28.dp, enabled = canResend)
             }
             PendingSendState.Unconfirmed -> {
                 Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = muted, modifier = Modifier.size(14.dp))
-                Text("未确认是否送达", style = MaterialTheme.typography.labelSmall, color = muted)
+                Text(L10n.tr("未确认是否送达"), style = MaterialTheme.typography.labelSmall, color = muted)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Check) }, icon = Icons.Rounded.Refresh,
-                    contentDescription = "核对送达状态", size = 28.dp, enabled = canResend)
+                    contentDescription = L10n.tr("核对送达状态"), size = 28.dp, enabled = canResend)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
-                    contentDescription = "删除", size = 28.dp)
+                    contentDescription = L10n.tr("删除"), size = 28.dp)
             }
             is PendingSendState.Failed -> {
                 Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                 Text(state.reason, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
                     maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Resend) }, icon = Icons.Rounded.Refresh,
-                    contentDescription = "重新发送", size = 28.dp, enabled = canResend)
+                    contentDescription = L10n.tr("重新发送"), size = 28.dp, enabled = canResend)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Restore) }, icon = Icons.Rounded.Edit,
-                    contentDescription = "放回输入框", size = 28.dp)
+                    contentDescription = L10n.tr("放回输入框"), size = 28.dp)
                 NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
-                    contentDescription = "删除", size = 28.dp)
+                    contentDescription = L10n.tr("删除"), size = 28.dp)
             }
         }
     }
@@ -3786,7 +3827,7 @@ internal fun AssistantTurnCard(
                 turnTiming?.let { TurnStartLabel(it.startedAt) }
                 // 整段回复的复制入口，与 iOS 卡片右上角一致。
                 if (copyMessages.any { message -> message.content.any { it.type == "text" && !it.text.isNullOrBlank() } }) {
-                    CopyIconButton("复制回复", size = 30.dp) {
+                    CopyIconButton(L10n.tr("复制回复"), size = 30.dp) {
                         copyMessages.flatMap { message -> message.content.filter { it.type == "text" }.mapNotNull { it.text } }
                             .filter(String::isNotBlank).joinToString("\n\n")
                     }
@@ -3834,7 +3875,7 @@ private fun AssistantTurnMessage(
                 Modifier.padding(horizontal = 11.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("回复异常", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
+                Text(L10n.tr("回复异常"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
                 MessageBlocks(runtimeId, message, toolActivities, toolResults, downloads, downloadArtifact, downloadFile)
             }
         }
@@ -3880,7 +3921,7 @@ private fun MessageBlocks(
                     // tool_call metadata.
                     val live = toolId == null && block.arguments == null && !block.text.isNullOrBlank()
                     CollapsedTool(
-                        toolName = block.toolName ?: activity?.toolName ?: message.toolName ?: "工具",
+                        toolName = block.toolName ?: activity?.toolName ?: message.toolName ?: L10n.tr("工具"),
                         arguments = block.arguments?.toString() ?: block.text,
                         activity = activity,
                         result = result,
@@ -3904,12 +3945,12 @@ private fun ArtifactCard(
 ) {
     val isDownloading = download?.status == "downloading" || download?.status == "queued"
     val status = when (download?.status) {
-        "queued" -> "正在请求文件"
-        "downloading" -> "正在下载 ${formatByteCount(download.receivedBytes)}/${formatByteCount(artifact.size)}"
-        "completed" -> "已保存到手机"
-        "failed" -> download.error ?: "下载失败"
-        "paused" -> "已暂停，可在下载页面继续"
-        else -> "点击下载"
+        "queued" -> L10n.tr("正在请求文件")
+        "downloading" -> L10n.tr("正在下载 {0}/{1}", formatByteCount(download.receivedBytes), formatByteCount(artifact.size))
+        "completed" -> L10n.tr("已保存到手机")
+        "failed" -> download.error ?: L10n.tr("下载失败")
+        "paused" -> L10n.tr("已暂停，可在下载页面继续")
+        else -> L10n.tr("点击下载")
     }
     NeumorphSurface(
         onClick = onDownload,
@@ -3923,11 +3964,11 @@ private fun ArtifactCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(Icons.Rounded.Download, contentDescription = "下载文件", tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Rounded.Download, contentDescription = L10n.tr("下载文件"), tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
                 FileNameText(artifact.fileName, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${formatByteCount(artifact.size)}，$status",
+                    L10n.tr("{0}，{1}", formatByteCount(artifact.size), status),
                     style = MaterialTheme.typography.bodySmall,
                     color = if (download?.status == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3948,8 +3989,8 @@ private fun CollapsedThinking(text: String) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     CompactDisclosure(
         icon = Icons.Rounded.Psychology,
-        title = "思考",
-        status = "${text.lineSequence().count()} 行",
+        title = L10n.tr("思考"),
+        status = L10n.tr("{0} 行", text.lineSequence().count()),
         summary = text,
         collapsedSummary = "",
         expanded = expanded,
@@ -3978,9 +4019,9 @@ private fun CollapsedTool(
     val detail = resultText.ifBlank { activity?.detail }
     val failed = activity?.isError == true || result?.isError == true
     val status = when {
-        failed -> "执行失败"
-        live -> "参数接收中"
-        else -> activity?.let { toolStateText(it.state) } ?: "已完成"
+        failed -> L10n.tr("执行失败")
+        live -> L10n.tr("参数接收中")
+        else -> activity?.let { toolStateText(it.state) } ?: L10n.tr("已完成")
     }
     CompactDisclosure(
         icon = Icons.Rounded.Build,
@@ -4036,7 +4077,7 @@ private fun CompactDisclosure(
             }
             Icon(
                 if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                contentDescription = if (expanded) "收起" else "展开",
+                contentDescription = if (expanded) L10n.tr("收起") else L10n.tr("展开"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
@@ -4054,9 +4095,9 @@ private fun ToolCard(tool: ToolActivity) {
         contentPadding = 12.dp,
     ) {
         Column(Modifier) {
-            Text("${tool.toolName}，${toolStateText(tool.state)}", style = MaterialTheme.typography.titleSmall)
+            Text(L10n.tr("{0}，{1}", tool.toolName, toolStateText(tool.state)), style = MaterialTheme.typography.titleSmall)
             tool.detail?.let { Text(it.take(2_000), fontFamily = FontFamily.Monospace) }
-            if (tool.isError) Text("工具执行失败", color = MaterialTheme.colorScheme.error)
+            if (tool.isError) Text(L10n.tr("工具执行失败"), color = MaterialTheme.colorScheme.error)
         }
     }
 }
@@ -4077,7 +4118,7 @@ private fun PendingMessagesPanel(
     ) {
         Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
             Text(
-                "排队消息",
+                L10n.tr("排队消息"),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
@@ -4105,14 +4146,14 @@ private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSe
         Column(Modifier.weight(1f)) {
             Text(message.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
             Text(
-                "${queuedMessageDeliveryText(message.delivery)}，${queuedMessageStateText(message.state)}${message.error?.let { "：$it" }.orEmpty()}",
+                L10n.tr("{0}，{1}{2}", queuedMessageDeliveryText(message.delivery), queuedMessageStateText(message.state), message.error?.let { "：$it" }.orEmpty()),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         // 只有还没送进上下文的消息能撤回；结果由队列事件回报（与 iOS 一致）。
         if (message.state == "accepted") {
-            NeumorphTextButton(if (unconfirmed) "撤回未确认" else "撤回", onClick = onCancel, icon = Icons.Rounded.Close,
+            NeumorphTextButton(if (unconfirmed) L10n.tr("撤回未确认") else L10n.tr("撤回"), onClick = onCancel, icon = Icons.Rounded.Close,
                 enabled = canSend && !unconfirmed)
         }
     }
@@ -4120,18 +4161,18 @@ private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSe
 
 /** How a message sent during a running turn is delivered; the same words on iOS. */
 internal fun queuedMessageDeliveryText(delivery: String): String = when (delivery) {
-    "steer" -> "插入当前任务"
-    else -> "完成后发送"
+    "steer" -> L10n.tr("插入当前任务")
+    else -> L10n.tr("完成后发送")
 }
 
 private fun queuedMessageStateText(state: String): String = when (state) {
-    "submitting" -> "提交中"
-    "unconfirmed" -> "未确认"
-    "accepted" -> "已排队"
-    "delivered" -> "已送入上下文"
-    "cancelled" -> "已取消"
-    "rejected" -> "已拒绝"
-    "not_cancelable" -> "不可取消"
+    "submitting" -> L10n.tr("提交中")
+    "unconfirmed" -> L10n.tr("未确认")
+    "accepted" -> L10n.tr("已排队")
+    "delivered" -> L10n.tr("已送入上下文")
+    "cancelled" -> L10n.tr("已取消")
+    "rejected" -> L10n.tr("已拒绝")
+    "not_cancelable" -> L10n.tr("不可取消")
     else -> state
 }
 
@@ -4180,7 +4221,7 @@ private fun ErrorBanner(message: String, needsAction: Boolean, onDismiss: () -> 
                     modifier = Modifier.weight(1f),
                 )
                 if (needsAction) {
-                    Text("关闭", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(L10n.tr("关闭"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -4208,7 +4249,7 @@ internal fun RuntimeNotifications(
     Column(Modifier.fillMaxWidth().heightIn(max = 200.dp)
         .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (projection.items.isEmpty()) NoticeBanner("通知状态待核对", isError = false, recheck = unverified, onRecheck = onRecheck, onClose = null)
+        if (projection.items.isEmpty()) NoticeBanner(L10n.tr("通知状态待核对"), isError = false, recheck = unverified, onRecheck = onRecheck, onClose = null)
         projection.items.forEachIndexed { index, notice ->
             NoticeBanner(notice.message, isError = notice.severity != "info",
                 recheck = index == 0 && (unverified || (supported && notice.verification == "unknown")), onRecheck = onRecheck,
@@ -4227,19 +4268,19 @@ private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRec
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text, style = MaterialTheme.typography.bodyMedium,
                     color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
-                if (recheck && text != "通知状态待核对") {
-                    Text("通知状态待核对", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (recheck && text != L10n.tr("通知状态待核对")) {
+                    Text(L10n.tr("通知状态待核对"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (recheck && onRecheck != null) {
                     var glyphActivation by remember { mutableStateOf(0) }
                     Row(Modifier.clip(CircleShape).clickable { glyphActivation++; onRecheck() }.padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation))
-                        Text("重新核对", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(L10n.tr("重新核对"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
-            onClose?.let { NeumorphIconButton(onClick = it, icon = Icons.Rounded.Close, contentDescription = "关闭通知", size = 28.dp) }
+            onClose?.let { NeumorphIconButton(onClick = it, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp) }
         }
     }
 }
@@ -4309,10 +4350,10 @@ internal fun InteractionPanel(
                         overflow = TextOverflow.Ellipsis)
                     Text(
                         when {
-                            request.submitted -> "已提交"
-                            submitting -> "正在发送…"
-                            expired -> "已过期"
-                            else -> "待确认"
+                            request.submitted -> L10n.tr("已提交")
+                            submitting -> L10n.tr("正在发送…")
+                            expired -> L10n.tr("已过期")
+                            else -> L10n.tr("待确认")
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
@@ -4343,21 +4384,21 @@ internal fun InteractionPanel(
                         }
                         // 只有内容真的被截断时才需要展开 / 复制整段；短命令可直接长按选择。
                         if (summaryOverflows || fullPreview) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            NeumorphTextButton(if (fullPreview) "收起内容" else "展开完整内容", onClick = { fullPreview = !fullPreview })
-                            NeumorphTextButton("复制内容", onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(summary)) })
+                            NeumorphTextButton(if (fullPreview) L10n.tr("收起内容") else L10n.tr("展开完整内容"), onClick = { fullPreview = !fullPreview })
+                            NeumorphTextButton(L10n.tr("复制内容"), onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(summary)) })
                         }
                     }
                     request.externalUrl?.let { url ->
                         Text(url, style = MaterialTheme.typography.bodySmall)
-                        NeumorphTextButton("打开网页", enabled = responseEnabled, onClick = {
-                            runCatching { uriHandler.openUri(url) }.onFailure { linkError = "无法打开网页，请在电脑端完成操作。" }
+                        NeumorphTextButton(L10n.tr("打开网页"), enabled = responseEnabled, onClick = {
+                            runCatching { uriHandler.openUri(url) }.onFailure { linkError = L10n.tr("无法打开网页，请在电脑端完成操作。") }
                         })
                     }
                     linkError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     if (interactionHasDeadline(request) && !expired) {
-                        Text("剩余 ${interactionRemainingSeconds(request, nowMs)} 秒", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
+                        Text(L10n.tr("剩余 {0} 秒", interactionRemainingSeconds(request, nowMs)), color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
                     }
-                    if (!knownKind) WarningCard("手机无法安全渲染此交互，请在电脑端处理。")
+                    if (!knownKind) WarningCard(L10n.tr("手机无法安全渲染此交互，请在电脑端处理。"))
                     when (request.kind) {
                         "select" -> request.options.forEach { option ->
                             NeumorphSurface(
@@ -4378,7 +4419,7 @@ internal fun InteractionPanel(
                             value = input,
                             onValueChange = { form.value = form.value.copy(input = it) },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text(request.placeholder ?: "输入内容") },
+                            label = { Text(request.placeholder ?: L10n.tr("输入内容")) },
                             supportingText = { interactionInputConstraintText(request)?.let { Text(it) } },
                             isError = !isInteractionInputValid(input, request),
                             enabled = responseEnabled,
@@ -4418,11 +4459,11 @@ internal fun InteractionPanel(
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (onCancel != null && request.kind != "confirm") {
-                        NeumorphTextButton("取消请求", enabled = responseEnabled, onClick = onCancel)
+                        NeumorphTextButton(L10n.tr("取消请求"), enabled = responseEnabled, onClick = onCancel)
                     }
                     if (request.kind == "confirm") {
                         NeumorphTextButton(
-                            text = request.cancelLabel ?: "拒绝",
+                            text = request.cancelLabel ?: L10n.tr("拒绝"),
                             danger = true,
                             enabled = responseEnabled,
                             modifier = Modifier.weight(1f),
@@ -4431,21 +4472,21 @@ internal fun InteractionPanel(
                     }
                     when (request.kind) {
                         "confirm" -> NeumorphTextButton(
-                            text = request.confirmLabel ?: "允许",
+                            text = request.confirmLabel ?: L10n.tr("允许"),
                             modifier = Modifier.weight(1f),
                             filled = true,
                             enabled = responseEnabled,
                             onClick = { respondConfirm(true) },
                         )
                         "input" -> NeumorphTextButton(
-                            text = "提交",
+                            text = L10n.tr("提交"),
                             modifier = Modifier.weight(1f),
                             filled = true,
                             enabled = responseEnabled && isInteractionInputValid(input, request),
                             onClick = { respondValue(input) },
                         )
                         "multi-select" -> NeumorphTextButton(
-                            text = "提交",
+                            text = L10n.tr("提交"),
                             modifier = Modifier.weight(1f),
                             filled = true,
                             enabled = responseEnabled && isInteractionMultiSelectValid(selected.size, request),
@@ -4460,10 +4501,10 @@ internal fun InteractionPanel(
 
 
 private fun toolStateText(state: String): String = when (state) {
-    "started" -> "已开始"
-    "updated" -> "执行中"
-    "finished" -> "已完成"
-    else -> "状态未知"
+    "started" -> L10n.tr("已开始")
+    "updated" -> L10n.tr("执行中")
+    "finished" -> L10n.tr("已完成")
+    else -> L10n.tr("状态未知")
 }
 
 /**
@@ -4513,7 +4554,7 @@ private fun AttachmentChips(uploads: List<UploadTask>, onRemove: (String) -> Uni
                 NeumorphIconButton(
                     onClick = { onRemove(upload.taskId) },
                     icon = Icons.Rounded.Close,
-                    contentDescription = "移除附件",
+                    contentDescription = L10n.tr("移除附件"),
                     size = 40.dp,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -4527,10 +4568,10 @@ internal fun uploadProgressText(upload: UploadTask): String {
     val total = upload.size
     val percent = if (total <= 0) 0 else ((upload.durableBytes * 100) / total).toInt().coerceIn(0, 100)
     return when (upload.status) {
-        "completed" -> "已发送到电脑"
-        "failed" -> upload.error ?: "发送失败"
-        "paused" -> "已暂停，可重新发送（$percent%）"
-        else -> "发送中 $percent%"
+        "completed" -> L10n.tr("已发送到电脑")
+        "failed" -> upload.error ?: L10n.tr("发送失败")
+        "paused" -> L10n.tr("已暂停，可重新发送（{0}%）", percent)
+        else -> L10n.tr("发送中 {0}%", percent)
     }
 }
 
@@ -4597,12 +4638,12 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(launch.failure?.let { "启动失败：$it" } ?: "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。",
+            Text(launch.failure?.let { L10n.tr("启动失败：{0}", it) } ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"),
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (launch.failure != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphTextButton("重试", onClick = onRetry, icon = Icons.Rounded.Refresh, modifier = Modifier.testTag("launch-retry"))
-                NeumorphTextButton("返回", onClick = onBack, modifier = Modifier.testTag("launch-back"))
+                NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = Icons.Rounded.Refresh, modifier = Modifier.testTag("launch-retry"))
+                NeumorphTextButton(L10n.tr("返回"), onClick = onBack, modifier = Modifier.testTag("launch-back"))
             }
         }
     }

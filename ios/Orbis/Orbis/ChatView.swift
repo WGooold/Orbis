@@ -117,10 +117,10 @@ struct ChatView: View {
                 if let launch = store.launching, store.isLaunchPage, launch.failure != nil || launch.unconfirmed {
                     // ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。
                         VStack(alignment: .leading, spacing: 8) {
-                            OrbisNotice(text: launch.failure.map { "启动失败：" + $0 } ?? "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。", error: launch.failure != nil)
+                            OrbisNotice(text: launch.failure.map { L10n.tr("启动失败：") + $0 } ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
                             HStack(spacing: 12) {
-                                OrbisActionButton(title: "重试", symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
-                                OrbisActionButton(title: "返回") { onBack() }.accessibilityIdentifier("launch-back")
+                                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
+                                OrbisActionButton(title: L10n.tr("返回")) { onBack() }.accessibilityIdentifier("launch-back")
                             }
                         }.padding(.horizontal, 16)
                             // 容器自身带标识；不加 .contain 时标识会下沉覆盖“重试”“返回”的标识。
@@ -194,7 +194,7 @@ struct ChatView: View {
         } label: {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    Text("最近提问").font(.orbisCaption(.medium)).foregroundStyle(p.secondary)
+                    Text(L10n.tr("最近提问")).font(.orbisCaption(.medium)).foregroundStyle(p.secondary)
                         .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     Text(question.text).font(.orbisLabel()).foregroundStyle(p.text)
                         .lineLimit(1).multilineTextAlignment(.leading)
@@ -204,8 +204,8 @@ struct ChatView: View {
             }.padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 48)
         }.buttonStyle(NeuButtonStyle())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("最近提问，\(question.text)")
-            .accessibilityHint("定位到原消息")
+            .accessibilityLabel(L10n.tr("最近提问，{0}", question.text))
+            .accessibilityHint(L10n.tr("定位到原消息"))
             .accessibilityIdentifier("chat-question-reminder")
             .accessibilityAddTraits(.isButton)
     }
@@ -224,7 +224,7 @@ struct ChatView: View {
     private var header: some View {
         let p = OrbisPalette(scheme)
         return OrbisHeader {
-            OrbisIconButton(symbol: "arrow.left", label: "返回", action: onBack)
+            OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack)
         } title: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -253,12 +253,12 @@ struct ChatView: View {
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(agentTitle(kind))，\(store.displayName(runtime))，\(store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection))")
-                .accessibilityHint("查看会话信息").accessibilityIdentifier("chat-title")
+                .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), store.displayName(runtime), store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection)))
+                .accessibilityHint(L10n.tr("查看会话信息")).accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
-            OrbisIconButton(symbol: "clock.arrow.circlepath", label: "历史与分支", action: onHistory)
-            OrbisIconButton(symbol: "arrow.down.to.line", label: "下载", action: onDownloads)
+            OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)
+            OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
                 .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
         }
     }
@@ -281,7 +281,7 @@ struct ChatView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     transcriptHeader.id("chat-header")
                     if transcript.rows.isEmpty {
-                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? "正在加载会话" : "继续这段会话")
+                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
                             .frame(minHeight: max(180, viewport.size.height - 100))
                     }
                     ForEach(transcript.rows) { row in
@@ -344,7 +344,7 @@ struct ChatView: View {
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if showJump && !transcript.rows.isEmpty {
-                        OrbisIconButton(symbol: "arrow.down", label: "跳到最新消息", tint: accent) { jumpToLatest() }
+                        OrbisIconButton(symbol: "arrow.down", label: L10n.tr("跳到最新消息"), tint: accent) { jumpToLatest() }
                             .padding(16)
                             .transition(.opacity.combined(with: .scale(scale: 0.85)))
                     }
@@ -383,9 +383,9 @@ struct ChatView: View {
 
     private var cachedComposer: some View {
         VStack(spacing: 10) {
-            Text("本机缓存，可离线浏览，发送消息前需在电脑继续此会话").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+            Text(L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
             if let session = store.sessions.first(where: { $0.sessionId == runtime.sessionId }) {
-                OrbisActionButton(title: "在电脑继续会话", symbol: "play") { store.activate(session) }
+                OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") { store.activate(session) }
                     .disabled(store.connection != .secured || store.activatingSessionId != nil)
             }
         }.padding(16)
@@ -402,14 +402,14 @@ struct ChatView: View {
             if let error {
                 Text(error).font(.orbisCaption()).foregroundStyle(p.error).lineLimit(1)
                 Spacer(minLength: 0)
-                OrbisTextButton(title: "重试", symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
+                OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
             } else if store.hasOlderHistory[runtime.runtimeId] == true {
-                OrbisTextButton(title: "更早的消息", symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
+                OrbisTextButton(title: L10n.tr("更早的消息"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
                 Spacer(minLength: 0)
             } else {
                 Spacer(minLength: 0)
             }
-            OrbisTextButton(title: "刷新", symbol: "arrow.clockwise", tint: accent, loading: store.isSyncing) { store.refresh() }
+            OrbisTextButton(title: L10n.tr("刷新"), symbol: "arrow.clockwise", tint: accent, loading: store.isSyncing) { store.refresh() }
                 .disabled(store.isSyncing || !store.canSend)
         }.frame(minHeight: 48)
     }
@@ -458,7 +458,7 @@ struct ChatView: View {
                 GeometryReader { geometry in
                     Rectangle().fill(accent.opacity(0.15))
                         .overlay(alignment: .leading) { Rectangle().fill(percent >= 90 ? p.error : accent).frame(width: geometry.size.width * min(100, max(0, percent)) / 100) }
-                }.frame(height: 2).accessibilityLabel("上下文已使用 \(Int(percent))%")
+                }.frame(height: 2).accessibilityLabel(L10n.tr("上下文已使用 {0}%", Int(percent)))
             } else { Color.clear.frame(height: 2) }
             QueuedMessagesView(runtimeId: runtime.runtimeId)
             OrbisCollapse(expanded: deliveryChoices) {
@@ -480,39 +480,39 @@ struct ChatView: View {
                             store.refreshWorkingBranch()
                         } label: {
                             Label { Text(branchTitle) } icon: { OrbisActionSymbol(systemName: "point.3.connected.trianglepath.dotted") }.lineLimit(1)
-                        }.buttonStyle(.plain).layoutPriority(1).accessibilityLabel("刷新 Git 工作分支，" + branchTitle)
+                        }.buttonStyle(.plain).layoutPriority(1).accessibilityLabel(L10n.tr("刷新 Git 工作分支，") + branchTitle)
                     }.font(.orbisCaption(mono: true)).foregroundStyle(p.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let permissions = runtime.permissionManagement {
                         OrbisMotionButton { composerFocused = false; permissionsOpen = true } label: {
                             HStack(spacing: 5) {
                                 OrbisActionSymbol(systemName: "shield.lefthalf.filled")
-                                Text(permissions.summary).lineLimit(1)
+                                Text(L10n.hostSummary(permissions.summary)).lineLimit(1)
                                 OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
                             }.font(.orbisCaption()).frame(minHeight: 32)
                                 .foregroundStyle(permissions.tone == "problem" ? p.error : accent)
                                 .contentShape(Rectangle().inset(by: -6))
-                        }.buttonStyle(.plain).accessibilityLabel("会话权限：\(permissions.summary)")
+                        }.buttonStyle(.plain).accessibilityLabel(L10n.tr("会话权限：{0}", L10n.hostSummary(permissions.summary)))
                     }
                 }.padding(.horizontal, 20).padding(.top, 6)
             }
             AttachmentStrip(runtime: runtime)
             if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             HStack(alignment: .bottom, spacing: 10) {
-                OrbisIconButton(symbol: "paperclip", label: "发送文件到电脑", tint: accent) {
+                OrbisIconButton(symbol: "paperclip", label: L10n.tr("发送文件到电脑"), tint: accent) {
                     composerFocused = false; filePickerOpen = true
                 }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
-                TextField("发给 \(agentTitle(kind))，/ 命令", text: draft, axis: .vertical)
+                TextField(L10n.tr("发给 {0}，/ 命令", agentTitle(kind)), text: draft, axis: .vertical)
                     .accessibilityIdentifier("chat-composer")
                     .font(.orbisBody()).lineLimit(1...6).focused($composerFocused)
                     .padding(.horizontal, 14).padding(.vertical, 15).frame(minHeight: 56)
                     .orbisField(focused: composerFocused).orbisAnchor(sendFlight.composer)
                 if runtime.status == "running" && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
-                    OrbisIconButton(symbol: "stop.fill", label: "停止生成", tint: p.error) {
+                    OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if store.stopRuntime() { OrbisHaptics.commit() }
                     }.disabled(!store.canSend)
                 } else {
-                    OrbisIconButton(symbol: "arrow.up", label: "发送消息", tint: accent) {
+                    OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送消息"), tint: accent) {
                         if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
                         else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
                         else { submit() }
@@ -528,8 +528,8 @@ struct ChatView: View {
     }
 
     private var branchTitle: String {
-        guard let branch = store.workingBranches[runtime.runtimeId], branch.cwd == runtime.cwd, branch.sessionId == runtime.sessionId else { return "分支信息待同步" }
-        return branch.branch ?? branch.commit.map { "\(String($0.prefix(8)))（分离 HEAD）" } ?? (branch.loaded ? "未获取到 Git 分支" : "分支信息待同步")
+        guard let branch = store.workingBranches[runtime.runtimeId], branch.cwd == runtime.cwd, branch.sessionId == runtime.sessionId else { return L10n.tr("分支信息待同步") }
+        return branch.branch ?? branch.commit.map { L10n.tr("{0}（分离 HEAD）", String($0.prefix(8))) } ?? (branch.loaded ? L10n.tr("未获取到 Git 分支") : L10n.tr("分支信息待同步"))
     }
 
     private func loadOlder() {
@@ -758,7 +758,7 @@ struct ChatMessageRow: View, Equatable {
                             Text(agentTitle(kind)).font(.orbisCaption(.semibold)).foregroundStyle(OrbisPalette(scheme).agent(kind))
                             Spacer(minLength: 8)
                             // 复制整轮回复。不用长按手势：它挂在每条消息上会和滚动、文本选择抢触摸。
-                            OrbisCopyButton(label: "复制回复", size: 26) { copyText }
+                            OrbisCopyButton(label: L10n.tr("复制回复"), size: 26) { copyText }
                                 .padding(.vertical, -10)
                         }
                     }
@@ -772,13 +772,13 @@ struct ChatMessageRow: View, Equatable {
                     ForEach(timings, id: \.turnId) { timing in
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
-                            Text(String(format: timing.durationMs == nil ? "本轮已运行 %.1f 秒" : "本轮耗时 %.1f 秒", elapsed / 1000))
+                            Text(String(format: timing.durationMs == nil ? L10n.tr("本轮已运行 %.1f 秒") : L10n.tr("本轮耗时 %.1f 秒"), elapsed / 1000))
                                 .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
                     }
                 }.frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
                     .neuSurface(inset: row.isUser, radius: OrbisRadius.card, intensity: row.isUser ? 0.6 : 0.4, padding: OrbisRadius.cardPadding + 2)
-                    .accessibilityAction(named: "复制") { UIPasteboard.general.string = copyText }
+                    .accessibilityAction(named: L10n.tr("复制")) { UIPasteboard.general.string = copyText }
                     .messageSendFlightTarget(row.messages.first?.clientMessageId ?? row.id)
                     .modifier(OrbisMessageActions(enabled: row.isUser, id: row.id, text: copyText,
                                                   rewindEnabled: rewindEnabled, rewind: messageRewind))
@@ -823,7 +823,7 @@ private struct PendingAttachments: View {
 
 func pendingAttachmentStatus(_ task: FileTransfer) -> String {
     if let error = task.error { return error }
-    if task.status == "completed" { return "已上传" }
+    if task.status == "completed" { return L10n.tr("已上传") }
     guard ["uploading", "verifying"].contains(task.status), task.size > 0 else { return transferStatusTitle(task.status) }
     return transferStatusTitle(task.status) + " \(min(100, Int(task.received * 100 / max(1, task.size))))%"
 }
@@ -871,11 +871,11 @@ private struct PendingSendStatus: View {
             switch state {
             case .sending, .accepted:
                 ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 26, height: 26)
-                Text("发送中").font(.orbisCaption()).foregroundStyle(palette.secondary)
+                Text(L10n.tr("发送中")).font(.orbisCaption()).foregroundStyle(palette.secondary)
             case .queued:
                 OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
-                Text("已排队").font(.orbisCaption()).foregroundStyle(palette.secondary)
-                OrbisIconButton(symbol: "xmark", label: "撤回排队消息", size: 26) { onAction(.cancel) }
+                Text(L10n.tr("已排队")).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("撤回排队消息"), size: 26) { onAction(.cancel) }
                     .disabled(!canResend).accessibilityIdentifier("pending-cancel-" + rowId)
             case .waiting(let label):
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
@@ -883,19 +883,19 @@ private struct PendingSendStatus: View {
                 Text(label).font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(2)
             case .unconfirmed:
                 OrbisActionSymbol(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
-                Text("未确认是否送达").font(.orbisCaption()).foregroundStyle(palette.secondary)
-                OrbisIconButton(symbol: "arrow.clockwise", label: "核对送达状态", size: 26) { onAction(.check) }
+                Text(L10n.tr("未确认是否送达")).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对送达状态"), size: 26) { onAction(.check) }
                     .accessibilityIdentifier("pending-check-" + rowId)
-                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 26) { onAction(.discard) }
                     .accessibilityIdentifier("pending-discard-" + rowId)
             case .failed(let reason):
                 OrbisActionSymbol(systemName: "exclamationmark.circle").foregroundStyle(palette.error).font(.orbisCaption())
                 Text(reason).font(.orbisCaption()).foregroundStyle(palette.error).lineLimit(2)
-                OrbisIconButton(symbol: "arrow.clockwise", label: "重新发送", size: 26) { onAction(.resend) }
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重新发送"), size: 26) { onAction(.resend) }
                     .disabled(!canResend).accessibilityIdentifier("pending-resend-" + rowId)
-                OrbisIconButton(symbol: "arrow.uturn.backward", label: "放回输入框", size: 26) { onAction(.restore) }
+                OrbisIconButton(symbol: "arrow.uturn.backward", label: L10n.tr("放回输入框"), size: 26) { onAction(.restore) }
                     .accessibilityIdentifier("pending-restore-" + rowId)
-                OrbisIconButton(symbol: "trash", label: "删除", size: 26) { onAction(.discard) }
+                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 26) { onAction(.discard) }
                     .accessibilityIdentifier("pending-discard-" + rowId)
             }
         }.accessibilityElement(children: .contain).accessibilityIdentifier("pending-status-" + rowId)
@@ -919,16 +919,16 @@ private struct MessageContentView: View {
             ForEach(Array(message.content.enumerated()), id: \.offset) { _, content in
                 switch content.type {
                 case "thinking":
-                    CompactDisclosure(title: "思考过程", symbol: "sparkles") {
-                        Text(content.text ?? "思考中…").font(.orbisLabel()).textSelection(.enabled)
+                    CompactDisclosure(title: L10n.tr("思考过程"), symbol: "sparkles") {
+                        Text(content.text ?? L10n.tr("思考中…")).font(.orbisLabel()).textSelection(.enabled)
                     }
                 case "tool_call", "toolCall":
                     let result = content.toolCallId.flatMap { toolResults[$0] }
                     if let summary = result?.toolSummary ?? content.summary { ToolSummaryView(summary: summary) }
                     else {
                         let live = content.toolCallId == nil && content.arguments == nil && content.text?.isEmpty == false
-                        let status = result?.isError == true ? "执行失败" : live ? "参数接收中" : "已完成"
-                        CompactDisclosure(title: content.toolName ?? result?.toolName ?? message.toolName ?? "工具", detail: status, symbol: "wrench.and.screwdriver") {
+                        let status = result?.isError == true ? L10n.tr("执行失败") : live ? L10n.tr("参数接收中") : L10n.tr("已完成")
+                        CompactDisclosure(title: content.toolName ?? result?.toolName ?? message.toolName ?? L10n.tr("工具"), detail: status, symbol: "wrench.and.screwdriver") {
                             VStack(alignment: .leading, spacing: 10) {
                                 if let arguments = toolArgumentsText(content), !arguments.isEmpty {
                                     Text(arguments).font(.orbisCaption(mono: true)).textSelection(.enabled)
@@ -954,14 +954,14 @@ private struct MessageContentView: View {
                 }
             }
             if let truncated = message.content.first(where: { $0.truncated == true }) {
-                Text(truncated.originalBytes.map { "有内容因超长被截断（原始 \($0.formatted()) 字节）" } ?? "有内容因超长被截断。")
+                Text(truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
                     .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                OrbisTextButton(title: "查看完整内容", symbol: "doc.text.magnifyingglass") {
+                OrbisTextButton(title: L10n.tr("查看完整内容"), symbol: "doc.text.magnifyingglass") {
                     store.previewEntry(message.messageId)
                     fullEntryId = store.entryPreview?.entryId ?? message.messageId
                     fullOpen = true
                 }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
-                if !store.canSend { Text("连接电脑并继续此会话后可取回完整内容。").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                if !store.canSend { Text(L10n.tr("连接电脑并继续此会话后可取回完整内容。")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }
             if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
         }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
@@ -978,20 +978,20 @@ private struct FullMessageView: View {
     private var preview: EntryPreview? { store.entryPreview?.entryId == entryId ? store.entryPreview : nil }
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "完整内容", closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "doc.on.doc", label: "复制完整内容") {
+            OrbisPageHeader(title: L10n.tr("完整内容"), closes: true, back: { dismiss() }) {
+                OrbisIconButton(symbol: "doc.on.doc", label: L10n.tr("复制完整内容")) {
                     if let message = preview?.message { UIPasteboard.general.string = fullMessageText(message) }
                 }.disabled(preview?.message == nil)
             }
-            if preview?.loading == true { ProgressView("正在取回…") }
+            if preview?.loading == true { ProgressView(L10n.tr("正在取回…")) }
             if let message = preview?.message {
                 ScrollView([.horizontal, .vertical]) {
                     Text(fullMessageText(message)).font(.orbisLabel(mono: true)).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(20)
                 }
             } else if preview?.loading != true {
-                OrbisNotice(text: preview?.error ?? "当前没有可显示的完整内容。", error: true).padding(.horizontal, 20)
-                OrbisActionButton(title: "重试", symbol: "arrow.clockwise") { store.previewEntry(entryId) }.disabled(!store.canSend).padding(.horizontal, 20)
+                OrbisNotice(text: preview?.error ?? L10n.tr("当前没有可显示的完整内容。"), error: true).padding(.horizontal, 20)
+                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { store.previewEntry(entryId) }.disabled(!store.canSend).padding(.horizontal, 20)
             }
             Spacer(minLength: 0)
         }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -1039,7 +1039,7 @@ struct CompactDisclosure<Content: View>: View {
                         .rotationEffect(.degrees(expanded ? 180 : 0))
                         .animation(reduced ? nil : .orbisCollapse, value: expanded)
                 }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel("\(expanded ? "收起" : "展开")\(title)\(detail.map { "，" + $0 } ?? "")")
+            }.buttonStyle(.plain).accessibilityLabel("\(expanded ? L10n.tr("收起") : L10n.tr("展开"))\(title)\(detail.map { "，" + $0 } ?? "")")
             OrbisCollapse(expanded: expanded) {
                 content().frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 10)
             }
@@ -1058,22 +1058,22 @@ struct ToolSummaryView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if summary.durationMs != nil || summary.exitCode != nil {
                     HStack {
-                        if let duration = summary.durationMs { Text(String(format: "耗时 %.1f 秒", Double(duration) / 1000)) }
-                        if let code = summary.exitCode { Text("退出码 \(code)") }
+                        if let duration = summary.durationMs { Text(String(format: L10n.tr("耗时 %.1f 秒"), Double(duration) / 1000)) }
+                        if let code = summary.exitCode { Text(L10n.tr("退出码 {0}", code)) }
                     }.font(.orbisCaption()).foregroundStyle(.secondary)
                 }
                 ForEach(Array([summary.inputSummary, summary.resultSummary, summary.errorSummary].compactMap { $0 }.enumerated()), id: \.offset) { _, part in
                     Text(part.text).font(.orbisCaption(mono: true)).textSelection(.enabled)
-                    if part.omitted { Text("已省略部分内容").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                    if part.omitted { Text(L10n.tr("已省略部分内容")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                 }
                 if let tool = summary.tool, let runtime = store.selectedRuntime {
                     ForEach(summary.contents, id: \.part) { part in
                         if part.availability != "absent" {
-                            OrbisActionButton(title: "查看" + toolPartTitle(part.part), symbol: "doc.text.magnifyingglass") {
+                            OrbisActionButton(title: L10n.tr("查看") + toolPartTitle(part.part), symbol: "doc.text.magnifyingglass") {
                                 store.toolContent.open(runtimeId: runtime.runtimeId, locator: ToolLocator(tool: tool, part: part.part)); detailOpen = true
                             }.disabled(!store.canSend || part.readCapability == "none" || !["readable", "pending"].contains(part.availability))
                             if ["temporarily-unavailable", "unrecoverable"].contains(part.availability) {
-                                Text(part.availability == "unrecoverable" ? "此部分内容已无法恢复" : "来源暂时无法提供此部分内容").font(.orbisCaption()).foregroundStyle(.secondary)
+                                Text(part.availability == "unrecoverable" ? L10n.tr("此部分内容已无法恢复") : L10n.tr("来源暂时无法提供此部分内容")).font(.orbisCaption()).foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -1084,7 +1084,7 @@ struct ToolSummaryView: View {
         }
     }
     private var phase: String {
-        switch summary.phase { case "started", "running": return "执行中"; case "cancelled": return "已取消"; default: return summary.isError == true ? "执行失败" : "已完成" }
+        switch summary.phase { case "started", "running": return L10n.tr("执行中"); case "cancelled": return L10n.tr("已取消"); default: return summary.isError == true ? L10n.tr("执行失败") : L10n.tr("已完成") }
     }
 }
 
@@ -1356,7 +1356,7 @@ private struct CodeBlockView: View {
             HStack {
                 Text(language).font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
                 Spacer()
-                OrbisCopyButton(label: "复制代码", size: 28) { text }
+                OrbisCopyButton(label: L10n.tr("复制代码"), size: 28) { text }
             }.padding(.top, -6).padding(.trailing, -8)
             ScrollView(.horizontal) {
                 Text(text).reveal(clock, base: base, now: now)
@@ -1381,12 +1381,12 @@ private struct SlashPickerView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if let selected, let command = commands.first(where: { $0.name == selected }), let argument = command.argument {
-                    if let hint = argument.hint { Text(hint).font(.orbisCaption()).foregroundStyle(p.secondary) }
+                    if let hint = argument.hint { Text(command.source == "builtin" ? L10n.hostText(hint) : hint).font(.orbisCaption()).foregroundStyle(p.secondary) }
                     ForEach(argument.options ?? []) { option in
                         OrbisMotionButton { input = "/\(command.name) \(option.value)" } label: {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(option.label).font(.orbisLabel(.medium))
-                                if let description = option.description { Text(description).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2) }
+                                if let description = option.description { Text(command.source == "builtin" ? L10n.hostText(description) : description).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2) }
                             }.frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).padding(.horizontal, 12)
                         }.buttonStyle(NeuButtonStyle(radius: 12))
                     }
@@ -1395,7 +1395,7 @@ private struct SlashPickerView: View {
                     // Built-in commands first, then by name: the same order as Android.
                     let filtered = commands.filter { query.isEmpty || $0.name.lowercased().contains(query) }
                         .sorted { ($0.source == "builtin" ? 0 : 1, $0.name) < ($1.source == "builtin" ? 0 : 1, $1.name) }
-                    if filtered.isEmpty { Text(commands.isEmpty ? "当前会话尚未提供可用命令" : "没有匹配的命令").font(.orbisCaption()).foregroundStyle(p.secondary).padding(12) }
+                    if filtered.isEmpty { Text(commands.isEmpty ? L10n.tr("当前会话尚未提供可用命令") : L10n.tr("没有匹配的命令")).font(.orbisCaption()).foregroundStyle(p.secondary).padding(12) }
                     ForEach(filtered) { command in
                         OrbisMotionButton {
                             if command.name == "tree" { input = ""; selected = nil; onHistory() }
@@ -1403,7 +1403,7 @@ private struct SlashPickerView: View {
                         } label: {
                             HStack(spacing: 10) {
                                 Text("/" + command.name).font(.orbisLabel(.semibold, mono: true))
-                                Text(command.description ?? "").font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2)
+                                Text(command.source == "builtin" ? L10n.hostText(command.description ?? "") : command.description ?? "").font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2)
                                 Spacer(minLength: 0)
                                 // Only a non-built-in source is worth naming; built-ins belong to this agent.
                                 if let source = slashSourceTitle(command.source) {
@@ -1429,28 +1429,28 @@ struct PermissionsView: View {
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(spacing: 16) {
-            OrbisPageHeader(title: "会话权限", closes: true, back: { dismiss() }) { EmptyView() }
+            OrbisPageHeader(title: L10n.tr("会话权限"), closes: true, back: { dismiss() }) { EmptyView() }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let permissions = store.selectedRuntime?.permissionManagement {
-                        Text(permissions.summary).font(.orbisBody(.semibold))
-                        Text(permissions.details).font(.orbisLabel()).foregroundStyle(p.secondary)
+                        Text(L10n.hostSummary(permissions.summary)).font(.orbisBody(.semibold))
+                        Text(L10n.hostText(permissions.details)).font(.orbisLabel()).foregroundStyle(p.secondary)
                         ForEach(permissions.settings) { setting in
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(setting.label).font(.orbisBody(.semibold)).padding(.horizontal, 4)
+                                Text(L10n.hostText(setting.label)).font(.orbisBody(.semibold)).padding(.horizontal, 4)
                                 ForEach(setting.options) { option in
                                     OrbisMotionButton { store.updatePermission(settingId: setting.id, value: option.value) } label: {
                                         HStack {
-                                            Text(option.label).font(.orbisLabel()).frame(maxWidth: .infinity, alignment: .leading)
+                                            Text(L10n.hostText(option.label)).font(.orbisLabel()).frame(maxWidth: .infinity, alignment: .leading)
                                             if option.value == setting.currentValue { OrbisActionSymbol(systemName: "checkmark").font(.orbisLabel(.semibold)) }
                                         }.padding(.horizontal, 14).frame(minHeight: 48)
                                     }.buttonStyle(NeuButtonStyle(selected: option.value == setting.currentValue))
                                         .disabled(!store.canSend || store.selectedRuntime?.status != "idle" || setting.disabledReason != nil || !store.pendingActionIds.isEmpty)
                                 }
-                                if let reason = setting.disabledReason { Text(reason).font(.orbisCaption()).foregroundStyle(p.secondary).padding(.horizontal, 4) }
+                                if let reason = setting.disabledReason { Text(L10n.hostText(reason)).font(.orbisCaption()).foregroundStyle(p.secondary).padding(.horizontal, 4) }
                             }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding)
                         }
-                        if runtime.status != "idle" { OrbisNotice(text: "会话空闲时可调整权限。") }
+                        if runtime.status != "idle" { OrbisNotice(text: L10n.tr("会话空闲时可调整权限。")) }
                     }
                 }.padding(24)
             }
@@ -1496,11 +1496,11 @@ private struct MarkdownImageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             AsyncImage(url: url) { phase in
-                if let image = phase.image { image.resizable().scaledToFit().frame(maxHeight: 280).accessibilityLabel(alt.isEmpty ? "消息图片" : alt) }
-                else if phase.error != nil { Label(alt.isEmpty ? "图片未能加载" : alt, systemImage: "photo").font(.orbisLabel()) }
+                if let image = phase.image { image.resizable().scaledToFit().frame(maxHeight: 280).accessibilityLabel(alt.isEmpty ? L10n.tr("消息图片") : alt) }
+                else if phase.error != nil { Label(alt.isEmpty ? L10n.tr("图片未能加载") : alt, systemImage: "photo").font(.orbisLabel()) }
                 else { ProgressView().frame(maxWidth: .infinity, minHeight: 80) }
             }
-            Link(alt.isEmpty ? "打开图片" : alt, destination: url).font(.orbisCaption())
+            Link(alt.isEmpty ? L10n.tr("打开图片") : alt, destination: url).font(.orbisCaption())
         }.neuSurface(inset: true, radius: 14, intensity: 0.35, padding: 12)
     }
 }
@@ -1527,12 +1527,12 @@ struct QueuedMessagesView: View {
     private func card(_ item: QueuedMessage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(deliveryTitle(item.delivery) + "，" + queueStateTitle(item.state)).font(.orbisCaption(.semibold))
+                Text(deliveryTitle(item.delivery) + L10n.tr("，") + queueStateTitle(item.state)).font(.orbisCaption(.semibold))
                 Spacer(minLength: 8)
                 if item.state == "accepted" {
                     // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
                     let unconfirmed = store.unconfirmedQueueCancellations(runtimeId).contains(item.queueId)
-                    OrbisTextButton(title: unconfirmed ? "撤回未确认" : "撤回", symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
+                    OrbisTextButton(title: unconfirmed ? L10n.tr("撤回未确认") : L10n.tr("撤回"), symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
                         .disabled(!store.canSend || unconfirmed).accessibilityIdentifier("queue-cancel-" + item.queueId)
                 }
             }
@@ -1558,7 +1558,7 @@ struct RuntimeNoticesView: View {
             ScrollView {
                 VStack(spacing: 8) {
                     if projection.items.isEmpty {
-                        banner(text: "通知状态待核对", error: false, recheck: unverified, close: nil)
+                        banner(text: L10n.tr("通知状态待核对"), error: false, recheck: unverified, close: nil)
                     }
                     ForEach(Array(projection.items.enumerated()), id: \.element.id) { index, notice in
                         banner(text: notice.message, error: notice.severity != "info",
@@ -1580,16 +1580,16 @@ struct RuntimeNoticesView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if recheck {
                     HStack(spacing: 10) {
-                        Text("通知状态待核对").font(.orbisCaption()).foregroundStyle(p.secondary)
+                        Text(L10n.tr("通知状态待核对")).font(.orbisCaption()).foregroundStyle(p.secondary)
                         OrbisMotionButton { notifications.sync(runtimeId: runtimeId) } label: {
-                            Label { Text("重新核对") } icon: { OrbisActionSymbol(systemName: "arrow.clockwise") }
+                            Label { Text(L10n.tr("重新核对")) } icon: { OrbisActionSymbol(systemName: "arrow.clockwise") }
                                 .font(.orbisCaption(.semibold))
                         }.buttonStyle(.plain).foregroundStyle(.tint).disabled(store.connection != .secured)
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if let close {
-                OrbisIconButton(symbol: "xmark", label: "关闭通知", size: 28, action: close)
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭通知"), size: 28, action: close)
                     .orbisNested().disabled(store.connection != .secured)
             }
         }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
@@ -1605,68 +1605,68 @@ private struct RuntimeInfoView: View {
     private func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: "会话信息", closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "arrow.clockwise", label: "核对会话状态") { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
+            OrbisPageHeader(title: L10n.tr("会话信息"), closes: true, back: { dismiss() }) {
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对会话状态")) { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    StatusSection(title: "模型与上下文") {
-                        StatusFact(label: "模型", value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + "（" + $0.mark + "）" }
-                                   ?? (ready("model") ? runtime.model?.name ?? runtime.model?.id ?? "未报告" : "状态待核对"))
-                        StatusFact(label: "供应商", value: ready("model") ? runtime.model?.provider ?? "未报告" : "状态待核对")
-                        StatusFact(label: "思考级别", value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + "（" + $0.mark + "）" }
-                                   ?? (ready("model") ? runtime.thinkingLevel ?? "来源未报告" : "状态待核对"))
-                        StatusFact(label: "上下文", value: ready("context") ? contextText : "状态待核对")
+                    StatusSection(title: L10n.tr("模型与上下文")) {
+                        StatusFact(label: L10n.tr("模型"), value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                                   ?? (ready("model") ? runtime.model?.name ?? runtime.model?.id ?? L10n.tr("未报告") : L10n.tr("状态待核对")))
+                        StatusFact(label: L10n.tr("供应商"), value: ready("model") ? runtime.model?.provider ?? L10n.tr("未报告") : L10n.tr("状态待核对"))
+                        StatusFact(label: L10n.tr("思考级别"), value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                                   ?? (ready("model") ? runtime.thinkingLevel ?? L10n.tr("来源未报告") : L10n.tr("状态待核对")))
+                        StatusFact(label: L10n.tr("上下文"), value: ready("context") ? contextText : L10n.tr("状态待核对"))
                     }
-                    StatusSection(title: "执行状态") {
-                        StatusFact(label: "当前状态", value: ready("execution") ? runtime.presentationTitle : "状态待核对")
+                    StatusSection(title: L10n.tr("执行状态")) {
+                        StatusFact(label: L10n.tr("当前状态"), value: ready("execution") ? runtime.presentationTitle : L10n.tr("状态待核对"))
                         if ready("execution"), let execution = snapshot?.domains["execution"]?.value {
-                            StatusFact(label: "重试", value: activity(execution["retry"]))
-                            StatusFact(label: "上下文压缩", value: activity(execution["compaction"]))
+                            StatusFact(label: L10n.tr("重试"), value: activity(execution["retry"]))
+                            StatusFact(label: L10n.tr("上下文压缩"), value: activity(execution["compaction"]))
                             if let start = execution["turn"]["startedAt"].number {
                                 TimelineView(.periodic(from: .now, by: 1)) { context in
                                     let duration = execution["turn"]["durationMs"].number ?? max(0, context.date.timeIntervalSince1970 * 1000 - start)
-                                    StatusFact(label: execution["turn"]["durationMs"] == .null ? "本轮已运行" : "本轮耗时", value: String(format: "%.1f 秒", duration / 1000))
+                                    StatusFact(label: execution["turn"]["durationMs"] == .null ? L10n.tr("本轮已运行") : L10n.tr("本轮耗时"), value: String(format: L10n.tr("%.1f 秒"), duration / 1000))
                                 }
                             }
                         }
                     }
                     ForEach((store.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
-                        StatusSection(title: command.description ?? command.name) {
+                        StatusSection(title: command.source == "builtin" ? L10n.hostText(command.description ?? command.name) : command.description ?? command.name) {
                             ForEach(command.argument?.options ?? []) { option in
                                 OrbisActionButton(title: option.label) { _ = store.executeSlash(command.name, args: option.value) }.disabled(!store.canSend)
                             }
                         }
                     }
-                    StatusSection(title: "状态来源") {
+                    StatusSection(title: L10n.tr("状态来源")) {
                         if let snapshot {
                             if let error = snapshot.error { OrbisNotice(text: error, error: true) }
                             ForEach(AgentState.domainNames, id: \.self) { name in
-                                StatusFact(label: agentDomainTitle(name), value: snapshot.missing[name] ?? snapshot.domains[name].map { $0.availability == "ready" ? ($0.completeness == "complete" || $0.projectionComplete == true ? "已核对" : "部分状态") : "当前不可用" } ?? "尚未读取")
+                                StatusFact(label: agentDomainTitle(name), value: snapshot.missing[name] ?? snapshot.domains[name].map { $0.availability == "ready" ? ($0.completeness == "complete" || $0.projectionComplete == true ? L10n.tr("已核对") : L10n.tr("部分状态")) : L10n.tr("当前不可用") } ?? L10n.tr("尚未读取"))
                             }
-                        } else { Text("尚未读取会话状态").font(.orbisLabel()) }
+                        } else { Text(L10n.tr("尚未读取会话状态")).font(.orbisLabel()) }
                     }
                 }.padding(20)
             }
         }
     }
     private var contextText: String {
-        guard let usage = runtime.contextUsage else { return "来源未报告" }
+        guard let usage = runtime.contextUsage else { return L10n.tr("来源未报告") }
         var parts: [String] = []
         if let percent = contextUsagePercent(usage) { parts.append(String(format: "%.1f%%", percent)) }
         if let tokens = usage.tokens { parts.append("\(tokens.formatted()) tokens") }
-        if let window = usage.contextWindow { parts.append("窗口 \(window.formatted())") }
-        return parts.isEmpty ? "来源未报告" : parts.joined(separator: "，")
+        if let window = usage.contextWindow { parts.append(L10n.tr("窗口 {0}", window.formatted())) }
+        return parts.isEmpty ? L10n.tr("来源未报告") : parts.joined(separator: L10n.tr("，"))
     }
     private func activity(_ value: HostJSON) -> String {
-        guard value != .null, value.string != "unavailable" else { return "来源尚未提供" }
-        let phase = ["idle": "空闲", "running": "进行中", "failed": "失败"][value["phase"].string ?? ""] ?? "待核对"
-        return [phase, value["attempt"].number.map { "第 \(Int($0)) 次" }, value["detail"].string].compactMap { $0 }.joined(separator: "，")
+        guard value != .null, value.string != "unavailable" else { return L10n.tr("来源尚未提供") }
+        let phase = ["idle": L10n.tr("空闲"), "running": L10n.tr("进行中"), "failed": L10n.tr("失败")][value["phase"].string ?? ""] ?? L10n.tr("待核对")
+        return [phase, value["attempt"].number.map { L10n.tr("第 {0} 次", Int($0)) }, value["detail"].string].compactMap { $0 }.joined(separator: L10n.tr("，"))
     }
 }
 
 private func agentDomainTitle(_ name: String) -> String {
-    ["identity": "会话身份", "availability": "可用性", "execution": "执行", "delivery": "消息队列", "interactions": "交互", "permissions": "权限", "model": "模型", "context": "上下文", "capabilities": "可用命令", "resources": "资源", "providerBinding": "供应商归属", "workspaceRef": "工作区", "artifacts": "附件", "records": "诊断记录"][name] ?? name
+    ["identity": L10n.tr("会话身份"), "availability": L10n.tr("可用性"), "execution": L10n.tr("执行"), "delivery": L10n.tr("消息队列"), "interactions": L10n.tr("交互"), "permissions": L10n.tr("权限"), "model": L10n.tr("模型"), "context": L10n.tr("上下文"), "capabilities": L10n.tr("可用命令"), "resources": L10n.tr("资源"), "providerBinding": L10n.tr("供应商归属"), "workspaceRef": L10n.tr("工作区"), "artifacts": L10n.tr("附件"), "records": L10n.tr("诊断记录")][name] ?? name
 }
 
 /// ADR-0062: read-only native task inventory, independent of the main composer state.
@@ -1679,16 +1679,16 @@ struct BackgroundTasksView: View {
             OrbisMotionButton { expanded.toggle() } label: {
                 HStack(spacing: 8) {
                     OrbisActionSymbol(systemName: expanded ? "chevron.down" : "chevron.right")
-                    Text(tasks.activityTitle ?? "子任务 · \(tasks.items.count) 项").font(.orbisCaption(.medium)).lineLimit(2)
+                    Text(tasks.activityTitle ?? L10n.tr("子任务 · {0} 项", tasks.items.count)).font(.orbisCaption(.medium)).lineLimit(2)
                     Spacer(minLength: 0)
                 }.frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("background-tasks-toggle")
-                .accessibilityValue(expanded ? "已展开" : "已收起")
+                .accessibilityValue(expanded ? L10n.tr("已展开") : L10n.tr("已收起"))
             OrbisCollapse(expanded: expanded) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         if !tasks.confirmed {
-                            Text("正在核对子任务状态，以下为最后已知信息").font(.orbisCaption())
+                            Text(L10n.tr("正在核对子任务状态，以下为最后已知信息")).font(.orbisCaption())
                         }
                         ForEach(tasks.items) { task in
                             VStack(alignment: .leading, spacing: 4) {
@@ -1699,7 +1699,7 @@ struct BackgroundTasksView: View {
                                 }
                                 Text(task.kind).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                                 if let parentId = task.parentId, let parent = tasks.items.first(where: { $0.id == parentId }) {
-                                    Text("来自：\(parent.title)").font(.orbisCaption()).lineLimit(1)
+                                    Text(L10n.tr("来自：{0}", parent.title)).font(.orbisCaption()).lineLimit(1)
                                 }
                             }.accessibilityElement(children: .combine).accessibilityIdentifier("background-task-\(task.id)")
                         }

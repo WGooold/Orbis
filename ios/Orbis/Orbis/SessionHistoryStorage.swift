@@ -71,7 +71,7 @@ final class SessionHistoryWriteLease: @unchecked Sendable {
     func check() throws { try perform {} }
     func perform<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard valid else { throw SessionHistoryError.invalid("会话写入归属已经失效") }
+        guard valid else { throw SessionHistoryError.invalid(L10n.tr("会话写入归属已经失效")) }
         return try body()
     }
 }
@@ -86,7 +86,7 @@ private final class SessionHistoryWriteFence: @unchecked Sendable {
     func invalidate(_ key: String) { lock.lock(); generations[key] = nil; lock.unlock() }
     func perform<T>(_ key: String, generation: UUID, _ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
-        guard generations[key] == generation else { throw SessionHistoryError.invalid("会话读取归属已经失效") }
+        guard generations[key] == generation else { throw SessionHistoryError.invalid(L10n.tr("会话读取归属已经失效")) }
         return try body()
     }
     func check(_ key: String, generation: UUID) throws { try perform(key, generation: generation) {} }
@@ -197,7 +197,7 @@ private final class SessionHistoryDatabase {
         self.root = root
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         guard sqlite3_open_v2(root.appendingPathComponent("history.sqlite3").path, &connection,
-            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw SessionHistoryError.invalid("历史数据库无法打开") }
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw SessionHistoryError.invalid(L10n.tr("历史数据库无法打开")) }
         sqlite3_busy_timeout(connection, 5000)
         try execute("PRAGMA journal_mode=WAL")
         try execute("PRAGMA synchronous=FULL")
@@ -215,7 +215,7 @@ private final class SessionHistoryDatabase {
         try execute("PRAGMA user_version=1")
     }
     deinit { sqlite3_close(connection) }
-    private func error() -> Error { SessionHistoryError.invalid("历史数据库操作失败：" + String(cString: sqlite3_errmsg(connection))) }
+    private func error() -> Error { SessionHistoryError.invalid(L10n.tr("历史数据库操作失败：") + String(cString: sqlite3_errmsg(connection))) }
     private func statement(_ sql: String, _ values: [HistorySQLValue]) throws -> OpaquePointer {
         var prepared: OpaquePointer?
         guard sqlite3_prepare_v2(connection, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else { throw error() }
@@ -295,7 +295,7 @@ private final class SessionHistoryDatabase {
             [.text(key), .text(session), .text(id), value.entryId.map(HistorySQLValue.text) ?? .null, value.anchor.map(HistorySQLValue.text) ?? .null, .blob(try JSONEncoder().encode(value)), .integer(seq)])
     }
     private func storeTiming(_ value: SessionTurnTiming, seq: Int64, key: String, session: String) throws {
-        guard value.valid else { throw SessionHistoryError.invalid("回合计时格式无效") }
+        guard value.valid else { throw SessionHistoryError.invalid(L10n.tr("回合计时格式无效")) }
         try execute("INSERT INTO timings VALUES(?,?,?,?,?,?) ON CONFLICT(host,session,id) DO UPDATE SET message_id=excluded.message_id,body=excluded.body,seq=excluded.seq WHERE excluded.seq>=timings.seq",
             [.text(key), .text(session), .text(value.turnId), value.messageId.map(HistorySQLValue.text) ?? .null, .blob(try JSONEncoder().encode(value)), .integer(seq)])
     }
@@ -314,9 +314,9 @@ private final class SessionHistoryDatabase {
         for id in changed where !checked.contains(id) {
             var next: String? = id, visiting: Set<String> = []
             while let value = next, !checked.contains(value), let entry = effective[value] {
-                guard visiting.insert(value).inserted else { throw SessionHistoryError.invalid("历史父节点形成循环") }
+                guard visiting.insert(value).inserted else { throw SessionHistoryError.invalid(L10n.tr("历史父节点形成循环")) }
                 if let parent = entry.parentId, effective[parent] == nil,
-                   try isDescendant(key: key, session: session, child: parent, ancestor: value) { throw SessionHistoryError.invalid("历史父节点形成循环") }
+                   try isDescendant(key: key, session: session, child: parent, ancestor: value) { throw SessionHistoryError.invalid(L10n.tr("历史父节点形成循环")) }
                 next = entry.parentId
             }
             checked.formUnion(visiting)
@@ -330,47 +330,47 @@ private final class SessionHistoryDatabase {
               let object = wrapped ? decoded["event"] as? [String: Any] : decoded,
               let source = object["source"] as? [String: Any], let epoch = source["epoch"] as? String,
               !epoch.isEmpty, epoch.utf16.count <= 256, source["ready"] as? Bool == true,
-              let seq = sessionInteger(source["seq"]) else { throw SessionHistoryError.invalid("历史来源或范围无效") }
+              let seq = sessionInteger(source["seq"]) else { throw SessionHistoryError.invalid(L10n.tr("历史来源或范围无效")) }
         // The historical cap applies to the event, not its transport wrapper. Check the
         // original rule on this worker so a large but valid envelope is not rejected.
         let eventBytes = wrapped ? try JSONSerialization.data(withJSONObject: object).count : event.count
-        guard eventBytes <= 16 * 1024 * 1024 else { throw SessionHistoryError.invalid("历史来源或范围无效") }
+        guard eventBytes <= 16 * 1024 * 1024 else { throw SessionHistoryError.invalid(L10n.tr("历史来源或范围无效")) }
         // Parse only this bounded packet. Cached parents are checked against SQLite below.
         let incoming = try CachedSessionGraph(sessionId: sessionId).merging(object, activate: activate)
         let timings = try (object["turnTimings"] as? [[String: Any]] ?? []).map { raw -> SessionTurnTiming in
             let value = try JSONDecoder().decode(SessionTurnTiming.self, from: JSONSerialization.data(withJSONObject: raw))
-            guard value.valid else { throw SessionHistoryError.invalid("回合计时格式无效") }; return value
+            guard value.valid else { throw SessionHistoryError.invalid(L10n.tr("回合计时格式无效")) }; return value
         }
-        guard timings.count <= 500, Set(timings.map(\.turnId)).count == timings.count else { throw SessionHistoryError.invalid("回合计时重复或超限") }
+        guard timings.count <= 500, Set(timings.map(\.turnId)).count == timings.count else { throw SessionHistoryError.invalid(L10n.tr("回合计时重复或超限")) }
         try execute("BEGIN IMMEDIATE")
         do {
             let previous = try metadata(key: key, sessionId: sessionId)
-            if let expectedEpoch, previous?.epoch != expectedEpoch { throw SessionHistoryError.invalid("历史缓存代次已经改变") }
+            if let expectedEpoch, previous?.epoch != expectedEpoch { throw SessionHistoryError.invalid(L10n.tr("历史缓存代次已经改变")) }
             let retired = try query("SELECT 1 FROM retired_epochs WHERE host=? AND session=? AND epoch=? LIMIT 1", [.text(key), .text(sessionId), .text(epoch)]) { _ in true }
-            guard retired.isEmpty else { throw SessionHistoryError.invalid("历史来源已被替换") }
+            guard retired.isEmpty else { throw SessionHistoryError.invalid(L10n.tr("历史来源已被替换")) }
             let changedEpoch = previous?.epoch != nil && previous?.epoch != epoch
             if changedEpoch || !incoming.entries.isEmpty || !incoming.display.isEmpty || !timings.isEmpty {
                 invalidateReadCaches()
             }
             if activate {
                 let live = object["live"] as? [String: Any]
-                guard live?["complete"] as? Bool == true else { throw SessionHistoryError.invalid("当前会话清单尚未完整") }
+                guard live?["complete"] as? Bool == true else { throw SessionHistoryError.invalid(L10n.tr("当前会话清单尚未完整")) }
                 if object["type"] as? String == "session.patch" {
                     guard previous?.epoch == epoch, let base = sessionInteger(object["baseSeq"]), previous?.sourceSeq == base,
-                          seq > base, sessionInteger(object["seq"]) == seq, object["headCompleteness"] as? String == "complete" else { throw SessionHistoryError.invalid("会话更新来源不连续") }
+                          seq > base, sessionInteger(object["seq"]) == seq, object["headCompleteness"] as? String == "complete" else { throw SessionHistoryError.invalid(L10n.tr("会话更新来源不连续")) }
                 } else {
                     guard let checkpoint = object["checkpoint"] as? [String: Any], checkpoint["headCompleteness"] as? String == "complete",
                           checkpoint["inventoryComplete"] as? Bool == true,
                           let head = checkpoint["head"] as? [String: Any], let cursor = object["cursor"] as? [String: Any],
-                          head["leafId"] as? String == cursor["leafId"] as? String else { throw SessionHistoryError.invalid("会话检查点尚未完整") }
+                          head["leafId"] as? String == cursor["leafId"] as? String else { throw SessionHistoryError.invalid(L10n.tr("会话检查点尚未完整")) }
                 }
             }
             if changedEpoch {
-                guard activate else { throw SessionHistoryError.invalid("历史页不能替换来源") }
+                guard activate else { throw SessionHistoryError.invalid(L10n.tr("历史页不能替换来源")) }
                 try execute("INSERT OR IGNORE INTO retired_epochs VALUES(?,?,?)", [.text(key), .text(sessionId), .text(previous!.epoch!)])
                 for table in ["entries", "display", "timings"] { try execute("DELETE FROM \(table) WHERE host=? AND session=?", [.text(key), .text(sessionId)]) }
-            } else if !activate, previous?.epoch != epoch { throw SessionHistoryError.invalid("历史页来源尚未确认") }
-            if activate, let previous, previous.epoch == epoch, seq < previous.sourceSeq { throw SessionHistoryError.invalid("历史快照落后于已提交状态") }
+            } else if !activate, previous?.epoch != epoch { throw SessionHistoryError.invalid(L10n.tr("历史页来源尚未确认")) }
+            if activate, let previous, previous.epoch == epoch, seq < previous.sourceSeq { throw SessionHistoryError.invalid(L10n.tr("历史快照落后于已提交状态")) }
             var meta = changedEpoch || previous == nil ? SessionHistoryMetadata(epoch: epoch, sourceSeq: -1, modifiedAt: 0) : previous!
             for entry in incoming.entries.values { try storeEntry(entry, seq: seq, key: key, session: sessionId) }
             try validateCycles(key: key, session: sessionId, changed: Array(incoming.entries.keys))
@@ -383,7 +383,7 @@ private final class SessionHistoryDatabase {
             for timing in timings { try storeTiming(timing, seq: seq, key: key, session: sessionId) }
             if activate {
                 if let cursor = (object["head"] as? [String: Any]) ?? (object["cursor"] as? [String: Any]) { meta.leaf = cursor["leafId"] as? String }
-                if let leaf = meta.leaf, try entry(key: key, sessionId: sessionId, id: leaf) == nil { throw SessionHistoryError.invalid("会话头节点尚未提交") }
+                if let leaf = meta.leaf, try entry(key: key, sessionId: sessionId, id: leaf) == nil { throw SessionHistoryError.invalid(L10n.tr("会话头节点尚未提交")) }
                 meta.sourceSeq = seq
             }
             meta.epoch = epoch; meta.modifiedAt = Int64(Date().timeIntervalSince1970 * 1000)

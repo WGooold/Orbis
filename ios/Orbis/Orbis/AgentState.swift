@@ -79,11 +79,11 @@ final class AgentState: ObservableObject {
             "requestId": id, "scope": "agent", "runtimeId": runtime.runtimeId, "sessionId": session,
             "subscribe": true, "domains": Self.domainNames, "known": known]
         if let kind = runtime.agentKind { payload["agentKind"] = kind }
-        guard send?(payload) == true else { reject(read, "状态读取未发送，请重新连接"); reads[id] = nil; return }
+        guard send?(payload) == true else { reject(read, L10n.tr("状态读取未发送，请重新连接")); reads[id] = nil; return }
         timeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.reads[id] != nil, self.snapshots[runtime.runtimeId]?.pending.isEmpty == false else { return }
-            self.reject(read, "状态读取超时，请重新读取")
+            self.reject(read, L10n.tr("状态读取超时，请重新读取"))
             self.reads[id] = nil
         }
     }
@@ -95,7 +95,7 @@ final class AgentState: ObservableObject {
     func consume(_ message: [String: Any]) -> Bool {
         guard connected, let type = message["type"] as? String else { return false }
         if type == "protocol.error", let id = message["requestId"] as? String, let read = reads[id] {
-            reject(read, message["message"] as? String ?? "电脑端无法完成读取"); reads[id] = nil; return true
+            reject(read, message["message"] as? String ?? L10n.tr("电脑端无法完成读取")); reads[id] = nil; return true
         }
         guard type == "agent.state.snapshot", message["scope"] as? String == "agent" else { return false }
         guard let id = message["requestId"] as? String, let read = reads[id],
@@ -147,7 +147,7 @@ final class AgentState: ObservableObject {
             reads[id] = nil; timeouts.removeValue(forKey: id)?.cancel()
         }
     }
-    private func reject(_ read: Read, _ reason: String = "电脑端状态格式无法识别，请重新读取") {
+    private func reject(_ read: Read, _ reason: String = L10n.tr("电脑端状态格式无法识别，请重新读取")) {
         snapshots[read.runtimeId]?.error = reason; snapshots[read.runtimeId]?.pending = []
         timeouts.removeValue(forKey: read.id)?.cancel()
     }

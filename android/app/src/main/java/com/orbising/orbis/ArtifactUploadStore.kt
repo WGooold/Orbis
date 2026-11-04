@@ -201,7 +201,7 @@ class ArtifactUploadStore(context: Context) {
      */
     @Synchronized
     fun read(taskId: String, offset: Long, length: Int): ByteArray {
-        val task = tasks[taskId] ?: error("上传任务不存在")
+        val task = tasks[taskId] ?: error(L10n.tr("上传任务不存在"))
         var source = openSource(task)
         if (source.position != offset) {
             // 重传：content:// 不保证可 seek，重开并跳过是最稳的做法。
@@ -231,7 +231,7 @@ class ArtifactUploadStore(context: Context) {
 
     private fun openSource(task: UploadTask): OpenSource = open.getOrPut(task.taskId) {
         val stream = appContext.contentResolver.openInputStream(Uri.parse(task.sourceUri))
-            ?: error("无法读取所选文件")
+            ?: error(L10n.tr("无法读取所选文件"))
         OpenSource(stream, 0)
     }
 
@@ -248,7 +248,7 @@ class ArtifactUploadStore(context: Context) {
                 continue
             }
             // skip() 允许返回 0（网络源常见），退化成读一个字节。
-            if (stream.read() < 0) error("源文件已不可读，无法续传")
+            if (stream.read() < 0) error(L10n.tr("源文件已不可读，无法续传"))
             remaining -= 1
         }
     }
@@ -265,13 +265,13 @@ class ArtifactUploadStore(context: Context) {
         metadataTemporaryFile.writeText(json.encodeToString(tasks.values.toList()))
         if (!metadataTemporaryFile.renameTo(metadataFile)) {
             metadataFile.delete()
-            check(metadataTemporaryFile.renameTo(metadataFile)) { "无法保存上传记录" }
+            check(metadataTemporaryFile.renameTo(metadataFile)) { L10n.tr("无法保存上传记录") }
         }
     }
 
     /** 重启后没有在跑的传输：状态退回可续传，而不是假装还在传。 */
     private fun UploadTask.asPausedIfNeeded(): UploadTask = if (status == "uploading" || status == "queued") {
-        copy(status = "paused", error = "应用已重新启动，可继续发送")
+        copy(status = "paused", error = L10n.tr("应用已重新启动，可继续发送"))
     } else {
         this
     }
@@ -294,7 +294,7 @@ class ArtifactUploadStore(context: Context) {
                     digest.update(buffer, 0, count)
                     size += count
                 }
-            } ?: error("无法读取所选文件")
+            } ?: error(L10n.tr("无法读取所选文件"))
             return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } to size
         }
 

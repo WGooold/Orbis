@@ -79,11 +79,11 @@ internal fun MessageActions(
         val next = it.boundsInWindow()
         if (bounds != Rect.Zero && bounds != next) dismiss()
         bounds = next
-    }.semantics { customActions = listOf(CustomAccessibilityAction("消息操作") { show(); true }) }) {
+    }.semantics { customActions = listOf(CustomAccessibilityAction(L10n.tr("消息操作")) { show(); true }) }) {
         CompositionLocalProvider(LocalTextToolbar provides toolbar) { content { show() } }
         NeumorphMenu(expanded = open && header == null, onDismissRequest = ::dismiss, preferAbove = true) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                CopyIconButton("复制消息", size = 32.dp) { text }
+                CopyIconButton(L10n.tr("复制消息"), size = 32.dp) { text }
                 if (onRewind != null) NeumorphIconButton(
                     onClick = { dismiss(); if (currentEnabled) currentRewind?.invoke() },
                     icon = Icons.Rounded.SkipPrevious, contentDescription = "Rewind", size = 32.dp, enabled = rewindEnabled)
@@ -91,8 +91,8 @@ internal fun MessageActions(
             // Preserve native selection handles and its copy/select-all operations. These
             // callbacks belong to the current selection and never rewrite message content.
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                copySelection?.let { copy -> NeumorphTextButton("复制选中文本", { dismiss(); copy() }) }
-                selectAll?.let { all -> NeumorphTextButton("全选", all) }
+                copySelection?.let { copy -> NeumorphTextButton(L10n.tr("复制选中文本"), { dismiss(); copy() }) }
+                selectAll?.let { all -> NeumorphTextButton(L10n.tr("全选"), all) }
             }
         }
     }
@@ -127,15 +127,15 @@ internal fun MessageActionHeader(normal: @Composable () -> Unit) {
                 modifier = Modifier.graphicsLayer { alpha = show; translationY = (1f-show) * -4.dp.toPx() }
                     .testTag("message-action-header")
                     .then(if (selection == null) Modifier.clearAndSetSemantics { } else Modifier),
-                title = { if (shown.copySelection == null && shown.selectAll == null) MotionText("消息操作", maxLines = 1) },
-                navigationIcon = { NeumorphIconButton({ state?.dismiss() }, Icons.Rounded.Close, "退出消息操作", enabled = selection != null) },
+                title = { if (shown.copySelection == null && shown.selectAll == null) MotionText(L10n.tr("消息操作"), maxLines = 1) },
+                navigationIcon = { NeumorphIconButton({ state?.dismiss() }, Icons.Rounded.Close, L10n.tr("退出消息操作"), enabled = selection != null) },
                 actions = {
-                    CopyIconButton("复制消息", enabled = selection != null) { selection?.text.orEmpty() }
+                    CopyIconButton(L10n.tr("复制消息"), enabled = selection != null) { selection?.text.orEmpty() }
                     if (shown.rewind != null) NeumorphIconButton({
                         if (state?.selection?.id == shown.id && shown.rewindEnabled) { state.dismiss(); shown.rewind.invoke() }
                     }, Icons.Rounded.SkipPrevious, "Rewind", enabled = selection?.rewindEnabled == true)
-                    shown.copySelection?.let { copy -> NeumorphTextButton("复制选区", { if (selection != null) copy() }) }
-                    shown.selectAll?.let { all -> NeumorphTextButton("全选", { if (selection != null) all() }) }
+                    shown.copySelection?.let { copy -> NeumorphTextButton(L10n.tr("复制选区"), { if (selection != null) copy() }) }
+                    shown.selectAll?.let { all -> NeumorphTextButton(L10n.tr("全选"), { if (selection != null) all() }) }
                 },
             )
         }

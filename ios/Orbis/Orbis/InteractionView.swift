@@ -23,9 +23,9 @@ struct InteractionWorkspaceView: View {
                 OrbisMotionButton { open = true } label: {
                     HStack(spacing: 10) {
                         OrbisActionSymbol(systemName: "exclamationmark.bubble")
-                        Text(requests.count == 1 ? requests[0].title : "\(requests.count) 项交互待确认").font(.orbisLabel(.semibold)).lineLimit(2)
+                        Text(requests.count == 1 ? requests[0].title : L10n.tr("{0} 项交互待确认", requests.count)).font(.orbisLabel(.semibold)).lineLimit(2)
                         Spacer()
-                        Text("打开").font(.orbisCaption())
+                        Text(L10n.tr("打开")).font(.orbisCaption())
                         OrbisActionSymbol(systemName: "chevron.up").font(.orbisCaption())
                     }.padding(14).frame(minHeight: 48)
                 }.buttonStyle(NeuButtonStyle(radius: 16)).padding(.horizontal, 16).padding(.bottom, 10).accessibilityIdentifier("interaction-open")
@@ -44,7 +44,7 @@ struct InteractionWorkspaceView: View {
         }
         .sheet(isPresented: $open) {
             VStack(spacing: 14) {
-                OrbisPageHeader(title: "远程交互", closes: true, back: { open = false }) { Text("\(requests.count) 项").font(.orbisCaption()) }
+                OrbisPageHeader(title: L10n.tr("远程交互"), closes: true, back: { open = false }) { Text(L10n.tr("{0} 项", requests.count)).font(.orbisCaption()) }
                 if requests.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
@@ -112,9 +112,9 @@ private struct InteractionRequestView: View {
                         Spacer(minLength: 0)
                         // One fixed status slot: submitting swaps the label for a spinner without reflowing the title.
                         ZStack(alignment: .trailing) {
-                            Text(expired ? "已过期" : "待确认").font(.orbisCaption()).foregroundStyle(pageAccent ?? p.accent).opacity(pending ? 0 : 1)
+                            Text(expired ? L10n.tr("已过期") : L10n.tr("待确认")).font(.orbisCaption()).foregroundStyle(pageAccent ?? p.accent).opacity(pending ? 0 : 1)
                             if pending { ProgressView().controlSize(.small) }
-                        }.accessibilityLabel(pending ? "已提交，等待电脑端确认" : expired ? "已过期" : "待确认")
+                        }.accessibilityLabel(pending ? L10n.tr("已提交，等待电脑端确认") : expired ? L10n.tr("已过期") : L10n.tr("待确认"))
                         if request.kind != "confirm" {
                             OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).foregroundStyle(p.secondary)
                                 .rotationEffect(.degrees(expanded ? 180 : 0)).animation(.orbisCollapse, value: expanded)
@@ -122,7 +122,7 @@ private struct InteractionRequestView: View {
                         }
                     }.frame(minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(.plain)
-                    .accessibilityHint(request.kind == "confirm" ? "" : expanded ? "收起交互" : "展开交互")
+                    .accessibilityHint(request.kind == "confirm" ? "" : expanded ? L10n.tr("收起交互") : L10n.tr("展开交互"))
                 OrbisCollapse(expanded: expanded || request.kind == "confirm") {
                     VStack(alignment: .leading, spacing: 12) {
                         ScrollView {
@@ -130,17 +130,17 @@ private struct InteractionRequestView: View {
                                 if let description = request.description { Text(description).font(.orbisLabel()) }
                                 if let summary = request.argumentSummary { Text(summary).font(.orbisCaption(mono: true)).textSelection(.enabled) }
                                 if let external = request.externalUrl, let url = URL(string: external), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                                    OrbisTextButton(title: "在浏览器打开", symbol: "safari") { openURL(url) }
+                                    OrbisTextButton(title: L10n.tr("在浏览器打开"), symbol: "safari") { openURL(url) }
                                 }
                                 content
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.frame(maxHeight: inSheet ? .infinity : 220).scrollBounceBehavior(.basedOnSize)
                         HStack(spacing: 12) {
-                            OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? "拒绝" : "取消")) {
+                            OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? L10n.tr("拒绝") : L10n.tr("取消"))) {
                                 let accepted = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
                                 if accepted && request.kind == "confirm" { OrbisHaptics.commit() }
                             }
-                            OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? "允许" : "提交"), symbol: "checkmark") { submit() }.disabled(!valid)
+                            OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交")), symbol: "checkmark") { submit() }.disabled(!valid)
                         }.disabled(pending || expired || store.connection != .secured)
                     }.padding(.top, 8)
                 }
@@ -162,10 +162,10 @@ private struct InteractionRequestView: View {
             }
         case "input":
             if request.secret == true {
-                SecureField(request.placeholder ?? "输入内容", text: $input).font(.orbisBody())
+                SecureField(request.placeholder ?? L10n.tr("输入内容"), text: $input).font(.orbisBody())
                     .focused($focusedField, equals: "input").orbisInput(focused: focusedField == "input").accessibilityIdentifier("interaction-input")
             } else {
-                TextField(request.placeholder ?? "输入内容", text: $input, axis: .vertical).font(.orbisBody()).lineLimit(2...6)
+                TextField(request.placeholder ?? L10n.tr("输入内容"), text: $input, axis: .vertical).font(.orbisBody()).lineLimit(2...6)
                     .focused($focusedField, equals: "input").orbisInput(focused: focusedField == "input").accessibilityIdentifier("interaction-input")
             }
         case "questionnaire":
@@ -185,25 +185,25 @@ private struct InteractionRequestView: View {
                     if question.allowOther == true {
                         let key = "other-" + question.id
                         if question.secret == true {
-                            SecureField("其他回答", text: textBinding($other, question.id)).font(.orbisBody())
+                            SecureField(L10n.tr("其他回答"), text: textBinding($other, question.id)).font(.orbisBody())
                                 .focused($focusedField, equals: key).orbisInput(focused: focusedField == key)
                         } else {
-                            TextField("其他回答", text: textBinding($other, question.id), axis: .vertical).font(.orbisBody())
+                            TextField(L10n.tr("其他回答"), text: textBinding($other, question.id), axis: .vertical).font(.orbisBody())
                                 .focused($focusedField, equals: key).orbisInput(focused: focusedField == key)
                         }
                     }
                     if question.allowNotes == true {
                         let key = "notes-" + question.id
                         if question.secret == true {
-                            SecureField("补充说明（可选）", text: textBinding($notes, question.id)).font(.orbisBody())
+                            SecureField(L10n.tr("补充说明（可选）"), text: textBinding($notes, question.id)).font(.orbisBody())
                                 .focused($focusedField, equals: key).orbisInput(focused: focusedField == key)
                         } else {
-                            TextField("补充说明（可选）", text: textBinding($notes, question.id), axis: .vertical).font(.orbisBody())
+                            TextField(L10n.tr("补充说明（可选）"), text: textBinding($notes, question.id), axis: .vertical).font(.orbisBody())
                                 .focused($focusedField, equals: key).orbisInput(focused: focusedField == key)
                         }
                     }
                     if (other[question.id]?.utf16.count ?? 0) > 4_000 || (notes[question.id]?.utf16.count ?? 0) > 4_000 {
-                        Text("其他回答和补充说明各不能超过 4,000 个字符。").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                        Text(L10n.tr("其他回答和补充说明各不能超过 4,000 个字符。")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
                     }
                 }
                 .onChange(of: other[question.id]) { _, value in
@@ -211,7 +211,7 @@ private struct InteractionRequestView: View {
                 }
             }
         case "confirm": EmptyView()
-        default: Text("此交互需要在电脑端完成。").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+        default: Text(L10n.tr("此交互需要在电脑端完成。")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
         }
     }
 

@@ -41,7 +41,7 @@ internal fun RemoteState.applyAgentDomainProjection(
             val value = domain.value?.takeUnless { it is JsonNull }
             when (name) {
                 "identity" -> if (value != null) {
-                    val identity = value as? JsonObject ?: error("identity 不是对象")
+                    val identity = value as? JsonObject ?: error(L10n.tr("identity 不是对象"))
                     require(identity.text("hostId") == null || identity.text("hostId") == hostId)
                     val incoming = json.decodeFromJsonElement<RuntimeSummary>(identity)
                     require(incoming.runtimeId == id && incoming.sessionId == sessionId)
@@ -49,7 +49,7 @@ internal fun RemoteState.applyAgentDomainProjection(
                         sessionName = incoming.sessionName, agentKind = incoming.agentKind)
                 }
                 "execution" -> {
-                    val phase = (value as? JsonObject)?.text("phase") ?: error("execution 缺少 phase")
+                    val phase = (value as? JsonObject)?.text("phase") ?: error(L10n.tr("execution 缺少 phase"))
                     require(phase in setOf("idle", "running", "waiting_local_interaction"))
                     runtime = runtime.copy(status = phase,
                         compactionPhase = ((value as? JsonObject)?.get("compaction") as? JsonObject)?.text("phase"))
@@ -68,7 +68,7 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "model" -> runtime = if (value == null && domain.completeness == "complete") {
                     runtime.copy(model = null, thinkingLevel = null)
                 } else if (value != null) {
-                    val model = value as? JsonObject ?: error("model 不是对象")
+                    val model = value as? JsonObject ?: error(L10n.tr("model 不是对象"))
                     runtime.copy(model = json.decodeFromJsonElement<RuntimeModelInfo>(model), thinkingLevel = model.text("thinkingLevel"))
                 } else runtime
                 "context" -> if (value != null || domain.completeness == "complete") {
@@ -90,8 +90,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "interactions" -> {
                     val rows = collection(value, domain) ?: continue
                     val incoming = rows.map { (key, element) ->
-                        val request = element as? JsonObject ?: error("交互不是对象")
-                        val interaction = parseInteraction(json, request, conversation.interactions[key]) ?: error("交互缺少可回答字段")
+                        val request = element as? JsonObject ?: error(L10n.tr("交互不是对象"))
+                        val interaction = parseInteraction(json, request, conversation.interactions[key]) ?: error(L10n.tr("交互缺少可回答字段"))
                         require(interaction.requestId == key)
                         // 回答提交是本设备本地状态，不接受共享模型覆盖它。
                         val previous = conversation.interactions[key]
@@ -108,12 +108,12 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "delivery" -> {
                     val rows = collection(value, domain) ?: continue
                     val incoming = rows.map { (key, element) ->
-                        val row = element as? JsonObject ?: error("队列项不是对象")
-                        val queueId = row.text("queueId") ?: error("队列项缺少身份")
-                        val delivery = row.text("delivery") ?: error("队列项缺少投递方式")
-                        val state = row.text("state") ?: error("队列项缺少状态")
+                        val row = element as? JsonObject ?: error(L10n.tr("队列项不是对象"))
+                        val queueId = row.text("queueId") ?: error(L10n.tr("队列项缺少身份"))
+                        val delivery = row.text("delivery") ?: error(L10n.tr("队列项缺少投递方式"))
+                        val state = row.text("state") ?: error(L10n.tr("队列项缺少状态"))
                         require(key == queueId && delivery in setOf("steer", "followUp") && state in setOf("accepted", "delivered", "cancelled", "rejected", "not_cancelable"))
-                        key to QueuedMessage(key, row.text("text") ?: error("队列项缺少正文"), delivery, state, row.text("error"))
+                        key to QueuedMessage(key, row.text("text") ?: error(L10n.tr("队列项缺少正文")), delivery, state, row.text("error"))
                     }.toMap()
                     val inventory = if (domain.projectionComplete || domain.completeness == "complete") incoming else conversation.queuedMessages + incoming
                     queueStamp = domain.projectionComplete || domain.completeness == "complete"
@@ -124,7 +124,7 @@ internal fun RemoteState.applyAgentDomainProjection(
             }
         }
     } catch (failure: Exception) {
-        return copy(error = "Host 模型领域格式无效：${failure.message ?: "未知字段"}")
+        return copy(error = L10n.tr("Host 模型领域格式无效：{0}", failure.message ?: L10n.tr("未知字段")))
     }
     val identity = if (domains["identity"]?.availability == "ready") runtime.catalogEntry() else null
     val catalog = if (identity == null) sessions else sessions +
@@ -141,7 +141,7 @@ private fun collection(value: JsonElement?, domain: AgentStateDomainView): JsonO
     value is JsonObject -> value
     value == null && (domain.projectionComplete || domain.completeness == "complete") -> JsonObject(emptyMap())
     value == null -> null
-    else -> error("集合领域不是对象")
+    else -> error(L10n.tr("集合领域不是对象"))
 }
 
 internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentStateDomainView>, json: Json): RemoteState {
@@ -188,7 +188,7 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
             val profiles = row["profiles"] as? JsonArray
             if (profiles == null || row.text("availability")?.let { it != "ready" } == true ||
                 row["profilesTruncated"]?.jsonPrimitive?.booleanOrNull == true) {
-                problems[kind] = "供应商清单尚未就绪，请刷新后重试"; continue
+                problems[kind] = L10n.tr("供应商清单尚未就绪，请刷新后重试"); continue
             }
             val providers = profiles.filterIsInstance<JsonObject>().mapNotNull { profile ->
                 val id = profile.text("id")?.takeIf { it.isNotBlank() && it.length <= 128 } ?: return@mapNotNull null
@@ -198,10 +198,10 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
                     profile["official"]?.jsonPrimitive?.booleanOrNull == true || profile["subscriptionSupported"]?.jsonPrimitive?.booleanOrNull == true)
             }
             if (providers.size != profiles.size || providers.size > 64 || providers.map { it.id }.toSet().size != providers.size) {
-                problems[kind] = "供应商清单格式无法识别，请刷新后重试"; continue
+                problems[kind] = L10n.tr("供应商清单格式无法识别，请刷新后重试"); continue
             }
             catalogs[kind] = providers
-            if (row["switching"]?.jsonPrimitive?.booleanOrNull == true) problems[kind] = "电脑正在切换供应商"
+            if (row["switching"]?.jsonPrimitive?.booleanOrNull == true) problems[kind] = L10n.tr("电脑正在切换供应商")
         }
         var providerState = state.agentProviders
         catalogs[providerState.kind]?.let { providers -> providerState = providerState.copy(providers = providers,

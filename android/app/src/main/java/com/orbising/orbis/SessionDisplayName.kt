@@ -22,7 +22,7 @@ internal fun RemoteState.sessionDisplayName(
         ?: runtime?.let { firstUserMessageTitle(conversations[it.runtimeId]?.messages.orEmpty()) }
         ?: sessionId?.trim()?.takeIf(String::isNotEmpty)
         ?: runtime?.runtimeId
-        ?: "Session 已离线"
+        ?: L10n.tr("Session 已离线")
 }
 
 /** Capture only newly available Pi names. Existing labels never follow later history or renames. */

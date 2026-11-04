@@ -66,7 +66,7 @@ class DeviceHandshake(
 
     init {
         if (this.pskRoot.size != Crypto.SYMMETRIC_KEY_BYTES) {
-            throw Crypto.E2eCryptoException("invalid_key_length", "pskRoot 必须是 32 字节")
+            throw Crypto.E2eCryptoException("invalid_key_length", L10n.tr("pskRoot 必须是 32 字节"))
         }
     }
 
@@ -82,7 +82,7 @@ class DeviceHandshake(
         val expected = HandshakeE2e.handshakeMacFromHost(derived, hostEphemeralPublic, keyPair.publicRaw)
         val actual = Crypto.fromBase64Url(body.macH, "macH")
         if (!Crypto.constantTimeEqual(expected, actual)) {
-            throw Crypto.E2eCryptoException("mac_mismatch", "mac_h 校验失败：对面拿不出这台电脑的 pskRoot")
+            throw Crypto.E2eCryptoException("mac_mismatch", L10n.tr("mac_h 校验失败：对面拿不出这台电脑的 pskRoot"))
         }
         keys = derived
         return HandshakeConfirmBody(
@@ -91,7 +91,7 @@ class DeviceHandshake(
         )
     }
 
-    fun sessionKeys(): SessionKeys = keys ?: throw Crypto.E2eCryptoException("not_ready", "握手尚未完成")
+    fun sessionKeys(): SessionKeys = keys ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("握手尚未完成"))
 }
 
 /**
@@ -129,7 +129,7 @@ class E2eChannel(keys: SessionKeys, role: String) {
                 sendKey = keys.kDeviceToHost
                 receiveKey = keys.kHostToDevice
             }
-            else -> throw Crypto.E2eCryptoException("malformed", "未知角色：$role")
+            else -> throw Crypto.E2eCryptoException("malformed", L10n.tr("未知角色：{0}", role))
         }
     }
 
@@ -145,7 +145,7 @@ class E2eChannel(keys: SessionKeys, role: String) {
         channel: String,
     ): EnvelopeV2 {
         if (kind == "hs" || kind == "pair") {
-            throw Crypto.E2eCryptoException("malformed", "$kind 帧不加密，请用 PlaintextEnvelope")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 帧不加密，请用 PlaintextEnvelope", kind))
         }
         val next = (sendSequences[channel] ?: 0L) + 1
         val hdr = RoutingHeaderV2(k = kind, room = room, from = from, to = to, n = next, ch = channel)
@@ -168,9 +168,9 @@ class E2eChannel(keys: SessionKeys, role: String) {
     fun open(envelope: EnvelopeV2): ByteArray? {
         val hdr = envelope.hdr
         if (hdr.k == "hs" || hdr.k == "pair") {
-            throw Crypto.E2eCryptoException("malformed", "${hdr.k} 帧不是密文，请用 PlaintextEnvelope")
+            throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 帧不是密文，请用 PlaintextEnvelope", hdr.k))
         }
-        val channel = hdr.ch ?: throw Crypto.E2eCryptoException("malformed", "加密帧 ${hdr.k} 缺少 hdr.ch")
+        val channel = hdr.ch ?: throw Crypto.E2eCryptoException("malformed", L10n.tr("加密帧 {0} 缺少 hdr.ch", hdr.k))
         val last = receiveSequences[channel] ?: 0L
         if (hdr.n <= last) {
             return null

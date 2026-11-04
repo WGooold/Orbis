@@ -47,7 +47,7 @@ internal fun PendingAttachments(uploads: List<UploadTask>) {
             val progress = uploadProgressText(upload)
             Row(
                 Modifier.testTag("pending-attachment-${upload.taskId}")
-                    .semantics(mergeDescendants = true) { contentDescription = "${upload.displayName}，$progress" },
+                    .semantics(mergeDescendants = true) { contentDescription = L10n.tr("{0}，{1}", upload.displayName, progress) },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {

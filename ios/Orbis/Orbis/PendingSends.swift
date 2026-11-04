@@ -148,7 +148,7 @@ struct PendingSendOutbox: Equatable {
                 if host.state == "unconfirmed" {
                     item.state = .unconfirmed; item.needsDeliveryEvidence = true
                 } else if host.state == "rejected" {
-                    item.state = .failed(host.error ?? "电脑端拒绝了这条消息")
+                    item.state = .failed(host.error ?? L10n.tr("电脑端拒绝了这条消息"))
                 } else if host.state == "accepted" || host.state == "not_cancelable" {
                     item.state = .queued; item.acceptedAt = item.acceptedAt ?? now
                 }
@@ -175,7 +175,7 @@ struct PendingSendOutbox: Equatable {
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
             if item.state == .accepted { return nil }
             if item.needsDeliveryEvidence { return item }
-            item.state = .failed("未能确认送达，可以重新发送"); item.settleRevision = nil
+            item.state = .failed(L10n.tr("未能确认送达，可以重新发送")); item.settleRevision = nil
             return item
         }
         return needsSync
@@ -202,11 +202,11 @@ struct PendingSendOutbox: Equatable {
 }
 
 func pendingSendFailureText(status: String?, error: String?) -> String {
-    if status == "message_id_conflict" { return "消息身份冲突，请重新发送" }
+    if status == "message_id_conflict" { return L10n.tr("消息身份冲突，请重新发送") }
     switch error {
-    case "runtime_busy": return "会话正在运行，请选择插入或完成后发送"
-    case "claude_steer_unsupported": return "Claude Code 不支持插入当前任务"
+    case "runtime_busy": return L10n.tr("会话正在运行，请选择插入或完成后发送")
+    case "claude_steer_unsupported": return L10n.tr("Claude Code 不支持插入当前任务")
     case .some(let text) where !text.isEmpty: return text
-    default: return "电脑端没有接受这条消息"
+    default: return L10n.tr("电脑端没有接受这条消息")
     }
 }

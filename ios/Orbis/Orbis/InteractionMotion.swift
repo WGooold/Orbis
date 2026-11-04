@@ -312,7 +312,7 @@ struct OrbisMessageActions: ViewModifier {
             // handles another hold when native text selection already owns the hit target.
             .simultaneousGesture(LongPressGesture().onEnded { _ in show() })
             .background(OrbisLongPressObserver(onPress: show))
-            .accessibilityAction(named: "消息操作") { if enabled { show() } }
+            .accessibilityAction(named: L10n.tr("消息操作")) { if enabled { show() } }
             .onChange(of: rewindEnabled) { _, _ in dismiss() }
             .onChange(of: text) { _, new in
                 guard toolbar?.selection?.id == id else { return }
@@ -343,7 +343,7 @@ struct OrbisMessageActions: ViewModifier {
             return
         }
         guard !anchor.frame.isEmpty else { return }
-        var items = [OrbisMenuItem(title: "复制消息", symbol: "doc.on.doc", keepsOpen: true, identifier: "copy-message-" + id) { UIPasteboard.general.string = text }]
+        var items = [OrbisMenuItem(title: L10n.tr("复制消息"), symbol: "doc.on.doc", keepsOpen: true, identifier: "copy-message-" + id) { UIPasteboard.general.string = text }]
         if let rewind {
             items.append(OrbisMenuItem(title: "Rewind", symbol: "backward.end", disabled: !rewindEnabled, identifier: "rewind-message-" + id, action: rewind))
         }
@@ -787,9 +787,9 @@ struct OrbisMessageActionHeader<Normal: View>: View {
             if actions.selection == nil { normal.transition(.opacity) }
             if let selected = actions.selection {
                 HStack(spacing: 12) {
-                    OrbisIconButton(symbol: "xmark", label: "退出消息操作") { actions.dismiss() }
-                    OrbisMotionText("消息操作").font(.orbisBody(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                    OrbisCopyButton(label: "复制消息") { actions.selection?.text ?? "" }
+                    OrbisIconButton(symbol: "xmark", label: L10n.tr("退出消息操作")) { actions.dismiss() }
+                    OrbisMotionText(L10n.tr("消息操作")).font(.orbisBody(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
+                    OrbisCopyButton(label: L10n.tr("复制消息")) { actions.selection?.text ?? "" }
                         .accessibilityIdentifier("copy-message-" + selected.id)
                     if let rewind = selected.rewind {
                         OrbisIconButton(symbol: "backward.end", label: "Rewind") {

@@ -38,22 +38,22 @@ private final class ToolExportFile: @unchecked Sendable {
     }
     func prepare() async throws {
         try await perform { [self] in
-            guard destination.isFileURL, !FileManager.default.fileExists(atPath: destination.path) else { throw failure("请选择新的导出文件路径。") }
+            guard destination.isFileURL, !FileManager.default.fileExists(atPath: destination.path) else { throw failure(L10n.tr("请选择新的导出文件路径。")) }
             scoped = destination.startAccessingSecurityScopedResource()
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw failure("无法创建导出文件。") }
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw failure(L10n.tr("无法创建导出文件。")) }
             output = try FileHandle(forWritingTo: temporary)
         }
     }
     func append(_ data: Data) async throws {
         try await perform { [self] in
-            guard let output else { throw failure("导出已取消。") }
+            guard let output else { throw failure(L10n.tr("导出已取消。")) }
             try output.write(contentsOf: data)
         }
     }
     func finish() async throws {
         try await perform { [self] in
-            guard let output else { throw failure("导出已取消。") }
+            guard let output else { throw failure(L10n.tr("导出已取消。")) }
             try output.synchronize(); try output.close(); self.output = nil
             try FileManager.default.moveItem(at: temporary, to: destination); published = true
             if scoped { destination.stopAccessingSecurityScopedResource(); scoped = false }
@@ -140,7 +140,7 @@ final class ToolContentReader: ObservableObject {
             }
         }
     }
-    func cancelExport() { abortExport("导出已取消。") }
+    func cancelExport() { abortExport(L10n.tr("导出已取消。")) }
     private func abortExport(_ message: String?) {
         guard exporting || exportFile != nil else { return }
         let file = exportFile
@@ -151,15 +151,15 @@ final class ToolContentReader: ObservableObject {
         if let message { error = message }
         Task { [weak self] in
             do { try await file?.cancel() }
-            catch { self?.exportError = "未完成的导出文件无法删除：\(error.localizedDescription)" }
+            catch { self?.exportError = L10n.tr("未完成的导出文件无法删除：{0}", error.localizedDescription) }
         }
     }
     private func writeExportPage(_ page: ToolContentPage) {
         guard let id = exportID, let file = exportFile else { return }
-        guard page.gaps.isEmpty else { abortExport("内容存在缺失范围，未导出不完整文件。"); return }
+        guard page.gaps.isEmpty else { abortExport(L10n.tr("内容存在缺失范围，未导出不完整文件。")); return }
         let bytes = Data(page.text.utf8)
         guard page.read.throughOffset <= Self.exportByteLimit, exportedBytes + Int64(bytes.count) <= Self.exportByteLimit else {
-            abortExport("导出达到 64 MiB 上限。"); return
+            abortExport(L10n.tr("导出达到 64 MiB 上限。")); return
         }
         loading = true
         Task { [weak self] in
@@ -195,7 +195,7 @@ final class ToolContentReader: ObservableObject {
         let command: [String: Any] = ["type": "session.tool.content.read", "runtimeId": runtimeId, "requestId": id,
             "viewerId": viewerId, "locator": encode(locator), "read": readObject, "offset": offset, "maxBytes": 32768]
         guard send(runtimeId, command) else {
-            if exporting { abortExport("内容读取未送达，请连接后重试。") } else { error = "内容读取未送达，请连接后重试。" }
+            if exporting { abortExport(L10n.tr("内容读取未送达，请连接后重试。")) } else { error = L10n.tr("内容读取未送达，请连接后重试。") }
             return
         }
         request = (id, offset); loading = true; error = nil; retryAfter = nil
@@ -203,8 +203,8 @@ final class ToolContentReader: ObservableObject {
         timeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
             guard let self, self.request?.id == id else { return }
-            if self.exporting { self.abortExport("内容读取超时，请重试。") }
-            else { self.loading = false; self.request = nil; self.error = "内容读取超时，请重试。"; self.follow(false) }
+            if self.exporting { self.abortExport(L10n.tr("内容读取超时，请重试。")) }
+            else { self.loading = false; self.request = nil; self.error = L10n.tr("内容读取超时，请重试。"); self.follow(false) }
         }
     }
     func consume(_ event: [String: Any], runtimeId: String) {
@@ -231,7 +231,7 @@ final class ToolContentReader: ObservableObject {
               page.fromOffset >= 0, page.read.throughOffset >= 0, validToolId(page.read.readId), validToolId(page.read.contentEpoch),
               lastEpoch == nil || lastEpoch == page.read.contentEpoch,
               read == nil || read == page.read else {
-            rejectPage("内容版本或范围不匹配，请重新打开详情。"); return
+            rejectPage(L10n.tr("内容版本或范围不匹配，请重新打开详情。")); return
         }
         var coverage: Int64 = 0
         for gap in page.gaps {
@@ -239,12 +239,12 @@ final class ToolContentReader: ObservableObject {
             guard gap.fromOffset == coverage, gap.fromOffset >= 0, gap.fromOffset < gap.throughOffset,
                   gap.throughOffset <= page.observedThroughOffset, ["quota", "expired", "source-missing"].contains(gap.reason),
                   gap.throughOffset <= page.availableFromOffset || gap.fromOffset >= page.availableThroughOffset else {
-                rejectPage("内容缺口声明无效。"); return
+                rejectPage(L10n.tr("内容缺口声明无效。")); return
             }
             coverage = gap.throughOffset
         }
         if coverage == page.availableFromOffset { coverage = page.availableThroughOffset }
-        guard coverage == page.observedThroughOffset else { rejectPage("内容范围不完整。"); return }
+        guard coverage == page.observedThroughOffset else { rejectPage(L10n.tr("内容范围不完整。")); return }
         timeout?.cancel(); loading = false; self.request = nil; read = page.read
         lastEpoch = page.read.contentEpoch
         if exporting { writeExportPage(page); return }
@@ -285,12 +285,12 @@ final class ToolContentReader: ObservableObject {
 
 func toolReadFailureTitle(_ reason: String?) -> String {
     switch reason {
-    case "busy": return "电脑端读取繁忙，请稍后重试。"
-    case "content_expired", "snapshot_expired": return "内容读取已过期，请重新打开详情。"
-    case "content_version_invalid": return "内容版本已变化，请重新打开详情。"
-    case "content_range_unavailable", "invalid_utf8_offset": return "请求范围不可读取。"
-    case "scope_mismatch": return "详情所属会话已变化，请重新打开。"
-    case "cancelled": return "详情读取已取消。"
-    default: return "来源暂时无法提供这部分内容。"
+    case "busy": return L10n.tr("电脑端读取繁忙，请稍后重试。")
+    case "content_expired", "snapshot_expired": return L10n.tr("内容读取已过期，请重新打开详情。")
+    case "content_version_invalid": return L10n.tr("内容版本已变化，请重新打开详情。")
+    case "content_range_unavailable", "invalid_utf8_offset": return L10n.tr("请求范围不可读取。")
+    case "scope_mismatch": return L10n.tr("详情所属会话已变化，请重新打开。")
+    case "cancelled": return L10n.tr("详情读取已取消。")
+    default: return L10n.tr("来源暂时无法提供这部分内容。")
     }
 }

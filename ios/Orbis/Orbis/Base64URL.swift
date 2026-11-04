@@ -5,8 +5,8 @@ enum Base64URLError: LocalizedError {
     case invalidLength(String, Int)
     var errorDescription: String? {
         switch self {
-        case .malformed(let label): return "\(label) 不是合法的 base64url"
-        case .invalidLength(let label, let bytes): return "\(label) 必须是 \(bytes) 字节"
+        case .malformed(let label): return L10n.tr("{0} 不是合法的 base64url", label)
+        case .invalidLength(let label, let bytes): return L10n.tr("{0} 必须是 {1} 字节", label, bytes)
         }
     }
 }

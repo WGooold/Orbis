@@ -91,10 +91,10 @@ class ArtifactDownloadStore(context: Context) {
         artifact: RemoteArtifact,
         hostId: String? = null,
     ): String {
-        require(artifact.size >= 0) { "下载文件大小无效" }
-        require(offset in 0..artifact.size) { "下载起点无效" }
-        require(isSafeFileName(artifact.fileName)) { "下载文件名无效" }
-        require(artifact.sha256.matches(Regex("^[a-f0-9]{64}$"))) { "下载校验值无效" }
+        require(artifact.size >= 0) { L10n.tr("下载文件大小无效") }
+        require(offset in 0..artifact.size) { L10n.tr("下载起点无效") }
+        require(isSafeFileName(artifact.fileName)) { L10n.tr("下载文件名无效") }
+        require(artifact.sha256.matches(Regex("^[a-f0-9]{64}$"))) { L10n.tr("下载校验值无效") }
         val boundTaskId = commandTasks.remove(commandId)
         val taskId = boundTaskId
             ?: findDownloadTaskId(tasks.values, runtimeId, artifact)
@@ -130,9 +130,9 @@ class ArtifactDownloadStore(context: Context) {
             0
         }
         val effectiveOffset = if (previousArtifact != null && !sameArtifact) 0 else offset
-        if (effectiveOffset > availableBytes) error("下载临时文件不完整")
+        if (effectiveOffset > availableBytes) error(L10n.tr("下载临时文件不完整"))
         val startOffset = availableBytes
-        if (!temporaryFile.exists()) check(temporaryFile.createNewFile()) { "无法创建下载临时文件" }
+        if (!temporaryFile.exists()) check(temporaryFile.createNewFile()) { L10n.tr("无法创建下载临时文件") }
         if (temporaryFile.length() != startOffset) {
             java.io.RandomAccessFile(temporaryFile, "rw").use { it.setLength(startOffset) }
         }
@@ -178,9 +178,9 @@ class ArtifactDownloadStore(context: Context) {
             // Keep a bounded in-memory window for frames that arrive before their missing prefix.
             // The durable prefix remains the ACK contract, so a process restart safely discards
             // this cache and makes the sender retransmit it.
-            require(offset <= download.artifact.size) { "下载数据偏移无效" }
-            require(data.isNotEmpty()) { "下载数据长度无效" }
-            require(data.size.toLong() <= download.artifact.size - offset) { "下载数据超过文件大小" }
+            require(offset <= download.artifact.size) { L10n.tr("下载数据偏移无效") }
+            require(data.isNotEmpty()) { L10n.tr("下载数据长度无效") }
+            require(data.size.toLong() <= download.artifact.size - offset) { L10n.tr("下载数据超过文件大小") }
             if (!download.pendingChunks.containsKey(offset) &&
                 download.pendingChunks.size < MAX_PENDING_CHUNKS &&
                 download.pendingBytes + data.size <= MAX_PENDING_BYTES
@@ -191,8 +191,8 @@ class ArtifactDownloadStore(context: Context) {
             }
             return ArtifactAppendResult(runtimeId, true, download.receivedBytes)
         }
-        require(data.isNotEmpty()) { "下载数据长度无效" }
-        require(data.size.toLong() <= download.artifact.size - download.receivedBytes) { "下载数据超过文件大小" }
+        require(data.isNotEmpty()) { L10n.tr("下载数据长度无效") }
+        require(data.size.toLong() <= download.artifact.size - download.receivedBytes) { L10n.tr("下载数据超过文件大小") }
         appendContiguous(download, data)
         while (true) {
             val pending = download.pendingChunks.remove(download.receivedBytes) ?: break
@@ -219,7 +219,7 @@ class ArtifactDownloadStore(context: Context) {
                 tasks[download.taskId] = task.copy(
                     status = "paused",
                     commandId = null,
-                    error = "下载中断，可继续下载",
+                    error = L10n.tr("下载中断，可继续下载"),
                 )
             }
             persistTasks()
@@ -267,7 +267,7 @@ class ArtifactDownloadStore(context: Context) {
             commandId = null,
             // Keep the transfer identity so an offline cancellation can be replayed when Relay reconnects.
             transferId = task.transferId,
-            error = "下载已取消，可继续下载",
+            error = L10n.tr("下载已取消，可继续下载"),
         )
         persistTasks()
         return CancelResult(task.runtimeId, activeDownload?.transferId ?: task.transferId)
@@ -339,12 +339,12 @@ class ArtifactDownloadStore(context: Context) {
         metadataTemporaryFile.writeText(json.encodeToString(tasks.values.toList()))
         if (!metadataTemporaryFile.renameTo(metadataFile)) {
             metadataFile.delete()
-            check(metadataTemporaryFile.renameTo(metadataFile)) { "无法保存下载记录" }
+            check(metadataTemporaryFile.renameTo(metadataFile)) { L10n.tr("无法保存下载记录") }
         }
     }
 
     private fun ArtifactDownload.asPausedIfNeeded(): ArtifactDownload = if (status == "queued" || status == "downloading") {
-        copy(status = "paused", commandId = null, error = "应用已重新启动，可继续下载")
+        copy(status = "paused", commandId = null, error = L10n.tr("应用已重新启动，可继续下载"))
     } else {
         this
     }
@@ -378,11 +378,11 @@ class ArtifactDownloadStore(context: Context) {
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri = appContext.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: error("无法创建手机下载文件")
+                ?: error(L10n.tr("无法创建手机下载文件"))
             try {
                 appContext.contentResolver.openOutputStream(uri)?.use { output ->
                     download.temporaryFile.inputStream().use { input -> input.copyTo(output) }
-                } ?: error("无法写入手机下载文件")
+                } ?: error(L10n.tr("无法写入手机下载文件"))
                 appContext.contentResolver.update(
                     uri,
                     ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) },
@@ -427,7 +427,7 @@ class ArtifactDownloadStore(context: Context) {
 
     private fun verifyChecksum(download: ActiveDownload) {
         if (download.temporaryFile.length() != download.artifact.size) {
-            throw InvalidDownloadContent("下载文件大小校验失败")
+            throw InvalidDownloadContent(L10n.tr("下载文件大小校验失败"))
         }
         val digest = MessageDigest.getInstance("SHA-256")
         download.temporaryFile.inputStream().use { input ->
@@ -439,7 +439,7 @@ class ArtifactDownloadStore(context: Context) {
             }
         }
         if (digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } != download.artifact.sha256) {
-            throw InvalidDownloadContent("下载文件校验失败")
+            throw InvalidDownloadContent(L10n.tr("下载文件校验失败"))
         }
     }
 

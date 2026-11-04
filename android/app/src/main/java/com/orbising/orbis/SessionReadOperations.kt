@@ -78,12 +78,12 @@ internal fun RemoteState.beginSessionRead(
         return SessionReadStart(current, SessionReadAcceptance(it.operationId, merged = true))
     }
     val sessionId = current.runtimes[key]?.sessionId ?: key.removePrefix("offline:").takeIf { key.startsWith("offline:") }
-        ?: return SessionReadStart(current, SessionReadAcceptance(rejection = "没有可读取的会话"))
+        ?: return SessionReadStart(current, SessionReadAcceptance(rejection = L10n.tr("没有可读取的会话")))
     val operation = SessionReadOperation(operationId, key, current.deviceId, current.hostId, sessionId, targetLeafId,
         null, current.sessionBranchGenerations[key] ?: 0, current.sessionGraphs[sessionId]?.cacheEpoch,
         phase = if (kind == SessionReadKind.FIRST_PAGE) SessionReadPhase.LOCAL else SessionReadPhase.QUEUED,
         kind = kind, demandGeneration = demandGeneration)
-    if (!current.readOwnerValid(operation)) return SessionReadStart(current, SessionReadAcceptance(rejection = "读取归属已失效"))
+    if (!current.readOwnerValid(operation)) return SessionReadStart(current, SessionReadAcceptance(rejection = L10n.tr("读取归属已失效")))
     return SessionReadStart(current.registerRead(operation), SessionReadAcceptance(operationId))
 }
 
@@ -99,15 +99,15 @@ internal fun RemoteState.beginHistoryRead(key: String, operationId: String): Ses
         pendingCommands = current.pendingCommands - retired)
     fun rejected(reason: String) = SessionReadStart(current, SessionReadAcceptance(rejection = reason))
     val sessionId = current.runtimes[key]?.sessionId ?: key.removePrefix("offline:").takeIf { key.startsWith("offline:") }
-        ?: return rejected("没有可读取的会话")
-    val history = current.sessionHistory[key] ?: return rejected("历史首屏尚未就绪")
-    if (history.sessionId != sessionId) return rejected("会话已经改变")
-    if (!history.hasOlder || history.oldestEntryId == null) return rejected("没有更早的历史")
-    if (current.sessionSyncCommands.values.any { it.runtimeId == key && it.range == "history" }) return rejected("历史页仍在等待响应")
+        ?: return rejected(L10n.tr("没有可读取的会话"))
+    val history = current.sessionHistory[key] ?: return rejected(L10n.tr("历史首屏尚未就绪"))
+    if (history.sessionId != sessionId) return rejected(L10n.tr("会话已经改变"))
+    if (!history.hasOlder || history.oldestEntryId == null) return rejected(L10n.tr("没有更早的历史"))
+    if (current.sessionSyncCommands.values.any { it.runtimeId == key && it.range == "history" }) return rejected(L10n.tr("历史页仍在等待响应"))
     val operation = SessionReadOperation(operationId, key, current.deviceId, current.hostId, sessionId,
         history.leafId, history.oldestEntryId, current.sessionBranchGenerations[key] ?: 0,
         current.sessionGraphs[sessionId]?.cacheEpoch)
-    if (!current.readOwnerValid(operation)) return rejected("该历史窗口已关闭")
+    if (!current.readOwnerValid(operation)) return rejected(L10n.tr("该历史窗口已关闭"))
     return SessionReadStart(current.registerRead(operation).copy(
         sessionRangeFailures = current.sessionRangeFailures - sessionRangeFailureKey(key, "history")), SessionReadAcceptance(operationId))
 }
@@ -213,7 +213,7 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     if (page.status in setOf(SessionGraphRangeStatus.LEAF_NOT_FOUND, SessionGraphRangeStatus.RANGE_START_NOT_FOUND) &&
         page.entries.isEmpty()) return this
     if (page.status !in setOf(SessionGraphRangeStatus.COMPLETE, SessionGraphRangeStatus.OLDER_AVAILABLE, SessionGraphRangeStatus.MISSING_PARENT))
-        return finishHistoryRead(operationId, SessionReadPhase.FAILED, "本地历史范围无效：${page.status}")
+        return finishHistoryRead(operationId, SessionReadPhase.FAILED, L10n.tr("本地历史范围无效：{0}", page.status))
     if (page.entries.isEmpty()) {
         if (page.status != SessionGraphRangeStatus.COMPLETE || !page.complete || page.hasOlder) return this
         val history = sessionHistory[operation.historyKey] ?: return this
@@ -295,7 +295,7 @@ internal fun RemoteState.observeCatchupCoverage(operationId: String, completedRa
     if (cacheEpoch != sessionReads[operationId]?.cacheEpoch) return finishHistoryRead(operationId, SessionReadPhase.SUPERSEDED)
     if (gap == null) return finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED)
     if (completedRange?.historyOperationId == operationId && gap.targetLeafId == completedRange.requestTargetLeafId &&
-        gap.knownLeafId == completedRange.knownLeafId) return failLocalSessionRead(operationId, "补齐范围未推进，请重试")
+        gap.knownLeafId == completedRange.knownLeafId) return failLocalSessionRead(operationId, L10n.tr("补齐范围未推进，请重试"))
     return this
 }
 

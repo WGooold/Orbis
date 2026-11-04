@@ -18,7 +18,7 @@ final class DeviceHandshake {
 
     func accept(_ body: [String: Any]) throws -> [String: Any] {
         guard body["type"] as? String == "hs2",
-              let pubText = body["ePubH"] as? String, let macText = body["macH"] as? String else { throw PairingError.handshake("握手响应格式无效") }
+              let pubText = body["ePubH"] as? String, let macText = body["macH"] as? String else { throw PairingError.handshake(L10n.tr("握手响应格式无效")) }
         let hostPub = try Base64URL.decodeFixed(pubText, bytes: 32, label: "ePubH")
         let shared = try E2ECrypto.sharedSecret(privateKey: ephemeral.privateKey, peerPublicRaw: hostPub)
         let keys = SessionKeys(
@@ -26,7 +26,7 @@ final class DeviceHandshake {
             deviceToHost: E2ECrypto.hkdf(shared, salt: pskRoot, info: "d2h|\(pubText)\(ephemeral.publicText)")
         )
         let expected = E2ECrypto.hmac(keys.hostToDevice, parts: "hs-h|", pubText, ephemeral.publicText)
-        guard let actual = try? Base64URL.decode(macText, label: "macH"), E2ECrypto.constantTimeEqual(expected, actual) else { throw PairingError.handshake("握手认证失败") }
+        guard let actual = try? Base64URL.decode(macText, label: "macH"), E2ECrypto.constantTimeEqual(expected, actual) else { throw PairingError.handshake(L10n.tr("握手认证失败")) }
         self.keys = keys
         return ["type": "hs3", "macD": Base64URL.encode(E2ECrypto.hmac(keys.deviceToHost, parts: "hs-d|", pubText, ephemeral.publicText))]
     }
@@ -45,7 +45,7 @@ final class E2EChannel {
     func seal(kind: String = "data", room: String, from: String, to: String, channel: String, payload: Data) throws -> Envelope {
         lock.lock(); defer { lock.unlock() }
         guard ["data", "ping", "bin"].contains(kind), (sendSequences[channel] ?? 0) < 9_007_199_254_740_991 else {
-            throw E2ECryptoError(message: "加密帧类型或序号无效")
+            throw E2ECryptoError(message: L10n.tr("加密帧类型或序号无效"))
         }
         let n = (sendSequences[channel] ?? 0) + 1
         let hdr = RoutingHeader(k: kind, room: room, from: from, to: to, n: n, ch: channel)
@@ -57,9 +57,9 @@ final class E2EChannel {
     func open(_ envelope: Envelope) throws -> Data? {
         lock.lock(); defer { lock.unlock() }
         guard envelope.v == 2, ["data", "ping", "bin"].contains(envelope.hdr.k), envelope.hdr.n <= 9_007_199_254_740_991 else {
-            throw E2ECryptoError(message: "加密帧类型或序号无效")
+            throw E2ECryptoError(message: L10n.tr("加密帧类型或序号无效"))
         }
-        guard let channel = envelope.hdr.ch else { throw PairingError.handshake("加密帧缺少 channel") }
+        guard let channel = envelope.hdr.ch else { throw PairingError.handshake(L10n.tr("加密帧缺少 channel")) }
         let last = receiveSequences[channel] ?? 0
         guard envelope.hdr.n > last else { return nil }
         let sealed = try Base64URL.decode(envelope.ct, label: "ct")

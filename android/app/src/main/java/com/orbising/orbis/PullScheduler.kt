@@ -112,7 +112,7 @@ internal class PullScheduler(
     fun onReadFailed(requestId: String): String? {
         val offset = requestById.remove(requestId) ?: return null
         outstanding.remove(offset)
-        return "电脑无法读取该文件的这一段"
+        return L10n.tr("电脑无法读取该文件的这一段")
     }
 
     private fun retransmitTimedOut(nowMs: Long) {

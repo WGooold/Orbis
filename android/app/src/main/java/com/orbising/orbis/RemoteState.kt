@@ -17,8 +17,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.UUID
 
-internal const val PROTOCOL_VERSION_MISMATCH_ERROR =
-    "Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本"
+internal val PROTOCOL_VERSION_MISMATCH_ERROR get() =
+    L10n.tr("Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本")
 
 /** 协议 14 已以模型/聊天事务替换这些一次性业务通知，迟到帧不能另建写入者。 */
 internal val MODEL_OWNED_LEGACY_EVENTS = setOf(
@@ -102,8 +102,8 @@ data class RuntimeSummary(
             val tasks = backgroundTasks
             val summary = tasks?.activityTitle
             if (status !in setOf("idle", "running") || summary == null) return runtimeStatusText(presentationStatus)
-            if (presentationStatus == "compacting") return "压缩中 · $summary"
-            if (status == "running") return if (tasks.confirmed) "运行中 · ${tasks.activeCount} 个子任务" else "运行中 · 子任务待核对"
+            if (presentationStatus == "compacting") return L10n.tr("压缩中 · {0}", summary)
+            if (status == "running") return if (tasks.confirmed) L10n.tr("运行中 · {0} 个子任务", tasks.activeCount) else L10n.tr("运行中 · 子任务待核对")
             return summary
         }
     fun allowsRemoteClose(commands: List<RuntimeSlashCommand>): Boolean =
@@ -120,8 +120,8 @@ data class RuntimeSummary(
 
 @Serializable
 data class BackgroundTask(val id: String, val title: String, val kind: String, val status: String, val parentId: String? = null) {
-    val statusTitle: String get() = mapOf("pending" to "启动中", "running" to "运行中", "waiting" to "等待中",
-        "idle" to "空闲", "completed" to "已完成", "failed" to "失败", "killed" to "已停止")[status] ?: "状态待核对"
+    val statusTitle: String get() = mapOf("pending" to L10n.tr("启动中"), "running" to L10n.tr("运行中"), "waiting" to L10n.tr("等待中"),
+        "idle" to L10n.tr("空闲"), "completed" to L10n.tr("已完成"), "failed" to L10n.tr("失败"), "killed" to L10n.tr("已停止"))[status] ?: L10n.tr("状态待核对")
 }
 
 @Serializable
@@ -137,9 +137,9 @@ data class BackgroundTaskInventory(val availability: String, val items: List<Bac
     val allowsQuit: Boolean get() = confirmed && activeCount == 0
     val visible: Boolean get() = !confirmed || items.isNotEmpty()
     val activityTitle: String? get() {
-        if (!confirmed) return "子任务状态待核对"
-        return listOf("running" to "运行中", "pending" to "启动中", "waiting" to "等待中").mapNotNull { (state, title) ->
-            items.count { it.status == state }.takeIf { it > 0 }?.let { "$it 个子任务$title" }
+        if (!confirmed) return L10n.tr("子任务状态待核对")
+        return listOf("running" to L10n.tr("运行中"), "pending" to L10n.tr("启动中"), "waiting" to L10n.tr("等待中")).mapNotNull { (state, title) ->
+            items.count { it.status == state }.takeIf { it > 0 }?.let { L10n.tr("{0} 个子任务{1}", it, title) }
         }.joinToString(" · ").takeIf { it.isNotEmpty() }
     }
 }
@@ -306,7 +306,7 @@ internal fun artifactDownloadTaskId(hostId: String, artifactId: String): String 
 internal fun downloadDisplayName(path: String): String = path.trimEnd('/', '\\')
     .substringAfterLast('/')
     .substringAfterLast('\\')
-    .ifBlank { "电脑文件" }
+    .ifBlank { L10n.tr("电脑文件") }
 
 @Serializable
 data class ArtifactDownload(
@@ -1195,7 +1195,7 @@ internal val RemoteState.sessionHost: SessionHost?
         val label = hostName?.takeIf(String::isNotBlank)
             ?: (sessions.values.map { it.hostname } + runtimes.values.map { it.hostname })
                 .mapNotNull { it?.takeIf(String::isNotBlank) }.distinct().singleOrNull()
-            ?: "已配对电脑"
+            ?: L10n.tr("已配对电脑")
         return SessionHost(id, label)
     }
 
@@ -1653,7 +1653,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
     val interrupted = pendingCommands.keys - interactionCommandIds
     val pausedDownloads = downloads.mapValues { (_, task) ->
         if (task.status in setOf("queued", "downloading")) {
-            task.copy(status = "paused", commandId = null, error = "连接已断开，可在重连后继续")
+            task.copy(status = "paused", commandId = null, error = L10n.tr("连接已断开，可在重连后继续"))
         } else task
     }
     return copy(
@@ -1662,7 +1662,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
         changeViewer = null,
-        toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = "连接已断开，仅显示已缓存内容"),
+        toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = L10n.tr("连接已断开，仅显示已缓存内容")),
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
@@ -1805,9 +1805,9 @@ class RelayReducer(
                 error = toolReadFailureText(event.string("reason"))))
         }
         val replica = when (type) {
-            "session.tools.opened" -> runCatching { old.opened(event.string("requestId") ?: "", json.decodeFromJsonElement<ToolInventorySnapshot>(event.getValue("snapshot"))) }.getOrElse { old.failed("工具清单无效") }
-            "session.tools.page" -> runCatching { old.page(json.decodeFromJsonElement<ToolInventoryPage>(event)) }.getOrElse { old.failed("工具清单页无效") }
-            "session.tools.patch" -> runCatching { old.patch(json.decodeFromJsonElement<ToolInventoryPatch>(event)) }.getOrElse { old.failed("工具清单更新无效") }
+            "session.tools.opened" -> runCatching { old.opened(event.string("requestId") ?: "", json.decodeFromJsonElement<ToolInventorySnapshot>(event.getValue("snapshot"))) }.getOrElse { old.failed(L10n.tr("工具清单无效")) }
+            "session.tools.page" -> runCatching { old.page(json.decodeFromJsonElement<ToolInventoryPage>(event)) }.getOrElse { old.failed(L10n.tr("工具清单页无效")) }
+            "session.tools.patch" -> runCatching { old.patch(json.decodeFromJsonElement<ToolInventoryPatch>(event)) }.getOrElse { old.failed(L10n.tr("工具清单更新无效")) }
             "session.tools.changed" -> return state // The corresponding chat checkpoint supplies the exact reference.
             "session.tool.read.failed" -> if (event.string("requestId") == old.requestId) old.failed(event.string("reason") ?: "snapshot_expired") else return state
             "tool.activity" -> return state
@@ -1858,7 +1858,7 @@ class RelayReducer(
                 "session.list.result", "session.browse.result", "session.activated", "session.archive.changed",
                 "host.online", "host.offline",
             )) {
-            return state.copy(error = "收到不支持的中继服务器消息，请在电脑端检查协议版本", errorNeedsAction = true)
+            return state.copy(error = L10n.tr("收到不支持的中继服务器消息，请在电脑端检查协议版本"), errorNeedsAction = true)
         }
         val protocolVersion = message["protocolVersion"]?.jsonPrimitive?.intOrNull
         // 用常量而不是字面量：写死版本号会在协议升级时**静默**把每条消息都变成错误，
@@ -2195,7 +2195,7 @@ class RelayReducer(
                     toolInventories = state.toolInventories - runtimeId,
                     pendingToolConversations = state.pendingToolConversations - runtimeId,
                     toolDetail = state.toolDetail?.let { if (it.runtimeId == runtimeId) it.copy(requestId = null, read = null,
-                        follow = false, error = "运行实例已离线，仅显示已缓存内容") else it },
+                        follow = false, error = L10n.tr("运行实例已离线，仅显示已缓存内容")) else it },
                     runtimes = state.runtimes - runtimeId,
                     workingBranches = state.workingBranches - runtimeId,
                     selectedRuntimeId = state.selectedRuntimeId.takeUnless { it == runtimeId },
@@ -2213,14 +2213,14 @@ class RelayReducer(
                         if (task.runtimeId == runtimeId && task.transferId == null &&
                             task.status in setOf("queued", "downloading")
                         ) {
-                            task.copy(status = "paused", commandId = null, error = "运行实例已离线，可在重连后继续")
+                            task.copy(status = "paused", commandId = null, error = L10n.tr("运行实例已离线，可在重连后继续"))
                         } else task
                     },
                     conversations = state.conversations + (runtimeId to (state.conversations[runtimeId] ?: RuntimeConversation())
                         .withoutActiveTurn()
                         .copy(
                             isChatSyncing = false,
-                            chatSyncError = "运行实例已离线",
+                            chatSyncError = L10n.tr("运行实例已离线"),
                         )),
                     sessionSyncCommands = state.sessionSyncCommands.filterValues { it.runtimeId != runtimeId },
                     sessionRangeFailures = state.sessionRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") },
@@ -2243,7 +2243,7 @@ class RelayReducer(
                 state.copy(downloads = state.downloads + (entry.key to entry.value.copy(
                     status = "failed",
                     commandId = null,
-                    error = "下载失败：电脑无法读取这个文件",
+                    error = L10n.tr("下载失败：电脑无法读取这个文件"),
                 )))
             }
             "protocol.error" -> {
@@ -2255,12 +2255,12 @@ class RelayReducer(
                 // 账本里的操作只由账本结算，并由种类给出带上下文的提示（L1）。
                 if (commandId != null && state.ledger.operation(commandId) != null) {
                     return state.ledgerReceipt(commandId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
-                        message.string("message")?.takeIf(String::isNotBlank) ?: "电脑端无法完成操作。")), System.currentTimeMillis())
+                        message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), System.currentTimeMillis())
                 }
                 val requestId = message.string("requestId")
                 if (requestId != null && state.ledger.operation(requestId) != null) {
                     return state.ledgerReceipt(requestId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
-                        message.string("message")?.takeIf(String::isNotBlank) ?: "请重试")), System.currentTimeMillis())
+                        message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("请重试"))), System.currentTimeMillis())
                 }
                 val syncError = protocolErrorText(message.string("code"), message.string("message"))
                 if (requestId != null && state.agentStateReads[requestId]?.scope == "agent") {
@@ -2364,7 +2364,7 @@ class RelayReducer(
             "interaction.resolved", "interaction.cancelled", "local_interaction.required", "command.result", "runtime.error",
         )
         if (eventType !in supportedEvents && eventType !in MODEL_OWNED_LEGACY_EVENTS) {
-            return state.copy(error = "手机无法安全处理此运行时事件，请在电脑端处理", errorNeedsAction = true)
+            return state.copy(error = L10n.tr("手机无法安全处理此运行时事件，请在电脑端处理"), errorNeedsAction = true)
         }
         val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
         if (eventType in MODEL_OWNED_LEGACY_EVENTS) {
@@ -2425,7 +2425,7 @@ class RelayReducer(
             }
             "session.patch" -> {
                 val patch = runCatching { json.decodeFromJsonElement<SessionPatch>(event) }.getOrNull()
-                    ?: return state.copy(error = "收到无效的 Session 状态 patch", errorNeedsAction = true)
+                    ?: return state.copy(error = L10n.tr("收到无效的 Session 状态 patch"), errorNeedsAction = true)
                 if (patch.source.seq != patch.seq || patch.baseSeq >= patch.seq) {
                     return state.copy(
                         sessionSyncRequests = state.sessionSyncRequests + runtimeId,
@@ -2453,7 +2453,7 @@ class RelayReducer(
                                 committed?.display ?: mergedPatchDisplay(cachePatches),
                             ))
                     }.getOrElse { error ->
-                        val failure = "Session 历史缓存写入失败：${error.message ?: "无效条目"}"
+                        val failure = L10n.tr("Session 历史缓存写入失败：{0}", error.message ?: L10n.tr("无效条目"))
                         return state.copy(
                             sessionSyncFailures = state.sessionSyncFailures + (runtimeId to failure),
                             conversations = state.conversations + (runtimeId to conversation.copy(chatSyncError = failure)),
@@ -2640,7 +2640,7 @@ class RelayReducer(
             }
             "session.snapshot" -> {
                 val snapshot = runCatching { json.decodeFromJsonElement<SessionGraphSnapshot>(event) }.getOrElse {
-                    return state.copy(error = "收到无效的 Session graph 快照", errorNeedsAction = true)
+                    return state.copy(error = L10n.tr("收到无效的 Session graph 快照"), errorNeedsAction = true)
                 }
                 val pending = state.sessionSyncCommands.values.firstOrNull {
                     it.runtimeId == runtimeId && it.syncId == snapshot.syncId
@@ -2680,7 +2680,7 @@ class RelayReducer(
                 val selectionError = runCatching { pending.validatePreviewSelection(snapshot) }.exceptionOrNull()
                 if (selectionError != null) {
                     val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
-                    return state.failSessionSync(id, "Session 同步响应无效：${selectionError.message}")
+                    return state.failSessionSync(id, L10n.tr("Session 同步响应无效：{0}", selectionError.message))
                 }
                 if (snapshot.selection == "unchanged") {
                     val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
@@ -2694,7 +2694,7 @@ class RelayReducer(
                         // catchup can legitimately have complete=false and hasOlder=false.
                         isHistory && snapshot.hasOlder == false && snapshot.complete == false)) {
                     val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
-                    return state.failSessionSync(id, "Session 范围加载失败：${snapshot.rangeStatus ?: "incomplete_range"}")
+                    return state.failSessionSync(id, L10n.tr("Session 范围加载失败：{0}", snapshot.rangeStatus ?: "incomplete_range"))
                 }
                 // Fixed ranges fill cache only; preview and patch own current source state.
                 val isCanonicalPage = pending.range != "preview"
@@ -2796,7 +2796,7 @@ class RelayReducer(
                                 .fold(base) { graph, patch -> graph.merge(patch.canonicalPage()) }
                     }.getOrElse { error ->
                         return@reduceRuntimeEvent state.failSessionSync(commandId,
-                            "Session 历史同步失败：${error.message}").copy(
+                            L10n.tr("Session 历史同步失败：{0}", error.message)).copy(
                             lastSequence = state.lastSequence + (sequenceKey to sequence),
                         )
                     }
@@ -2814,7 +2814,7 @@ class RelayReducer(
                 }
                 val graphForProjection = if (staleTarget) mergedGraph.copy(cursor = currentGraph.cursor) else mergedGraph
                 if (!staleTarget && isHistory && snapshotForProjection.entries.any { !graphForProjection.hasDisplayFor(it) }) {
-                    return@reduceRuntimeEvent state.failSessionSync(commandId, "历史页缺少显示结果，请更新并重启电脑端会话后重试")
+                    return@reduceRuntimeEvent state.failSessionSync(commandId, L10n.tr("历史页缺少显示结果，请更新并重启电脑端会话后重试"))
                 }
                 if (!staleTarget) {
                     if (!isCanonicalPage) nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
@@ -3020,7 +3020,7 @@ class RelayReducer(
                             isChatSyncing = false,
                             chatSyncError = snapshot.rangeStatus?.takeIf {
                                 it in setOf("leaf_not_found", "range_start_not_found", "missing_parent", "cycle_detected")
-                            }?.let { "Session 范围加载失败：$it" },
+                            }?.let { L10n.tr("Session 范围加载失败：{0}", it) },
                             revision = conversation.revision + 1,
                         )
                     if (isCanonicalPage && conversation.sourceEpoch != null) {
@@ -3039,7 +3039,7 @@ class RelayReducer(
                 } else if (staleTarget) {
                     nextConversation = projectionConversation.copy(
                         isChatSyncing = if (conversation.sourceEpoch != null) conversation.isChatSyncing else false,
-                        chatSyncError = "Session 已产生更新，正在重新加载最新范围",
+                        chatSyncError = L10n.tr("Session 已产生更新，正在重新加载最新范围"),
                         revision = conversation.revision + 1,
                     )
                 }
@@ -3097,7 +3097,7 @@ class RelayReducer(
                     if (!staleTarget) {
                         val key = sessionRangeFailureKey(runtimeId, pending.range)
                         nextRangeFailures = if (rangeFailure == null) nextRangeFailures - key
-                            else nextRangeFailures + (key to "Session 范围加载失败：$rangeFailure")
+                            else nextRangeFailures + (key to L10n.tr("Session 范围加载失败：{0}", rangeFailure))
                     }
                 }
                 if (isHistory || isCanonicalPage && (staleTarget || rangeFailure != null)) {
@@ -3108,26 +3108,26 @@ class RelayReducer(
                         else -> HistoryReadPhase.SUCCEEDED
                     }
                     nextHistoryReads = state.finishRemoteHistoryRead(commandId, phase,
-                        rangeFailure?.let { "Session 范围加载失败：$it" }).historyReads
+                        rangeFailure?.let { L10n.tr("Session 范围加载失败：{0}", it) }).historyReads
                 }
             }
             "artifact.started" -> {
                 val artifact = event["artifact"]?.let {
                     json.decodeFromJsonElement<RemoteArtifact>(it)
-                } ?: return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理", errorNeedsAction = true)
+                } ?: return state.copy(error = L10n.tr("手机无法安全处理此下载项，请在电脑端处理"), errorNeedsAction = true)
                 if (artifact.size < 0 || !isSafeArtifactFileName(artifact.fileName) || !isValidSha256(artifact.sha256)) {
-                    return state.copy(error = "手机无法安全处理此下载项，请在电脑端处理", errorNeedsAction = true)
+                    return state.copy(error = L10n.tr("手机无法安全处理此下载项，请在电脑端处理"), errorNeedsAction = true)
                 }
                 val commandId = event.string("commandId")
                 val transferId = event.string("transferId")
-                    ?: return state.copy(error = "下载传输标识无效，请重新下载")
+                    ?: return state.copy(error = L10n.tr("下载传输标识无效，请重新下载"))
                 val pending = commandId?.let(state.pendingDownloads::get)
                 val offset = event["offset"]?.jsonPrimitive?.longOrNull ?: pending?.offset ?: 0
                 if (offset !in 0..artifact.size) {
-                    return state.copy(error = "下载起点校验失败，请重新下载")
+                    return state.copy(error = L10n.tr("下载起点校验失败，请重新下载"))
                 }
                 if (pending != null && pending.offset != offset) {
-                    return state.copy(error = "下载起点校验失败，请重新下载")
+                    return state.copy(error = L10n.tr("下载起点校验失败，请重新下载"))
                 }
                 val taskId = pending?.taskId
                     ?: findDownloadTaskId(state.downloads.values, runtimeId, artifact)
@@ -3273,7 +3273,7 @@ class RelayReducer(
             }
             "runtime.error" -> {
                 val runtimeError = event.string("message")?.takeIf(String::isNotBlank)
-                    ?: "运行实例发生错误"
+                    ?: L10n.tr("运行实例发生错误")
                 val commandId = event.string("commandId")
                 if (commandId != null && state.ledger.operation(commandId)?.let { OperationKinds.runtimeId(it) ?: runtimeId } == runtimeId) {
                     return state.copy(lastSequence = state.lastSequence + (sequenceKey to sequence))
@@ -3336,7 +3336,7 @@ class RelayReducer(
         val artifactSize = download.artifact?.size ?: return state
         if (download.status != "downloading") return state
         if (offset < 0 || length <= 0 || offset > artifactSize || length.toLong() > artifactSize - offset) {
-            return state.copy(error = "下载数据校验失败，请重新下载")
+            return state.copy(error = L10n.tr("下载数据校验失败，请重新下载"))
         }
         if (offset != download.receivedBytes) return state
         val nextOffset = receivedOffset ?: (offset + length)
@@ -3369,10 +3369,10 @@ class RelayReducer(
     }
 
     private fun interactionCancellationText(reason: String?): String = when (reason) {
-        "timeout" -> "交互请求已超时"
-        "disconnected" -> "交互请求因连接断开而取消"
-        "owner_closed" -> "电脑端已结束此交互"
-        else -> "交互请求已取消"
+        "timeout" -> L10n.tr("交互请求已超时")
+        "disconnected" -> L10n.tr("交互请求因连接断开而取消")
+        "owner_closed" -> L10n.tr("电脑端已结束此交互")
+        else -> L10n.tr("交互请求已取消")
     }
 
     /**
@@ -3390,52 +3390,52 @@ class RelayReducer(
         val detail = message?.takeIf(String::isNotBlank)
         val chinese = detail?.takeIf { it.containsCjk() }
         return when (code) {
-            "unauthorized" -> "Relay 拒绝了设备凭据，请重新扫码配对"
+            "unauthorized" -> L10n.tr("Relay 拒绝了设备凭据，请重新扫码配对")
             "protocol_version_mismatch" -> PROTOCOL_VERSION_MISMATCH_ERROR
             // 不再写死版本号：协议升到 4 之后这句话还在说 v3，把排查方向直接带偏——而
             // `invalid_message` 其实也可能来自「帧结构非法」（两端同版本照样会发生，比如
             // `hdr` 里混进了 null），版本号到底是多少得由常量说了算。
             "invalid_message" ->
-                "Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v$PROTOCOL_VERSION）"
-            "runtime_mismatch" -> "Relay 拒绝了运行实例身份，请重启电脑端 Orbis Host"
-            "runtime_offline" -> chinese ?: "目标运行实例已离线"
-            "unsupported_command" -> chinese ?: "电脑端不支持该命令"
+                L10n.tr("Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v{0}）", PROTOCOL_VERSION)
+            "runtime_mismatch" -> L10n.tr("Relay 拒绝了运行实例身份，请重启电脑端 Orbis Host")
+            "runtime_offline" -> chinese ?: L10n.tr("目标运行实例已离线")
+            "unsupported_command" -> chinese ?: L10n.tr("电脑端不支持该命令")
             // 会话/进程类失败（§8）：电脑端自己的问题，别挂到中继头上。
             "agent_unsupported", "spawn_failed", "spawn_limit_reached",
             "cwd_missing", "session_not_found", "session_request_failed",
-            -> chinese ?: "电脑端无法完成该会话请求"
-            null, "" -> "电脑端拒绝了请求，但没有说明原因"
-            else -> detail?.let { "电脑端拒绝了请求（$code）：$it" } ?: "电脑端拒绝了请求（$code）"
+            -> chinese ?: L10n.tr("电脑端无法完成该会话请求")
+            null, "" -> L10n.tr("电脑端拒绝了请求，但没有说明原因")
+            else -> detail?.let { L10n.tr("电脑端拒绝了请求（{0}）：{1}", code, it) } ?: L10n.tr("电脑端拒绝了请求（{0}）", code)
         }
     }
 
     private fun commandErrorText(code: String?): String = when (code) {
-        "runtime_mismatch" -> "命令发送到了错误的运行实例"
-        "interaction_not_available" -> "交互请求已失效或不可用"
-        "runtime_offline" -> "目标运行实例已离线"
-        "slash_commands_not_available" -> "当前会话未提供斜杠命令"
-        "slash_command_not_available" -> "所选命令已不可用，请重新打开菜单"
-        "slash_command_argument_required" -> "所选命令需要参数"
-        "slash_command_arguments_not_allowed" -> "所选命令不接受参数"
-        "slash_command_argument_not_available" -> "所选参数已不可用，请重新选择"
-        "slash_command_cancelled", "slash command cancelled" -> "命令已取消"
-        "not_cancelable" -> "当前 Agent 版本无法按队列项取消，消息仍会保留"
-        "already_delivered" -> "消息已经送入上下文，无法取消"
-        "runtime_busy" -> "当前会话正在运行任务，暂时无法执行此命令"
-        "model_not_available" -> "所选模型已不可用"
-        "thinking_level_not_available" -> "所选思考级别已不可用"
-        "session_not_available" -> "所选 Session 已不可用"
-        "assistant_message_not_available" -> "当前没有可复制的助手消息"
-        "file_not_available" -> "电脑端文件不可用"
-        "file_not_a_file" -> "所选路径不是普通文件"
-        "file_size_invalid" -> "电脑端文件大小无效"
-        "artifact_changed" -> "电脑端文件已发生变化，请重新下载"
-        "artifact_chunk_invalid", "artifact_size_mismatch" -> "文件传输数据不完整"
-        null, "" -> "命令执行失败"
+        "runtime_mismatch" -> L10n.tr("命令发送到了错误的运行实例")
+        "interaction_not_available" -> L10n.tr("交互请求已失效或不可用")
+        "runtime_offline" -> L10n.tr("目标运行实例已离线")
+        "slash_commands_not_available" -> L10n.tr("当前会话未提供斜杠命令")
+        "slash_command_not_available" -> L10n.tr("所选命令已不可用，请重新打开菜单")
+        "slash_command_argument_required" -> L10n.tr("所选命令需要参数")
+        "slash_command_arguments_not_allowed" -> L10n.tr("所选命令不接受参数")
+        "slash_command_argument_not_available" -> L10n.tr("所选参数已不可用，请重新选择")
+        "slash_command_cancelled", "slash command cancelled" -> L10n.tr("命令已取消")
+        "not_cancelable" -> L10n.tr("当前 Agent 版本无法按队列项取消，消息仍会保留")
+        "already_delivered" -> L10n.tr("消息已经送入上下文，无法取消")
+        "runtime_busy" -> L10n.tr("当前会话正在运行任务，暂时无法执行此命令")
+        "model_not_available" -> L10n.tr("所选模型已不可用")
+        "thinking_level_not_available" -> L10n.tr("所选思考级别已不可用")
+        "session_not_available" -> L10n.tr("所选 Session 已不可用")
+        "assistant_message_not_available" -> L10n.tr("当前没有可复制的助手消息")
+        "file_not_available" -> L10n.tr("电脑端文件不可用")
+        "file_not_a_file" -> L10n.tr("所选路径不是普通文件")
+        "file_size_invalid" -> L10n.tr("电脑端文件大小无效")
+        "artifact_changed" -> L10n.tr("电脑端文件已发生变化，请重新下载")
+        "artifact_chunk_invalid", "artifact_size_mismatch" -> L10n.tr("文件传输数据不完整")
+        null, "" -> L10n.tr("命令执行失败")
         else -> when {
-            code.startsWith("ENOENT:") -> "电脑端文件不存在或已被删除"
-            code.startsWith("EACCES:") || code.startsWith("EPERM:") -> "Orbis Host 无权读取电脑端文件"
-            else -> "命令执行失败：$code"
+            code.startsWith("ENOENT:") -> L10n.tr("电脑端文件不存在或已被删除")
+            code.startsWith("EACCES:") || code.startsWith("EPERM:") -> L10n.tr("Orbis Host 无权读取电脑端文件")
+            else -> L10n.tr("命令执行失败：{0}", code)
         }
     }
 
@@ -3508,14 +3508,14 @@ private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.
 }
 
 internal fun runtimeStatusText(status: String): String = when (status) {
-    "starting" -> "启动中"
-    "launch_unconfirmed" -> "启动未确认"
-    "idle" -> "空闲"
-    "running" -> "运行中"
-    "compacting" -> "压缩中"
-    "background" -> "子任务运行中"
-    "tasks_unknown" -> "子任务状态待核对"
-    "unknown" -> "状态待核对"
-    "waiting_local_interaction" -> "等待电脑端交互"
-    else -> "未知状态"
+    "starting" -> L10n.tr("启动中")
+    "launch_unconfirmed" -> L10n.tr("启动未确认")
+    "idle" -> L10n.tr("空闲")
+    "running" -> L10n.tr("运行中")
+    "compacting" -> L10n.tr("压缩中")
+    "background" -> L10n.tr("子任务运行中")
+    "tasks_unknown" -> L10n.tr("子任务状态待核对")
+    "unknown" -> L10n.tr("状态待核对")
+    "waiting_local_interaction" -> L10n.tr("等待电脑端交互")
+    else -> L10n.tr("未知状态")
 }

@@ -44,15 +44,15 @@ internal val RemoteState.homeRuntimes: List<RuntimeSummary> get() = homeCards.ma
 internal val RemoteState.homeRuntimesError: String?
     get() {
         if (!homeRuntimesUpdating) return null
-        if (connection == RelayConnection.OFFLINE) return "电脑未连接，请重试"
+        if (connection == RelayConnection.OFFLINE) return L10n.tr("电脑未连接，请重试")
         for (runtime in runtimes.values) {
-            if (runtime.sessionId.isNullOrBlank()) return "会话身份尚未就绪，请重新加载"
+            if (runtime.sessionId.isNullOrBlank()) return L10n.tr("会话身份尚未就绪，请重新加载")
             val read = homeRead(runtime)
             val snapshot = homeModelSnapshot(runtime)
             if (snapshot?.requestId == read?.key) snapshot?.error?.let { return it }
             if (read?.value?.pendingDomains?.any { it in HOME_MODEL_DOMAINS } == true) continue
             snapshot?.error?.let { return it }
-            if (snapshot != null && !homeFactsComplete(runtime)) return "会话信息未能完整读取，请重试"
+            if (snapshot != null && !homeFactsComplete(runtime)) return L10n.tr("会话信息未能完整读取，请重试")
         }
         return null
     }

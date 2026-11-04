@@ -59,13 +59,13 @@ struct CachedSessionGraph: Codable {
         let incomingEpoch = source?["epoch"] as? String
         let version = sessionInteger(source?["seq"]) ?? 0
         if let incomingEpoch, let epoch, incomingEpoch != epoch {
-            guard activate else { throw SessionHistoryError.invalid("历史来源已经改变") }
+            guard activate else { throw SessionHistoryError.invalid(L10n.tr("历史来源已经改变")) }
             next = CachedSessionGraph(sessionId: sessionId, epoch: incomingEpoch)
         }
         if let incomingEpoch { next.epoch = incomingEpoch }
         let rawEntries = event["entries"] as? [[String: Any]] ?? []
-        guard rawEntries.count <= 500 else { throw SessionHistoryError.invalid("历史页条目超限") }
-        guard rawEntries.allSatisfy({ !($0["type"] as? String ?? "").isEmpty && !($0["timestamp"] as? String ?? "").isEmpty }) else { throw SessionHistoryError.invalid("历史条目缺少类型或时间") }
+        guard rawEntries.count <= 500 else { throw SessionHistoryError.invalid(L10n.tr("历史页条目超限")) }
+        guard rawEntries.allSatisfy({ !($0["type"] as? String ?? "").isEmpty && !($0["timestamp"] as? String ?? "").isEmpty }) else { throw SessionHistoryError.invalid(L10n.tr("历史条目缺少类型或时间")) }
         var received: [String: Entry] = [:]
         for row in rawEntries {
             guard let id = row["entryId"] as? String, !id.isEmpty,
@@ -73,10 +73,10 @@ struct CachedSessionGraph: Codable {
                   row["parentId"] as? String != id,
                   let data = try? JSONSerialization.data(withJSONObject: row),
                   let value = try? JSONDecoder().decode(RemoteJSONValue.self, from: data) else {
-                throw SessionHistoryError.invalid("历史条目格式无效")
+                throw SessionHistoryError.invalid(L10n.tr("历史条目格式无效"))
             }
             let entry = Entry(entryId: id, parentId: row["parentId"] as? String, value: value)
-            if let duplicate = received[id], duplicate != entry { throw SessionHistoryError.invalid("历史条目身份冲突") }
+            if let duplicate = received[id], duplicate != entry { throw SessionHistoryError.invalid(L10n.tr("历史条目身份冲突")) }
             received[id] = entry
         }
         for (id, entry) in received where version >= (next.entryVersions[id] ?? -1) {
@@ -86,18 +86,18 @@ struct CachedSessionGraph: Codable {
         for id in received.keys {
             var current: String? = id, visiting: Set<String> = []
             while let value = current, !checked.contains(value) {
-                guard visiting.insert(value).inserted else { throw SessionHistoryError.invalid("历史父节点形成循环") }
+                guard visiting.insert(value).inserted else { throw SessionHistoryError.invalid(L10n.tr("历史父节点形成循环")) }
                 current = next.entries[value]?.parentId
             }
             checked.formUnion(visiting)
         }
         if let batch = event["display"] as? [String: Any], let rows = batch["entries"] as? [[String: Any]] {
-            guard sessionInteger(batch["projectionVersion"]) == 3 else { throw SessionHistoryError.invalid("历史显示投影版本不兼容") }
+            guard sessionInteger(batch["projectionVersion"]) == 3 else { throw SessionHistoryError.invalid(L10n.tr("历史显示投影版本不兼容")) }
             next.displayVersion = 3
             var seen: Set<String> = []
             for row in rows {
                 guard let id = (row["entryId"] as? String) ?? (row["displayId"] as? String) else { continue }
-                guard seen.insert(id).inserted else { throw SessionHistoryError.invalid("历史显示条目重复") }
+                guard seen.insert(id).inserted else { throw SessionHistoryError.invalid(L10n.tr("历史显示条目重复")) }
                 let message: ChatMessage?
                 if let raw = row["message"] as? [String: Any] {
                     let data = try JSONSerialization.data(withJSONObject: raw)

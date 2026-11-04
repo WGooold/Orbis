@@ -115,7 +115,7 @@ internal fun Map<String, PendingSend>.reconcile(
             next[original.messageId] = when {
                 host.state == "unconfirmed" -> retained.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, settleRevision = null)
                 host.state == "rejected" -> retained.copy(settleRevision = null,
-                    state = PendingSendState.Failed(host.error ?: "电脑端拒绝了这条消息"))
+                    state = PendingSendState.Failed(host.error ?: L10n.tr("电脑端拒绝了这条消息")))
                 host.state == "accepted" || host.state == "not_cancelable" ->
                     retained.copy(state = PendingSendState.Queued, acceptedAt = original.acceptedAt ?: now, settleRevision = null)
                 else -> retained.copy(settleRevision = null)
@@ -146,7 +146,7 @@ internal fun Map<String, PendingSend>.reconcile(
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
             item.state == PendingSendState.Accepted -> Unit
             item.needsDeliveryEvidence -> next[item.messageId] = item
-            else -> next[item.messageId] = item.copy(state = PendingSendState.Failed("未能确认送达，可以重新发送"), settleRevision = null)
+            else -> next[item.messageId] = item.copy(state = PendingSendState.Failed(L10n.tr("未能确认送达，可以重新发送")), settleRevision = null)
         }
     }
     return (if (next == this) this else next) to needsSync
@@ -173,11 +173,11 @@ internal fun mergePendingSends(messages: List<ChatMessage>, pending: List<Pendin
 }
 
 internal fun pendingSendFailureText(status: String?, error: String?): String = when {
-    status == "message_id_conflict" -> "消息身份冲突，请重新发送"
-    error == "runtime_busy" -> "会话正在运行，请选择插入或完成后发送"
-    error == "claude_steer_unsupported" -> "Claude Code 不支持插入当前任务"
+    status == "message_id_conflict" -> L10n.tr("消息身份冲突，请重新发送")
+    error == "runtime_busy" -> L10n.tr("会话正在运行，请选择插入或完成后发送")
+    error == "claude_steer_unsupported" -> L10n.tr("Claude Code 不支持插入当前任务")
     !error.isNullOrEmpty() -> error
-    else -> "电脑端没有接受这条消息"
+    else -> L10n.tr("电脑端没有接受这条消息")
 }
 
 /**

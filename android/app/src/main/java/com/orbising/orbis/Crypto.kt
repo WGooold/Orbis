@@ -49,7 +49,7 @@ object Crypto {
     /** 先正则拒掉非法字符再解——java.util.Base64 的宽容度与 Node 不一致，必须显式收紧。 */
     fun fromBase64Url(value: String, label: String): ByteArray {
         if (!BASE64URL_PATTERN.matches(value)) {
-            throw E2eCryptoException("malformed", "$label 不是合法的 base64url")
+            throw E2eCryptoException("malformed", L10n.tr("{0} 不是合法的 base64url", label))
         }
         return java.util.Base64.getUrlDecoder().decode(value)
     }
@@ -57,7 +57,7 @@ object Crypto {
     fun fromBase64UrlFixed(value: String, bytes: Int, label: String): ByteArray {
         val decoded = fromBase64Url(value, label)
         if (decoded.size != bytes) {
-            throw E2eCryptoException("invalid_key_length", "$label 必须是 $bytes 字节，实际 ${decoded.size}")
+            throw E2eCryptoException("invalid_key_length", L10n.tr("{0} 必须是 {1} 字节，实际 {2}", label, bytes, decoded.size))
         }
         return decoded
     }
@@ -72,19 +72,19 @@ object Crypto {
      */
     fun deriveSharedSecret(privateRaw: ByteArray, peerPublicRaw: ByteArray): ByteArray {
         if (privateRaw.size != X25519_KEY_BYTES) {
-            throw E2eCryptoException("invalid_key_length", "X25519 私钥必须是 $X25519_KEY_BYTES 字节")
+            throw E2eCryptoException("invalid_key_length", L10n.tr("X25519 私钥必须是 {0} 字节", X25519_KEY_BYTES))
         }
         if (peerPublicRaw.size != X25519_KEY_BYTES) {
-            throw E2eCryptoException("invalid_key_length", "对方 X25519 公钥必须是 $X25519_KEY_BYTES 字节")
+            throw E2eCryptoException("invalid_key_length", L10n.tr("对方 X25519 公钥必须是 {0} 字节", X25519_KEY_BYTES))
         }
         val secret = ByteArray(X25519_KEY_BYTES)
         try {
             X25519.calculateAgreement(privateRaw, 0, peerPublicRaw, 0, secret, 0)
         } catch (error: Exception) {
-            throw E2eCryptoException("degenerate_public_key", "X25519 拒绝了这个公钥（退化点或小群元素）")
+            throw E2eCryptoException("degenerate_public_key", L10n.tr("X25519 拒绝了这个公钥（退化点或小群元素）"))
         }
         if (isAllZero(secret)) {
-            throw E2eCryptoException("degenerate_shared_secret", "X25519 输出全零，公钥是退化点")
+            throw E2eCryptoException("degenerate_shared_secret", L10n.tr("X25519 输出全零，公钥是退化点"))
         }
         return secret
     }
@@ -139,7 +139,7 @@ object Crypto {
     fun openAead(key: ByteArray, nonce: ByteArray, aad: ByteArray, sealed: ByteArray): ByteArray {
         requireKeyAndNonce(key, nonce)
         if (sealed.size < AEAD_TAG_BYTES) {
-            throw E2eCryptoException("malformed", "密文短于认证标签长度")
+            throw E2eCryptoException("malformed", L10n.tr("密文短于认证标签长度"))
         }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(AEAD_TAG_BYTES * 8, nonce))
@@ -147,16 +147,16 @@ object Crypto {
         return try {
             cipher.doFinal(sealed) // 输入是 ciphertext||tag，javax.crypto 直接接受并校验 tag
         } catch (error: Exception) {
-            throw E2eCryptoException("aead_failed", "AEAD 认证失败：密文、AAD 或密钥不匹配")
+            throw E2eCryptoException("aead_failed", L10n.tr("AEAD 认证失败：密文、AAD 或密钥不匹配"))
         }
     }
 
     private fun requireKeyAndNonce(key: ByteArray, nonce: ByteArray) {
         if (key.size != SYMMETRIC_KEY_BYTES) {
-            throw E2eCryptoException("invalid_key_length", "AEAD 密钥必须是 $SYMMETRIC_KEY_BYTES 字节")
+            throw E2eCryptoException("invalid_key_length", L10n.tr("AEAD 密钥必须是 {0} 字节", SYMMETRIC_KEY_BYTES))
         }
         if (nonce.size != AEAD_NONCE_BYTES) {
-            throw E2eCryptoException("malformed", "AEAD nonce 必须是 $AEAD_NONCE_BYTES 字节")
+            throw E2eCryptoException("malformed", L10n.tr("AEAD nonce 必须是 {0} 字节", AEAD_NONCE_BYTES))
         }
     }
 }
@@ -171,7 +171,7 @@ class X25519KeyPair(val privateRaw: ByteArray, val publicRaw: ByteArray) {
 
         fun fromPrivateRaw(raw: ByteArray): X25519KeyPair {
             if (raw.size != Crypto.X25519_KEY_BYTES) {
-                throw Crypto.E2eCryptoException("invalid_key_length", "X25519 私钥必须是 32 字节")
+                throw Crypto.E2eCryptoException("invalid_key_length", L10n.tr("X25519 私钥必须是 32 字节"))
             }
             val privateRaw = raw.copyOf()
             val publicRaw = ByteArray(Crypto.X25519_KEY_BYTES)

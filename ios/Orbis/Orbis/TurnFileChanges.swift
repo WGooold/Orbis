@@ -166,7 +166,7 @@ final class TurnFileChanges: ObservableObject {
     private var visited: [String] = []
     private var readingPositions: [String: Int] = [:]
     private let detailByteLimit = 8 * 1024 * 1024
-    private let detailLimitMessage = "已达到此文件 8 MiB 阅读上限，已加载内容仍可查看。"
+    private var detailLimitMessage: String { L10n.tr("已达到此文件 8 MiB 阅读上限，已加载内容仍可查看。") }
     private enum Request {
         case list(entries: [String], turns: [String], cursor: String?)
         case manifest(summary: TurnChangeSummary, cursor: String?)
@@ -207,7 +207,7 @@ final class TurnFileChanges: ObservableObject {
         command["cursor"] = cursor as Any? ?? NSNull(); command["maxItems"] = 100
         state.loading = true; state.error = nil; manifests[summary.versionKey] = state
         if !dispatch(command, request: .manifest(summary: summary, cursor: cursor)) {
-            state.loading = false; state.error = "文件清单未送达，请连接电脑后重试。"; manifests[summary.versionKey] = state
+            state.loading = false; state.error = L10n.tr("文件清单未送达，请连接电脑后重试。"); manifests[summary.versionKey] = state
         }
     }
     var viewerFiles: [TurnFileMetadata] { opened.map { manifest($0).files } ?? [] }
@@ -251,7 +251,7 @@ final class TurnFileChanges: ObservableObject {
         command["cursor"] = state.nextCursor as Any? ?? NSNull(); command["maxBytes"] = 32_768
         state.loading = true; state.error = nil; details[key] = state
         if !dispatch(command, request: .detail(summary: summary, file: file, cursor: state.nextCursor, viewer: viewerId, readId: state.readId)) {
-            state.loading = false; state.error = "差异读取未送达，请连接电脑后重试。"; details[key] = state
+            state.loading = false; state.error = L10n.tr("差异读取未送达，请连接电脑后重试。"); details[key] = state
         }
     }
     func rememberScroll(_ line: Int?, file: TurnFileMetadata) {
@@ -269,7 +269,7 @@ final class TurnFileChanges: ObservableObject {
     }
     func disconnected() {
         closeViewer()
-        for (id, request) in Array(requests) { fail(id, request: request, message: "连接已断开，请重试。") }
+        for (id, request) in Array(requests) { fail(id, request: request, message: L10n.tr("连接已断开，请重试。")) }
         queriedEntries = []; queriedTurns = []
     }
 
@@ -316,7 +316,7 @@ final class TurnFileChanges: ObservableObject {
                   page.eof == (page.nextCursor == nil), page.nextCursor == nil || (page.nextCursor != cursor && !page.text.isEmpty) else { return }
             let key = detailKey(file)
             var state = details[key] ?? TurnFileDetail()
-            guard state.readId == nil || state.readId == page.readId else { fail(id, request: request, message: "差异版本不匹配，请重新打开。"); return }
+            guard state.readId == nil || state.readId == page.readId else { fail(id, request: request, message: L10n.tr("差异版本不匹配，请重新打开。")); return }
             let pageBytes = page.text.utf8.count
             finish(id)
             guard pageBytes <= detailByteLimit - state.bytes else {
@@ -372,7 +372,7 @@ final class TurnFileChanges: ObservableObject {
         timeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
             guard let self, let request = self.requests[id] else { return }
-            self.fail(id, request: request, message: "读取超时，请重试。")
+            self.fail(id, request: request, message: L10n.tr("读取超时，请重试。"))
         }
         return true
     }
@@ -392,7 +392,7 @@ final class TurnFileChanges: ObservableObject {
             _ = send(runtimeId, ["type": "session.change.detail.cancel", "runtimeId": runtimeId, "requestId": UUID().uuidString,
                 "viewerId": viewerId, "readId": currentDetail.readId as Any? ?? NSNull()])
         }
-        for (id, request) in outstanding { fail(id, request: request, message: "读取已暂停。") }
+        for (id, request) in outstanding { fail(id, request: request, message: L10n.tr("读取已暂停。")) }
         if let file = selectedFile { details[detailKey(file)]?.readId = nil }
         viewerId = UUID().uuidString
     }
@@ -405,25 +405,25 @@ final class TurnFileChanges: ObservableObject {
 
 func turnChangeFailureTitle(_ reason: String?) -> String {
     switch reason {
-    case "binary": return "二进制文件，仅显示变更信息。"
-    case "too-large": return "文件超过文本比较上限，仅显示变更信息。"
-    case "unsupported": return "此文件类型暂不支持文本差异。"
-    case "not-captured": return "此轮未保存可比较的文件版本。"
-    case "expired": return "此轮文件版本已超过电脑端保留期限。"
-    case "version-mismatch": return "差异版本已更新，请重新打开。"
-    case "scope-mismatch": return "详情所属会话已变化，请重新打开。"
-    case "busy": return "电脑端正在处理，请稍后重试。"
-    default: return "暂时无法读取此轮文件变化。"
+    case "binary": return L10n.tr("二进制文件，仅显示变更信息。")
+    case "too-large": return L10n.tr("文件超过文本比较上限，仅显示变更信息。")
+    case "unsupported": return L10n.tr("此文件类型暂不支持文本差异。")
+    case "not-captured": return L10n.tr("此轮未保存可比较的文件版本。")
+    case "expired": return L10n.tr("此轮文件版本已超过电脑端保留期限。")
+    case "version-mismatch": return L10n.tr("差异版本已更新，请重新打开。")
+    case "scope-mismatch": return L10n.tr("详情所属会话已变化，请重新打开。")
+    case "busy": return L10n.tr("电脑端正在处理，请稍后重试。")
+    default: return L10n.tr("暂时无法读取此轮文件变化。")
     }
 }
 
 /// Fits the count column when a file has no text line counts.
 func turnChangeShortStatus(_ detail: String) -> String {
-    ["binary": "二进制", "too-large": "过大", "unsupported": "不支持", "not-captured": "未保存", "busy": "未统计"][detail] ?? "—"
+    ["binary": L10n.tr("二进制"), "too-large": L10n.tr("过大"), "unsupported": L10n.tr("不支持"), "not-captured": L10n.tr("未保存"), "busy": L10n.tr("未统计")][detail] ?? "—"
 }
 
 func turnChangeKindTitle(_ kind: String) -> String {
-    ["added": "新增", "modified": "修改", "deleted": "删除", "renamed": "重命名", "type-changed": "类型变化"][kind] ?? "变化"
+    ["added": L10n.tr("新增"), "modified": L10n.tr("修改"), "deleted": L10n.tr("删除"), "renamed": L10n.tr("重命名"), "type-changed": L10n.tr("类型变化")][kind] ?? L10n.tr("变化")
 }
 
 func reviewFileNameParts(_ name: String) -> (stem: String, ext: String) {
@@ -439,17 +439,17 @@ func reviewFileNameParts(_ name: String) -> (stem: String, ext: String) {
 
 func turnChangeScopeTitle(_ scope: String) -> String {
     switch scope {
-    case "native-file-tools": return "范围：Codex 文件工具"
-    case "git-visible-files": return "范围：已跟踪及非忽略文件"
-    case "bounded-directory": return "范围：当前目录，已排除缓存"
-    default: return "采集范围未确认"
+    case "native-file-tools": return L10n.tr("范围：Codex 文件工具")
+    case "git-visible-files": return L10n.tr("范围：已跟踪及非忽略文件")
+    case "bounded-directory": return L10n.tr("范围：当前目录，已排除缓存")
+    default: return L10n.tr("采集范围未确认")
     }
 }
 
 func turnChangeCoverageNote(_ summary: TurnChangeSummary) -> String? {
-    if summary.attribution == "native-tool" { return "仅记录 Codex 文件工具变更" }
+    if summary.attribution == "native-tool" { return L10n.tr("仅记录 Codex 文件工具变更") }
     var notes: [String] = []
-    if summary.coverage != "complete" && summary.state != "unavailable" { notes.append("仅记录部分范围") }
-    if summary.reasons.contains(where: { $0.contains("concurrent") }) { notes.append("含同期工作区修改，归属未确认") }
+    if summary.coverage != "complete" && summary.state != "unavailable" { notes.append(L10n.tr("仅记录部分范围")) }
+    if summary.reasons.contains(where: { $0.contains("concurrent") }) { notes.append(L10n.tr("含同期工作区修改，归属未确认")) }
     return notes.isEmpty ? nil : notes.joined(separator: "；")
 }

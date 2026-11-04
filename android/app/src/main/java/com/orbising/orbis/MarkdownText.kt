@@ -190,7 +190,7 @@ private fun MarkdownImages(node: Node, listener: LinkInteractionListener) {
                 onSuccess = { failed = false },
             )
         }
-        Text(if (failed) "图片无法加载" else "", Modifier.height(20.dp), style = MaterialTheme.typography.bodySmall)
+        Text(if (failed) L10n.tr("图片无法加载") else "", Modifier.height(20.dp), style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -207,7 +207,7 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
                     // A task marker reports the message's state; it is not a locally editable checkbox.
                     Icon(
                         if (task.isChecked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
-                        contentDescription = if (task.isChecked) "已完成" else "未完成",
+                        contentDescription = if (task.isChecked) L10n.tr("已完成") else L10n.tr("未完成"),
                         modifier = Modifier.size(20.dp),
                         tint = MaterialTheme.colorScheme.primary,
                     )
@@ -235,7 +235,7 @@ internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 3
     NeumorphIconButton(
         onClick = { clipboard.setText(AnnotatedString(text())); copied = true; copyGeneration++ },
         icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-        contentDescription = if (copied) "已复制" else label,
+        contentDescription = if (copied) L10n.tr("已复制") else label,
         size = size,
         enabled = enabled,
     )
@@ -246,8 +246,8 @@ private fun MarkdownCode(code: String, info: String = "") {
     NeumorphSurface(shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed) {
         Column(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(info.substringBefore(' ').ifBlank { "代码" }, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
-                CopyIconButton("复制代码") { code }
+                Text(info.substringBefore(' ').ifBlank { L10n.tr("代码") }, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                CopyIconButton(L10n.tr("复制代码")) { code }
             }
             // Keep scrolling outside selection so selecting text doesn't swallow horizontal drags.
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp)) {

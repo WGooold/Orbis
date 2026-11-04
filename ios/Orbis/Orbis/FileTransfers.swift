@@ -11,7 +11,7 @@ struct ArtifactChunk: Equatable {
     func encoded() throws -> Data {
         let runtime = Data(runtimeId.utf8), transfer = Data(transferId.utf8)
         guard !runtime.isEmpty, runtime.count <= 256, !transfer.isEmpty, transfer.count <= 256,
-              offset >= 0, offset <= 9_007_199_254_740_991, !bytes.isEmpty, bytes.count <= 1_048_576 else { throw transferError("文件分片无效") }
+              offset >= 0, offset <= 9_007_199_254_740_991, !bytes.isEmpty, bytes.count <= 1_048_576 else { throw transferError(L10n.tr("文件分片无效")) }
         var data = Data([0x50, 0x49, 0x52, 0x33, UInt8(orbisProtocolVersion), 1])
         func append(_ value: UInt64, count: Int) { for shift in stride(from: (count - 1) * 8, through: 0, by: -8) { data.append(UInt8((value >> UInt64(shift)) & 255)) } }
         append(UInt64(runtime.count), count: 2); append(UInt64(transfer.count), count: 2); append(0, count: 2)
@@ -21,13 +21,13 @@ struct ArtifactChunk: Equatable {
     }
     static func decode(_ data: Data) throws -> ArtifactChunk {
         let data = Array(data)
-        guard data.count >= 24, Array(data[0..<6]) == [0x50, 0x49, 0x52, 0x33, UInt8(orbisProtocolVersion), 1], data[10] == 0, data[11] == 0 else { throw transferError("文件分片格式无效") }
+        guard data.count >= 24, Array(data[0..<6]) == [0x50, 0x49, 0x52, 0x33, UInt8(orbisProtocolVersion), 1], data[10] == 0, data[11] == 0 else { throw transferError(L10n.tr("文件分片格式无效")) }
         func read(_ offset: Int, _ length: Int) -> UInt64 { data[offset..<(offset + length)].reduce(0) { ($0 << 8) | UInt64($1) } }
         let r = Int(read(6, 2)), t = Int(read(8, 2)), count = Int(read(20, 4)), offset = read(12, 8)
         guard (1...256).contains(r), (1...256).contains(t), (1...1_048_576).contains(count),
               data.count == 24 + r + t + count, offset <= 9_007_199_254_740_991,
               let runtime = String(bytes: data[24..<(24 + r)], encoding: .utf8), !runtime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let transfer = String(bytes: data[(24 + r)..<(24 + r + t)], encoding: .utf8), !transfer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw transferError("文件分片长度无效") }
+              let transfer = String(bytes: data[(24 + r)..<(24 + r + t)], encoding: .utf8), !transfer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw transferError(L10n.tr("文件分片长度无效")) }
         return ArtifactChunk(runtimeId: runtime, transferId: transfer, offset: Int64(offset), bytes: Data(data[(24 + r + t)...]))
     }
 }
@@ -144,7 +144,7 @@ final class FileTransfers: ObservableObject {
             guard let didSettleUpload else { return }
             for task in tasks where task.direction == "upload" && ["completed", "failed", "cancelled"].contains(task.status) {
                 guard let old = oldValue.first(where: { $0.id == task.id }), old.status != task.status else { continue }
-                didSettleUpload(task.id, task.status == "completed" ? task.remotePath : nil, task.status == "failed" ? task.error ?? "上传失败" : "上传已取消")
+                didSettleUpload(task.id, task.status == "completed" ? task.remotePath : nil, task.status == "failed" ? task.error ?? L10n.tr("上传失败") : L10n.tr("上传已取消"))
             }
         }
     }
@@ -205,7 +205,7 @@ final class FileTransfers: ObservableObject {
                     return item
                 }
                 if !discarded.isEmpty { self.save() }
-            } catch { self?.error = "无法读取传输记录：\(error.localizedDescription)" }
+            } catch { self?.error = L10n.tr("无法读取传输记录：{0}", error.localizedDescription) }
         }
     }
 
@@ -269,9 +269,9 @@ final class FileTransfers: ObservableObject {
     /// Returns whether a download task was queued (download feedback depends on it, ADR-0053 §7).
     @discardableResult
     func download(path: String? = nil, artifact: RemoteArtifact? = nil) -> Bool {
-        guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = "连接电脑后可下载文件。"; return false }
+        guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = L10n.tr("连接电脑后可下载文件。"); return false }
         var task = FileTransfer(id: UUID().uuidString, hostKey: hostKey, hostId: pairing.hostId, runtimeId: pairing.hostId,
-            sessionId: nil, direction: "download", name: artifact?.fileName ?? directoryTitle(path ?? "文件"), sourcePath: path, artifactId: artifact?.artifactId)
+            sessionId: nil, direction: "download", name: artifact?.fileName ?? directoryTitle(path ?? L10n.tr("文件")), sourcePath: path, artifactId: artifact?.artifactId)
         task.size = artifact?.size ?? 0; task.sha256 = artifact?.sha256
         tasks.insert(task, at: 0); restart(task.id)
         return true
@@ -293,18 +293,18 @@ final class FileTransfers: ObservableObject {
                     self.tasks[index].received = snapshot.durableOffset
                     var body: [String: Any] = ["type": task.sourcePath == nil ? "artifact.download" : "file.download", "offset": snapshot.durableOffset]
                     if let path = task.sourcePath { body["path"] = path } else { body["artifactId"] = task.artifactId }
-                    if !self.send(["type": "runtime.command", "protocolVersion": orbisProtocolVersion, "runtimeId": task.hostId, "commandId": command, "command": body]) { self.fail(id, "下载请求未送达。") }
+                    if !self.send(["type": "runtime.command", "protocolVersion": orbisProtocolVersion, "runtimeId": task.hostId, "commandId": command, "command": body]) { self.fail(id, L10n.tr("下载请求未送达。")) }
                     else { self.arm(id) }
                     self.save()
                 } catch { if let self, self.current(id, generation: generation) != nil { self.fail(id, error.localizedDescription) } }
             }
         } else {
-            guard task.localPath != nil, let hash = task.sha256, let directory = task.remotePath else { fail(id, "上传源文件不可用。请重新选择。"); return }
+            guard task.localPath != nil, let hash = task.sha256, let directory = task.remotePath else { fail(id, L10n.tr("上传源文件不可用。请重新选择。")); return }
             _ = renewGeneration(id, path: task.localPath)
             task.requestId = command; tasks[index] = task
             let request: [String: Any] = ["type": "file.upload.init", "protocolVersion": orbisProtocolVersion, "requestId": command,
                 "runtimeId": task.runtimeId, "directory": directory, "fileName": task.name, "size": task.size, "sha256": hash]
-            if !send(request) { fail(id, "上传请求未送达。") } else { arm(id) }
+            if !send(request) { fail(id, L10n.tr("上传请求未送达。")) } else { arm(id) }
         }
         save()
     }
@@ -324,7 +324,7 @@ final class FileTransfers: ObservableObject {
             do {
                 for (url, item) in zip(urls.prefix(10), staged) {
                     let info = try await item.1.prepareUpload(source: url, generation: item.2, maximumBytes: 100 * 1024 * 1024)
-                    guard self.preparingGeneration == generation, self.hostKey == key, self.connected else { throw transferError("上传准备已经取消") }
+                    guard self.preparingGeneration == generation, self.hostKey == key, self.connected else { throw transferError(L10n.tr("上传准备已经取消")) }
                     let directory = remoteBrowsePath(parent: remoteBrowsePath(parent: runtime.cwd, name: ".orbis-uploads"), name: info.sha256)
                     prepared.append(FileTransfer(id: item.0, hostKey: key, hostId: pairing.hostId, runtimeId: runtime.runtimeId, sessionId: runtime.sessionId,
                         direction: "upload", name: url.lastPathComponent, size: info.size, sha256: info.sha256, localPath: info.path, remotePath: directory))
@@ -410,29 +410,29 @@ final class FileTransfers: ObservableObject {
            let size = sessionInteger(artifact["size"]), size >= 0, let transfer = object["transferId"] as? String {
             guard hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil, size <= 9_007_199_254_740_991,
                   !transfer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, transfer.utf8.count <= 256,
-                  object["offset"] == nil || sessionInteger(object["offset"]) == tasks[index].received else { fail(tasks[index].id, "文件下载参数无效，请更新电脑端。"); return }
-            if let oldHash = tasks[index].sha256, oldHash != hash { fail(tasks[index].id, "文件内容已更改，请删除任务后重新下载。"); return }
+                  object["offset"] == nil || sessionInteger(object["offset"]) == tasks[index].received else { fail(tasks[index].id, L10n.tr("文件下载参数无效，请更新电脑端。")); return }
+            if let oldHash = tasks[index].sha256, oldHash != hash { fail(tasks[index].id, L10n.tr("文件内容已更改，请删除任务后重新下载。")); return }
             tasks[index].transferId = transfer; tasks[index].sha256 = hash; tasks[index].size = size; tasks[index].status = "downloading"
-            if tasks[index].received > size { fail(tasks[index].id, "本地进度与文件长度不一致。"); return }
+            if tasks[index].received > size { fail(tasks[index].id, L10n.tr("本地进度与文件长度不一致。")); return }
             if let name = artifact["fileName"] as? String, !name.isEmpty { tasks[index].name = name }
             beginDownload(tasks[index].id); return
         }
         if type == "command.result", object["ok"] as? Bool == false, let command = object["commandId"] as? String,
            let task = tasks.first(where: { $0.hostKey == hostKey && $0.commandId == command && $0.status == "queued" }) {
-            fail(task.id, object["error"] as? String ?? "文件请求被电脑端拒绝。"); return
+            fail(task.id, object["error"] as? String ?? L10n.tr("文件请求被电脑端拒绝。")); return
         }
         if type == "artifact.failed" || type == "artifact.read.failed" {
             if let index = tasks.firstIndex(where: { $0.transferId != nil && $0.transferId == object["transferId"] as? String && $0.hostKey == hostKey && $0.status == "downloading" }) {
                 let id = tasks[index].id
                 if type == "artifact.read.failed", let request = object["requestId"] as? String,
                    downloads[id]?.scheduler.contains(requestId: request) != true { return }
-                fail(id, object["error"] as? String ?? object["reason"] as? String ?? "下载失败。")
+                fail(id, object["error"] as? String ?? object["reason"] as? String ?? L10n.tr("下载失败。"))
             }; return
         }
         if type == "file.upload.ready", let request = object["requestId"] as? String,
            let index = tasks.firstIndex(where: { $0.requestId == request && $0.hostKey == hostKey && $0.status == "queued" }), let upload = object["uploadId"] as? String {
             guard let received = sessionInteger(object["receivedBytes"]), received >= 0, received <= tasks[index].size,
-                  !upload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, upload.utf8.count <= 256 else { fail(tasks[index].id, "上传续传位置无效。"); return }
+                  !upload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, upload.utf8.count <= 256 else { fail(tasks[index].id, L10n.tr("上传续传位置无效。")); return }
             tasks[index].transferId = upload; tasks[index].status = "uploading"; tasks[index].received = received
             arm(tasks[index].id); save(); return
         }
@@ -448,16 +448,16 @@ final class FileTransfers: ObservableObject {
                     do {
                         let data = try await disk.read(offset: offset, length: length, generation: generation)
                         guard let self, self.current(task.id, generation: generation, status: "uploading") != nil else { return }
-                        guard data.count == length, self.sendBinary(try ArtifactChunk(runtimeId: task.runtimeId, transferId: upload, offset: offset, bytes: data).encoded()) else { throw transferError("上传分片未送达。") }
+                        guard data.count == length, self.sendBinary(try ArtifactChunk(runtimeId: task.runtimeId, transferId: upload, offset: offset, bytes: data).encoded()) else { throw transferError(L10n.tr("上传分片未送达。")) }
                         self.arm(task.id)
                     } catch { if let self, self.current(task.id, generation: generation) != nil { self.fail(task.id, error.localizedDescription) } }
                 }
             } else if type == "file.upload.progress" {
                 let count = sessionInteger(object["receivedBytes"]) ?? task.received
-                guard count >= 0, count <= task.size else { fail(task.id, "上传进度超出文件范围。"); return }
+                guard count >= 0, count <= task.size else { fail(task.id, L10n.tr("上传进度超出文件范围。")); return }
                 tasks[index].received = max(task.received, count); arm(task.id); save()
             } else if type == "file.upload.finished" {
-                guard object["sha256"] as? String == task.sha256, sessionInteger(object["size"]) == task.size, let path = object["path"] as? String else { fail(task.id, "上传结果校验失败。"); return }
+                guard object["sha256"] as? String == task.sha256, sessionInteger(object["size"]) == task.size, let path = object["path"] as? String else { fail(task.id, L10n.tr("上传结果校验失败。")); return }
                 tasks[index].remotePath = path; tasks[index].received = task.size; tasks[index].status = "completed"
                 timeouts.removeValue(forKey: task.id)?.cancel(); save()
             }
@@ -466,7 +466,7 @@ final class FileTransfers: ObservableObject {
             if let index = tasks.firstIndex(where: { task in
                 task.hostKey == hostKey && ["queued", "downloading", "uploading"].contains(task.status) && ((task.commandId != nil && task.commandId == object["commandId"] as? String) ||
                     (task.requestId != nil && task.requestId == object["requestId"] as? String) || (task.transferId != nil && task.transferId == object["uploadId"] as? String))
-            }) { fail(tasks[index].id, object["message"] as? String ?? "文件传输失败。") }
+            }) { fail(tasks[index].id, object["message"] as? String ?? L10n.tr("文件传输失败。")) }
         }
     }
     private func beginDownload(_ id: String) {
@@ -476,7 +476,7 @@ final class FileTransfers: ObservableObject {
             do {
                 let snapshot = try await disk.resume(generation: generation, expectedSize: task.size)
                 guard let self, self.current(id, generation: generation, status: "downloading") != nil else { return }
-                guard snapshot.durableOffset == task.received else { self.fail(id, "下载续传位置已改变，请重试。"); return }
+                guard snapshot.durableOffset == task.received else { self.fail(id, L10n.tr("下载续传位置已改变，请重试。")); return }
                 self.startScheduler(id)
             } catch { if let self, self.current(id, generation: generation) != nil { self.fail(id, error.localizedDescription) } }
         }
@@ -487,7 +487,7 @@ final class FileTransfers: ObservableObject {
         let scheduler = PullScheduler(size: task.size, startOffset: task.received) { [weak self] request, offset, length in
             guard let self, self.connected, self.tasks.contains(where: { $0.id == id && $0.status == "downloading" && $0.transferId == transfer && $0.hostKey == self.hostKey }) else { return false }
             guard self.send(["type": "artifact.read", "protocolVersion": orbisProtocolVersion, "transferId": transfer,
-                             "requestId": request, "offset": offset, "length": length]) else { self.fail(id, "文件读取请求未送达。"); return false }
+                             "requestId": request, "offset": offset, "length": length]) else { self.fail(id, L10n.tr("文件读取请求未送达。")); return false }
             return true
         }
         scheduler.interactive = interactive
@@ -572,7 +572,7 @@ final class FileTransfers: ObservableObject {
         timeouts[id]?.cancel()
         timeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { return }
-            self?.fail(id, "传输超时，点击重试可继续传输。")
+            self?.fail(id, L10n.tr("传输超时，点击重试可继续传输。"))
         }
     }
     private func save() {
@@ -581,7 +581,7 @@ final class FileTransfers: ObservableObject {
         enqueueIO { [self] in
             await self.bootstrap?.value
             do { _ = try await metadata.save(JSONEncoder().encode(self.tasks), revision: revision) }
-            catch { self.error = "无法保存传输进度：\(error.localizedDescription)" }
+            catch { self.error = L10n.tr("无法保存传输进度：{0}", error.localizedDescription) }
         }
     }
 }

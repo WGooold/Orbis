@@ -266,7 +266,7 @@ data class OperationLedger<P>(
         val ids = gone.map(LedgerOperation<P>::opId).toSet()
         list.removeAll { it.opId in ids }
         gone.forEach { events += LedgerEvent.Expired(it) }
-        gone.forEach { dependentsFailed(it.opId, "前置操作已失效") }
+        gone.forEach { dependentsFailed(it.opId, L10n.tr("前置操作已失效")) }
     }
 
     /** 期限到期：已写入但没有最终结果的操作转为结果不明并要求核对；成功后的种类期限按策略处理（L8）。 */

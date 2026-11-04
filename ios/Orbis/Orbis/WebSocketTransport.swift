@@ -56,7 +56,7 @@ actor InboundFrameDecoder {
         if channel == nil, let keys { channel = E2EChannel(keys: keys) }
         guard let channel else {
             if relay { return nil }
-            throw PairingError.handshake("局域网握手尚未完成")
+            throw PairingError.handshake(L10n.tr("局域网握手尚未完成"))
         }
         guard let payload = try channel.open(envelope) else { return nil }
         var object: [String: Any]?
@@ -128,11 +128,11 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                 let (data, response) = try await urlSession().data(for: request)
                 guard self.pairingGeneration == generation else { throw CancellationError() }
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                    throw PairingError.relay("中继配对失败，请在电脑端重新生成二维码。")
+                    throw PairingError.relay(L10n.tr("中继配对失败，请在电脑端重新生成二维码。"))
                 }
                 let body = try E2ECrypto.jsonObject(data)
                 guard let deviceId = body["deviceId"] as? String, !deviceId.isEmpty,
-                      let secret = body["credential"] as? String, !secret.isEmpty else { throw PairingError.relay("中继返回缺少设备凭据") }
+                      let secret = body["credential"] as? String, !secret.isEmpty else { throw PairingError.relay(L10n.tr("中继返回缺少设备凭据")) }
                 let pair = try DevicePairingSession.create(qr: qr, deviceId: deviceId, identity: identity)
                 let relay = RelayCredential(relayUrl: qr.relayUrl, deviceId: deviceId, credential: secret)
                 try await connectPairing(qr: qr, relay: relay, pairingSession: pair)
@@ -178,7 +178,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         timeoutTask?.cancel(); timeoutTask = nil
         let pending = pairingContinuation
         pairingContinuation = nil
-        pending?.resume(throwing: PairingError.relay("配对连接已关闭"))
+        pending?.resume(throwing: PairingError.relay(L10n.tr("配对连接已关闭")))
         let oldSocket = socket
         socket = nil
         oldSocket?.cancel(with: .goingAway, reason: nil)
@@ -209,7 +209,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         do {
             let payload = try E2ECrypto.jsonData(object)
             guard outboundBytes + payload.count * 2 + 4096 <= maxOutboundBytes else {
-                throw PairingError.relay("发送队列已满，请稍后重试。")
+                throw PairingError.relay(L10n.tr("发送队列已满，请稍后重试。"))
             }
             let envelope = try channel.seal(room: hostId, from: fromId, to: hostId, channel: "ctl", payload: payload)
             try enqueue(envelope)
@@ -222,7 +222,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
 
     private func openSocket() {
         guard let credential, let url = RelayURL.endpoint(credential.relayUrl, path: "v1/device", webSocket: true) else {
-            stateHandler?(.error, "中继地址无效，请重新配对。")
+            stateHandler?(.error, L10n.tr("中继地址无效，请重新配对。"))
             return
         }
         if !hasDirectPath { stateHandler?(.connecting, nil) }
@@ -239,7 +239,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         self.pairingSession = pairingSession
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.pairingContinuation = continuation
-            self.armTimeout(message: "配对等待超时，请重新扫描二维码。")
+            self.armTimeout(message: L10n.tr("配对等待超时，请重新扫描二维码。"))
             self.openSocket()
         }
     }
@@ -287,7 +287,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         handshake = value
         if !hasDirectPath { stateHandler?(.connecting, nil) }
         try sendPlain(kind: "hs", body: value.hs1())
-        armTimeout(message: "电脑端安全握手未响应，正在重新连接。")
+        armTimeout(message: L10n.tr("电脑端安全握手未响应，正在重新连接。"))
     }
 
     private func sendPlain(kind: String, body: [String: Any], completion: ((Error?) -> Void)? = nil) throws {
@@ -309,8 +309,8 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     }
 
     private func enqueueText(_ text: String, channel: String? = nil, completion: ((Error?) -> Void)? = nil) throws {
-        guard socket != nil else { throw PairingError.relay("连接已关闭") }
-        guard outboundBytes + text.utf8.count <= maxOutboundBytes else { throw PairingError.relay("发送队列已满，请稍后重试。") }
+        guard socket != nil else { throw PairingError.relay(L10n.tr("连接已关闭")) }
+        guard outboundBytes + text.utf8.count <= maxOutboundBytes else { throw PairingError.relay(L10n.tr("发送队列已满，请稍后重试。")) }
         outbound.append((text, channel, completion))
         outboundBytes += text.utf8.count
         drainQueue()
@@ -373,7 +373,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                 receiveHandler?(outer, nil)
                 if let pending = pairingContinuation {
                     pairingContinuation = nil
-                    pending.resume(throwing: PairingError.relay(outer["message"] as? String ?? "配对认证失败"))
+                    pending.resume(throwing: PairingError.relay(outer["message"] as? String ?? L10n.tr("配对认证失败")))
                     disconnect()
                 }
                 return
@@ -389,7 +389,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
             } else if envelope.hdr.k == "hs" {
                 guard envelope.hdr.n == 0, let handshake else { return }
                 let reply = try handshake.accept(E2ECrypto.jsonObject(Base64URL.decode(envelope.ct, label: "hs.ct")))
-                guard let keys = handshake.keys else { throw PairingError.handshake("会话密钥未建立") }
+                guard let keys = handshake.keys else { throw PairingError.handshake(L10n.tr("会话密钥未建立")) }
                 channel = E2EChannel(keys: keys)
                 let establishedChannel = channel
                 self.handshake = nil
@@ -506,7 +506,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         resetChannel()
         let pending = pairingContinuation
         pairingContinuation = nil
-        pending?.resume(throwing: error ?? PairingError.relay("配对连接已关闭"))
+        pending?.resume(throwing: error ?? PairingError.relay(L10n.tr("配对连接已关闭")))
         stateHandler?(hasDirectPath ? .secured : .offline, hasDirectPath ? nil : error?.localizedDescription)
         guard reconnect, pairing != nil else { return }
         reconnectTask?.cancel()
@@ -714,12 +714,12 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         try enqueue(Envelope(v: 2, hdr: RoutingHeader(k: "hs", room: hostId, from: deviceId, to: hostId, n: 0, ch: nil), ct: Base64URL.encode(E2ECrypto.jsonData(body))))
     }
     private func enqueue(_ envelope: Envelope) throws {
-        guard socket != nil else { throw PairingError.relay("局域网连接已关闭") }
+        guard socket != nil else { throw PairingError.relay(L10n.tr("局域网连接已关闭")) }
         let frames = try EnvelopePieces.fragment(envelope).map { piece in
             String(decoding: try JSONEncoder().encode(V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: piece)), as: UTF8.self)
         }
         let cost = frames.reduce(0) { $0 + $1.utf8.count }
-        guard queuedBytes + cost <= maxQueuedBytes else { throw PairingError.relay("局域网发送队列已满") }
+        guard queuedBytes + cost <= maxQueuedBytes else { throw PairingError.relay(L10n.tr("局域网发送队列已满")) }
         queue.append(contentsOf: frames.map { ($0, envelope.hdr.ch) }); queuedBytes += cost
         drain()
     }
@@ -756,9 +756,9 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     private func handle(_ decoded: InboundFrameDecoder.Decoded) throws {
         switch decoded {
         case .handshake(let envelope):
-            guard envelope.hdr.k == "hs", envelope.hdr.n == 0, channel == nil, let handshake else { throw PairingError.handshake("局域网握手状态无效") }
+            guard envelope.hdr.k == "hs", envelope.hdr.n == 0, channel == nil, let handshake else { throw PairingError.handshake(L10n.tr("局域网握手状态无效")) }
             let reply = try handshake.accept(E2ECrypto.jsonObject(Base64URL.decode(envelope.ct)))
-            guard let keys = handshake.keys else { throw PairingError.handshake("局域网密钥未建立") }
+            guard let keys = handshake.keys else { throw PairingError.handshake(L10n.tr("局域网密钥未建立")) }
             try sendHandshake(reply)
             channel = E2EChannel(keys: keys); self.handshake = nil
             timeout?.cancel(); timeout = nil
@@ -766,7 +766,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
             state?(true)
             armHeartbeat()
         case .authenticated(let header, let bytes, let message):
-            guard let channel else { throw PairingError.handshake("局域网握手尚未完成") }
+            guard let channel else { throw PairingError.handshake(L10n.tr("局域网握手尚未完成")) }
             switch header.k {
             case "ping": try enqueue(channel.seal(kind: "ping", room: hostId, from: deviceId, to: hostId, channel: "ctl", payload: bytes))
             case "data": receive?(bytes, header.ch, false, message)

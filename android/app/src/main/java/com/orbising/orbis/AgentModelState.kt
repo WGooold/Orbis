@@ -104,13 +104,13 @@ internal fun RemoteState.withAgentStateSnapshot(
     if (failure != null) return cleared.storeSnapshot(key, AgentStateSnapshotView(
         key = key, scope = scope, requestId = requestId, error = failure,
     ))
-    val epoch = message.string("modelEpoch") ?: return cleared.rejectedSnapshot(key, scope, requestId, "模型快照缺少代次")
+    val epoch = message.string("modelEpoch") ?: return cleared.rejectedSnapshot(key, scope, requestId, L10n.tr("模型快照缺少代次"))
     if (agentModelEpoch != null && epoch != agentModelEpoch || epoch in retiredAgentModelEpochs) return cleared
-    val entries = message["domains"] as? JsonArray ?: return cleared.rejectedSnapshot(key, scope, requestId, "模型快照缺少领域清单")
+    val entries = message["domains"] as? JsonArray ?: return cleared.rejectedSnapshot(key, scope, requestId, L10n.tr("模型快照缺少领域清单"))
     val domains = LinkedHashMap<String, AgentStateDomainView>()
     for (element in entries) {
         val row = element as? JsonObject
-            ?: return cleared.rejectedSnapshot(key, scope, requestId, "模型快照里的领域不是对象")
+            ?: return cleared.rejectedSnapshot(key, scope, requestId, L10n.tr("模型快照里的领域不是对象"))
         val domain = row.string("domain")
         val modelEpoch = row.string("modelEpoch")
         val revision = row["revision"]?.jsonPrimitive?.longOrNull
@@ -122,7 +122,7 @@ internal fun RemoteState.withAgentStateSnapshot(
             completeness == null || completeness !in setOf("complete", "partial", "unknown") || checkedAt == null || checkedAt < 0 ||
             domain in domains || read != null && domain !in read.domains
         ) {
-            return cleared.rejectedSnapshot(key, scope, requestId, "模型快照里的领域缺少 envelope 字段")
+            return cleared.rejectedSnapshot(key, scope, requestId, L10n.tr("模型快照里的领域缺少 envelope 字段"))
         }
         domains[domain] = AgentStateDomainView(
             domain = domain, modelEpoch = modelEpoch, revision = revision,
@@ -166,7 +166,7 @@ internal fun RemoteState.withAgentStateSnapshot(
     }
     val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json, parseInteraction)
         else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
-    if (projected.error?.startsWith("Host 模型领域格式无效：") == true && projected.error != base.error) {
+    if (projected.error != null && L10n.hasPrefix(projected.error, "Host 模型领域格式无效：") && projected.error != base.error) {
         return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
     }
     val settled = if (read?.subscribe == true) projected.copy(agentStateReads = projected.agentStateReads +
@@ -212,30 +212,30 @@ internal data class DiagnosticDirectoryView(val text: String, val detail: String
  */
 internal fun RemoteState.diagnosticDirectoryView(): DiagnosticDirectoryView {
     val snapshot = hostScopeSnapshot()
-        ?: return DiagnosticDirectoryView("尚未读取", "连接建立后会自动读一次")
-    snapshot.error?.let { return DiagnosticDirectoryView("读取失败：" + it, null, StatusTone.Bad) }
+        ?: return DiagnosticDirectoryView(L10n.tr("尚未读取"), L10n.tr("连接建立后会自动读一次"))
+    snapshot.error?.let { return DiagnosticDirectoryView(L10n.tr("读取失败：") + it, null, StatusTone.Bad) }
     snapshot.missing["diagnostics"]?.let { reason ->
-        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
-        return DiagnosticDirectoryView(text, "缺席原因：" + reason, StatusTone.Warn)
+        val text = if (reason == "unknown_domain") L10n.tr("这台电脑不认识这个领域") else L10n.tr("电脑没有报这个领域")
+        return DiagnosticDirectoryView(text, L10n.tr("缺席原因：") + reason, StatusTone.Warn)
     }
     val domain = snapshot.domains["diagnostics"]
-        ?: return DiagnosticDirectoryView("清单里没有这个领域", "缺席没有给原因，不能当成 0 条", StatusTone.Warn)
+        ?: return DiagnosticDirectoryView(L10n.tr("清单里没有这个领域"), L10n.tr("缺席没有给原因，不能当成 0 条"), StatusTone.Warn)
     if (domain.availability != "ready") {
-        return DiagnosticDirectoryView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+        return DiagnosticDirectoryView(L10n.tr("电脑尚未核对"), "availability=" + domain.availability, StatusTone.Warn)
     }
     val value = domain.value as? JsonObject
-        ?: return DiagnosticDirectoryView("目录格式无法识别", "负载不是对象", StatusTone.Bad)
+        ?: return DiagnosticDirectoryView(L10n.tr("目录格式无法识别"), L10n.tr("负载不是对象"), StatusTone.Bad)
     val records = value.long("records")
-        ?: return DiagnosticDirectoryView("目录缺少条数", "负载里没有 records", StatusTone.Bad)
+        ?: return DiagnosticDirectoryView(L10n.tr("目录缺少条数"), L10n.tr("负载里没有 records"), StatusTone.Bad)
     val dropped = value.long("dropped") ?: 0
     val persistFailures = value.long("persistFailures") ?: 0
     val notes = buildList {
-        if (dropped > 0) add("已淘汰 " + dropped + " 条")
-        if (persistFailures > 0) add("落盘失败 " + persistFailures + " 次")
-        if (snapshot.truncated) add("清单被截断")
-        if (isEmpty() && domain.completeness != "complete") add("清单不完整")
+        if (dropped > 0) add(L10n.tr("已淘汰 ") + dropped + L10n.tr(" 条"))
+        if (persistFailures > 0) add(L10n.tr("落盘失败 ") + persistFailures + L10n.tr(" 次"))
+        if (snapshot.truncated) add(L10n.tr("清单被截断"))
+        if (isEmpty() && domain.completeness != "complete") add(L10n.tr("清单不完整"))
     }
-    val text = if (notes.isEmpty()) records.toString() + " 条记录" else records.toString() + " 条记录（" + notes.joinToString("，") + "）"
+    val text = if (notes.isEmpty()) records.toString() + L10n.tr(" 条记录") else records.toString() + L10n.tr(" 条记录（") + notes.joinToString(L10n.tr("，")) + L10n.tr("）")
     return DiagnosticDirectoryView(text, null, if (notes.isEmpty()) StatusTone.Good else StatusTone.Warn)
 }
 
@@ -266,13 +266,13 @@ internal data class ModelStatusFact(val label: String, val value: String)
 /** 所有已支持 Host/Agent 领域均可见；缺席/待核对不伪装为空或已完成。 */
 internal fun RemoteState.modelStatusFacts(): List<ModelStatusFact> = buildList {
     for (snapshot in agentStateSnapshots.values.sortedBy { it.key }) {
-        val label = if (snapshot.scope == "host") "电脑" else snapshot.key.substringAfterLast('|')
-        snapshot.error?.let { add(ModelStatusFact(label, "读取失败：$it")) }
+        val label = if (snapshot.scope == "host") L10n.tr("电脑") else snapshot.key.substringAfterLast('|')
+        snapshot.error?.let { add(ModelStatusFact(label, L10n.tr("读取失败：{0}", it))) }
         for ((name, domain) in snapshot.domains.toSortedMap()) {
-            val status = when (domain.availability) { "ready" -> "已核对"; "unavailable" -> "不支持"; else -> "待核对" }
-            add(ModelStatusFact("$label，$name", "$status，v${domain.revision}，${domain.completeness}"))
+            val status = when (domain.availability) { "ready" -> L10n.tr("已核对"); "unavailable" -> L10n.tr("不支持"); else -> L10n.tr("待核对") }
+            add(ModelStatusFact(L10n.tr("{0}，{1}", label, name), L10n.tr("{0}，v{1}，{2}", status, domain.revision, domain.completeness)))
         }
-        for ((name, reason) in snapshot.missing) add(ModelStatusFact("$label，$name", "尚无状态：$reason"))
+        for ((name, reason) in snapshot.missing) add(ModelStatusFact(L10n.tr("{0}，{1}", label, name), L10n.tr("尚无状态：{0}", reason)))
     }
 }
 
@@ -281,12 +281,12 @@ internal fun RemoteState.providerPublicFacts(): List<ModelStatusFact> = buildLis
     val rows = ((domain.value as? JsonObject)?.get("providers") as? JsonArray).orEmpty()
     for (row in rows.filterIsInstance<JsonObject>()) {
         val kind = row.string("agentKind") ?: continue
-        for ((key, title) in listOf("usage" to "用量", "authentication" to "认证", "health" to "健康", "routing" to "路由")) {
+        for ((key, title) in listOf("usage" to L10n.tr("用量"), "authentication" to L10n.tr("认证"), "health" to L10n.tr("健康"), "routing" to L10n.tr("路由"))) {
             val fact = row[key] as? JsonObject
             val available = fact?.string("availability") ?: "unknown"
             val detail = fact?.get("detail")?.takeUnless { it is JsonNull }?.toString()?.trim('"')
-            val summary = if (available != "ready") "未核对" else detail ?: fact.toString()
-            add(ModelStatusFact("$kind，$title", summary.take(800)))
+            val summary = if (available != "ready") L10n.tr("未核对") else detail ?: fact.toString()
+            add(ModelStatusFact(L10n.tr("{0}，{1}", kind, title), summary.take(800)))
         }
     }
 }
@@ -299,27 +299,27 @@ internal fun RemoteState.providerPublicFacts(): List<ModelStatusFact> = buildLis
  * 而不是替它断言「现在没有切换」。
  */
 internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
-    val snapshot = hostScopeSnapshot() ?: return ProviderSwitchingView("尚未读取", "连接建立后会自动读一次")
-    snapshot.error?.let { return ProviderSwitchingView("读取失败：" + it, null, StatusTone.Bad) }
+    val snapshot = hostScopeSnapshot() ?: return ProviderSwitchingView(L10n.tr("尚未读取"), L10n.tr("连接建立后会自动读一次"))
+    snapshot.error?.let { return ProviderSwitchingView(L10n.tr("读取失败：") + it, null, StatusTone.Bad) }
     snapshot.missing["providers"]?.let { reason ->
-        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
-        return ProviderSwitchingView(text, "缺席原因：" + reason, StatusTone.Warn)
+        val text = if (reason == "unknown_domain") L10n.tr("这台电脑不认识这个领域") else L10n.tr("电脑没有报这个领域")
+        return ProviderSwitchingView(text, L10n.tr("缺席原因：") + reason, StatusTone.Warn)
     }
     val domain = snapshot.domains["providers"]
-        ?: return ProviderSwitchingView("清单里没有这个领域", "缺席没有给原因，不能当成没有切换", StatusTone.Warn)
+        ?: return ProviderSwitchingView(L10n.tr("清单里没有这个领域"), L10n.tr("缺席没有给原因，不能当成没有切换"), StatusTone.Warn)
     if (domain.availability != "ready") {
-        return ProviderSwitchingView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+        return ProviderSwitchingView(L10n.tr("电脑尚未核对"), "availability=" + domain.availability, StatusTone.Warn)
     }
     val value = domain.value as? JsonObject
-        ?: return ProviderSwitchingView("供应商摘要格式无法识别", "负载不是对象", StatusTone.Bad)
+        ?: return ProviderSwitchingView(L10n.tr("供应商摘要格式无法识别"), L10n.tr("负载不是对象"), StatusTone.Bad)
     val rows = value["providers"] as? JsonArray
-        ?: return ProviderSwitchingView("供应商摘要缺少清单", "负载里没有 providers", StatusTone.Bad)
+        ?: return ProviderSwitchingView(L10n.tr("供应商摘要缺少清单"), L10n.tr("负载里没有 providers"), StatusTone.Bad)
     val summaries = ArrayList<ProviderSummaryView>(rows.size)
     for (element in rows) {
         val row = element as? JsonObject
-            ?: return ProviderSwitchingView("供应商摘要格式无法识别", "条目不是对象", StatusTone.Bad)
+            ?: return ProviderSwitchingView(L10n.tr("供应商摘要格式无法识别"), L10n.tr("条目不是对象"), StatusTone.Bad)
         val kind = row.string("agentKind")
-            ?: return ProviderSwitchingView("供应商摘要缺少字段", "条目没有 agentKind", StatusTone.Bad)
+            ?: return ProviderSwitchingView(L10n.tr("供应商摘要缺少字段"), L10n.tr("条目没有 agentKind"), StatusTone.Bad)
         val usage = row["usage"] as? JsonObject
         summaries += ProviderSummaryView(
             agentKind = kind,
@@ -331,19 +331,19 @@ internal fun RemoteState.providerSwitchingView(): ProviderSwitchingView {
         )
     }
     if (summaries.isEmpty()) {
-        return ProviderSwitchingView("电脑没有报任何供应商", null, StatusTone.Warn)
+        return ProviderSwitchingView(L10n.tr("电脑没有报任何供应商"), null, StatusTone.Warn)
     }
-    val detail = summaries.joinToString("、") { summary ->
-        summary.agentKind + ": " + (summary.current ?: if (summary.agentKind in setOf("codex", "codexDesktop")) "未核对" else "未配置")
+    val detail = summaries.joinToString(L10n.tr("、")) { summary ->
+        summary.agentKind + ": " + (summary.current ?: if (summary.agentKind in setOf("codex", "codexDesktop")) L10n.tr("未核对") else L10n.tr("未配置"))
     }
-    val profiles = summaries.joinToString("、") { summary ->
-        summary.agentKind + ": " + (summary.profileCount?.let { count -> count.toString() + " 个可选" } ?: "清单未读到")
+    val profiles = summaries.joinToString(L10n.tr("、")) { summary ->
+        summary.agentKind + ": " + (summary.profileCount?.let { count -> count.toString() + L10n.tr(" 个可选") } ?: L10n.tr("清单未读到"))
     }
     val switching = summaries.filter { it.switching == true }.map { it.agentKind }
     if (switching.isNotEmpty()) {
-        return ProviderSwitchingView("正在切换：" + switching.joinToString("、"), detail, StatusTone.Warn, profiles)
+        return ProviderSwitchingView(L10n.tr("正在切换：") + switching.joinToString(L10n.tr("、")), detail, StatusTone.Warn, profiles)
     }
-    return ProviderSwitchingView("Host 未报告进行中的切换", detail, StatusTone.Neutral, profiles)
+    return ProviderSwitchingView(L10n.tr("Host 未报告进行中的切换"), detail, StatusTone.Neutral, profiles)
 }
 
 
@@ -374,54 +374,54 @@ internal data class CatalogSummaryView(val text: String, val detail: String? = n
  * 缺席的会话不能显示成「没有」，所以这里必须说出来是哪个后端、为什么。
  */
 internal fun RemoteState.catalogSummaryView(): CatalogSummaryView {
-    val snapshot = hostScopeSnapshot() ?: return CatalogSummaryView("尚未读取", "连接建立后会自动读一次")
-    snapshot.error?.let { return CatalogSummaryView("读取失败：" + it, null, StatusTone.Bad) }
+    val snapshot = hostScopeSnapshot() ?: return CatalogSummaryView(L10n.tr("尚未读取"), L10n.tr("连接建立后会自动读一次"))
+    snapshot.error?.let { return CatalogSummaryView(L10n.tr("读取失败：") + it, null, StatusTone.Bad) }
     snapshot.missing["catalog"]?.let { reason ->
-        val text = if (reason == "unknown_domain") "这台电脑不认识这个领域" else "电脑没有报这个领域"
-        return CatalogSummaryView(text, "缺席原因：" + reason, StatusTone.Warn)
+        val text = if (reason == "unknown_domain") L10n.tr("这台电脑不认识这个领域") else L10n.tr("电脑没有报这个领域")
+        return CatalogSummaryView(text, L10n.tr("缺席原因：") + reason, StatusTone.Warn)
     }
     val domain = snapshot.domains["catalog"]
-        ?: return CatalogSummaryView("清单里没有这个领域", "缺席没有给原因，不能当成完整目录", StatusTone.Warn)
+        ?: return CatalogSummaryView(L10n.tr("清单里没有这个领域"), L10n.tr("缺席没有给原因，不能当成完整目录"), StatusTone.Warn)
     if (domain.availability != "ready") {
-        return CatalogSummaryView("电脑尚未核对", "availability=" + domain.availability, StatusTone.Warn)
+        return CatalogSummaryView(L10n.tr("电脑尚未核对"), "availability=" + domain.availability, StatusTone.Warn)
     }
     val value = domain.value as? JsonObject
-        ?: return CatalogSummaryView("目录格式无法识别", "负载不是对象", StatusTone.Bad)
+        ?: return CatalogSummaryView(L10n.tr("目录格式无法识别"), L10n.tr("负载不是对象"), StatusTone.Bad)
     val total = value.long("totalSessions")
-        ?: return CatalogSummaryView("目录缺少总数", "负载里没有 totalSessions", StatusTone.Bad)
+        ?: return CatalogSummaryView(L10n.tr("目录缺少总数"), L10n.tr("负载里没有 totalSessions"), StatusTone.Bad)
     val rows = value["backends"] as? JsonArray
-        ?: return CatalogSummaryView("目录缺少后端清单", "负载里没有 backends", StatusTone.Bad)
+        ?: return CatalogSummaryView(L10n.tr("目录缺少后端清单"), L10n.tr("负载里没有 backends"), StatusTone.Bad)
     val backends = ArrayList<CatalogBackendView>(rows.size)
     for (element in rows) {
         val row = element as? JsonObject
-            ?: return CatalogSummaryView("目录格式无法识别", "后端条目不是对象", StatusTone.Bad)
+            ?: return CatalogSummaryView(L10n.tr("目录格式无法识别"), L10n.tr("后端条目不是对象"), StatusTone.Bad)
         val kind = row.string("kind")
         val sessions = row.long("sessions")
         val complete = row["complete"]?.jsonPrimitive?.booleanOrNull
         val ready = row["ready"]?.jsonPrimitive?.booleanOrNull
         if (kind == null || sessions == null || complete == null || ready == null) {
-            return CatalogSummaryView("目录缺少字段", "后端条目缺少 kind/sessions/ready/complete", StatusTone.Bad)
+            return CatalogSummaryView(L10n.tr("目录缺少字段"), L10n.tr("后端条目缺少 kind/sessions/ready/complete"), StatusTone.Bad)
         }
         backends += CatalogBackendView(kind, ready, sessions, complete, row.string("error"))
     }
     val truncated = value["truncated"]?.jsonPrimitive?.booleanOrNull == true
     val range = agentCatalogRange?.takeIf { it.modelEpoch == domain.modelEpoch && it.revision == domain.revision }
-    if (range?.error != null) return CatalogSummaryView("$total 个会话（部分）", "目录分页失败：${range.error}", StatusTone.Warn)
+    if (range?.error != null) return CatalogSummaryView(L10n.tr("{0} 个会话（部分）", total), L10n.tr("目录分页失败：{0}", range.error), StatusTone.Warn)
     if (range?.nextCursor != null || value.string("nextCursor") != null && range == null)
-        return CatalogSummaryView("$total 个会话（读取中）", "已读取 ${range?.sessions?.size ?: (value["sessions"] as? JsonArray)?.size ?: 0} 个", StatusTone.Warn)
+        return CatalogSummaryView(L10n.tr("{0} 个会话（读取中）", total), L10n.tr("已读取 {0} 个", range?.sessions?.size ?: (value["sessions"] as? JsonArray)?.size ?: 0), StatusTone.Warn)
     val gaps = backends.filter { !it.complete }
     if (gaps.isEmpty() && !truncated && domain.completeness == "complete") {
-        return CatalogSummaryView("$total 个会话（" + backends.size + " 个后端都读全）", null, StatusTone.Good)
+        return CatalogSummaryView(L10n.tr("{0} 个会话（", total) + backends.size + L10n.tr(" 个后端都读全）"), null, StatusTone.Good)
     }
-    val reason = gaps.joinToString("，") { gap ->
+    val reason = gaps.joinToString(L10n.tr("，")) { gap ->
         val why = when {
-            gap.error != null -> "读取失败：" + gap.error
-            !gap.ready -> "未就绪"
-            else -> "没读全"
+            gap.error != null -> L10n.tr("读取失败：") + gap.error
+            !gap.ready -> L10n.tr("未就绪")
+            else -> L10n.tr("没读全")
         }
         gap.kind + " " + why
-    }.ifEmpty { if (truncated) "结果被上限截断" else "清单不完整" }
-    return CatalogSummaryView("$total 个会话（部分）", reason, StatusTone.Warn)
+    }.ifEmpty { if (truncated) L10n.tr("结果被上限截断") else L10n.tr("清单不完整") }
+    return CatalogSummaryView(L10n.tr("{0} 个会话（部分）", total), reason, StatusTone.Warn)
 }
 
 
@@ -469,14 +469,14 @@ internal fun RemoteState.withDiagnosticsPage(message: JsonObject): RemoteState {
     val records = ArrayList<DiagnosticRecordView>(rows.size)
     for (element in rows) {
         val row = element as? JsonObject
-            ?: return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = "记录不是对象"))
+            ?: return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = L10n.tr("记录不是对象")))
         val recordId = row.string("recordId")
         val category = row.string("category")
         val severity = row.string("severity")
         val text = row.string("message")
         val at = row["at"]?.jsonPrimitive?.longOrNull
         if (recordId == null || category == null || severity == null || text == null || at == null) {
-            return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = "记录缺少字段"))
+            return cleared.copy(diagnosticPage = DiagnosticPageView(requestId, emptyList(), error = L10n.tr("记录缺少字段")))
         }
         records += DiagnosticRecordView(recordId, category, severity, text, at)
     }
@@ -500,20 +500,20 @@ internal fun RemoteState.diagnosticRecordsView(now: Long = System.currentTimeMil
     val waiting = pending != null && now - pending.sentAt < DIAGNOSTIC_REQUEST_TIMEOUT_MS
     val page = diagnosticPage
     if (page == null) {
-        if (waiting) return DiagnosticRecordsView("读取中…")
-        if (pending != null) return DiagnosticRecordsView("上次读取没有回音", null, StatusTone.Warn)
-        return DiagnosticRecordsView("尚未读取", "点下面的按钮读一页")
+        if (waiting) return DiagnosticRecordsView(L10n.tr("读取中…"))
+        if (pending != null) return DiagnosticRecordsView(L10n.tr("上次读取没有回音"), null, StatusTone.Warn)
+        return DiagnosticRecordsView(L10n.tr("尚未读取"), L10n.tr("点下面的按钮读一页"))
     }
-    page.error?.let { return DiagnosticRecordsView("读取失败：" + it, null, StatusTone.Bad) }
+    page.error?.let { return DiagnosticRecordsView(L10n.tr("读取失败：") + it, null, StatusTone.Bad) }
     val newest = page.records.lastOrNull()
-        ?: return DiagnosticRecordsView(if (page.truncated) "没有记录（有缺口）" else "没有记录", null, if (page.truncated) StatusTone.Warn else StatusTone.Neutral)
+        ?: return DiagnosticRecordsView(if (page.truncated) L10n.tr("没有记录（有缺口）") else L10n.tr("没有记录"), null, if (page.truncated) StatusTone.Warn else StatusTone.Neutral)
     val notes = buildList {
         // 游标朝更新的方向走：不为 null 表示「比这一页更新的还没读」。
-        if (page.nextCursor != null) add("还有更新的没读")
-        if (page.truncated) add("有缺口")
-        if (!waiting && pending != null) add("上次读取没有回音")
+        if (page.nextCursor != null) add(L10n.tr("还有更新的没读"))
+        if (page.truncated) add(L10n.tr("有缺口"))
+        if (!waiting && pending != null) add(L10n.tr("上次读取没有回音"))
     }
-    val text = newest.message + if (notes.isEmpty()) "" else "（" + notes.joinToString("，") + "）"
+    val text = newest.message + if (notes.isEmpty()) "" else L10n.tr("（") + notes.joinToString(L10n.tr("，")) + L10n.tr("）")
     val tone = when (newest.severity) {
         "error" -> StatusTone.Bad
         "warning" -> StatusTone.Warn

@@ -317,7 +317,7 @@ internal fun NewSessionMotionCard(launch: LaunchState, onPresented: () -> Unit) 
             AgentIcon(agentBrand(launch.agentKind), Modifier.size(44.dp))
             androidx.compose.foundation.layout.Column {
                 MotionText(launch.title, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, maxLines = 2)
-                MotionText("启动中", color = androidx.compose.material3.MaterialTheme.colorScheme.primary)
+                MotionText(L10n.tr("启动中"), color = androidx.compose.material3.MaterialTheme.colorScheme.primary)
             }
         }
     }

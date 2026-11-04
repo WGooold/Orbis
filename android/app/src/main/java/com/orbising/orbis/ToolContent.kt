@@ -52,13 +52,13 @@ private fun validToolSummary(value: ToolSummary): Boolean = value.projectionVers
         it.readCapability in setOf("range", "whole-source", "none") && (it.availability != "readable" || it.readCapability != "none") } && toolBytes(value) <= 4096
 
 internal fun toolReadFailureText(reason: String?) = when (reason) {
-    "busy" -> "电脑端读取繁忙，请稍后重试"
-    "content_expired", "snapshot_expired" -> "内容读取已过期，请关闭并重新打开详情"
-    "content_version_invalid" -> "内容版本已变化，请关闭并重新打开详情"
-    "content_range_unavailable", "invalid_utf8_offset" -> "请求范围不可读取"
-    "scope_mismatch" -> "详情所属会话已变化，请重新打开"
-    "cancelled" -> "详情读取已取消"
-    else -> "来源暂时无法提供这部分内容"
+    "busy" -> L10n.tr("电脑端读取繁忙，请稍后重试")
+    "content_expired", "snapshot_expired" -> L10n.tr("内容读取已过期，请关闭并重新打开详情")
+    "content_version_invalid" -> L10n.tr("内容版本已变化，请关闭并重新打开详情")
+    "content_range_unavailable", "invalid_utf8_offset" -> L10n.tr("请求范围不可读取")
+    "scope_mismatch" -> L10n.tr("详情所属会话已变化，请重新打开")
+    "cancelled" -> L10n.tr("详情读取已取消")
+    else -> L10n.tr("来源暂时无法提供这部分内容")
 }
 
 /** Fixed-version inventory is independent of the chat source sequence and detail cache. */
@@ -81,11 +81,11 @@ data class ToolInventoryReplica(
         if (target != null && target.source.epoch == ref.source.epoch) return this
         if (ref.projectionVersion != 1 || !validToolId(ref.version.epoch) || ref.version.revision < 1 ||
             !validToolId(ref.source.epoch) || ref.source.seq < 0 || ref.version.epoch in retired || ref.totalCount !in 0..4096 ||
-            ref.summaryBytes !in 0..8_388_608) return copy(error = "工具清单版本或大小无效")
+            ref.summaryBytes !in 0..8_388_608) return copy(error = L10n.tr("工具清单版本或大小无效"))
         val old = target ?: reference
         if (old != null && old.version.epoch == ref.version.epoch && ref.version.revision < old.version.revision) return this
         val dead = if (old != null && old.version.epoch != ref.version.epoch) retired + old.version.epoch else retired
-        if (dead.size > 64) return copy(error = "工具清单代次超限")
+        if (dead.size > 64) return copy(error = L10n.tr("工具清单代次超限"))
         return copy(target = ref, snapshot = null, incoming = emptyList(), bytes = 0, cursor = null,
             requestId = UUID.randomUUID().toString(), buffered = emptyList(), retired = dead, error = null)
     }
@@ -103,7 +103,7 @@ data class ToolInventoryReplica(
     fun opened(request: String, value: ToolInventorySnapshot): ToolInventoryReplica {
         val ref = target ?: return this
         if (requestId != request) return this
-        if (value.agent != ref.agent || value.source != ref.source || value.version != ref.version || value.totalCount != ref.totalCount) return failed("工具清单身份不匹配")
+        if (value.agent != ref.agent || value.source != ref.source || value.version != ref.version || value.totalCount != ref.totalCount) return failed(L10n.tr("工具清单身份不匹配"))
         return copy(snapshot = value, requestId = UUID.randomUUID().toString())
     }
     fun page(page: ToolInventoryPage): ToolInventoryReplica {
@@ -114,11 +114,11 @@ data class ToolInventoryReplica(
         if (page.snapshot != snapshot || page.startIndex != incoming.size || page.endIndex != incoming.size + page.tools.size ||
             page.tools.size > 128 || page.tools.any { it.tool.agent != ref.agent || !validToolSummary(it) } ||
             ids.distinct().size != ids.size || ids.size > 4096 || nextBytes > 8_388_608 ||
-            page.nextCursor != null && (page.nextCursor == cursor || page.tools.isEmpty())) return failed("工具清单分页无效")
+            page.nextCursor != null && (page.nextCursor == cursor || page.tools.isEmpty())) return failed(L10n.tr("工具清单分页无效"))
         val all = incoming + page.tools
-        if (all != all.sortedWith(toolOrder)) return failed("工具清单顺序无效")
+        if (all != all.sortedWith(toolOrder)) return failed(L10n.tr("工具清单顺序无效"))
         if (page.nextCursor != null) return copy(incoming = all, bytes = nextBytes, cursor = page.nextCursor, requestId = UUID.randomUUID().toString())
-        if (all.size != ref.totalCount || nextBytes != ref.summaryBytes) return failed("工具清单未完整接收")
+        if (all.size != ref.totalCount || nextBytes != ref.summaryBytes) return failed(L10n.tr("工具清单未完整接收"))
         return copy(reference = ref, tools = all, target = null, snapshot = null, incoming = emptyList(),
             bytes = 0, cursor = null, requestId = null, error = null)
     }
@@ -127,16 +127,16 @@ data class ToolInventoryReplica(
         if (patch.version.epoch in retired || patch.version.epoch == latest.version.epoch && patch.version.revision <= latest.version.revision) return this
         if (patch.agent != latest.agent || patch.version.epoch != latest.version.epoch || patch.source.epoch != latest.source.epoch ||
             patch.baseRevision != latest.version.revision || patch.version.revision != patch.baseRevision + 1 || patch.source.seq <= latest.source.seq ||
-            patch.upserts.size + patch.removes.size > 128) return failed("工具清单需要重新读取")
+            patch.upserts.size + patch.removes.size > 128) return failed(L10n.tr("工具清单需要重新读取"))
         if (target != null) {
-            if (buffered.size >= 64 || (buffered + patch).sumOf { toolJson.encodeToString(it).toByteArray().size } > 1_048_576) return failed("工具清单更新缓冲已满")
+            if (buffered.size >= 64 || (buffered + patch).sumOf { toolJson.encodeToString(it).toByteArray().size } > 1_048_576) return failed(L10n.tr("工具清单更新缓冲已满"))
             return copy(buffered = buffered + patch)
         }
         val map = tools.associateBy { it.tool.toolCallId }.toMutableMap()
         val touched = patch.upserts.map { it.tool.toolCallId } + patch.removes
-        if (touched.isEmpty() || touched.distinct().size != touched.size || patch.removes.any { it !in map } || patch.upserts.any { it.tool.agent != patch.agent || !validToolSummary(it) }) return failed("工具清单更新无效")
+        if (touched.isEmpty() || touched.distinct().size != touched.size || patch.removes.any { it !in map } || patch.upserts.any { it.tool.agent != patch.agent || !validToolSummary(it) }) return failed(L10n.tr("工具清单更新无效"))
         patch.removes.forEach(map::remove); patch.upserts.forEach { map[it.tool.toolCallId] = it }
-        if (map.size > 4096 || map.values.sumOf(::toolBytes) > 8_388_608) return failed("工具清单超过预算")
+        if (map.size > 4096 || map.values.sumOf(::toolBytes) > 8_388_608) return failed(L10n.tr("工具清单超过预算"))
         return copy(reference = reference!!.copy(version = patch.version, source = patch.source, totalCount = map.size,
             summaryBytes = map.values.sumOf { toolBytes(it).toLong() }), tools = map.values.sortedWith(toolOrder))
     }
@@ -183,8 +183,8 @@ data class ToolDetailView(
             page.read.throughOffset > page.availableThroughOffset || page.availableThroughOffset > page.observedThroughOffset ||
             page.fromOffset < page.availableFromOffset || page.throughOffset > page.read.throughOffset ||
             page.nextCursor != (page.throughOffset.takeIf { it < page.read.throughOffset }) ||
-            page.nextCursor != null && count == 0 || page.gaps.size > 32) return copy(requestId = null, follow = false, error = "详情范围或版本无效")
-        if (text.toByteArray().size + count > 2 * 1024 * 1024) return copy(requestId = null, follow = false, error = "已读取内容达到 2 MiB 缓存上限，可清空已读内容后继续")
+            page.nextCursor != null && count == 0 || page.gaps.size > 32) return copy(requestId = null, follow = false, error = L10n.tr("详情范围或版本无效"))
+        if (text.toByteArray().size + count > 2 * 1024 * 1024) return copy(requestId = null, follow = false, error = L10n.tr("已读取内容达到 2 MiB 缓存上限，可清空已读内容后继续"))
         return copy(read = page.read, contentEpoch = page.read.contentEpoch, text = text + page.text, offset = page.throughOffset, nextCursor = page.nextCursor,
             observed = page.observedThroughOffset, contentFinal = page.contentFinal, gaps = page.gaps, requestId = null, error = null)
     }

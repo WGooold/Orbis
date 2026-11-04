@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-03。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-03/r44`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-04。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-04/r45`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -134,7 +134,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 89 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 92 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项，r45 语言新增 3 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -273,6 +273,20 @@ C01–C18 对应的扫码、发送、文件、列表、新建、配额等操作�
 R60 左滑反馈增补（同属 §3.3 / X09 / SC44）：真实鼠标拖动采集轻震正 / 负向与归零帧，检查阈值前不震、首次越线只请求一次 12ms 振动、同一手势重复越线去重、拉回取消与松手交接清零、pointercancel 保留卡片、振动 API 返回 false / 缺失 / 抛错时仍可操作，以及减少动画下直接关闭且无震动。硬件 API 的模拟断言不代表实际设备触觉；手动清单增加触屏左滑、连续多次手势与真实振动体感。证据 `.artifacts/ui-regression/20261103-swipe-close-feedback/summary.md`。
 
 本轮结果：97 项 Chrome 浏览器检查、31 项 Relay、构建 / ESLint / L0 / diff 检查通过；共用轻震与原片 6 帧比较一致。共享队列仍有两个其他任务的设备锁，未借用 / 抢占设备；完整设备浏览器与硬件触觉门禁保留未验收。
+
+### R62：全 App 中英文与系统语言（S27 / r45 / ADR-0063）
+
+| 层级 | 用例与范围 | 主要 ID |
+| --- | --- | --- |
+| L0 | `python3 scripts/generate-mobile-localizations.py --check`；双端目录一致、重复键、参数与英文单复数、源码查找覆盖、当前 feature ID 计数与双入口一致 | S27、S16 |
+| L1 | iOS `LocalizationTests`；Android `LocalizationTest`、`ConfigLedgerTest.prerequisiteFailureDoesNotParseTheLanguageOfTheWaitingLabel`；另保留双端全部既有单元 | S27、V05–V08 |
+| L2 | Swift 核心、iOS App / UI tests、Android Debug / AndroidTest 构建；权限本地化资源随包 | S27 |
+| L3 | iOS `testLanguageSwitchIsImmediateAndPersistsAcrossLaunches`、`testLanguageFollowsSystemAndEnglishFallback`、`testEnglishChatKeepsOriginalContentAndDraft`（含权限摘要与窄屏英文历史标题完整换行、筛选 / 下载仍可点）；Android `SettingsEntryInstrumentedTest.languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage`、`englishSettingsFitNarrowLargeTypeAndKeepLanguageTargets`、`englishPermissionsKeepOpaqueSettingAndOptionIdentities`（保留原身份、等待确认按钮禁用；逐行边界、无省略、完整末字符和高度校验，不把未使用的段落预留宽度当文字裁切）；双端既有全量 | S16、S19、S22、S27、V01–V03、V13 |
+| L4 / 手动 | R62、C01–C18、A1–A4 / A5：中英文逐页、长标签 / 状态、配对权限、菜单、辅助功能、原文和草稿；普通按钮轻压与返回保留 | S05、S08、S13、S25、S27、M11、M20 |
+
+手动 R62：清除本任务语言偏好后分别以中文、英文、不支持语言启动；切换 English → 简体中文 → 跟随系统，核对当前页和首页 / 聊天入口立即更新；重启保留手动选择；系统模式改变手机语言再返回，手动模式不跟着变。保留正在输入的中英文 / 代码草稿、路径、电脑名、正文、选中和阅读位置；确认不会发出 Agent 操作或重连。窄屏大字下检查设置连接状态 / 语言选项全文、48pt/dp 命中和 A1–A4 / A5。系统页面按 OS 语言显示，App 不翻译 Agent / 用户原文。iOS 既有预览测试明确固定简体中文配置，语言专项另选语言；不放宽既有断言。实际运行和阻塞见 `.artifacts/ui-regression/20261104-app-language/summary.md`。
+
+2026-11-04 模拟器补验：1,481 条共享翻译、L0、Swift 374 / 374、Android JVM 703 / 703 和双端构建通过；SE 英文历史标题与 Android 大字权限等待按钮截断已修复。最终 App 的 SE / iPad 语言各 3 / 3、Android 设置 A1–A4 整类 32 / 32；iOS 逐项滚动及中文辅助功能组合标签修正后 4 / 4。标准配置同设备全量已跑，原始失败及复测分别保留，详见 §6。最终图片已审阅；完整 C01–C18、系统设置修改语言再回前台、屏幕阅读器、真实 Host / 真机未验收。本任务设备 / ADB / 构建租约已释放，无后台测试遗留。最终结论和版本范围以 `.artifacts/ui-regression/20261104-app-language/summary.md` 与 `manual-checklist.md` 为准。
 
 ### 3.4 r31 共用交互动效映射
 
@@ -504,6 +518,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-04 全 App 中英文 / r45（S27 / SC46 / MOT-25 / R62，已实施、未验收）：最终 App 已完成同设备同配置基线 / 候选全量。Android 基线 183 项为 169 过 / 7 失败 / 7 assumption，候选 192 项为 177 过 / 8 失败 / 7 assumption；7 项异常及测试帧与基线一致，额外权限文本布局检查经实际行边界、完整末字符、无省略和高度诊断修正后，设置 A1–A4 整类 32 / 32 通过，生产 APK 不变，不改写原全量计数。iOS SE 基线 89 项为 82 过 / 7 失败，候选 93 项为 82 过 / 11 失败；连接事实逐项短滚动、DeepSeek / 附件的中文辅助功能组合标签选择器修正后 4 / 4 复测通过，生产 App 不变。剩余 7 项为 5 项基线相同断言及报错、长聊天工具展开不同失败表现、同期回复卡片几何新增用例失败，不能按失败名称或总数认定等价。SE / iPad 语言各 3 / 3，SE / iPad 各 40 张英文 A1–A4 预览、SE 全量 193 张、Android 最终全量 331 张及最终设置 44 张均已看；修复 SE 历史英文标题单行截断和 Android 权限待确认按钮大字截断。iPad 只跑语言 / 宽屏专项；完整 C01–C18、实际系统前后台语言变化、屏幕阅读器、真实 Host / 真机仍未验收。读取 cleanup / result 并核验原 owner、进程、端口、Shutdown 与全局队列，本任务资源全部释放。版本、完整失败集合、图片限制与清理证据见 `.artifacts/ui-regression/20261104-app-language/summary.md`、`manual-checklist.md`、`cleanup-resume-final.json`。
 
 2026-11-03 Claude 后台子任务 / r44（S26 / R61，已实施、未验收）：先写 ADR-0062，再接入独立任务清单、汇总状态、子审批身份与关闭能力门禁；协议 19、插件 0.1.6 / bridge 4。最终 Node 全量 1704 过 / 5 条件跳过（160 文件全过），官方 Mod runner 19 / 19、Swift 359 / 359、Android JVM 689 / 689，双端 App 与设备测试包构建通过。首次 Node 的 2 个启动器失败由继承本机包装器环境导致，只在测试子进程去掉两个路径覆盖变量后全量通过；首次 Swift 中继夹具仍为协议 18，同步为 19 后全量通过；首次 Android 新增 lambda 语法错误已修正。原始日志保留。两端共用入口各等待 40 秒，被 `provider-well-shadow-standard-full` 和 `Codex permission model preservation` 的旧设备锁阻塞，未启动设备，未清他人锁。L3–L4、C01–C18 / R61 / A1–A4、iPad、真实隔离 TUI 与同设备基线均未运行；不能宣称完整回归或用户现场问题已验证解决。未部署或重启用户 Host，证据 `.artifacts/ui-regression/20261103-claude-background-agents/summary.md`。
 

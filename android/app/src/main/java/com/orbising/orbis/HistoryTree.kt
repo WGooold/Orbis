@@ -19,19 +19,21 @@ import kotlinx.serialization.json.contentOrNull
  */
 
 /** 历史树页面的筛选档位。 */
-internal enum class HistoryTreeFilter(val title: String) {
+internal enum class HistoryTreeFilter(private val titleKey: String) {
     DEFAULT("默认"),
     NO_TOOLS("无工具"),
     USER_ONLY("仅用户"),
     LABELED_ONLY("书签"),
-    ALL("全部"),
+    ALL("全部");
+    val title: String get() = L10n.tr(titleKey)
 }
 
-internal enum class HistoryNodeKind(val label: String) {
+internal enum class HistoryNodeKind(private val labelKey: String) {
     User("你问"),
     Assistant("助手"),
     Tool("工具"),
-    System("设置"),
+    System("设置");
+    val label: String get() = L10n.tr(labelKey)
 }
 
 /** 节点上能执行的动作；null 表示这个节点只能预览。 */
@@ -96,7 +98,7 @@ internal data class HistoryBranchRow(
     override val containsSelected: Boolean get() = false
 
     /** "8 轮对话" / "3 条记录"：分支里没有用户消息时退化按记录条数说。 */
-    val subtitle: String get() = if (turnCount > 0) "$turnCount 轮对话" else "$nodeCount 条记录"
+    val subtitle: String get() = if (turnCount > 0) L10n.tr("{0} 轮对话", turnCount) else L10n.tr("{0} 条记录", nodeCount)
 }
 
 /**

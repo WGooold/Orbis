@@ -89,7 +89,7 @@ internal fun RuntimePermissionsStatus(
     LaunchedEffect(pendingId, commandResults[pendingId]) {
         val result = commandResults[pendingId] ?: return@LaunchedEffect
         if (result.status == "pending") return@LaunchedEffect
-        feedback = if (result.ok) "已应用到当前会话" else result.error ?: "设置未确认，请检查当前权限后重试"
+        feedback = if (result.ok) L10n.tr("已应用到当前会话") else result.error ?: L10n.tr("设置未确认，请检查当前权限后重试")
         pendingId = null
         if (result.ok) selectedValue = null
     }
@@ -97,16 +97,16 @@ internal fun RuntimePermissionsStatus(
         val requestId = pendingId ?: return@LaunchedEffect
         if (!connected) {
             pendingId = null
-            feedback = "连接已断开，权限设置尚未确认；重新连接后请检查当前权限"
+            feedback = L10n.tr("连接已断开，权限设置尚未确认；重新连接后请检查当前权限")
             return@LaunchedEffect
         }
         delay(75_000)
         if (pendingId == requestId) {
             pendingId = null
-            feedback = "等待电脑确认已超过 75 秒，权限设置尚未确认；请检查当前权限后再决定是否重试"
+            feedback = L10n.tr("等待电脑确认已超过 75 秒，权限设置尚未确认；请检查当前权限后再决定是否重试")
         }
     }
-    val label = permissionManagement?.summary ?: "电脑端管理"
+    val label = permissionManagement?.summary?.let { L10n.hostSummary(it) } ?: L10n.tr("电脑端管理")
     val icon = when (permissionManagement?.tone) {
         "problem" -> Icons.Rounded.ErrorOutline
         "full" -> Icons.Rounded.LockOpen
@@ -118,8 +118,8 @@ internal fun RuntimePermissionsStatus(
     var glyphActivation by remember { mutableStateOf(0) }
     Row(
         modifier = modifier.clip(RoundedCornerShape(12.dp))
-            .clickable(role = Role.Button, onClickLabel = "查看权限与审批设置") { glyphActivation++; expanded = true }
-            .semantics { contentDescription = "当前会话权限"; stateDescription = label }
+            .clickable(role = Role.Button, onClickLabel = L10n.tr("查看权限与审批设置")) { glyphActivation++; expanded = true }
+            .semantics { contentDescription = L10n.tr("当前会话权限"); stateDescription = label }
             .heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -129,24 +129,24 @@ internal fun RuntimePermissionsStatus(
             color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation), tint = tint)
     }
-    if (expanded) SessionControlDialog("当前会话权限", onClose = { expanded = false }) {
+    if (expanded) SessionControlDialog(L10n.tr("当前会话权限"), onClose = { expanded = false }) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (permissionManagement == null) {
-                Text("当前会话未提供权限管理信息，请在电脑端查看和管理权限")
+                Text(L10n.tr("当前会话未提供权限管理信息，请在电脑端查看和管理权限"))
             } else {
-                Text("当前生效", style = MaterialTheme.typography.labelLarge)
-                Text(permissionManagement.summary, style = MaterialTheme.typography.titleMedium, color = tint)
-                SelectionContainer { Text(permissionManagement.details, style = MaterialTheme.typography.bodyMedium) }
+                Text(L10n.tr("当前生效"), style = MaterialTheme.typography.labelLarge)
+                Text(L10n.hostSummary(permissionManagement.summary), style = MaterialTheme.typography.titleMedium, color = tint)
+                SelectionContainer { Text(L10n.hostText(permissionManagement.details), style = MaterialTheme.typography.bodyMedium) }
             }
             if (available.isNotEmpty()) {
-                Text("修改设置", style = MaterialTheme.typography.titleMedium)
+                Text(L10n.tr("修改设置"), style = MaterialTheme.typography.titleMedium)
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     available.forEach { item ->
-                        NeumorphTextButton(item.label, filled = item == setting, enabled = pendingId == null,
+                        NeumorphTextButton(L10n.hostText(item.label), filled = item == setting, enabled = pendingId == null,
                             onClick = { selectedSettingId = item.id; selectedValue = null; feedback = null })
                     }
                 }
-                setting?.disabledReason?.let { Text(it) }
+                setting?.disabledReason?.let { Text(L10n.hostText(it)) }
                 setting?.options?.forEach { option ->
                     val chosen = (selectedValue ?: current) == option.value
                     NeumorphSurface(
@@ -157,24 +157,25 @@ internal fun RuntimePermissionsStatus(
                         contentInset = 14.dp,
                     ) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${if (chosen) "● " else "○ "}${option.label}${if (option.value == current) "，当前" else ""}")
-                            option.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                            Text("${if (chosen) "● " else "○ "}${L10n.hostText(option.label)}${if (option.value == current) L10n.tr("，当前") else ""}")
+                            option.description?.let { Text(L10n.hostText(it), style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                 }
-            } else if (permissionManagement != null) Text("当前会话未提供手机端权限设置")
+            } else if (permissionManagement != null) Text(L10n.tr("当前会话未提供手机端权限设置"))
         }
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!connected) Text("连接已断开，连接后可应用设置", color = MaterialTheme.colorScheme.error)
-            else if (!idle) Text("请先完成当前任务和待处理交互，再调整权限")
+            if (!connected) Text(L10n.tr("连接已断开，连接后可应用设置"), color = MaterialTheme.colorScheme.error)
+            else if (!idle) Text(L10n.tr("请先完成当前任务和待处理交互，再调整权限"))
             feedback?.let { Text(it) }
             if (setting != null) NeumorphTextButton(
-                if (pendingId != null) "正在应用，等待电脑确认…" else "应用到当前会话", filled = true,
+                if (pendingId != null) L10n.tr("正在应用，等待电脑确认…") else L10n.tr("应用到当前会话"), filled = true,
                 modifier = Modifier.fillMaxWidth(),
+                maxLines = Int.MAX_VALUE,
                 enabled = canEdit && selectedValue != null && selectedValue != current && setting.options.any { it.value == selectedValue },
                 onClick = {
                     pendingId = onApply(setting.id, selectedValue!!)
-                    feedback = if (pendingId == null) "设置未发送，请检查连接后重试" else null
+                    feedback = if (pendingId == null) L10n.tr("设置未发送，请检查连接后重试") else null
                 },
             )
         }

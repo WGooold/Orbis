@@ -86,6 +86,17 @@ class ConfigLedgerTest {
         assertTrue(state.readySends().isEmpty())
     }
 
+    @Test fun prerequisiteFailureDoesNotParseTheLanguageOfTheWaitingLabel() {
+        val (chosen, id) = choose(setup(), "model-b", "Original model label")
+        val waiting = waitingSend(chosen, "原文 {0} /repo/file.swift")
+        val row = waiting.pendingSends.values.single()
+        val state = result(waiting.copy(pendingSends = waiting.pendingSends +
+            (row.messageId to row.copy(state = PendingSendState.Waiting("Waiting for model switch")))),
+            id, ok = false, error = "Model unavailable")
+        assertEquals(PendingSendState.Failed("模型切换未完成，消息未发送"), state.pendingSends.values.single().state)
+        assertEquals("原文 {0} /repo/file.swift", state.pendingSends.values.single().text)
+    }
+
     @Test fun messagesSentBeforeConfirmationWaitAndThenSubmit() {
         val (chosen, id) = choose(setup(), "model-b", "快速模型")
         var state = result(waitingSend(chosen, "用新模型回答"), id, ok = true)
