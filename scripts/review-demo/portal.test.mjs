@@ -59,6 +59,7 @@ it("keeps the exact QR across restarts and serves its PNG/JSON without login", a
   const loaded = await createFixedReviewPairing({ host, identity, accessPath: join(dir, "review-pairing.json"), publicRelayUrl: relay.url });
   expect(loaded.text).toBe(first);
   const qr = decodePairingQrText(first); expect(qr.exp).toBeGreaterThan(Date.now() / 1000 + 10 * 365 * 86400);
+  expect(qr.code).toMatch(/^[A-Z0-9_-]{4,128}$/u);
   expect(qr.hostName).toBe("Orbis Review Demo");
   const image = await fetch(`${portal.url}${pairing.pagePath}qr.png`);
   expect(image.status).toBe(200); expect(image.headers.get("content-type")).toBe("image/png");

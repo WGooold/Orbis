@@ -9,11 +9,17 @@ export async function createFixedReviewPairing({ host, identity, accessPath, pub
   try { access = JSON.parse(await readFile(accessPath, "utf8")); }
   catch (error) {
     if (error.code !== "ENOENT") throw error;
-    access = { version: 1, code: randomBytes(24).toString("base64url"), psk: randomBytes(32).toString("base64url") };
+    access = { version: 1, code: randomBytes(24).toString("base64url").toUpperCase(), psk: randomBytes(32).toString("base64url") };
     await writeFile(accessPath, JSON.stringify(access), { mode: 0o600, flag: "wx" });
   }
   const psk = fromBase64Url(access.psk, "review pairing secret");
   if (access.version !== 1 || !/^[A-Za-z0-9_-]{32}$/u.test(access.code) || psk.length !== 32) throw new Error("Invalid saved review pairing access");
+  // Released iOS clients validate code against ^[A-Z0-9_-]{4,128}$.
+  // Normalize the unpublished prototype's code once; preserve its key and identity.
+  if (access.code !== access.code.toUpperCase()) {
+    access.code = access.code.toUpperCase();
+    await writeFile(accessPath, JSON.stringify(access), { mode: 0o600 });
+  }
   const expiresAt = Math.floor(Date.UTC(2099, 0, 1) / 1000);
   const payload = buildPairingQrPayload({ relayUrl: publicRelayUrl, code: access.code,
     hostId: identity.hostId, hostName: identity.hostName, hostPublicRaw: identity.publicRaw, psk, expiresAt });
