@@ -1,0 +1,50 @@
+name: Review Host deploy
+on:
+  workflow_dispatch:
+concurrency:
+  group: orbis-review-host
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: npx eslint scripts/review-demo --ignore-pattern 'scripts/review-demo/sample/**'
+      - run: npx vitest run scripts/review-demo/portal.test.mjs --maxWorkers=1
+      - run: bash -n scripts/review-demo/deploy.sh
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TARGET: ${{ secrets.ORBIS_DEPLOY_TARGET }}
+      PORT: ${{ secrets.ORBIS_SSH_PORT }}
+      SSH_PRIVATE_KEY: ${{ secrets.ORBIS_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.ORBIS_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Deploy separate review Host
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${TARGET:?missing deploy target}" "${PORT:?missing SSH port}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/review-deploy
+          chmod 600 ~/.ssh/review-deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          trap 'rm -f ~/.ssh/review-deploy' EXIT
+          git archive --format=tar HEAD scripts/review-demo | gzip > /tmp/review-source.tar.gz
+          remote_dir="/opt/orbis-review/releases/$GITHUB_SHA"
+          ssh -p "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" "mkdir -p '$remote_dir'"
+          scp -P "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes /tmp/review-source.tar.gz "$TARGET:$remote_dir/source.tar.gz"
+          ssh -p "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" \
+            "tar -xzf '$remote_dir/source.tar.gz' -C '$remote_dir' && bash '$remote_dir/scripts/review-demo/deploy.sh' '$remote_dir' 'orbis-review:$GITHUB_SHA'"
