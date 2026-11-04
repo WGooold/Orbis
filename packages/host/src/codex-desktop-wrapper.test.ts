@@ -51,7 +51,7 @@ describe("Codex desktop wrapper CLI selection", () => {
 
       const resolution = resolveRealCodex(
         { LOCALAPPDATA: localAppData, ProgramW6432: programFiles, ProgramFiles: programFiles },
-        { listDesktopPackages: () => [packageName] },
+        { platform: "win32", listDesktopPackages: () => [packageName] },
       );
 
       await expect(resolution).resolves.toEqual({ command: join(packaged, "codex.exe"), prefixArgs: [] });
