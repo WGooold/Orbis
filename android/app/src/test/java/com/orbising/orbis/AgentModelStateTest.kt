@@ -109,7 +109,7 @@ class AgentModelStateTest {
 
     @Test
     fun `协议版本不匹配的应答仍然被拒绝`() {
-        val reduced = reduce(pending(), snapshot(protocolVersion = PROTOCOL_VERSION - 1))
+        val reduced = reduce(pending(), snapshot(protocolVersion = MIN_PROTOCOL_VERSION - 1))
 
         assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, reduced.error)
         assertTrue(reduced.agentStateSnapshots.isEmpty())

@@ -55,26 +55,40 @@ internal class LanTransport(
     fun start() {
         scope.launch {
             while (isActive && urls.isNotEmpty()) {
+                var connected = false
                 for (url in urls) {
-                    if (!isActive) return@launch
-                    val next = Attempt()
-                    synchronized(lock) {
-                        if (closed) return@launch
-                        attempt = next
-                        trace("lan.connect url=$url")
-                        next.socket = http.newWebSocket(Request.Builder().url(url).build(), next)
+                    // Legacy LAN has no version-error response: a discarded HS1 just times out.
+                    // A second format is probed on a fresh socket/key only before HS3 or any command.
+                    for (version in MIN_PROTOCOL_VERSION..PROTOCOL_VERSION) {
+                        if (!isActive) return@launch
+                        val next = Attempt(version)
+                        synchronized(lock) {
+                            if (closed) return@launch
+                            attempt = next
+                            trace("lan.connect url=$url version=$version")
+                            next.socket = http.newWebSocket(Request.Builder().url(url).build(), next)
+                        }
+                        val ready = withTimeoutOrNull(4_000) { next.ready.await() } == true
+                        if (ready) {
+                            connected = true
+                            next.down.await()
+                            break
+                        }
+                        synchronized(lock) { if (next.failureReason == null) next.fail("handshake_timeout") }
+                        if (next.failureReason != "handshake_timeout") break
                     }
-                    val ready = withTimeoutOrNull(4_000) { next.ready.await() } == true
-                    if (ready) next.down.await()
-                    else synchronized(lock) { next.fail("handshake_timeout") }
-                    if (ready) break // Prefer the first reachable address again after a disconnect.
+                    if (connected) break // Prefer the first reachable address after a disconnect.
                 }
                 delay(5_000)
             }
         }
     }
 
-    fun sendPayload(payload: JsonObject): Boolean = send("data", payload.toString().toByteArray(Charsets.UTF_8), "ctl")
+    val protocolVersion: Int get() = synchronized(lock) { attempt?.protocolVersion ?: INITIAL_WIRE_PROTOCOL_VERSION }
+
+    fun sendPayload(payload: JsonObject): Boolean = synchronized(lock) {
+        send("data", payload.withWireProtocolVersion(protocolVersion).toString().toByteArray(Charsets.UTF_8), "ctl")
+    }
     fun sendBinary(payload: ByteArray, channel: String): Boolean = send("bin", payload, channel)
 
     private fun send(kind: String, payload: ByteArray, channel: String): Boolean = synchronized(lock) {
@@ -93,7 +107,8 @@ internal class LanTransport(
         scope.cancel()
     }
 
-    private inner class Attempt : WebSocketListener() {
+    private inner class Attempt(var protocolVersion: Int) : WebSocketListener() {
+        var failureReason: String? = null
         var socket: WebSocket? = null
         var channel: E2eChannel? = null
         val ready = CompletableDeferred<Boolean>()
@@ -112,7 +127,8 @@ internal class LanTransport(
             if (!current()) return
             runCatching {
                 val frame = E2eJson.decode<V2Frame>(text, "v2.frame")
-                require(frame.type == "v2.frame" && frame.protocolVersion == PROTOCOL_VERSION)
+                require(frame.type == "v2.frame" && isSupportedProtocolVersion(frame.protocolVersion))
+                if (channel != null) require(frame.protocolVersion == protocolVersion)
                 val envelope = pieces.accept(frame.envelope) ?: return
                 require(envelope.hdr.room == hostId && envelope.hdr.from == hostId && envelope.hdr.to == deviceId)
                 when (envelope.hdr.k) {
@@ -121,6 +137,7 @@ internal class LanTransport(
                         val accept = PlaintextEnvelope.read<HandshakeAcceptBody>(envelope, "hs")
                         require(accept.type == "hs2")
                         val confirm = handshake.accept(accept)
+                        protocolVersion = frame.protocolVersion
                         check(sendFrame(PlaintextEnvelope.build("hs", hostId, deviceId, hostId, confirm)))
                         channel = E2eChannel(handshake.sessionKeys(), E2eChannel.ROLE_DEVICE)
                         ready.complete(true)
@@ -151,7 +168,10 @@ internal class LanTransport(
         }
 
         fun fail(reason: String) {
-            if (!current()) return
+            if (!current() || failureReason != null) return
+            // Cancellation callbacks can arrive after the handshake deadline. Keep the first
+            // cause so a timeout probe cannot be mistaken for a later socket cancellation.
+            failureReason = reason
             val wasReady = channel != null
             channel = null
             down.complete(Unit)
@@ -163,7 +183,7 @@ internal class LanTransport(
 
         fun sendFrame(envelope: EnvelopeV2): Boolean {
             for (piece in EnvelopePieces.fragment(envelope)) {
-                if (socket?.send(E2eJson.json.encodeToString(V2Frame("v2.frame", PROTOCOL_VERSION, piece))) != true) {
+                if (socket?.send(E2eJson.json.encodeToString(V2Frame("v2.frame", protocolVersion, piece))) != true) {
                     fail("write_failed")
                     return false
                 }

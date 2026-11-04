@@ -1,6 +1,6 @@
 # 放弃协议向后兼容
 
-**Status:** accepted
+**Status:** partially superseded（2026-11-04：[ADR-0064](0064-protocol-compatibility.md) 恢复从 18 起的兼容目标；Android 先实施 18 / 19，其他组件与长期能力协商分别验证。原认证 / E2E / 核心语义校验继续有效。）
 
 本产品目前**只有一个人使用**（作者本人）：需要升级的三个部件——Pi extension(`/reload`)、
 已部署的 Relay（有部署脚本）、以及手机上的 APK（可重新构建并安装）——都在自己手里。

@@ -7,10 +7,9 @@ import java.nio.charset.CodingErrorAction
 /**
  * 分片帧头第 4 字节的版本号。
  *
- * **必须是 `PROTOCOL_VERSION`，不能自己维护一个字面量。** 这个帧是裸字节格式，没有 schema
- * 兜底：TS 侧（`packages/protocol/src/index.ts` 的 `encodeArtifactChunkFrame`）读写的就是
- * `PROTOCOL_VERSION`。这里曾经写死 `3`，和常量一起停留在旧值——手机封 3、电脑解 4，
- * 上传的每一片都被判「版本不兼容」，而单侧测试又把 3 写成期望值，于是漂移一直没人发现。
+ * ADR-0064: send the format selected for the Host on this path. Revisions 18 and 19
+ * have identical framing; their version byte still has to match an older strict Host.
+ * Do not confuse this field with the app's latest implemented revision.
  */
 private const val ARTIFACT_FRAME_KIND_CHUNK = 1
 private const val ARTIFACT_FRAME_HEADER_BYTES = 24
@@ -34,7 +33,9 @@ internal fun encodeArtifactChunkFrame(
     transferId: String,
     offset: Long,
     data: ByteArray,
+    protocolVersion: Int = PROTOCOL_VERSION,
 ): ByteArray {
+    require(isSupportedProtocolVersion(protocolVersion)) { L10n.tr("Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。") }
     val runtimeIdBytes = runtimeId.toByteArray(Charsets.UTF_8)
     val transferIdBytes = transferId.toByteArray(Charsets.UTF_8)
     require(runtimeId.isNotBlank() && runtimeIdBytes.size <= MAX_RUNTIME_ID_BYTES) { L10n.tr("上传运行实例标识无效") }
@@ -47,7 +48,7 @@ internal fun encodeArtifactChunkFrame(
     output[2] = 'R'.code.toByte()
     output[3] = '3'.code.toByte()
     val buffer = ByteBuffer.wrap(output).order(ByteOrder.BIG_ENDIAN)
-    buffer.put(4, PROTOCOL_VERSION.toByte())
+    buffer.put(4, protocolVersion.toByte())
     buffer.put(5, ARTIFACT_FRAME_KIND_CHUNK.toByte())
     buffer.putShort(6, runtimeIdBytes.size.toShort())
     buffer.putShort(8, transferIdBytes.size.toShort())
@@ -68,7 +69,7 @@ internal fun decodeArtifactChunkFrame(bytes: ByteArray): ArtifactChunkFrame {
         error(L10n.tr("二进制下载分片无效"))
     }
     val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
-    if (buffer.get(4).toInt() != PROTOCOL_VERSION || buffer.get(5).toInt() != ARTIFACT_FRAME_KIND_CHUNK) {
+    if (!isSupportedProtocolVersion(buffer.get(4).toInt() and 0xff) || buffer.get(5).toInt() != ARTIFACT_FRAME_KIND_CHUNK) {
         error(L10n.tr("二进制下载分片版本不兼容"))
     }
     val runtimeIdLength = buffer.getShort(6).toInt() and 0xffff

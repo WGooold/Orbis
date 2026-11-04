@@ -1,5 +1,7 @@
 # Documentation Guide
 
+- [ADR-0064](adr/0064-protocol-compatibility.md)：协议 18 起的兼容策略；第一阶段恢复 Android 与既有 18 / 19 的互通，验证中。
+
 This directory is organized by authority and maintenance horizon. The root `README.md` remains the product and usage overview; `CONTEXT.md` is the domain vocabulary.
 
 ## Current references

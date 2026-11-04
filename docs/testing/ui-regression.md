@@ -114,6 +114,8 @@ adb -s "$SERIAL" shell am instrument -w -r \
 
 ### 3.3 全量用例与 feature 映射
 
+2026-11-04 Android 协议 18 兼容（R64；S18、V05、V12、V16–V18）：L1 `ProtocolCompatibilityTest`、`LegacyProtocolConnectionTest`、`PublishedProtocol18InteropTest`，L3 `LegacyProtocolConnectionInstrumentedTest`。覆盖严格 18 认证 / E2E / 业务请求 / ACK / 上传和下载、明确版本拒绝后一次 19 认证、凭据拒绝不重试、Relay 不可用时独立 LAN 18 以及不泄漏凭据、纯 HS1 超时后新连接 / 密钥探测 LAN 19；边界含 17、字符串 / null / 分数 / 容器版本和畸形文件帧。原版 Host-18 模块测试需要显式提供本机隔离 fixture，未提供时是前置条件不满足，不能算通过。完整既有 UI 用例不删、不跳过或放宽。
+
 2026-11-03 iOS 返回即时交接（r40；M08 / M14 / V13；ADR-0054 / ADR-0058）：新增 `testChatReturnImmediatelyAcceptsRepeatedCardEntry`（A1–A4，连续三次重入）、`testFullPageReturnBudgetAndNestedSourceReentry`（设置、首页下载、聊天→历史→下载、聊天下载连续重入）。`--measure-page-return` 只在 Debug 记录应用内单调时钟的松手→路径提交，正常 <300ms，减少动画 <50ms；不含正文 / 身份，不把 XCTest 空闲后的可点击断言当作延迟测量。补强添加电脑 / 历史短拖断言，禁止松手同时打开扫码 Sheet 或历史预览；保留 `testAddComputerPageReboundsAndSwipesBack`、`testSettingsAndDownloadsSwipeBack`、`testNestedPagesSwipeBackOneLevelAtATime`、`testOptionalEdgeBackKeepsExistingIOSNavigation` 与聊天 / 历史下载原有用例；Android 复跑 `SwipeBackInstrumentedTest`、`HomeNavigationInstrumentedTest`、`SwipeBackPagesInstrumentedTest`、`HistorySwipeBackInstrumentedTest`、`PageNavigationInstrumentedTest`。C04、R11–R13 / R19–R22 / R47 加查：屏幕回到来源即连续点卡片 / 图标，取消后再拖、快速重入、减少动画 / 已屏外、嵌套只退一层，录屏确认没有额外原生退场或透明层。完整 L1–L4 / C01–C18 / A1–A4 分别记录于 `.artifacts/ui-regression/20261103-ios-return-response/`。
 
 2026-11-03 Codex 权限更新后选型保持（[ADR-0061](../adr/0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18；R27 / R56，ADR-0021 / ADR-0031 / ADR-0049 §6.7）：`codex-permission-settings.test.ts` 覆盖 Sol→Astra / effort 后分别修改四类权限、相同原生快照、resume、真实电脑端变更、字段独立交接及 null effort，断言下一次 `turn/start` 仍携带正确选择；`codex-terminal-sync.test.ts` 覆盖首条输入前 resume 拒绝、无原生设置 RPC 选型、首轮物化 / 订阅及后续权限通知。真实隔离 PTY 使用 Codex 0.166.0 和本地 Responses stub，分别检查电脑首条 / 手机首条输入，不能用纯 RPC 成功替代订阅和通知。两端沿用配置 / 权限及状态用例，包含 iOS `testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`、Android `ConfigComposerInstrumentedTest` / `CodexPermissionsInstrumentedTest`；C05–C06、C17–C18 与 R27 补查“切模型 / effort→改权限→继续提问”、空终端首次输入及电脑端真正改模。完整双端 L1–L4、C01–C18 / A1–A4 结果另记，证据 `.artifacts/ui-regression/20261103-codex-permission-model/`。
@@ -658,3 +660,13 @@ A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残�
 用户选择保留无法终止的旧模拟器现场，继续无设备验证。仅含本任务改动的独立候选快照：Node 全量 1704 通过 / 5 既有条件跳过，官方 Mod runner 19 / 19，Swift 359 / 359，Android JVM 685 / 685；TypeScript、受影响文件 ESLint、双端 App 与设备测试包构建通过。候选排除了其他图标、回答反馈和 Codex 未提交改动，因此 Android 计数不沿用原共享工作区 689 项。首次 iOS 构建因提交范围漏选状态组件片段失败，补齐本任务片段后重跑通过，失败证据保留。
 
 本轮 L3–L4、C01–C18、R61、A1–A4、iPad / iOS 17、同设备失败集合比较和真实隔离 Claude TUI 均未运行，不标记设备验收。旧 emulator PID 15559 经再次定向 SIGTERM / SIGKILL 后仍监听 5680 / 5681，按用户选择保留现场；维护临时锁、候选构建租约均已释放，未部署或重启用户 Host。验证输入、完整结果、首次失败、产物哈希与资源清理记录见 `.artifacts/ui-regression/20261104-claude-background-validation/summary.md`。
+
+## R64：Android 与既有协议 18 互通
+
+规则见 [ADR-0064](../adr/0064-protocol-compatibility.md)，不修改视觉或动效参数。先按相同设备 / 配置执行导入基线与候选的全量 L1–L4，另外执行 18 / 19 严格连接专项；C01–C18、A1–A4 和真实隔离 Host 场景分别记录。
+
+手动专项：保留配对后覆盖升级 APK，在协议 18 下查看首页 / 设置 / 目录、发送 / 停止 / 审批 / 队列、历史恢复 / 翻页、通知与供应商读取、轮次文件审阅、上传下载；切换 LAN / Relay、断线 / 重连不重发未确认消息、不清草稿或跳阅读位置。错误凭据不得通过切换版本重复认证；未实现协议与已知字段损坏仍明确失败。协议 18 缺少 S26 子任务来源时不显示虚假的完成或空库存。
+
+最终 Android JVM 712 / 712（无跳过），包含未修改的已安装 Host-18 schema / crypto/session 模块隔离互通；共享设备 `Orbis_UI_Polish_35` 连接专项 5 / 5。相同设备 / A1 配置导入基线 193 项：178 通过、7 失败、8 前置条件跳过；候选 198 项：183 通过、7 失败、8 前置条件跳过。无新增失败、无删除用例；七项失败的首条异常及测试栈位置一致，详见证据 `failure-comparison.json`。A2 / A3 / A4 设置专项各 8 / 8，共 24 / 24，不冒充各配置全量。现有八项跳过需要 Claude / 同步 / 配对 / 实时历史 / 工具等独立夹具或显式启用，均未作为通过。
+
+截图只完成首页、设置及英文大字体的有限静态审阅；归档含沿用的旧 PNG，不将 412 张归档计为本次新截图。完整 L4 逐帧、C01–C18、手机覆盖升级与实际 Host 模型操作仍待补，R64 保持验证中。基线入口曾归档中断、清理报权限错误，按资源恢复规则确认原进程 / 端口退出、设置恢复后定向释放；最终候选 cleanup 无错误，模拟器、私有 ADB、构建租约与全程名额均核验释放。完整证据、失败与恢复记录、APK 哈希见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`；未改生产 Host / Relay，未推送或安装手机。

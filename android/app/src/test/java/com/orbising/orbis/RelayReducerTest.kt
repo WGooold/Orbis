@@ -230,7 +230,7 @@ class RelayReducerTest {
     // 版本号必须来自常量。曾经这里硬编码了 `!= 3`：协议升到 4 之后每条入站消息都被判成
     // 「不兼容的协议版本」，界面永远停在「正在连接」+ 弹窗——而链路其实是通的，极难定位。
     @Test
-    fun `accepts the current protocol version and rejects any other`() {
+    fun `accepts supported protocol versions and rejects versions below the floor`() {
         val ready = { version: Int ->
             """
               {"type":"device.ready","protocolVersion":$version,"deviceId":"phone-1","runtimes":[]}
@@ -240,9 +240,9 @@ class RelayReducerTest {
         assertEquals(RelayConnection.ONLINE, ok.connection)
         assertEquals(null, ok.error)
 
-        // 旧版本**绝不能**被当成已连接：这才是这条不变量真正要守的东西（connection 的默认值
+        // 不受支持的旧版本**绝不能**被当成已连接：这才是这条不变量真正要守的东西（connection 的默认值
         // 是 OFFLINE 还是 CONNECTING 不重要，将来改了也不该让这条测试变红）。
-        val stale = reducer.reduce(RemoteState(), ready(PROTOCOL_VERSION - 1))
+        val stale = reducer.reduce(RemoteState(), ready(MIN_PROTOCOL_VERSION - 1))
         assertNotEquals(RelayConnection.ONLINE, stale.connection)
         assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, stale.error)
     }

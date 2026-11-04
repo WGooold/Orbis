@@ -34,7 +34,7 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-/** 必须与 `packages/protocol/src/index.ts` 的 `PROTOCOL_VERSION` 同步升版（精确匹配，没有兼容旁路）。 */
+/** Latest implemented revision. Connection wire versions are selected separately (ADR-0064). */
 internal const val PROTOCOL_VERSION = 19
 internal const val RELOAD_TRACE_TAG = "Orbis.ReloadTrace"
 private const val TRACE_LOG_LIMIT = 200
@@ -125,6 +125,8 @@ data class E2eConnectOptions(
 
 /** 一次连接内的 E2E 会话状态。`lock` 保护序号推进与待发队列（WS 回调线程 ↔ 调用线程）。 */
 private class E2eSession(val options: E2eConnectOptions) {
+    @Volatile var relayProtocolVersion = INITIAL_WIRE_PROTOCOL_VERSION
+    @Volatile var hostProtocolVersion = INITIAL_WIRE_PROTOCOL_VERSION
     var handshake: DeviceHandshake? = null
     var channel: E2eChannel? = null
     val pending = ArrayDeque<JsonObject>()
@@ -268,6 +270,8 @@ class RelayClient(
         messageSink = onMessage
         binarySink = onBinaryMessage
         updateLanEndpoints(e2eOptions.lanEndpoints)
+        var relayAuthenticated = false
+        var retryingAuthentication = false
         lateinit var openRelay: () -> Unit
         fun relayDown(reason: String?) {
             webSocket = null
@@ -310,9 +314,10 @@ class RelayClient(
                     trace("socket.open_stale ignored")
                     return
                 }
+                relayAuthenticated = false
                 val authenticated = ws.send(buildJsonObject {
                     put("type", "device.authenticate")
-                    put("protocolVersion", PROTOCOL_VERSION)
+                    put("protocolVersion", connection.relayProtocolVersion)
                     put("credential", device.credential)
                 }.toString())
                 trace("socket.open authentication.queued=$authenticated")
@@ -329,7 +334,8 @@ class RelayClient(
                         )
                         trace("e2e.pair.request_sent hostId=${state.options.hostId}")
                     } else {
-                        startHandshake(state)
+                        startHandshake(state, preservePending = retryingAuthentication)
+                        retryingAuthentication = false
                     }
                 } ?: trace(L10n.tr("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）"))
                 if (!hasE2eChannel()) onOpen()
@@ -338,6 +344,26 @@ class RelayClient(
             override fun onMessage(ws: WebSocket, text: String) {
                 if (!isCurrent(ws)) return
                 traceIncoming(text)
+                val notice = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                if (notice?.get("type") == JsonPrimitive("protocol.error") &&
+                    notice["code"] == JsonPrimitive("protocol_version_mismatch") &&
+                    connection.relayProtocolVersion == INITIAL_WIRE_PROTOCOL_VERSION && !relayAuthenticated &&
+                    synchronized(connection.lock) { connection.channel == null }
+                ) {
+                    // Only an explicit pre-session version rejection retries authentication. No business
+                    // operation has reached Host. Unauthorized / transport errors never enter this path.
+                    connection.relayProtocolVersion = PROTOCOL_VERSION
+                    connection.hostProtocolVersion = PROTOCOL_VERSION
+                    retryingAuthentication = true
+                    this@RelayClient.webSocket = null
+                    ws.cancel()
+                    trace("protocol.relay.retry version=$PROTOCOL_VERSION reason=protocol_version_mismatch")
+                    openRelay()
+                    return
+                }
+                if (notice?.get("type") == JsonPrimitive("device.ready") && supportedProtocolVersion(notice["protocolVersion"]) != null) {
+                    relayAuthenticated = true
+                }
                 if (!handleE2eText(text, onMessage)) {
                     handleHostLifecycleNotice(text)
                     // 明文消息（protocol.error / device.* 生命周期）没有信封，按控制面处理。
@@ -418,7 +444,7 @@ class RelayClient(
         when (message["type"]?.jsonPrimitive?.contentOrNull) {
             "host.lan" -> {
                 // This method only receives authenticated data envelopes, never Relay plaintext.
-                if (message["protocolVersion"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() == PROTOCOL_VERSION) {
+                if (supportedProtocolVersion(message["protocolVersion"]) != null) {
                     val endpoints = message["endpoints"]?.let {
                         runCatching { E2eJson.json.decodeFromJsonElement<List<LanEndpoint>>(it) }.getOrNull()
                     }
@@ -429,7 +455,7 @@ class RelayClient(
             "device.path" -> {
                 val path = message["path"]?.jsonPrimitive?.contentOrNull ?: return true
                 if (path != "lan" && path != "relay") return true
-                if (message["protocolVersion"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() != PROTOCOL_VERSION) return true
+                if (supportedProtocolVersion(message["protocolVersion"]) == null) return true
                 val rttMs = message["rttMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
                 activePath = path
                 onPathChanged?.invoke(path, rttMs)
@@ -518,15 +544,17 @@ class RelayClient(
      */
     fun sendUploadChunk(runtimeId: String, uploadId: String, offset: Long, data: ByteArray): Boolean {
         val state = e2e ?: return false
-        val frame = runCatching { encodeArtifactChunkFrame(runtimeId, uploadId, offset, data) }
+        val direct = lan
+        val useLan = activePath == "lan" && direct?.isReady == true
+        val version = if (useLan) direct!!.protocolVersion else state.hostProtocolVersion
+        val frame = runCatching { encodeArtifactChunkFrame(runtimeId, uploadId, offset, data, version) }
             .getOrElse { error ->
                 trace("upload.encode_failed ${error.message ?: error::class.simpleName}")
                 return false
             }
         // 上传分片固定走 `bulk`（ADR-0008 之后没有"对端不懂 channel"这回事）。
         val channel = "bulk"
-        val direct = lan
-        if (activePath == "lan" && direct?.isReady == true) return direct.sendBinary(frame, channel)
+        if (useLan) return direct!!.sendBinary(frame, channel)
         return synchronized(state.lock) {
             val e2eChannel = state.channel ?: run {
                 trace("upload.chunk_rejected offset=$offset reason=no_relay_channel")
@@ -717,20 +745,20 @@ class RelayClient(
     private fun sendV2Frame(envelope: EnvelopeV2): Boolean {
         var sent = true
         for (piece in EnvelopePieces.fragment(envelope)) {
-            val frame = V2Frame(type = "v2.frame", protocolVersion = PROTOCOL_VERSION, envelope = piece)
+            val frame = V2Frame(type = "v2.frame", protocolVersion = e2e?.relayProtocolVersion ?: return false, envelope = piece)
             sent = (webSocket?.send(E2eJson.json.encodeToString(frame)) == true) && sent
         }
         return sent
     }
 
     /** 发 HS1。每次连接/换路都换一套临时密钥（spec §6.2）。 */
-    private fun startHandshake(state: E2eSession) {
+    private fun startHandshake(state: E2eSession, preservePending: Boolean = false) {
         val pskRoot = state.options.pskRoot ?: return
         val handshake = DeviceHandshake(pskRoot)
         synchronized(state.lock) {
             state.handshake = handshake
             state.channel = null
-            state.pending.clear()
+            if (!preservePending) state.pending.clear()
         }
         // 新会话 = 新的序号空间：上一条会话留下的半截消息永远凑不齐了。
         state.reassembler.clear()
@@ -771,15 +799,23 @@ class RelayClient(
         val state = e2e ?: return false
         val frame = runCatching { E2eJson.decode<V2Frame>(text, "v2.frame") }.getOrNull()
         if (frame?.type != "v2.frame") return false
+        if (!isSupportedProtocolVersion(frame.protocolVersion)) {
+            trace("protocol.frame.rejected version=${frame.protocolVersion}")
+            onMessage(buildJsonObject {
+                put("type", "protocol.error"); put("code", "protocol_version_mismatch")
+                put("message", PROTOCOL_VERSION_MISMATCH_ERROR)
+            }.toString(), null)
+            return true
+        }
         val envelope = frame.envelope
-        runCatching { handleE2eEnvelope(state, envelope, onMessage) }
+        runCatching { handleE2eEnvelope(state, envelope, onMessage, frame.protocolVersion) }
             .onFailure { error ->
                 trace("e2e.error kind=${error::class.simpleName} message=${error.message ?: "<none>"}")
             }
         return true
     }
 
-    private fun handleE2eEnvelope(state: E2eSession, incoming: EnvelopeV2, onMessage: (String, String?) -> Unit) {
+    private fun handleE2eEnvelope(state: E2eSession, incoming: EnvelopeV2, onMessage: (String, String?) -> Unit, protocolVersion: Int) {
         // 片先拼回整条信封：解密、序号检查、`ch` 校验都只认完整信封——片层自己什么都不判
         // （见 EnvelopePieces.kt），否则就会存在第二份合法性真相。半截消息在这里直接返回。
         val envelope = state.reassembler.accept(incoming) ?: return
@@ -803,6 +839,7 @@ class RelayClient(
                     throw Crypto.E2eCryptoException("malformed", L10n.tr("期望 hs2，收到 {0}", hs2.type))
                 }
                 val hs3 = handshake.accept(hs2)
+                state.hostProtocolVersion = protocolVersion
                 sendV2Frame(
                     PlaintextEnvelope.build(
                         "hs", room = state.room, from = state.options.deviceId, to = state.options.hostId,
@@ -842,6 +879,10 @@ class RelayClient(
                     ?: throw Crypto.E2eCryptoException("not_ready", L10n.tr("握手尚未完成，收到 data"))
                 val plaintext = synchronized(state.lock) { channel.open(envelope) } ?: return
                 val text = plaintext.toString(Charsets.UTF_8)
+                val message = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                if (message?.get("type") == JsonPrimitive("device.ready")) {
+                    supportedProtocolVersion(message["protocolVersion"])?.let { state.hostProtocolVersion = it }
+                }
                 if (handlePathControl(text)) return
                 // 把 `hdr.ch` 一并交出去：接收侧要按它分优先级派发，否则分片会堵住控制帧。
                 onMessage(text, envelope.hdr.ch)
@@ -877,7 +918,7 @@ class RelayClient(
                 state.room,
                 state.options.deviceId,
                 state.options.hostId,
-                payload.toString().toByteArray(Charsets.UTF_8),
+                payload.withWireProtocolVersion(state.hostProtocolVersion).toString().toByteArray(Charsets.UTF_8),
                 outboundChannel(),
             )
         }

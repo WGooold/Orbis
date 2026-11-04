@@ -2219,8 +2219,7 @@ internal class HostConnection(
                                 if (messageType == "protocol.error" || runtimeError != null) {
                                     preserveErrorOnClose = true
                                 }
-                                if (message?.get("protocolVersion")?.jsonPrimitive?.intOrNull != null &&
-                                    message["protocolVersion"]?.jsonPrimitive?.intOrNull != PROTOCOL_VERSION ||
+                                if (message?.hasUnsupportedProtocolVersion() == true ||
                                     protocolCode in setOf("unauthorized", "invalid_message", "protocol_version_mismatch", "runtime_mismatch") ||
                                     runtimeError?.get("recoverable")?.jsonPrimitive?.contentOrNull == "false"
                                 ) {

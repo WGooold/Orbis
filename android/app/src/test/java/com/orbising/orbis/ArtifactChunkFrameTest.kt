@@ -21,7 +21,7 @@ class ArtifactChunkFrameTest {
 
         // 旧版本的帧必须被拒，不能悄悄按现格式解下去。
         val stale = encoded.copyOf()
-        stale[4] = (PROTOCOL_VERSION - 1).toByte()
+        stale[4] = (MIN_PROTOCOL_VERSION - 1).toByte()
         assertThrows(IllegalStateException::class.java) { decodeArtifactChunkFrame(stale) }
     }
 

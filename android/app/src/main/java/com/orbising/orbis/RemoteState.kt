@@ -1860,10 +1860,8 @@ class RelayReducer(
             )) {
             return state.copy(error = L10n.tr("收到不支持的中继服务器消息，请在电脑端检查协议版本"), errorNeedsAction = true)
         }
-        val protocolVersion = message["protocolVersion"]?.jsonPrimitive?.intOrNull
-        // 用常量而不是字面量：写死版本号会在协议升级时**静默**把每条消息都变成错误，
-        // 现象是界面永远停在「正在连接」+ 弹「不兼容的协议版本」，而链路其实是通的。
-        if (protocolVersion != null && protocolVersion != PROTOCOL_VERSION) {
+        // Keep version validation consistent with transport and binary frame acceptance (ADR-0064).
+        if (message.hasUnsupportedProtocolVersion()) {
             return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR, errorNeedsAction = true)
         }
         // ADR-0049 §7 L5：账本发起的核对读取只交回账本。

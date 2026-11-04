@@ -22,7 +22,7 @@ Status: accepted（用户已授权先写 ADR 再实施；Host、Mod 与双端已
 - **子任务清单 execution.tasks**：由适配器发布有界完整库存，包含 availability（ready / unknown / unavailable）、items、truncated；每项保存原生 id、可选 parentId、名称 / 类型、状态。身份作用域是 Host / Session / bridge generation / task id。它不是新的普通 Runtime，也不进入历史会话恢复 / 归档 / 批量关闭。
 - **会话展示状态**：App 从上述事实生成汇总文字，不能用于命令准入。等待审批优先；主回合运行 + N 个活跃子任务显示“运行中 · N 个子任务”；主回合空闲 + 活跃子任务显示“N 个子任务运行中”（pending / waiting 分别显示启动 / 等待）；仅在库存已确认且没有活跃子任务时显示空闲。未知库存显示“子任务状态待核对”，并保留最后已知清单。
 
-其他后端没有这个来源时不伪造空清单、不改变原状态。协议按 ADR-0032 升为 19，Host / Relay / 双端须配套更新；插件 0.1.6 / bridge 4 要求 agent.list 能力，旧 bridge 不混用。
+其他后端没有这个来源时不伪造空清单、不改变原状态。原实施按 ADR-0032 升为 19；2026-11-04 按 [ADR-0064](0064-protocol-compatibility.md) 改为保留 18 基础互通，Android 先兼容既有 18 / 19，不能要求旧 Host 先升级。后台子任务的新来源仍需要支持它的 Host / Mod；缺失不伪造为空清单。插件 0.1.6 / bridge 4 要求 agent.list 能力，旧 bridge 不混用。
 
 ### 2. 采集、恢复与身份
 
