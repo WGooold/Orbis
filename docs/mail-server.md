@@ -59,4 +59,18 @@ Ask the IP provider to set **PTR/rDNS** to `mail.example.com`. Confirm both forw
 4. Send to an explicitly authorized QQ recipient. An SMTP `250` response means the receiving server accepted the message; confirm actual mailbox receipt separately, including spam placement.
 5. Deploy the SMTP environment through GitHub Actions, confirm the deployed commit and public health, then request a real code through the registration endpoint. Keep the QQ verification policy unchanged.
 
-The official service sends as `Orbis <noreply@orbising.com>` through `mail.orbising.com:465`. SMTP credentials remain on the production server and in private operational backups outside this repository.
+## Production Resend SMTP
+
+The official service sends as `Orbis <noreply@orbising.com>` through Resend:
+
+```dotenv
+ORBIS_SMTP_HOST=smtp.resend.com
+ORBIS_SMTP_PORT=465
+ORBIS_SMTP_USER=resend
+ORBIS_SMTP_PASSWORD=domain-scoped-sending-only-resend-api-key
+ORBIS_SMTP_FROM=Orbis <noreply@orbising.com>
+```
+
+Verify `orbising.com` in Resend and publish the DNS records provided for that domain. Keep existing DNS records unless a specific record conflicts; do not point the website or the existing `mail` A record at Resend. Resend manages the outbound IP and its reverse DNS. The self-hosted checks above apply only when using the local mail transport.
+
+Use a sending-only API key restricted to `orbising.com` as the SMTP password. Keep setup credentials, sending keys and private configuration backups outside the repository with mode `600`. Confirm TLS and SMTP authentication from the Relay container, apply the environment through the Relay deploy workflow at a new commit, and verify `mailConfigured` after deployment. Preserve the operator's QQ verification policy and test delivery only to an explicitly authorized recipient.
