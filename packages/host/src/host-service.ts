@@ -77,6 +77,7 @@ import { createDiagnosticJournalFileStore } from "./diagnostic-journal-file-stor
 import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
 import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
+import { normalizeDeviceRequest } from "./device-protocol.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
@@ -1489,11 +1490,11 @@ export class HostService {
     const lan = new HostLanServer({
       port: this.#lanPort,
       resolveDevice: (deviceId) => findActiveDeviceRecord(this.#store, deviceId),
-      onEnvelope: (deviceId, envelope, sink) => {
+      onEnvelope: (deviceId, envelope, sink, protocolVersion) => {
         try {
           const link = this.#requireLink(deviceId);
           link.attach("lan", sink);
-          link.handle("lan", envelope);
+          link.handle("lan", envelope, protocolVersion);
         } catch (error) {
           this.#options.onDeviceError?.(deviceId, error);
           this.#options.log?.(`LAN 上处理 ${deviceId} 的帧失败：${describeError(error)}`);
@@ -1623,12 +1624,35 @@ export class HostService {
    * M3 的进程激活请求（`session.list` / `session.browse` / `session.activate`，spec §8）。
    * 认不出来的载荷交给上层（`onData`），不静默吞掉，方便接后端功能时排查。
    */
-  #handleDevicePayload(deviceId: string, payload: Buffer, frame: "data" | "bin" = "data"): void {
+  #handleDevicePayload(deviceId: string, payload: Buffer, frame: "data" | "bin" = "data", path: PathKind = "relay"): void {
     if (frame === "bin") {
       this.#uploads.handleData(deviceId, payload);
       return;
     }
-    const message = parseDevicePayload(payload);
+    const wire = normalizeDeviceRequest(payload);
+    if (wire === undefined) {
+      let raw: unknown;
+      try { raw = JSON.parse(payload.toString("utf8")); } catch { /* Opaque extension payload. */ }
+      if (raw && typeof raw === "object" && !Array.isArray(raw) && "protocolVersion" in raw) {
+        const ids = raw as { commandId?: unknown; requestId?: unknown };
+        this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "protocol_version_mismatch", message: "仅支持已实现的协议 18 / 19",
+          ...(typeof ids.commandId === "string" && ids.commandId.length > 0 && ids.commandId.length <= 256 ? { commandId: ids.commandId } : {}),
+          ...(typeof ids.requestId === "string" && ids.requestId.length > 0 && ids.requestId.length <= 128 ? { requestId: ids.requestId } : {}),
+        });
+        return;
+      }
+    }
+    const message = parseDevicePayload(wire?.payload ?? payload);
+    if (message !== undefined && wire !== undefined) {
+      const link = this.#links.get(deviceId);
+      if (!link?.bindProtocolVersion(path, wire.version)) {
+        this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "protocol_version_mismatch", message: "会话业务协议不能中途更换",
+          ...("commandId" in message && typeof message.commandId === "string" ? { commandId: message.commandId } : {}),
+          ...("requestId" in message && typeof message.requestId === "string" ? { requestId: message.requestId } : {}),
+        });
+        return;
+      }
+    }
     if (message === undefined) {
       // Authenticated malformed/future requests still need a correlated endpoint for their local wait.
       try {
@@ -1638,10 +1662,10 @@ export class HostService {
           const commandId = typeof value.commandId === "string" && value.commandId.length > 0 && value.commandId.length <= 256 ? value.commandId : undefined;
           const requestId = typeof value.requestId === "string" && value.requestId.length > 0 && value.requestId.length <= 128 ? value.requestId : undefined;
           if (value.type === "runtime.command" && commandId) {
-            this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_command", commandId, message: "输入格式无效或当前版本不支持" }); return;
+            this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "invalid_command", commandId, message: "输入格式无效或当前版本不支持" }); return;
           }
           if (typeof value.type === "string" && requestId) {
-            this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_request", requestId, message: "请求格式无效或当前版本不支持" }); return;
+            this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "invalid_request", requestId, message: "请求格式无效或当前版本不支持" }); return;
           }
         }
       } catch { /* Unstructured extension data keeps its existing explicit owner. */ }
@@ -2535,6 +2559,7 @@ export class HostService {
     // 不节流就是每个 pump tick 一行日志（真机实测一次 84MB 下载刷出 1.89 GB）。
     let lastBulkWarnAt = 0;
     const link = new DeviceLink({
+      compatible: true,
       hostId: this.#identity.hostId,
       device: record,
       onQueueDiagnostic: (path, sample) => {
@@ -2569,8 +2594,8 @@ export class HostService {
               `多为发送端在该 channel 上的序号回退——若成批出现，检查两端会话状态是否错位`,
           );
         } }),
-      onPayload: (payload, frame) => {
-        this.#handleDevicePayload(deviceId, payload, frame);
+      onPayload: (payload, frame, path) => {
+        this.#handleDevicePayload(deviceId, payload, frame, path);
       },
       onActivePathChange: (change) => {
         this.#handlePathChange(deviceId, change);

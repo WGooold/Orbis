@@ -24,6 +24,21 @@ It does not add protocol-18 E2E support to a strict Host/iOS 19 implementation;
 Android 0.1.54 separately handles Host E2E formats 18 and 19. Preserve pairing
 keys and persistent state. Production cutover requires a deployment record.
 
+2026-11-05 decision (ADR-0064 §6): restore old-App interoperability through
+Relay + Host updates, preserving installed App 18 / 19 builds. The Relay portion
+is deployed in `8601e6508523`; Host 0.1.15 now implements business-format adaptation on the compatibility branch,
+including strict request parsing, per-path ready messages, response/state projection
+and validated binary conversion. Internal schemas remain strict 19; supported
+business formats are explicitly 18 / 19, independent of Relay routing support.
+Relay waits for the first authenticated valid business request before Host ready;
+LAN uses its socket version only after MAC confirmation. End-to-end encryption
+and existing operation identities are retained. Local macOS arm64 validation has
+passed; Windows / x64 packaging and full old-App device gates remain pending. Host 0.1.14 uses 18
+and does not gain this business compatibility from a Relay-only deployment.
+Acceptance must retain the actual old App binaries and pairing; installing
+Android 0.1.54 cannot substitute for this test. A new compatible Host must be
+delivered before this path can be reported complete.
+
 ## GitHub Actions
 
 Create a `production` environment and configure its secrets:

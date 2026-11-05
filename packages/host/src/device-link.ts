@@ -25,6 +25,7 @@ import {
 } from "@orbis/protocol";
 
 import { HostDeviceSession } from "./device-session.js";
+import { UnsupportedDeviceEventError, type DeviceProtocolVersion } from "./device-protocol.js";
 import { PathSelector, type PathChange } from "./path.js";
 
 /**
@@ -84,6 +85,7 @@ export type ActivePathChange = {
 };
 
 export type DeviceLinkOptions = {
+  compatible?: boolean;
   hostId: string;
   device: DeviceRecord;
   /** 0 表示不探测；默认每两秒采样可用路径的 RTT。 */
@@ -101,7 +103,7 @@ export type DeviceLinkOptions = {
    */
   onSessionReady?: (kind: PathKind, active: PathKind, change: PathChange) => void;
   /** 收到业务载荷（`data` 帧解密后的明文）。`frame` 区分 JSON 文本与裸字节。 */
-  onPayload?: (payload: Buffer, frame: "data" | "bin") => void;
+  onPayload?: (payload: Buffer, frame: "data" | "bin", path: PathKind) => void;
   /**
    * 一片分片因为 `bulk` 限速被丢掉（见 `BulkTokenBucket`）。
    *
@@ -381,7 +383,7 @@ export class DeviceLink {
   }
 
   /** 处理一条入站帧。返回它是否被某条路径消化掉。 */
-  handle(kind: PathKind, envelope: EnvelopeV2): boolean {
+  handle(kind: PathKind, envelope: EnvelopeV2, lanVersion?: DeviceProtocolVersion): boolean {
     const sink = this.#sinks.get(kind);
     if (sink === undefined) return false;
     // 片先拼回整条信封：解密、序号检查、`ch` 校验都只认完整信封——片层自己什么都不判
@@ -389,8 +391,12 @@ export class DeviceLink {
     const complete = this.#reassembler.accept(envelope);
     if (complete === undefined) return isPieceEnvelope(envelope);
     const session = this.#session(kind);
-    const outcome = session.handle(complete);
+    const outcome = session.handle(complete, kind === "lan" ? lanVersion : undefined);
     if (outcome.kind === "handshake-reply") {
+      if (this.#options.compatible) {
+        this.#announce(this.#selector.markUnavailable(kind));
+        this.#syncProbeTimer();
+      }
       sink(outcome.envelope);
       return true;
     }
@@ -401,14 +407,14 @@ export class DeviceLink {
       this.#resetMux(kind);
       // 新会话 = 新的序号空间：上一条会话留下的半截消息永远凑不齐了。
       this.#reassembler.clear();
-      // 握手走完才算这条路可用：在那之前它只是个 socket，不是一条能承载业务的路。
-      const change = this.#selector.markAvailable(kind);
-      this.#syncProbeTimer();
+      // An encrypted Relay request must select the business format before this
+      // path can replace an already usable path or publish versioned ready/state.
+      if (session.protocolVersion === undefined) return true;
       // 刻意走 `onSessionReady` 而不是 `onActivePathChange`：一条路上**重新**握手时生效路径
       // 不变（`markAvailable` 会返回「没变」），但对端同样是「刚接上来」——它需要一份新的
       // runtime 目录。把它挂在「路径变了」上，手机重开就永远补不到（实测症状：多出一个 cwd
       // 是用户目录的进程，真正的 Pi 进程看起来全不在线）。
-      this.#options.onSessionReady?.(kind, this.#selector.active ?? kind, change);
+      this.#announceSessionReady(kind);
       return true;
     }
     if (outcome.kind === "stale") {
@@ -423,8 +429,23 @@ export class DeviceLink {
       this.#handleProbe(kind, outcome.payload);
       return true;
     }
-    this.#options.onPayload?.(outcome.payload, outcome.frame === "bin" ? "bin" : "data");
+    this.#options.onPayload?.(outcome.payload, outcome.frame === "bin" ? "bin" : "data", kind);
     return true;
+  }
+
+  protocolVersion(kind: PathKind): DeviceProtocolVersion | undefined { return this.#sessions.get(kind)?.protocolVersion; }
+  bindProtocolVersion(kind: PathKind, version: DeviceProtocolVersion): boolean {
+    const session = this.#sessions.get(kind);
+    const pending = session?.protocolVersion === undefined;
+    if (!session?.bindProtocolVersion(version)) return false;
+    if (pending) this.#announceSessionReady(kind);
+    return true;
+  }
+
+  #announceSessionReady(kind: PathKind): void {
+    const change = this.#selector.markAvailable(kind);
+    this.#syncProbeTimer();
+    this.#options.onSessionReady?.(kind, this.#selector.active ?? kind, change);
   }
 
   /**
@@ -590,6 +611,7 @@ export class DeviceLink {
       const envelope = session.seal(frame, payload, channel);
       return this.#enqueueSealed(mux, envelope, attribution);
     } catch (error) {
+      if (error instanceof UnsupportedDeviceEventError) return false;
       this.#options.onError?.(error);
       return false;
     }
@@ -657,7 +679,7 @@ export class DeviceLink {
   #session(kind: PathKind): HostDeviceSession {
     const existing = this.#sessions.get(kind);
     if (existing !== undefined) return existing;
-    const session = new HostDeviceSession({ hostId: this.#options.hostId, device: this.#options.device });
+    const session = new HostDeviceSession({ hostId: this.#options.hostId, device: this.#options.device, compatible: this.#options.compatible === true });
     this.#sessions.set(kind, session);
     return session;
   }

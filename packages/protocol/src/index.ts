@@ -21,14 +21,14 @@ export * from "./tool-inventory-receiver.js";
 export * from "./tool-inventory-source.js";
 
 /**
- * 协议硬版本（ADR-0008 / ADR-0032 §7）。
+ * 内部业务 schema 修订（ADR-0064 / ADR-0032 §7）。
  *
  * 17：Host 轮次文件快照、元数据概况及按需差异读取（ADR-0052）。
  * 16：Path 仅允许 LAN / Relay；固定 LAN 优先，删除路径偏好设置（ADR-0050）。
  * 13：客户端改为消费 Host 的显示投影（`session.snapshot` / `session.patch` 上的 `display`：
- * 窗口起点 `windowStart` + 渲染锚点 `anchor`），App 不再解释原生形状。版本号是**精确匹配**的：
- * 本机与 E2E 业务格式仍使用此修订。Relay 的独立路由外层按 ADR-0064 保留已实现的 18 / 19；
- * 接受旧路由格式不代表新 Host 已能处理旧 E2E 业务格式。
+ * 窗口起点 `windowStart` + 渲染锚点 `anchor`），App 不再解释原生形状。
+ * 内部 schema 仍严格匹配此修订。Host 在设备与 loopback 边界适配已实现的 18 / 19；
+ * Relay 独立适配路由外层，不解密或改写 E2E 业务版本，不自动接受未来修订。
  */
 export const PROTOCOL_VERSION = 19 as const;
 
@@ -72,7 +72,8 @@ export type ArtifactChunkFrame = {
 
 const artifactFrameError = (): Error => new Error("invalid_artifact_chunk_frame");
 
-export function encodeArtifactChunkFrame(frame: ArtifactChunkFrame): Uint8Array {
+export function encodeArtifactChunkFrame(frame: ArtifactChunkFrame, protocolVersion: number = PROTOCOL_VERSION): Uint8Array {
+  if (protocolVersion !== 18 && protocolVersion !== 19) throw artifactFrameError();
   const runtimeId = new TextEncoder().encode(frame.runtimeId);
   const transferId = new TextEncoder().encode(frame.transferId);
   if (!frame.runtimeId.trim() || runtimeId.byteLength > MAX_RUNTIME_ID_BYTES ||
@@ -84,7 +85,7 @@ export function encodeArtifactChunkFrame(frame: ArtifactChunkFrame): Uint8Array 
   const output = new Uint8Array(ARTIFACT_FRAME_HEADER_BYTES + runtimeId.byteLength + transferId.byteLength + frame.data.byteLength);
   output.set(ARTIFACT_FRAME_MAGIC, 0);
   const view = new DataView(output.buffer);
-  view.setUint8(4, PROTOCOL_VERSION);
+  view.setUint8(4, protocolVersion);
   view.setUint8(5, ARTIFACT_FRAME_KIND_CHUNK);
   view.setUint16(6, runtimeId.byteLength);
   view.setUint16(8, transferId.byteLength);
@@ -97,11 +98,12 @@ export function encodeArtifactChunkFrame(frame: ArtifactChunkFrame): Uint8Array 
   return output;
 }
 
-export function decodeArtifactChunkFrame(input: Uint8Array): ArtifactChunkFrame {
+export function decodeArtifactChunkFrame(input: Uint8Array, protocolVersion: number = PROTOCOL_VERSION): ArtifactChunkFrame {
+  if (protocolVersion !== 18 && protocolVersion !== 19) throw artifactFrameError();
   if (input.byteLength < ARTIFACT_FRAME_HEADER_BYTES) throw artifactFrameError();
   if (!ARTIFACT_FRAME_MAGIC.every((byte, index) => input[index] === byte)) throw artifactFrameError();
   const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
-  if (view.getUint8(4) !== PROTOCOL_VERSION || view.getUint8(5) !== ARTIFACT_FRAME_KIND_CHUNK) {
+  if (view.getUint8(4) !== protocolVersion || view.getUint8(5) !== ARTIFACT_FRAME_KIND_CHUNK) {
     throw artifactFrameError();
   }
   const runtimeIdBytes = view.getUint16(6);
