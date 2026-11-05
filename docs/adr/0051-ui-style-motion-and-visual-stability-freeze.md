@@ -30,6 +30,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-04 Android 协议 18 兼容（S18、V05、V12、V16–V18，验证中）：按 [ADR-0064](0064-protocol-compatibility.md) 保留现有 18 Host / Relay 的认证、消息、请求 / 回执与文件帧格式，同时保留 19；旧端不发布的子任务数据不伪造。认证格式探测与业务重试分开，既有身份、阅读位置、输入账本和错误 / 重连反馈保持。无新 feature 或视觉 / 动效参数，83 项与已交付计数不变；JVM 712 / 712、设备连接专项 5 / 5，同设备全量 UI 无新增失败（基线 / 候选均 7 项失败、8 项前置条件跳过）。完整逐帧 / 人工 / 真机门禁未完成，专项 R64 和证据见 UI 回归方案。
 
+2026-11-05 兼容责任补充（S18、V05、V12、V16–V18，Host 已实施、验证中）：按 [ADR-0064 §6](0064-protocol-compatibility.md)，交付主路径改为更新 Relay＋Host，保留真实旧 App 18 / 19；不以安装 Android 0.1.54 作为互通验收前提。Relay 保留外层兼容及端到端密文边界，Host 按设备 / 路径适配完整业务收发；现有布局、动效、消息身份、阅读位置与真实状态规则保持。沿用 R64，补齐旧包首次 ready、双版本并用、请求 / 回执 / 文件和重连矩阵；本次兼容改动不改变 feature 编号、基线参数或已交付计数，不提升既有验收状态。
+
 ## Context
 
 2026-11-03 Codex 权限更新重置选型修复（[ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18，验证中）：Host 分离原生模型 / effort 观测值与下一轮覆盖，权限通知及首次订阅重复旧值不再清除用户选择；真实原生变更继续同步。保留尚未物化终端的无设置 RPC 选型路径，不强制首条输入或伪造确认。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input)、[D31]、[D49] §6.7；分类沿用 [D58] SC16，不新增 feature 或动效参数。原生 0.166.0 隔离 PTY 与回归、设备及未完成门禁见 [Regression] R27 / R56，未部署用户 Host。

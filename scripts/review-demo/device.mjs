@@ -71,6 +71,9 @@ export async function connectDevice(text, options = {}) {
     const confirmation = handshake.accept(hs2);
     channel = new E2eChannel({ keys: handshake.keys, role: "device" });
     send(buildPlaintextEnvelope({ kind: "hs", room: qr.hostId, from: paired.deviceId, to: qr.hostId, body: confirmation }));
+    // Released Android/iOS refresh LAN endpoints immediately after HS3. This also
+    // gives Host the authenticated business version before its first ready/state.
+    send(seal("data", Buffer.from(JSON.stringify({ type: "host.lan.request", protocolVersion: PROTOCOL_VERSION }))));
     const ready = await matching(message => message.type === "device.ready");
     return { qr, ready, matching, close,
       send: message => send(seal("data", Buffer.from(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message })))) };

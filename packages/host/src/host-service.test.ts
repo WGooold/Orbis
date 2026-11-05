@@ -272,6 +272,10 @@ class TestPath {
     this.#channel = new E2eChannel({ keys: handshake.keys, role: "device" });
     // 从这里起这条路径上的帧都是业务帧，交给设备层。
     this.#handshaking = false;
+    if (this.kind === "relay") {
+      // Match released Android/iOS: HS3 is followed by an authenticated LAN refresh.
+      this.seal("data", Buffer.from(JSON.stringify({ type: "host.lan.request", protocolVersion: PROTOCOL_VERSION })));
+    }
   }
 
   send(envelope: EnvelopeV2): void {
@@ -305,6 +309,7 @@ class TestPath {
 
 /** 模拟手机：只持有 QR 里带过来的东西，其余全部自己算。 */
 class TestDevice {
+  #initialLanRefreshReplies = 0;
   readonly deviceId: string;
   readonly #paths = new Map<PathKind, TestPath>();
   /** 手机侧认定的「现在该往哪条路发」——来自 Host 的 `device.path` 宣布。 */
@@ -381,6 +386,7 @@ class TestDevice {
   }
 
   async openChannel(kind: PathKind, pskRoot: Buffer, room: string, hostId: string): Promise<void> {
+    if (kind === "relay") this.#initialLanRefreshReplies += 1;
     await this.#require(kind).openChannel(pskRoot, room, hostId, this.deviceId);
   }
 
@@ -505,6 +511,15 @@ class TestDevice {
   }
 
   #deliver(incoming: Incoming): void {
+    if (this.#initialLanRefreshReplies > 0 && "payload" in incoming && incoming.payload[0] === 0x7b) {
+      const message = JSON.parse(incoming.payload.toString("utf8")) as { type?: string; protocolVersion?: number };
+      if (message.type === "host.lan") {
+        // Endpoint refresh is a transport control and can return on the active LAN path.
+        expect(message.protocolVersion).toBe(PROTOCOL_VERSION);
+        this.#initialLanRefreshReplies -= 1;
+        return;
+      }
+    }
     for (const waiter of this.#waiters) {
       this.#waiters.delete(waiter);
       waiter(incoming);

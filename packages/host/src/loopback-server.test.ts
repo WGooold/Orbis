@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
-import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE } from "@orbis/protocol";
+import { LOOPBACK_DESCRIPTOR_FILE, LOOPBACK_PATH, LoopbackDescriptorSchema, PROTOCOL_VERSION_ERROR_CODE } from "@orbis/protocol";
 
 import { HostLoopbackServer } from "./loopback-server.js";
 
@@ -192,7 +192,7 @@ describe("HostLoopbackServer 的发现文件", () => {
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("版本不匹配时回 protocol.error 并断开，同版本照常注册", async () => {
+  it.each([18, 19])("不支持的版本回错误并断开，已实现版本 %s 按原格式注册与收命令", async (version) => {
     dir = await mkdtemp(join(tmpdir(), "orbis-loopback-"));
     const online: string[] = [];
     server = new HostLoopbackServer({
@@ -215,7 +215,7 @@ describe("HostLoopbackServer 的发现文件", () => {
     await once(stranger, "open");
     const closed = once(stranger, "close");
     const rejection = once(stranger, "message");
-    stranger.send(authenticate(PROTOCOL_VERSION - 1, "runtime-old"));
+    stranger.send(authenticate(17, "runtime-old"));
     const [refusal] = await rejection;
     expect(JSON.parse(refusal.toString())).toMatchObject({ type: "protocol.error", code: PROTOCOL_VERSION_ERROR_CODE });
     await closed;
@@ -224,10 +224,14 @@ describe("HostLoopbackServer 的发现文件", () => {
     const peer = new WebSocket(url);
     await once(peer, "open");
     const ready = once(peer, "message");
-    peer.send(authenticate(PROTOCOL_VERSION, "runtime-current"));
+    peer.send(authenticate(version, "runtime-current"));
     const [confirmation] = await ready;
-    expect(JSON.parse(confirmation.toString())).toMatchObject({ type: "runtime.ready", runtimeId: "runtime-current" });
+    expect(JSON.parse(confirmation.toString())).toMatchObject({ type: "runtime.ready", protocolVersion: version, runtimeId: "runtime-current" });
     expect(online).toEqual(["runtime-current"]);
+    const command = once(peer, "message");
+    expect(server.sendCommand("runtime-current", "same-command-id", { type: "stop" })).toBe(true);
+    const [raw] = await command;
+    expect(JSON.parse(raw.toString())).toEqual({ type: "runtime.command", protocolVersion: version, runtimeId: "runtime-current", commandId: "same-command-id", command: { type: "stop" } });
     peer.close();
   });
 });

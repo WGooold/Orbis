@@ -36,6 +36,18 @@ jobs:
           $inno = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
           if (!(Test-Path -LiteralPath $inno)) { throw 'The runner must provide Inno Setup 6' }
           scripts/windows/windows-host-build.ps1 -QtRoot $env:QT_ROOT_DIR -CompilerRoot $compiler -Package -InnoCompiler $inno
+      - name: Verify packaged Host business compatibility
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem .artifacts/host -Recurse -Filter 'OrbisHost.exe' | Select-Object -First 1
+          if (!$app) { throw 'Packaged Host executable missing' }
+          $env:ORBIS_COMPATIBLE_RUNTIME = Join-Path $app.DirectoryName 'runtime'
+          try {
+            npx vitest run packages/host/src/host-protocol-compatibility.test.ts --maxWorkers=1 --testTimeout=30000
+            if ($LASTEXITCODE -ne 0) { throw 'Packaged Host protocol18/19 compatibility failed' }
+          } finally {
+            Remove-Item Env:ORBIS_COMPATIBLE_RUNTIME -ErrorAction SilentlyContinue
+          }
       - name: Verify installed application
         shell: pwsh
         run: |

@@ -31,6 +31,7 @@ import {
 } from "@orbis/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 import type { ClaudeModsPoll } from "./claude-mods-bridge.js";
+import { normalizeDeviceRequest, convertDeviceBinary, type DeviceProtocolVersion } from "./device-protocol.js";
 
 export type CodexLaunchRequest = { cwd: string };
 export type CodexLaunchResult = { endpoint: string; command: string; prefixArgs: readonly string[] };
@@ -58,6 +59,7 @@ export type HostLoopbackServerOptions = {
 };
 
 type LocalRuntime = {
+  protocolVersion: DeviceProtocolVersion;
   metadata: RuntimeMetadata;
   socket: WebSocket;
   /**
@@ -337,11 +339,15 @@ export class HostLoopbackServer {
     let runtimeId: string | undefined;
     // 注册之前不允许发任何东西：一条未认证的连接不该能把事件灌进设备会话。
     let authenticated = false;
+    let protocolVersion: DeviceProtocolVersion | undefined;
 
     socket.on("message", (raw, isBinary) => {
       if (isBinary) {
         if (!authenticated || runtimeId === undefined) return;
-        this.#options.onRuntimeFrame?.(runtimeId, Buffer.from(raw as ArrayBuffer));
+        const bytes = Buffer.from(raw as ArrayBuffer);
+        try {
+          this.#options.onRuntimeFrame?.(runtimeId, protocolVersion === 18 ? Buffer.from(convertDeviceBinary(bytes, 18, PROTOCOL_VERSION)) : bytes);
+        } catch { this.#options.log?.("loopback 忽略非法旧版文件帧"); }
         return;
       }
 
@@ -351,13 +357,14 @@ export class HostLoopbackServer {
       } catch {
         return;
       }
-      const parsed = LoopbackInboundSchema.safeParse(value);
+      const wire = normalizeDeviceRequest(Buffer.from(raw.toString()));
+      const parsed = LoopbackInboundSchema.safeParse(wire ? JSON.parse(wire.payload.toString()) : value);
       if (!parsed.success) {
         // `protocolVersion` 是字面量，所以「对面是另一版协议」和「这帧是垃圾」在 schema 里
         // 长得一模一样。前者必须回话：静默丢弃会让对面的 TUI 永远停在 connecting——
         // 连接通着、没有错误、也不重连（实测：协议 8 的扩展连上协议 14 的 Host 就是这样）。
         const reported = reportedProtocolVersion(value);
-        if (reported !== undefined && reported !== PROTOCOL_VERSION) {
+        if (reported !== undefined && reported !== 18 && reported !== 19) {
           socket.send(JSON.stringify({
             type: "protocol.error",
             code: PROTOCOL_VERSION_ERROR_CODE,
@@ -370,6 +377,9 @@ export class HostLoopbackServer {
         return;
       }
       const message = parsed.data;
+      if (authenticated && wire?.version !== protocolVersion) {
+        socket.close(1008, "loopback 连接不能中途更换协议版本"); return;
+      }
 
       if (!authenticated) {
         if (message.type !== "runtime.authenticate") {
@@ -387,8 +397,9 @@ export class HostLoopbackServer {
           return;
         }
         authenticated = true;
+        protocolVersion = wire!.version;
         runtimeId = message.runtime.runtimeId;
-        this.#register(socket, message.runtime);
+        this.#register(socket, message.runtime, protocolVersion);
         return;
       }
 
@@ -450,16 +461,16 @@ export class HostLoopbackServer {
     });
   }
 
-  #register(socket: WebSocket, metadata: RuntimeMetadata): void {
+  #register(socket: WebSocket, metadata: RuntimeMetadata, protocolVersion: DeviceProtocolVersion): void {
     const previous = this.#runtimes.get(metadata.runtimeId);
     if (previous !== undefined && previous.socket !== socket) {
       // 同一个 runtimeId 重新注册（典型是 `/reload`）：旧连接先让位。
       previous.socket.close(1000, "loopback 被同一 runtime 的新连接取代");
     }
-    this.#runtimes.set(metadata.runtimeId, { metadata, socket });
+    this.#runtimes.set(metadata.runtimeId, { metadata, socket, protocolVersion });
     socket.send(JSON.stringify({
       type: "runtime.ready",
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion,
       runtimeId: metadata.runtimeId,
     }));
     this.#options.log?.(`loopback 已接入 runtime ${metadata.runtimeId}`);
@@ -469,7 +480,8 @@ export class HostLoopbackServer {
   #send(runtimeId: string, message: unknown): boolean {
     const entry = this.#runtimes.get(runtimeId);
     if (entry === undefined || entry.socket.readyState !== WebSocket.OPEN) return false;
-    entry.socket.send(JSON.stringify(message));
+    const versioned = message !== null && typeof message === "object" && "protocolVersion" in message;
+    entry.socket.send(JSON.stringify(versioned ? { ...message, protocolVersion: entry.protocolVersion } : message));
     return true;
   }
 }

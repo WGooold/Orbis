@@ -4,7 +4,8 @@
  * 一台设备可能反复上下线，每次上下线都重跑一遍握手、重新派生 `k_h2d` / `k_d2h`——
  * 这是「换网络不掉线」和「前向保密」的共同来源。业务层只看到一条能收发字节的通道。
  */
-import type { EnvelopeChannel, EnvelopeV2 } from "@orbis/protocol";
+import { PROTOCOL_VERSION, type EnvelopeChannel, type EnvelopeV2 } from "@orbis/protocol";
+import { convertDeviceBinary, encodeDeviceResponse, UnsupportedDeviceEventError, type DeviceProtocolVersion } from "./device-protocol.js";
 
 import {
   E2eChannel,
@@ -39,14 +40,28 @@ export class HostDeviceSession {
   #channel: E2eChannel | undefined;
   /** 最近一次被判重放的帧信息（由通道的 onStale 回填），随 stale 结果交给调用方。 */
   #lastStale: { channel: string; n: number; last: number } | undefined;
+  readonly #compatible: boolean;
+  #protocolVersion: DeviceProtocolVersion | undefined;
+  #lanVersion: DeviceProtocolVersion | undefined;
 
-  constructor(input: { hostId: string; device: DeviceRecord }) {
+  constructor(input: { hostId: string; device: DeviceRecord; compatible?: boolean }) {
+    this.#compatible = input.compatible === true;
     this.#hostId = input.hostId;
     this.#deviceId = input.device.deviceId;
     this.#pskRoot = Buffer.from(input.device.pskRoot, "base64url");
     if (this.#pskRoot.length !== 32) {
       throw new E2eError("invalid_key_length", `设备 ${this.#deviceId} 的 pskRoot 不是 32 字节`);
     }
+  }
+
+  get protocolVersion(): DeviceProtocolVersion | undefined {
+    return this.#compatible ? this.#protocolVersion : PROTOCOL_VERSION;
+  }
+
+  bindProtocolVersion(version: DeviceProtocolVersion): boolean {
+    if (this.state !== "ready" || this.#protocolVersion !== undefined && this.#protocolVersion !== version) return false;
+    this.#protocolVersion = version;
+    return true;
   }
 
   get state(): DeviceSessionState {
@@ -61,13 +76,15 @@ export class HostDeviceSession {
    * 一条会话只服务于一条路径：换路径就是换一套临时密钥（spec §6.2「每次切换重跑一次
    * 握手，不沿用密钥」），所以这里不做任何跨路径的状态复用。
    */
-  handle(envelope: EnvelopeV2): SessionOutcome {
+  handle(envelope: EnvelopeV2, lanVersion?: DeviceProtocolVersion): SessionOutcome {
     const { hdr } = envelope;
     this.#room = hdr.room;
 
     if (hdr.k === "hs") {
       const body = readHandshakeEnvelope(envelope);
       if (body.type === "hs1") {
+        this.#protocolVersion = undefined;
+        this.#lanVersion = lanVersion;
         // 每次 HS1 都换一套临时密钥：重连不是「恢复旧会话」，而是新会话。
         this.#handshake = new HostHandshake(this.#pskRoot);
         this.#channel = undefined;
@@ -90,6 +107,9 @@ export class HostDeviceSession {
         throw new E2eError("malformed", `Host 不处理 ${body.type}`);
       }
       handshake.confirm(body);
+      // LAN has a socket-bound outer version. It is only used after PSK MAC confirmation.
+      // Relay outer versions are unrelated to the encrypted business version.
+      this.#protocolVersion = this.#lanVersion;
       this.#channel = new E2eChannel({
         keys: handshake.keys,
         role: "host",
@@ -115,6 +135,10 @@ export class HostDeviceSession {
       this.#lastStale = undefined;
       return { kind: "stale", ...stale };
     }
+    if (this.#compatible && frame === "bin") {
+      if (this.#protocolVersion === undefined) throw new E2eError("not_ready", "业务协议尚未确定");
+      return { kind: "payload", frame, payload: Buffer.from(convertDeviceBinary(payload, this.#protocolVersion, PROTOCOL_VERSION)) };
+    }
     return { kind: "payload", frame, payload };
   }
 
@@ -128,6 +152,19 @@ export class HostDeviceSession {
     const room = this.#room;
     if (e2e === undefined || room === undefined) {
       throw new E2eError("not_ready", "握手尚未完成，不能发送数据");
+    }
+    if (this.#compatible && kind !== "ping") {
+      const version = this.#protocolVersion;
+      if (version === undefined) {
+        // A rejected first request can receive a versionless, correlated protocol.error.
+        const message = kind === "data" ? JSON.parse(Buffer.from(payload).toString("utf8")) as { type?: unknown; protocolVersion?: unknown } : undefined;
+        if (message?.type !== "protocol.error" || message.protocolVersion !== undefined) throw new E2eError("not_ready", "业务协议尚未确定");
+      } else if (kind === "bin") payload = convertDeviceBinary(payload, PROTOCOL_VERSION, version);
+      else {
+        const encoded = encodeDeviceResponse(payload, version);
+        if (encoded === undefined) throw new UnsupportedDeviceEventError("旧设备不订阅后台任务事件");
+        payload = encoded;
+      }
     }
     return e2e.seal(
       {

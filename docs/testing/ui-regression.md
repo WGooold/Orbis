@@ -677,7 +677,7 @@ A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残�
 
 本轮 L3–L4、C01–C18、R61、A1–A4、iPad / iOS 17、同设备失败集合比较和真实隔离 Claude TUI 均未运行，不标记设备验收。旧 emulator PID 15559 经再次定向 SIGTERM / SIGKILL 后仍监听 5680 / 5681，按用户选择保留现场；维护临时锁、候选构建租约均已释放，未部署或重启用户 Host。验证输入、完整结果、首次失败、产物哈希与资源清理记录见 `.artifacts/ui-regression/20261104-claude-background-validation/summary.md`。
 
-## R64：Android 与既有协议 18 互通
+## R64：协议 18 / 19 互通与 Relay＋Host 保留旧 App
 
 规则见 [ADR-0064](../adr/0064-protocol-compatibility.md)，不修改视觉或动效参数。先按相同设备 / 配置执行导入基线与候选的全量 L1–L4，另外执行 18 / 19 严格连接专项；C01–C18、A1–A4 和真实隔离 Host 场景分别记录。
 
@@ -699,3 +699,20 @@ A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残�
 当前双端已接入，验证中；实际运行结果、源码边界、包哈希和资源释放证据见 `.artifacts/ui-regression/20261105-sidebar-panel/summary.md`。
 
 2026-11-05 / r47 侧边栏面板：隔离基线 / 候选各 Swift Core 374、Android JVM 712 项及两端 App / UI 测试构建通过；Android 目录定向 19 / 19、减少动画目录 2 / 2，同设备全量各 197 项均为 183 通过 / 相同 7 失败 / 相同 7 条件未满足，无新增失败。经典 / 雾蓝浅深色及 1.0 / 1.5 字体面板图已审阅。iOS 首轮因调试标识传播到子按钮而在继续全量前取消；最终移除该标识并重建，排队约 9 分 35 秒仍由其他目录滚动任务占用，最终 L3 未运行，不计通过。完整 L4、C01–C18、R65 / A1–A4、375pt / iPad / 真机未验收。所有本任务设备 / 端口 / 构建租约、原进程及排队进程已核验释放，其他 Android owner 正常接续、未动其资源；详见 `.artifacts/ui-regression/20261105-sidebar-panel/summary.md` 与 `final-resource-audit.json`。
+
+### R64 第三阶段：保留旧 App，更新 Relay＋Host（2026-11-05，已实施 / 验证中）
+
+按 ADR-0064 §6，固定原版旧 App（18 / 19）及当前用户 0.1.53 包的来源、签名、哈希与实际协议；仅更新 Relay＋Host，保持手机 App、配对、草稿和会话。前述 Android 0.1.54 结果是第一阶段历史记录，不代替本阶段旧 App 验收。本轮自动映射及其设备要求如下，不得删除或放宽现有用例。
+
+| 层级 / 手动覆盖 | 必须验证的行为 | feature |
+| --- | --- | --- |
+| L1 Host / protocol 契约；macOS / Windows | 真实旧端严格 schema 的首次 ready、18 / 19 请求 / 回执 / 状态 / 文件格式；同 Host 双版本设备隔离；非法版本 / 字段和未知操作有真实失败结果 | S18、V05、V12、V16–V18 |
+| L2 Host 与既有 App 产物核对 | 兼容 Host 两平台构建及来源可追溯；旧 Android / iOS 包不重编译、不修改版本常量，记录原包哈希 / 签名；回退产物保留 | S18、V16–V18 |
+| L3 双端既有全量、R64 隔离 Host 联动 | 旧包连接兼容 Relay＋Host；首次基线、历史、请求 / ACK、发送 / 停止 / 审批、通知和文件往返；LAN / Relay 切换与重连不重发业务；同设备同配置基线比较 | S18、V05、V12、V16–V18 |
+| L4；C01–C18；R64；A1–A4 | 保留真实旧包核对首页 / 聊天 / 设置、输入与回执、历史阅读位置和失败恢复；新功能仅按能力出现；不以升级手机解决不兼容；受影响平台按现有门禁留证 | S18、V05、V12、V16–V18 |
+
+Host 双向业务适配已实施。L1 映射为 `device-protocol.test.ts`、`host-protocol-compatibility.test.ts`、`device-link.test.ts`、`host-service.test.ts`、`loopback-server.test.ts` 与 `scripts/review-demo/portal.test.mjs`：兼容相关 110 项通过；完整 Node 1762 通过、5 项原有平台条件跳过，166 文件全过。`ORBIS_LEGACY_RUNTIME` 显式指向未修改的已安装0.1.14 runtime，增加完整协议18 schema和旧E2E模块验证；未提供该变量时仅运行仓库契约，不将其标为真实旧模块验证。macOS arm64 原生五个测试目标、独立启动及签名检查通过；预览0.1.15与0.1.14回退副本保留。
+
+L3 旧0.1.53 / versionCode54原包隔离联动1 / 1通过，收到Host状态；APK哈希 / 签名和原始instrumentation包均留存，未重编译手机包。设备原无这两个包，测试后恢复原状态并核对；两次设备入口cleanup无错误，本次owner、ADB / 模拟器进程与租约均核验释放。macOS实际包内runtime对接旧协议18 schema / E2E模块的七项契约通过；Windows / macOS构建CI均新增实际包验证，但尚未push执行。双端全量、L4 / C01–C18 / A1–A4、实际用户旧包 / iOS、Windows / x64、真实模型操作和升级回退门禁未完成，不提升既有验收状态。原版0.1.52 / versionCode53已从DEX核对为协议18并保存原APK / 签名，其设备联动排队300秒超时，NQ-14任务占用单台模拟器，未实际执行；队列入口cleanup无错误，无设备 / 端口租约残留。第一轮探针时序错误与一次本机预检误启动默认ADB的失败 / 定向清理记录均保留；未借用他人设备或改变其测试结果。证据 `.artifacts/ui-regression/20261105-relay-host-compatibility/summary.md`。
+
+协议 18 原包补验完成：上述首次队列超时后，旧 0.1.52 / versionCode 53 原包在同一固定模拟器运行隔离配对及 Host 状态接收，1 / 1 通过，对接的是实际包内 Host 0.1.15 runtime。原包 / instrumentation、DEX 协议、哈希与签名证据保留，未重编译手机包；原设备包状态、六项设置、ADB / emulator 与租约均核验恢复 / 释放。见 `old18/old-apk-result.json` 和 `old18-device-r3/cleanup.json`。该结果只补齐旧 18 Android 连接专项，其他未完成门禁保持。

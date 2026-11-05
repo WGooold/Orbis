@@ -18,7 +18,7 @@ import { networkInterfaces } from "node:os";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import type { PairingQrLanEndpoint } from "@orbis/e2e";
-import { PROTOCOL_VERSION, V2FrameSchema, type EnvelopeV2 } from "@orbis/protocol";
+import { PROTOCOL_VERSION, V2FrameSchema, RelayWireProtocolVersionSchema, type RelayWireProtocolVersion, type EnvelopeV2 } from "@orbis/protocol";
 
 import type { PathSink } from "./device-link.js";
 import { describeError } from "./describe-error.js";
@@ -45,7 +45,8 @@ export function parseLanDiscoveryRequest(value: unknown): LanDiscoveryRequest | 
   return { type: "host.lan.request", protocolVersion: PROTOCOL_VERSION };
 }
 
-export type LanConnectionHandler = (deviceId: string, envelope: EnvelopeV2, sink: PathSink) => void;
+export type LanConnectionHandler = (deviceId: string, envelope: EnvelopeV2, sink: PathSink, protocolVersion: RelayWireProtocolVersion) => void;
+const LanFrameSchema = V2FrameSchema.extend({ protocolVersion: RelayWireProtocolVersionSchema });
 
 export type HostLanServerOptions = {
   /** 0 表示让系统分配（测试用）；正式运行时用配置里的固定端口。 */
@@ -106,11 +107,12 @@ export class HostLanServer {
 
   #handleConnection(socket: WebSocket): void {
     let deviceId: string | undefined;
+    let protocolVersion: RelayWireProtocolVersion | undefined;
     let closed = false;
 
     const sink: PathSink = (envelope: EnvelopeV2): void => {
       if (closed) return;
-      socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope }));
+      socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: protocolVersion ?? PROTOCOL_VERSION, envelope }));
     };
     // 交给多路复用器当水位判据：它决定分片什么时候才能写进这条 socket。
     sink.backlog = () => socket.bufferedAmount;
@@ -120,13 +122,17 @@ export class HostLanServer {
         socket.close(1008, "LAN 端点只接受文本帧");
         return;
       }
-      let parsed: ReturnType<typeof V2FrameSchema.safeParse>;
+      let parsed: ReturnType<typeof LanFrameSchema.safeParse>;
       try {
-        parsed = V2FrameSchema.safeParse(JSON.parse(raw.toString()) as unknown);
+        parsed = LanFrameSchema.safeParse(JSON.parse(raw.toString()) as unknown);
       } catch {
         return;
       }
       if (!parsed.success) return;
+      if (protocolVersion !== undefined && parsed.data.protocolVersion !== protocolVersion) {
+        socket.close(1008, "LAN 连接不能中途更换协议版本"); return;
+      }
+      protocolVersion = parsed.data.protocolVersion;
       const { envelope } = parsed.data;
 
       if (deviceId === undefined) {
@@ -151,7 +157,7 @@ export class HostLanServer {
         return;
       }
 
-      this.#options.onEnvelope(deviceId, envelope, sink);
+      this.#options.onEnvelope(deviceId, envelope, sink, protocolVersion);
     });
 
     socket.on("close", () => {
