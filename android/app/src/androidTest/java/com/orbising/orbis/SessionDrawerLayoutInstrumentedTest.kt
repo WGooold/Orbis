@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - S19 / R65：防止标题长度、字体及外观变化破坏会话行等高和所属目录几何。
+// - 目录（S15、S19、M06、M09、V17）
 package com.orbising.orbis
 
 import android.content.res.Configuration
@@ -21,6 +24,7 @@ import androidx.compose.ui.unit.Density
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -73,6 +77,16 @@ class SessionDrawerLayoutInstrumentedTest {
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             File(context.getExternalFilesDir(null), "drawer-layout-${visualStyle.key}-${if (dark) "dark" else "light"}-$fontScale.png")
                 .outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
+            // Geometry alone cannot detect a material parent flattening every card.
+            // Sample the blank top padding, away from rounded corners and text.
+            val card = short.captureToImage().asAndroidBitmap()
+            val x = card.width / 2
+            val edge = card.getPixel(x, (2 * compose.density.density).toInt())
+            val inside = card.getPixel(x, (10 * compose.density.density).toInt())
+            fun brightness(pixel: Int) = (android.graphics.Color.red(pixel) +
+                android.graphics.Color.green(pixel) + android.graphics.Color.blue(pixel)) / 3f
+            assertTrue("${visualStyle.key} / dark=$dark / font=$fontScale must retain the inset top shadow",
+                brightness(inside) - brightness(edge) > 2f)
         }
     }
 }

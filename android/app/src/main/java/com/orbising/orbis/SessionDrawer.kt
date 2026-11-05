@@ -47,7 +47,6 @@ import androidx.compose.material3.ModalDrawerSheet
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -511,18 +510,16 @@ internal fun SessionDrawer(
     }
 }
 
-/** Keep the native drawer's insets and semantics while giving the panel one material frame. */
+/** Keep the original drawer ground so its controls retain their own raised / inset shadows. */
 @Composable
 private fun DrawerPanel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     ModalDrawerSheet(
-        modifier = modifier.testTag("drawer-panel").neumorphRaised(RemoteUi.CardShape, shadowScale = 1f),
-        drawerShape = RemoteUi.CardShape,
+        modifier = modifier.testTag("drawer-panel"),
+        drawerShape = MaterialTheme.shapes.extraLarge,
         drawerTonalElevation = 0.dp,
-        drawerContainerColor = rememberNeumorphColors().base,
+        drawerContainerColor = MaterialTheme.colorScheme.background,
     ) {
-        CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(layer = 1, depth = 1, innerRadius = null)) {
-            content()
-        }
+        content()
     }
 }
 
