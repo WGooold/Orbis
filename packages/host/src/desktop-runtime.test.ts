@@ -2,15 +2,44 @@ import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createRelayServer } from "../../relay/src/index.js";
 import { RegistrationAuthority } from "../../relay/src/registration.js";
 import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 import * as claudeInstallation from "./claude-integration-install.js";
+import { DshRuntime } from "./dsh-runtime.js";
+import type { DshConnection } from "./dsh-client.js";
 
 describe("desktop Host lifecycle", () => {
+  // Passive discovery must never attach these isolated test Hosts to a user's Web service.
+  beforeEach(() => { vi.spyOn(DshRuntime, "connectExisting").mockResolvedValue(undefined); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("recovers an existing DSH bridge with prestart disabled and closes it when paused", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-dsh-recovery-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const runtime = new DesktopRuntime(() => {}, join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const client: DshConnection = { onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}) };
+    const dsh = new DshRuntime(client, { list: async () => [],
+      read: async id => ({ header: { id, cwd: root, createdAt: 1 }, events: [] }), close: async () => {} });
+    const start = vi.spyOn(dsh, "start");
+    vi.mocked(DshRuntime.connectExisting).mockResolvedValue(dsh);
+    const launch = vi.spyOn(DshRuntime, "create").mockRejectedValue(new Error("must not prestart DSH"));
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false });
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      expect(launch).not.toHaveBeenCalled();
+      expect(client.request).not.toHaveBeenCalled();
+      await runtime.stop();
+      expect(client.stop).toHaveBeenCalledTimes(1);
+    } finally { await runtime.close(); await dsh.stop(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it.each([undefined, "/local/bin/claude"])("reports native Claude availability %s independently of managed npm Agents", async executable => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-detect-"));
     const events: DesktopEvent[] = [];

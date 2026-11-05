@@ -87,6 +87,17 @@ async function readDescriptor(path: string, home: string): Promise<Descriptor | 
 
 const handle = (url: string, cli?: PiCommand): DshWebService => ({ url, ...(cli ? { cli } : {}), stop: async () => {} });
 
+/** Discover an authenticated existing service without creating files, locks or processes. */
+export async function findDshWebService(env: NodeJS.ProcessEnv = process.env): Promise<DshWebService | undefined> {
+  if (env.ORBIS_DSH_WEB_URL?.trim()) {
+    const url = validateDshWebUrl(env.ORBIS_DSH_WEB_URL.trim());
+    return await authenticated(url, 3_000) ? handle(url) : undefined;
+  }
+  const home = dshHome(env);
+  const current = await readDescriptor(join(home, "cache", "orbis-web.json"), home);
+  return current ? handle(current.url, current.cli) : undefined;
+}
+
 /** Reuse a normal authenticated Web endpoint before starting one persistent local service. */
 export async function ensureDshWebService(env: NodeJS.ProcessEnv = process.env, options: Options = {}): Promise<DshWebService> {
   if (env.ORBIS_DSH_WEB_URL?.trim()) {

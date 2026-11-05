@@ -219,6 +219,8 @@ export type HostServiceOptions = {
   dshRuntime?: DshRuntime;
   /** DeepSeek Harness 已安装时可按需启动；连接可用时直接复用，不重复创建。 */
   ensureDshRuntime?: () => Promise<DshRuntime | undefined>;
+  /** Reconnect only to an existing authenticated service; automatic recovery must never launch DSH. */
+  recoverDshRuntime?: () => Promise<DshRuntime | undefined>;
   /** DeepSeek Harness 已安装且 Host 可启动；与当前是否已连接分开公告。 */
   dshLaunchable?: boolean;
   /**
@@ -273,6 +275,9 @@ export class HostService {
   #backends: AgentBackend[];
   #dshRuntime: DshRuntime | undefined;
   #dshStarting: Promise<DshRuntime | undefined> | undefined;
+  #dshStartingExistingOnly = false;
+  #dshRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  #dshRecoveryError: string | undefined;
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -1244,16 +1249,56 @@ export class HostService {
     return agents;
   }
 
-  async #ensureDshRuntime(): Promise<DshRuntime | undefined> {
+  /** Recover existing native work without creating a Session or starting a Web service. */
+  recoverDshRuntime(): Promise<DshRuntime | undefined> {
+    return this.#ensureDshRuntime(true);
+  }
+
+  #scheduleDshRecovery(): void {
+    if (!this.#options.recoverDshRuntime || this.#providerFactsClosing || this.#serviceClosed) return;
+    void this.recoverDshRuntime().then(() => { this.#dshRecoveryError = undefined; }, error => {
+      const message = describeError(error);
+      if (!this.#providerFactsClosing && message !== this.#dshRecoveryError) {
+        this.#dshRecoveryError = message;
+        this.#options.log?.(`DeepSeek 自动接入暂时失败，将重试：${message}`);
+      }
+    }).finally(() => {
+      if (this.#providerFactsClosing || this.#serviceClosed) return;
+      this.#dshRecoveryTimer = setTimeout(() => { this.#dshRecoveryTimer = undefined; this.#scheduleDshRecovery(); }, 2_000);
+      this.#dshRecoveryTimer.unref();
+    });
+  }
+
+  async #ensureDshRuntime(existingOnly = false): Promise<DshRuntime | undefined> {
+    if (this.#providerFactsClosing || this.#serviceClosed) return undefined;
     const current = this.#backends.find(backend => backend.kind === "dsh" && backend.isReady());
     if (current !== undefined) return current as DshRuntime;
-    if (!this.#options.ensureDshRuntime) return undefined;
-    if (this.#dshStarting) return this.#dshStarting;
+    if (this.#dshStarting) {
+      const passive = this.#dshStartingExistingOnly;
+      if (!existingOnly && passive) {
+        // A failed read-only probe is not a failed App operation. Retry through the
+        // explicit launch path, but never repeat a launch or native Session operation.
+        const runtime = await this.#dshStarting.catch(() => undefined);
+        return runtime ?? this.#ensureDshRuntime();
+      }
+      return this.#dshStarting;
+    }
+    const connect = existingOnly ? this.#options.recoverDshRuntime : this.#options.ensureDshRuntime;
+    if (!connect) return undefined;
     const pending = (async () => {
-      const runtime = await this.#options.ensureDshRuntime?.();
-      if (runtime !== undefined) await this.attachDshRuntime(runtime);
+      const runtime = await connect();
+      if (runtime !== undefined) {
+        if (this.#providerFactsClosing || this.#serviceClosed) { await runtime.stop(); return undefined; }
+        await this.attachDshRuntime(runtime);
+        if (this.#providerFactsClosing || this.#serviceClosed) {
+          this.detachDshRuntime(runtime);
+          await runtime.stop();
+          return undefined;
+        }
+      }
       return runtime;
     })().finally(() => { if (this.#dshStarting === pending) this.#dshStarting = undefined; });
+    this.#dshStartingExistingOnly = existingOnly;
     this.#dshStarting = pending;
     return pending;
   }
@@ -1435,6 +1480,7 @@ export class HostService {
     catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
     await relay.start();
     this.#modelLifecycle = "running";
+    this.#scheduleDshRecovery();
     this.refreshHostFacts();
     void this.refreshProviderFacts();
   }
@@ -1445,9 +1491,11 @@ export class HostService {
     this.#providerFactsClosing = true;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
+    clearTimeout(this.#dshRecoveryTimer); this.#dshRecoveryTimer = undefined;
     this.#commandOwners.close();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
+    await this.#dshStarting?.catch(() => {});
     this.#toolContentService.close();
     await this.#fileChangeTurns.close();
     await this.#fileChanges.close();

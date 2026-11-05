@@ -2397,7 +2397,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
-  it("announces a working browser DSH session and shares messages over E2E without APP activation", async () => {
+  it.each(["prestarted", "recovered"])("announces %s browser DSH sessions and shares messages over E2E without APP activation", async mode => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-discovery-host-"));
     relay = await startRelayLocal(stateDir);
     const follows = new Map<string, (value: unknown) => void>();
@@ -2408,6 +2408,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       onEvent: undefined, onExit: undefined, onReconnect: undefined,
       request: request as DshWebConnection["request"], respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
       subscribe(method, args, frame) {
+        if (method === "session/control") return () => {};
         if (method === "workspace/follow") {
           workspace = frame;
           queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: [] } }));
@@ -2419,9 +2420,14 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       },
     };
     const runtime = new DshRuntime(client);
+    const recoverDshRuntime = vi.fn(async () => runtime);
+    const ensureDshRuntime = vi.fn(async () => { throw new Error("automatic recovery must not launch DSH"); });
     host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
-      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, ensureDshRuntime,
+      ...(mode === "prestarted" ? { dshRuntime: runtime } : { recoverDshRuntime }) });
     try {
+      await host.start();
+      await vi.waitFor(() => expect(runtime.directoryEntries().some(row => row.runtimeId === "dsh:existing")).toBe(true));
       client.onDiagnostic?.({ event: "socket.closed", code: "1001", reason: "peer left" });
       client.onDiagnostic?.({ event: "socket.error", code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH", reason: "Max payload size exceeded", maxFrameBytes: 104857600 });
       client.onDiagnostic?.({ event: "reconnected" });
@@ -2433,7 +2439,6 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       ]));
       const persisted = await readFile(join(stateDir, "diagnostics.ndjson"), "utf8");
       expect(persisted).toContain('"category":"backend.transport"');
-      await host.start();
       const ready = await readyDeviceCapturing({ host, relay }); device = ready.device;
       expect(ready.ready).toMatchObject({ runtimes: [expect.objectContaining({ runtimeId: "dsh:existing" })] });
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
@@ -2459,6 +2464,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(await until(message => message.type === "session.archive.changed" && message.sessionId === "dsh:browser"))
         .toMatchObject({ archived: true, agentKind: "dsh" });
       expect(request.mock.calls.some(([method]) => method === "session/create")).toBe(false);
+      expect(ensureDshRuntime).not.toHaveBeenCalled();
+      expect(recoverDshRuntime).toHaveBeenCalledTimes(mode === "recovered" ? 1 : 0);
     } finally { await runtime.stop(); }
   });
 
@@ -2636,6 +2643,43 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ensureDshRuntime).toHaveBeenCalledTimes(1);
       expect(attachedReady).toMatchObject({ launchableAgents: ["pi", "dsh"] });
     } finally { await runtime.stop(); }
+  });
+
+  it.each(["absent", "failed", "ready"])("preserves an App DSH activation racing an %s recovery probe", async outcome => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-recovery-activation-"));
+    relay = await startRelayLocal(stateDir);
+    const request = vi.fn(async (method: string) => method === "session/new"
+      ? { sessionId: "recovered-or-new", configOptions: [] } : { sessions: [] });
+    const client: DshConnection = { onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request, notify: vi.fn(), stop: vi.fn(async () => {}) };
+    const runtime = new DshRuntime(client, {
+      list: async () => [], read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {},
+    });
+    let finish!: (value: DshRuntime | undefined) => void;
+    let fail!: (error: Error) => void;
+    const opening = new Promise<DshRuntime | undefined>((resolve, reject) => { finish = resolve; fail = reject; });
+    const recoverDshRuntime = vi.fn(() => opening);
+    const ensureDshRuntime = vi.fn(async () => runtime);
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshLaunchable: true,
+      recoverDshRuntime, ensureDshRuntime });
+    try {
+      await host.start();
+      const ready = await readyDeviceCapturing({ host, relay }); device = ready.device;
+      expect(recoverDshRuntime).toHaveBeenCalledTimes(1);
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "recover-race",
+        target: { type: "new", agentKind: "dsh", cwd: stateDir } });
+      if (outcome === "failed") fail(new Error("probe authentication failed"));
+      else finish(outcome === "ready" ? runtime : undefined);
+      let activated: Record<string, unknown> | undefined;
+      for (let i = 0; i < 30; i++) {
+        const message = await device.receiveMessage() as Record<string, unknown>;
+        if (message.requestId === "recover-race") { activated = message; break; }
+      }
+      expect(activated).toMatchObject({ type: "session.activated", sessionId: "dsh:recovered-or-new" });
+      expect(ensureDshRuntime).toHaveBeenCalledTimes(outcome === "ready" ? 0 : 1);
+      expect(request.mock.calls.filter(([method]) => method === "session/new")).toHaveLength(1);
+    } finally { finish(undefined); await runtime.stop(); }
   });
 
   it("controls already attached DeepSeek and Codex Desktop runtimes without launching another instance", async () => {

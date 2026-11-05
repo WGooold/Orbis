@@ -16,7 +16,7 @@ import { DshAcpClient, DshUnconfirmedError, record, resolveDshCommand, type DshC
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
-import { ensureDshWebService } from "./dsh-web-service.js";
+import { ensureDshWebService, findDshWebService, type DshWebService } from "./dsh-web-service.js";
 import type { DshStreamDecoder } from "./dsh-web-history.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { localHostname } from "./sessions.js";
@@ -646,6 +646,16 @@ export class DshRuntime implements AgentBackend {
 
   static async create(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime> {
     const service = await ensureDshWebService(env);
+    return DshRuntime.#connect(service, env, true);
+  }
+
+  /** Restore the bridge to an existing service; never launch DSH or change provider credentials. */
+  static async connectExisting(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime | undefined> {
+    const service = await findDshWebService(env);
+    return service ? DshRuntime.#connect(service, env, false) : undefined;
+  }
+
+  static async #connect(service: DshWebService, env: NodeJS.ProcessEnv, applyProvider: boolean): Promise<DshRuntime> {
     const cli = service.cli ?? await resolveDshCommand(env);
     const client = await DshWebClient.connect({
       url: service.url,
@@ -653,7 +663,7 @@ export class DshRuntime implements AgentBackend {
       cli,
     });
     try {
-      await applyDshWebProvider(client, env);
+      if (applyProvider) await applyDshWebProvider(client, env);
       const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
       const decoder = cli.prefixArgs[0] ? await loadDshStreamDecoder(cli.prefixArgs[0]) : undefined;
       return new DshRuntime(client, decoder, { coalesceMs: STREAM_COALESCE_MS });

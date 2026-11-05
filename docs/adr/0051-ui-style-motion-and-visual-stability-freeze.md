@@ -6,6 +6,8 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 基线版本：`2026-11-05/r47`。盘点参照：`main` 的 `3a5bbf5`、已有 accepted ADR 及下列实现入口；r15 决策见 [ADR-0053][D53]，回归门禁与方案见 [UI 回归方案][Regression]。
 
+2026-11-05 DSH 已有服务自动接回（S20、X03、V12、V16–V18，源码已实施 / 设备验证中）：预启动关闭时，桌面 / CLI Host 仍持续认证、发现并接入已有服务；服务缺席不冷启动，App 显式新建 / 恢复继续按需准备。后台探测与显式请求共用在途连接，暂停清理迟到结果；不自动重发业务、不写供应商凭据。沿用运行中会话在线、空闲历史仅目录与消息身份规则，不新增 feature 或视觉 / 动效参数，当前基线及已交付计数保持。规则见 [ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0056](0056-agent-startup-readiness-and-consent.md)；回归映射 R32，证据 `.artifacts/host-dsh-recovery/20261105/summary.md`。
+
 2026-11-02 弱网中继 / 长会话性能：按 [ADR-0060](0060-mobile-relay-history-performance.md) 先登记再实施，关联 S08、S10–S11、M03–M05、M07–M08、V01–V05、V09–V10、V13–V20。仅优化入站处理、历史复用与聊天派生计算，原 UI / 交互参数和协议语义保持；不增加 feature，不计入已交付。实现与双端设备门禁分别记录，专项为 [UI 回归方案][Regression] R57。
 
 2026-11-03 R57 原保存包补验仍未通过：iOS 相关 11 项候选 8 过 / 3 失败（均在同设备基点失败集合内），Android 限速历史仍有缓存代次 / 请求数断言及一次候选超时，工具详情夹具另有重放错误。证据、复测及未覆盖范围见 ADR-0060 实施记录和 `.artifacts/ui-regression/20261103-relay-history-acceptance/summary.md`；不改变冻结参数或已交付计数。

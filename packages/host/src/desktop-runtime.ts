@@ -495,6 +495,18 @@ export class DesktopRuntime {
       try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
       catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
       const codexDesktopLaunchable = await this.#codexDesktopLifecycle.isInstalled();
+      const connectDshRuntime = async (existingOnly = false): Promise<DshRuntime | undefined> => {
+        if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
+        const env = await this.#providers.environment("dsh");
+        const runtime = existingOnly ? await DshRuntime.connectExisting(env) : await DshRuntime.create(env);
+        if (this.#desired !== settings) {
+          await runtime?.stop().catch(() => {});
+          if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek 启动");
+          return undefined;
+        }
+        if (runtime) this.#dshRuntime = runtime;
+        return runtime;
+      };
       const service = await HostService.create({
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
@@ -509,16 +521,8 @@ export class DesktopRuntime {
         codexDesktopLaunchable,
         codexDesktopStatus: () => this.#codexDesktopLifecycle!.status,
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
-        ensureDshRuntime: async () => {
-          if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
-          const runtime = await DshRuntime.create(await this.#providers.environment("dsh"));
-          if (this.#desired !== settings) {
-            await runtime.stop().catch(() => undefined);
-            throw new Error("Host 正在暂停，已取消 DeepSeek 启动");
-          }
-          this.#dshRuntime = runtime;
-          return runtime;
-        },
+        ensureDshRuntime: () => connectDshRuntime(),
+        recoverDshRuntime: () => connectDshRuntime(true),
         dshLaunchable,
         claude: {},
         log: line => this.log(line),

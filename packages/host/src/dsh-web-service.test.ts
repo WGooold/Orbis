@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
+import { ensureDshWebService, findDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
 
 const token = "test-launch-token-with-enough-characters";
 const directories: string[] = [];
@@ -61,6 +61,49 @@ function cli(launchToken = token) {
 }
 
 describe("shared DSH Web lifecycle", () => {
+  it("probes an unused home without creating a service, cache or startup lock", async () => {
+    const directory = await home();
+    expect(await findDshWebService({ DSH_HOME: directory })).toBeUndefined();
+    await expect(readFile(join(directory, "cache", "orbis-web.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(directory, "cache", "orbis-web.json.lock"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("discovers a service published after the first probe and leaves its descriptor unchanged", async () => {
+    const directory = await home();
+    expect(await findDshWebService({ DSH_HOME: directory })).toBeUndefined();
+    const url = await web();
+    await mkdir(join(directory, "cache"));
+    const path = join(directory, "cache", "orbis-web.json");
+    const descriptor = JSON.stringify({ version: 1, owner: "orbis", home: directory, pid: process.pid, url, cli: cli() });
+    await writeFile(path, descriptor);
+    const service = await findDshWebService({ DSH_HOME: directory });
+    expect(service).toMatchObject({ url, cli: cli() });
+    await service!.stop();
+    expect(await readFile(path, "utf8")).toBe(descriptor);
+    expect((await fetch(url, { redirect: "manual" })).status).toBe(303);
+  });
+
+  it("probes explicit endpoints with authentication and does not fall back to another service", async () => {
+    const directory = await home();
+    const url = await web();
+    expect(await findDshWebService({ DSH_HOME: directory, ORBIS_DSH_WEB_URL: url })).toMatchObject({ url });
+    expect(await findDshWebService({ DSH_HOME: directory, ORBIS_DSH_WEB_URL: url.replace(token, "wrong-authentication-token") })).toBeUndefined();
+    expect(await findDshWebService({ DSH_HOME: directory, ORBIS_DSH_WEB_URL: await web(false) })).toBeUndefined();
+  });
+
+  it.each(["wrong-owner", "wrong-home", "stale-token", "malformed"])("leaves an unusable %s descriptor untouched during recovery", async kind => {
+    const directory = await home();
+    const url = await web();
+    await mkdir(join(directory, "cache"));
+    const path = join(directory, "cache", "orbis-web.json");
+    const descriptor = kind === "malformed" ? "{" : JSON.stringify({ version: 1,
+      owner: kind === "wrong-owner" ? "other" : "orbis", home: kind === "wrong-home" ? "/elsewhere" : directory,
+      pid: process.pid, url: kind === "stale-token" ? url.replace(token, "wrong-authentication-token") : url, cli: cli() });
+    await writeFile(path, descriptor);
+    expect(await findDshWebService({ DSH_HOME: directory })).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe(descriptor);
+  });
+
   it("accepts only authenticated loopback launch URLs without leaking supplied values in errors", () => {
     expect(validateDshWebUrl(`http://127.0.0.1:3080/?token=${token}`)).toContain(token);
     for (const value of ["https://example.com/?token=secret", "http://127.0.0.1:3080", `http://127.0.0.1:3080/?token=${token}&token=${token}`, `http://user:pass@localhost/?token=${token}`, `http://localhost/api?token=${token}`, `http://localhost/?token=${token}#secret`]) {

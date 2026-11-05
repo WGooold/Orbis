@@ -168,6 +168,12 @@ async function runHost(
         dshRuntime = await DshRuntime.create(await providers.environment("dsh"));
         return dshRuntime;
       },
+      recoverDshRuntime: async () => {
+        if (dshRuntime?.isReady()) return dshRuntime;
+        const runtime = await DshRuntime.connectExisting(await providers.environment("dsh"));
+        if (runtime) dshRuntime = runtime;
+        return runtime;
+      },
       dshLaunchable,
       claude: {},
       log: (line) => console.log(`[host] ${line}`),
