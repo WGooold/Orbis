@@ -10,6 +10,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { orbisEnvironment } from "@orbis/protocol";
 
+import { relayTransportMode, type RelayTransportMode } from "./relay-socket.js";
+import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
+
 export const HOST_CONFIG_FILE = "config.json";
 
 export function defaultAgentConfigPath(): string {
@@ -18,6 +21,8 @@ export function defaultAgentConfigPath(): string {
 
 export type HostConfig = {
   relayUrl: string;
+  relayTransport: RelayTransportMode;
+  relayHistoryMode: RelayHistoryMode;
   runtimeCredential: string;
   /** 缺省时 `pair` 会明确报错，`host` 仍然可用（它不需要签发设备凭据）。 */
   adminToken: string | undefined;
@@ -59,8 +64,10 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
     );
   }
   assertRelayUrl(relayUrl);
+  const relayTransport = relayTransportMode(env["ORBIS_RELAY_TRANSPORT"] ?? hostConfig?.["relayTransport"]);
+  const historyMode = relayHistoryMode(env["ORBIS_RELAY_HISTORY_MODE"] ?? hostConfig?.["relayHistoryMode"]);
 
-  return { relayUrl: relayUrl.replace(/\/$/, ""), runtimeCredential, adminToken, lanPort };
+  return { relayUrl: relayUrl.replace(/\/$/, ""), relayTransport, relayHistoryMode: historyMode, runtimeCredential, adminToken, lanPort };
 }
 
 /**

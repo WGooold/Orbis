@@ -43,6 +43,12 @@ export interface RelayServerOptions {
   /** Enable only when a trusted reverse proxy overwrites X-Real-IP. */
   trustProxy?: boolean;
   buildCommit?: string;
+  /** Advertise only after the same-host native QUIC adapter is deployed. */
+  quicPort?: number;
+  /** Advertise only when the adapter also enables its fixed runtime endpoint. */
+  quicHostEnabled?: boolean;
+  /** Advertise v3 only after the five-stream adapter is deployed. */
+  quicHistoryStreamsEnabled?: boolean;
 }
 
 export interface RelayServer {
@@ -179,12 +185,19 @@ const logProtocolValidationFailure = (value: unknown, issues: readonly { path: P
 };
 
 export async function createRelayServer(options: RelayServerOptions = {}): Promise<RelayServer> {
+  if (options.quicPort !== undefined && (!Number.isInteger(options.quicPort) || options.quicPort < 1 || options.quicPort > 65535)) {
+    throw new Error("quicPort must be an integer between 1 and 65535");
+  }
   const serveWeb = await createWebHandler(options.downloadsDir, options.androidDownloadsDir);
   const runtimeWss = new WebSocketServer({ noServer: true });
   const deviceWss = new WebSocketServer({ noServer: true });
   const responsiveSockets = new WeakSet<WebSocket>();
   const authenticatedSockets = new WeakSet<WebSocket>();
   const monitorSocket = (socket: WebSocket): void => {
+    socket.once("close", () => {
+      deviceMuxes.get(socket)?.stop();
+      deviceMuxes.delete(socket);
+    });
     responsiveSockets.add(socket);
     socket.on("pong", () => responsiveSockets.add(socket));
   };
@@ -358,6 +371,15 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         jsonResponse(response, 200, { status: "ok", ...(options.buildCommit ? { commit: options.buildCommit } : {}) });
         return;
       }
+      if (request.method === "GET" && path === "/v1/transports") {
+        response.setHeader("cache-control", "no-store");
+        jsonResponse(response, 200, { version: 1, quic: options.quicPort === undefined ? null : {
+          port: options.quicPort, alpn: "orbis-relay-v2",
+          ...(options.quicHistoryStreamsEnabled ? { historyAlpn: "orbis-relay-v3" } : {}),
+          ...(options.quicHostEnabled ? { hostAlpn: "orbis-relay-host-v2", ...(options.quicHistoryStreamsEnabled ? { historyHostAlpn: "orbis-relay-host-v3" } : {}) } : {}),
+        } });
+        return;
+      }
       if (path.startsWith("/v1/registration/")) {
         response.setHeader("cache-control", "no-store");
         if (request.method === "GET" && path === "/v1/registration/status") {
@@ -508,6 +530,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     let runtimeId: string | undefined;
 
     socket.on("message", (raw) => {
+      if (runtimeId !== undefined && runtimes.get(runtimeId)?.socket !== socket) return;
       let decoded: unknown;
       try {
         decoded = decodeJson(raw);
@@ -552,6 +575,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         runtimeId = message.runtime.runtimeId;
         const previous = runtimes.get(runtimeId);
         if (previous) {
+          deviceMuxes.get(previous.socket)?.stop();
+          deviceMuxes.delete(previous.socket);
           previous.socket.close(4001, "replaced");
         }
         runtimes.set(runtimeId, { socket, name: message.runtime.name.slice(0, 128), connectedAt: Date.now() });
@@ -593,6 +618,12 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           });
           return;
         }
+        if (message.envelope.hdr.k === "hs") {
+          // The authenticated Host has started a new key exchange. Already
+          // written WS bytes remain FIFO; pending ciphertext belongs to the old key.
+          deviceMuxes.get(target.socket)?.stop();
+          deviceMuxes.delete(target.socket);
+        }
         send(target.socket, message);
         return;
       }
@@ -622,6 +653,9 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     let connection: DeviceConnection | undefined;
 
     socket.on("message", (raw, isBinary) => {
+      // A replacement may authenticate before the old transport receives close.
+      // Retired connections must not keep forwarding to the Host in that gap.
+      if (connection && !devices.has(connection)) return;
       if (isBinary) {
         reject(socket, "invalid_message", "Device messages must be JSON");
         return;
@@ -659,6 +693,14 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         if (credential.hostId !== undefined && admin.isDisabled(credential.hostId)) {
           reject(socket, "host_disabled", "This Host has been disabled by an administrator");
           return;
+        }
+        // Preparation alone never takes ownership. After credentials validate,
+        // retire the old route synchronously, before exposing the new ready.
+        for (const previous of devices) {
+          if (previous.deviceId !== credential.deviceId) continue;
+          devices.delete(previous);
+          deviceMuxes.get(previous.socket)?.stop();
+          previous.socket.close(4001, "replaced");
         }
         connection = { socket, deviceId: credential.deviceId, ...(credential.hostId === undefined ? {} : { hostId: credential.hostId }) };
         devices.add(connection);
@@ -701,12 +743,20 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           });
           return;
         }
+        if (message.envelope.hdr.k === "hs") {
+          const { from, to } = message.envelope.hdr;
+          deviceMuxes.get(v2Runtime.socket)?.retireSessionFrames(text => {
+            const queued = JSON.parse(text) as RelayToRuntimeMessage;
+            return queued.type === "v2.frame" && queued.envelope.hdr.from === from && queued.envelope.hdr.to === to;
+          });
+        }
         send(v2Runtime.socket, message);
         return;
       }
     });
 
     socket.on("close", () => {
+      deviceMuxes.get(socket)?.stop();
       if (!connection) return;
       devices.delete(connection);
     });

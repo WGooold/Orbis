@@ -21,6 +21,7 @@ import { ToolContentService } from "./tool-content-service.js";
 import { PiToolContentReader } from "./pi-tool-content-reader.js";
 import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inventory.js";
 import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
+import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 
 import {
   E2eError,
@@ -166,8 +167,13 @@ const OFFLINE_DEVICE_REPORT_INTERVAL_MS = 10_000;
 /** 水位告警的节流窗口，与 relay 的 `MUX_WARN_INTERVAL_MS` 同一判据。 */
 const BULK_WARN_INTERVAL_MS = 10_000;
 
+import type { RelayTransportMode, RelayTransportKind, RelaySocketOptions } from "./relay-socket.js";
+
 export type HostServiceOptions = {
   relayUrl: string;
+  relayTransport?: RelayTransportMode;
+  relayHistoryMode?: RelayHistoryMode;
+  relaySocketOptions?: RelaySocketOptions;
   credential: string;
   /** 只在 `pair` 时用得到：签发设备管道凭据。 */
   adminToken?: string;
@@ -646,7 +652,7 @@ export class HostService {
     identity: HostIdentity,
     store: DeviceStore,
   ) {
-    this.#options = options;
+    this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
     this.#stateDir = stateDir;
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
@@ -1296,6 +1302,14 @@ export class HostService {
     return this.#links.get(deviceId)?.active;
   }
 
+  get relayTransportKind(): RelayTransportKind | undefined { return this.#relay?.transportKind; }
+  get relayTransportMode(): RelayTransportMode { return this.#relay?.transportMode ?? this.#options.relayTransport ?? "ws"; }
+
+  async setRelayTransportMode(mode: RelayTransportMode): Promise<void> {
+    if (this.#relay === undefined) throw new Error("Host Relay has not started");
+    await this.#relay.setTransportMode(mode);
+  }
+
   async start(): Promise<void> {
     this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
     this.#claudeModsSweep.unref();
@@ -1315,6 +1329,8 @@ export class HostService {
     };
     const relay = new HostRelayClient({
       relayUrl: this.#options.relayUrl,
+      ...(this.#options.relayTransport === undefined ? {} : { transportMode: this.#options.relayTransport }),
+      ...(this.#options.relaySocketOptions === undefined ? {} : { socketOptions: this.#options.relaySocketOptions }),
       credential: this.#options.credential,
       runtime,
       onFrame: (envelope) => {
@@ -2535,6 +2551,7 @@ export class HostService {
     const link = new DeviceLink({
       hostId: this.#identity.hostId,
       device: record,
+      relayHistoryMode: this.#options.relayHistoryMode ?? "shared",
       onQueueDiagnostic: (path, sample) => {
         for (const input of outboundQueueDiagnosticRecords(deviceId, path, sample)) this.recordDiagnostic(input);
       },
@@ -2617,6 +2634,8 @@ export class HostService {
     };
     // 中继 socket 的待发字节数：出站多路复用器靠它决定分片什么时候才能写进去。
     sink.backlog = () => this.#relay?.bufferedAmount ?? 0;
+    sink.channelBacklog = (channel) => this.#relay?.bufferedAmountFor(channel) ?? 0;
+    sink.supportsHistoryStreams = () => this.#relay?.supportsHistoryStreams === true;
     link.attach("relay", sink);
   }
 

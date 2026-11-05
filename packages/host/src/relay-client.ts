@@ -8,14 +8,19 @@ import {
   PROTOCOL_VERSION,
   RelayToRuntimeMessageSchema,
   type EnvelopeV2,
+  type EnvelopeChannel,
   type RuntimeMetadata,
 } from "@orbis/protocol";
 import WebSocket from "ws";
+import { NativeQuicSocket, closeRelaySocket, prepareRelaySocket, relayTransportMode,
+  type RelaySocket, type RelaySocketOptions, type RelayTransportMode, type RelayTransportKind } from "./relay-socket.js";
 
 export type HostRelayState = "connecting" | "connected" | "reconnecting" | "closed";
 
 export type HostRelayClientOptions = {
   relayUrl: string;
+  transportMode?: RelayTransportMode;
+  socketOptions?: RelaySocketOptions;
   credential: string;
   runtime: RuntimeMetadata;
   /** 收到对端（手机）发来的 v2 帧。 */
@@ -42,9 +47,15 @@ type PendingReady = {
 
 export class HostRelayClient {
   readonly #options: HostRelayClientOptions;
-  #socket: WebSocket | undefined;
+  #socket: RelaySocket | undefined;
+  #mode: RelayTransportMode;
+  #kind: RelayTransportKind | undefined;
+  #generation = 0;
+  #preparation: AbortController | undefined;
+  #tasks = new Set<Promise<void>>();
+  #handoff: Promise<void> = Promise.resolve();
   #state: HostRelayState = "closed";
-  #stopped = false;
+  #stopped = true;
   #attempt = 0;
   #pendingReady: PendingReady | undefined;
   #reconnectTimer: NodeJS.Timeout | undefined;
@@ -53,10 +64,26 @@ export class HostRelayClient {
 
   constructor(options: HostRelayClientOptions) {
     this.#options = options;
+    this.#mode = relayTransportMode(options.transportMode);
   }
 
   get state(): HostRelayState {
     return this.#state;
+  }
+
+  get transportMode(): RelayTransportMode { return this.#mode; }
+  get transportKind(): RelayTransportKind | undefined { return this.#kind; }
+
+  /** Prepare before retiring the incumbent; only the last requested mode authenticates. */
+  setTransportMode(mode: RelayTransportMode): Promise<void> {
+    this.#mode = relayTransportMode(mode);
+    if (this.#stopped) return Promise.resolve();
+    if (this.#state === "connected" && (mode === "auto" || mode === this.#kind)) {
+      this.#generation++;
+      this.#preparation?.abort(new Error("Relay transport selection superseded"));
+      return Promise.allSettled([...this.#tasks]).then(() => undefined);
+    }
+    return this.#open();
   }
 
   /** 连接并等待 Relay 确认 runtime 身份。首次失败直接抛出，不静默重试。 */
@@ -68,19 +95,18 @@ export class HostRelayClient {
 
   async stop(): Promise<void> {
     this.#stopped = true;
-    if (this.#reconnectTimer !== undefined) {
-      clearTimeout(this.#reconnectTimer);
-      this.#reconnectTimer = undefined;
-    }
+    this.#generation++;
+    this.#preparation?.abort(new Error("Host Relay stopped"));
+    this.#clearReconnect();
     this.#stopHeartbeat();
+    this.#pendingReady?.reject(new Error("Host Relay stopped"));
+    this.#pendingReady = undefined;
     const socket = this.#socket;
     this.#socket = undefined;
+    this.#kind = undefined;
     this.#setState("closed");
-    if (socket === undefined) return;
-    await new Promise<void>((resolve) => {
-      socket.once("close", () => resolve());
-      socket.close(1000, "host shutdown");
-    });
+    if (socket !== undefined) await closeRelaySocket(socket);
+    await Promise.allSettled([...this.#tasks]);
   }
 
   /**
@@ -95,6 +121,17 @@ export class HostRelayClient {
     return socket.bufferedAmount;
   }
 
+  get supportsHistoryStreams(): boolean {
+    return this.#socket instanceof NativeQuicSocket ? this.#socket.supportsHistoryStreams : this.#socket?.readyState === WebSocket.OPEN;
+  }
+
+  /** WS has one shared buffer; QUIC writers account independently per stream. */
+  bufferedAmountFor(channel: EnvelopeChannel): number {
+    const socket = this.#socket;
+    if (socket === undefined || socket.readyState !== WebSocket.OPEN) return 0;
+    return socket instanceof NativeQuicSocket ? socket.bufferedAmountFor(channel) : socket.bufferedAmount;
+  }
+
   /** 发送一条 v2 帧。连接未就绪时抛错——调用方此刻应当先让设备重试，而不是缓存。 */
   send(envelope: EnvelopeV2): void {
     const socket = this.#socket;
@@ -104,64 +141,105 @@ export class HostRelayClient {
     socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope }));
   }
 
+  #clearReconnect(): void {
+    if (this.#reconnectTimer !== undefined) clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = undefined;
+  }
+
   #open(): Promise<void> {
+    this.#clearReconnect();
+    const generation = ++this.#generation;
+    this.#preparation?.abort(new Error("Relay transport selection superseded"));
+    const controller = new AbortController();
+    this.#preparation = controller;
+    const mode = this.#mode;
+    if (this.#socket === undefined) this.#setState(this.#attempt === 0 ? "connecting" : "reconnecting");
+    const current = (): boolean => !this.#stopped && generation === this.#generation;
+    const operation = (async () => {
+      const prepared = await prepareRelaySocket(this.#options.relayUrl, mode, controller.signal, this.#options.socketOptions);
+      let owned = false;
+      try {
+        const handoff = this.#handoff.catch(() => undefined).then(async () => {
+          if (!current()) throw new Error("Relay transport selection superseded");
+          const old = this.#socket;
+          this.#socket = undefined;
+          this.#kind = undefined;
+          this.#pendingReady?.reject(new Error("Relay transport replaced"));
+          this.#pendingReady = undefined;
+          this.#stopHeartbeat();
+          this.#setState("connecting");
+          if (old !== undefined) await closeRelaySocket(old);
+          if (!current()) throw new Error("Relay transport selection superseded");
+          if (prepared.socket.readyState !== WebSocket.OPEN) throw new Error("Prepared Relay transport closed");
+          this.#socket = prepared.socket;
+          this.#kind = prepared.kind;
+          owned = true;
+          try { await this.#authenticate(prepared.socket, controller.signal); }
+          catch (error) {
+            if (this.#socket === prepared.socket) {
+              this.#socket = undefined;
+              this.#kind = undefined;
+              this.#stopHeartbeat();
+            }
+            await closeRelaySocket(prepared.socket);
+            throw error;
+          }
+        });
+        this.#handoff = handoff;
+        await handoff;
+      } finally { if (!owned) await closeRelaySocket(prepared.socket); }
+    })().finally(() => {
+      if (this.#preparation === controller) {
+        this.#preparation = undefined;
+        if (this.#socket === undefined && !this.#stopped) this.#scheduleReconnect();
+      }
+    });
+    this.#tasks.add(operation);
+    void operation.then(() => this.#tasks.delete(operation), () => this.#tasks.delete(operation));
+    return operation;
+  }
+
+  #authenticate(socket: RelaySocket, signal: AbortSignal): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.#setState(this.#attempt === 0 ? "connecting" : "reconnecting");
-      const socket = new WebSocket(`${this.#options.relayUrl.replace(/\/$/u, "")}/v1/runtime`);
-      this.#socket = socket;
       let settled = false;
-
-      this.#pendingReady = {
-        resolve: () => {
-          if (settled) return;
-          settled = true;
-          resolve();
-        },
-        reject: (error: unknown) => {
-          if (settled) return;
-          settled = true;
-          reject(error);
-        },
+      const timer = setTimeout(() => pending.reject(new Error("Relay authentication timed out")), 10000);
+      const finish = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        if (this.#pendingReady === pending) this.#pendingReady = undefined;
+        if (error === undefined) resolve(); else reject(error);
       };
-
-      socket.on("open", () => {
-        this.#startHeartbeat(socket);
-        socket.send(JSON.stringify({
-          type: "runtime.authenticate",
-          protocolVersion: PROTOCOL_VERSION,
-          credential: this.#options.credential,
-          // Host 在 Relay 眼里是一条 runtime —— 那只是为了让手机能把帧路由到它
-          // （`hdr.to = hostId`）。它对手机不是一条「进程」，所以说清楚自己是网关，
-          // 免得中继把它当成进程目录里的一条播出去（见 RuntimeRoleSchema）。
-          role: "host",
-          runtime: this.#options.runtime,
-        }));
+      const pending: PendingReady = { resolve: () => finish(), reject: error => finish(error) };
+      const abort = (): void => pending.reject(signal.reason);
+      this.#pendingReady = pending;
+      signal.addEventListener("abort", abort, { once: true });
+      socket.on("message", (raw: WebSocket.RawData, isBinary: boolean) => {
+        if (this.#socket === socket && !isBinary) this.#handleMessage(raw);
       });
-
-      socket.on("message", (raw, isBinary) => {
-        if (isBinary) return;
-        this.#handleMessage(raw);
-      });
-
       socket.on("error", (error: unknown) => {
-        this.#pendingReady?.reject(error);
+        if (this.#socket === socket) { pending.reject(error); socket.terminate(); }
       });
-
-      socket.on("pong", () => {
-        this.#awaitingPong = false;
-      });
-
+      socket.on("pong", () => { if (this.#socket === socket) this.#awaitingPong = false; });
       socket.on("close", () => {
+        pending.reject(new Error("Relay 连接在就绪前关闭"));
+        if (this.#socket !== socket) return;
+        this.#socket = undefined;
+        this.#kind = undefined;
         this.#stopHeartbeat();
-        this.#pendingReady?.reject(new Error("Relay 连接在就绪前关闭"));
-        this.#pendingReady = undefined;
-        if (this.#socket === socket) this.#socket = undefined;
-        if (this.#stopped) {
-          this.#setState("closed");
-          return;
-        }
-        this.#scheduleReconnect();
+        this.#setState(this.#stopped ? "closed" : "reconnecting");
+        if (!this.#stopped && this.#preparation === undefined) this.#scheduleReconnect();
       });
+      if (signal.aborted) { abort(); return; }
+      if (socket instanceof NativeQuicSocket) socket.activate();
+      else this.#startHeartbeat(socket);
+      try {
+        socket.send(JSON.stringify({
+          type: "runtime.authenticate", protocolVersion: PROTOCOL_VERSION,
+          credential: this.#options.credential, role: "host", runtime: this.#options.runtime,
+        }));
+      } catch (error) { pending.reject(error); }
     });
   }
 
@@ -206,6 +284,7 @@ export class HostRelayClient {
   }
 
   #scheduleReconnect(): void {
+    if (this.#stopped || this.#reconnectTimer !== undefined) return;
     if (this.#options.reconnect === false) {
       this.#setState("closed");
       return;

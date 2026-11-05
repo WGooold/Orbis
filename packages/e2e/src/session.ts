@@ -30,14 +30,15 @@ export type E2eRole = "host" | "device";
 export type SessionKeys = {
   kHostToDevice: Buffer;
   kDeviceToHost: Buffer;
+  historyStreams?: boolean;
 };
 
 export type HandshakeHello = {
   type: "hs1";
   ePubD: string;
 };
-export type HandshakeAcceptBody = { type: "hs2"; ePubH: string; macH: string };
-export type HandshakeConfirmBody = { type: "hs3"; macD: string };
+export type HandshakeAcceptBody = { type: "hs2"; ePubH: string; macH: string; historyStreams?: string; historyMac?: string };
+export type HandshakeConfirmBody = { type: "hs3"; macD: string; historyStreams?: string };
 export type HandshakeBody = HandshakeHello | HandshakeAcceptBody | HandshakeConfirmBody;
 
 /** `info` 里两个临时公钥**固定 `e_pub_h` 在前**，写反会导致两端派生出不同密钥。 */
@@ -73,8 +74,13 @@ export function handshakeMacFromDevice(
   keys: SessionKeys,
   hostEphemeralPublic: Uint8Array,
   deviceEphemeralPublic: Uint8Array,
+  historyStreams = false,
 ): Buffer {
-  return hmacSha256(keys.kDeviceToHost, "hs-d|", toBase64Url(hostEphemeralPublic), toBase64Url(deviceEphemeralPublic));
+  return hmacSha256(keys.kDeviceToHost, "hs-d|", toBase64Url(hostEphemeralPublic), toBase64Url(deviceEphemeralPublic), historyStreams ? "|history-streams-v1" : "");
+}
+
+export function historyStreamsMac(keys: SessionKeys, host: Uint8Array, device: Uint8Array): Buffer {
+  return hmacSha256(keys.kHostToDevice, "history-streams-v1|", toBase64Url(host), toBase64Url(device));
 }
 
 /**
@@ -132,7 +138,7 @@ export class DeviceHandshake {
   readonly #pskRoot: Buffer;
   #keys: SessionKeys | null = null;
 
-  constructor(pskRoot: Uint8Array) {
+  constructor(pskRoot: Uint8Array, readonly supportsHistoryStreams = false) {
     this.#pskRoot = Buffer.from(pskRoot);
     if (this.#pskRoot.length !== SYMMETRIC_KEY_BYTES) {
       throw new E2eError("invalid_key_length", "pskRoot 必须是 32 字节");
@@ -164,10 +170,18 @@ export class DeviceHandshake {
     if (!constantTimeEqual(expected, fromBase64Url(body.macH, "macH"))) {
       throw new E2eError("mac_mismatch", "mac_h 校验失败：对面拿不出这台电脑的 pskRoot");
     }
+    if (this.supportsHistoryStreams && body.historyStreams !== undefined) {
+      if (body.historyStreams !== "v1" || typeof body.historyMac !== "string" ||
+          !constantTimeEqual(historyStreamsMac(keys, hostEphemeralPublic, this.#keyPair.publicRaw), fromBase64Url(body.historyMac, "historyMac"))) {
+        throw new E2eError("mac_mismatch", "history streams capability authentication failed");
+      }
+      keys.historyStreams = true;
+    }
     this.#keys = keys;
     return {
       type: "hs3",
-      macD: toBase64Url(handshakeMacFromDevice(keys, hostEphemeralPublic, this.#keyPair.publicRaw)),
+      macD: toBase64Url(handshakeMacFromDevice(keys, hostEphemeralPublic, this.#keyPair.publicRaw, keys.historyStreams)),
+      ...(keys.historyStreams ? { historyStreams: "v1" } : {}),
     };
   }
 
@@ -187,7 +201,7 @@ export class HostHandshake {
   #keys: SessionKeys | null = null;
   #confirmed = false;
 
-  constructor(pskRoot: Uint8Array) {
+  constructor(pskRoot: Uint8Array, readonly supportsHistoryStreams = false) {
     this.#pskRoot = Buffer.from(pskRoot);
     if (this.#pskRoot.length !== SYMMETRIC_KEY_BYTES) {
       throw new E2eError("invalid_key_length", "pskRoot 必须是 32 字节");
@@ -213,6 +227,7 @@ export class HostHandshake {
       type: "hs2",
       ePubH: toBase64Url(this.#keyPair.publicRaw),
       macH: toBase64Url(handshakeMacFromHost(keys, this.#keyPair.publicRaw, deviceEphemeralPublic)),
+      ...(this.supportsHistoryStreams ? { historyStreams: "v1", historyMac: toBase64Url(historyStreamsMac(keys, this.#keyPair.publicRaw, deviceEphemeralPublic)) } : {}),
     };
   }
 
@@ -222,10 +237,15 @@ export class HostHandshake {
     if (keys === null || deviceEphemeralPublic === null) {
       throw new E2eError("not_ready", "还没收到 HS1，无法校验 HS3");
     }
-    const expected = handshakeMacFromDevice(keys, this.#keyPair.publicRaw, deviceEphemeralPublic);
+    if (body.historyStreams !== undefined && (body.historyStreams !== "v1" || !this.supportsHistoryStreams)) {
+      throw new E2eError("malformed", "unoffered history streams capability");
+    }
+    const historyStreams = body.historyStreams === "v1";
+    const expected = handshakeMacFromDevice(keys, this.#keyPair.publicRaw, deviceEphemeralPublic, historyStreams);
     if (!constantTimeEqual(expected, fromBase64Url(body.macD, "macD"))) {
       throw new E2eError("mac_mismatch", "mac_d 校验失败：对面没有同一份 pskRoot");
     }
+    keys.historyStreams = historyStreams;
     this.#confirmed = true;
   }
 
@@ -254,6 +274,7 @@ export class HostHandshake {
 export class E2eChannel {
   readonly #sendKey: Buffer;
   readonly #receiveKey: Buffer;
+  readonly #historyStreams: boolean;
   /**
    * 序号按 channel 各自计数。
    *
@@ -265,6 +286,7 @@ export class E2eChannel {
   readonly #onStale: ((channel: string, n: number, last: number) => void) | undefined;
 
   constructor(input: { keys: SessionKeys; role: E2eRole; onStale?: (channel: string, n: number, last: number) => void }) {
+    this.#historyStreams = input.keys.historyStreams === true;
     this.#sendKey = input.role === "host" ? input.keys.kHostToDevice : input.keys.kDeviceToHost;
     this.#receiveKey = input.role === "host" ? input.keys.kDeviceToHost : input.keys.kHostToDevice;
     this.#onStale = input.onStale;
@@ -280,6 +302,7 @@ export class E2eChannel {
       throw new E2eError("malformed", `${hdr.k} 帧不加密，请用 buildPlaintextEnvelope`);
     }
     const key = requireChannel(hdr);
+    this.#requireNegotiated(key);
     if (hdr.n !== (this.#sendSequences.get(key) ?? 0) + 1) {
       throw new E2eError(
         "sequence_out_of_order",
@@ -308,6 +331,7 @@ export class E2eChannel {
       throw new E2eError("malformed", `${hdr.k} 帧不是密文，请用 readPlaintextEnvelope`);
     }
     const channel = requireChannel(hdr);
+    this.#requireNegotiated(channel);
     const last = this.#receiveSequences.get(channel) ?? 0;
     if (hdr.n <= last) {
       this.#onStale?.(channel, hdr.n, last);
@@ -321,6 +345,12 @@ export class E2eChannel {
     });
     this.#receiveSequences.set(channel, hdr.n);
     return plaintext;
+  }
+
+  #requireNegotiated(channel: EnvelopeChannel): void {
+    if ((channel === "history" || channel === "catchup") && !this.#historyStreams) {
+      throw new E2eError("malformed", "history streams were not negotiated");
+    }
   }
 }
 

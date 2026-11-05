@@ -26,10 +26,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -127,6 +123,7 @@ data class E2eConnectOptions(
 private class E2eSession(val options: E2eConnectOptions) {
     var handshake: DeviceHandshake? = null
     var channel: E2eChannel? = null
+    var bootstrapReady = false
     val pending = ArrayDeque<JsonObject>()
     val lock = Any()
     /** 入站片的重组缓冲（issue 03）。每次重握手都换一套序号空间，所以那时要 clear()。 */
@@ -138,13 +135,33 @@ private class E2eSession(val options: E2eConnectOptions) {
     val room: String get() = options.hostId
 }
 
-class RelayClient(
+class RelayClient internal constructor(
     private val http: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)
         .build(),
     private val json: Json = Json { ignoreUnknownKeys = true },
+    private val socketFactory: (Request, RelayTransportMode, RelaySocketListener) -> RelaySocketConnection = { request, mode, listener -> RelaySocket(http, request, listener, mode = mode) },
 ) {
-    @Volatile private var webSocket: WebSocket? = null
+    private val relayLock = Any()
+    private var candidate: RelaySocketConnection? = null
+    private var switchAttempt = 0L
+    private var retirement: Job? = null
+    private var switchRelay: ((RelayTransportMode) -> Unit)? = null
+    @Volatile var desiredRelayMode = RelayTransportMode.WS
+        private set
+    @Volatile var relaySwitchPhase = "idle"
+        private set
+    @Volatile var relaySwitchError: String? = null
+        private set
+    @Volatile private var webSocket: RelaySocketConnection? = null
+    val relayTransportKind: RelayTransportKind? get() = webSocket?.kind
+    fun setRelayTransportMode(mode: RelayTransportMode) = synchronized(relayLock) { switchRelay?.invoke(mode) }
+    private fun retire(socket: RelaySocketConnection?) {
+        if (socket == null) return
+        socket.cancel()
+        val previous = retirement
+        retirement = reconnectScope.launch { previous?.join(); socket.cancelAndJoin() }
+    }
     private val reconnectScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var relayReconnect: Job? = null
     @Volatile private var lan: LanTransport? = null
@@ -184,7 +201,7 @@ class RelayClient(
     var onPathChanged: ((path: String, rttMs: Long?) -> Unit)? = null
 
     /**
-     * 加密通道状态变化（HS3 发出即 true；断开/重连/重握手即 false）。
+     * 加密通道状态变化（WS 在 HS3 发出后就绪；QUIC 还需 Host bootstrap）。
      *
      * 和 `connection == ONLINE` 是两回事：ONLINE 只代表中继认了这台手机。UI 与「进程激活」
      * 是否可用，看的是这条通道。
@@ -194,7 +211,7 @@ class RelayClient(
     /** 加密通道此刻是否可用（HS 走完、可以收发 data 帧）。 */
     fun hasE2eChannel(): Boolean {
         val state = e2e ?: return false
-        return synchronized(state.lock) { state.channel != null } || lan?.isReady == true
+        return synchronized(state.lock) { state.bootstrapReady } || lan?.isReady == true
     }
 
     suspend fun pair(relayUrl: String, code: String, deviceName: String): DeviceCredential = withContext(Dispatchers.IO) {
@@ -255,127 +272,225 @@ class RelayClient(
         // 连接照常成功、中继照常回 device.ready，但配对帧/HS1 永远发不出去（Android 侧从
         // f822ef9 起正是如此，整整一个 E2E 层没接上）。改成必填后，漏传是编译错误。
         e2eOptions: E2eConnectOptions,
+        relayMode: RelayTransportMode = RelayTransportMode.WS,
     ) {
-        requireSupportedRelay(device.relayUrl)
-        disconnect()
-        val request = Request.Builder().url("${device.relayUrl.trimEnd('/')}/v1/device").build()
-        trace(
-            "socket.connect relay=${device.relayUrl} e2e=" +
-                if (e2eOptions.pairingSession != null) "pair" else "hsk",
-        )
-        val connection = E2eSession(e2eOptions)
-        e2e = connection
-        messageSink = onMessage
-        binarySink = onBinaryMessage
-        updateLanEndpoints(e2eOptions.lanEndpoints)
-        lateinit var openRelay: () -> Unit
-        fun relayDown(reason: String?) {
-            webSocket = null
-            synchronized(connection.lock) {
-                connection.channel = null
-                connection.handshake = null
-            }
-            if (activePath != "lan") activePath = null
-            notifyE2eState(hasE2eChannel())
-            if (lanEndpoints.isNotEmpty() && connection.options.pskRoot != null) {
-                // LAN has an independent lifetime: even a failed initial Relay dial must not cancel it.
-                relayReconnect?.cancel()
-                relayReconnect = reconnectScope.launch {
-                    delay(2_000)
-                    if (e2e === connection) openRelay()
+        synchronized(relayLock) {
+            requireSupportedRelay(device.relayUrl)
+            disconnect()
+            desiredRelayMode = relayMode
+            val request = Request.Builder().url("${device.relayUrl.trimEnd('/')}/v1/device").build()
+            trace(
+                "socket.connect relay=${device.relayUrl} e2e=" +
+                    if (e2eOptions.pairingSession != null) "pair" else "hsk",
+            )
+            val connection = E2eSession(e2eOptions)
+            e2e = connection
+            messageSink = onMessage
+            binarySink = onBinaryMessage
+            updateLanEndpoints(e2eOptions.lanEndpoints)
+            lateinit var openRelay: () -> Unit
+            fun relayDown(reason: String?) {
+                val old = webSocket; webSocket = null
+                retire(old)
+                synchronized(connection.lock) {
+                    connection.channel = null
+                    connection.handshake = null
+                    connection.bootstrapReady = false
                 }
-            } else {
-                e2e = null
-                messageSink = null
-                binarySink = null
-                onClosed(reason)
-            }
-        }
-        val listener = object : WebSocketListener() {
-            /**
-             * 陈旧 socket 的守卫。
-             *
-             * `connect()` 开头会 `disconnect()` 掉旧 socket，而 OkHttp 的 `onClosed` 是**异步**投递的：
-             * 它常常晚于新连接建立（新连接还要做 TLS 握手，比一个 close 往返慢），于是旧 socket 的回调
-             * 会把**刚建好的** `e2e` 清成 null —— 新连接 `onOpen` 时看到 `e2e == null`，就只发
-             * `device.authenticate`，配对帧 / HS1 一个都发不出去：中继认了这台手机（device.ready →
-             * ONLINE），电脑那边却永远收不到任何帧。
-             *
-             * 所以每个回调都必须先确认「这个 socket 还是当前这个」。
-             */
-            private fun isCurrent(ws: WebSocket): Boolean = this@RelayClient.webSocket === ws
-
-            override fun onOpen(ws: WebSocket, response: Response) {
-                if (!isCurrent(ws)) {
-                    trace("socket.open_stale ignored")
-                    return
-                }
-                val authenticated = ws.send(buildJsonObject {
-                    put("type", "device.authenticate")
-                    put("protocolVersion", PROTOCOL_VERSION)
-                    put("credential", device.credential)
-                }.toString())
-                trace("socket.open authentication.queued=$authenticated")
-                // 中继在连接后不会主动问候：手机必须先发 PAIR 或 HS1。
-                // （这句话过去写成「Relay v3 …」——版本号写在注释里一样会腐烂，去掉。）
-                e2e?.let { state ->
-                    val session = state.options.pairingSession
-                    if (session != null) {
-                        sendV2Frame(
-                            PlaintextEnvelope.build(
-                                "pair", room = state.room, from = state.options.deviceId, to = state.options.hostId,
-                                body = session.request,
-                            ),
-                        )
-                        trace("e2e.pair.request_sent hostId=${state.options.hostId}")
-                    } else {
-                        startHandshake(state)
+                if (activePath != "lan") activePath = null
+                notifyE2eState(hasE2eChannel())
+                relaySwitchPhase = "offline"
+                if (candidate != null) return // The prepared replacement still owns recovery.
+                if (lanEndpoints.isNotEmpty() && connection.options.pskRoot != null) {
+                    // LAN has an independent lifetime: even a failed initial Relay dial must not cancel it.
+                    relayReconnect?.cancel()
+                    relayReconnect = reconnectScope.launch {
+                        delay(2_000)
+                        val retired = synchronized(relayLock) { retirement }
+                        retired?.join()
+                        synchronized(relayLock) {
+                            if (e2e === connection && webSocket == null && candidate == null) openRelay()
+                        }
                     }
-                } ?: trace("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）")
-                if (!hasE2eChannel()) onOpen()
-            }
-
-            override fun onMessage(ws: WebSocket, text: String) {
-                if (!isCurrent(ws)) return
-                traceIncoming(text)
-                if (!handleE2eText(text, onMessage)) {
-                    handleHostLifecycleNotice(text)
-                    // 明文消息（protocol.error / device.* 生命周期）没有信封，按控制面处理。
-                    onMessage(text, null)
+                } else {
+                    e2e = null
+                    messageSink = null
+                    binarySink = null
+                    onClosed(reason)
                 }
             }
+            val listener = object : RelaySocketListener {
+                /**
+                 * 陈旧 socket 的守卫。
+                 *
+                 * `connect()` 开头会 `disconnect()` 掉旧 socket，而 OkHttp 的 `onClosed` 是**异步**投递的：
+                 * 它常常晚于新连接建立（新连接还要做 TLS 握手，比一个 close 往返慢），于是旧 socket 的回调
+                 * 会把**刚建好的** `e2e` 清成 null —— 新连接 `onOpen` 时看到 `e2e == null`，就只发
+                 * `device.authenticate`，配对帧 / HS1 一个都发不出去：中继认了这台手机（device.ready →
+                 * ONLINE），电脑那边却永远收不到任何帧。
+                 *
+                 * 所以每个回调都必须先确认「这个 socket 还是当前这个」。
+                 */
+                private fun isCurrent(ws: RelaySocketConnection): Boolean = this@RelayClient.webSocket === ws
 
-            override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                if (!isCurrent(ws)) return
-                onBinaryMessage(bytes.toByteArray())
-            }
+                override fun onOpen(connection: RelaySocketConnection) {
+                    synchronized(relayLock) {
+                        val ws = connection
+                        if (!isCurrent(ws)) {
+                            trace("socket.open_stale ignored")
+                            return
+                        }
+                        relaySwitchPhase = "handshaking"
+                        val authenticated = ws.send(buildJsonObject {
+                            put("type", "device.authenticate")
+                            put("protocolVersion", PROTOCOL_VERSION)
+                            put("credential", device.credential)
+                        }.toString())
+                        trace("socket.open authentication.queued=$authenticated")
+                        // 中继在连接后不会主动问候：手机必须先发 PAIR 或 HS1。
+                        // （这句话过去写成「Relay v3 …」——版本号写在注释里一样会腐烂，去掉。）
+                        e2e?.let { state ->
+                            val session = state.options.pairingSession
+                            if (session != null) {
+                                sendV2Frame(
+                                    PlaintextEnvelope.build(
+                                        "pair", room = state.room, from = state.options.deviceId, to = state.options.hostId,
+                                        body = session.request,
+                                    ),
+                                )
+                                trace("e2e.pair.request_sent hostId=${state.options.hostId}")
+                            } else {
+                                startHandshake(state)
+                            }
+                        } ?: trace("socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）")
+                        if (!hasE2eChannel()) onOpen()
 
-            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
-                if (isCurrent(ws)) ws.close(code, reason)
-            }
-
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-                if (!isCurrent(ws)) {
-                    trace("socket.closed_stale ignored code=$code")
-                    return
+                    }
                 }
-                trace("socket.closed code=$code reason=${reason.ifBlank { "<empty>" }}")
-                relayDown(reason)
-            }
 
-            override fun onFailure(ws: WebSocket, error: Throwable, response: Response?) {
-                if (!isCurrent(ws)) {
-                    trace("socket.failure_stale ignored message=${error.message ?: error::class.simpleName}")
-                    return
+                override fun onMessage(connection: RelaySocketConnection, text: String) {
+                    synchronized(relayLock) {
+                        val ws = connection
+                        if (!isCurrent(ws)) return
+                        traceIncoming(text)
+                        if (!handleE2eText(text, onMessage)) {
+                            handleHostLifecycleNotice(text)
+                            // 明文消息（protocol.error / device.* 生命周期）没有信封，按控制面处理。
+                            onMessage(text, null)
+                        }
+
+                    }
                 }
-                trace("socket.failure message=${error.message ?: error::class.simpleName}")
-                relayDown(error.message)
+
+                override fun onBinaryMessage(connection: RelaySocketConnection, bytes: ByteArray) {
+                    synchronized(relayLock) {
+                        val ws = connection
+                        if (!isCurrent(ws)) return
+                        onBinaryMessage(bytes)
+
+                    }
+                }
+
+                override fun onClosed(connection: RelaySocketConnection, code: Int, reason: String) {
+                    synchronized(relayLock) {
+                        val ws = connection
+                        if (!isCurrent(ws)) {
+                            trace("socket.closed_stale ignored code=$code")
+                            return
+                        }
+                        trace("socket.closed code=$code reason=${reason.ifBlank { "<empty>" }}")
+                        relayDown(reason)
+
+                    }
+                }
+
+                override fun onFailure(connection: RelaySocketConnection, error: Throwable) {
+                    synchronized(relayLock) {
+                        val ws = connection
+                        if (!isCurrent(ws)) {
+                            trace("socket.failure_stale ignored message=${error.message ?: error::class.simpleName}")
+                            return
+                        }
+                        trace("socket.failure message=${error.message ?: error::class.simpleName}")
+                        relayDown(error.message)
+
+                    }
+                }
             }
+            openRelay = open@{
+                if (e2e === connection) {
+                    val retired = retirement
+                    if (retired != null && !retired.isCompleted) {
+                        relayReconnect = reconnectScope.launch {
+                            retired.join()
+                            synchronized(relayLock) {
+                                if (e2e === connection && webSocket == null && candidate == null) openRelay()
+                            }
+                        }
+                        return@open
+                    }
+                    val socket = socketFactory(request, desiredRelayMode, listener)
+                    webSocket = socket
+                    relaySwitchPhase = "preparing"
+                    socket.start()
+                }
+            }
+            switchRelay = switch@{ mode ->
+                if (desiredRelayMode == mode && candidate != null) return@switch
+                desiredRelayMode = mode; relaySwitchError = null
+                switchAttempt += 1
+                val attempt = switchAttempt
+                candidate?.cancel(); candidate = null
+                val active = webSocket
+                if (active?.kind != null && (mode == RelayTransportMode.AUTO || mode.name == active.kind?.name)) {
+                    relaySwitchPhase = if (connection.bootstrapReady) "active" else "handshaking"
+                    return@switch
+                }
+                val prepared = socketFactory(request, mode, object : RelaySocketListener {
+                    override fun onOpen(connection: RelaySocketConnection) {
+                        synchronized(relayLock) {
+                            if (e2e == null || attempt != switchAttempt || candidate !== connection) { connection.cancel(); return }
+                            relayReconnect?.cancel(); relayReconnect = null
+                            val old = webSocket; webSocket = null
+                            relaySwitchPhase = "retiring"
+                            e2e?.let { state -> synchronized(state.lock) {
+                                state.channel = null; state.handshake = null; state.bootstrapReady = false
+                                state.pending.clear(); state.reassembler.clear()
+                            } }
+                            notifyE2eState(hasE2eChannel())
+                            val previous = retirement
+                            retirement = reconnectScope.launch {
+                                previous?.join()
+                                old?.cancelAndJoin()
+                                synchronized(relayLock) {
+                                    if (attempt != switchAttempt || candidate !== connection || e2e == null) return@synchronized
+                                    candidate = null; webSocket = connection
+                                    listener.onOpen(connection)
+                                }
+                            }
+                        }
+                    }
+                    override fun onMessage(connection: RelaySocketConnection, text: String) = listener.onMessage(connection, text)
+                    override fun onBinaryMessage(connection: RelaySocketConnection, bytes: ByteArray) = listener.onBinaryMessage(connection, bytes)
+                    override fun onClosed(connection: RelaySocketConnection, code: Int, reason: String) {
+                        onFailure(connection, java.io.IOException(reason))
+                    }
+                    override fun onFailure(connection: RelaySocketConnection, error: Throwable) {
+                        synchronized(relayLock) {
+                            if (webSocket === connection) { listener.onFailure(connection, error); return }
+                            if (candidate !== connection || attempt != switchAttempt) return
+                            candidate = null; connection.cancel()
+                            relaySwitchError = error.message ?: "Relay transport preparation failed"
+                            relaySwitchPhase = if (webSocket == null) "offline" else "active"
+                            if (webSocket == null) relayDown(error.message)
+                        }
+                    }
+                })
+                candidate = prepared; relaySwitchPhase = "preparing"; prepared.start()
+            }
+            openRelay()
+
         }
-        openRelay = {
-            if (e2e === connection) webSocket = http.newWebSocket(request, listener)
-        }
-        openRelay()
     }
 
     private fun updateLanEndpoints(endpoints: List<LanEndpoint>) {
@@ -517,6 +632,7 @@ class RelayClient(
      * 返回 false（写被拒/通道未就绪）时不必重试——Host 的拉取循环会重发同一个 read。
      */
     fun sendUploadChunk(runtimeId: String, uploadId: String, offset: Long, data: ByteArray): Boolean {
+        return synchronized(relayLock) {
         val state = e2e ?: return false
         val frame = runCatching { encodeArtifactChunkFrame(runtimeId, uploadId, offset, data) }
             .getOrElse { error ->
@@ -528,6 +644,7 @@ class RelayClient(
         val direct = lan
         if (activePath == "lan" && direct?.isReady == true) return direct.sendBinary(frame, channel)
         return synchronized(state.lock) {
+            if (!state.bootstrapReady) return false
             val e2eChannel = state.channel ?: run {
                 trace("upload.chunk_rejected offset=$offset reason=no_relay_channel")
                 return false
@@ -538,6 +655,8 @@ class RelayClient(
             val sent = sendV2Frame(envelope)
             if (!sent) trace("upload.chunk_rejected offset=$offset bytes=${data.size} path=relay")
             sent
+        }
+
         }
     }
 
@@ -685,20 +804,27 @@ class RelayClient(
         }, commandId)
 
     fun disconnect() {
-        e2e = null
-        relayReconnect?.cancel()
-        relayReconnect = null
-        val oldSocket = webSocket
-        webSocket = null
-        oldSocket?.cancel()
-        val oldLan = lan
-        lan = null
-        lanEndpoints = emptyList()
-        oldLan?.close()
-        activePath = null
-        messageSink = null
-        binarySink = null
-        notifyE2eState(false)
+        synchronized(relayLock) {
+            switchAttempt += 1
+            switchRelay = null
+            candidate?.cancel(); candidate = null
+            relaySwitchPhase = "idle"
+            e2e = null
+            relayReconnect?.cancel()
+            relayReconnect = null
+            val oldSocket = webSocket
+            webSocket = null
+            retire(oldSocket)
+            val oldLan = lan
+            lan = null
+            lanEndpoints = emptyList()
+            oldLan?.close()
+            activePath = null
+            messageSink = null
+            binarySink = null
+            notifyE2eState(false)
+
+        }
     }
 
     /** 通知 UI 加密通道状态。回调可能在 WebSocket 读线程上执行。 */
@@ -718,7 +844,7 @@ class RelayClient(
         var sent = true
         for (piece in EnvelopePieces.fragment(envelope)) {
             val frame = V2Frame(type = "v2.frame", protocolVersion = PROTOCOL_VERSION, envelope = piece)
-            sent = (webSocket?.send(E2eJson.json.encodeToString(frame)) == true) && sent
+            sent = (webSocket?.send(E2eJson.json.encodeToString(frame), RelayLane.fromChannel(envelope.hdr.ch)) == true) && sent
         }
         return sent
     }
@@ -726,14 +852,16 @@ class RelayClient(
     /** 发 HS1。每次连接/换路都换一套临时密钥（spec §6.2）。 */
     private fun startHandshake(state: E2eSession) {
         val pskRoot = state.options.pskRoot ?: return
-        val handshake = DeviceHandshake(pskRoot)
+        val handshake = DeviceHandshake(pskRoot, supportsHistoryStreams = webSocket?.supportsHistoryStreams == true)
         synchronized(state.lock) {
             state.handshake = handshake
             state.channel = null
+            state.bootstrapReady = false
             state.pending.clear()
         }
         // 新会话 = 新的序号空间：上一条会话留下的半截消息永远凑不齐了。
         state.reassembler.clear()
+        webSocket?.setBusinessReady(false)
         sendV2Frame(
             PlaintextEnvelope.build(
                 "hs", room = state.room, from = state.options.deviceId, to = state.options.hostId,
@@ -813,12 +941,8 @@ class RelayClient(
                     state.channel = E2eChannel(handshake.sessionKeys(), E2eChannel.ROLE_DEVICE)
                 }
                 trace("e2e.hs.confirmed hostId=${state.options.hostId}")
-                notifyE2eState(true)
-                flushPending(state)
-                sendRelayPayload(state, buildJsonObject {
-                    put("type", "host.lan.request")
-                    put("protocolVersion", PROTOCOL_VERSION)
-                })
+                // WS retains its existing single-stream handshake contract.
+                if (webSocket?.kind == RelayTransportKind.WS) activateRelay(state)
             }
             "ping" -> {
                 val channel = synchronized(state.lock) { state.channel }
@@ -842,6 +966,10 @@ class RelayClient(
                     ?: throw Crypto.E2eCryptoException("not_ready", "握手尚未完成，收到 data")
                 val plaintext = synchronized(state.lock) { channel.open(envelope) } ?: return
                 val text = plaintext.toString(Charsets.UTF_8)
+                if (!state.bootstrapReady && envelope.hdr.ch == "ctl" &&
+                    runCatching { E2eJson.json.parseToJsonElement(text).jsonObject["type"]?.jsonPrimitive?.contentOrNull }.getOrNull() == "device.ready") {
+                    activateRelay(state)
+                }
                 if (handlePathControl(text)) return
                 // 把 `hdr.ch` 一并交出去：接收侧要按它分优先级派发，否则分片会堵住控制帧。
                 onMessage(text, envelope.hdr.ch)
@@ -857,6 +985,15 @@ class RelayClient(
         }
     }
 
+    private fun activateRelay(state: E2eSession) {
+        state.bootstrapReady = true
+        webSocket?.setBusinessReady(true)
+        relaySwitchPhase = "active"; relaySwitchError = null
+        notifyE2eState(true)
+        flushPending(state)
+        sendRelayPayload(state, buildJsonObject { put("type", "host.lan.request"); put("protocolVersion", PROTOCOL_VERSION) })
+    }
+
     /** 握手完成后把排队中的业务载荷按序发出去。 */
     private fun flushPending(state: E2eSession) {
         val batch: List<JsonObject>
@@ -870,6 +1007,7 @@ class RelayClient(
     }
 
     private fun sealAndSend(state: E2eSession, payload: JsonObject): Boolean {
+        return synchronized(relayLock) {
         val envelope = synchronized(state.lock) {
             val channel = state.channel ?: return false
             channel.seal(
@@ -882,6 +1020,8 @@ class RelayClient(
             )
         }
         return sendV2Frame(envelope)
+
+        }
     }
 
     /**
@@ -899,11 +1039,12 @@ class RelayClient(
      * - 否则走 Relay data 帧（握手未完成排队，完成后按序补发）。
      */
     private fun sendE2ePayload(state: E2eSession, payload: JsonObject, traceLabel: String): Boolean {
+        return synchronized(relayLock) {
         val direct = lan
         if (activePath == "lan" && direct?.isReady == true) {
             return direct.sendPayload(payload)
         }
-        val queued = synchronized(state.lock) { state.channel == null }
+        val queued = synchronized(state.lock) { !state.bootstrapReady }
         return if (queued) {
             synchronized(state.lock) { state.pending.add(payload) }
             trace("e2e.data.queued $traceLabel（握手未完成，已排队）")
@@ -911,17 +1052,22 @@ class RelayClient(
         } else {
             sealAndSend(state, payload)
         }
+
+        }
     }
 
     /** 把设备级 E2E 载荷发进 Relay 路径（用于在 Relay 握手后请求 LAN 地址）。 */
     private fun sendRelayPayload(state: E2eSession, payload: JsonObject): Boolean {
-        val queued = synchronized(state.lock) { state.channel == null }
+        return synchronized(relayLock) {
+        val queued = synchronized(state.lock) { !state.bootstrapReady }
         return if (queued) {
             synchronized(state.lock) { state.pending.add(payload) }
             trace("e2e.data.queued type=${payload["type"]?.jsonPrimitive?.contentOrNull ?: "<missing>"}（握手未完成，已排队）")
             true
         } else {
             sealAndSend(state, payload)
+        }
+
         }
     }
 

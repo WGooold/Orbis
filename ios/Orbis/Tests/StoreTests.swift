@@ -1100,7 +1100,7 @@ struct StoreTests {
         #expect((known["head"] as? [String: Any])?["leafId"] as? String == "e5")
     }
 
-    @Test func historyPageSurvivesLiveAppendAndKeepsTheNewerHead() async throws {
+    @Test(arguments: ["msg", "history"]) func historyPageSurvivesLiveAppendAndKeepsTheNewerHead(channel: String) async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [2, 3], hasOlder: true))
         #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
@@ -1109,7 +1109,7 @@ struct StoreTests {
             "source": ["epoch": "source", "seq": 2, "ready": true], "head": ["leafId": "e4"],
             "entries": [["entryId": "e4", "parentId": "e3"]],
             "display": ["entries": [["entryId": "e4", "message": message("m4", text: "row 4")]]]], sequence: 2)
-        await transport.event(rangeSnapshot(history, ids: [1]), sequence: 3)
+        await transport.event(rangeSnapshot(history, ids: [1]), sequence: 3, channel: channel)
         #expect(store.messages.map(\.text) == ["row 1", "row 2", "row 3", "row 4"])
         #expect(store.historyErrors["a"] == nil)
         #expect(store.historyLoading.isEmpty)
@@ -1151,7 +1151,7 @@ struct StoreTests {
         #expect(child.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .failed)
     }
 
-    @Test func backgroundCatchupAdvancesAcrossMultipleForwardPages() async throws {
+    @Test(arguments: ["msg", "catchup"]) func backgroundCatchupAdvancesAcrossMultipleForwardPages(channel: String) async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
         var last = 0
@@ -1160,7 +1160,7 @@ struct StoreTests {
             #expect(request["targetLeafId"] as? String == "e498")
             #expect(request["knownLeafId"] as? String == (last == 0 ? nil : "e\(last)"))
             let end = min(498, last + 128)
-            await transport.event(rangeSnapshot(request, ids: Array((last + 1)...end), complete: end == 498), sequence: page + 2)
+            await transport.event(rangeSnapshot(request, ids: Array((last + 1)...end), complete: end == 498), sequence: page + 2, channel: channel)
             last = end
         }
         #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.count == 4)

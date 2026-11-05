@@ -77,4 +77,24 @@ UI 状态仍由原主线程拥有者提交；独立 Task 不自动代表后台�
 
 ## 2026-11-04 传输专项
 
-[ADR-0063](0063-native-quic-relay-transport.md) 独立验证手机到 Relay 的 QUIC 承载（R62）。本 ADR 的消费端 / 主线程优化和 R57 未完成门禁保持；QUIC 性能不得冒充长会话 UI 优化验收，WS 经同机 Hysteria 2 的用户体验属于对照线索。
+[ADR-0065](0065-native-quic-relay-transport.md) 独立验证手机到 Relay 的 QUIC 承载（R67）。本 ADR 的消费端 / 主线程优化和 R57 未完成门禁保持；QUIC 性能不得冒充长会话 UI 优化验收，WS 经同机 Hysteria 2 的用户体验属于对照线索。
+
+同日[文档与业务复核](../architecture/native-quic-transport-review.md) 修订 QUIC 为三通道映射、Go 原生调度；当前代码仍是单流候选。多流接收必须保持本 ADR 的每路径 worker 独占 / 代次隔离和通道内 FIFO，不能用并发解密破坏高水位语义，也不提高现有 UI 门禁状态。epoch / bootstrap 屏障与 Apple 上行调度尚待完成，见 Q07–Q10。
+
+同日[历史 ADR 故障审查](../architecture/native-quic-transport-lessons.md)补充 Q11–Q13：接收过载曾引发 OOM / 重连循环，来源累计 live 与 WS 节拍也曾分别造成排队和快网吞吐回退。QUIC 须保持本 ADR 的消费端优化和错误 / 归属语义，分别测网络、解码、SQLite 与 UI；先复用已有准入 / mux / 预算，以对照测试定位必要的边界修改，不预设新的信用协议或全链路预算重构。该审查不重跑或提升 R57 既有结果。
+
+可切换设计按 ADR-0065 §3 / Q14：Relay 专属生命周期保留 LAN / 多 Host 隔离，候选准备不改变当前业务连接，退休后重建当前 Relay 的解码 / E2E 拥有者；旧任务提交前仍验证归属。真实 WS / QUIC 单流对照与服务端交接回归通过不代表本 ADR 的手机消费 / UI 门禁完成。
+
+原功能回归按 [R67 功能矩阵](../testing/native-quic-functional-regression.md)执行；原 HostService 业务套件 WS / QUIC 模式各 54/54 是业务集成层结果，不代替本 ADR 的实际手机历史落库 / applied、阅读锚点、消费成本和 UI 验收。
+
+2026-11-04 按 [NQ tickets](../agents/native-quic-tickets.md) 实施，NQ-01 只接入双端传输共用接口与首次连接模式；未调整本文解码 / 消费 / SQLite 预算，未完成的 R57 / R67 设备与现场门禁保持。
+
+2026-11-04 R67 v2 实施：原生 QUIC 按 ctl/msg/bulk 拆为同连接三流，仍复用本 ADR 的来源减量、worker、消费预算和 UI 规则。每 Host 模式与 Relay-only 切换已接入；WS 默认及既有 LAN 优先保持。Android 693/693、Swift 370/370、HostService 原 54 项加 3 项交接、两承载各 57/57 的本机结果不作为真机性能结论；设备与 Q06/Q12/完整 Q13 待验，见 ADR-0065 / tickets。
+
+2026-11-04 NQ-13 按 ADR-0065 §10 试验当前聊天 / 后台历史隔离：preview/live 保持 msg，显式 background 的 Relay catchup 用 bulk，手动 history 保持 msg；源版本、SQLite applied、消息身份和消费预算保持。历史 data 溢出需走同步恢复，不能套文件静默丢片。受控夹具与真机分开验收，见 [试验方案](../testing/native-quic-chat-history-isolation.md)。
+
+本轮[结果报告](../testing/native-quic-chat-history-results-20261104.md)：受控三轮确认后台阻塞时 msg / ctl 继续到达且历史恢复后完整；两段 QUIC 的公网诊断 msg p95 中位数 6.022→0.569 秒，后台 goodput 中位数 6.82→1.15 Mbit/s。仅后台 catchup 进入显式试验，首屏 / 手动 history 保留前台；两端原自动套件无新增失败，但既有阅读相关失败仍在。Mac 参考端的诊断结果不代替实际手机、Agent、SQLite 或显示测量；R57 / R67 完整门禁不提升，默认 WS/shared 保持。
+
+2026-11-05 NQ-14：依 ADR-0065 §11 将 history / catchup / bulk 分开，原消息 / SQLite applied / 来源依赖与阅读锚点保持，新增通道共用原历史预算。用户要求本轮仅做[功能回归](../testing/native-quic-five-stream-functional-regression.md)，不再测速；不以拆流声明本 ADR 的真机停更或完整 R57 门禁已经解决。
+
+五流实现、核心功能通过、Android 同设备原套件无新增失败及 iOS 设备边界见[本轮结果](../testing/native-quic-five-stream-results-20261105.md)。原 53 个设备用例源码文件保留，既有慢同步失败与未满足真实环境前提如实记录；不将传输功能验证等同于本 ADR 的现场 / UI 全部门禁。

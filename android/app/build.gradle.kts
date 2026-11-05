@@ -70,7 +70,17 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 
+val relayQuicAar = layout.buildDirectory.file("generated/relayquic/relayquic.aar")
+val buildRelayQuic by tasks.registering(Exec::class) {
+    val root = rootProject.projectDir.parentFile
+    inputs.dir(root.resolve("native/relayquic"))
+    inputs.file(root.resolve("scripts/build-relay-quic.py"))
+    outputs.file(relayQuicAar)
+    commandLine("python3", root.resolve("scripts/build-relay-quic.py"), relayQuicAar.get().asFile, android.sdkDirectory)
+}
+
 dependencies {
+    implementation(files(relayQuicAar).builtBy(buildRelayQuic))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.camera:camera-camera2:1.4.2")

@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { generateX25519KeyPair, toBase64Url } from "@orbis/e2e";
 import { PROTOCOL_VERSION, RelayToDeviceMessageSchema, RecoverableSessionSource, selectSessionSyncSnapshot } from "@orbis/protocol";
 import { DeviceLink } from "../packages/host/dist/device-link.js";
+import { relayHistoryMode } from "../packages/host/dist/history-delivery.js";
 import { SessionSyncTasks } from "../packages/host/dist/session-sync-tasks.js";
 import { AgentStateRegistry } from "../packages/host/dist/agent-state-registry.js";
 import { AgentStateFacts } from "../packages/host/dist/agent-state-facts.js";
@@ -123,7 +124,8 @@ ws.on("connection", (socket) => {
       stats.set(deviceId, stats.get(deviceId) ?? { requests: 0, generated: 0, entries: 0, wireBytes: 0, pieces: 0, peakQueueBytes: 0, ranges: [], ids: [] });
       const gate = { until: 0, tokens: 32768, at: Date.now() };
       gates.set(deviceId, gate);
-      link = new DeviceLink({ hostId, device: { deviceId, devicePub: toBase64Url(generateX25519KeyPair().publicRaw),
+      link = new DeviceLink({ hostId, relayHistoryMode: relayHistoryMode(process.env.ORBIS_TEST_RELAY_HISTORY_MODE),
+        device: { deviceId, devicePub: toBase64Url(generateX25519KeyPair().publicRaw),
         pskRoot, label: "isolated sync fixture", createdAt: 0, revoked: false }, probeIntervalMs: 0,
         onSessionReady: () => {
           tasks.clearDevice(deviceId);
@@ -161,7 +163,7 @@ ws.on("connection", (socket) => {
       const sink = (envelope) => {
         if (socket.readyState !== WebSocket.OPEN) throw new Error("fixture_socket_closed");
         const encoded = JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope });
-        if (envelope.hdr.ch === "msg") {
+        if (envelope.hdr.ch === "msg" || envelope.hdr.ch === "bulk") {
           gate.tokens -= Buffer.byteLength(encoded);
           const record = stats.get(deviceId);
           record.wireBytes += Buffer.byteLength(encoded);

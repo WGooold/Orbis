@@ -64,6 +64,44 @@ struct ProtocolTests {
         #expect(forged.keys == nil)
     }
 
+    @Test func fiveStreamCapabilityIsAuthenticatedAndLegacyHandshakeRemainsUsable() throws {
+        let ephemeral = try DeviceIdentity.load(raw: Data(repeating: 0x44, count: 32))
+        let handshake = DeviceHandshake(pskRoot: try Base64URL.decode(Vectors.root), ephemeral: ephemeral, supportsHistoryStreams: true)
+        let body: [String: Any] = ["type": "hs2", "ePubH": Vectors.hostEphemeral, "macH": Vectors.handshakeMacH, "historyStreams": "v1", "historyMac": "kb6D5m5K52lSkwlb1HBJf4ndTyal8PhR5GQ8xzlg-cA"]
+        var forged = body; forged["historyMac"] = Vectors.pairMacH
+        #expect(throws: (any Error).self) { try handshake.accept(forged) }
+        #expect(handshake.keys == nil)
+        let result = try handshake.accept(body)
+        #expect(result["historyStreams"] as? String == "v1")
+        #expect(result["macD"] as? String == "Vx94-gWop5AEkfQeSPBUUxVxxmG2VS6IcF01kqlt16k")
+        #expect(handshake.keys?.historyStreams == true)
+        let legacy = DeviceHandshake(pskRoot: try Base64URL.decode(Vectors.root), ephemeral: ephemeral, supportsHistoryStreams: true)
+        let old = try legacy.accept(["type": "hs2", "ePubH": Vectors.hostEphemeral, "macH": Vectors.handshakeMacH])
+        #expect(old["historyStreams"] == nil)
+        #expect(old["macD"] as? String == Vectors.handshakeMacD)
+        #expect(legacy.keys?.historyStreams == false)
+    }
+
+    @Test func fiveStreamsKeepNonceReplayAndFragmentationIndependent() throws {
+        var keys = try Vectors.keys(); keys.historyStreams = true
+        let host = E2EChannel(keys: SessionKeys(hostToDevice: keys.deviceToHost, deviceToHost: keys.hostToDevice, historyStreams: true))
+        let receiver = E2EChannel(keys: keys)
+        let payload = Data(String(repeating: "history🙂", count: 6000).utf8)
+        let catchup = try host.seal(room: "r", from: "h", to: "d", channel: "catchup", payload: payload)
+        let history = try host.seal(room: "r", from: "h", to: "d", channel: "history", payload: payload)
+        let live = try host.seal(room: "r", from: "h", to: "d", channel: "msg", payload: Data("live".utf8))
+        #expect(try receiver.open(live) == Data("live".utf8))
+        let pieces = EnvelopeReassembler()
+        var complete: Envelope?
+        for piece in EnvelopePieces.fragment(history) { if let value = pieces.accept(piece) { complete = value } }
+        #expect(try receiver.open(try #require(complete)) == payload)
+        #expect(try receiver.open(catchup) == payload)
+        #expect(try receiver.open(history) == nil)
+        #expect(try E2ECrypto.frameNonce(channel: "history", sequence: 1) != E2ECrypto.frameNonce(channel: "catchup", sequence: 1))
+        let old = E2EChannel(keys: try Vectors.keys())
+        #expect(throws: (any Error).self) { try old.open(history) }
+    }
+
     @Test func aadAndCiphertextMatchWireVectors() throws {
         let channel = E2EChannel(keys: try Vectors.keys())
         let envelope = try channel.seal(room: "host-1", from: "device-1", to: "host-1", channel: "ctl", payload: Data("{\"type\":\"device.ready\"}".utf8))

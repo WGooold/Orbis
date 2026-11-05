@@ -35,8 +35,10 @@ import {
 import {
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
+  RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
   EnvelopeReassembler,
+  fragmentEnvelope,
   decodeArtifactChunkFrame,
   encodeArtifactChunkFrame,
   type CodexDesktopAttach,
@@ -46,7 +48,8 @@ import {
   type RuntimeMetadata,
   type ToolContentReadRequest, type ToolInventorySnapshot,
 } from "@orbis/protocol";
-import { createRelayServer, type RelayServer } from "@orbis/relay";
+import { type RelayServer } from "@orbis/relay";
+import { createBusinessRelayServer as createRelayServer, relayBusinessHostOptions, restartBusinessHostQUIC } from "./fixtures/relay-business-transport.js";
 
 import { HostService, channelForDeviceMessage } from "./host-service.js";
 import type { ActivePathChange } from "./device-link.js";
@@ -57,6 +60,7 @@ import type { DshConnection } from "./dsh-client.js";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
+import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
 
@@ -157,7 +161,7 @@ class TcpProxy {
  */
 type Incoming =
   | { kind: PathKind; envelope: EnvelopeV2 }
-  | { kind: PathKind; payload: Buffer };
+  | { kind: PathKind; payload: Buffer; channel?: string };
 
 /** 一条路径的假手机端：一个 socket + 一套只属于这条路径的会话密钥。 */
 class TestPath {
@@ -220,7 +224,7 @@ class TestPath {
           this.seal("ping", payload);
           continue;
         }
-        this.#onIncoming({ kind: this.kind, payload });
+        this.#onIncoming({ kind: this.kind, payload, channel: complete.hdr.ch! });
       }
     } finally {
       this.#draining = false;
@@ -246,7 +250,7 @@ class TestPath {
 
   /** HS1 → HS2 → HS3，密钥全部由自己这一侧算出来。 */
   async openChannel(pskRoot: Buffer, room: string, hostId: string, deviceId: string): Promise<void> {
-    const handshake = new DeviceHandshake(pskRoot);
+    const handshake = new DeviceHandshake(pskRoot, this.kind === "relay" && process.env.ORBIS_TEST_HISTORY_STREAMS === "1");
     this.#room = room;
     this.#hostId = hostId;
     this.#deviceId = deviceId;
@@ -275,14 +279,16 @@ class TestPath {
   }
 
   send(envelope: EnvelopeV2): void {
-    this.socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope }));
+    for (const piece of fragmentEnvelope(envelope)) {
+      this.socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope: piece }));
+    }
   }
 
-  seal(kind: "data" | "bin" | "ping", payload: Uint8Array): EnvelopeV2 {
+  seal(kind: "data" | "bin" | "ping", payload: Uint8Array, lane: "ctl" | "bulk" = "ctl"): EnvelopeV2 {
     const channel = this.#channel;
     if (channel === undefined) throw new Error(`${this.kind} 上的握手尚未完成`);
     const envelope = channel.seal(
-      { k: kind, room: this.#room, from: this.#deviceId, to: this.#hostId, n: channel.nextSequence("ctl"), ch: "ctl" },
+      { k: kind, room: this.#room, from: this.#deviceId, to: this.#hostId, n: channel.nextSequence(lane), ch: lane },
       payload,
     );
     this.send(envelope);
@@ -312,7 +318,7 @@ class TestDevice {
   readonly #inbox: Incoming[] = [];
   readonly #waiters = new Set<(incoming: Incoming) => void>();
 
-  private constructor(deviceId: string) {
+  private constructor(deviceId: string, private readonly relayURL: string, private readonly credential: string) {
     this.deviceId = deviceId;
   }
 
@@ -333,7 +339,7 @@ class TestDevice {
     if (!response.ok) throw new Error(`配对码兑换失败：HTTP ${response.status}`);
     const paired = await response.json() as { deviceId: string; credential: string };
 
-    const socket = new WebSocket(`${input.relayUrl}/v1/device`);
+    const socket = new WebSocket(await relayBusinessDeviceURL(`${input.relayUrl}/v1/device`));
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve);
       socket.once("error", reject);
@@ -344,7 +350,7 @@ class TestDevice {
       credential: paired.credential,
     }));
 
-    const device = new TestDevice(paired.deviceId);
+    const device = new TestDevice(paired.deviceId, `${input.relayUrl}/v1/device`, paired.credential);
     device.#install("relay", socket);
     return { device, payload };
   }
@@ -384,6 +390,21 @@ class TestDevice {
     await this.#require(kind).openChannel(pskRoot, room, hostId, this.deviceId);
   }
 
+  /** Reference-phone handover: prepare unauthed, join old socket, then authenticate with the same identity. */
+  async replaceRelay(mode: "ws" | "quic", pskRoot: Buffer, hostId: string): Promise<void> {
+    const socket = new WebSocket(await relayBusinessDeviceURL(this.relayURL, mode));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve); socket.once("error", reject);
+      });
+      const old = this.#require("relay");
+      await new Promise<void>(resolve => { old.socket.once("close", resolve); old.close(); });
+      this.#install("relay", socket);
+      socket.send(JSON.stringify({ type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: this.credential }));
+      await this.openChannel("relay", pskRoot, hostId, hostId);
+    } catch (error) { socket.close(); throw error; }
+  }
+
   get active(): PathKind | undefined {
     return this.#active;
   }
@@ -398,8 +419,8 @@ class TestDevice {
   }
 
   /** 上传分片走的是 `bin` 帧：与下载回程同一条路、同一套密钥，只是方向相反。 */
-  sendBinary(payload: Uint8Array): EnvelopeV2 {
-    return this.#outbound().seal("bin", payload);
+  sendBinary(payload: Uint8Array, lane: "ctl" | "bulk" = "ctl"): EnvelopeV2 {
+    return this.#outbound().seal("bin", payload, lane);
   }
 
   sendCommand(runtimeId: string, commandId: string, command: unknown): EnvelopeV2 {
@@ -446,6 +467,26 @@ class TestDevice {
       this.#active = message.path as PathKind;
     }
     return message;
+  }
+
+  /** Correlated replies may be interleaved with authenticated path/notification
+   * updates. Validate those updates without extending the original 5s budget. */
+  async receiveReply(requestId: string): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`等待 ${requestId} 回复超时（5000ms）`);
+      const incoming = await this.nextIncoming(remaining);
+      if (!("payload" in incoming)) throw new Error("期待回复，收到握手帧");
+      const message = JSON.parse(incoming.payload.toString("utf8")) as Record<string, unknown>;
+      if (message.type === "device.path" || message.type === "notification.snapshot") {
+        const validated = RelayToDeviceMessageSchema.parse(message);
+        if (validated.type === "device.path") this.#active = validated.path;
+        continue;
+      }
+      expect(message.requestId).toBe(requestId);
+      return message;
+    }
   }
 
   /** 等一条**握手/配对**帧（那时还没有会话密钥，拿到的是信封本身）。 */
@@ -642,7 +683,7 @@ describe("host end-to-end over relay", () => {
   it("persists Android version reports received only through the encrypted device channel", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-android-version-e2e-"));
     relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
     await host.start();
     const paired = await pairDevice({ relay, host });
     device = paired.device;
@@ -671,39 +712,39 @@ describe("host end-to-end over relay", () => {
     const paths = { pi: join(stateDir, "pi"), codex: join(stateDir, "codex"), dsh: join(stateDir, "dsh") };
     const providers = new ProviderManager(stateDir, paths);
     await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true, false, { notes: "private-notes-never-send", usageScript: { enabled: false, language: "javascript", timeout: 10, code: "private-script-never-send" } });
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
     await host.start();
     const paired = await pairDevice({ relay, host }); device = paired.device;
     await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     await device.receiveMessage(); await device.receiveMessage();
     device.sendData(JSON.stringify({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "list", kind: "pi" }));
-    const list = await device.receiveMessage();
+    const list = await device.receiveReply("list");
     expect(list).toMatchObject({ type: "provider.result", requestId: "list", providers: [{ id: "custom", enabled: false }] });
     expect(JSON.stringify(list)).not.toContain("never-send-this");
     expect(JSON.stringify(list)).not.toContain("private-notes-never-send");
     expect(JSON.stringify(list)).not.toContain("private-script-never-send");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "switch", kind: "pi", id: "custom", enabled: true }));
-    const switched = await device.receiveMessage();
+    const switched = await device.receiveReply("switch");
     expect(switched).toMatchObject({ type: "provider.result", requestId: "switch", providers: [{ id: "custom", enabled: true }] });
     expect(JSON.parse(readFileSync(join(paths.pi, "models.json"), "utf8")).providers.custom.apiKey).toBe("never-send-this");
     expect(JSON.stringify(switched)).not.toContain("never-send-this");
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "missing", kind: "pi", id: "missing", enabled: true }));
-    expect(await device.receiveMessage()).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
+    expect(await device.receiveReply("missing")).toMatchObject({ type: "provider.result", requestId: "missing", error: expect.any(String) });
     const claude = (await providers.list("claude"))[0]!;
     await providers.save("claude", "vendor", "Vendor", { env: { ANTHROPIC_BASE_URL: "https://vendor.test", ANTHROPIC_AUTH_TOKEN: "claude-secret-never-send" } }, true);
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "claude-switch", kind: "claude", id: "vendor", enabled: true }));
-    const claudeResult = await device.receiveMessage();
+    const claudeResult = await device.receiveReply("claude-switch");
     expect(claudeResult).toMatchObject({ type: "provider.result", requestId: "claude-switch", kind: "claude" });
     expect(JSON.stringify(claudeResult)).not.toContain("claude-secret-never-send");
     await providers.switch("claude", claude.id);
     const quota = { checkedAt: 100, windows: [{ name: "five_hour" as const, remainingPercent: 75, resetsAt: 200 }, { name: "seven_day" as const, remainingPercent: null, resetsAt: null }] };
     const query = vi.spyOn(providers, "querySubscription").mockResolvedValue(quota);
     device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota", kind: "claude", id: claude.id }));
-    expect(await device.receiveMessage()).toMatchObject({ type: "provider.subscription.result", requestId: "quota", kind: "claude", id: claude.id, quota });
+    expect(await device.receiveReply("quota")).toMatchObject({ type: "provider.subscription.result", requestId: "quota", kind: "claude", id: claude.id, quota });
     expect(query).toHaveBeenCalledWith("claude", claude.id);
     query.mockRejectedValueOnce(new Error("secret-upstream-body"));
     device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "quota-failed", kind: "claude", id: claude.id }));
-    const failure = await device.receiveMessage();
+    const failure = await device.receiveReply("quota-failed");
     expect(failure).toMatchObject({ type: "provider.subscription.result", requestId: "quota-failed", id: claude.id, error: expect.any(String) });
     expect(JSON.stringify(failure)).not.toContain("secret-upstream-body");
     query.mockRestore();
@@ -712,6 +753,7 @@ describe("host end-to-end over relay", () => {
   afterEach(async () => {
     runtime?.close();
     device?.close();
+    const transportCleanup = await stopRelayBusinessTransports().then(() => undefined, error => error);
     await host?.stop();
     await proxy?.close();
     await relay?.close();
@@ -722,6 +764,7 @@ describe("host end-to-end over relay", () => {
     runtime = undefined;
     stateDir = undefined;
     proxy = undefined;
+    if (transportCleanup) throw transportCleanup;
   });
 
   const startRelay = async (dir: string): Promise<RelayServer> => await createRelayServer({
@@ -751,9 +794,102 @@ describe("host end-to-end over relay", () => {
     return { device: connected.device, payload: opened.payload, pskRoot };
   };
 
+  // Default runs exercise WS reconnection; the QUIC run exercises QUIC→WS→QUIC
+  // with the same assertions. These are real Host tests, not native mobile/UI tests.
+  const handoverModes = (side: "device" | "host"): ("ws" | "quic")[] => ["ws",
+    (side === "host" ? process.env.ORBIS_TEST_HOST_TRANSPORT : process.env.ORBIS_TEST_RELAY_TRANSPORT) === "quic" ? "quic" : "ws"];
+  const handover = async (side: "device" | "host", mode: "ws" | "quic", psk: Buffer, hostId: string): Promise<void> => {
+    if (side === "device") await device!.replaceRelay(mode, psk, hostId);
+    else {
+      await host!.setRelayTransportMode(mode);
+      expect(host!.relayTransportKind).toBe(mode);
+      await device!.openChannel("relay", psk, hostId, hostId);
+    }
+  };
+  const readMatching = async (phone: TestDevice, predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
+    for (let count = 0; count < 100; count++) {
+      const message = await phone.receiveMessage();
+      if (message.type === "protocol.error") throw new Error(JSON.stringify(message));
+      if (predicate(message)) return message;
+    }
+    throw new Error("Expected handover business message did not arrive");
+  };
+
+  it.each(["device", "host"] as const)("keeps accepted commands and pending interaction results across Relay handovers without dispatching twice (%s)", async side => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-handover-command-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-handover", name: "handover", cwd: stateDir, status: "idle", sessionId: "s" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    let sequence = 0;
+    for (const [index, mode] of handoverModes(side).entries()) {
+      const requestId = `question-${index}`; const commandId = `accepted-${index}`;
+      runtime.publish(++sequence, { type: "interaction.requested", request: { runtimeId: "pi-handover", requestId,
+        extensionId: "ask", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+      await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "interaction.requested");
+      device.sendCommand("pi-handover", commandId, { type: "stop" });
+      await expect(runtime.next()).resolves.toMatchObject({ commandId, command: { type: "stop" } });
+      // The backend accepted the command, but neither its result nor the pending interaction's terminal event has been sent.
+      await handover(side, mode, paired.pskRoot, paired.payload.hostId);
+      await readMatching(device, message => message.type === "device.path");
+      await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.resync", reason: "device_reconnected" });
+      runtime.publish(++sequence, { type: "command.result", commandId, ok: true });
+      expect(await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "command.result"))
+        .toMatchObject({ event: { commandId, ok: true } });
+      runtime.publish(++sequence, { type: "interaction.resolved", requestId, source: "remote" });
+      expect(await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "interaction.resolved"))
+        .toMatchObject({ event: { requestId, source: "remote" } });
+      // A later command on the same backend connection is a FIFO barrier: a replay would be observed before it.
+      device.sendCommand("pi-handover", `barrier-${index}`, { type: "stop" });
+      await expect(runtime.next()).resolves.toMatchObject({ commandId: `barrier-${index}` });
+      runtime.publish(++sequence, { type: "command.result", commandId: `barrier-${index}`, ok: true });
+      await readMatching(device, message => (message.event as Record<string, unknown>)?.commandId === `barrier-${index}`);
+    }
+  });
+
+  it.each(["device", "host"] as const)("recovers an unacknowledged snapshot across Relay handover without a permanently busy sync (%s)", async side => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-handover-sync-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-handover-sync", name: "sync", cwd: stateDir, status: "idle", sessionId: "s" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    device.sendCommand("pi-handover-sync", "ack-capability", { type: "session.snapshot.ack", syncId: "prior-session", result: "applied" });
+    const request = { type: "session.sync", sessionId: "s", syncId: "pending-snapshot", range: "preview" };
+    device.sendCommand("pi-handover-sync", "sync-command", request);
+    const forwarded = await runtime.next();
+    runtime.publish(1, { type: "session.snapshot", sessionId: "s", syncId: (forwarded.command as { syncId: string }).syncId,
+      range: "preview", cursor: { leafId: null }, mode: "replace", entries: [], complete: true,
+      source: { epoch: "handover-source", seq: 0, ready: true }, checkpoint: { checkpointId: "c", head: { leafId: null }, headCompleteness: "complete", inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+    const original = await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "session.snapshot");
+    // Deliberately withhold applied. The reference client only retries this read-only sync, never a user command.
+    for (const mode of handoverModes(side)) {
+      await handover(side, mode, paired.pskRoot, paired.payload.hostId);
+      await readMatching(device, message => message.type === "device.path");
+      device.sendCommand("pi-handover-sync", "sync-command", request);
+      const recovered = await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "session.snapshot");
+      const snapshot = original.event as Record<string, unknown>;
+      expect(recovered.event).toEqual({ ...snapshot,
+        checkpoint: { ...(snapshot.checkpoint as Record<string, unknown>), checkpointId: "host:handover-source:0" },
+        hasOlder: false, rangeStatus: "complete", selection: "snapshot", turnTimings: [] });
+    }
+    device.sendCommand("pi-handover-sync", "applied", { type: "session.snapshot.ack", syncId: request.syncId, result: "applied" });
+    device.sendCommand("pi-handover-sync", "after-applied", { ...request, syncId: "after-applied" });
+    expect(await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "session.snapshot"))
+      .toMatchObject({ event: { syncId: "after-applied", source: { epoch: "handover-source", seq: 0 } } });
+  });
+
   it("recovers independent notification state and device dismissals over encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-notices-")); relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
     await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
     await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     const ready = await device.receiveMessage(); await device.receiveMessage();
@@ -800,7 +936,7 @@ describe("host end-to-end over relay", () => {
     { terminal: { type: "interaction.cancelled", requestId: "answer", reason: "cancelled" }, message: "交互已取消" },
   ] as const)("keeps only the appropriate interaction feedback for $terminal", async ({ terminal, message }) => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-interaction-notices-")); relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
     await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
     await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     await device.receiveMessage(); await device.receiveMessage();
@@ -831,10 +967,56 @@ describe("host end-to-end over relay", () => {
     }
   });
 
+  it.each(["shared", "background"] as const)("%s history mode preserves encrypted preview/history/catchup and applied ACKs", async historyMode => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-history-isolation-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      relayHistoryMode: historyMode, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); await device.receiveMessage();
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-history", name: "history", cwd: "/work", status: "idle", sessionId: "s" } });
+    await runtime.next(); await device.receiveMessage();
+    let sequence = 0;
+    for (const range of ["preview", "history", "catchup"] as const) {
+      device.sendCommand("pi-history", range, { type: "session.sync", sessionId: "s", syncId: range, range });
+      const forwarded = await runtime.next();
+      const command = forwarded.command as { syncId: string; range: string };
+      expect(command.range).toBe(range);
+      runtime.publish(++sequence, { type: "session.snapshot", sessionId: "s", syncId: command.syncId, range,
+        cursor: { leafId: null }, mode: range === "preview" ? "replace" : "prepend", entries: [], complete: true,
+        source: { epoch: "isolation-source", seq: 0, ready: true },
+        ...(range !== "preview" ? {} : {
+          checkpoint: { checkpointId: "isolation-source:0", head: { leafId: null }, headCompleteness: "complete", inventoryComplete: true },
+          live: { complete: true, turn: null, messages: [], tools: [] },
+        }),
+      });
+      let received = false;
+      for (let i = 0; i < 10; i++) {
+        const incoming = await device.nextIncoming();
+        if (!("payload" in incoming)) throw new Error("unexpected handshake");
+        const message = JSON.parse(incoming.payload.toString()) as { event?: { type: string; syncId?: string; range?: string } };
+        if (message.event?.type !== "session.snapshot" || message.event.syncId !== range) continue;
+        expect(message.event.range).toBe(range);
+        const independent = historyMode === "background" && process.env.ORBIS_TEST_HISTORY_STREAMS === "1";
+        expect(incoming.channel).toBe(independent && range === "history" ? "history" : historyMode === "background" && range === "catchup" ? (independent ? "catchup" : "bulk") : "msg");
+        received = true; break;
+      }
+      expect(received).toBe(true);
+      device.sendCommand("pi-history", `${range}-applied`, { type: "session.snapshot.ack", syncId: range, result: "applied" });
+    }
+    runtime.publish(++sequence, { type: "runtime.status", status: "running" });
+    const status = await device.receiveMessage();
+    expect(status).toMatchObject({ type: "runtime.event", event: { type: "runtime.status", status: "running" } });
+  });
+
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false });
     await host.start();
     const first = await pairDevice({ relay, host });
@@ -895,7 +1077,7 @@ describe("host end-to-end over relay", () => {
 
   it("privately pages Pi tool inventories and details through two real authenticated encrypted devices", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-private-tools-")); relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       reconnect: false, lan: false }); await host.start();
     const first = await pairDevice({ relay, host }); device = first.device;
     await device.openChannel("relay", first.pskRoot, first.payload.hostId, first.payload.hostId);
@@ -962,7 +1144,7 @@ describe("host end-to-end over relay", () => {
     const receivedByHost: string[] = [];
     const pairedDeviceIds: string[] = [];
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1006,7 +1188,7 @@ describe("host end-to-end over relay", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-rtt-"));
     relay = await startRelay(stateDir);
     const pathChanges: ActivePathChange[] = [];
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false, probeIntervalMs: 30,
       onPathChange: (_deviceId, change) => pathChanges.push(change) });
     await host.start();
@@ -1028,7 +1210,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1050,7 +1232,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1136,7 +1318,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1184,7 +1366,7 @@ describe("host end-to-end over relay", () => {
   it("returns a new session's execution separately and keeps publishing status on the same subscription", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false });
     await host.start();
     const paired = await pairDevice({ relay, host });
@@ -1221,7 +1403,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1308,7 +1490,7 @@ describe("host end-to-end over relay", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({
-      relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false,
     });
     await host.start();
@@ -1345,7 +1527,7 @@ describe("host end-to-end over relay", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1407,7 +1589,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1453,14 +1635,15 @@ describe("host end-to-end over relay", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
-    // 一个裸 TCP 代理挡在 Host 和 Relay 之间。掐掉它就等于「Host 那条中继连接断了一次」，
-    // 而手机那条连接（直连 Relay）毫发无伤——这正是真实世界里 Host 侧链路抖动的样子：
-    // 中继进程自己没重启，只有 Host 这边的 socket 掉了，所以手机不会主动重连。
-    proxy = await TcpProxy.listen(relay.url);
+    // WS 掐 TCP 代理；QUIC 关闭并重开独立 Host 接入端。Node Relay 与手机连接
+    // 均保持，验证 Host 断链后出口重挂，手机无需重新连接才能再次握手。
+    const quicHost = process.env.ORBIS_TEST_HOST_TRANSPORT === "quic";
+    if (!quicHost) proxy = await TcpProxy.listen(relay.url);
 
     const relayStates: string[] = [];
     host = await HostService.create({
-      relayUrl: proxy.url,
+      relayUrl: proxy?.url ?? relay.url,
+      ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1475,7 +1658,8 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveMessage()).resolves.toMatchObject({ type: "device.ready" });
     await expect(device.receiveMessage()).resolves.toMatchObject({ type: "device.path", path: "relay" });
 
-    proxy.dropAll();
+    if (quicHost) await restartBusinessHostQUIC(relay.url);
+    else proxy!.dropAll();
     await vi.waitFor(() => {
       expect(relayStates).toContain("reconnecting");
     }, { timeout: 5_000 });
@@ -1499,7 +1683,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1617,7 +1801,7 @@ describe("host end-to-end over relay", () => {
     const receivedByHost: string[] = [];
     const pathChanges: string[] = [];
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1718,7 +1902,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1768,7 +1952,7 @@ describe("host end-to-end over relay", () => {
     relay = await startRelay(stateDir);
     const lanPort = await freeTcpPort();
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1783,7 +1967,7 @@ describe("host end-to-end over relay", () => {
     // 静默降级去连中继会让两个 Host 用同一个 runtime 身份互相踢，手机端表现为
     // 状态卡在「运行中」、聊天不再更新。
     const duplicate = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -1820,7 +2004,7 @@ describe("host end-to-end over relay", () => {
       device: TestDevice,
       data: Buffer,
       uploadId: string,
-      state: { served: number; wrongOffset?: boolean; tamper?: boolean },
+      state: { served: number; wrongOffset?: boolean; tamper?: boolean; lane?: "ctl" | "bulk" },
     ): Promise<Record<string, unknown>> => {
       for (;;) {
         const message = (await device.receiveMessage()) as Record<string, unknown>;
@@ -1839,15 +2023,64 @@ describe("host end-to-end over relay", () => {
         state.served += 1;
         device.sendBinary(encodeArtifactChunkFrame({
           runtimeId: "runtime-a", transferId: uploadId, offset: declaredOffset, data: payload,
-        }));
+        }), state.lane);
       }
     };
+
+    it.each(["device", "host"] as const)("keeps an upload durable prefix and downloads only missing ranges across Relay handovers (%s)", async side => {
+      stateDir = await mkdtemp(join(tmpdir(), "orbis-handover-files-")); relay = await startRelay(stateDir);
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+      await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+      await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+      await readMatching(device, message => message.type === "device.path");
+      const bytes = randomBytes(1024 * 1024 + 4096); const expectedHash = createHash("sha256").update(bytes).digest("hex");
+      initUpload(device, uploadDir(stateDir), "handover.bin", bytes);
+      const ready = await readMatching(device, message => message.type === "file.upload.ready");
+      const uploadId = ready.uploadId as string;
+      const first = await readMatching(device, message => message.type === "file.upload.read");
+      expect(first.offset).toBe(0);
+      device.sendBinary(encodeArtifactChunkFrame({ runtimeId: "runtime-a", transferId: uploadId, offset: 0,
+        data: bytes.subarray(0, first.length as number) }), "bulk");
+      const pending = await readMatching(device, message => message.type === "file.upload.read");
+      expect(pending.offset).toBe(first.length); // A second read proves the first prefix was durably written.
+      await handover(side, handoverModes(side)[0]!, paired.pskRoot, paired.payload.hostId);
+      await readMatching(device, message => message.type === "device.path");
+      device.sendBinary(encodeArtifactChunkFrame({ runtimeId: "runtime-a", transferId: uploadId, offset: pending.offset as number,
+        data: bytes.subarray(pending.offset as number, (pending.offset as number) + (pending.length as number)) }), "bulk");
+      const finished = await nextOutcome(device, bytes, uploadId, { served: 0, lane: "bulk" });
+      expect(finished).toMatchObject({ type: "file.upload.finished", uploadId, fileName: "handover.bin" });
+      expect(createHash("sha256").update(await readFile(finished.path as string)).digest("hex")).toBe(expectedHash);
+
+      device.sendCommand(paired.payload.hostId, "handover-download", { type: "file.download", path: finished.path });
+      const started = await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "artifact.started");
+      const transferId = (started.event as Record<string, unknown>).transferId as string;
+      const downloaded = Buffer.alloc(bytes.length);
+      const readRange = async (offset: number): Promise<void> => {
+        const length = Math.min(16 * 1024, bytes.length - offset);
+        device!.sendData(JSON.stringify({ type: "artifact.read", protocolVersion: PROTOCOL_VERSION, transferId,
+          requestId: `range-${offset}`, offset, length }));
+        const chunk = decodeArtifactChunkFrame(await device!.receivePayload());
+        expect(chunk).toMatchObject({ transferId, offset }); expect(chunk.data.byteLength).toBe(length);
+        downloaded.set(chunk.data, offset);
+      };
+      await readRange(0);
+      await handover(side, handoverModes(side)[1]!, paired.pskRoot, paired.payload.hostId);
+      await readMatching(device, message => message.type === "device.path");
+      // Keep the saved prefix and request only the remaining holes using the same transfer identity.
+      for (let offset = 16 * 1024; offset < bytes.length; offset += 16 * 1024) await readRange(offset);
+      expect(createHash("sha256").update(downloaded).digest("hex")).toBe(expectedHash);
+      device.sendData(JSON.stringify({ type: "artifact.done", protocolVersion: PROTOCOL_VERSION, transferId }));
+      device.sendData(JSON.stringify({ type: "artifact.read", protocolVersion: PROTOCOL_VERSION, transferId,
+        requestId: "after-done", offset: 0, length: 1 }));
+      expect(await readMatching(device, message => message.type === "artifact.read.failed"))
+        .toMatchObject({ transferId, requestId: "after-done", reason: "unknown_transfer" });
+    }, 30_000);
 
     it("read 拉取 → 应答 → 收齐自动校验落地；确认收到的字节是原始内容", async () => {
       stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
-        relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+        relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
         stateDir, reconnect: false, lan: false,
       });
       await host.start();
@@ -1875,7 +2108,7 @@ describe("host end-to-end over relay", () => {
       stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
-        relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+        relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
         stateDir, reconnect: false, lan: false,
       });
       await host.start();
@@ -1901,7 +2134,7 @@ describe("host end-to-end over relay", () => {
       stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
       relay = await startRelay(stateDir);
       host = await HostService.create({
-        relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+        relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
         stateDir, reconnect: false, lan: false,
       });
       await host.start();
@@ -1947,6 +2180,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
 
   afterEach(async () => {
     device?.close();
+    const transportCleanup = await stopRelayBusinessTransports().then(() => undefined, error => error);
     await host?.stop();
     await relay?.close();
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
@@ -1955,6 +2189,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     host = undefined;
     device = undefined;
     stateDir = undefined;
+    if (transportCleanup) throw transportCleanup;
   });
 
   /** 配对 + 握手 + 吃掉 device.ready / device.path 两条欢迎消息。 */
@@ -1996,7 +2231,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
 
     relay = await startRelayLocal(stateDir);
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2039,7 +2274,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
 
     relay = await startRelayLocal(stateDir);
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2112,7 +2347,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     await writeSession("11111111-2222-3333-4444-555555555555");
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2152,7 +2387,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     await writeSession("11111111-2222-3333-4444-555555555555");
 
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2205,7 +2440,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     };
     const activate = vi.fn(async () => activated as never);
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2239,7 +2474,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       throw new ActivationError("cwd_missing", "目录不存在：D:/gone");
     });
     const host2 = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2283,6 +2518,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
 
   afterEach(async () => {
     device?.close();
+    const transportCleanup = await stopRelayBusinessTransports().then(() => undefined, error => error);
     await host?.stop();
     await relay?.close();
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
@@ -2290,6 +2526,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     host = undefined;
     device = undefined;
     stateDir = undefined;
+    if (transportCleanup) throw transportCleanup;
   });
 
   /** 配对 + 握手，并把第一条 `device.ready` 原样交出来（`device.path` 留在队列里）。 */
@@ -2324,7 +2561,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   it("lets DSH saves reach provider validation while busy, but still blocks switches", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-save-gate-"));
     relay = await startRelayLocal(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
     const guard = vi.spyOn(host, "assertProviderSwitchReady").mockRejectedValue(new Error("browser session running"));
     const save = vi.fn(async () => "saved");
@@ -2351,7 +2588,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const runtime = new DshRuntime(client, {
       list: async () => [], read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {},
     });
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
     try {
       await host.start();
@@ -2404,7 +2641,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       },
     };
     const runtime = new DshRuntime(client);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
     try {
       client.onDiagnostic?.({ event: "socket.closed", code: "1001", reason: "peer left" });
@@ -2472,7 +2709,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       },
     };
     const runtime = new DshRuntime(client);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: codex, dshRuntime: runtime });
     try {
       await host.start();
@@ -2503,7 +2740,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2528,7 +2765,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2560,7 +2797,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     });
     // 桌面接入分档由 Host 下发给手机，且它变了就要主动重播：手机别的地方看不到它。
     let attach: CodexDesktopAttach = { state: "closed", reason: "Codex 桌面版未打开可见窗口" };
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       reconnect: false, lan: false, codexDesktopLaunchable: true, codexDesktopStatus: () => attach });
     await host.start();
     const connected = await readyDeviceCapturing({ host, relay });
@@ -2599,7 +2836,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     });
     const ensureDshRuntime = vi.fn(async () => runtime);
     try {
-      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
         sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshLaunchable: true, ensureDshRuntime });
       await host.start();
       const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
@@ -2652,7 +2889,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const ensureDshRuntime = vi.fn(async () => { throw new Error("must reuse the attached DSH runtime"); });
     const ensureCodexDesktop = vi.fn(async () => { throw new Error("must reuse the attached Codex Desktop runtime"); });
     try {
-      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
         sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
         dshRuntime: dsh, codexDesktopRuntime: desktop, dshLaunchable: true, codexDesktopLaunchable: true,
         ensureDshRuntime, ensureCodexDesktop });
@@ -2710,7 +2947,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     });
     const ensureCodexDesktop = vi.fn(async () => desktop);
     try {
-      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
         sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
         codexDesktopLaunchable: true, ensureCodexDesktop });
       await host.start();
@@ -2742,7 +2979,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2791,7 +3028,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2833,7 +3070,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   it("rejects malformed and future inputs with their original command identity", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-invalid-input-"));
     relay = await startRelayLocal(stateDir);
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
     await host.start(); device = await readyDeviceLocal({ host, relay });
     for (const [commandId, command] of [["future", { type: "future.input" }], ["invalid", { type: "user_message", text: "" }]] as const) {
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "offline", commandId, command });
@@ -2864,7 +3101,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -2920,7 +3157,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       onEvent: () => {}, rolloutRoot: join(stateDir, "desktop-rollouts"),
     });
     try {
-      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
         sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
         codexRuntime: terminal, codexDesktopRuntime: desktop,
         providers: { proxyTakeoverActive: true } as ProviderManager });
@@ -2982,7 +3219,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
     });
     try {
-      host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
         stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
         ...(kind === "codexDesktop" ? { codexDesktopRuntime: desktop } : { codexRuntime: desktop }) });
       await host.start();
@@ -3049,7 +3286,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -3093,13 +3330,26 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       command: { type: "session.sync", sessionId: "th-new-1", syncId: "empty-preview", range: "preview" },
     });
     let snapshot: Record<string, unknown> | undefined;
+    const syncMessages: Record<string, unknown>[] = [];
+    let syncAccepted = false;
     for (let i = 0; i < 4; i += 1) {
       const message = await codexDevice.receiveMessage() as Record<string, unknown>;
+      syncMessages.push(message);
       expect(message.type, JSON.stringify(message)).not.toBe("protocol.error");
       const event = message.event as Record<string, unknown> | undefined;
+      // ctl acceptance can precede msg snapshot on independent QUIC streams.
+      // Keep the four business-frame bound; validate the one permitted receipt
+      // separately, without treating it as the required snapshot / applied state.
+      if (event?.type === "command.result") {
+        expect(syncAccepted).toBe(false);
+        expect(event).toMatchObject({ commandId: "new-thread-sync", ok: true });
+        syncAccepted = true;
+        i -= 1;
+        continue;
+      }
       if (event?.type === "session.snapshot") { snapshot = message; break; }
     }
-    expect(snapshot).toMatchObject({
+    expect(snapshot, JSON.stringify(syncMessages)).toMatchObject({
       type: "runtime.event", runtimeId: "codex:th-new-1",
       event: {
         type: "session.snapshot", sessionId: "th-new-1", syncId: "empty-preview",
@@ -3127,7 +3377,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       rolloutRoot: join(tmpdir(), "orbis-test-no-rollout"),
     });
     host = await HostService.create({
-      relayUrl: relay.url,
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
       credential: "runtime-secret",
       adminToken: "owner-secret",
       stateDir,
@@ -3189,10 +3439,12 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
 
   afterEach(async () => {
     device?.close();
+    const transportCleanup = await stopRelayBusinessTransports().then(() => undefined, error => error);
     await host?.stop();
     await relay?.close();
     if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
     relay = undefined; host = undefined; device = undefined; stateDir = undefined;
+    if (transportCleanup) throw transportCleanup;
   });
 
   it("captures a turn at authenticated barriers and serves frozen diffs only after an encrypted detail request", async () => {
@@ -3204,7 +3456,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     const user = { type: "user", uuid: "user-1", cwd: workspace, timestamp: "2026-10-30T00:00:00.000Z", message: { role: "user", content: "change the file" } };
     await writeFile(transcript, JSON.stringify(user) + "\n");
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay-state.json") });
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
     await host.start();
     const opened = await host.openPairingWindow();
@@ -3265,7 +3517,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     ].map(row => JSON.stringify(row)).join("\n") + "\n");
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay-state.json") });
     const launches: unknown[] = [];
-    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
       claude: { configDir: config, launcher: { unavailable: async () => undefined, launch: async request => { launches.push(request); } } } });
     await host.start();

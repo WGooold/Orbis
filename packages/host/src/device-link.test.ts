@@ -16,7 +16,7 @@ import {
   toBase64Url,
   type DeviceRecord,
 } from "@orbis/e2e";
-import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@orbis/protocol";
+import { EnvelopeReassembler, PIECE_HEADER_BYTES, type EnvelopeChannel, type EnvelopeV2, type OutboundQueueDiagnostic, type PathKind } from "@orbis/protocol";
 
 import { DeviceLink, SESSION_SYNC_WIRE_LIMIT_BYTES, sessionSyncWireBytes, type PathSink } from "./device-link.js";
 import { outboundQueueSource } from "./outbound-queue-diagnostics.js";
@@ -35,9 +35,9 @@ class FakePeer {
   #probeCounter = 0;
   pingsSeen = 0;
 
-  constructor(kind: PathKind, pskRoot: Buffer) {
+  constructor(kind: PathKind, pskRoot: Buffer, five = false) {
     this.kind = kind;
-    this.#handshake = new DeviceHandshake(pskRoot);
+    this.#handshake = new DeviceHandshake(pskRoot, five);
   }
 
   get ready(): boolean {
@@ -116,6 +116,7 @@ function deviceRecord(pskRoot: Buffer): DeviceRecord {
 
 /** 把 DeviceLink 与一组假手机接起来：出站的帧进 `outbox`，测试再手动喂回去。 */
 function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLimitBytes?: number;
+  relayHistoryMode?: "shared" | "background"; fiveStreams?: boolean;
   msgQueueLimitBytes?: number;
   onQueueDiagnostic?: (kind: PathKind, sample: OutboundQueueDiagnostic) => void }) {
   const outbox: { kind: PathKind; envelope: EnvelopeV2 }[] = [];
@@ -132,6 +133,7 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     hostId: HOST_ID,
     device: deviceRecord(input.pskRoot),
     probeIntervalMs: input.probeIntervalMs ?? 0,
+    ...(input.relayHistoryMode === undefined ? {} : { relayHistoryMode: input.relayHistoryMode }),
     ...(input.bulkQueueLimitBytes === undefined ? {} : { bulkQueueLimitBytes: input.bulkQueueLimitBytes }),
     ...(input.msgQueueLimitBytes === undefined ? {} : { msgQueueLimitBytes: input.msgQueueLimitBytes }),
     ...(input.onQueueDiagnostic === undefined ? {} : { onQueueDiagnostic: input.onQueueDiagnostic }),
@@ -150,8 +152,9 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     kind: PathKind,
     backlog?: () => number,
     onWrite?: (envelope: EnvelopeV2) => void,
+    channelBacklog?: (channel: EnvelopeChannel) => number,
   ): FakePeer => {
-    const peer = new FakePeer(kind, input.pskRoot);
+    const peer = new FakePeer(kind, input.pskRoot, input.fiveStreams);
     peers.set(kind, peer);
     const sink: PathSink = (envelope) => {
       outbox.push({ kind, envelope });
@@ -159,6 +162,8 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
     };
     // 多路复用器靠它判水位：`bulk` 只在「socket 还没发出去的字节」低的时候才写得进去。
     if (backlog !== undefined) sink.backlog = backlog;
+    if (channelBacklog !== undefined) sink.channelBacklog = channelBacklog;
+    sink.supportsHistoryStreams = () => input.fiveStreams === true;
     link.attach(kind, sink);
     return peer;
   };
@@ -203,6 +208,136 @@ function harness(input: { probeIntervalMs?: number; pskRoot: Buffer; bulkQueueLi
 
   return { link, outbox, payloads, changes, sessions, rttUpdates, attach, handshake, probeRoundTrip, peer, shift, messagesSent };
 }
+
+describe("Relay history isolation", () => {
+  it("negotiates independent history and catchup, preserves priority, encrypted contents and completion budgets", async () => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: "background", fiveStreams: true });
+    let blocked = true;
+    h.attach("relay", () => 0, undefined, lane => blocked && ["history", "catchup", "bulk"].includes(lane) ? 1_000_000 : 0);
+    h.handshake("relay"); h.outbox.length = 0;
+    const historyDone = vi.fn(), catchupDone = vi.fn();
+    try {
+      expect(h.link.sendBinary(Buffer.from("file"))).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.from("background"), catchupDone, undefined, undefined, "catchup")).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.from("manual history"), historyDone, undefined, undefined, "history")).toBe(true);
+      expect(h.link.send(Buffer.from("live"), "msg")).toBe(true);
+      expect(h.peer("relay").open(h.outbox.shift()!.envelope).toString()).toBe("live");
+      expect(historyDone).not.toHaveBeenCalled(); expect(catchupDone).not.toHaveBeenCalled();
+      blocked = false;
+      await vi.waitFor(() => expect(historyDone).toHaveBeenCalledExactlyOnceWith(true));
+      expect(catchupDone).toHaveBeenCalledExactlyOnceWith(true);
+      expect(h.outbox.map(entry => entry.envelope.hdr.ch)).toEqual(["history", "catchup", "bulk"]);
+      expect(h.outbox.map(entry => h.peer("relay").open(entry.envelope).toString())).toEqual(["manual history", "background", "file"]);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+    } finally { h.link.close(); }
+  });
+
+  it("releases both independent pending deliveries once on path loss", () => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: "background", fiveStreams: true });
+    h.attach("relay", () => 0, undefined, lane => lane === "history" || lane === "catchup" ? 1_000_000 : 0);
+    h.handshake("relay"); h.outbox.length = 0;
+    const done = vi.fn();
+    try {
+      for (const range of ["history", "catchup"] as const) expect(h.link.sendSessionSnapshot(Buffer.from(range), done, undefined, undefined, range)).toBe(true);
+      h.link.detach("relay"); h.link.detach("relay");
+      expect(done.mock.calls).toEqual([[false], [false]]);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      expect(h.outbox).toEqual([]);
+    } finally { h.link.close(); }
+  });
+
+  it("keeps chat and the active path alive when file traffic fills the background lane", () => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: "background", bulkQueueLimitBytes: 100_000 });
+    h.attach("relay", () => 1_000_000, undefined, lane => lane === "bulk" ? 1_000_000 : 0);
+    h.handshake("relay"); h.outbox.length = 0;
+    const done = vi.fn();
+    try {
+      expect(h.link.sendBinary(Buffer.alloc(64_000, 7))).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.alloc(64_000, 8), done, undefined, undefined, "catchup")).toBe(false);
+      expect(h.link.sessionSyncRejection?.reason).toBe("message_byte_limit");
+      expect(h.link.active).toBe("relay");
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      expect(done).not.toHaveBeenCalled();
+      expect(h.link.send(Buffer.from("chat stays usable"), "msg")).toBe(true);
+      expect(h.peer("relay").open(h.outbox[0]!.envelope).toString()).toBe("chat stays usable");
+    } finally { h.link.close(); }
+  });
+  it.each(["shared", "background"] as const)("%s: compares live/preview progress while a real encrypted history is queued", async (mode) => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: mode });
+    const pending: Record<EnvelopeChannel, number> = { ctl: 0, msg: 0, bulk: 0, history: 0, catchup: 0 };
+    let draining = false;
+    h.attach("relay", () => pending.ctl + pending.msg + pending.bulk,
+      envelope => { if (envelope.hdr.ch && !draining) pending[envelope.hdr.ch] += envelope.ct.length; },
+      channel => pending[channel]);
+    h.handshake("relay"); h.outbox.length = 0;
+    const history = Buffer.from(JSON.stringify({ type: "history", text: "旧记录🙂".repeat(40_000) }));
+    const done = vi.fn(), progress = vi.fn();
+    try {
+      expect(h.link.sendSessionSnapshot(history, done, progress, undefined, "catchup")).toBe(true);
+      expect(done).not.toHaveBeenCalled();
+      expect(h.link.sessionSyncQueuedBytes).toBeGreaterThan(0);
+      expect(h.link.send(Buffer.from("live update"), "msg")).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.from("preview"), () => undefined, undefined, undefined, "preview")).toBe(true);
+      expect(h.link.sendSessionSnapshot(Buffer.from("manual history"), () => undefined, undefined, undefined, "history")).toBe(true);
+      expect(h.link.send(Buffer.from("execution=running"), "ctl")).toBe(true);
+      const assembler = new EnvelopeReassembler();
+      const received: string[] = [];
+      const consume = (): void => {
+        for (const entry of h.outbox.splice(0)) {
+          const envelope = assembler.accept(entry.envelope);
+          if (envelope) received.push(h.peer("relay").open(envelope).toString());
+        }
+      };
+      consume();
+      expect(received).toEqual(mode === "background"
+        ? ["live update", "preview", "manual history", "execution=running"] : ["execution=running"]);
+      pending.ctl = pending.msg = pending.bulk = 0; draining = true;
+      await vi.waitFor(() => expect(done).toHaveBeenCalledExactlyOnceWith(true));
+      consume();
+      expect(received).toEqual(mode === "background"
+        ? ["live update", "preview", "manual history", "execution=running", history.toString()]
+        : ["execution=running", history.toString(), "live update", "preview", "manual history"]);
+      expect(progress.mock.calls.length).toBeGreaterThan(1);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+    } finally { h.link.close(); }
+  });
+
+  it.each(["preview", "history", "catchup", undefined] as const)("keeps LAN and default shared behavior for range=%s", (range) => {
+    for (const [kind, mode] of [["lan", "background"], ["relay", "shared"]] as const) {
+      const h = harness({ pskRoot: randomKey(), relayHistoryMode: mode });
+      try {
+        h.attach(kind); h.handshake(kind); h.outbox.length = 0;
+        expect(h.link.sendSessionSnapshot(Buffer.from("page"), () => undefined, undefined, undefined, range)).toBe(true);
+        expect(h.outbox.map(entry => entry.envelope.hdr.ch)).toEqual(["msg"]);
+        expect(h.peer(kind).open(h.outbox[0]!.envelope).toString()).toBe("page");
+      } finally { h.link.close(); }
+    }
+  });
+
+  it.each(["preview", "history", undefined] as const)("keeps foreground reads on msg in background mode, range=%s", range => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: "background" });
+    try {
+      h.attach("relay"); h.handshake("relay"); h.outbox.length = 0;
+      expect(h.link.sendSessionSnapshot(Buffer.from("foreground"), () => undefined, undefined, undefined, range)).toBe(true);
+      expect(h.outbox.map(entry => entry.envelope.hdr.ch)).toEqual(["msg"]);
+    } finally { h.link.close(); }
+  });
+
+  it.each(["history", "catchup"] as const)("fails a pending %s delivery once on path loss and releases its budget", (range) => {
+    const h = harness({ pskRoot: randomKey(), relayHistoryMode: "background" });
+    h.attach("relay", () => 1_000_000); h.handshake("relay"); h.outbox.length = 0;
+    const done = vi.fn();
+    try {
+      expect(h.link.sendSessionSnapshot(Buffer.alloc(100_000, 7), done, undefined, undefined, range)).toBe(true);
+      expect(h.link.sessionSyncQueuedBytes).toBeGreaterThan(0);
+      h.link.detach("relay");
+      expect(done).toHaveBeenCalledExactlyOnceWith(false);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      h.link.detach("relay");
+      expect(done).toHaveBeenCalledTimes(1);
+    } finally { h.link.close(); }
+  });
+});
 
 describe("DeviceLink", () => {
   it("admits details before sealing with an independent bounded bulk budget and keeps chat/control priority", async () => {
@@ -372,6 +507,30 @@ describe("DeviceLink", () => {
       expect(done.mock.calls).toEqual([[true]]);
     } finally { h.link.close(); }
   }, 30_000);
+
+  it("retires queued old ciphertext at HS1 before emitting HS2", async () => {
+    const root = randomKey();
+    const h = harness({ pskRoot: root });
+    let backlog = 10_000_000;
+    h.attach("relay", () => backlog);
+    h.handshake("relay");
+    const done = vi.fn();
+    try {
+      expect(h.link.sendSessionSnapshot(Buffer.alloc(100_000), done)).toBe(true);
+      expect(h.link.sendBinary(Buffer.alloc(100_000))).toBe(true);
+      const next = new FakePeer("relay", root);
+      expect(h.link.handle("relay", next.hello())).toBe(true);
+      expect(h.outbox).toHaveLength(1);
+      expect(h.outbox[0]!.envelope.hdr.k).toBe("hs");
+      backlog = 0;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      // Even with delayed HS3 no frame from the invalidated key may follow HS2.
+      expect(h.outbox).toHaveLength(1);
+      expect(done.mock.calls).toEqual([[false]]);
+      expect(h.link.sessionSyncQueuedBytes).toBe(0);
+      expect(h.link.handle("relay", next.accept(h.outbox[0]!.envelope))).toBe(true);
+    } finally { h.link.close(); }
+  });
 
   it("path switch preserves sealed slices and rehandshake or revocation releases their reservations", () => {
     const h = harness({ pskRoot: randomKey() });

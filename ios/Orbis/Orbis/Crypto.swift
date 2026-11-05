@@ -4,6 +4,7 @@ import Security
 
 struct E2ECryptoError: LocalizedError {
     let message: String
+    var authenticationFailure = false
     var errorDescription: String? { message }
 }
 
@@ -62,7 +63,7 @@ enum E2ECrypto {
         let tag = sealed.suffix(16)
         let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: nonce), ciphertext: Data(ciphertext), tag: Data(tag))
         do { return try AES.GCM.open(box, using: SymmetricKey(data: key), authenticating: aad) }
-        catch { throw E2ECryptoError(message: "AEAD 认证失败") }
+        catch { throw E2ECryptoError(message: "AEAD 认证失败", authenticationFailure: true) }
     }
 
     static func jsonData(_ value: Any) throws -> Data {
@@ -78,7 +79,7 @@ enum E2ECrypto {
 
     static func frameNonce(channel: String, sequence: UInt64) throws -> Data {
         let slot: UInt32
-        switch channel { case "ctl": slot = 1; case "msg": slot = 2; case "bulk": slot = 3; default: throw E2ECryptoError(message: "未知 channel") }
+        switch channel { case "ctl": slot = 1; case "msg": slot = 2; case "bulk": slot = 3; case "history": slot = 4; case "catchup": slot = 5; default: throw E2ECryptoError(message: "未知 channel") }
         var data = Data()
         data.append(UInt8((slot >> 24) & 0xff)); data.append(UInt8((slot >> 16) & 0xff)); data.append(UInt8((slot >> 8) & 0xff)); data.append(UInt8(slot & 0xff))
         for shift in stride(from: 56, through: 0, by: -8) { data.append(UInt8((sequence >> UInt64(shift)) & 0xff)) }

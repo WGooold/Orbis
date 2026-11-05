@@ -1,6 +1,7 @@
 import { access, chmod, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const output = resolve(process.argv[2] ?? ".artifacts/host/OrbisHost/runtime");
@@ -57,6 +58,9 @@ async function bundle(source, target) {
 }
 
 for (const name of ["host", "pi-extension"]) await bundle(join(root, "packages", name), join(output, "packages", name));
+const quicNative = join(output, "packages", "host", "native");
+execFileSync(process.execPath, [join(root, "scripts", "build-host-quic.mjs"), quicNative], { stdio: "inherit" });
+const quicInventory = JSON.parse(await readFile(join(quicNative, "DEPENDENCIES.json"), "utf8"));
 // The Claude Code plugin is loaded in place by Claude itself (TypeScript hooks module, Node hook
 // script), so it ships as source. Its directory is also the local marketplace Host registers.
 {
@@ -103,5 +107,5 @@ if (!windows) {
   await access(license);
   await cp(license, join(output, "node", "LICENSE"));
 }
-await writeFile(join(output, "DEPENDENCIES.json"), JSON.stringify({ node: process.version, packages: inventory }, null, 2));
+await writeFile(join(output, "DEPENDENCIES.json"), JSON.stringify({ node: process.version, packages: inventory, nativeQuic: quicInventory }, null, 2));
 console.log(`Packaged Node ${process.version} and ${inventory.length} runtime packages into ${output}`);

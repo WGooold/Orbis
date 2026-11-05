@@ -5,6 +5,23 @@ import { OutboundChannelMux, type OutboundQueueDiagnostic } from "./outbound-mux
 /** 造一个长度恰好是 `bytes` 的「帧」——测试里用它的长度当字节数，避免声明与事实不符。 */
 const frame = (bytes: number, tag = ""): string => tag.padEnd(bytes, "x").slice(0, bytes);
 
+it("retires only a reset session while preserving peer FIFO and queue accounting", () => {
+  let backlog = 10_000_000;
+  const written: string[] = [];
+  const mux = new OutboundChannelMux<string>({ write: text => { written.push(text); }, backlog: () => backlog });
+  try {
+    mux.enqueue("bulk", "a-old", 5); mux.enqueue("bulk", "b-one", 5);
+    mux.enqueue("msg", "a-msg", 5); mux.enqueue("bulk", "b-two", 5);
+    mux.retireSessionFrames(text => text.startsWith("a-"));
+    expect(mux.queuedBytes).toBe(10); expect(mux.bulkQueuedBytes).toBe(10); expect(mux.msgQueuedBytes).toBe(0);
+    backlog = 0; mux.notifyDrained();
+    expect(written).toEqual(["b-one", "b-two"]);
+    expect(mux.queuedBytes).toBe(0);
+    mux.enqueue("msg", "a-new", 5);
+    expect(written).toEqual(["b-one", "b-two", "a-new"]);
+  } finally { mux.stop(); }
+});
+
 describe("outbound queue diagnostic attribution", () => {
   const MiB = 1024 * 1024;
 
@@ -354,5 +371,29 @@ describe("outbound channel mux", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe("independent native stream admission", () => {
+  it("lets msg through a blocked bulk writer, while retaining bulk FIFO and shared WS gating", () => {
+    const sent: string[] = [];
+    let bulkBacklog = 1_000_000;
+    const mux = new OutboundChannelMux<string>({ write: frame => { sent.push(frame); },
+      backlog: () => bulkBacklog, channelBacklog: lane => lane === "bulk" ? bulkBacklog : 0 });
+    try {
+      mux.enqueue("bulk", "history-1", 10); mux.enqueue("bulk", "history-2", 10);
+      mux.enqueue("msg", "live", 10); mux.enqueue("ctl", "state", 10);
+      expect(sent).toEqual(["live", "state"]);
+      expect(mux.bulkQueuedBytes).toBe(20);
+      bulkBacklog = 0; mux.notifyDrained();
+      expect(sent).toEqual(["live", "state", "history-1", "history-2"]);
+    } finally { mux.stop(); }
+    const wsSent: string[] = [];
+    const shared = new OutboundChannelMux<string>({ write: frame => { wsSent.push(frame); }, backlog: () => 1_000_000 });
+    try {
+      shared.enqueue("bulk", "history", 10); shared.enqueue("msg", "live", 10); shared.enqueue("ctl", "state", 10);
+      expect(wsSent).toEqual(["state"]);
+    } finally { shared.stop(); }
   });
 });

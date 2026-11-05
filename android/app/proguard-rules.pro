@@ -1,2 +1,4 @@
 -keepattributes *Annotation*
+-keep class go.** { *; }
+-keep class orbis.mobile.** { *; }
 -keep,includedescriptorclasses class com.orbising.orbis.**$$serializer { *; }

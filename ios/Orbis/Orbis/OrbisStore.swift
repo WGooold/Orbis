@@ -201,6 +201,7 @@ final class HostConnection: ObservableObject {
     private var agentStateObservation: AnyCancellable?
     private let secure: SecureStorage
     private let transport: OrbisTransport
+    func setRelayTransportMode(_ mode: RelayTransportMode) { transport.setRelayTransportMode(mode) }
     private let deviceName: String
     private let preferences: UserDefaults?
     let historyWorker: SessionHistoryWorker
@@ -1066,7 +1067,10 @@ final class HostConnection: ObservableObject {
         eventTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, generation == self.historyGeneration, !self.pendingEvents.isEmpty {
-                let index = self.pendingEvents.firstIndex { $0.channel == "ctl" } ?? 0
+                let index = self.pendingEvents.firstIndex { $0.channel == "ctl" }
+                    ?? self.pendingEvents.firstIndex { $0.channel == "msg" }
+                    ?? self.pendingEvents.firstIndex { $0.channel == "history" }
+                    ?? self.pendingEvents.firstIndex { $0.channel == "catchup" } ?? 0
                 let event = self.pendingEvents.remove(at: index); self.pendingEventBytes -= event.bytes
                 await self.consumeEvent(event.message, channel: event.channel, rawEnvelope: event.payload)
                 guard generation == self.historyGeneration else { break }

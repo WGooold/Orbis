@@ -37,10 +37,12 @@ export class HostDeviceSession {
   #room: string | undefined;
   #handshake: HostHandshake | undefined;
   #channel: E2eChannel | undefined;
+  readonly #supportsHistoryStreams: () => boolean;
   /** 最近一次被判重放的帧信息（由通道的 onStale 回填），随 stale 结果交给调用方。 */
   #lastStale: { channel: string; n: number; last: number } | undefined;
 
-  constructor(input: { hostId: string; device: DeviceRecord }) {
+  constructor(input: { hostId: string; device: DeviceRecord; supportsHistoryStreams?: () => boolean }) {
+    this.#supportsHistoryStreams = input.supportsHistoryStreams ?? (() => false);
     this.#hostId = input.hostId;
     this.#deviceId = input.device.deviceId;
     this.#pskRoot = Buffer.from(input.device.pskRoot, "base64url");
@@ -54,6 +56,8 @@ export class HostDeviceSession {
     if (this.#handshake !== undefined) return "handshaking";
     return "idle";
   }
+
+  get historyStreams(): boolean { return this.#channel !== undefined && this.#handshake?.keys.historyStreams === true; }
 
   /**
    * 处理一条来自该设备的帧。
@@ -69,7 +73,7 @@ export class HostDeviceSession {
       const body = readHandshakeEnvelope(envelope);
       if (body.type === "hs1") {
         // 每次 HS1 都换一套临时密钥：重连不是「恢复旧会话」，而是新会话。
-        this.#handshake = new HostHandshake(this.#pskRoot);
+        this.#handshake = new HostHandshake(this.#pskRoot, this.#supportsHistoryStreams());
         this.#channel = undefined;
         return {
           kind: "handshake-reply",

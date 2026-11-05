@@ -13,7 +13,7 @@ function harness(synchronous = false) {
   let now = 0;
   let available = true;
   let accept = true;
-  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void; onProgress: (() => void) | undefined }[] = [];
+  const sends: { deviceId: string; payload: Buffer; done: (written: boolean) => void; onProgress: (() => void) | undefined; range?: SessionSyncRequest["range"] }[] = [];
   const dispatches: { runtimeId: string; id: string; command: SessionSyncRequest }[] = [];
   const error = vi.fn();
   const log = vi.fn();
@@ -21,9 +21,9 @@ function harness(synchronous = false) {
   const manager = new SessionSyncTasks({
     now: () => now,
     link: (deviceId) => ({ active: available ? "relay" : undefined, sessionSyncQueuedBytes: 0,
-      sendSessionSnapshot: (payload, done, onProgress) => {
+      sendSessionSnapshot: (payload, done, onProgress, _source, range) => {
         if (!accept) return false;
-        sends.push({ deviceId, payload: Buffer.from(payload), done, onProgress });
+        sends.push({ deviceId, payload: Buffer.from(payload), done, onProgress, ...(range === undefined ? {} : { range }) });
         return true;
       } }),
     dispatch: (runtimeId, id, command) => {
@@ -39,6 +39,16 @@ function harness(synchronous = false) {
 }
 
 describe("SessionSyncTasks", () => {
+  it.each(["preview", "history", "catchup"] as const)("passes the registered %s range to delivery without trusting response routing", (range) => {
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request("sync", range));
+    h.manager.tick();
+    // A backend response's range cannot change the immutable transport classification.
+    h.manager.handleEvent("runtime", snapshot(h.dispatches[0]!.command.syncId));
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.range).toBe(range);
+  });
+
   it("keeps the applied baseline immutable across retry and rejects changed progress on the same ID", () => {
     const h = harness();
     const command = { ...request(), knownState: { epoch: "epoch", seq: 7, head: { leafId: "leaf" } } };

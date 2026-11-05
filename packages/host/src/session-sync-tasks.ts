@@ -165,7 +165,7 @@ export class SessionSyncTasks {
         }
       }, () => { if (this.#current(task)) task.lastProgressAt = this.#now(); }, {
         type: "runtime.event", eventType: event.type, runtimeId, sessionId: event.sessionId, payloadBytes: payload.byteLength,
-      }) ?? false;
+      }, task.command.range) ?? false;
       if (!accepted && task.stage === "sending") {
         const rejection = link?.sessionSyncRejection;
         this.#log(task, "rejected", `reason=${rejection?.reason ?? "unknown"} path=${rejection?.path ?? link?.active ?? "none"} deliveries=${rejection?.deliveries ?? 0} syncQueueBytes=${rejection?.syncQueuedBytes ?? link?.sessionSyncQueuedBytes ?? 0} nonBulkQueueBytes=${rejection?.nonBulkQueuedBytes ?? 0} bulkQueueBytes=${rejection?.bulkQueuedBytes ?? 0} wireBytes=${sessionSyncWireBytes(payload.byteLength)}`);
