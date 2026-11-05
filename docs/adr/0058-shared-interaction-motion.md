@@ -284,3 +284,5 @@ S26 / [ADR-0062](0062-claude-background-agents-and-session-activity.md) 归入�
 - **验证**：两端 `ReplyCardMotionTests / ReplyCardMotionTest` 覆盖前缀追加、同高追加、输出结束、改写、宽度变化、减少动画、首次基线 / 前插 / 恢复 / 离屏 / 重挂 / 分组；Android `ReplyCardMotionInstrumentedTest` 验证中间高度、连续接续、文字几何和一次入场；iOS `testReplyCardGrowthAndNewCardKeepExistingTextGeometry` 验证生产组件的增长、出现、改写和浅深色 / 减少动画，正常时钟中帧另录屏审阅。沿用 C05–C07、R01–R04 / R37 / R57，新增 R63；完整双端 L1–L4、C01–C18、A1–A4 / iPad 与同设备基线不可被专项或构建替代。
 
 状态：双端实现已接入；受控候选 Swift 373 / Android JVM 702 项及两端 App / 设备测试包构建通过。Android 卡片设备专项浅 / 深 / 大字体各 4 / 4；同设备完整 instrumentation 基线 172 过 / 8 失败 / 7 assumption，候选 176 / 8 / 7，失败集合相同。iOS 卡片设备专项通过，覆盖浅 / 深 / 减少动画 / XXXL；同设备 `OrbisUITests` 基线 82 过 / 10 失败、候选 83 / 10 失败，具名失败集合相同，新增卡片用例也在候选全量通过。Android 中间高度 / 新卡 PNG 与 iOS 正常时钟录屏局部增长 / 入场帧已审阅。C01–C18 完整人工、全应用 L4 / A1–A4、iPad / iOS 17 / 真机现场仍未完成，因此 M24 继续验证中、不计已交付。实际结果和证据见 `.artifacts/ui-regression/20261104-chat-card-motion/summary.md`。
+
+2026-11-05 / r47 侧边栏材质修订：归类 SC32 / MOT-10 的原有抽屉边界，沿用 M09；SC03 选择、SC07–08 菜单、SC36 筛选集合及共用按压反馈保持原参数。新增外框只改变材质环境，阴影随原面板移动，不新增独立动画 / 触觉 / 手势接收层。回归 R65 记录开合、半途回退、长按后拖动、菜单与 IME 优先级以及减少动画；本次不增场景或 MOT 编号。

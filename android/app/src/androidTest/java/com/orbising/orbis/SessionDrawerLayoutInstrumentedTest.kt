@@ -2,8 +2,16 @@ package com.orbising.orbis
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -24,6 +32,7 @@ class SessionDrawerLayoutInstrumentedTest {
 
     private fun exercise(dark: Boolean) {
         val scale = mutableStateOf(1f)
+        val style = mutableStateOf(OrbisVisualStyle.Classic)
         val state = mutableStateOf(RemoteState(hostId = "layout-host", e2eReady = true,
             sessions = listOf(
                 SessionCatalogEntry(sessionId = "short", name = "短标题", cwd = "/repo", agentKind = "codex"),
@@ -34,15 +43,23 @@ class SessionDrawerLayoutInstrumentedTest {
             val configuration = Configuration(LocalConfiguration.current).apply { screenWidthDp = 360 }
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale.value),
                 LocalConfiguration provides configuration) {
-                OrbisTheme(darkTheme = dark) {
+                OrbisTheme(darkTheme = dark, visualStyle = style.value) {
                     val host = HostSnapshot(HostPairing("layout-host", "Test Host", "test-public", "test-root",
                         relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only"), state.value)
-                    SessionDrawer(state.value, listOf(host), {}, {}, {}, { _, _ -> }, { _, _ -> }, { _, _ -> }, { _, _, _ -> })
+                    ModalNavigationDrawer(
+                        drawerState = rememberDrawerState(DrawerValue.Open),
+                        scrimColor = rememberNeumorphColors().scrim.copy(alpha = 0.32f),
+                        drawerContent = {
+                            SessionDrawer(state.value, listOf(host), {}, {}, {}, { _, _ -> }, { _, _ -> }, { _, _ -> }, { _, _, _ -> })
+                        },
+                    ) {
+                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+                    }
                 }
             }
         }
-        for (fontScale in listOf(1f, 1.5f)) {
-            compose.runOnIdle { scale.value = fontScale }
+        for (visualStyle in OrbisVisualStyle.values()) for (fontScale in listOf(1f, 1.5f)) {
+            compose.runOnIdle { style.value = visualStyle; scale.value = fontScale }
             val short = compose.onNodeWithTag("drawer-session-short")
             val long = compose.onNodeWithTag("drawer-session-long")
             val before = short.fetchSemanticsNode().boundsInRoot
@@ -54,7 +71,7 @@ class SessionDrawerLayoutInstrumentedTest {
             assertEquals(other, long.fetchSemanticsNode().boundsInRoot)
             compose.onNodeWithContentDescription("退出多选").performClick()
             val context = InstrumentationRegistry.getInstrumentation().targetContext
-            File(context.getExternalFilesDir(null), "drawer-layout-${if (dark) "dark" else "light"}-$fontScale.png")
+            File(context.getExternalFilesDir(null), "drawer-layout-${visualStyle.key}-${if (dark) "dark" else "light"}-$fontScale.png")
                 .outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
     }

@@ -244,7 +244,16 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                             .disabled(suppressTaps)
                             .frame(width: width)
                             .frame(maxHeight: .infinity)
-                            .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                            .orbisNested()
+                            .background {
+                                // The panel owns the material; its contents use flat tonal layers.
+                                // Extend only the shell into safe areas, keeping controls in place.
+                                Color.clear
+                                    .neuSurface(radius: OrbisRadius.card, intensity: 1, concentric: false)
+                                    .ignoresSafeArea()
+                                    .allowsHitTesting(false)
+                                    .accessibilityHidden(true)
+                            }
                             .offset(x: offset ?? 0)
                             .transition(.move(edge: .leading))
                             .accessibilityElement(children: .contain)

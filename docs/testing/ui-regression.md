@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-04。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-04/r46`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-05。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-05/r47`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -130,13 +130,15 @@ Codex Desktop Rewind 反馈（2026-11-03，V06、V12、V16–V18）：`codex-des
 
 Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中缩至裁边尺寸的 85%，保留图形路径与原色、图标槽和触控尺寸。沿用 iOS `testPageScreenshotsInBothAppearances`、`testHomeDirectorySearchAndNewSession`、`testSettingsPageOrderAndSingleHostMenu`、`testRefreshKeepsHeaderTextAndTruncationStable`，Android `DisplayScenariosInstrumentedTest`、`ProviderSelectionInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、`ChatStatusLayoutInstrumentedTest`；C01–C04 / C17–C18 按 A1–A4 对照首页、目录、聊天、新建与设置的 Pi / Codex / Claude / DeepSeek 图标，确认 Pi 居中、视觉大小协调且文字与命中范围不动。素材静态核对不替代双端 L1–L4 与人工门禁，当前设备回归未运行、未验收。
 
+r47 侧边栏面板（R65；S02–S04 / S19，关联 S01 / S12 / S13 / S15 / S25、M06 / M09 / M11 / V17 / V21）：扩展 iOS `testDrawerCardsKeepUniformGeometryForShortAndLongTitles` 至经典 / 雾蓝浅深色、大字与减少动画；Android `SessionDrawerLayoutInstrumentedTest` 在真实 `ModalNavigationDrawer` 内覆盖两套配色、浅深色与 1.0 / 1.5 字体，保留两行等高与选择前后边界断言，采集面板 / 遮罩边缘。保留目录选择 / 搜索 / 筛选 / 滚动 / 折叠、底部电脑菜单及开合手势用例；两端 L1–L4 全量、C01–C18 / R65 / A1–A4 分别记录。
+
 修改某个 ID 时，至少先跑映射到它的用例做定向验证；交付前跑全量。新增用例时同步更新本表。
 
 2026-11-03 Claude macOS 启动执行确认（V12、V16–V18 / R29–R30）：`claude-launcher.test.ts` 覆盖实际脚本回执 / 未执行超时与文件清理，`macos-terminal.test.ts` 覆盖 opener spawn 后非零退出，`agent-backend.test.ts` 覆盖取消 bridge 等待。手动补查系统开窗成功但脚本未执行、执行后插件未接入、正常 hello 三种边界；两端启动页应分别结束为明确失败 / 未确认 / 已连接，保留草稿、旧会话，不自动重发。现有新建页用例与 C01–C18 / A1–A4 继续适用。源码验证与现场恢复分开记录，证据 `launch-followup.md`，本补丁未部署。
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 93 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项，r45 语言新增 3 项，r46 回复卡片新增 1 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（r47 受控快照 93 项；本轮仅扩展既有目录用例、不新增方法。共享工作区同期新增用例另记，原合并计数：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项，r45 语言新增 3 项，r46 回复卡片新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -683,3 +685,14 @@ A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残�
 截图只完成首页、设置及英文大字体的有限静态审阅；归档含沿用的旧 PNG，不将 412 张归档计为本次新截图。完整 L4 逐帧、C01–C18、手机覆盖升级与实际 Host 模型操作仍待补，R64 保持验证中。基线入口曾归档中断、清理报权限错误，按资源恢复规则确认原进程 / 端口退出、设置恢复后定向释放；最终候选 cleanup 无错误，模拟器、私有 ADB、构建租约与全程名额均核验释放。完整证据、失败与恢复记录、APK 哈希见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`；未改生产 Host / Relay，未推送或安装手机。
 
 2026-11-04 回复卡片增长与首次入场 / r46（M24 / SC47 / MOT-26 / R63，双端 R63 自动门禁无新增失败；完整人工门禁未完成）：最终受控候选 Swift 373 / 373、Android JVM 702 / 702（控制基线 697 / 697）及双端 App / 设备测试包构建通过。Android `ReplyCardMotionInstrumentedTest` 最终候选浅 / 深 / 大字体各 4 / 4 通过，减少动画由专项测试实际关闭并在 finally 恢复；同设备 instrumentation 基线 172 通过 / 8 失败 / 7 assumption，候选 176 / 8 / 7，具名失败集合完全相同。iOS `testReplyCardGrowthAndNewCardKeepExistingTextGeometry` 通过，覆盖浅 / 深 / 减少动画 / XXXL；同设备完整 `OrbisUITests` 基线 82 通过 / 10 失败、候选 83 / 10 失败，具名失败集合完全相同，新增卡片用例也包含在候选全量并通过。Android 增高 / 入场中帧 PNG 与 iOS 候选正常时钟录屏局部增长 / 首次入场帧已查看；正文没有缩放，卡片从紧凑高度渐显至完整外框。R63 定向、双端全量失败集合子集门禁完成；C01–C18 完整人工流程、完整全应用 L4 / A1–A4、iPad / iOS17 / 真机尚未完成，不据局部设备结果宣称完整 UI 验收。保存包、xcresult、录屏、失败原文及未完成项见 `.artifacts/ui-regression/20261104-chat-card-motion/summary.md`。
+
+## R65：侧边栏面板新拟物（r47 / S02–S04 / S19）
+
+- 自动 L0：83 个 feature / 67 个已交付计数、ADR 引用与 AGENTS / CLAUDE 双入口一致；L1–L2 两端全量核心与 App / UI 测试构建。
+- 自动 L3：上述 §3.3 两端目录几何扩展；iOS 开合跟手、折叠、多选 / 搜索清除、电脑菜单；Android `SessionArchiveSelectionInstrumentedTest`、`SessionProviderFilterInstrumentedTest`、`SessionDrawerViewportInstrumentedTest`、`SettingsEntryInstrumentedTest`；两端既有全量与同设备同配置基线比较。
+- L4 / 手动 R65：经典 / 雾蓝浅深色检查外框左上高光、右下柔影、24pt/dp 圆角、阴影不裁成硬边；内部目录 / 会话 / 电脑行不叠第二层影；焦点环、选择色与两行标题清晰。开到一半取消 / 反向，长按选择后拖动，搜索 IME、归档 / 恢复与电脑菜单开合；核对原面板宽度、内容安全区、48pt/dp 触控范围、列表滚动锚点和菜单独立材质。
+- C01–C18 全部保留；A1–A4 分别记录普通浅色 / 深色、窄屏大字和减少动画。iPad / 真机、全部人工与全量失败未处理时，不以静态图或定向通过提升验收状态。
+
+当前双端已接入，验证中；实际运行结果、源码边界、包哈希和资源释放证据见 `.artifacts/ui-regression/20261105-sidebar-panel/summary.md`。
+
+2026-11-05 / r47 侧边栏面板：隔离基线 / 候选各 Swift Core 374、Android JVM 712 项及两端 App / UI 测试构建通过；Android 目录定向 19 / 19、减少动画目录 2 / 2，同设备全量各 197 项均为 183 通过 / 相同 7 失败 / 相同 7 条件未满足，无新增失败。经典 / 雾蓝浅深色及 1.0 / 1.5 字体面板图已审阅。iOS 首轮因调试标识传播到子按钮而在继续全量前取消；最终移除该标识并重建，排队约 9 分 35 秒仍由其他目录滚动任务占用，最终 L3 未运行，不计通过。完整 L4、C01–C18、R65 / A1–A4、375pt / iPad / 真机未验收。所有本任务设备 / 端口 / 构建租约、原进程及排队进程已核验释放，其他 Android owner 正常接续、未动其资源；详见 `.artifacts/ui-regression/20261105-sidebar-panel/summary.md` 与 `final-resource-audit.json`。

@@ -47,6 +47,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -296,14 +297,7 @@ internal fun SessionDrawer(
         )
     }
 
-    ModalDrawerSheet(
-        modifier = Modifier.width(drawerWidth),
-        drawerShape = MaterialTheme.shapes.extraLarge,
-        drawerTonalElevation = 0.dp,
-        drawerContainerColor = MaterialTheme.colorScheme.background,
-    ) {
-        // 抽屉不再铺一层凸起底板：内容直接落在与页面同一块「地面」上，
-        // 浅色面板会把抽屉内外的软材质割成两层，也让贴边控件多出一圈无处安放的柔影。
+    DrawerPanel(modifier = Modifier.width(drawerWidth)) {
         Column(
             Modifier.fillMaxSize()
                 .imePadding()
@@ -535,6 +529,21 @@ internal fun SessionDrawer(
                     onAddHost = onAddHost,
                 )
             }
+        }
+    }
+}
+
+/** Keep the native drawer's insets and semantics while giving the panel one material frame. */
+@Composable
+private fun DrawerPanel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    ModalDrawerSheet(
+        modifier = modifier.testTag("drawer-panel").neumorphRaised(RemoteUi.CardShape, shadowScale = 1f),
+        drawerShape = RemoteUi.CardShape,
+        drawerTonalElevation = 0.dp,
+        drawerContainerColor = rememberNeumorphColors().base,
+    ) {
+        CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(layer = 1, depth = 1, innerRadius = null)) {
+            content()
         }
     }
 }

@@ -2243,11 +2243,15 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(drawer.buttons["provider-switch-codex"].exists)
     }
     func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
-        for (name, dark, category) in [("light", false, "UICTContentSizeCategoryL"),
-                                       ("dark", true, "UICTContentSizeCategoryL"),
-                                       ("large", false, "UICTContentSizeCategoryXXXL")] {
+        for (name, dark, category, style, reduced) in [("light", false, "UICTContentSizeCategoryL", "classic", false),
+                                       ("dark", true, "UICTContentSizeCategoryL", "classic", false),
+                                       ("fog-light", false, "UICTContentSizeCategoryL", "insetFocus", false),
+                                       ("fog-dark", true, "UICTContentSizeCategoryL", "insetFocus", false),
+                                       ("large", false, "UICTContentSizeCategoryXXXL", "classic", false),
+                                       ("reduced", false, "UICTContentSizeCategoryL", "classic", true)] {
             let app = launch("drawer", dark: dark, arguments: ["--preview-drawer-layout",
-                "-UIPreferredContentSizeCategoryName", category])
+                "-orbis.visualStyle", style, "-UIPreferredContentSizeCategoryName", category]
+                + (reduced ? ["--preview-reduce-motion"] : []))
             let long = app.buttons["drawer-session-session-4"]
             let short = app.buttons["drawer-session-session-5"]
             XCTAssertTrue(long.waitForExistence(timeout: 8))
