@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-04。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-04/r45`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-04。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-04/r46`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -136,7 +136,7 @@ Pi 图标视觉尺寸对齐（X02，关联 S19 / S20）：双端 Pi 素材居中
 
 2026-11-03 Claude 长会话恢复（R18；V09–V10、V16–V18）：`session-source.test.ts` 覆盖 257 / 1,055 条初始化、字节超限批次、unknown→checkpoint 与后续连续增量；`claude-transcript.test.ts` 覆盖长原生日志继续追加后 Host 重开 preview 的最新 head。Android `ClaudeHistoryInstrumentedTest#existingHistoryAndRunningTurnSurviveParallelToolsAndReconnect` 使用 `ORBIS_CLAUDE_HISTORY_PREFIX=1053` 的真实 Host / Relay / Mods 夹具，比较同设备同 App 的修复前后结果。iOS 沿用 source recovery 核心与 Claude 身份设备映射；完整双端 L1–L4 / C01–C18 / A1–A4 结果不得由此定向对照替代。
 
-**iOS `OrbisUITests`（合并后 92 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项，r45 语言新增 3 项；历史运行计数按证据保留）**
+**iOS `OrbisUITests`（合并后 93 项：主线 71 项含 r31 新增 4 项及原生文件审阅 / 按需启动新增 2 项，r32 乐观操作新增 8 项，r33 下拉刷新新增 3 项，r34 外观切换新增 1 项，r36 发送展开新增 1 项，r37 配额减少动画新增 1 项，r40 返回响应新增 2 项，r43 普通按钮反馈新增 1 项，r44 后台子任务新增 1 项，r45 语言新增 3 项，r46 回复卡片新增 1 项；历史运行计数按证据保留）**
 
 | 区域 | 用例 | 主要 ID |
 | --- | --- | --- |
@@ -289,6 +289,17 @@ R60 左滑反馈增补（同属 §3.3 / X09 / SC44）：真实鼠标拖动采集
 手动 R62：清除本任务语言偏好后分别以中文、英文、不支持语言启动；切换 English → 简体中文 → 跟随系统，核对当前页和首页 / 聊天入口立即更新；重启保留手动选择；系统模式改变手机语言再返回，手动模式不跟着变。保留正在输入的中英文 / 代码草稿、路径、电脑名、正文、选中和阅读位置；确认不会发出 Agent 操作或重连。窄屏大字下检查设置连接状态 / 语言选项全文、48pt/dp 命中和 A1–A4 / A5。系统页面按 OS 语言显示，App 不翻译 Agent / 用户原文。iOS 既有预览测试明确固定简体中文配置，语言专项另选语言；不放宽既有断言。实际运行和阻塞见 `.artifacts/ui-regression/20261104-app-language/summary.md`。
 
 2026-11-04 模拟器补验：1,481 条共享翻译、L0、Swift 374 / 374、Android JVM 703 / 703 和双端构建通过；SE 英文历史标题与 Android 大字权限等待按钮截断已修复。最终 App 的 SE / iPad 语言各 3 / 3、Android 设置 A1–A4 整类 32 / 32；iOS 逐项滚动及中文辅助功能组合标签修正后 4 / 4。标准配置同设备全量已跑，原始失败及复测分别保留，详见 §6。最终图片已审阅；完整 C01–C18、系统设置修改语言再回前台、屏幕阅读器、真实 Host / 真机未验收。本任务设备 / ADB / 构建租约已释放，无后台测试遗留。最终结论和版本范围以 `.artifacts/ui-regression/20261104-app-language/summary.md` 与 `manual-checklist.md` 为准。
+
+### R63：回复卡片增长与首次入场（M24 / r46 / SC47）
+
+| 层级 | 用例 / 检查 | Feature |
+| --- | --- | --- |
+| L1 | iOS `ReplyCardMotionTests`（6）、Android `ReplyCardMotionTest`（5）：前缀追加、同高追加、最终一批、历史、改写 / 宽度变化、减少动画、入场一次、前插、恢复、离屏、重分组 | M24、M04、V09、V17–V18 |
+| L3 Android | `ReplyCardMotionInstrumentedTest`（4）：中间高度与接续、既有文字不缩放、不漂移、新卡一次入场、重挂和历史 / 改写直接落定 | M24、S10、S08 |
+| L3 iOS | `testReplyCardGrowthAndNewCardKeepExistingTextGeometry`：生产组件追加、出现、改写、原文字几何，浅 / 深 / 减少动画；沿用聊天视口、历史、发送和流式顺序用例 | M24、M04、M17、V01–V03 |
+| L4 / 手动 | 60fps 正常时钟录屏：新卡首帧不闪完整外框，220ms 展开淡入，180ms 增高无回弹；连续批次无回退、文字不拉伸、圆角 / 阴影不断层 | M24、S02–S03、S10 |
+
+手动 R63：在同一隔离会话依次输出短句、换行、列表、代码块、多批密集追加和跨轮新卡；上翻阅读、回到最新、输出结束同帧追加、工具手动展开、历史前插、离开重进、断线恢复、长轮次虚拟化重挂、改写 / 缩短、旋转和字体变化。核对阅读锚点 / 跟随状态、草稿、选择 / 复制 / 链接、顶部 / 旧字形和消息唯一性；用户发送仍只播放 M17。A1–A4 与 iPad 检查；C01–C18、R01–R04 / R37 / R57 继续执行。证据 `.artifacts/ui-regression/20261104-chat-card-motion/`，未运行与阻塞不能记为通过。
 
 ### 3.4 r31 共用交互动效映射
 
@@ -670,3 +681,5 @@ A1–A4均覆盖；减少动画仅按住时即时透明度变化，结束无残�
 最终 Android JVM 712 / 712（无跳过），包含未修改的已安装 Host-18 schema / crypto/session 模块隔离互通；共享设备 `Orbis_UI_Polish_35` 连接专项 5 / 5。相同设备 / A1 配置导入基线 193 项：178 通过、7 失败、8 前置条件跳过；候选 198 项：183 通过、7 失败、8 前置条件跳过。无新增失败、无删除用例；七项失败的首条异常及测试栈位置一致，详见证据 `failure-comparison.json`。A2 / A3 / A4 设置专项各 8 / 8，共 24 / 24，不冒充各配置全量。现有八项跳过需要 Claude / 同步 / 配对 / 实时历史 / 工具等独立夹具或显式启用，均未作为通过。
 
 截图只完成首页、设置及英文大字体的有限静态审阅；归档含沿用的旧 PNG，不将 412 张归档计为本次新截图。完整 L4 逐帧、C01–C18、手机覆盖升级与实际 Host 模型操作仍待补，R64 保持验证中。基线入口曾归档中断、清理报权限错误，按资源恢复规则确认原进程 / 端口退出、设置恢复后定向释放；最终候选 cleanup 无错误，模拟器、私有 ADB、构建租约与全程名额均核验释放。完整证据、失败与恢复记录、APK 哈希见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`；未改生产 Host / Relay，未推送或安装手机。
+
+2026-11-04 回复卡片增长与首次入场 / r46（M24 / SC47 / MOT-26 / R63，双端 R63 自动门禁无新增失败；完整人工门禁未完成）：最终受控候选 Swift 373 / 373、Android JVM 702 / 702（控制基线 697 / 697）及双端 App / 设备测试包构建通过。Android `ReplyCardMotionInstrumentedTest` 最终候选浅 / 深 / 大字体各 4 / 4 通过，减少动画由专项测试实际关闭并在 finally 恢复；同设备 instrumentation 基线 172 通过 / 8 失败 / 7 assumption，候选 176 / 8 / 7，具名失败集合完全相同。iOS `testReplyCardGrowthAndNewCardKeepExistingTextGeometry` 通过，覆盖浅 / 深 / 减少动画 / XXXL；同设备完整 `OrbisUITests` 基线 82 通过 / 10 失败、候选 83 / 10 失败，具名失败集合完全相同，新增卡片用例也包含在候选全量并通过。Android 增高 / 入场中帧 PNG 与 iOS 候选正常时钟录屏局部增长 / 首次入场帧已查看；正文没有缩放，卡片从紧凑高度渐显至完整外框。R63 定向、双端全量失败集合子集门禁完成；C01–C18 完整人工流程、完整全应用 L4 / A1–A4、iPad / iOS17 / 真机尚未完成，不据局部设备结果宣称完整 UI 验收。保存包、xcresult、录屏、失败原文及未完成项见 `.artifacts/ui-regression/20261104-chat-card-motion/summary.md`。

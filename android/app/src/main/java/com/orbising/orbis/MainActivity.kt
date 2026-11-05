@@ -1577,6 +1577,12 @@ internal fun ChatScreen(
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
+    val replyArrivals = remember(state.hostId, runtimeId, sessionId) { ReplyCardArrivals() }
+    replyArrivals.observe(chatItems.map { item -> item.key to when (item) {
+        is ChatListItem.UserMessage -> listOf(item.message.messageId)
+        is ChatListItem.AssistantTurn -> item.messages.map { it.messageId }
+    } }, initialPositioned && state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing && !displayReadPending,
+        following, android.os.SystemClock.uptimeMillis())
     var hasBrowsed by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var lastScrollTowardEarlier by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var suppressQuestionPaging by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
@@ -2391,6 +2397,7 @@ internal fun ChatScreen(
                             nowMs = timerNow,
                             streamingMessageIds = if (state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing)
                                 conversation.streamingMessageIds - conversation.finishedMessageIds else emptySet(),
+                            replyArrivals = replyArrivals,
                             toolActivities = conversation.tools,
                             toolResults = presentation.toolResults,
                             downloads = state.downloads,
@@ -3816,10 +3823,14 @@ internal fun AssistantTurnCard(
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
     streamingMessageIds: Set<String> = emptySet(),
+    replyArrivals: ReplyCardArrivals? = null,
     copyMessages: List<ChatMessage> = messages,
     fileChanges: @Composable () -> Unit = {},
 ) {
-    NeumorphSurface(Modifier.fillMaxWidth(), shadowScale = 0.55f, contentPadding = 16.dp) {
+    val motionParts = remember(messages) { messages.flatMap { message -> message.content.mapIndexed { index, block ->
+        ReplyCardPart("${message.messageId}:$index:${block.type}", block.text.orEmpty())
+    } } }
+    GrowingReplyCard(messages.first().messageId, motionParts, messages.any { it.messageId in streamingMessageIds }, replyArrivals) {
         Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AgentLabel(LocalAgentBrand.current)

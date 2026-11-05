@@ -145,6 +145,37 @@ final class OrbisUITests: XCTestCase {
         capture("streaming-one-cursor-finished", app: app)
     }
 
+    func testReplyCardGrowthAndNewCardKeepExistingTextGeometry() {
+        let variants: [(String, Bool, [String])] = [
+            ("light", false, []), ("dark", true, []), ("reduced", false, ["--preview-reduce-motion"]),
+            ("large", false, ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        ]
+        for (name, dark, arguments) in variants {
+            let app = launch("reply-motion", dark: dark, arguments: arguments)
+            let card = app.otherElements["reply-card"]
+            XCTAssertTrue(card.waitForExistence(timeout: 8))
+            let anchor = app.staticTexts["reply-anchor"].frame
+            let anchorOffset = anchor.minY - card.frame.minY
+            let initial = card.frame.height
+            app.buttons["reply-append"].tap()
+            settle()
+            XCTAssertGreaterThan(card.frame.height, initial)
+            XCTAssertEqual(app.staticTexts["reply-anchor"].frame.minY - card.frame.minY, anchorOffset, accuracy: 1)
+            capture("reply-growth-\(name)", app: app)
+            app.buttons["reply-new"].tap()
+            let newCard = app.otherElements["reply-new-card"]
+            XCTAssertTrue(newCard.waitForExistence(timeout: 4))
+            settle()
+            XCTAssertGreaterThan(newCard.frame.height, 40)
+            XCTAssertEqual(app.staticTexts["reply-anchor"].frame.minY - card.frame.minY, anchorOffset, accuracy: 1)
+            capture("reply-arrival-\(name)", app: app)
+            app.buttons["reply-rewrite"].tap()
+            settle()
+            XCTAssertEqual(card.frame.height, initial, accuracy: 1)
+            app.terminate()
+        }
+    }
+
     func testStreamingRevealWithReducedMotionShowsEveryBlockImmediately() {
         let app = launch("reveal", arguments: ["--preview-reduce-motion"])
         let next = app.buttons["reveal-next-frame"]

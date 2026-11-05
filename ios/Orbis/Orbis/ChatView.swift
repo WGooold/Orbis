@@ -60,6 +60,7 @@ struct ChatView: View {
     let onHistory: () -> Void
     let onDownloads: () -> Void
     @State private var following = true
+    @State private var replyArrivals = ReplyCardArrivals()
     @State private var jumpRequest = 0
     /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
     /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
@@ -275,6 +276,9 @@ struct ChatView: View {
         let kind = self.kind
         let transcript = store.chatTranscript
         let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
+        replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
+            ready: hasPositioned && store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession,
+            following: following, now: ProcessInfo.processInfo.systemUptime)
         let rewindOptions = store.userMessageRewindOptions(for: runtime)
         return GeometryReader { viewport in
             ScrollView {
@@ -290,6 +294,7 @@ struct ChatView: View {
                                        changes: store.turnFileChanges,
                                        changeAnchors: turnEndChangeAnchors(row),
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
+                                       replyArrivals: replyArrivals,
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
                                        rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,
                                        pending: row.isUser ? store.pendingSends.item(row.messages.first?.messageId)?.state : nil,
@@ -735,6 +740,7 @@ struct ChatMessageRow: View, Equatable {
     var changes: TurnFileChanges?
     var changeAnchors: Set<String> = []
     var streamingMessageIds: Set<String> = []
+    var replyArrivals: ReplyCardArrivals? = nil
     var rewindOption: RuntimeOption? = nil
     var rewindEnabled = false
     /// ADR-0049：本地待确认发送的状态；权威行为 nil。
@@ -777,7 +783,7 @@ struct ChatMessageRow: View, Equatable {
                         }
                     }
                 }.frame(maxWidth: row.isUser ? nil : .infinity, alignment: .leading)
-                    .neuSurface(inset: row.isUser, radius: OrbisRadius.card, intensity: row.isUser ? 0.6 : 0.4, padding: OrbisRadius.cardPadding + 2)
+                    .modifier(ChatMessageSurface(row: row, streaming: !streamingMessageIds.isEmpty, arrivals: replyArrivals))
                     .accessibilityAction(named: L10n.tr("复制")) { UIPasteboard.general.string = copyText }
                     .messageSendFlightTarget(row.messages.first?.clientMessageId ?? row.id)
                     .modifier(OrbisMessageActions(enabled: row.isUser, id: row.id, text: copyText,
@@ -794,6 +800,23 @@ struct ChatMessageRow: View, Equatable {
         return { onRewind(rewindOption) }
     }
     private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
+}
+
+private struct ChatMessageSurface: ViewModifier {
+    let row: ChatRow
+    let streaming: Bool
+    let arrivals: ReplyCardArrivals?
+    func body(content: Content) -> some View {
+        if row.isUser {
+            content.neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: OrbisRadius.cardPadding + 2)
+        } else {
+            content.modifier(OrbisReplyCard(id: row.id, parts: row.messages.flatMap { message in
+                message.content.enumerated().map { index, block in
+                    ReplyCardPart(id: "\(message.messageId):\(index):\(block.type)", text: block.text ?? "")
+                }
+            }, live: streaming, arrivals: arrivals))
+        }
+    }
 }
 
 enum PendingSendAction { case resend, restore, discard, check, cancel }

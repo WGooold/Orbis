@@ -58,6 +58,44 @@ struct StreamingRevealPreview: View {
     }
 }
 
+/// Production reply surface in an isolated fixture, with explicit append / rewrite / remount.
+struct ReplyCardMotionPreview: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    @State private var text = "FIRST"
+    @State private var showNew = false
+    @State private var arrivals = ReplyCardArrivals()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack {
+                Button("Append") { text += "\nSECOND\nTHIRD\nFOURTH" }.accessibilityIdentifier("reply-append")
+                Button("Rewrite") { text = "REWRITTEN" }.accessibilityIdentifier("reply-rewrite")
+                Button("New") {
+                    let now = ProcessInfo.processInfo.systemUptime
+                    arrivals.observe(rows: [], ready: true, following: true, now: now)
+                    arrivals.observe(rows: [("new", ["new"])], ready: true, following: true, now: now)
+                    showNew = true
+                }.accessibilityIdentifier("reply-new")
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("ANCHOR").accessibilityIdentifier("reply-anchor")
+                MarkdownMessage(text: text, streaming: true)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(OrbisReplyCard(id: "old", parts: [.init(id: "text", text: text)], live: true, arrivals: nil))
+                .accessibilityElement(children: .contain).accessibilityIdentifier("reply-card")
+            if showNew {
+                VStack(alignment: .leading) { Text("NEW FIRST\nNEW SECOND\nNEW THIRD") }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(OrbisReplyCard(id: "new", parts: [.init(id: "new", text: "new")], live: true, arrivals: arrivals))
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("reply-new-card")
+            }
+            Spacer()
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(OrbisPalette(scheme).base)
+            .environmentObject(store.transfers)
+    }
+}
+
 @MainActor
 enum PreviewViewportUpdates {
     static var schedule: (() -> Void)?

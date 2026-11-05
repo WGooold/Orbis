@@ -143,6 +143,96 @@ enum InteractionMotion {
     }
 }
 
+private struct ReplyCardMeasurement: Equatable {
+    var size: CGSize = .zero
+    var parts: [ReplyCardPart] = []
+    var live = false
+    var reduced = false
+}
+private struct ReplyCardMeasurementKey: PreferenceKey {
+    static var defaultValue: ReplyCardMeasurement? { nil }
+    static func reduce(value: inout ReplyCardMeasurement?, nextValue: () -> ReplyCardMeasurement?) {
+        value = nextValue() ?? value
+    }
+}
+private final class ReplyCardAppearance: ObservableObject {
+    let entering: Bool
+    init(arrivals: ReplyCardArrivals?, id: String) {
+        entering = arrivals?.claim(id, now: ProcessInfo.processInfo.systemUptime) ?? false
+    }
+}
+
+/// Measure at the final width, then reveal only height. The surface is outside the clip,
+/// so its rounded bottom edge and shadow grow with the card without scaling the text.
+struct OrbisReplyCard: ViewModifier {
+    @Environment(\.orbisReduceMotion) private var reduced
+    @StateObject private var appearance: ReplyCardAppearance
+    @State private var growth = ReplyCardGrowth()
+    @State private var height = ReplyCardHeight()
+    @State private var opacity = ReplyCardHeight()
+    @State private var animating = false
+    let parts: [ReplyCardPart]
+    let live: Bool
+
+    init(id: String, parts: [ReplyCardPart], live: Bool, arrivals: ReplyCardArrivals?) {
+        self.parts = parts; self.live = live
+        _appearance = StateObject(wrappedValue: ReplyCardAppearance(arrivals: arrivals, id: id))
+    }
+
+    func body(content: Content) -> some View {
+        TimelineView(.animation(paused: !animating)) { clock in
+            let now = clock.date.timeIntervalSinceReferenceDate
+            content
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { geometry in
+                Color.clear.preference(key: ReplyCardMeasurementKey.self,
+                    value: ReplyCardMeasurement(size: geometry.size, parts: parts, live: live, reduced: reduced))
+            })
+            .frame(height: reduced ? nil : (height.value(at: now) ?? (appearance.entering ? 0 : nil)), alignment: .top)
+            .clipped()
+            .neuSurface(radius: OrbisRadius.card, intensity: 0.4, padding: OrbisRadius.cardPadding + 2)
+            .opacity(reduced ? 1 : Double(opacity.value(at: now) ?? (appearance.entering ? 0 : 1)))
+            .transaction { transaction in
+                if reduced { transaction.animation = nil; transaction.disablesAnimations = true }
+            }
+            .onAppear {
+                guard appearance.entering, opacity.target == nil else { return }
+                let now = Date.timeIntervalSinceReferenceDate
+                opacity.retarget(1, at: now, animated: !reduced, duration: MotionGeometry.replyArrivalDuration, initial: 0)
+                animating = height.isAnimating(at: now) || opacity.isAnimating(at: now)
+            }
+            .onChange(of: animating && !height.isAnimating(at: now) && !opacity.isAnimating(at: now)) { _, finished in
+                if finished { animating = false }
+            }
+        }
+            .onPreferenceChange(ReplyCardMeasurementKey.self) { measurement in
+                guard let measurement, measurement.size.width > 0 else { return }
+                let now = Date.timeIntervalSinceReferenceDate
+                let first = height.target == nil
+                let animate = growth.update(size: measurement.size, parts: measurement.parts,
+                    live: measurement.live, reduced: measurement.reduced, entering: appearance.entering)
+                guard height.target != measurement.size.height || (!animate && height.isAnimating(at: now)) ||
+                        (measurement.reduced && opacity.isAnimating(at: now)) else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    height.retarget(measurement.size.height, at: now, animated: animate,
+                        duration: first ? MotionGeometry.replyArrivalDuration : MotionGeometry.replyGrowthDuration,
+                        initial: appearance.entering ? 0 : nil)
+                    if measurement.reduced { opacity.retarget(1, at: now, animated: false, duration: 0) }
+                    animating = height.isAnimating(at: now) || opacity.isAnimating(at: now)
+                }
+            }
+            .onDisappear {
+                if let target = height.target {
+                    height.retarget(target, at: Date.timeIntervalSinceReferenceDate, animated: false, duration: 0)
+                }
+                opacity.retarget(1, at: Date.timeIntervalSinceReferenceDate, animated: false, duration: 0)
+                animating = false
+            }
+    }
+}
+
 /// Observes touch-down without participating in gesture recognition or delaying a scroll/long press.
 struct OrbisTouchOrigin: UIViewRepresentable {
     let onTouch: (CGPoint) -> Void
