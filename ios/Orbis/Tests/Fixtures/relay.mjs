@@ -31,7 +31,7 @@ function wire(text, opcode = 1) {
   return Buffer.concat([header, data]);
 }
 function aad(h) { return Buffer.from(`k=${h.k}\nroom=${h.room}\nfrom=${h.from}\nto=${h.to}\nch=${h.ch}\nn=${h.n}`); }
-function nonce(h) { const b = Buffer.alloc(12); b.writeUInt32BE({ ctl: 1, msg: 2, bulk: 3 }[h.ch]); b.writeBigUInt64BE(BigInt(h.n), 4); return b; }
+function nonce(h) { const b = Buffer.alloc(12); b.writeUInt32BE({ ctl: 1, msg: 2, bulk: 3, history: 4, catchup: 5 }[h.ch]); b.writeBigUInt64BE(BigInt(h.n), 4); return b; }
 function decrypt(e, key) {
   const bytes = Buffer.from(e.ct, 'base64url');
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce(e.hdr));
@@ -123,20 +123,35 @@ server.on('upgrade', (req, socket) => {
         const shared = crypto.diffieHellman({ privateKey: ephemeral.privateKey, publicKey: publicKey(ePubD) });
         keys = { h2d: derive(shared, root, `h2d|${ePubH}${ePubD}`), d2h: derive(shared, root, `d2h|${ePubH}${ePubD}`) };
         sequences = {}; generation++;
-        plain('hs', { type: 'hs2', ePubH, macH: mac(keys.h2d, 'hs-h|', ePubH, ePubD) });
+        plain('hs', { type: 'hs2', ePubH, macH: mac(keys.h2d, 'hs-h|', ePubH, ePubD), ...(!isLan && process.env.ORBIS_FIXTURE_HISTORY_STREAMS === '1' ? { historyStreams: 'v1', historyMac: mac(keys.h2d, 'history-streams-v1|', ePubH, ePubD) } : {}) });
       } else if (body.type === 'hs3') {
-        if (body.macD !== mac(keys.d2h, 'hs-d|', ePubH, ePubD)) throw Error('invalid HS3');
+        const historyStreams = !isLan && process.env.ORBIS_FIXTURE_HISTORY_STREAMS === '1' && body.historyStreams === 'v1';
+        if (body.macD !== mac(keys.d2h, 'hs-d|', ePubH, ePubD, historyStreams ? '|history-streams-v1' : '')) throw Error('invalid HS3');
+        peer.ready = false;
+        peer.publishReady = () => {
+        if (peer.ready) return;
         peer.ready = true;
         if (isLan) json({ type: 'device.path', protocolVersion: version, path: 'lan', rttMs: 1 });
         json({ type: 'device.ready', protocolVersion: version, deviceId, runtimes: [], fixtureGeneration: generation, fixtureConnections: connections });
+        if (historyStreams) { json({ type: 'fixture.history', generation, text: '历史🙂'.repeat(6000) }, 'history'); json({ type: 'fixture.catchup', generation, text: '补齐🙂'.repeat(6000) }, 'catchup'); }
         json({ type: 'fixture.large', text: '分片兼容性'.repeat(4000) }, 'msg');
         encrypted('ping', Buffer.from([0x48, 0, 1, 2, 3, 4, 5, 6, 7]));
+        };
+        // Match ADR-0064: Relay business format is selected by an encrypted
+        // read-only request before Host emits versioned ready or other lanes.
+        if (isLan) peer.publishReady();
       }
     } else if (h.k === 'ping') {
       if (!decrypt(e, keys.d2h).equals(Buffer.from([0x48, 0, 1, 2, 3, 4, 5, 6, 7]))) throw Error('invalid ping echo');
       json({ type: 'fixture.ping.echoed' });
+    } else if (h.k === 'bin') {
+      encrypted('bin', decrypt(e, keys.d2h), 'bulk');
     } else if (h.k === 'data') {
       const body = JSON.parse(decrypt(e, keys.d2h));
+      if (!peer.ready) {
+        if (body.type !== 'host.lan.request' || body.protocolVersion !== version) throw Error('expected version bootstrap');
+        peer.publishReady();
+      }
       if (body.type === 'fixture.echo') json({ type: 'fixture.echoed', text: body.text, path: isLan ? 'lan' : 'relay' }, 'msg');
       else if (body.type === 'host.lan.request' && enableLan) {
         json({ type: 'host.lan', protocolVersion: version, endpoints: [{ host: '127.0.0.1', port: server.address().port }] });

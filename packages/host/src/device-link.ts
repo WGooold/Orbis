@@ -27,6 +27,7 @@ import {
 import { HostDeviceSession } from "./device-session.js";
 import { UnsupportedDeviceEventError, type DeviceProtocolVersion } from "./device-protocol.js";
 import { PathSelector, type PathChange } from "./path.js";
+import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 
 /**
  * 一条路径的出站出口。谁提供的不重要，重要的是它只说「把这条信封送出去」。
@@ -35,7 +36,11 @@ import { PathSelector, type PathChange } from "./path.js";
  * 它在多路复用里是水位判据：`bulk` 只在 backlog 低时才往 socket 里写，这样一条新产生的
  * 控制帧前面最多只剩水位那点字节。不提供就退化成「只按优先级重排，不做水位控制」。
  */
-export type PathSink = ((envelope: EnvelopeV2) => void) & { backlog?: () => number };
+export type PathSink = ((envelope: EnvelopeV2) => void) & {
+  backlog?: () => number;
+  channelBacklog?: (channel: EnvelopeChannel) => number;
+  supportsHistoryStreams?: () => boolean;
+};
 
 export const SESSION_SYNC_WIRE_LIMIT_BYTES = 12 * 1024 * 1024;
 export type SessionSyncRejection = {
@@ -137,6 +142,8 @@ export type DeviceLinkOptions = {
   ctlQueueLimitBytes?: number;
   /** `bulk` channel 的速率上限（字节/秒）。`0`/缺省 = 不限速。 */
   bulkBytesPerSecond?: number;
+  /** Opt-in: background catchup uses bulk on Relay; preview, manual history and LAN stay msg. */
+  relayHistoryMode?: RelayHistoryMode;
   /**
    * 一条路径的底层写入**重试耗尽**——那几帧已经丢了，而它们的序号已经消耗。
    *
@@ -329,6 +336,10 @@ export class DeviceLink {
         }
       },
       backlog: () => this.#sinks.get(kind)?.backlog?.() ?? 0,
+      channelBacklog: (channel) => {
+        const sink = this.#sinks.get(kind);
+        return sink?.channelBacklog?.(channel) ?? sink?.backlog?.() ?? 0;
+      },
       ...(this.#options.bulkQueueLimitBytes === undefined
         ? {}
         : { bulkQueueLimitBytes: this.#options.bulkQueueLimitBytes }),
@@ -397,6 +408,9 @@ export class DeviceLink {
         this.#announce(this.#selector.markUnavailable(kind));
         this.#syncProbeTimer();
       }
+      // HS1 invalidates the previous key before HS3 arrives. Stop old sealed
+      // slices now; otherwise a stalled old queue can drain after HS2.
+      this.#resetMux(kind);
       sink(outcome.envelope);
       return true;
     }
@@ -499,7 +513,8 @@ export class DeviceLink {
 
   /** Admission happens before seal consumes a nonce. A delivery owns all of its slices until
    * the last socket write, or until its entire path session is invalidated. */
-  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void, onProgress?: () => void, source?: OutboundQueueSource): boolean {
+  sendSessionSnapshot(payload: Uint8Array, done: (written: boolean) => void, onProgress?: () => void, source?: OutboundQueueSource,
+    range?: "preview" | "history" | "catchup"): boolean {
     this.#syncRejection = undefined;
     const kind = this.#selector.active;
     const bytes = sessionSyncWireBytes(payload.byteLength);
@@ -508,25 +523,30 @@ export class DeviceLink {
     const session = this.#sessions.get(kind);
     const mux = this.#muxes.get(kind);
     if (session?.state !== "ready" || mux === undefined) return this.#rejectSync("session_not_ready", kind, bytes);
+    const background = kind === "relay" && relayHistoryMode(this.#options.relayHistoryMode) === "background";
+    const lane = background && session.historyStreams && range === "history" ? "history" :
+      background && range === "catchup" ? (session.historyStreams ? "catchup" : "bulk") : "msg";
     if ([...this.#syncDeliveries].filter(delivery => !delivery.detail).length >= 32) return this.#rejectSync("delivery_limit", kind, bytes);
     if (this.#syncBytes + bytes > SESSION_SYNC_WIRE_LIMIT_BYTES) return this.#rejectSync("sync_byte_limit", kind, bytes);
     // ADR-0013 §6：bulk 有独立预算，不能以下载积压拒绝优先级更高的同步。
     const queueBytes = envelopeBytesForPayload(payload.byteLength);
     const attribution = source ?? { type: "runtime.event", eventType: "session.snapshot", payloadBytes: payload.byteLength };
-    if (!mux.hasRoom("msg", queueBytes)) {
+    if (!mux.hasRoom(lane, queueBytes)) {
       const rejected = this.#rejectSync("message_byte_limit", kind, bytes);
-      this.#rejectQueueAdmission(kind, mux, "msg", queueBytes, attribution);
+      // Background history shares bulk with files. A full file queue must not
+      // retire an otherwise healthy chat path; nothing has been sealed yet.
+      if (lane === "msg") this.#rejectQueueAdmission(kind, mux, lane, queueBytes, attribution);
       return rejected;
     }
     this.#syncBytes += bytes;
     let delivery: SyncDelivery | undefined;
     try {
-      const pieces = fragmentEnvelope(session.seal("data", payload, "msg"));
+      const pieces = fragmentEnvelope(session.seal("data", payload, lane));
       delivery = { kind, bytes, remaining: pieces.length, done, ...(onProgress === undefined ? {} : { onProgress }) };
       this.#syncDeliveries.add(delivery);
       for (const piece of pieces) this.#syncPieces.set(piece, delivery);
       for (const piece of pieces) {
-        if (!mux.enqueue("msg", piece, piece.ct.length + PIECE_HEADER_BYTES, attribution)) {
+        if (!mux.enqueue(lane, piece, piece.ct.length + PIECE_HEADER_BYTES, attribution)) {
           this.detach(kind);
           return false;
         }
@@ -679,7 +699,9 @@ export class DeviceLink {
   #session(kind: PathKind): HostDeviceSession {
     const existing = this.#sessions.get(kind);
     if (existing !== undefined) return existing;
-    const session = new HostDeviceSession({ hostId: this.#options.hostId, device: this.#options.device, compatible: this.#options.compatible === true });
+    const session = new HostDeviceSession({ hostId: this.#options.hostId, device: this.#options.device, compatible: this.#options.compatible === true,
+      supportsHistoryStreams: () => kind === "relay" && this.#options.relayHistoryMode === "background" &&
+        this.#sinks.get(kind)?.supportsHistoryStreams?.() === true });
     this.#sessions.set(kind, session);
     return session;
   }

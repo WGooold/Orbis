@@ -34,7 +34,7 @@
  */
 
 /** 逻辑 channel。与 `EnvelopeChannelSchema` 同集合，这里独立声明是为了避免与 `index.ts` 循环引用。 */
-export type MuxChannel = "ctl" | "msg" | "bulk";
+export type MuxChannel = "ctl" | "msg" | "bulk" | "history" | "catchup";
 
 /** Only routing/type metadata, supplied before encryption. Never include payload content. */
 export type OutboundQueueSource = {
@@ -84,6 +84,8 @@ export type OutboundMuxOptions<T> = {
    * 不提供 = 不做水位控制，只剩优先级重排。
    */
   backlog?: () => number;
+  /** Independent native streams only. Shared sockets must keep using backlog. */
+  channelBacklog?: (channel: MuxChannel) => number;
   /** `bulk` 只在 backlog 不超过它时交付。缺省 [DEFAULT_BULK_LOW_WATER_BYTES]。 */
   bulkLowWaterBytes?: number;
   /**
@@ -208,7 +210,7 @@ type Entry<T> = { frame: T; bytes: number; queuedAt: number; channel: MuxChannel
 
 export class OutboundChannelMux<T> {
   readonly #options: OutboundMuxOptions<T>;
-  readonly #queues: Record<MuxChannel, Entry<T>[]> = { ctl: [], msg: [], bulk: [] };
+  readonly #queues: Record<MuxChannel, Entry<T>[]> = { ctl: [], msg: [], bulk: [], history: [], catchup: [] };
   /** 校验过的重试间隔（写被拒时用）。见构造函数里的注释。 */
   readonly #pumpIntervalMs: number;
   /** 校验过的复查间隔（被 socket 积压挡住时用）。 */
@@ -216,7 +218,7 @@ export class OutboundChannelMux<T> {
   /** 上一次 `#pump` 是**因为 socket 积压**停下的（而不是因为队列空或写被拒）。它决定下次用哪个节拍。 */
   #gatedByBacklog = false;
   #queuedBytes = 0;
-  #channelBytes: Record<MuxChannel, number> = { ctl: 0, msg: 0, bulk: 0 };
+  #channelBytes: Record<MuxChannel, number> = { ctl: 0, msg: 0, bulk: 0, history: 0, catchup: 0 };
   #bulkBytes = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #overflowReported = false;
@@ -251,12 +253,12 @@ export class OutboundChannelMux<T> {
   }
 
   get msgQueuedBytes(): number {
-    return this.#channelBytes.msg;
+    return this.#channelBytes.msg + this.#channelBytes.history + this.#channelBytes.catchup;
   }
 
   queueLimitBytes(channel: MuxChannel): number {
     if (channel === "ctl") return this.#options.ctlQueueLimitBytes ?? DEFAULT_CTL_QUEUE_LIMIT_BYTES;
-    if (channel === "msg") return this.#options.msgQueueLimitBytes ?? DEFAULT_MSG_QUEUE_LIMIT_BYTES;
+    if (channel === "msg" || channel === "history" || channel === "catchup") return this.#options.msgQueueLimitBytes ?? DEFAULT_MSG_QUEUE_LIMIT_BYTES;
     return this.#options.bulkQueueLimitBytes ?? DEFAULT_BULK_QUEUE_LIMIT_BYTES;
   }
 
@@ -266,7 +268,8 @@ export class OutboundChannelMux<T> {
    */
   hasRoom(channel: MuxChannel, bytes: number): boolean {
     if (!Number.isFinite(bytes) || bytes < 0) return false;
-    return this.#channelBytes[channel] + bytes <= this.queueLimitBytes(channel);
+    const used = channel === "msg" || channel === "history" || channel === "catchup" ? this.msgQueuedBytes : this.#channelBytes[channel];
+    return used + bytes <= this.queueLimitBytes(channel);
   }
 
   /**
@@ -333,10 +336,27 @@ export class OutboundChannelMux<T> {
     this.#queues.ctl.length = 0;
     this.#queues.msg.length = 0;
     this.#queues.bulk.length = 0;
+    this.#queues.history.length = 0;
+    this.#queues.catchup.length = 0;
     this.#queuedBytes = 0;
-    this.#channelBytes = { ctl: 0, msg: 0, bulk: 0 };
+    this.#channelBytes = { ctl: 0, msg: 0, bulk: 0, history: 0, catchup: 0 };
     this.#bulkBytes = 0;
     this.#gatedByBacklog = false;
+  }
+
+  /** Only for a confirmed key/session reset, never queue pressure. A shared
+   * Relay socket must retire one device's old ciphertext without losing peers. */
+  retireSessionFrames(matches: (frame: T) => boolean): void {
+    for (const channel of ["ctl", "msg", "history", "catchup", "bulk"] as const) {
+      this.#queues[channel] = this.#queues[channel].filter(entry => {
+        if (!matches(entry.frame)) return true;
+        this.#queuedBytes -= entry.bytes;
+        this.#channelBytes[channel] -= entry.bytes;
+        if (channel === "bulk") this.#bulkBytes -= entry.bytes;
+        return false;
+      });
+    }
+    this.#syncTimer();
   }
 
   #pump(): void {
@@ -348,6 +368,8 @@ export class OutboundChannelMux<T> {
       const entry =
         this.#queues.ctl.shift() ??
         this.#takeGated("msg", this.#options.msgLowWaterBytes ?? DEFAULT_MSG_LOW_WATER_BYTES) ??
+        this.#takeGated("history", this.#options.msgLowWaterBytes ?? DEFAULT_MSG_LOW_WATER_BYTES) ??
+        this.#takeGated("catchup", this.#options.msgLowWaterBytes ?? DEFAULT_MSG_LOW_WATER_BYTES) ??
         this.#takeGated("bulk", this.#options.bulkLowWaterBytes ?? DEFAULT_BULK_LOW_WATER_BYTES);
       if (entry === undefined) break;
       if (!this.#writeEntry(entry)) {
@@ -396,7 +418,7 @@ export class OutboundChannelMux<T> {
     const queue = this.#queues[channel];
     const head = queue[0];
     if (head === undefined) return undefined;
-    const backlog = this.#options.backlog?.() ?? 0;
+    const backlog = this.#options.channelBacklog?.(channel) ?? this.#options.backlog?.() ?? 0;
     if (backlog > lowWaterBytes) {
       // 链路只是还没消化完，不是坏了：记下来，让下一次复查走更密的节拍（见 `#syncTimer`）。
       this.#gatedByBacklog = true;
@@ -416,7 +438,7 @@ export class OutboundChannelMux<T> {
    */
   #syncTimer(): void {
     // `ctl` 也算在内：它平时不排队，但写被拒时同样会留在队首等重试。
-    const pending = this.#queues.ctl.length + this.#queues.msg.length + this.#queues.bulk.length;
+    const pending = this.#queues.ctl.length + this.#queues.msg.length + this.#queues.history.length + this.#queues.catchup.length + this.#queues.bulk.length;
     if (pending === 0 || this.#stopped) {
       if (this.#timer !== undefined) {
         clearTimeout(this.#timer);
@@ -462,7 +484,7 @@ export class OutboundChannelMux<T> {
     const groups = new Map<string, OutboundQueueSourceStats>();
     let oldestQueuedMs = 0;
     let sourcesTruncated = false;
-    for (const channel of ["ctl", "msg"] as const) {
+    for (const channel of ["ctl", "msg", "history", "catchup"] as const) {
       for (const entry of this.#queues[channel]) {
         const queuedMs = Math.max(0, now - entry.queuedAt);
         oldestQueuedMs = Math.max(oldestQueuedMs, queuedMs);

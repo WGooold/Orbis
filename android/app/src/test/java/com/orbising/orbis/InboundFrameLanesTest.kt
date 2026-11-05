@@ -17,6 +17,36 @@ import org.junit.Test
  * 2. 内存上界（ADR-0040）：会话面与分片有预算，超了丢最旧；控制面不静默丢。
  */
 class InboundFrameLanesTest {
+    @Test fun `history then catchup retain FIFO and share the original session budget`() {
+        val lanes = InboundFrameLanes(sessionLimits = InboundFrameLanes.LaneLimits(3, 100))
+        lanes.offer("catchup-1", "catchup"); lanes.offer("history-1", "history"); lanes.offer("live", "msg")
+        assertEquals("live", lanes.takeSession()?.payload)
+        assertEquals("history-1", lanes.takeSession()?.payload)
+        assertEquals("catchup-1", lanes.takeSession()?.payload)
+        lanes.offer("old", "catchup"); lanes.offer("first", "history"); lanes.offer("second", "history"); lanes.offer("new", "msg")
+        assertEquals(1, lanes.drainOverflow().sessionFrames)
+        assertEquals("new", lanes.takeSession()?.payload)
+        assertEquals("first", lanes.takeSession()?.payload)
+        assertEquals("second", lanes.takeSession()?.payload)
+        assertEquals(null, lanes.takeSession())
+        lanes.close()
+    }
+
+    @Test
+    fun `evicted background history requests session repair while binary loss keeps offset recovery`() {
+        val lanes = bounded(bulkFrames = 1, bulkPayload = 100)
+        lanes.offer("history JSON", "bulk")
+        lanes.offerBulk(byteArrayOf(1))
+        assertEquals(1, lanes.drainOverflow().sessionFrames)
+        lanes.offer("next history", "bulk")
+        assertEquals(false, lanes.drainOverflow().any)
+        lanes.offer("live", "msg")
+        assertEquals("live", lanes.takeSession()?.payload)
+        assertEquals(InboundFrameLanes.InteractiveFrame("next history", "bulk"), lanes.takeBulk())
+        assertEquals(false, lanes.drainOverflow().any)
+        lanes.close()
+    }
+
 
     private fun bounded(
         controlFrames: Int = 8,

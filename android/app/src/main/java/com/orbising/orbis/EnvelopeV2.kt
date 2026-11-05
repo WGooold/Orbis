@@ -31,7 +31,7 @@ object EnvelopeV2Contract {
         "k=${hdr.k}\nroom=${hdr.room}\nfrom=${hdr.from}\nto=${hdr.to}\nch=${hdr.ch}\nn=${hdr.n}".toByteArray(Charsets.UTF_8)
 
     /** channel 在 nonce 前四字节里的槽位。与 TS 侧 `CHANNEL_SLOT` 逐值一致。 */
-    private val CHANNEL_SLOT = mapOf("ctl" to 1, "msg" to 2, "bulk" to 3)
+    private val CHANNEL_SLOT = mapOf("ctl" to 1, "msg" to 2, "bulk" to 3, "history" to 4, "catchup" to 5)
 
     /**
      * `nonce = uint32BE(channel 槽位) ‖ uint64BE(n)`，12 字节。

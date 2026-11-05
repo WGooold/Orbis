@@ -11,6 +11,7 @@
 		C06300010000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
 		C06300010000000000000002 /* LocalizationCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000002; };
 		C06300010000000000000003 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C06320010000000000000001; };
+		C06400010000000000000010 /* RelaySocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06410010000000000000010 /* RelaySocket.swift */; };
 		C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03710010000000000000001 /* QuotaCoinGeometry.swift */; };
 		A00100010000000000000001 /* OrbisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000001 /* OrbisApp.swift */; };
 		A00100010000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000002 /* Models.swift */; };
@@ -56,6 +57,7 @@
 		C05800010000000000000001 /* MotionGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000001 /* MotionGeometry.swift */; };
 		C05800010000000000000002 /* InteractionMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000002 /* InteractionMotion.swift */; };
 		C03300010000000000000001 /* HomePullRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03310010000000000000001 /* HomePullRefresh.swift */; };
+        C06400010000000000000001 = {isa = PBXBuildFile; fileRef = C06410010000000000000001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,6 +66,7 @@
 		C06310010000000000000002 /* LocalizationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalog.swift; sourceTree = "<group>"; };
 		C06310010000000000000003 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
 		C06310010000000000000004 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		C06410010000000000000010 /* RelaySocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySocket.swift; sourceTree = "<group>"; };
 		C03710010000000000000001 /* QuotaCoinGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuotaCoinGeometry.swift; sourceTree = "<group>"; };
 		A00110010000000000000001 /* OrbisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisApp.swift; sourceTree = "<group>"; };
 		A00110010000000000000002 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -112,6 +115,8 @@
 		C05810010000000000000001 /* MotionGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionGeometry.swift; sourceTree = "<group>"; };
 		C05810010000000000000002 /* InteractionMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionMotion.swift; sourceTree = "<group>"; };
 		C03310010000000000000001 /* HomePullRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePullRefresh.swift; sourceTree = "<group>"; };
+        C06410010000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/RelayQUICDeviceTests.swift; sourceTree = SOURCE_ROOT; };
+        C06410010000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = OrbisTransportTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +128,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -147,6 +153,7 @@
 				A00110010000000000000006 /* Pairing.swift */,
 				A00110010000000000000007 /* Envelope.swift */,
 				A00110010000000000000008 /* WebSocketTransport.swift */,
+				C06410010000000000000010 /* RelaySocket.swift */,
 				A00110010000000000000009 /* OrbisStore.swift */,
 				A0011001000000000000000A /* ContentView.swift */,
 				A0011001000000000000000B /* PairingScannerView.swift */,
@@ -171,6 +178,7 @@
 				A0011001000000000000002B /* ToolInventory.swift */,
 				A0011001000000000000002A /* ToolContent.swift */,
                 B00110010000000000000001,
+                C06410010000000000000001,
 				A00110010000000000000029 /* DownloadView.swift */,
 				A00110010000000000000028 /* FileTransfers.swift */,
 				A00110010000000000000027 /* InteractionView.swift */,
@@ -195,6 +203,7 @@
 			children = (
 				A0011001000000000000000E /* Orbis.app */,
                 B00110010000000000000002,
+                C06410010000000000000002,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -239,6 +248,7 @@
             productReference = B00110010000000000000002;
             productType = "com.apple.product-type.bundle.ui-testing";
         };
+        C06430010000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = C06450010000000000000001; buildPhases = (C06440010000000000000001, C06440010000000000000002, C06440010000000000000003); buildRules = (); dependencies = (B00160010000000000000002); name = OrbisTransportTests; productName = OrbisTransportTests; productReference = C06410010000000000000002; productType = "com.apple.product-type.bundle.unit-test"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -268,6 +278,7 @@
 			targets = (
 				A00130010000000000000001 /* Orbis */,
                 B00130010000000000000001,
+                C06430010000000000000001,
 			);
 		};
 /* End PBXProject section */
@@ -283,6 +294,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -300,6 +312,7 @@
 				A00100010000000000000006 /* Pairing.swift in Sources */,
 				A00100010000000000000007 /* Envelope.swift in Sources */,
 				A00100010000000000000008 /* WebSocketTransport.swift in Sources */,
+				C06400010000000000000010 /* RelaySocket.swift in Sources */,
 				A00100010000000000000009 /* OrbisStore.swift in Sources */,
 				A0010001000000000000000A /* ContentView.swift in Sources */,
 				A0010001000000000000000B /* PairingScannerView.swift in Sources */,
@@ -340,6 +353,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */
@@ -429,6 +443,8 @@
 		};
         B00170010000000000000001 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Debug; };
         B00170010000000000000002 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = Orbis;}; name = Release; };
+        C06470010000000000000001 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Orbis.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Orbis"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.transporttests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+        C06470010000000000000002 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Orbis.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Orbis"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios.transporttests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -451,6 +467,7 @@
 			defaultConfigurationName = Release;
 		};
         B00150010000000000000001 = {isa = XCConfigurationList; buildConfigurations = (B00170010000000000000001, B00170010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+        C06450010000000000000001 = {isa = XCConfigurationList; buildConfigurations = (C06470010000000000000001, C06470010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 /* End XCConfigurationList section */
 	};
 	rootObject = A00160010000000000000001 /* Project object */;

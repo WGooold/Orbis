@@ -35,20 +35,25 @@ object HandshakeE2e {
     fun handshakeMacFromHost(keys: SessionKeys, hostEphemeralPublic: ByteArray, deviceEphemeralPublic: ByteArray): ByteArray =
         Crypto.hmacSha256(keys.kHostToDevice, "hs-h|", Crypto.toBase64Url(hostEphemeralPublic), Crypto.toBase64Url(deviceEphemeralPublic))
 
-    fun handshakeMacFromDevice(keys: SessionKeys, hostEphemeralPublic: ByteArray, deviceEphemeralPublic: ByteArray): ByteArray =
-        Crypto.hmacSha256(keys.kDeviceToHost, "hs-d|", Crypto.toBase64Url(hostEphemeralPublic), Crypto.toBase64Url(deviceEphemeralPublic))
+    fun handshakeMacFromDevice(keys: SessionKeys, hostEphemeralPublic: ByteArray, deviceEphemeralPublic: ByteArray, historyStreams: Boolean = false): ByteArray =
+        Crypto.hmacSha256(keys.kDeviceToHost, "hs-d|", Crypto.toBase64Url(hostEphemeralPublic), Crypto.toBase64Url(deviceEphemeralPublic), if (historyStreams) "|history-streams-v1" else "")
 }
 
-data class SessionKeys(val kHostToDevice: ByteArray, val kDeviceToHost: ByteArray)
+data class SessionKeys(val kHostToDevice: ByteArray, val kDeviceToHost: ByteArray, val historyStreams: Boolean = false)
 
 @Serializable
 data class HandshakeHello(val type: String, val ePubD: String)
 
 @Serializable
-data class HandshakeAcceptBody(val type: String, val ePubH: String, val macH: String)
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+data class HandshakeAcceptBody(val type: String, val ePubH: String, val macH: String,
+ @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val historyStreams: String? = null,
+ @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val historyMac: String? = null)
 
 @Serializable
-data class HandshakeConfirmBody(val type: String, val macD: String)
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+data class HandshakeConfirmBody(val type: String, val macD: String,
+ @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val historyStreams: String? = null)
 
 /**
  * 手机侧握手状态机：发 HS1 → 收 HS2 → 验 `mac_h` → 产出 HS3。
@@ -59,6 +64,7 @@ data class HandshakeConfirmBody(val type: String, val macD: String)
 class DeviceHandshake(
     pskRoot: ByteArray,
     ephemeralSeed: ByteArray? = null,
+    private val supportsHistoryStreams: Boolean = false,
 ) {
     private val keyPair = ephemeralSeed?.let(X25519KeyPair::fromSeed) ?: X25519KeyPair.generate()
     private val pskRoot: ByteArray = pskRoot.copyOf()
@@ -78,16 +84,24 @@ class DeviceHandshake(
     fun accept(body: HandshakeAcceptBody): HandshakeConfirmBody {
         val hostEphemeralPublic = Crypto.fromBase64UrlFixed(body.ePubH, Crypto.X25519_KEY_BYTES, "ePubH")
         val sharedSecret = Crypto.deriveSharedSecret(keyPair.privateRaw, hostEphemeralPublic)
-        val derived = HandshakeE2e.deriveSessionKeys(sharedSecret, pskRoot, hostEphemeralPublic, keyPair.publicRaw)
+        var derived = HandshakeE2e.deriveSessionKeys(sharedSecret, pskRoot, hostEphemeralPublic, keyPair.publicRaw)
         val expected = HandshakeE2e.handshakeMacFromHost(derived, hostEphemeralPublic, keyPair.publicRaw)
         val actual = Crypto.fromBase64Url(body.macH, "macH")
         if (!Crypto.constantTimeEqual(expected, actual)) {
             throw Crypto.E2eCryptoException("mac_mismatch", L10n.tr("mac_h 校验失败：对面拿不出这台电脑的 pskRoot"))
         }
+        if (supportsHistoryStreams && body.historyStreams != null) {
+            val capabilityMac = Crypto.hmacSha256(derived.kHostToDevice, "history-streams-v1|", Crypto.toBase64Url(hostEphemeralPublic), Crypto.toBase64Url(keyPair.publicRaw))
+            if (body.historyStreams != "v1" || body.historyMac == null || !Crypto.constantTimeEqual(capabilityMac, Crypto.fromBase64Url(body.historyMac, "historyMac"))) {
+                throw Crypto.E2eCryptoException("mac_mismatch", "history streams capability authentication failed")
+            }
+            derived = derived.copy(historyStreams = true)
+        }
         keys = derived
         return HandshakeConfirmBody(
             type = "hs3",
-            macD = Crypto.toBase64Url(HandshakeE2e.handshakeMacFromDevice(derived, hostEphemeralPublic, keyPair.publicRaw)),
+            macD = Crypto.toBase64Url(HandshakeE2e.handshakeMacFromDevice(derived, hostEphemeralPublic, keyPair.publicRaw, derived.historyStreams)),
+            historyStreams = if (derived.historyStreams) "v1" else null,
         )
     }
 
@@ -107,6 +121,7 @@ class DeviceHandshake(
 class E2eChannel(keys: SessionKeys, role: String) {
     private val sendKey: ByteArray
     private val receiveKey: ByteArray
+    private val historyStreams = keys.historyStreams
 
     /**
      * 序号按 channel 各自计数（spec 票 07）。
@@ -147,6 +162,7 @@ class E2eChannel(keys: SessionKeys, role: String) {
         if (kind == "hs" || kind == "pair") {
             throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 帧不加密，请用 PlaintextEnvelope", kind))
         }
+        requireNegotiated(channel)
         val next = (sendSequences[channel] ?: 0L) + 1
         val hdr = RoutingHeaderV2(k = kind, room = room, from = from, to = to, n = next, ch = channel)
         val sealed = Crypto.sealAead(
@@ -171,6 +187,7 @@ class E2eChannel(keys: SessionKeys, role: String) {
             throw Crypto.E2eCryptoException("malformed", L10n.tr("{0} 帧不是密文，请用 PlaintextEnvelope", hdr.k))
         }
         val channel = hdr.ch ?: throw Crypto.E2eCryptoException("malformed", L10n.tr("加密帧 {0} 缺少 hdr.ch", hdr.k))
+        requireNegotiated(channel)
         val last = receiveSequences[channel] ?: 0L
         if (hdr.n <= last) {
             return null
@@ -183,6 +200,10 @@ class E2eChannel(keys: SessionKeys, role: String) {
         )
         receiveSequences[channel] = hdr.n
         return plaintext
+    }
+
+    private fun requireNegotiated(channel: String) {
+        if ((channel == "history" || channel == "catchup") && !historyStreams) throw Crypto.E2eCryptoException("malformed", "history streams were not negotiated")
     }
 
     companion object {

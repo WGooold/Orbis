@@ -14,6 +14,9 @@ const registration = await RegistrationAuthority.create({
 });
 
 const relay = await createRelayServer({
+  ...(process.env.ORBIS_QUIC_PORT === undefined ? {} : { quicPort: Number(process.env.ORBIS_QUIC_PORT) }),
+  quicHistoryStreamsEnabled: process.env["ORBIS_RELAY_QUIC_HISTORY_STREAMS"] === "1",
+  quicHostEnabled: process.env.ORBIS_QUIC_HOST_ENABLED === "1",
   port,
   host: process.env.HOST ?? "0.0.0.0",
   runtimeCredentials: runtimeCredential ? [runtimeCredential] : [],

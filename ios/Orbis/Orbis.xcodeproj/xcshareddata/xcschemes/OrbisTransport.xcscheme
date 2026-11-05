@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1600" version="1.3">
+  <BuildAction parallelizeBuildables="NO" buildImplicitDependencies="YES">
+    <BuildActionEntries>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C06430010000000000000001" BuildableName="OrbisTransportTests.xctest" BlueprintName="OrbisTransportTests" ReferencedContainer="container:Orbis.xcodeproj"/>
+      </BuildActionEntry>
+    </BuildActionEntries>
+  </BuildAction>
+  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO">
+    <Testables>
+      <TestableReference skipped="NO" parallelizable="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C06430010000000000000001" BuildableName="OrbisTransportTests.xctest" BlueprintName="OrbisTransportTests" ReferencedContainer="container:Orbis.xcodeproj"/>
+      </TestableReference>
+    </Testables>
+    <CommandLineArguments>
+      <CommandLineArgument argument="--preview-screen=home" isEnabled="YES"/>
+    </CommandLineArguments>
+  </TestAction>
+</Scheme>

@@ -341,7 +341,7 @@ export type EnvelopeKind = z.infer<typeof EnvelopeKindSchema>;
  * **`ch` 必填**（ADR-0008 取消了向后兼容）：不再有"不携带 `ch` = 单流"的旧对端，
  * 也不再需要握手里的 `channels` 协商。
  */
-export const EnvelopeChannelSchema = z.enum(["ctl", "msg", "bulk"]);
+export const EnvelopeChannelSchema = z.enum(["ctl", "msg", "bulk", "history", "catchup"]);
 export type EnvelopeChannel = z.infer<typeof EnvelopeChannelSchema>;
 
 /** 握手帧不参与加密流，序号固定为 0；加密流的序号从 1 开始（§5.3）。 */
@@ -423,7 +423,7 @@ export function canonEnvelopeAad(hdr: RoutingHeaderV2): Uint8Array {
  *
  * `0` 保留不用：ADR-0008 之后不存在"缺省 = 单流"的帧，见到 0 只能是实现 bug。
  */
-const CHANNEL_SLOT: Record<EnvelopeChannel, number> = { ctl: 1, msg: 2, bulk: 3 };
+const CHANNEL_SLOT: Record<EnvelopeChannel, number> = { ctl: 1, msg: 2, bulk: 3, history: 4, catchup: 5 };
 
 /**
  * `nonce = 0x00000000 || uint64BE(n)` 是 v4 及以前的布局，它依赖"n 全局唯一"这个

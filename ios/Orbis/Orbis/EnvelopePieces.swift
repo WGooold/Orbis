@@ -53,7 +53,7 @@ final class EnvelopeReassembler {
         sweep()
         let h = envelope.hdr
         guard envelope.v == 2, let kind = h.ik, ["data", "ping", "bin"].contains(kind),
-              let channel = h.ch, ["ctl", "msg", "bulk"].contains(channel),
+              let channel = h.ch, ["ctl", "msg", "bulk", "history", "catchup"].contains(channel),
               let mid = h.mid, !mid.isEmpty, mid.utf8.count <= 128,
               let index = h.idx, (0...1_000_000).contains(index), let last = h.last,
               !envelope.ct.isEmpty, envelope.ct.utf8.count <= EnvelopePieces.maxPieceChars,

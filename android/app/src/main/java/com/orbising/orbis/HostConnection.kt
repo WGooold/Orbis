@@ -115,6 +115,14 @@ internal class HostConnection(
 
     val hostId: String get() = pairing.hostId
     private val relay = RelayClient()
+    private val relayPreferences = application.getSharedPreferences("orbis_relay_transport", android.content.Context.MODE_PRIVATE)
+    private fun savedRelayMode(): RelayTransportMode = runCatching {
+        RelayTransportMode.valueOf(relayPreferences.getString(hostId, RelayTransportMode.WS.name)!!)
+    }.getOrDefault(RelayTransportMode.WS)
+    fun setRelayTransportMode(mode: RelayTransportMode) {
+        relayPreferences.edit().putString(hostId, mode.name).apply()
+        relay.setRelayTransportMode(mode)
+    }
     private val reducer = RelayReducer()
     private val notifier = stores.notifier
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
@@ -2452,6 +2460,7 @@ internal class HostConnection(
             // 电脑侧永远收不到任何东西。Android 侧从 f822ef9 起一直漏了这一行，表现就是
             // 「每次都显示已连接，却永远无法配对/激活」。
             e2eOptions = options,
+            relayMode = savedRelayMode(),
         )
         // 配对看门狗：配对连接建立后，若电脑迟迟不确认这次配对（pair-accept），必须有人说话。
         // 这段以前是空白——配对帧发出去没人应，APP 就安静地停在「已连接」，用户无从判断该干什么，

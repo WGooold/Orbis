@@ -29,9 +29,43 @@ struct InboundTransportTests {
         #expect(try await replacement.decode(.data(repeated), hostId: "h", deviceId: "other", keys: keys, relay: true) == nil)
         #expect(try await replacement.decode(.data(repeated), hostId: "h", deviceId: "d", keys: keys, relay: true) != nil)
     }
+    @Test func priorQUICSessionCiphertextCannotPoisonNewLaneHighWatermark() async throws {
+        let keys = SessionKeys(hostToDevice: Data(repeating: 1, count: 32), deviceToHost: Data(repeating: 2, count: 32))
+        let oldKeys = SessionKeys(hostToDevice: Data(repeating: 3, count: 32), deviceToHost: Data(repeating: 4, count: 32))
+        for lane in ["ctl", "msg", "bulk"] {
+            let decoder = InboundFrameDecoder()
+            let old = E2EChannel(keys: oldKeys)
+            var stale: Envelope!
+            for _ in 0..<3 { stale = try old.seal(room: "h", from: "h", to: "d", channel: lane, payload: Data("{}".utf8)) }
+            let invalid = try JSONEncoder().encode(V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: stale))
+            // Baseline strict decoder reproduces the cross-stream old-key failure.
+            await #expect(throws: E2ECryptoError.self) {
+                try await InboundFrameDecoder().decode(.data(invalid), hostId: "h", deviceId: "d", keys: keys, relay: true)
+            }
+            #expect(try await decoder.decode(.data(invalid), hostId: "h", deviceId: "d", keys: keys, relay: true, allowPriorSession: true) == nil)
+            let host = E2EChannel(keys: SessionKeys(hostToDevice: keys.deviceToHost, deviceToHost: keys.hostToDevice))
+            let fresh = try host.seal(room: "h", from: "h", to: "d", channel: lane, payload: Data("{}".utf8))
+            let valid = try JSONEncoder().encode(V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: fresh))
+            #expect(try await decoder.decode(.data(valid), hostId: "h", deviceId: "d", keys: keys, relay: true, allowPriorSession: true) != nil)
+            // First authenticated frame closes the exception for this lane.
+            await #expect(throws: E2ECryptoError.self) {
+                try await decoder.decode(.data(invalid), hostId: "h", deviceId: "d", keys: keys, relay: true, allowPriorSession: true)
+            }
+        }
+    }
+
     private func frame(_ text: String, _ channel: String?, binary: Bool = false) -> InboundFrameLanes.Frame {
         .init(payload: Data(text.utf8), channel: channel, binary: binary)
     }
+    @Test func historyCatchupKeepPriorityAndShareExistingSessionBudget() {
+        let lanes = InboundFrameLanes(session: .init(frames: 3, payload: 100))
+        lanes.offer(frame("catchup-1", "catchup")); lanes.offer(frame("history-1", "history")); lanes.offer(frame("live", "msg"))
+        #expect(lanes.take() == frame("live", "msg")); #expect(lanes.take() == frame("history-1", "history")); #expect(lanes.take() == frame("catchup-1", "catchup"))
+        lanes.offer(frame("old", "catchup")); lanes.offer(frame("first", "history")); lanes.offer(frame("second", "history")); lanes.offer(frame("new", "msg"))
+        #expect(lanes.drainOverflow().session == 1)
+        #expect(lanes.take() == frame("new", "msg")); #expect(lanes.take() == frame("first", "history")); #expect(lanes.take() == frame("second", "history")); #expect(lanes.take() == nil)
+    }
+
     @Test func headerChannelSetsPriorityAndBulkPreservesPayloadKind() {
         let lanes = InboundFrameLanes()
         lanes.offer(frame("binary", "bulk", binary: true))
@@ -58,6 +92,19 @@ struct InboundTransportTests {
         #expect(lanes.take() == frame("new-", "msg"))
         #expect(lanes.take() == frame("last", "msg"))
         #expect(lanes.take() == frame("new", "bulk", binary: true))
+    }
+    @Test func evictedBackgroundHistoryRequestsRepairButBinaryStillUsesOffsets() {
+        let lanes = InboundFrameLanes(bulk: .init(frames: 1, payload: 100))
+        lanes.offer(frame("history JSON", "bulk"))
+        lanes.offer(frame("binary", "bulk", binary: true))
+        #expect(lanes.drainOverflow().session == 1)
+        lanes.offer(frame("next history", "bulk"))
+        #expect(lanes.drainOverflow().session == 0)
+        lanes.offer(frame("live", "msg"))
+        #expect(lanes.take() == frame("live", "msg"))
+        #expect(lanes.take() == frame("next history", "bulk"))
+        lanes.clear()
+        #expect(lanes.drainOverflow().session == 0)
     }
     @Test func consumptionAndDisconnectReturnBudgetsAndLargeSnapshotCanMakeProgress() {
         let lanes = InboundFrameLanes(session: .init(frames: 1, payload: 4))

@@ -152,6 +152,8 @@ async function runHost(
     service = await HostService.create({
       providers,
       relayUrl: config.relayUrl,
+      relayTransport: config.relayTransport,
+      relayHistoryMode: config.relayHistoryMode,
       credential: config.runtimeCredential,
       stateDir,
       ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),

@@ -9,11 +9,13 @@ protocol OrbisTransport: AnyObject {
     func disconnect()
     @discardableResult func send(_ object: [String: Any]) -> Bool
     @discardableResult func sendBinary(_ data: Data) -> Bool
+    func setRelayTransportMode(_ mode: RelayTransportMode)
 }
 
 extension OrbisTransport {
     var receivedPayload: Data? { nil }
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
+    func setRelayTransportMode(_ mode: RelayTransportMode) {}
 }
 
 /// One instance per path/handshake generation. No mutable cipher or reassembly state crosses
@@ -27,17 +29,18 @@ actor InboundFrameDecoder {
     }
     private let pieces = EnvelopeReassembler()
     private var channel: E2EChannel?
+    private var authenticatedLanes = Set<String>()
+    private var rejectedBytes: [String: Int] = [:]
     private let beforeDecode: (@Sendable () -> Void)?
     init(beforeDecode: (@Sendable () -> Void)? = nil) { self.beforeDecode = beforeDecode }
 
-    func decode(_ message: URLSessionWebSocketTask.Message, hostId: String, deviceId: String,
-                keys: SessionKeys?, relay: Bool) throws -> Decoded? {
+    func decode(_ message: RelayMessage, hostId: String, deviceId: String,
+                keys: SessionKeys?, relay: Bool, allowPriorSession: Bool = false) throws -> Decoded? {
         beforeDecode?()
         let data: Data
         switch message {
         case .string(let text): data = Data(text.utf8)
         case .data(let bytes): data = bytes
-        @unknown default: return nil
         }
         guard let frame = try? JSONDecoder().decode(V2Frame.self, from: data) else {
             if relay {
@@ -58,7 +61,23 @@ actor InboundFrameDecoder {
             if relay { return nil }
             throw PairingError.handshake(L10n.tr("局域网握手尚未完成"))
         }
-        guard let payload = try channel.open(envelope) else { return nil }
+        let payload: Data
+        do {
+            guard let opened = try channel.open(envelope) else { return nil }
+            payload = opened
+            if let lane = envelope.hdr.ch { authenticatedLanes.insert(lane) }
+        } catch let error as E2ECryptoError {
+            // Independent streams may still contain ciphertext accepted before
+            // HS2. Only AEAD rejection before the first valid frame of this lane
+            // is eligible. Authentication failure never advances the high-water mark.
+            let lane = envelope.hdr.ch ?? ""
+            let limit = ["ctl": 8, "msg": 40, "bulk": 72, "history": 40, "catchup": 40][lane, default: 0] * 1024 * 1024
+            let total = rejectedBytes[lane, default: 0] + envelope.ct.utf8.count
+            guard relay, allowPriorSession, error.authenticationFailure,
+                  !authenticatedLanes.contains(lane), total <= limit else { throw error }
+            rejectedBytes[lane] = total
+            return nil
+        }
         var object: [String: Any]?
         if envelope.hdr.k == "data" {
             if relay && envelope.hdr.ch == "ctl" { object = try E2ECrypto.jsonObject(payload) }
@@ -71,9 +90,24 @@ actor InboundFrameDecoder {
 /// All connection state is confined to the main actor. URLSession callbacks
 /// hop here before touching keys, continuations, queues or connection identity.
 @MainActor
-final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegate {
+final class RelayTransport: NSObject, OrbisTransport {
+    typealias SocketFactory = (URL, RelayTransportMode, @escaping (any RelaySocketConnection) -> Void, @escaping (any RelaySocketConnection, Error?) -> Void) -> any RelaySocketConnection
     private var session: URLSession?
-    private var socket: URLSessionWebSocketTask?
+    private var socket: (any RelaySocketConnection)?
+    private var candidate: (any RelaySocketConnection)?
+    private var switchTask: Task<Void, Never>?
+    private var retirement: Task<Void, Never>?
+    private var retirementID = UUID()
+    private var retirementPending = false
+    private var switchAttempt = UUID()
+    private let initialMode: RelayTransportMode?
+    private let preferences: UserDefaults?
+    private let makeSocket: SocketFactory
+    private(set) var desiredRelayMode: RelayTransportMode = .ws
+    private(set) var relaySwitchPhase = "idle"
+    private(set) var relaySwitchError: String?
+    var relayTransportKind: RelayTransportKind? { socket?.kind }
+    private var bootstrapReady = false
     private var credential: RelayCredential?
     private var pairing: HostPairing?
     private var identity: DeviceIdentity?
@@ -99,16 +133,24 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     private let inbound = InboundFrameLanes()
     private var deliveryTask: Task<Void, Never>?
     private var deliveryGeneration = UUID()
-    private var isSending = false
+    private var sendingLanes = Set<RelayLane>()
+    private var outboundGeneration = UUID()
     private var outboundBytes = 0
     private let maxOutboundBytes = 4 * 1024 * 1024
+
+    init(relayMode: RelayTransportMode? = nil, preferences: UserDefaults? = .standard, makeSocket: SocketFactory? = nil) {
+        self.initialMode = relayMode
+        self.preferences = preferences
+        self.makeSocket = makeSocket ?? { url, mode, opened, closed in RelaySocket(url: url, mode: mode, onOpen: opened, onClose: closed) }
+        super.init()
+    }
 
     private func urlSession() -> URLSession {
         if let session { return session }
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 20
-        let value = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+        let value = URLSession(configuration: configuration)
         session = value
         return value
     }
@@ -155,6 +197,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         receiveHandler = receive
         stateHandler = state
         hostId = pairing.hostId
+        desiredRelayMode = initialMode ?? preferences?.string(forKey: modeKey).flatMap(RelayTransportMode.init(rawValue:)) ?? .ws
         fromId = pairing.relay.deviceId
         reconnect = true
         updateLANEndpoints(pairing.lan)
@@ -168,6 +211,10 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
 
     private func closeConnection() {
         reconnect = false
+        switchAttempt = UUID()
+        candidate?.cancel(); candidate = nil
+        switchTask?.cancel(); switchTask = nil
+        relaySwitchPhase = "idle"
         deliveryGeneration = UUID()
         deliveryTask?.cancel(); deliveryTask = nil
         inbound.clear()
@@ -181,21 +228,24 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         pending?.resume(throwing: PairingError.relay(L10n.tr("配对连接已关闭")))
         let oldSocket = socket
         socket = nil
-        oldSocket?.cancel(with: .goingAway, reason: nil)
+        _ = retire(oldSocket)
         session?.invalidateAndCancel(); session = nil
         resetChannel()
         pairingSession = nil
     }
 
     private func resetChannel() {
+        bootstrapReady = false
+        socket?.setBusinessReady(false)
+        outboundGeneration = UUID()
         channel = nil
         handshake = nil
         decoder = InboundFrameDecoder()
         outbound.removeAll()
         outboundBytes = 0
         // An in-flight send finishes before the new handshake queue is drained.
-        // Keep isSending true until that callback returns on the same socket.
-        if socket == nil { isSending = false }
+        // Keep busy lane slots until callbacks return on the same socket.
+        if socket == nil { sendingLanes.removeAll() }
     }
 
     @discardableResult
@@ -205,7 +255,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     }
 
     private func sendRelay(_ object: [String: Any]) -> Bool {
-        guard socket != nil, let channel else { return false }
+        guard socket != nil, bootstrapReady, let channel else { return false }
         do {
             let payload = try E2ECrypto.jsonData(object)
             guard outboundBytes + payload.count * 2 + 4096 <= maxOutboundBytes else {
@@ -220,22 +270,93 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
+    private func retire(_ old: (any RelaySocketConnection)?) -> Task<Void, Never> {
+        guard let old else { return retirement ?? Task {} }
+        old.cancel()
+        let previous = retirement, id = UUID()
+        retirementID = id; retirementPending = true
+        let task = Task { @MainActor in
+            await previous?.value
+            await old.cancelAndWait()
+            if self.retirementID == id { self.retirementPending = false }
+        }
+        retirement = task
+        return task
+    }
+
     private func openSocket() {
+        if retirementPending {
+            let generation = pairingGeneration, retired = retirement
+            reconnectTask = Task { @MainActor [weak self] in
+                await retired?.value
+                guard let self, !Task.isCancelled, self.pairingGeneration == generation,
+                      self.socket == nil, self.candidate == nil else { return }
+                self.openSocket()
+            }
+            return
+        }
         guard let credential, let url = RelayURL.endpoint(credential.relayUrl, path: "v1/device", webSocket: true) else {
             stateHandler?(.error, L10n.tr("中继地址无效，请重新配对。"))
             return
         }
         if !hasDirectPath { stateHandler?(.connecting, nil) }
-        let task = urlSession().webSocketTask(with: URLRequest(url: url))
-        task.maximumMessageSize = 2 * 1024 * 1024
+        let task = makeSocket(url, desiredRelayMode, { [weak self] in self?.socketOpened($0) },
+            { [weak self] in self?.socketClosed($0, error: $1) })
         socket = task
-        task.resume()
+        relaySwitchPhase = "preparing"
+        task.start()
+    }
+
+    private var modeKey: String { "orbis.relay.mode." + Data(hostId.utf8).base64EncodedString() }
+
+    /// Changes only this Host's Relay. LAN, outboxes, caches and UI identity stay owned above.
+    func setRelayTransportMode(_ mode: RelayTransportMode) {
+        if desiredRelayMode == mode, candidate != nil { return }
+        desiredRelayMode = mode
+        if !hostId.isEmpty { preferences?.set(mode.rawValue, forKey: modeKey) }
+        relaySwitchError = nil
+        switchAttempt = UUID()
+        let attempt = switchAttempt
+        candidate?.cancel(); candidate = nil
+        switchTask?.cancel(); switchTask = nil
+        guard pairing != nil else { return }
+        if let socket, socket.kind != nil, mode == .auto || socket.kind?.rawValue == mode.rawValue {
+            relaySwitchPhase = bootstrapReady ? "active" : "handshaking"; return
+        }
+        guard let credential, let url = RelayURL.endpoint(credential.relayUrl, path: "v1/device", webSocket: true) else { return }
+        relaySwitchPhase = "preparing"
+        let task = makeSocket(url, mode, { [weak self] candidate in
+            guard let self, self.switchAttempt == attempt, self.candidate === candidate else { candidate.cancel(); return }
+            self.reconnectTask?.cancel(); self.reconnectTask = nil
+            self.relaySwitchPhase = "retiring"
+            let old = self.socket; self.socket = nil
+            self.timeoutTask?.cancel(); self.timeoutTask = nil
+            self.resetChannel()
+            let retired = self.retire(old)
+            self.switchTask = Task { @MainActor [weak self, weak candidate] in
+                await retired.value
+                guard let self, let candidate, !Task.isCancelled, self.switchAttempt == attempt, self.candidate === candidate else { return }
+                self.candidate = nil; self.socket = candidate
+                self.socketOpened(candidate)
+            }
+        }, { [weak self] candidate, error in
+            guard let self else { return }
+            if self.socket === candidate { self.socketClosed(candidate, error: error); return }
+            guard self.switchAttempt == attempt, self.candidate === candidate else { return }
+            self.candidate = nil; candidate.cancel()
+            self.relaySwitchError = error?.localizedDescription ?? "Relay transport preparation failed"
+            self.relaySwitchPhase = self.socket == nil ? "offline" : "active"
+            if self.socket == nil, self.reconnect { self.scheduleReconnect() }
+        })
+        candidate = task
+        task.start()
     }
 
     private func connectPairing(qr: PairingQR, relay: RelayCredential, pairingSession: DevicePairingSession) async throws {
         hostId = qr.hostId
         fromId = relay.deviceId
         credential = relay
+        desiredRelayMode = initialMode ?? .ws
         self.pairingSession = pairingSession
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.pairingContinuation = continuation
@@ -244,21 +365,9 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
-    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        Task { @MainActor [weak self] in self?.socketOpened(webSocketTask) }
-    }
-
-    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let task = task as? URLSessionWebSocketTask else { return }
-        Task { @MainActor [weak self] in self?.socketClosed(task, error: error) }
-    }
-
-    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        Task { @MainActor [weak self] in self?.socketClosed(webSocketTask, error: nil) }
-    }
-
-    private func socketOpened(_ task: URLSessionWebSocketTask) {
+    private func socketOpened(_ task: any RelaySocketConnection) {
         guard socket === task, let credential else { return }
+        relaySwitchPhase = "handshaking"
         if !hasDirectPath { stateHandler?(.online, nil) }
         do {
             try enqueueRaw(["type": "device.authenticate", "protocolVersion": orbisProtocolVersion, "credential": credential.credential])
@@ -271,7 +380,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     @discardableResult
     func sendBinary(_ data: Data) -> Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.sendBinary(data) }
-        guard socket != nil, let channel else { return false }
+        guard socket != nil, bootstrapReady, let channel else { return false }
         do {
             guard outboundBytes + data.count * 2 + 4096 <= maxOutboundBytes else { return false }
             try enqueue(channel.seal(kind: "bin", room: hostId, from: fromId, to: hostId, channel: "bulk", payload: data))
@@ -283,7 +392,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         guard let pairing else { return }
         resetChannel()
         let root = try Base64URL.decodeFixed(pairing.pskRoot, bytes: 32, label: "pskRoot")
-        let value = DeviceHandshake(pskRoot: root)
+        let value = DeviceHandshake(pskRoot: root, supportsHistoryStreams: socket?.supportsHistoryStreams == true)
         handshake = value
         if !hasDirectPath { stateHandler?(.connecting, nil) }
         try sendPlain(kind: "hs", body: value.hs1())
@@ -317,25 +426,29 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
     }
 
     private func drainQueue() {
-        guard !isSending, let task = socket, !outbound.isEmpty else { return }
+        guard let task = socket, !outbound.isEmpty else { return }
         // Per-channel sequence order stays FIFO. Control frames can pass bulk
         // pieces because each authenticated channel has its own nonce sequence.
-        let index = outbound.firstIndex { $0.channel != "bulk" } ?? 0
-        let (text, _, completion) = outbound.remove(at: index)
+        let available = outbound.indices.filter { !sendingLanes.contains(task.kind == .quic ? RelayLane(channel: outbound[$0].channel) : .ctl) }
+        guard let index = available.first(where: { outbound[$0].channel != "bulk" }) ?? available.first else { return }
+        let (text, channel, completion) = outbound.remove(at: index)
         outboundBytes -= text.utf8.count
-        isSending = true
-        task.send(.string(text)) { [weak self, weak task] error in
+        let lane = RelayLane(channel: channel), writeLane: RelayLane = task.kind == .quic ? lane : .ctl
+        let generation = outboundGeneration
+        sendingLanes.insert(writeLane)
+        task.send(.string(text), lane: lane) { [weak self, weak task] error in
             Task { @MainActor in
                 guard let self, let task, self.socket === task else { return }
-                self.isSending = false
-                completion?(error)
+                self.sendingLanes.remove(writeLane)
+                if self.outboundGeneration == generation { completion?(error) }
                 if let error { self.socketClosed(task, error: error) }
                 else { self.drainQueue() }
             }
         }
+        drainQueue()
     }
 
-    private func receive(from task: URLSessionWebSocketTask) {
+    private func receive(from task: any RelaySocketConnection) {
         task.receive { [weak self, weak task] result in
             Task { @MainActor in
                 guard let self, let task, self.socket === task else { return }
@@ -343,7 +456,7 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                 do {
                     let message = try result.get()
                     let decoded = try await decoder.decode(message, hostId: self.hostId, deviceId: self.fromId,
-                        keys: self.channel?.keys, relay: true)
+                        keys: self.channel?.keys, relay: true, allowPriorSession: task.kind == .quic)
                     // A timeout, disconnect or a replacement handshake can win while decoding.
                     guard self.socket === task, self.decoder === decoder else { return }
                     if let decoded { try self.handle(decoded) }
@@ -391,21 +504,30 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
                 let reply = try handshake.accept(E2ECrypto.jsonObject(Base64URL.decode(envelope.ct, label: "hs.ct")))
                 guard let keys = handshake.keys else { throw PairingError.handshake(L10n.tr("会话密钥未建立")) }
                 channel = E2EChannel(keys: keys)
-                let establishedChannel = channel
                 self.handshake = nil
-                // HS3 is queued before the channel becomes available to business sends.
-                try sendPlain(kind: "hs", body: reply) { [weak self] error in
-                    if let self, error == nil, self.channel === establishedChannel {
-                        self.stateHandler?(.secured, nil)
-                        // Endpoint refresh is authenticated by the Host; relay
-                        // lifecycle plaintext never controls direct dialing.
-                        _ = self.sendRelay(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])
+                if socket?.kind == .ws {
+                    // Preserve the original WS readiness callback after HS3 write completion.
+                    let establishedChannel = channel
+                    try sendPlain(kind: "hs", body: reply) { [weak self] error in
+                        if let self, error == nil, self.channel === establishedChannel { self.activateRelay() }
+                    }
+                    timeoutTask?.cancel(); timeoutTask = nil
+                } else {
+                    // Only authenticated Host bootstrap enables other QUIC streams/sends.
+                    try sendPlain(kind: "hs", body: reply)
+                    // ADR-0064 binds the business format before Host publishes ready.
+                    // Both HS3 and this read-only bootstrap stay FIFO on ctl.
+                    if let channel {
+                        try enqueue(channel.seal(room: hostId, from: fromId, to: hostId, channel: "ctl",
+                            payload: E2ECrypto.jsonData(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])))
                     }
                 }
-                timeoutTask?.cancel(); timeoutTask = nil
             }
         case .authenticated(let header, let payload, let message):
             guard let channel else { return }
+            if socket?.kind == .quic, !bootstrapReady, header.k == "data", header.ch == "ctl", message?["type"] as? String == "device.ready" {
+                activateRelay()
+            }
             switch header.k {
             case "ping":
                 try enqueue(channel.seal(kind: "ping", room: hostId, from: fromId, to: hostId, channel: "ctl", payload: payload))
@@ -418,6 +540,14 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
+
+    private func activateRelay() {
+        bootstrapReady = true; socket?.setBusinessReady(true)
+        relaySwitchPhase = "active"; relaySwitchError = nil
+        timeoutTask?.cancel(); timeoutTask = nil
+        stateHandler?(.secured, nil)
+        _ = sendRelay(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])
+    }
 
     private func updateLANEndpoints(_ endpoints: [LANEndpoint]) {
         guard let pairing, let root = try? Base64URL.decodeFixed(pairing.pskRoot, bytes: 32, label: "pskRoot") else { return }
@@ -498,21 +628,28 @@ final class RelayTransport: NSObject, OrbisTransport, URLSessionWebSocketDelegat
         }
     }
 
-    private func socketClosed(_ task: URLSessionWebSocketTask, error: Error?) {
+    private func socketClosed(_ task: any RelaySocketConnection, error: Error?) {
         guard socket === task else { return }
         socket = nil
-        task.cancel(with: .goingAway, reason: nil)
+        _ = retire(task)
         timeoutTask?.cancel(); timeoutTask = nil
         resetChannel()
+        relaySwitchPhase = "offline"
         let pending = pairingContinuation
         pairingContinuation = nil
         pending?.resume(throwing: error ?? PairingError.relay(L10n.tr("配对连接已关闭")))
         stateHandler?(hasDirectPath ? .secured : .offline, hasDirectPath ? nil : error?.localizedDescription)
         guard reconnect, pairing != nil else { return }
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
-            guard let self, self.reconnect, self.socket == nil else { return }
+            guard let self else { return }
+            await self.retirement?.value
+            guard !Task.isCancelled, self.reconnect, self.socket == nil, self.candidate == nil else { return }
             self.openSocket()
         }
     }
@@ -566,21 +703,25 @@ final class InboundFrameLanes {
         var frames: [Frame] = []
         var bytes = 0
         let limits: Limits
-        mutating func offer(_ frame: Frame) -> Int {
+        mutating func offer(_ frame: Frame) -> (total: Int, data: Int) {
             var dropped = 0
+            var droppedData = 0
             while !frames.isEmpty && (frames.count >= limits.frames || bytes + frame.payload.count > limits.payload) {
-                bytes -= frames.removeFirst().payload.count
+                let removed = frames.removeFirst()
+                bytes -= removed.payload.count
+                if !removed.binary { droppedData += 1 }
                 dropped += 1
             }
             // A single authenticated snapshot can exceed the nominal lane
             // budget. Keep it alone (bounded by envelope reassembly), as Android
             // does, so a legal large snapshot cannot fail every recovery attempt.
             frames.append(frame); bytes += frame.payload.count
-            return dropped
+            return (dropped, droppedData)
         }
-        mutating func take() -> Frame? {
+        mutating func take(prioritized: Bool = false) -> Frame? {
             guard !frames.isEmpty else { return nil }
-            let frame = frames.removeFirst(); bytes -= frame.payload.count
+            let index = prioritized ? (["msg", "history", "catchup"].compactMap { channel in frames.firstIndex { $0.channel == channel } }.first ?? 0) : 0
+            let frame = frames.remove(at: index); bytes -= frame.payload.count
             return frame
         }
     }
@@ -596,11 +737,12 @@ final class InboundFrameLanes {
         self.control = Lane(limits: control); self.session = Lane(limits: session); self.bulk = Lane(limits: bulk)
     }
     func offer(_ frame: Frame) {
-        if frame.binary || frame.channel == "bulk" { _ = bulk.offer(frame) }
-        else if frame.channel == "msg" { droppedSession += session.offer(frame) }
-        else { droppedControl += control.offer(frame) }
+        // JSON history/detail pages require source repair, unlike offset-based binary chunks.
+        if frame.binary || frame.channel == "bulk" { droppedSession += bulk.offer(frame).data }
+        else if ["msg", "history", "catchup"].contains(frame.channel ?? "") { droppedSession += session.offer(frame).total }
+        else { droppedControl += control.offer(frame).total }
     }
-    func take() -> Frame? { control.take() ?? session.take() ?? bulk.take() }
+    func take() -> Frame? { control.take() ?? session.take(prioritized: true) ?? bulk.take() }
     func drainOverflow() -> (control: Int, session: Int) {
         defer { droppedControl = 0; droppedSession = 0 }
         return (droppedControl, droppedSession)
@@ -741,7 +883,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
                 guard let self, let task, self.socket === task else { return }
                 let decoder = self.decoder
                 do {
-                    let message = try result.get()
+                    guard let message = RelayMessage(try result.get()) else { self.read(task); return }
                     let decoded = try await decoder.decode(message, hostId: self.hostId, deviceId: self.deviceId,
                         keys: self.channel?.keys, relay: false)
                     guard self.socket === task, self.decoder === decoder else { return }

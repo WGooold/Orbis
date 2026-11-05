@@ -108,3 +108,7 @@ Android lint 同时修复基线 `StreamingText.kt` 的字体常量组合：改�
 发布前仍需执行 Windows 全量测试、Windows / macOS 原生安装包和正式签名移动产物验证、Android 连接状态页仪器测试、真机覆盖升级与实际网络故障切换、Relay 容量验证及生产版本切换。
 
 生产 Host / Relay、真实会话与配对数据均未修改。代码实施和线上发布分别验收。
+
+## 2026-11-04 原生 QUIC 补充
+
+[ADR-0065](0065-native-quic-relay-transport.md) 在移动端 Relay 路径内增加 QUIC 与认证前 WS 回退。逻辑路径仍只有 LAN / Relay；LAN 优先、端到端探测及原设置不变，不把 QUIC 传输 ready 当成 E2E ready。首版 Host ↔ Relay 仍用 WS。实施和设备门禁分别记录，专项 R67。

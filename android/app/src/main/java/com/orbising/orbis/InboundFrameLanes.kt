@@ -61,6 +61,8 @@ internal class InboundFrameLanes(
     /** 控制 / 消息面：命令结果、状态、会话同步、协议错误。 */
     private val control = Channel<InteractiveFrame>(Channel.UNLIMITED)
     private val session = Channel<InteractiveFrame>(Channel.UNLIMITED)
+    private val history = Channel<InteractiveFrame>(Channel.UNLIMITED)
+    private val catchup = Channel<InteractiveFrame>(Channel.UNLIMITED)
 
     /** 分片面：保留 data JSON 与 bin 裸字节类型，共用优先级和预算。 */
     private val bulk = Channel<BulkFrame>(Channel.UNLIMITED)
@@ -83,12 +85,17 @@ internal class InboundFrameLanes(
      */
     fun offer(payload: String, channel: String?): Boolean {
         if (channel == BULK_CHANNEL) return offerBulkFrame(InteractiveFrame(payload, channel))
-        val sessionLane = channel == MESSAGE_CHANNEL
-        val queue = if (sessionLane) session else control
+        val sessionLane = channel == MESSAGE_CHANNEL || channel == "history" || channel == "catchup"
+        val queue = when (channel) { MESSAGE_CHANNEL -> session; "history" -> history; "catchup" -> catchup; else -> control }
         val accounting = if (sessionLane) sessionCount else controlCount
         val dropped = if (sessionLane) droppedSession else droppedControl
         val cost = payload.length
-        dropOldestText(queue, accounting, dropped, cost)
+        if (sessionLane) {
+            while (sessionCount.frames.get() >= sessionLimits.frames || sessionCount.payload.get() + cost > sessionLimits.payload) {
+                val removed = catchup.tryReceive().getOrNull() ?: history.tryReceive().getOrNull() ?: session.tryReceive().getOrNull() ?: break
+                sessionCount.frames.decrementAndGet(); sessionCount.payload.addAndGet(-removed.cost); droppedSession.incrementAndGet()
+            }
+        } else dropOldestText(queue, accounting, dropped, cost)
         if (queue.trySend(InteractiveFrame(payload, channel)).isFailure) return false
         accounting.frames.incrementAndGet()
         accounting.payload.addAndGet(cost)
@@ -111,6 +118,8 @@ internal class InboundFrameLanes(
     fun close() {
         control.close()
         session.close()
+        history.close()
+        catchup.close()
         bulk.close()
         wakeup.close()
     }
@@ -119,7 +128,7 @@ internal class InboundFrameLanes(
     fun takeControl(): InteractiveFrame? = takeText(control, controlCount)
 
     /** 取一条会话面帧。`null` = 会话面暂时空了。 */
-    fun takeSession(): InteractiveFrame? = takeText(session, sessionCount)
+    fun takeSession(): InteractiveFrame? = takeText(session, sessionCount) ?: takeText(history, sessionCount) ?: takeText(catchup, sessionCount)
 
     /** 取一片分片。`null` = 暂时没有。 */
     fun takeBulk(): BulkFrame? {
@@ -165,6 +174,8 @@ internal class InboundFrameLanes(
             val oldest = bulk.tryReceive().getOrNull() ?: return
             bulkCount.frames.decrementAndGet()
             bulkCount.payload.addAndGet(-oldest.cost)
+            // JSON history/detail pages have no offset-based binary retransmit.
+            if (oldest is InteractiveFrame) droppedSession.incrementAndGet()
         }
     }
 

@@ -10,6 +10,31 @@ afterEach(async () => {
 });
 
 describe("Orbis Host configuration", () => {
+  it("isolates background history only when explicitly configured and validates overrides", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-history-config-"));
+    temporaryDirectories.push(stateDir);
+    const base = { relayUrl: "wss://relay.example.test", runtimeCredential: "fixture" };
+    await writeFile(join(stateDir, "config.json"), JSON.stringify(base));
+    expect((await loadHostConfig({ stateDir, env: {} })).relayHistoryMode).toBe("shared");
+    await writeFile(join(stateDir, "config.json"), JSON.stringify({ ...base, relayHistoryMode: "background" }));
+    expect((await loadHostConfig({ stateDir, env: {} })).relayHistoryMode).toBe("background");
+    expect((await loadHostConfig({ stateDir, env: { ORBIS_RELAY_HISTORY_MODE: "shared" } })).relayHistoryMode).toBe("shared");
+    await expect(loadHostConfig({ stateDir, env: { ORBIS_RELAY_HISTORY_MODE: "new-channel" } })).rejects.toThrow("relayHistoryMode");
+  });
+
+  it("defaults to WS, persists the chosen mode and strictly validates environment overrides", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-transport-config-"));
+    temporaryDirectories.push(stateDir);
+    const base = { relayUrl: "wss://relay.example.test", runtimeCredential: "fixture" };
+    await writeFile(join(stateDir, "config.json"), JSON.stringify(base));
+    expect((await loadHostConfig({ stateDir, env: {} })).relayTransport).toBe("ws");
+    await writeFile(join(stateDir, "config.json"), JSON.stringify({ ...base, relayTransport: "quic" }));
+    expect((await loadHostConfig({ stateDir, env: {} })).relayTransport).toBe("quic");
+    expect((await loadHostConfig({ stateDir, env: { ORBIS_RELAY_TRANSPORT: "auto" } })).relayTransport).toBe("auto");
+    await expect(loadHostConfig({ stateDir, env: { ORBIS_RELAY_TRANSPORT: "udp" } })).rejects.toThrow("ws、quic 或 auto");
+    await writeFile(join(stateDir, "config.json"), JSON.stringify({ ...base, relayTransport: true }));
+    await expect(loadHostConfig({ stateDir, env: {} })).rejects.toThrow("ws、quic 或 auto");
+  });
   it("loads the Orbis config independently of a malformed legacy Pi config", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "orbis-config-"));
     temporaryDirectories.push(stateDir);

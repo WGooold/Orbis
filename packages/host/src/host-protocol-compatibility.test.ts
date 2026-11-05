@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
 import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
-import { createRelayServer, type RelayServer } from "@orbis/relay";
+import type { RelayServer } from "@orbis/relay";
+import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
 
 // Optional additional oracle from an unchanged installed release. Native require
@@ -108,7 +109,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
   afterEach(async () => {
     for (const phone of phones.splice(0)) phone.socket.close();
     for (const runtime of runtimes.splice(0)) runtime.close();
-    await host?.stop(); await relay?.close();
+    await host?.stop(); await stopRelayBusinessTransports(); await relay?.close();
     if (directory) await rm(directory, { recursive: true, force: true });
     keys.clear();
   });
@@ -121,12 +122,12 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     });
     await saveDeviceStore(directory, { version: 1, devices });
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["isolated-runtime"], deviceCredentials: devices.map(device => ({ deviceId: device.deviceId, hostId, name: device.label, credential: device.deviceId })) });
-    host = await HostService.create({ relayUrl: relay.url, credential: "isolated-runtime", stateDir: directory, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
     await host.start();
   };
   const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true): Promise<OldPhone> => {
     const deviceId = `phone${version}`;
-    const socket = new WebSocket(path === "relay" ? `${relay.url}/v1/device` : `ws://127.0.0.1:${host.lan!.port}/v1/lan`);
+    const socket = new WebSocket(path === "relay" ? await relayBusinessDeviceURL(relay.url + "/v1/device") : "ws://127.0.0.1:" + host.lan!.port + "/v1/lan");
     await once(socket, "open");
     if (path === "relay") {
       const ready = once(socket, "message");

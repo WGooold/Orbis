@@ -34,6 +34,26 @@ Status: accepted（基线冻结；新增与变更按本文维护）
 
 2026-11-05 兼容责任补充（S18、V05、V12、V16–V18，Host 已实施、验证中）：按 [ADR-0064 §6](0064-protocol-compatibility.md)，交付主路径改为更新 Relay＋Host，保留真实旧 App 18 / 19；不以安装 Android 0.1.54 作为互通验收前提。Relay 保留外层兼容及端到端密文边界，Host 按设备 / 路径适配完整业务收发；现有布局、动效、消息身份、阅读位置与真实状态规则保持。沿用 R64，补齐旧包首次 ready、双版本并用、请求 / 回执 / 文件和重连矩阵；本次兼容改动不改变 feature 编号、基线参数或已交付计数，不提升既有验收状态。
 
+2026-11-04 原生 QUIC（[ADR-0065](0065-native-quic-relay-transport.md)，v2 三流与双端切换已接入，设备 / 现场未验收）：关联 S18 / S23、V05、V09–V12、V16–V18、V22；QUIC 与 WS 仍是同一 Relay 路径，LAN 优先、延迟测量、消息身份、同步与操作对账不变。文档 / 源码复核修订为按 ctl/msg/bulk 拆流并使用 Go 原生优先级，握手 / bootstrap / epoch 屏障先行，Q07–Q10 本机专项已跑，完整发布门禁仍见 R67。不新增 UI feature 或交互动效，已交付计数保持；专项 R67。
+
+同日用户扩大为 Host↔Relay↔手机整链路 QUIC：先登记 ADR-0065 §9 / NQ-09～NQ-12，增加 Host 接入与两段独立切换、四种承载组合回归及完整公网测速。沿用上述 feature 与 R67，不新增 UI / 动效 / 已交付计数；Host 切换不重启 Agent、关闭 LAN 或重放未知操作，实施与验收另记。
+
+同日整链路本机实现完成：四种 Host/手机承载组合各 104/104、Node 全套 1727/0/5、Go race 含 Node 45 个测试事件通过，包内 helper 默认路径切换验证通过；原功能与跨流回执适配详见 R67 和[最终回归记录](../testing/native-quic-functional-regression.md)。保留原 UI / 身份 / applied / unknown 规则与所有未完成设备 / 人工门禁，不提高 80 项 / 已交付 67 项计数。
+
+同日 NQ-12 的[完整公网报告](../testing/native-quic-public-performance-20261104.md)完成：两段公网各承载五轮对照，QUIC 加压控制探针全部返回，但下载五轮排空超时、存在长尾，未证明吞吐提速。参考客户端在 Mac，未验证实际手机 / 生产入口 / Hysteria；R67 性能与发布门禁保持未通过或未验收，原 feature / 已交付计数不变。临时测试资源已核验释放。
+
+后续 R67 [分层诊断](../testing/native-quic-layered-results-20261104.md)完成原始 TLS / QUIC 20 窗口及双段负载交错 24 窗口，控制等待改善重复出现；发现测试 socket 接收丢包与 CPU quota 条件，仍需单变量归因。仅增加 opt-in 元数据 / writer 观测与隔离夹具，原显示、消息身份、applied / unknown 和 80 项 / 已交付 67 项计数不变。新 20 秒窗口不覆盖旧 60 秒失败，不提升真机 / UI / 人工 / 发布门禁；资源已独立核验释放。
+
+重启后 R67 自动对照完成：Android 原套件含夹具 / 配对补测去重后，基线 171 通过 / 9 失败 / 2 assumption，候选 173 / 8 / 2；iOS SE 原 88 项两版均 83 通过 / 5 失败 / 0 跳过，无新增失败或缺失原用例。Android JNI 1/1 与 iOS App 内真实 QUIC 2/2 另列专项，默认 WS / preview 原套件不冒充全套 QUIC UI。截图审阅、既有失败和未执行边界见 R67；完整 L4、人工 / 真机 / 线路仍未验收，80 项 / 已交付 67 项不变。本任务资源已核验释放，证据 `.artifacts/ui-regression/20261104-native-quic-reboot/`。
+
+同日[历史传输复核](../architecture/native-quic-transport-lessons.md)补充 R67 / Q11–Q13：区分封帧前准入、密文桥接与解密后消费压力；保留同步终态 / applied、文件接收方驱动和未确认操作对账，验证无过载重连风暴。范围随后收窄为复用现有业务 / 预算、替换传输，不预设新的信用协议或全链路预算重构。
+
+同日可切换设计补充 R67 / Q14：WS / QUIC 使用同一 RelayTransport 边界，ws/quic/auto 区分期望模式和实际承载；切换只重连当前 Host 的 Relay，保留 LAN、缓存、消息身份与未知操作。已补 Node 认证原子接替和真实 WS↔QUIC / Host / E2E 回归，两端切换 API 与三流现已实施，设备和现场门禁尚未完成；不新增设置 UI、feature 或已交付计数。验收范围见 ADR-0065 §3、§8 及 R67。
+
+同日澄清回归目标：R67 按[原功能回归矩阵](../testing/native-quic-functional-regression.md)保证原项目功能不退化，底层契约测试不能代替配对、输入 / 回复、历史、工具、文件、设置 / 操作、通知、多 Host / LAN 和既有 UI。原 HostService 套件在 WS / QUIC 模式各 54/54，通过范围仅为该业务集成层；双端 L1–L4 / C01–C18 / A1–A4、切换中的业务恢复仍独立验收，feature 计数和已交付状态保持。
+
+同日按 [NQ-00～NQ-08](../agents/native-quic-tickets.md) 分 ticket 实施；NQ-01 接入双端共用传输接口和首次连接 ws/quic/auto，实际承载独立于业务就绪。未新增设置 UI、消息 / 同步语义或 feature，原 ID / 计数保持；运行中切换、三流、设备与现场验收仍按后续 tickets 执行。
+
 ## Context
 
 2026-11-03 Codex 权限更新重置选型修复（[ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md)；V05、V12、V17–V18，验证中）：Host 分离原生模型 / effort 观测值与下一轮覆盖，权限通知及首次订阅重复旧值不再清除用户选择；真实原生变更继续同步。保留尚未物化终端的无设置 RPC 选型路径，不强制首条输入或伪造确认。规则见 [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input)、[D31]、[D49] §6.7；分类沿用 [D58] SC16，不新增 feature 或动效参数。原生 0.166.0 隔离 PTY 与回归、设备及未完成门禁见 [Regression] R27 / R56，未部署用户 Host。
@@ -596,3 +616,14 @@ S19 r37验证补充：双端最终单元/构建通过，配额设备专项通过
 ## 2026-11-05 / r47：侧边栏面板新拟物
 
 用户授权给侧边栏面板增加新拟物。修订 S02 / S03 / S04 / S19，关联 S01 / S12 / S13 / S15 / S25 与 M06 / M09 / M11 / V17 / V21；不新增 feature，83 项、已交付 67 项保持。双端面板作为唯一独立凸起外框，使用共用 24pt/dp 圆角、4pt/dp 位移 / 模糊、左上高光 / 右下带色暗影（强度 1），内部按层级平铺而不再逐张叠影。保留宽度、内容安全区、触控范围、目录滚动与菜单入口；iOS 仅背景延伸至安全区，Android 保留原生 ModalDrawerSheet。经典 / 雾蓝浅深色随现有主题切换。交互归类 ADR-0058 SC32 / MOT-10，并回归 SC03 / SC07–08 / SC36，未新增动效或触觉参数。专项 R65 与双端 L1–L4、C01–C18、A1–A4 分别留证，当前已接入、验证中；证据 `.artifacts/ui-regression/20261105-sidebar-panel/summary.md`。
+2026-11-04 R67 实施更新：ADR-0065 v2 三流、每 Host ws/quic/auto 存储与 Relay-only 切换、QUIC bootstrap 屏障已接入。WS 保持原握手 / LAN 恢复语义，未保存偏好默认 WS；未改变既有显示、输入回执、阅读或动效规则。Android 693/693、Swift 369/369、原 HostService WS / v2 QUIC 各 54/54；Node 基点对照无新增失败。设备入口仍被外部任务锁阻塞，L3/L4、手动、现场和完整压力未验收；feature / 已交付计数保持。详见 [tickets](../agents/native-quic-tickets.md) 和 R67 最终记录。
+
+2026-11-04 R67 收尾：Swift 370/370、Android 693/693；HostService 原 54 项加 3 项运行中业务交接在 WS / QUIC 各 57/57。覆盖命令 / 交互、未 applied 同步及上传 / 下载恢复；仍不替代双端设备、存储故障和真实阅读锚点验收。80 项 feature / 67 项已交付保持，证据以 NQ tickets 最终记录为准。
+
+2026-11-04 NQ-13 聊天 / 历史隔离试验（S18、V05、V09–V12、V16–V18、V22；R67）：按 ADR-0065 §10 只调整显式试验的传输分类与队列准入 / 溢出恢复，首屏、source/applied、消息身份、阅读锚点和交互参数保持。无新增 feature，当前工作树 r43 的计数不提升；主工作树 r46 未合并。试验验收见 [方案](../testing/native-quic-chat-history-isolation.md)，未完成设备 / 人工 / 现场不记通过。
+
+2026-11-05 NQ-14（上述 ID / R67）：按 ADR-0065 §11 新增独立 history/catchup，与 bulk 按用户指定顺序传输，保留现有 UI / 身份 / 阅读 / applied 语义。沿用原总预算与旧端基础格式，能力缺失不发送扩展通道。只执行[功能回归](../testing/native-quic-five-stream-functional-regression.md)，不再测速；80 项 feature / 67 项已交付保持，未完成门禁不记通过。
+
+本轮功能结果见[五流报告](../testing/native-quic-five-stream-results-20261105.md)：Node 1755/0/5、四组合各 93/93、Swift 374/374、Android JVM 697/697、Go race 55 事件通过；Android 同设备补测去重基线 172/8/2、候选 174/8/2，无新增失败或缺失。iOS 备用固定 SE 原全量基线 83/5/0、候选 80/8/0，3 项差异原样复核后两版均 2/3、失败详情一致，去重各 82/6/0；首次差异和未知根因保留。App 内三流 / 五流专项 4/4。原 SE 系统崩溃隔离、既有失败、截图采样差异、完整 L4 / 手动仍不记通过；本任务资源已核验释放。主工作树 r48 的 83 项与本分支 r43 的 80 项分别维护，不提高任何已交付计数。
+
+2026-11-04 NQ-13 自动与公网记录：最终只隔离后台 catchup；Node 1746 通过 / 0 失败 / 5 原跳过，四种 WS/QUIC 组合各 92/92、Swift 371/371、Android JVM 694/694。Android full 基线 170/6/5、候选 171/6/5（通过/失败/跳过），iOS 原 88 项两版均 83/5/0，均无新增失败 / 缺失原用例。两段 QUIC 公网诊断的交互 msg p95 中位数 6.022→0.569 秒，后台 goodput 同时降低；仅为 Mac 参考端，手机现场未验收。既有失败、完整 L4 / C / A 和 R57 / R67 现场门禁保持，80 项 feature / 67 项已交付计数不变；资源已核验释放。详见[结果报告](../testing/native-quic-chat-history-results-20261104.md)。

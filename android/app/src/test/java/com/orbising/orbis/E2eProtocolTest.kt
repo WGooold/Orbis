@@ -97,6 +97,36 @@ class E2eProtocolTest {
         }
     }
 
+    @Test fun five_stream_capability_matches_cross_platform_vector_and_rejects_forgery() {
+        val handshake = DeviceHandshake(Crypto.fromBase64Url(E2eVectors.PSK_ROOT, "pskRoot"), ByteArray(32) { 0x44 }, supportsHistoryStreams = true)
+        val body = HandshakeAcceptBody("hs2", E2eVectors.E_PUB_H, E2eVectors.HS_MAC_H, "v1", "kb6D5m5K52lSkwlb1HBJf4ndTyal8PhR5GQ8xzlg-cA")
+        try { handshake.accept(body.copy(historyMac = E2eVectors.MAC_H)); throw AssertionError("accepted forged capability") } catch (_: Crypto.E2eCryptoException) { }
+        val reply = handshake.accept(body)
+        assertEquals("v1", reply.historyStreams)
+        assertEquals("Vx94-gWop5AEkfQeSPBUUxVxxmG2VS6IcF01kqlt16k", reply.macD)
+        assertTrue(handshake.sessionKeys().historyStreams)
+        val old = DeviceHandshake(Crypto.fromBase64Url(E2eVectors.PSK_ROOT, "pskRoot"), ByteArray(32) { 0x44 }, supportsHistoryStreams = true)
+        val legacy = old.accept(HandshakeAcceptBody("hs2", E2eVectors.E_PUB_H, E2eVectors.HS_MAC_H))
+        assertNull(legacy.historyStreams)
+        assertEquals(E2eVectors.HS_MAC_D, legacy.macD)
+        assertTrue(!old.sessionKeys().historyStreams)
+        assertTrue(!E2eJson.json.encodeToString(legacy).contains("historyStreams"))
+    }
+
+    @Test fun five_streams_do_not_advance_each_others_replay_watermarks() {
+        val keys = SessionKeys(Crypto.fromBase64Url(E2eVectors.K_H2D, "h2d"), Crypto.fromBase64Url(E2eVectors.K_D2H, "d2h"), true)
+        val host = E2eChannel(keys, E2eChannel.ROLE_HOST)
+        val phone = E2eChannel(keys, E2eChannel.ROLE_DEVICE)
+        val frames = listOf("bulk", "catchup", "history", "msg", "ctl").map { channel ->
+            host.seal("data", "r", "h", "d", channel.toByteArray(), channel)
+        }
+        for (frame in frames.reversed()) {
+            assertEquals(frame.hdr.ch, phone.open(frame)!!.toString(Charsets.UTF_8))
+            assertNull(phone.open(frame))
+        }
+        assertNotEquals(Crypto.toBase64Url(EnvelopeV2Contract.nonce("history", 1)), Crypto.toBase64Url(EnvelopeV2Contract.nonce("catchup", 1)))
+    }
+
     @Test
     fun channel_seal_matches_node_ct() {
         val channel = deviceChannel()
