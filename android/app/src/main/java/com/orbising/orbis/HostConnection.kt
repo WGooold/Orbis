@@ -290,7 +290,7 @@ internal class HostConnection(
         }
         // ADR-0049 §7 L8：账本自己不计时；到最近的期限时交给账本处理。
         scope.launch {
-            mutableState.map { it.ledger.nextDeadline }.distinctUntilChanged().collectLatest { deadline ->
+            mutableState.map { it.nextOperationDeadline }.distinctUntilChanged().collectLatest { deadline ->
                 if (deadline == null) return@collectLatest
                 delay((deadline - System.currentTimeMillis()).coerceAtLeast(0) + 10)
                 updateState { it.ledgerTick(System.currentTimeMillis()) }
@@ -846,7 +846,9 @@ internal class HostConnection(
                     latest.runtimeSessionViews[runtimeId]?.leafId != candidate.sessionLeafId ||
                     candidate.sessionLeafId != null && candidateGraph?.hasCompleteEntryChain(candidate.sessionLeafId) != true ||
                     candidateConversation?.sourceEpoch != null && latest.appliedSessionState(candidate.runtimeId) == null)
-            val selected = latest.cancelForegroundSessionSyncs(runtimeId)
+            val selected = latest.cancelForegroundSessionSyncs(runtimeId).let {
+                if (it.selectedRuntimeId != runtimeId) it.clearInteractionOutcome(it.selectedRuntimeId) else it
+            }
             selected.copy(
                 sessionActivateTargets = emptyMap(),
                 activatedSessionToOpen = null,

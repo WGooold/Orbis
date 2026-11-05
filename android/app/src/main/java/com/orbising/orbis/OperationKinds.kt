@@ -458,7 +458,7 @@ internal fun RemoteState.ledgerOpenConnection(): RemoteState {
 /** 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。 */
 internal fun RemoteState.ledgerCloseConnection(): RemoteState {
     if (!ledgerConnectionOpen) return this
-    return copy(ledgerConnectionOpen = false, ledgerReads = emptyMap(), ledgerFresh = emptySet()).withLedgerStep(ledger.connectionLost())
+    return copy(ledgerConnectionOpen = false, ledgerReads = emptyMap(), ledgerFresh = emptySet(), interactionOutcomes = emptyMap()).withLedgerStep(ledger.connectionLost())
 }
 
 /** 创建操作时记下它要读的领域已应用到哪里（L2 的 basis）。 */
@@ -570,8 +570,19 @@ internal fun RemoteState.ledgerReadReply(requestId: String, message: JsonObject,
     return next
 }
 
-/** 到期处理的唯一入口（L8）。 */
-internal fun RemoteState.ledgerTick(now: Long): RemoteState = withLedgerStep(ledger.tick(now))
+/** 账本与已结算回答短反馈共用状态层时钟，不依赖聊天页面是否挂载。 */
+internal val RemoteState.nextOperationDeadline: Long?
+    get() = (interactionOutcomes.values.map { it.expiresAt } + listOfNotNull(ledger.nextDeadline)).minOrNull()
+
+/** 到期处理的唯一入口（L8、V16）。只清理已过期结果，旧期限不能移除后一次回答。 */
+internal fun RemoteState.ledgerTick(now: Long): RemoteState = withLedgerStep(ledger.tick(now)).let { next ->
+    next.copy(interactionOutcomes = next.interactionOutcomes.filterValues { now < it.expiresAt })
+}
+
+/** 离开会话即消费本次已完成短反馈；待确认操作仍由账本保留。 */
+internal fun RemoteState.clearInteractionOutcome(runtimeId: String?): RemoteState =
+    if (runtimeId == null || runtimeId !in interactionOutcomes) this
+    else copy(interactionOutcomes = interactionOutcomes - runtimeId)
 
 /** `quit` 先记入账本（尚未写入）；返回是否创建。同一会话的关闭尚未结算时不重复创建（L9）。 */
 internal fun RemoteState.createQuit(opId: String, runtimeId: String, now: Long): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
@@ -639,8 +650,8 @@ internal fun RemoteState.ledgerQueue(runtimeId: String, delivered: Set<String>, 
     return next.ledgerAuthority(OperationKinds.queueDomain(runtimeId), null, complete)
 }
 
-/** 回答结算后在原位短暂显示的结果（V16）：`id` 区分每次结算，界面据此计时约 2.5 秒后隐藏。 */
-data class InteractionOutcome(val id: String, val text: String)
+/** 回答结算后显示约 2.5 秒（V16）。期限属于状态，重建页面不能重新计时。 */
+data class InteractionOutcome(val id: String, val text: String, val expiresAt: Long = System.currentTimeMillis() + 2_500)
 
 /** `respond` 先记入账本（尚未写入），opId 即命令的 commandId。同一请求的回答尚未结算时不重复创建（L9）。 */
 internal fun RemoteState.createRespond(commandId: String, runtimeId: String, requestId: String, summary: String, now: Long):
@@ -648,13 +659,14 @@ internal fun RemoteState.createRespond(commandId: String, runtimeId: String, req
     val (next, creation) = ledger.create(commandId, OperationKinds.RESPOND, OperationKinds.respondTarget(runtimeId, requestId),
         policy = OperationKinds.respondPolicy, basis = ledgerBasis(OperationKinds.interactionsDomain(runtimeId)),
         payload = LedgerPayload.Respond(runtimeId, requestId, summary), written = false, now = now)
-    return copy(ledger = next) to creation
+    val created = copy(ledger = next)
+    return (if (creation is LedgerCreation.Created) created.clearInteractionOutcome(runtimeId) else created) to creation
 }
 
-/** 原位短状态：账本中未结算的回答，或刚结算的结果（文案, 是否处理中, 结果标识）。 */
-internal fun RemoteState.interactionStatus(runtimeId: String): Triple<String, Boolean, String?>? =
+/** 原位短状态：账本中未结算的回答，或尚未过期的结果（文案, 是否处理中, 结果标识）。 */
+internal fun RemoteState.interactionStatus(runtimeId: String, now: Long = System.currentTimeMillis()): Triple<String, Boolean, String?>? =
     OperationKinds.respondStatus(ledger, runtimeId)?.let { Triple(it.first, it.second, null) }
-        ?: interactionOutcomes[runtimeId]?.let { Triple(it.text, false, it.id) }
+        ?: interactionOutcomes[runtimeId]?.takeIf { now < it.expiresAt }?.let { Triple(it.text, false, it.id) }
 
 /**
  * ADR-0049 §6.2：气泡立即出现，输入框清空；附件上传完成且同会话前一条已写入后，按创建顺序写入通道。

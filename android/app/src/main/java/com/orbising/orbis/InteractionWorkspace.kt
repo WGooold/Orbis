@@ -16,7 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -154,9 +153,6 @@ internal fun InteractionWorkspace(
 @Composable
 private fun InteractionStatus(status: Triple<String, Boolean, String?>?) {
     status ?: return
-    var hidden by remember(status.third) { mutableStateOf(false) }
-    if (status.third != null) LaunchedEffect(status.third) { delay(2_500); hidden = true }
-    if (hidden) return
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("interaction-status"),
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,

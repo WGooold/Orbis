@@ -2,10 +2,13 @@ package com.orbising.orbis
 
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -47,6 +50,38 @@ class OptimisticPresentationInstrumentedTest {
         compose.runOnIdle { responding = emptySet(); status = null }
         compose.onNodeWithText("允许执行命令？").assertIsDisplayed()
         compose.onNodeWithTag("interaction-status").assertDoesNotExist()
+    }
+
+    @Test fun completedAnswerDoesNotReplayWhenTheConversationIsReopened() {
+        var state by mutableStateOf(RemoteState(interactionOutcomes = mapOf(
+            "runtime" to InteractionOutcome("answer", "已提交", Long.MAX_VALUE))))
+        var inChat by mutableStateOf(true)
+        compose.setContent { OrbisTheme {
+            // Preserve a page-sized capture surface when the cleared outcome renders no children.
+            Box(Modifier.fillMaxSize()) {
+                if (inChat) InteractionWorkspace(emptyList(), connected = true, pendingCommands = emptySet(), error = null,
+                    respondConfirm = { _, _ -> }, respondValue = { _, _ -> }, respondValues = { _, _ -> },
+                    respondQuestionnaire = { _, _ -> }, onCancel = {}, status = state.interactionStatus("runtime"))
+            }
+        } }
+        compose.onNodeWithText("已提交").assertIsDisplayed()
+        compose.runOnIdle { state = state.clearInteractionOutcome("runtime"); inChat = false }
+        compose.onNodeWithTag("interaction-status").assertDoesNotExist()
+        repeat(3) {
+            compose.runOnIdle { inChat = true }
+            compose.onNodeWithTag("interaction-status").assertDoesNotExist()
+            compose.runOnIdle { inChat = false }
+        }
+        // A later answer still gets its own feedback, then expires in state while the page is absent.
+        compose.runOnIdle {
+            state = state.copy(interactionOutcomes = mapOf("runtime" to InteractionOutcome("next", "已提交", Long.MAX_VALUE)))
+            inChat = true
+        }
+        compose.onNodeWithText("已提交").assertIsDisplayed()
+        compose.runOnIdle { inChat = false; state = state.ledgerTick(Long.MAX_VALUE) }
+        compose.runOnIdle { inChat = true }
+        compose.onNodeWithTag("interaction-status").assertDoesNotExist()
+        capture("respond-reentry-no-stale-summary")
     }
 
     @Test fun aDismissedNoticeLeavesAtOnceAndTheOtherStays() {

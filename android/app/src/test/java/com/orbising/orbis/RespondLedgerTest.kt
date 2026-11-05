@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-05 `respond`（V07、V22）（V07、V22）
 package com.orbising.orbis
 
 import kotlinx.serialization.json.Json
@@ -82,6 +84,49 @@ class RespondLedgerTest {
         state = interactions(state, request("pick", "select"))
         assertTrue(state.ledger.operations.isEmpty())
         assertEquals("已允许" to false, status(state)?.let { it.first to it.second })
+    }
+
+    @Test fun settledFeedbackExpiresWithoutAnOpenChatAndCannotReplayOnReentry() {
+        val (sent, id) = respond(setup(), "approval", "已提交")
+        val settled = interactions(result(sent, id, ok = true), request("pick", "select"))
+        val deadline = settled.interactionOutcomes.getValue("a").expiresAt
+        assertEquals(deadline, settled.nextOperationDeadline)
+        assertEquals("已提交", settled.interactionStatus("a", deadline - 1)?.first)
+        // Even before the scheduler runs after a background pause, a new page must not show expired feedback.
+        assertNull(settled.interactionStatus("a", deadline))
+        val expired = settled.ledgerTick(deadline)
+        assertTrue(expired.interactionOutcomes.isEmpty())
+        assertNull(expired.nextOperationDeadline)
+        assertNull(status(expired.copy(selectedRuntimeId = "a")))
+    }
+
+    @Test fun leavingConsumesOnlyTheCompletedFeedbackAndKeepsPendingAnswers() {
+        val (sent, id) = respond(setup(), "approval", "已提交")
+        val settled = interactions(result(sent, id, ok = true), request("pick", "select"))
+        val other = InteractionOutcome("other", "已选择", Long.MAX_VALUE)
+        val left = settled.copy(interactionOutcomes = settled.interactionOutcomes + ("b" to other)).clearInteractionOutcome("a")
+        assertNull(status(left.copy(selectedRuntimeId = "a")))
+        assertEquals(other, left.interactionOutcomes["b"])
+        assertEquals("已提交", status(sent.clearInteractionOutcome("a"))?.first)
+        assertTrue(sent.clearInteractionOutcome("a").ledger.operations.isNotEmpty())
+    }
+
+    @Test fun anOldDeadlineCannotClearANewerAnswerAndNewSubmissionsConsumeOldFeedback() {
+        val old = InteractionOutcome("first", "已提交", 10_000)
+        val newer = InteractionOutcome("second", "已选择", 12_000)
+        val state = setup().copy(interactionOutcomes = mapOf("a" to newer, "b" to old))
+        val ticked = state.ledgerTick(10_000)
+        assertEquals(newer, ticked.interactionOutcomes["a"])
+        assertNull(ticked.interactionOutcomes["b"])
+        val (sent, id) = respond(ticked, "approval", "已允许")
+        assertTrue(sent.interactionOutcomes.isEmpty())
+        assertNull(status(result(sent, id, ok = false, error = "拒绝")))
+    }
+
+    @Test fun disconnectClearsSettledFeedback() {
+        val state = setup().copy(ledgerConnectionOpen = true,
+            interactionOutcomes = mapOf("a" to InteractionOutcome("done", "已提交")))
+        assertTrue(state.ledgerCloseConnection().interactionOutcomes.isEmpty())
     }
 
     @Test fun freeTextAndSecretsOnlySaySubmitted() {
