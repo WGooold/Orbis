@@ -4,7 +4,7 @@
 
 Status: accepted（决策与实现已接入；完整设备 / 手动验收分别记录，未验收不记为交付；未部署）
 
-关联：[ADR-0021](0021-codex-terminal-host-attachment.md)（终端接入）、[ADR-0031](0031-host-permission-management.md)（权限管理）、[ADR-0049 §6.7](0049-optimistic-send-and-source-reconciliation.md#67-模型与思考级别条件乐观)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（V05、V12、V17–V18）、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)（输入生命周期）、[ADR-0058](0058-shared-interaction-motion.md) SC16（配置反馈）。验证映射见 [UI 回归](../testing/ui-regression.md) R27 / R56。
+关联：[ADR-0021](0021-codex-terminal-host-attachment.md)（终端接入）、[ADR-0031](0031-host-permission-management.md)（权限管理）、[ADR-0049 §6.7](0049-optimistic-send-and-source-reconciliation.md#67-模型与思考级别条件乐观)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)（V05、V12、V17–V18）、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)（输入生命周期）、[ADR-0058](0058-shared-interaction-motion.md) SC16（配置反馈）。验证映射见 [UI 回归](../../AGENTS.md#测试) R27 / R56。
 
 ## 背景与问题
 
@@ -74,39 +74,8 @@ Status: accepted（决策与实现已接入；完整设备 / 手动验收分别�
 
 ## 验证与实际完成范围
 
-| 项目 | 结果与边界 |
-| --- | --- |
-| 修复前新增回归 | 16 项中 13 过、3 失败，覆盖权限通知、resume 和首次订阅覆盖本地选择 |
-| 修复后适配器专项 | **188 / 188 通过**，包括既有 `codex-runtime.test.ts` |
-| 真实 PTY：电脑首次输入 | 首次原生请求为 Sol；手机下一轮选型在首次订阅和权限更新后保留为 Astra / high，实际后续请求为 Astra |
-| 真实 PTY：手机首次输入 | 首次输入前选择未发出原生设置 RPC；首条及后续手机请求均为 Astra，权限更新后仍为 Astra / high |
-| 模型请求隔离 | 全部进入本地 Responses 假服务，真实模型请求数为 0 |
-| 类型检查 / 修改文件 lint | 通过 |
-| Node 全量 | 1701 项：1694 过、2 失败、5 条件未运行。2 项 macOS launcher 的源码与当次 HEAD 一致，整类复测同样失败，不能写成全量全过 |
-| Android 单元 / 构建 | 首次共享工作树为 681 项、0 失败；恢复后的隔离基线 / 候选各 **677 / 677**，两包构建通过。两次源码范围不同，不合并计数 |
-| iOS 核心 / 构建 | 恢复后的隔离基线 / 候选各 **351 / 351**，Debug 与测试包构建通过 |
-| Android 设备 | 共用入口先后借用两台空闲 API 35，模拟器均在启动时退出 **-11**，没有进入安装 / instrumentation；新会话设备与端口锁正常释放，不记 L3 / L4 通过 |
-| iOS 设备 / 截图 / 手动 | 首次全量受掉盘中断；恢复后 SE 基线仅完成 50 项（44 过 / 6 失败），随后测试驱动等待 crash-log 收集，系统重启后进程退出；候选全量未开始，无法比较失败集合。另借 iPhone 17 查看 9 张预览图，仅局部静态核对；C01–C18、真实 App R27 / R56 与完整 A1–A4 未完成 |
-| 部署 | 未部署，未操作用户正在使用的 Host |
-
-永久回归入口为 `packages/host/src/codex-permission-settings.test.ts`、`packages/host/src/codex-terminal-sync.test.ts` 及既有 `codex-runtime.test.ts`。测试须继续检查四类权限、实际下一轮请求、首次输入前不发设置 RPC、首次物化与订阅、普通 resume、电脑端真实改变、模型 / effort 独立交接和 null effort。
-
-App 侧沿用 iOS `testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader`、Android `ConfigComposerInstrumentedTest` / `CodexPermissionsInstrumentedTest` 等现有用例。R27 / R56 手动补查“切模型 / effort → 改权限 → 继续提问”、电脑首条 / 手机首条输入和电脑端真实切模；夹具 UI 测试不能替代真实原生链路。
+[测试规则](../../AGENTS.md#测试)；[codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)；[codex-terminal-sync.test.ts](../../packages/host/src/codex-terminal-sync.test.ts)；[ConfigComposerInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/ConfigComposerInstrumentedTest.kt)；[codex-permission-settings.test.ts](../../packages/host/src/codex-permission-settings.test.ts)；[CodexPermissionsInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/CodexPermissionsInstrumentedTest.kt)；[原始证据](../../.artifacts/)。
 
 ## 存储恢复与验证记录
 
-首次双端回归期间，`/Volumes/WD1TB` 从挂载表消失。该次 Android / iOS 全量日志均不完整，原始记录保留在 `.artifacts/ui-regression/20261103-codex-permission-model/`，未将中断计为通过。内置盘临时备份已复制回同目录的 `internal-recovery-backup/`。
-
-2026-11-03 继续任务时，外接盘已挂载。对 `codex-runtime.ts`、`codex-permission-settings.test.ts`、`codex-terminal-sync.test.ts` 核对 SHA-256，三者与断连前保存记录完全一致，修复和新增测试均保留；随后为本决策补上中文注释和正式 ADR 引用。未重复套用备份补丁，也未改动并行任务的代码。
-
-旧 Android 会话的独占锁仍保留：其注册模拟器端口被占用，原私有 ADB 服务已不可用，不能仅凭监督进程退出或锁龄回收。继续测试从固定池借用其他已确认空闲的 API 35 设备，经共用入口完成设备 / ADB 生命周期。后续设备、截图、手动验证的结果与未覆盖项见 [UI 回归 §6](../testing/ui-regression.md#6-结果记录) 和上述证据目录的 `summary.md`；源码或原生专项通过不能替代全部门禁。
-
-恢复后以 `3bdb968` 建立独立基线 / 候选工作树，候选只叠加本次 Host 选型修复与两份回归文件，排除共享工作树其他任务的源码改动。两端移动源码哈希相同，但仍执行设备门禁；该事实不作为免测理由。构建来源与包哈希见 `resumed-validation/build-products.json`。
-
-Android 首轮 `Orbis_UI_Polish_35` 与固定重试 `Orbis_UI_Regression_35_3` 都在启动阶段退出 -11，日志有 QEMU 线程无响应；入口的两份 `cleanup.json` 均无清理错误、私有 ADB 已停止、设备 / 端口锁已释放。没有重建或擦除设备，也没有绕过共用入口。
-
-iPhone 17 上保存并查看首页和模型配置前后预览图，覆盖浅色 / 深色及 XXXL / 减少动画启动参数；XXXL 图没有满足 375pt 窄屏要求，静态图也不能证明手势或动效全过程。手动预览设备已恢复 Shutdown 并释放自己的锁。完整逐项范围见 `resumed-validation/manual-checklist.md`。
-
-恢复后的 iOS SE 基线全量在完成 50 项后停在模型切换用例开始位置；采样显示测试驱动等待 `XCTCrashLogTracker.waitForPendingCrashlogs`，截图仍是上一项的长工具输出，不能记为模型切换用例已执行。随后电脑重启，原监督进程、Xcode 与本任务 App / test runner 均已退出，设备为 Shutdown。未完成 `.xcresult` 缺少 `Info.plist`，工具不能导出完整结果；保留原始目录、日志、采样和截图。准确结果见 `resumed-validation/ios-interrupted-result.json`，不能据此宣称候选失败集合未扩大。
-
-按重启后新增的本机规则，`resource_guard.py check` 返回内存 **83.5% ≥ 80%**、拒绝启动；后续快照为 84.4%。没有再启动模拟器或构建。核对 owner / PID、Shutdown 状态与构建目录无打开引用后，在 registry 独占锁下只释放本轮 5 个残留租约；没有按锁龄回收、终止其他任务或处理旧 Android 锁。证据见 `post-reboot-memory.json` 与 `post-reboot-cleanup.json`。后续补验须用新的 `ios-simulator.py` / Android 共用入口及内存检查，当前完整 UI 门禁仍未通过。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

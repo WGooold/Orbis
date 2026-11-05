@@ -8,11 +8,11 @@
 
 当前未保存偏好的 Host 默认 **ws**；quic 强制模式失败明确报错，auto 只允许认证前回退。`relayTransportKind` 表示实际承载，`relaySwitchPhase` / `relaySwitchError` 独立报告切换状态。未通过完整设备、弱网 / 快网和现场门禁，不启用默认 auto，不宣称复现 Hysteria 2 的效果。
 
-[ADR-0065](adr/0065-native-quic-relay-transport.md)记录替换边界、优势条件、预算和验收；[tickets](agents/native-quic-tickets.md)与[原功能回归矩阵](testing/native-quic-functional-regression.md)区分已跑的底层、业务、平台和未跑的设备 / 现场结果。
+[ADR-0065](adr/0065-native-quic-relay-transport.md)记录替换边界、优势条件、预算和验收；[主分支集成报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)与[原功能回归矩阵](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md)区分已跑的底层、业务、平台和未跑的设备 / 现场结果。
 
-两段 WSS / 原生 QUIC 的有效吞吐、加压控制延迟、全部失败和复跑入口见[完整公网测试报告](testing/native-quic-public-performance-20261104.md)。Host 与参考客户端在同一 Mac，两段均连接真正公网 Relay；五轮对照观察到 QUIC 加压控制回复更可用，但未证明吞吐提速，且下载排空五轮均超时。原[单侧回环报告](testing/native-quic-performance-20261104.md)已中止，保留历史证据。公网参考端结果不代替 Q06 / Q12 的真实手机、同机 Hysteria 和受控线路验收。
+两段 WSS / 原生 QUIC 的有效吞吐、加压控制延迟、全部失败和复跑入口见[完整公网测试报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-public-performance-20261104.md)。Host 与参考客户端在同一 Mac，两段均连接真正公网 Relay；五轮对照观察到 QUIC 加压控制回复更可用，但未证明吞吐提速，且下载排空五轮均超时。原[单侧回环报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-performance-20261104.md)已中止，保留历史证据。公网参考端结果不代替 Q06 / Q12 的真实手机、同机 Hysteria 和受控线路验收。
 
-后续[分层方案](testing/native-quic-layered-diagnostics.md)与[诊断报告](testing/native-quic-layered-results-20261104.md)完成 20 个原始传输窗口及 24 个双段负载窗口，控制延迟改善重复出现，吞吐仍有方向差异；定位到独立测试 socket 的内核接收丢包和 CPU quota 条件。20 秒诊断窗口全部通过不等于旧 60 秒失败已修复，默认 WS 与发布门禁保持。显式设置 `ORBIS_QUIC_DIAGNOSTICS_FILE` 仅输出按秒聚合的 QUIC / writer 元数据，缺省不记录；不是配置拥塞算法的入口。
+后续[分层方案](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-diagnostics.md)与[诊断报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-results-20261104.md)完成 20 个原始传输窗口及 24 个双段负载窗口，控制延迟改善重复出现，吞吐仍有方向差异；定位到独立测试 socket 的内核接收丢包和 CPU quota 条件。20 秒诊断窗口全部通过不等于旧 60 秒失败已修复，默认 WS 与发布门禁保持。显式设置 `ORBIS_QUIC_DIAGNOSTICS_FILE` 仅输出按秒聚合的 QUIC / writer 元数据，缺省不记录；不是配置拥塞算法的入口。
 
 ## 构建
 
@@ -78,28 +78,10 @@ Apple 同连接三流和取消已在本机及共享 iOS SE App 内验证，Andro
 
 ## 隔离验证
 
-```sh
-npm ci
-npm run typecheck
-node scripts/build-relay-web.mjs
-cd native/relayquic
-ORBIS_TEST_NODE="$(command -v node)" go test -race -count=1 ./...
-go build -o ../../.artifacts/quic-fixture ./testdata/fixture
-```
-
-`ORBIS_TEST_NODE` 启用实际 Node Relay + WS Host + QUIC 手机侧认证 / 密文转发 / 重连 / 协议错误测试。fixture 使用临时身份，不读取用户状态。
-
-Swift 核心测试可设 `ORBIS_QUIC_FIXTURE` 为上述 fixture 的**绝对路径**，同时设 `ORBIS_TEST_NODE` 为 Node 的绝对路径。`RelayQUICInteropTests` 用每次生成的临时证书验证 Apple ↔ Go QUIC；仅测试使用私有证书锚，不修改系统信任库。
-
-Android `RelayQuicInstrumentedTest` 接受 `quicPort` 和 `quicCertificateBase64` 测试参数（fixture 的 `ready.json` 与 `cert.der`），从共享模拟器经 `10.0.2.2` 访问宿主。必须在共用入口内运行并在结束时关闭 fixture。没有 fixture 参数会标记前置条件不满足，不能记为 QUIC 已通过。
-
-完整设备 / 人工门禁和同手机直连 WS、同机 Hysteria、原生 QUIC 的现场对照另行记录，见 [R67](testing/ui-regression.md)。本机回环成功不代表公网稳定性已改善。
-
-iOS 设备专项使用独立 `OrbisTransport` scheme，在 App 测试宿主内导入生产 `RelaySocket`。先 `build-for-testing`，将生成的 `.xctestrun` 的 `OrbisTransportTests.EnvironmentVariables` 设置为 fixture `ready.json` 的 `ORBIS_QUIC_PORT` 和 `cert.der` 的 base64 `ORBIS_QUIC_CERTIFICATE`，还需将 `ORBIS_QUIC_BUSINESS_FIXTURES` 设置为两组隔离业务夹具的 JSON 数组（每组含 `lan`、`qr`、`port`、`certificate`），分别验证 Relay-only 与 LAN 优先；再 `test-without-building`。scheme 用 `--preview-screen=home` 隔离 App 启动，不改变配对和系统信任；没有 fixture 参数即失败。必须经共享 iOS 入口指定池内 UDID、关闭并行测试并持有 DerivedData 租约，测试后关闭 fixture 和设备。它验证实际 iOS adapter / TLS / 三流，不替代原 `Orbis` scheme 的完整 UI 回归。
-
+[根部测试约束](../AGENTS.md#测试)；[relayquic](../native/relayquic)；[src](../packages/host/src)；[run-native-quic-perf.py](../scripts/run-native-quic-perf.py)。
 
 ## 聊天 / 后台历史隔离试验
 
 按 ADR-0065 §10 / NQ-13，默认 `relayHistoryMode=shared`。在隔离候选 Host 中，可配置 `"relayHistoryMode": "background"` 或环境变量 `ORBIS_RELAY_HISTORY_MODE=background`：旧端未协商五流时，首屏 preview、手动 history 分页、live 和目录保留 msg，后台 catchup snapshot 走 bulk。新五流 adapter 已部署并在 Node Relay 显式设置 `ORBIS_RELAY_QUIC_HISTORY_STREAMS=1` 时，发现新增 historyAlpn/historyHostAlpn，原 v2 字段保留；App 通过 HS2 已认证能力及 HS3 接受后，手动 history / 后台 catchup 分别走独立 history / catchup，preview / live 保留 msg，文件 / 工具详情留 bulk。LAN 不协商该扩展。两段 QUIC 均可利用现有独立流；WS 继续兼容相同帧，仍有单字节流队头阻塞。LAN 保持原 msg。
 
-配置只在新建 HostService 时读取，当前不新增设置 UI 或热切换 API。恢复 `shared` 并在授权的重启后回到原分类；不移动已封帧消息、不重放用户操作。用户 Host 尚未重启，生产未启用。NQ-13 历史结果见[聊天历史隔离报告](testing/native-quic-chat-history-results-20261104.md)。NQ-14 五流按用户要求只做[功能回归](testing/native-quic-five-stream-functional-regression.md)，不再测速，不将旧性能数字外推到五流。实际通过、既有失败与设备阻塞见[五流结果报告](testing/native-quic-five-stream-results-20261105.md)。
+配置只在新建 HostService 时读取，当前不新增设置 UI 或热切换 API。恢复 `shared` 并在授权的重启后回到原分类；不移动已封帧消息、不重放用户操作。用户 Host 尚未重启，生产未启用。NQ-13 历史结果见[聊天历史隔离报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-chat-history-results-20261104.md)。NQ-14 五流按用户要求只做[功能回归](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，不再测速，不将旧性能数字外推到五流。实际通过、既有失败与设备阻塞见[五流结果报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)。

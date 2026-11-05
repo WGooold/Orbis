@@ -46,7 +46,7 @@ LAN 地址不可达或握手失败时自动尝试下一个地址，并定期重�
 
 每个 Agent 展示当前供应商和透明切换按钮；Claude Code 与 Codex 官方配置卡片提供 5h / 周两个紧凑配额环，点击整卡查询，返回后动画展开到剩余百分比。角标区分窗口，刷新图标和按压反馈提示操作，不显示点击说明。两个 Agent 的读数分开保存。
 
-聊天输入区使用附件、输入框、发送/停止按钮同一行的布局。每个会话通过对应 agent 的图标、名称与强调色区分；通用配对入口保持「连接你的电脑」，不绑定某两个 agent。控件与独立内容面共用新拟物材质，完整覆盖及平面例外见 [新拟物审计](docs/neumorphism-audit.md)，图标来源见 [Agent 标识](docs/agent-icons.md)。
+聊天输入区使用附件、输入框、发送/停止按钮同一行的布局。每个会话通过对应 agent 的图标、名称与强调色区分；通用配对入口保持「连接你的电脑」，不绑定某两个 agent。控件与独立内容面共用新拟物材质，完整覆盖及平面例外见 [新拟物审计](../docs/adr/0046-mobile-ui-stability-and-material.md)，图标来源见 [Agent 标识](docs/agent-icons.md)。
 
 输入框接受普通消息。输入 `/` 时会展开当前 runtime 动态发布的统一 Slash 命令菜单，其中包含可远程执行的内置命令、Skill、Prompt Template、扩展注册命令和 MCP 工具；各 backend 只发布它能兑现的子集。命令必须从菜单选择；任意手输的 `/...` 不会作为聊天消息发送，也没有独立的 Runtime Action 菜单。需要参数的内置命令会显示当前 runtime 提供的模型、Session 或 tree 候选项。
 
@@ -109,7 +109,7 @@ Claude Code 的隔离模拟器回归使用 `scripts/claude-history-fixture.mjs`�
 Mods HTTP 接口和加密连接验证已有历史、运行中回复、并行工具结果后的流式输出及重连恢复；
 原生记录使用合成数据，配对和缓存存入独立测试目录。
 
-已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](docs/history-reload-probe.md)。必须取得本次设备操作授权；不清缓存、不激活后端，也不重启 Host。
+已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](../scripts/windows/history-client-reload-probe.ps1)。必须取得本次设备操作授权；不清缓存、不激活后端，也不重启 Host。
 
 ## 文件
 

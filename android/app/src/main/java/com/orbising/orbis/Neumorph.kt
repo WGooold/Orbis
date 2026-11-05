@@ -7,7 +7,7 @@
  * 控件与独立内容面共用这套材质：操作凸起，输入/单选/嵌套内容凹陷。
  * 长按批量选择保留卡片材质，用淡主色底、细描边与固定槽位的圆形标记表达。
  * 连续画布、文字、状态点、树连接线和图片本体不单独加影，避免破坏阅读与信息编码。
- * 所有平面例外及位置记录在 android/docs/neumorphism-audit.md。
+ * 所有平面例外及位置记录在 docs/adr/0046-mobile-ui-stability-and-material.md；几何与回归见对应测试。
  *
  * 实现说明：柔影主体用 **BlurMaskFilter 真高斯模糊**（API 28+，画笔缓存、单图层、
  * 不依赖 RenderEffect / graphicsLayer）；API < 28 无硬件加速支持，回退到纯绘制的

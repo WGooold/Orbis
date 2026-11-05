@@ -395,7 +395,7 @@ SDK 会把每个请求绑定到 runtime、扩展和唯一请求 ID。本地端�
 - 设备凭据等价于「发消息 + 调用该 runtime 发布的 Slash 命令 + 按路径读写 Host 账户可读写的文件」，而不是只读凭据。需要整机隔离时，使用受限 Windows 用户、容器或虚拟机。
 - 中继只在内存中转发实时内容，不持久化聊天记录、session 数据或文件字节；它落盘的只有设备凭据与配对状态。
 
-完整产品要求和测试决策见 `ORBIS_CONTROL_SPEC.md`。
+产品术语见 [CONTEXT.md](CONTEXT.md)，架构决策见 [ADR](docs/adr/)，测试约束见 [AGENTS.md](AGENTS.md#测试)。
 
 ## 参与与许可证
 

@@ -10,4 +10,4 @@ After editing the catalogs, run `python3 scripts/generate-mobile-localizations.p
 
 Preference values are `system`, `zh-Hans` and `en`. The default is `system`; the first supported phone language wins, with English as fallback. All Chinese variants use Simplified Chinese. Settings, system-change notifications and foreground entry update observable presentation state without replacing the page or its connection. System-owned permission prompts use their native localized resources and follow the OS language.
 
-Rules and device regression requirements: [ADR-0063](../docs/adr/0063-mobile-app-language.md), R62 in [UI regression](../docs/testing/ui-regression.md).
+Language behavior: [ADR-0063](../docs/adr/0063-mobile-app-language.md); test rules: [AGENTS.md](../AGENTS.md#测试).

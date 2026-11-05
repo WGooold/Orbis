@@ -145,68 +145,17 @@ Host 存储按真实工作区及采集 owner 协调，避免多个 Orbis 观察�
 
 ### §8 实施顺序与验收
 
-下列步骤保留为完整验收要求；已实现部分、验证证据和剩余缺口见 §9，不将代码级 fixture 等同于真实后端验收。
-
-1. **后端边界探针。** Codex terminal/Desktop 分别验证实际开始/结束、电脑端直接发起、消息排队及中途附着；Pi 验证顶层轮次/内部 turn 与执行前回调；Claude 验证 Mods 回调顺序、异常和当前 TUI 归属；DSH 验证 Web 执行前协调与轮次结束时序。使用隔离 fixture 和可控本地模型，无法取得可靠边界的路径显式报告缺口。
-2. **统一域和 Host 采集。** 先实现与后端无关的快照、内容存储、统一差异引擎、`changes` 域和详情服务；用可控写文件 fixture 验证。再按边界能力接入各 adapter，覆盖文件工具、shell 与失败/取消的实际落盘。已有工具详情保持按需语义。
-3. **双端 UI。** 落地轮末概况、中间省略、元数据分页、modal 查看器、单文件分页缓存和带动画的左右切换；请求调度与 Pager 的视图创建分开。
-4. **端到端与发布。** 验证断线重连、历史重入、多 Host/多设备、多轮并行及限额；再统一升级协议与相关组件。设备测试遵守本机共享模拟器池及构建锁，使用固定已登记设备。
-
-必需验收场景：
-
-| 范围 | 通过条件 |
-| --- | --- |
-| 统计正确性 | 既有 staged/unstaged/untracked 修改不算成本轮新增；同文件反复修改、改后恢复、创建再删除、删除再创建、rename、取消后部分落盘均符合净变化口径。无变化与无数据明确区分。 |
-| 来源缺口 | 所有后端覆盖范围内的 shell-only 修改都由 Host 前后版本识别；原生 diff 为空、截断或不可用不改变这份结果。电脑端直接发起、排队、晚附着、非 Git/忽略路径/不可读/外部并发等均正确声明边界和 coverage，不能展示伪完整结果。 |
-| 历史固定 | T1 结束后 T2 再改同文件，打开 T1 仍读 T1；两轮间的用户修改不算入 T2。更正、重连、分页、排序不会混合内容版本；原生 Session 销毁不影响 Host 已保留记录，Host 重启缺基线不事后补造。 |
-| 元数据先行 | 在详情接口被故意阻断时，文件名、已知 A/M/D 类型和行数仍可显示；长列表显示部分状态并能继续取元数据；未知类型/行数不通过预取所有 diff 补齐。 |
-| 按需流量 | 100 文件、每文件 1 MiB 的 fixture，进入会话/展开文件清单后详情请求数及详情字节数均为 0；打开一个文件只读该文件首范围，滑动落位后才请求目标文件，其他设备收到详情字节为 0。Host 已完成行数计算与手机未收到详情可以同时成立。 |
-| 取消与缓存 | 连续快速左右切换、回到缓存文件、关闭/后台、换 Host、超时/重试和迟到响应均不串页；无新增用户查看行为时无后台全量下载；离线显示已缓存范围。 |
-| 特殊内容 | Unicode/emoji/超长文件名、同名不同目录、`.d.ts`/`.tar.gz`/点文件、重命名、CRLF/末尾换行、二进制、超大文件和超长单行不会误算、破坏省略或突破内存/页预算。 |
-| 动效与性能 | 测试时钟检查拖拽中间帧、正确滑入方向、取消回弹、首尾边界和再次打开；加载/离线/失败页照常可滑。减少动态效果、大字体、VoiceOver/TalkBack 可操作；未查看 diff 的正文构建/高亮次数为 0。 |
-| 隔离与资源 | 两台 Host 同名 Session/路径互不命中缓存；无跨会话读取和原生凭据外泄；超限 busy/partial/expired 正确，采集不改用户 index/refs/文件，活跃读取与其他任务存储不会被回收。 |
-
-发布前记录概况到达耗时、单文件首屏耗时、Host 采集 I/O/磁盘峰值和手机传输字节。当前没有性能实测，不预先宣称带宽减少百分比或毫秒收益。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ### §9 初版实现、接入与剩余验收
 
-本节记录本次工作树的实际行为，区别前文完整设计要求。实现位于 `codex/adr-turn-file-changes`，基于 `375078cbbd9d7b3299ade6b24867ec5e8b3c65f1`；功能提交为 `cf7d635`，合并目标为主分支 `ee6f7c8`；未部署。合并保留主线的固定 LAN / Relay、首页和消息对账行为。主线已占用协议 16，故合并后的统一协议为 17。
-
-| 后端 | 已接入的轮次边界 | 当前覆盖结论 |
-| --- | --- | --- |
-| Codex terminal / Desktop | `CodexRuntime` 在实际 `turn/start` 分派前等待基线；排队输入到真正执行时才采集。终止事件触发终点，锚点取该 turn 按原生条目顺序的最后一条 agentMessage（包括已完成但仍排在未提交条目之后的项），没有正文时退回最后一条助手行（2026-10-31 修订）。 | Host 分派路径可建立起点；仅观察到电脑端原生 started、运行中附着或下一轮抢先写入时为 partial。真实 Desktop / TUI 的版本与时序尚待验收。 |
-| Pi | `before_agent_start` 经认证 loopback HTTP 等待 begin；内部 turn ID 归并；`agent_settled` 在队列继续前等待 finish。客户端 HTTP 5 秒上限，Host 屏障 2 秒。 | shell 与文件工具都由同一范围快照覆盖。缺 begin 的 finish 记录 unavailable，不用终点补造起点。原生异常 / 重连 / 排队仍待实际模型验证。 |
-| Claude Mods | bridge **2** 的 `turn.start` 先等 Host 再执行一次 `next()`；complete 后等待终点；transcript 公布真实 Entry 后补齐锚点。 | 拒绝 bridge 1，避免把旧回调顺序当作可靠起点。Host 接口时序、本机 CLI 2.1.314 静态插件校验和 8 项 testing-kit 模拟用例通过；真实 TUI 模型轮次尚未重新验收。 |
-| DSH Web | 在恢复层消费之前观察原始 turn 生命周期并保存时间窗快照。 | 尚无执行前屏障，明确 partial；不调用原生 changes.summary / changes.diff 作为替代。旧 ACP 不在本次交付范围。 |
-
-Host 的实现入口为 [coordinator](../../packages/host/src/turn-change-coordinator.ts)、[snapshot](../../packages/host/src/turn-file-change-snapshot.ts)、[service](../../packages/host/src/turn-file-change-service.ts) 和 [diff](../../packages/host/src/turn-file-change-diff.ts)。Git 只枚举工作树范围，比较真实磁盘起止内容；不创建提交、不修改 index/refs。明确禁用 fsmonitor / untracked cache，读取不经过外部 diff、textconv 或 clean/smudge。非 Git 使用排除缓存和嵌套仓库的有界目录扫描。
-
-当前没有“写工具执行前补录忽略 / 仓库外路径”。Git scope 表示跟踪及非忽略文件再扣除固定缓存目录；bounded-directory 表示本次 cwd 内的有界目录。范围外 shell 写入不覆盖，无法映射的远程文件不能用本机同名文件替代。所有结果目前统一 `attribution: workspace-window`，不声称修改由助手独占造成；已知同工作区并发会降级，但无法识别所有外部编辑。可靠 rename 证据尚未接入，所以移动文件显示删除 + 新增。
-
-协议已升为 **17**，Host、Pi extension、Claude mod 与 iOS / Android 应同时升级；Claude 插件包版本升为 **0.1.3**，确保缓存更新能交付 bridge 2；Relay 继续转发加密载荷。正式 strict schema 见 [turn-file-changes.ts](../../packages/protocol/src/turn-file-changes.ts)：`reviewTurnId/sourceTurnIds` 关联来源，`anchorEntryId` 关联真实消息，`changeSetId/manifestVersion/fileId/contentVersion` 固定内容，独立单调 `revision` 拒绝迟到摘要。`changes` Registry 域只持有轻量描述，当前窗口通过 `session.changes.list` 订阅及补齐概况；`read` 取清单，`detail.read/cancel` 为设备私有按需读取。无 canonical 锚点的记录留待关联，不猜最近助手气泡。
-
-持久化先于发布；重启后可读取已冻结记录，中途采集转为 unavailable。详情仅引用私有 blob 和比较索引，不重新扫描当前工作区。正文从不进入 summary、共享消息或其他设备的响应。真实加密 Host / Relay / 设备测试已验证：轮前已有脏内容作为起点、概况没有正文、点击前没有详情事件，以及后续磁盘再改不改变旧轮差异。
-
-双端已实现概况、清单分页、文件名中间省略、独立 modal、统一 diff 行号 / 增删色、带动画的原生 Pager。只在落位后读取当前文件；取消拖动及邻页创建没有详情请求。阅读位置、版本隔离、迟到响应、缓存返回和特殊文件状态已有定向测试。实现入口为 [iOS model](../../ios/Orbis/Orbis/TurnFileChanges.swift) / [view](../../ios/Orbis/Orbis/TurnFileChangesView.swift)、[Android model](../../android/app/src/main/java/com/orbising/orbis/TurnFileChanges.kt) / [view](../../android/app/src/main/java/com/orbising/orbis/TurnFileChangeViews.kt)。同步维护 UI 基线 [ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 S21 / M13 / V19。
-
-**2026-10-31 修订。** 本机真实记录显示 Codex 锚点常为 `exec-*`、`call_*`、`rs_*` 等中途工具 / 推理行：`turn/completed` 时最终 `final_answer` 仍在 `completedItems` 中等待更早条目提交，旧逻辑只查已提交 Entry；App 又把卡片放在锚点所在的 4 条消息虚拟行之后，于是卡片落在回合中段。现由 Host 按原生条目顺序取最后一条正文，App 按整轮末行放置。查看器原用系统 sheet / ModalBottomSheet，正文滚到顶后的剩余拖动与快甩被交给 sheet 而关闭卡片；现 iOS 在每次按下时同步判断触点，只有落在标题区才允许系统 sheet 下拉关闭，并让正文滚动优先于 sheet 拖动；Android 在正文区消费剩余嵌套滚动、快甩和纵向拖动，标题区保留原生拖动关闭。iOS 首版曾自绘标题区拖动位移，手动回归录屏发现拖动时 sheet 容器露出白底、关闭动画期间内容被清空成“正在读取文件清单”，已改为上述原生方式，并在关闭动画结束后才清空状态。
-
-验证结果和日志见 [轮次文件审阅验证记录](../testing/turn-file-changes.md)。仍待完成真实各 backend / 真机网络端到端、100 文件带宽与时延测量、多设备并发实测、完整 VoiceOver / TalkBack 及异常文件系统压力验收。两端设备测试使用隔离 UI fixture；不能把这些测试或 HTTP 模拟后端等同于真实模型验收。
-
-**2026-11-01 Android 预览清单切换修复。** 用户报告 Pi 轮末直接点击 `.kt` / `.md` 文件闪退，先展开完整清单后打开则正常。设备对照在旧代码 `HorizontalPager` key 回调复现 `IndexOutOfBoundsException: Index 4 out of bounds for length 4`：首个完整清单到达后页数已更新，保留的 key 回调仍读取四项预览。页数、key、正文三处现统一读取同一份 `rememberUpdatedState` 当前清单，并防护过渡中的越界索引；文件 ID、落位读取、缓存与手势规则保持。新增 `piSummaryClickOpensLoadingFileThenDisplaysItsFirstDiffPage` 覆盖点击预览、入场期间清单扩充 / 首段差异到达、访问追加文件及关闭重开。550 项 JVM、5 项专项（含 A1–A4）通过。全量仍有基线失败及入场耗时波动，完整手动 / 真机门禁未通过；不得将专项通过扩展为整体验收，详见审阅验证记录。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ### §9.1 2026-11-01：Codex / Codex Desktop 原生轮次记录（验证中）
 
 用户选择先实现两条 Codex 路径；本修订不扩展 Pi / Claude / DSH 的写入归属，也不迁移 SQL。此节取代初版 §9 表中 Codex 的起止快照数据源，其他后端与已冻结的旧快照记录保持原来源。
 
-- **来源与边界。** `CodexRuntime` 只在当前原生 turn 中转交 `turn/diff/updated`，以及 `fileChange` 开始 / 完成的身份与状态；不把 `changes.diff` 提议或 `patchUpdated` 当作实际落盘证据。`CodexTurnFileChanges` 接收整轮聚合正文的最新 revision，不累加各次工具行数；`TurnChangeCoordinator` 按原生 turn 串行归并，结束后冻结，不接受旧轮或封口后的通知。历史项原文不在本修订中回填。
-- **归属与完整性。** `attribution=native-tool`、`scope=native-file-tools`，coverage 固定为 partial 或 unavailable。固定提示“仅记录 Codex 文件工具变更”，详情范围为“Codex 文件工具”。这证明记录来自原生文件工具 tracker，不代表任意 shell / MCP / 子 Agent 写入都被覆盖，也不提供外部并发修改的逐行因果证明。原生零文本不等于整个工作区无修改。
-- **拒绝、失败与未知。** declined 提议不算实际修改；有实际 diff 的部分失败保留 diff 并注明 incomplete；未完成或已完成的文件工具没有可用聚合 diff 时标 unavailable。空字符串可能是净变化为零，也可能是上游 tracker 失效，清除旧 diff 并标 unavailable，不能保留旧正文或伪报零变化。纯改名、空文件等未出现在聚合文本中的事实不从提议补造，缺失时明确不可用。
-- **解析与资源。** 复用固定 `diff@9.0.0` 的 `parsePatch/formatPatch`，按原生 hunk 计数并分文件保存；A/D/R 与 binary 按已收到的 diff 头部声明，前后文件大小未知时为 null。聚合上限 8 MiB / 200,000 行、工具身份上限 20,000、并行原生记录上限 32；畸形 / 截断 / 重复路径或超限不可用。原生显示路径仅用于元数据与身份，不能授权任意源文件读取。
-  - 2026-11-02 部署回归补充：原生绝对路径按证据自身的 POSIX / Windows 方言解析，不使用 Host 操作系统的默认 `path` 方言；工作区内的显示路径保持 `/` 分隔。Windows 部署门禁发现原实现会返回反斜杠，新增在所有 runner 上模拟 Windows 默认函数的回归，保留原有两项路径断言。此修复影响 S21 / V19 的显示路径与文件身份；设备与真实后端门禁仍按原未完成状态记录。
-- **持久化与读取。** 元数据仍原子保存为私有 JSON，已收到的单文件 diff 存入现有 SHA-256 blob 存储并参与配额 / GC。先持久化再发布；重启可读已冻结 diff，中途重启仍 unavailable。Codex 不再执行起止工作区扫描，也不靠当前文件恢复原生 diff。手机仅在选中文件后读取，概况 / 清单不含正文，保留现有身份、分页、取消、租约和回收规则。
-- **协议与旧记录。** 协议升为 18，Host / Relay / 扩展 / 两端须协调升级。新增来源组合受 strict schema 校验，仅允许 Codex 两个 agentKind，不允许 native-tool 与完整工作区 coverage 混用。旧 workspace-window 记录按原身份与保留期读取，不能改标为原生。
-- **验证。** 新增 `codex-turn-file-changes.test.ts`、`codex-native-file-review.test.ts`；扩展 service / protocol / 双端模型与设备用例。受影响 S21 / V19，M13 原有行为继续回归。续跑已在池内 iPad Air / SE 直接操作，并对双端 UI 辅助执行留存录屏、亲自查看截图与关键帧；文件审阅夹具主流程和 iPhone 关闭期间正文保持已核对。审批 / 问卷及部分 Android 首页 / 电脑归属仍有失败，其他手动子步骤、Android 关闭中间帧和 R28 真实模型全流程尚未完成。实际结果见 [验证记录](../testing/turn-file-changes.md) 与 `.artifacts/ui-regression/20261101-native-codex-file-changes/manual-checklist.md`；不宣称完整验收通过。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。
 
 ## Alternatives and consequences
 
@@ -276,7 +225,7 @@ Desktop 需要另外区分**用户当前选择的比较范围**。官方文档�
 
 以下公开资料于 2026-10-30 读取；版本固定的源码用于证明该版本的契约，动态文档不替代实施时的版本探针。没有检查私有桌面数据库或逆向原生程序。
 
-- **[S1] Codex**：[官方 app-server 文档](https://learn.chatgpt.com/docs/app-server)，从原 `developers.openai.com/codex/app-server` 重定向；核对 turn notifications、Items 和 fileChange 增量说明。仓库 [0.154.0 协议快照](../codex-app-server-protocol.md) 另列 `item/fileChange/patchUpdated`；官方文档说明旧 `outputDelta` 已不再由当前 app-server 发出，不能以它作为 diff 来源。
+- **[S1] Codex**：[官方 app-server 文档](https://learn.chatgpt.com/docs/app-server)，从原 `developers.openai.com/codex/app-server` 重定向；核对 turn notifications、Items 和 fileChange 增量说明。仓库 [0.154.0 协议快照](../../packages/host/src/codex-native-file-review.test.ts) 另列 `item/fileChange/patchUpdated`；官方文档说明旧 `outputDelta` 已不再由当前 app-server 发出，不能以它作为 diff 来源。
 - **[S2] Pi 0.84.4**：[edit 类型/实现](https://github.com/earendil-works/pi/blob/v0.84.4/packages/coding-agent/src/core/tools/edit.ts)、[write 实现](https://github.com/earendil-works/pi/blob/v0.84.4/packages/coding-agent/src/core/tools/write.ts)、[扩展事件文档](https://github.com/earendil-works/pi/blob/v0.84.4/packages/coding-agent/docs/extensions.md)；仓库 package-lock 与本机该依赖版本一致。只证明已检查的内置工具及扩展契约，不推断所有自定义工具。
 - **[S3] Claude**：[Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)、[Checkpointing](https://code.claude.com/docs/en/checkpointing)。当前 TUI 集成约束及已验证 CLI 版本见 [ADR-0033](0033-claude-code-tui-mods-integration.md)。
 - **[S4] DSH 0.1.7-rc.1**：[workspace-changes 说明与限制](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/deliverables/workspace-changes/README.md)、[summary/diff 类型](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/deliverables/workspace-changes/src/types.ts)、[认证路由及参数](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/client/ui-deliverables/src/changes.ts)。核对 tag 对应提交 `46a7f68b0922371ce7144b668b90e377d8e799f4`。DSH 文档中的 Host 指原生服务进程，与 Orbis Host 的生命周期须分开。

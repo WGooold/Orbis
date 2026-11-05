@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r24 整页导航（M07、M08、M14、V17、V18）
+// - 转场（M07、M08、V13）
 package com.orbising.orbis
 
 import androidx.compose.foundation.layout.Column

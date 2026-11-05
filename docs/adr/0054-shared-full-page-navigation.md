@@ -53,11 +53,7 @@ Status: accepted（用户确认页面盘点及范围后授权实施；完整设�
 
 ## Verification
 
-- Android `PageNavigationInstrumentedTest`：真实添加电脑入口的拖动几何、取消复位与返回后目录可操作；离线历史同款返回；嵌套系统返回只弹出顶部一层。已有 `SwipeBackInstrumentedTest`、`SwipeBackPagesInstrumentedTest` 和 `HistorySwipeBackInstrumentedTest` 保留。
-- iOS `testAddComputerPageReboundsAndSwipesBack`：浅色正常动画、深色减少动画，短拖回弹，右滑返回后首页可操作。`testNestedPagesSwipeBackOneLevelAtATime`：聊天草稿、历史搜索词保留，下载→历史→聊天逐层返回。已有设置、聊天与下载返回用例保留。
-- 手动专项 R19–R22、ID 映射及 C01–C18 / A1–A4 门禁见 [UI 回归方案](../testing/ui-regression.md)；本次页面盘点新增的自动用例已记录在 §3.3。验证记录位于 `.artifacts/ui-regression/20261031-page-navigation/summary.md`；未运行和失败项逐项记录，不以定向通过代替全量门禁。
-
-本轮结果：Android 548 / iOS 223 项单元、双端构建通过；最终 Android 受影响组 11/11、iOS 导航 7/7 和目录手势 4/4 通过。Android 全量 138 项 11 失败，与导航修改前对照失败集合相同；iOS 全量 61 项 11 失败，9 项对照复现，配对等待与目录手势复跑通过。对照仅恢复导航代码并保留工作区其他修改；最终完整提交基线对照、手动冒烟、完整外观与窄屏门禁仍未完成，不能记为全部验收通过。
+[测试规则](../../AGENTS.md#测试)；[SwipeBackInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SwipeBackInstrumentedTest.kt)；[PageNavigationInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/PageNavigationInstrumentedTest.kt)；[HistorySwipeBackInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/HistorySwipeBackInstrumentedTest.kt)；[原始证据](../../.artifacts/)。
 
 ## Consequences
 
@@ -65,7 +61,7 @@ Status: accepted（用户确认页面盘点及范围后授权实施；完整设�
 
 ## 2026-11-01 / r31 共用动效修订（已接入，验证中）
 
-[ADR-0058](0058-shared-interaction-motion.md) 统一菜单、选择工具栏、图标反馈、最近提问右上出入及边缘返回。本文先前的导航来源、提示条件、阅读稳定和业务判定保持；对应动效参数以该修订为目标，未完成双端门禁不记为验收通过。实施与测试映射见 [MOT ticket](../agents/interaction-motion-tickets.md)。
+[ADR-0058](0058-shared-interaction-motion.md) 统一菜单、选择工具栏、图标反馈、最近提问右上出入及边缘返回。本文先前的导航来源、提示条件、阅读稳定和业务判定保持；对应动效参数以该修订为目标，未完成双端门禁不记为验收通过。实施与测试映射见 [MOT ticket](0058-shared-interaction-motion.md)。
 
 ## 2026-11-02 / r35 交互补充（已接入，验证中）
 
@@ -83,4 +79,4 @@ iOS 的确认退场不再复用取消回弹并等待弹簧 `.removed`：统一�
 
 本轮整页审计另复现“右滑松手同时点中下方按钮”：添加电脑从扫码按钮起手的短拖会打开扫码 Sheet，历史页从卡片起手会打开预览，旧用例仅核对标题存在而漏掉误操作。共用返回容器识别横拖后按目录现行规则临时停用内容按钮，取消其按压，直到本次 touch-up 事件派发完再恢复；手势识别器仍位于外层，竖向滚动、按钮尺寸与原业务启用条件保持。正常点按在取消后立即恢复。补强原添加电脑 / 历史短拖用例，断言不出现扫码 Sheet / 历史预览；不删除既有取消回弹、返回来源与草稿断言。
 
-2026-11-03 r40 返回响应验证：代码已实施，应用内实测与最终专项支持返回交接修复；完整iOS全量受外接盘中断和共享设备残留锁阻塞，Android深色按压反馈及其他全量失败保留，完整人工/最终动效帧未验收。结果与未跑范围见 [UI 回归方案 §6](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。
+2026-11-03 r40 返回响应验证：代码已实施，应用内实测与最终专项支持返回交接修复；完整iOS全量受外接盘中断和共享设备残留锁阻塞，Android深色按压反馈及其他全量失败保留，完整人工/最终动效帧未验收。结果与未跑范围见 [UI 回归方案 §6](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。

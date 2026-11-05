@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 为工具库存、分页读取、导出、取消及身份隔离提供独立合成 Host 来源；不连接用户会话。
 // Isolated encrypted Android pipeline fixture. No real agent sessions or pairing records are read.
 import { createServer } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";

@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - SC / MOT：防止菜单、显式选字、按压、取消和身份切换改变布局或误发业务操作。
 package com.orbising.orbis
 
 import android.graphics.Bitmap

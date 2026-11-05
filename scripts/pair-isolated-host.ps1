@@ -18,7 +18,7 @@
   载荷里广播的 LAN 端口，必须与 start-isolated-host.ps1 用的一致（默认 42131）。
 
 .EXAMPLE
-  pwsh -File docs\testing\isolated-host\pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787
+  pwsh -File scripts\pair-isolated-host.ps1 -AdvertiseRelayUrl ws://10.0.2.2:8787
 #>
 [CmdletBinding()]
 param(
@@ -29,7 +29,7 @@ param(
     [int]$PayloadTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $RigRoot) { $RigRoot = Join-Path $repo '.scratch\isolated-host' }
 $stateDir = Join-Path $RigRoot 'state'
 $logDir = Join-Path $RigRoot 'logs'

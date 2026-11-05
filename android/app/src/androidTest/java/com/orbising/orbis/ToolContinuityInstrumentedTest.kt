@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - Pi 连续工具交接（V20、V09、V01、V04、V18）
 package com.orbising.orbis
 
 import android.content.Context

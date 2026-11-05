@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - MOT-21 / SC43（MOT-21、SC43、R55、S18、V13、V18）
+// - 首页（S18、M06、M10、M12、V10、V11、V13、V18）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

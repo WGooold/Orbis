@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 需要隔离 Host（V20）
 package com.orbising.orbis
 
 import android.content.Context
@@ -16,7 +18,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * 用**隔离 Host 测试台**（`docs/testing/isolated-host/README.md`）配对：真 Relay 连接 + 真端到端
+ * 用**隔离 Host 测试台**（`scripts/start-isolated-host.ps1`）配对：真 Relay 连接 + 真端到端
  * 握手 + 真落盘，但不碰这台模拟器上与用户电脑的既有配对（状态目录隔离）。
  *
  * 运行方式（先 `relay.ps1 -Action Start`，再 `pair-isolated-host.ps1` 拿载荷）：

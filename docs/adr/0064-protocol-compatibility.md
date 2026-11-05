@@ -82,14 +82,7 @@ Host 的“支持 18 / 19”必须覆盖完整收发链路，包含首次握手�
 
 ## Verification
 
-- 第三阶段以“原版旧 App＋兼容 Host＋兼容 Relay”为硬性组合，分别保留真实协议 18、真实协议 19 的旧 App；当前 0.1.53 按原 APK 来源、签名、SHA-256 和实际协议归档。不得重编译旧 App、改版本常量或安装 0.1.54 后将结果算作旧 App 验收。
-- 在同一 Host 同时连接 18 / 19 设备，验证首次 ready、请求与响应、事件投影和二进制帧按设备 / 路径隔离；切换 LAN / Relay、断线重连、Host 升级与回退后保持配对与身份。macOS / Windows Host、已发布 Android / iOS 严格解析器分别验证，不以 Android 新兼容包通过代替旧 iOS 结果。
-- 保留真实已发布 18、已发布 19 以及新兼容实现，对 18 / 19 / 20 / 21 的 App、Host、Relay 组合做双向测试：旧 App + 新 Host、新 App + 旧 Host、不同 Relay；比较实际选中版本和业务结果。
-- 17 及以下拒绝；版本交集为空、协商值不在本地支持范围、缺失 / 非法协商数据均失败，不能误报 ready。
-- 握手后覆盖配对、LAN / Relay 切换、恢复基线、消息 / 输入 / 停止 / 权限、回执、通知、上传下载和重连；不能只证明 socket 连接成功。
-- 新可选字段与未知能力不破坏基础功能；未知命令有相关错误回执；畸形已知字段、未知执行状态和身份冲突不能冒充成功。
-- 每次后续版本继续跑与 18 基点的契约回归；不以约定替代实际兼容实现和测试。
-- 证据保存至 `.artifacts/ui-regression/20261104-protocol19-compatibility/`；未运行的设备与真实端到端门禁如实保留，不能以单测或构建代替验收。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 第一阶段：Android 兼容当前 18（2026-11-04）
 
@@ -101,17 +94,7 @@ Host 的“支持 18 / 19”必须覆盖完整收发链路，包含首次握手�
 - 接收层对 JSON / E2E 外层、通知、状态、文件审阅和二进制文件帧接受已实现的 18 / 19，17 及以下及非法版本仍拒绝。不能将数字字符串、分数、null / 容器误判为有效版本。20 及未来版本的持续兼容与显式能力协商留给后续阶段，不能把本阶段写为整个 ADR 已完成。
 - Android 交付标识递增为 0.1.54 / versionCode 55，避免与此前 0.1.53 的不同协议包重名。导入当前 Android 工作区原有中英文、卡片等改动作为构建基线，并以逐文件哈希记录；它们不是本兼容补丁的新增功能。主工作树未被修改。
 
-定向 JVM 初轮 133 项中，三项新测试的断言完成后在 MockWebServer 服务端 WebSocket.cancel 清理处触发 NPE；改为正常 close，保持全部业务断言。复跑 133 / 133 通过。首轮 runner 因本机 Python 不支持 process_group 参数在启动构建前失败，未留下子进程或租约；改用受父进程等待的独立进程组，记录保留。
-
-第一阶段最终验证：Android JVM 全量 712 / 712，无跳过，包含直接加载未修改的已安装 Host-18 schema 与 crypto/session 模块的隔离互通测试。该测试验证旧格式、加密、请求 / 回执及二进制传输，不执行真实模型命令，也不连接用户 Host 状态。模块哈希和 fixture 均留存，不能将它表述为生产端到端验收。
-
-共享设备 `Orbis_UI_Polish_35` 上，18 / 19 连接专项 5 / 5 通过，包括严格 Relay / Host 18、明确版本拒绝后一次 19 探测、凭据拒绝不重试、独立 LAN18，以及仅纯 HS1 超时才重新握手 LAN19。同设备 / A1 配置的导入基线为 193 项（178 通过、7 失败、8 前置条件跳过），最终候选为 198 项（183 通过、7 失败、8 前置条件跳过）。无删除用例、无候选新增失败；七项失败的首条异常和测试栈位置均与基线一致。A2 / A3 / A4 各执行设置专项 8 / 8，共 24 / 24；它们不等同于各配置全量回归。
-
-完整 L4 逐帧审阅、C01–C18 人工检查、真实手机覆盖升级及实际 Host 上的模型操作仍未完成；R64 保持验证中，不宣称完整 UI / 真机验收。截图归档含旧文件，只有核对时间及来源的本轮截图可用于有限审阅，不能把归档总数当本轮产出。基线 runner 曾因归档警告导致中断且清理返回权限错误；原始记录保留，按资源恢复规则核对进程、端口和设置后定向释放原 owner 租约。最终候选入口清理无错误，设备 / ADB / 构建租约及全程名额均已核验释放。
-
-交付 Debug APK 的 SHA-256 为 `034bcaddb85ce7d1f1ba842467899e1105e99bdefadbfea40aeda920f440cb0e`，签名与导入基线一致；正式签名 APK、混淆映射和回退包同时保留。完整结果、失败比较、产物及清理记录见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`。
-
-工作树 `/Volumes/WD1TB/Orbis/orbis-protocol19-compatibility`，分支 `codex/protocol19-compatibility`；证据 `.artifacts/ui-regression/20261104-protocol19-compatibility/`。没有操作真机、重启用户 Host 或部署 Relay。
+第一阶段核心 / 设备、首轮MockWebServer清理失败与runner错误、源码 / APK哈希和资源核验统一见UI回归§6及`.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`。同设备全量无新增失败不等于旧App＋新Host的第三阶段验收；完整用户 / 真机与真实模型未完成。
 
 ## 第二阶段：Relay 接受已部署 Host / App 18（2026-11-04）
 
@@ -143,12 +126,7 @@ schema 校验和凭据认证成功后按 socket 绑定版本；后续帧不得�
 边界内检查公网路径；两处均使用随机无效测试凭据，不注册 Host / App、不读取真实
 凭据、不改写用户会话。HTTP 健康但拒绝现有 18 的候选因此不能切入生产。
 
-本地 lint、TypeScript 检查、生产构建及 protocol / Relay / E2E / Host Relay
-相关 247 项测试通过。将 Relay 临时换回修复前实现时，新增 Host18 / App18
-回归如期失败，修复源文件已按哈希恢复。直接加载本机已安装 Host 0.1.13 的
-未修改 Relay client、protocol18 和 E2E 模块，以隔离凭据分别对接 App 18 / 19
-外层：认证、完整握手、旧 schema 的 ready / 请求 / 回执与协议18二进制往返均
-通过，请求 ID 保持且仅执行一次；本轮未连接用户 Host 配置或真实模型进程。
+第二阶段本地247项与未修改旧Host模块隔离验证有通过 / 负对照证据，原始目录见上；它们只证明所测传输与协议链，不代替第三阶段业务 / 旧App / 用户验收。
 
 ## 第三阶段：Relay＋Host 保留旧 App（2026-11-05）
 
@@ -165,13 +143,4 @@ Host 0.1.15 的双向业务适配已在隔离工作树 `codex/host-protocol18-19
 
 ### 当前验证记录
 
-- TypeScript、ESLint、生产构建通过。全量 Node 166 文件、1762 项通过，5 项原有 Windows / DSH 平台条件跳过；未删除或放宽既有断言。首轮官网探针等待 ready 超时，已补齐已发布手机端原有的 HS3 后 LAN 刷新；失败原文保留。
-- 兼容相关 110 项通过；另以未修改的已安装 Host 0.1.14 的完整协议18 schema / E2E 模块作为独立解析与加密 oracle，覆盖 Relay / LAN、首次非法请求、双版本并用、外层与业务版本相反、路径切换、重新握手、通知、execution 投影、历史同步、原命令 / sync ID 回执、文件上传下载和完成后的拒绝。该隔离模块验证不等同于实际手机包验收，来源 SHA-256 见证据。
-- macOS arm64 Qt 原生五个测试目标、独立目录启动 / 退出、0.1.15 版本信息与签名验证通过；实际包内 runtime 对接未修改协议18 schema / E2E模块的七项互通测试通过。90个 Mach-O 文件未发现丢失的绝对库依赖；三个未使用且依赖本地缺失厂商库的可选 SQL 驱动迁出包并留存证据。保留未修改的 0.1.14 回退副本。产物为未公证的本机预览，未替换 `/Applications/OrbisHost.app`、未重启用户 Host。
-- 未改变 App 源码或要求安装0.1.54。固定共享模拟器 `Orbis_UI_Polish_35` 上，未修改的0.1.53 / versionCode54 Debug APK与其原始instrumentation包完成隔离配对及Host状态接收，1 / 1通过；APK SHA-256为 `4c43ecad1e3630653ebaabdc51f75497f5215c295b9628ec1dd96d1855d1edda`，Android Debug签名核验通过。该包来自第一阶段导入基线，原DEX的 `RelayClientKt.PROTOCOL_VERSION` 已确认是19，不宣称就是用户手机上的同名包。原设备未安装这两个包，测试后移除并核对恢复为原状态；设置、模拟器、私有ADB与租约均核验释放。真实用户手机原包、旧iOS包设备联动、双端完整 L1–L4 / C01–C18 / A1–A4、Windows 与 macOS x64、真实模型操作和升级 / 回退既有配对门禁仍需补齐。另保存原版0.1.52 / versionCode53、DEX协议18的APK和instrumentation包；其设备联动排队300秒后超时，未实际执行，阻塞为另一NQ-14 Android回归任务占用共享单台设备，不能算通过。对应result / cleanup已记录，无资源残留。前述模拟器专项与 Node 单测不能代替这些未完成项。
-
-完整测试、保留的初轮失败、模块来源、构建 / 清理记录与产物见 `.artifacts/ui-regression/20261105-relay-host-compatibility/summary.md`。
-
-协议 18 原包设备补验：首次排队超时后，原版 Android 0.1.52 / versionCode 53 在同一固定模拟器上对接实际打包的 Host 0.1.15 runtime，隔离配对、加密通道与 Host 状态接收 1 / 1 通过。原包与 instrumentation SHA-256 保留，未重编译手机包。测试后恢复原本未安装这两个包的状态，六项系统设置恢复；ADB、emulator 与租约清理无错误，证据为 `old18/old-apk-result.json` 和 `old18-device-r3/`。本条更新前段首次队列超时的设备状态，其失败证据继续保留；完整 UI、真实用户既有配对及旧 iOS 门禁仍未验收。
-
-第二阶段 Relay `8601e6508523` 已上线；2026-11-05 现场确认 Host 0.1.14（协议 18）显示已连接，但用户手机 0.1.53 仍收到业务协议拒绝。因此前两阶段的单测、Relay 公网探测与新 Android 0.1.54 的结果，均不作为第三阶段“旧 App 无须升级”的验收证据。本轮已实施 §6 适配并补齐隔离互通，仍按 Verification 与 R64 保留未完成的设备及真实旧包验证。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

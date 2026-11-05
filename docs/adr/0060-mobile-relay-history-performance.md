@@ -4,7 +4,7 @@
 
 Status: accepted（用户要求先写 ADR 再实施；实现与设备验收分别记录，未验收不记为交付）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) r35 的 S08、S10–S11、M03–M05、M07–M08、V01–V05、V09–V10、V13–V20；[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0039](0039-content-change-signals.md)、[ADR-0040](0040-bounded-inbound-delivery.md)、[ADR-0044](0044-bounded-codex-live-publish.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0058](0058-shared-interaction-motion.md)。验证入口：[UI 回归方案](../testing/ui-regression.md) R57。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) r35 的 S08、S10–S11、M03–M05、M07–M08、V01–V05、V09–V10、V13–V20；[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0039](0039-content-change-signals.md)、[ADR-0040](0040-bounded-inbound-delivery.md)、[ADR-0044](0044-bounded-codex-live-publish.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0058](0058-shared-interaction-motion.md)。验证入口：[UI 回归方案](../../AGENTS.md#测试) R57。
 
 ## Context
 
@@ -51,53 +51,11 @@ UI 状态仍由原主线程拥有者提交；独立 Task 不自动代表后台�
 
 ## Verification
 
-### 自动与性能专项
-
-- PERF-01：加密分片、跨通道、防重放、无效路由 / 密文、握手、重连及旧代次响应；用确定性的 worker 阻塞探针验证 MainActor 仍能执行任务，不用单次墙钟耗时当作正确性断言。
-- PERF-02：长历史下多次纯 live 更新复用历史读取；新增条目、同 ID 修正、display / timing 变化、分支、epoch、压缩窗口、失败提交与跨 Host 均不复用旧结果；断言实际回读 / 覆盖检查次数并记录可重复的耗时样本。
-- PERF-03/04：非尾部内容变化、工具结果迟到、live / persisted 对账、轮次边界、最近提问、复制全文和原行身份；短 / 长会话结果等价，记录操作数或基准而非不稳定的硬毫秒门槛。
-- PERF-05：既有 reducer 全量，加上工具物化与历史响应组合；解析次数由实际入口探针或结构性回归验证，不以删除分支换性能。
-- PERF-06：隔离夹具分别覆盖短 / 长历史、实时输出 / 静止、正常 / 限速中继与重连；只记录包长、事件数、队列、阶段耗时和内存，不记录聊天正文 / 密钥。分别报告网络等待、消费等待和 UI 停顿。
-
-### UI 回归与门禁
-
-按 UI 回归方案执行双端 L0–L4、C01–C18、R57 及受影响专项、A1–A4；使用共享池独占设备和固定构建目录租约。覆盖初次进入、上翻补页、正在上翻时新回复、展开 / 复制、回到最新、发送 / 对账、工具交接、重连、切会话 / Host、分支 / 历史改写及明暗 / 大字 / 减少动画。
-
-同设备、同配置与基点对照失败集合，证据保存 `.artifacts/ui-regression/20261102-relay-history-performance/`。单测 / 构建 / 定向通过不代表设备全量通过；现场真机卡死未复现时必须明示，不用模拟器性能数字替代真机结论。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 实施与验证记录
 
-- 2026-11-02：先登记本 ADR、基线关联与 R57；PERF-01–PERF-06 均待实施 / 验证。未修改 UI 参数或 wire 协议，未认定现场卡死根因。
-- 2026-11-02 代码阶段：PERF-01 将 Relay / LAN 入站解码、分片重组和认证移入串行 actor，沿原队列递交已解码事件及原始字节；PERF-02 只缓存一个已提交的有界历史页，live-only 提交仍写入来源元数据，条目、显示、计时、分支与事务失败保守失效；PERF-03 已将批量消息替换 / 删除改为索引更新，并跳过无工具清单的完整扫描与相同 `isSyncing` 发布，`ChatTranscript` 在消息实际变化时仍全量重建；PERF-04 的旧轮次查找改为按首消息 ID 建索引并在重复键时保留旧匹配顺序；PERF-05 的 reducer 内部只解析一次入站 JSON，工具补充直接传 `JsonObject`。上述均为内部改动，设备门禁未完成。
-- 2026-11-02 自动阶段：iOS Swift 345 项 / 33 suites 通过；3000 条历史的 20 次纯 live 提交，基点 / 候选本机各一次样本约 291 / 11 ms，候选额外历史页读取 0、覆盖检查 0、已提交页命中 20（计数是主要证据，耗时不作为 UI 帧率或真机结论）。Android 基点 JVM 669 项、候选 671 项均无失败，两端 Debug / 测试包构建通过。iOS 同设备基点、修订前候选及最终代码全量均为 83 项中 77 通过、同 6 项失败，候选没有新增失败；其中长聊天工具展开与最近提问阅读锚点是本次受影响用例，仍未全过。Android 池内模拟器在私有 / 系统 ADB 端口及 iOS 停跑后仍在安装或首项测试前中断，未形成有效全量结果；均在核实进程与端口后释放本任务锁。已审阅 iOS 5 张相关截图与基点并排图，完整 L4、C01–C18、R57、A1–A4 和 PERF-06 限速中继 / 真机队列与内存采样尚未完成；详见 `.artifacts/ui-regression/20261102-relay-history-performance/summary.md`。不能据此认定现场 iOS 卡死已消失或本 ADR 完整验收。
-
-- 2026-11-03 Android 设备恢复：旧运行器 ADB 的 5037 / 5123 配置不一致，本机既有 ADB 崩溃栈另指向 mDNS 服务名解析；统一任务端口、设置 `ADB_MDNS=0` 并排除 USB 真机后，池内 API 35 完成同设备基点 / 候选全量：各 170 项，159 通过、同 4 项失败、同 7 项外部夹具 assumption，无新增失败，全程未断连。工具连续性截图差异另以两版各两轮原用例复核，每轮 2 / 2 通过，最终画面一致；首轮差异图与上一阶段 PNG 完全相同，支持旧 surface 帧捕获解释，原证据保留。Android 设备对照阻塞已解除，但既有失败、7 项外部夹具、完整 L4 / 人工 / 弱网真机门禁仍未完成。恢复流程与证据见 `.artifacts/ui-regression/20261102-relay-history-performance/android-recovery.md`；没有为恢复模拟器修改 App 代码、测试断言或 SDK 版本。
-
-- 2026-11-03 补充验收：使用原保存包及相同 iOS 测试驱动，池内同一 iPhone 17 相关 11 项，基点 7 通过 / 4 失败，候选 8 通过 / 3 失败；候选仍有长聊天工具展开、两项最近提问失败，失败名称未超出本次基点，具体阶段差异保留。Android 同一 API 35 补跑真实加密 / SQLite 的 400 条历史、首响应 10 秒 / 32 KiB/s 夹具：两版完成路径均在预期 7 / 实际 15 请求断言失败；预存 200 条未带 source epoch，新代次按原规则清缓存，不能据此证明同代次缓存恢复。候选 Pi 首轮 90 秒超时，同设备关闭旁路采样后两版均补齐 400 条并停在相同请求数断言，首轮未作废。压缩 / 失败 / 产物投影两版各 1 / 1；工具详情两版均被 fixture 的 `fixture_inventory_rejected` 阻塞，已在无设备时独立复现。实际 fixture 依赖闭包 46 个模块与基点源码重建产物一致。已审阅本轮 iOS 13 / 14 张 PNG 与 Android 有效完成画面，Pi 复测和 Codex 两版截图各自字节一致；首轮候选 Pi 遗留截图明确排除。完整 C01–C18、L4、A1–A4、实时限速 / 队列年龄和 iOS 真机卡死仍未验收，不能认定本 ADR 交付。证据及资源释放见 `.artifacts/ui-regression/20261103-relay-history-acceptance/summary.md`。本轮没有改动 App 源码或原测试断言，没有部署。
-
-## 2026-11-04 传输专项
-
-[ADR-0065](0065-native-quic-relay-transport.md) 独立验证手机到 Relay 的 QUIC 承载（R67）。本 ADR 的消费端 / 主线程优化和 R57 未完成门禁保持；QUIC 性能不得冒充长会话 UI 优化验收，WS 经同机 Hysteria 2 的用户体验属于对照线索。
-
-同日[文档与业务复核](../architecture/native-quic-transport-review.md) 修订 QUIC 为三通道映射、Go 原生调度；当前代码仍是单流候选。多流接收必须保持本 ADR 的每路径 worker 独占 / 代次隔离和通道内 FIFO，不能用并发解密破坏高水位语义，也不提高现有 UI 门禁状态。epoch / bootstrap 屏障与 Apple 上行调度尚待完成，见 Q07–Q10。
-
-同日[历史 ADR 故障审查](../architecture/native-quic-transport-lessons.md)补充 Q11–Q13：接收过载曾引发 OOM / 重连循环，来源累计 live 与 WS 节拍也曾分别造成排队和快网吞吐回退。QUIC 须保持本 ADR 的消费端优化和错误 / 归属语义，分别测网络、解码、SQLite 与 UI；先复用已有准入 / mux / 预算，以对照测试定位必要的边界修改，不预设新的信用协议或全链路预算重构。该审查不重跑或提升 R57 既有结果。
-
-可切换设计按 ADR-0065 §3 / Q14：Relay 专属生命周期保留 LAN / 多 Host 隔离，候选准备不改变当前业务连接，退休后重建当前 Relay 的解码 / E2E 拥有者；旧任务提交前仍验证归属。真实 WS / QUIC 单流对照与服务端交接回归通过不代表本 ADR 的手机消费 / UI 门禁完成。
-
-原功能回归按 [R67 功能矩阵](../testing/native-quic-functional-regression.md)执行；原 HostService 业务套件 WS / QUIC 模式各 54/54 是业务集成层结果，不代替本 ADR 的实际手机历史落库 / applied、阅读锚点、消费成本和 UI 验收。
-
-2026-11-04 按 [NQ tickets](../agents/native-quic-tickets.md) 实施，NQ-01 只接入双端传输共用接口与首次连接模式；未调整本文解码 / 消费 / SQLite 预算，未完成的 R57 / R67 设备与现场门禁保持。
-
-2026-11-04 R67 v2 实施：原生 QUIC 按 ctl/msg/bulk 拆为同连接三流，仍复用本 ADR 的来源减量、worker、消费预算和 UI 规则。每 Host 模式与 Relay-only 切换已接入；WS 默认及既有 LAN 优先保持。Android 693/693、Swift 370/370、HostService 原 54 项加 3 项交接、两承载各 57/57 的本机结果不作为真机性能结论；设备与 Q06/Q12/完整 Q13 待验，见 ADR-0065 / tickets。
-
-2026-11-04 NQ-13 按 ADR-0065 §10 试验当前聊天 / 后台历史隔离：preview/live 保持 msg，显式 background 的 Relay catchup 用 bulk，手动 history 保持 msg；源版本、SQLite applied、消息身份和消费预算保持。历史 data 溢出需走同步恢复，不能套文件静默丢片。受控夹具与真机分开验收，见 [试验方案](../testing/native-quic-chat-history-isolation.md)。
-
-本轮[结果报告](../testing/native-quic-chat-history-results-20261104.md)：受控三轮确认后台阻塞时 msg / ctl 继续到达且历史恢复后完整；两段 QUIC 的公网诊断 msg p95 中位数 6.022→0.569 秒，后台 goodput 中位数 6.82→1.15 Mbit/s。仅后台 catchup 进入显式试验，首屏 / 手动 history 保留前台；两端原自动套件无新增失败，但既有阅读相关失败仍在。Mac 参考端的诊断结果不代替实际手机、Agent、SQLite 或显示测量；R57 / R67 完整门禁不提升，默认 WS/shared 保持。
-
-2026-11-05 NQ-14：依 ADR-0065 §11 将 history / catchup / bulk 分开，原消息 / SQLite applied / 来源依赖与阅读锚点保持，新增通道共用原历史预算。用户要求本轮仅做[功能回归](../testing/native-quic-five-stream-functional-regression.md)，不再测速；不以拆流声明本 ADR 的真机停更或完整 R57 门禁已经解决。
-
-五流实现、核心功能通过、Android 同设备原套件无新增失败及 iOS 设备边界见[本轮结果](../testing/native-quic-five-stream-results-20261105.md)。原 53 个设备用例源码文件保留，既有慢同步失败与未满足真实环境前提如实记录；不将传输功能验证等同于本 ADR 的现场 / UI 全部门禁。
+[根部测试约束](../../AGENTS.md#测试)；[DrawerCatalogWorkerTest.kt](../../android/app/src/test/java/com/orbising/orbis/DrawerCatalogWorkerTest.kt)；[DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)。
 
 ## 2026-11-05：Android 侧边栏滚动（PERF-07，验证中）
 
@@ -127,3 +85,12 @@ PERF-07执行状态统一见UI回归§6与本任务`summary.md`、`physical/summ
 [根部测试约束](../../AGENTS.md#测试)；[DrawerCatalogWorkerTest.kt](../../android/app/src/test/java/com/orbising/orbis/DrawerCatalogWorkerTest.kt)；[DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)。
 
 目录分组、排序、筛选与统计由 `DrawerCatalogWorker` 在 `Dispatchers.Default` 串行处理，按行事实复用目录与标题派生；发布前核对 Host、筛选和捕获的语言，释放失效历史引用。`HostConnection` 先在 IO 中完成目录、下载、上传、迁移及等待草稿水合，再连接；关闭时取消启动任务。保留既有材质、动效和阅读位置。实现见 [DrawerCatalogWorker.kt](../../android/app/src/main/java/com/orbising/orbis/DrawerCatalogWorker.kt)、[DrawerCatalogCache.kt](../../android/app/src/main/java/com/orbising/orbis/DrawerCatalogCache.kt)、[HostCacheStartup.kt](../../android/app/src/main/java/com/orbising/orbis/HostCacheStartup.kt)；证据 `.artifacts/ui-regression/20261105-drawer-background/summary.md`，真机体感待用户验证。
+
+### 原生QUIC与五流隔离（ADR-0065 / R67）
+
+Host↔Relay↔手机两段可分别选择ws/quic/auto，默认WS/shared；显式background且通过能力认证后按ctl > msg > history > catchup > bulk隔离，旧端 / 未协商沿用原三通道，LAN不启用扩展。原Host同步12MiB、Go共享会话32MiB及手机原队列总预算保持，history/catchup不各自扩容；独立序号追加槽位，旧槽位不变。首次ctl只读引导兼容ADR-0064的业务版本绑定；保持消息 / source / applied、未知操作、阅读与文件恢复语义。
+
+本专项功能回归覆盖原配对、目录、消息 / 状态、历史 / 同步、详情 / 文件、LAN、两端承载切换、重连和旧18/19。测试结果及边界见[主分支集成报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)、[五流功能报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)；历史公网测量见该报告引用，不能外推手机卡顿已解决。按用户要求本轮不再测速，完整设备 / 人工与现场状态不提升。
+
+
+最终合并版本验证（2026-11-05）：`integrated-final-packages` JVM共748项，747通过、0失败、1既有Host18条件跳过；Debug / AndroidTest / 正式签名Release构建通过。相同池内API35的 `integrated-device` 15/15通过：异步首载 / 显式收起、连续60次正文 / 状态后几何与点击、Host / 搜索隔离、首页加载、侧栏布局、3项阅读视口、3项归档选择、3项provider筛选和960会话滚动。构建后源码哈希未变，版本0.1.54/55，最终APK SHA-256 `fb99707c28485b5b405fdb062e42142f24b554703fc6e79509ba292a1699a02b`；发布签名校验通过、混淆映射保留。四次设备会话设置恢复 / 关闭，所有本任务构建进程与Go / Java / 私有ADB / emulator均退出、端口无监听、租约按owner核验释放；证据 `.artifacts/ui-regression/20261105-drawer-background/final-resource-audit.json`。未执行用户真机体感 / 完整人工 / 真实Host流量门禁，保持待用户验证。

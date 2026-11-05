@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r24 整页导航（M07、M08、M14、V17、V18）
 package com.orbising.orbis
 
 import android.app.Application

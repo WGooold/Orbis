@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 下载 / 文件（S09、S15、S20、S21、M13、V19）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

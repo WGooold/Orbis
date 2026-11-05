@@ -86,18 +86,4 @@ Web runtime 不读取本地 sessions 目录作为会话来源；会话目录和�
 
 ## 验证
 
-使用 Windows 工具链；先构建，再跑测试，避免清理 `dist` 与运行时测试并发：
-
-```powershell
-npm run build
-npm run typecheck
-npm run lint
-npm test
-node scripts/test-dsh.mjs
-```
-
-`node scripts/test-dsh-web.mjs` 调用已安装的真实 dsh，但创建独立临时 `DSH_HOME` 和工作目录，模型请求仅发往本机回环测试服务，不消费真实 API 额度。它验证 Web URL/token、Host 只接入正在工作的实例而空闲实例留在会话目录、网页里开始的会话自动接入、冷历史在发现和读取时保持未激活、网页与 APP 适配器的双向消息、归档及取消归档、实时 token/tool 流、队列撤回、session cancel、工具 round-trip，以及同一进程中供应商 URL/API Key 切换后的真实请求。测试不会修改用户已有 dsh 会话或凭据。
-
-Host 单元测试另外覆盖旧 ACP 兼容层的分包、超时、无效帧、停止竞态、加密命令路由，以及 Web runtime 的审批会话归属、有界历史同步、历史树投影（角色、细节折叠、窗口边界）与 `/tree` 的 `session/fork` 切点、原文回传和新分支接入。Android 的 `DshIdentityTest` 验证品牌和缓存身份，`DshInstrumentedTest` 验证新建入口与审批操作，`HistoryTreeTest` 验证线性历史成行、分支结果解析。Android 构建、安装与模拟器使用遵守仓库规定的 Windows 脚本和资源锁。
-
-功能启用前应同步更新桌面 Host 与 Android。正式发布的 Protocol/Relay 构建仍通过 `main` 的 Relay deploy 工作流，不使用本机部署入口。
+[测试规则](../AGENTS.md#测试)；[DshIdentityTest.kt](../android/app/src/test/java/com/orbising/orbis/DshIdentityTest.kt)；[HistoryTreeTest.kt](../android/app/src/test/java/com/orbising/orbis/HistoryTreeTest.kt)；[DshInstrumentedTest.kt](../android/app/src/androidTest/java/com/orbising/orbis/DshInstrumentedTest.kt)；[原始证据](../.artifacts/)。

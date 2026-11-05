@@ -28,6 +28,4 @@ The existing raw `permissions` metadata remains available for diagnostics and ex
 
 ## Consequences and verification
 
-Adding a permission-capable backend requires a backend adapter and does not require phone-specific mappings. Native semantics, explanatory text, and supported options have one computer-side source. APP and Host must be updated together for the new command; missing management metadata never implies full access.
-
-Tests cover permission projection, option validation, confirmed updates, native failures, busy and concurrent requests, stale native state, and mobile rendering of opaque settings. TypeScript type checks and Android compilation verify the protocol and client changes. Updating a running Host remains a separate explicitly authorized operation.
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

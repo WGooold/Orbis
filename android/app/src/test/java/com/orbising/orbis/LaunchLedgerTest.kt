@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-08 `launch`（V12、V10）（V12、V10）
 package com.orbising.orbis
 
 import org.junit.Assert.assertEquals

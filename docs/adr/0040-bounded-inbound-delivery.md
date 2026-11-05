@@ -91,5 +91,4 @@ Host 的 `session.sync` 响应里带 `interaction.snapshot` 与会话状态，�
 
 ## Verification
 
-- 单测（`InboundFrameLanesTest`）：分类只看 channel；`msg` 超预算丢最旧且最新帧仍在；`ctl` 超预算记录丢帧且不进入失败字段；`bulk` 超预算丢片；关闭后 `offer` 返回 false 且不增长；丢帧计数只被消费一次。
-- 设备：长会话流式输出 10 分钟不 OOM；`dumpsys meminfo` 的 PSS 不再逼近 1GB；堆转储中 `InteractiveFrame` 数量不超过预算；`inbound.overflow` 出现后 3 秒内必有对应 runtime 的 `session.sync.send`。
+[测试规则](../../AGENTS.md#测试)；[InboundFrameLanesTest.kt](../../android/app/src/test/java/com/orbising/orbis/InboundFrameLanesTest.kt)；[原始证据](../../.artifacts/)。

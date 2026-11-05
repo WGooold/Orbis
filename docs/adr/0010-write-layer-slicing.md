@@ -137,23 +137,4 @@ Host 与 Android 同时重组的消息条数由 4 提到 16，以容纳四个活
 
 ## Verification
 
-- 协议片层（`packages/protocol/src/piece.test.ts`）：大信封切片后逐字节还原、小消息不切、
-  乱序与重传幂等、`mid` 冲突整条丢弃、并发/字节上限、超时丢弃、片帧不可再切。
-- 多路复用器（`outbound-mux.test.ts`）：写被拒时留在队首重试且顺序不乱，重试耗尽才放弃上报；
-  `pumpIntervalMs` 非法值退回默认节拍（`NaN` 会被 `setTimeout` 当成 1 ms 空转）——最后这条用
-  **写被拒**制造阻塞，因为被水位挡住走的是另一个、本来就更密的节拍（见上一节）。
-- **节拍本身没有测试钉住**，这是刻意的：它是可由判据推导、并可由实测微调的参数，钉死一个数
-  只会让下一次调整多一道与行为无关的假红。复核靠 本地节拍探针（历史诊断脚本，未随源码发布）。
-- **验收指标的写法要改**：ADR-0010 与 ADR-0005 记的是「88 MB 下载期间 `ctl` / `msg` 的 P95
-  延迟 ≤ 空闲基线的 2 倍」，**这条判据立不住**——下载本来就在占满链路，控制帧必须与已经交给
-  socket 的那点字节共享同一条管道；1 Mbit/s 下切片后的 532 ms 对空闲基线（≈0.5 ms）是 1000 倍，
-  永远不可能 ≤2×。可判的是**绝对上界** `(水位 + 一件) / 带宽`：1 Mbit/s ≈0.55 s、5 Mbit/s
-  ≈0.11 s、50 Mbit/s ≈11 ms（复核实测与这三个数一致）。真机实测仍要做，但要按绝对上界判。
-- Host `DeviceLink`（`device-link.test.ts`）：一条 1 MiB 分片现在由多片交付；控制帧越过排队的
-  `bulk` 当场出去；**一次写出的字节数 < 9 KiB**、控制帧前面 ≤ `bulk` 水位 + 一件（票 03 验收的
-  算术前提）。
-- Android `EnvelopePiecesTest`：同样的契约与边界（两端各实现一份，必须逐条对齐）。
-- 中继（`relay.test.ts`）：片帧按 `hdr.to` 原样转发、不改写 `ct`——若有人给中继加「重组后转发」
-  会立刻红。
-- **仍未做的实测**：88 MB 下载期间 `ctl` / `msg` 的延迟（真机弱链路，不是单测能替代的）——
-  按上面那条**绝对上界**判，不要按 ADR-0010 原文的「≤ 空闲基线 2 倍」判。
+[测试规则](../../AGENTS.md#测试)；[piece.test.ts](../../packages/protocol/src/piece.test.ts)；[relay.test.ts](../../packages/relay/src/relay.test.ts)；[device-link.test.ts](../../packages/host/src/device-link.test.ts)；[outbound-mux.test.ts](../../packages/protocol/src/outbound-mux.test.ts)；[EnvelopePiecesTest.kt](../../android/app/src/test/java/com/orbising/orbis/EnvelopePiecesTest.kt)；[原始证据](../../.artifacts/)。

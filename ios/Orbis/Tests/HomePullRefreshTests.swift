@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 首页下拉刷新（M15、S18、V21）
 import CoreGraphics
 import Testing
 @testable import OrbisCore

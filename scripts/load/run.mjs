@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - Relay 路由 / 队列 / WebSocket 压测；不覆盖 App E2E 加密、Host 业务或移动 UI。入口 npm run load:smoke / load:capacity / load:soak；参数 --config / --scenario / --duration，结果交给 report.mjs。
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";

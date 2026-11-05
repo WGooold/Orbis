@@ -61,18 +61,4 @@ APP 显式重试强制完整恢复；普通周期核对允许条件响应。断�
 
 ## Verification
 
-- 无变化时 Entries/live 正文传输为零；大 live 正文不因 unchanged 占用页面预算。
-- 同 head 的正文/工具/完成变化返回 state；丢结束事件也可恢复。
-- 少量纯追加只发送缺失后缀；分支改变、新 epoch、超预算、未 ready 和未知 inventory 均安全恢复。
-- 未来/缺口 patch、SQLite 失败、重启未建立基线不能被报告为已应用版本。
-- 请求后新 patch、缺口、回退或换会话，迟到 unchanged 不清除更新或待恢复状态。
-- retry 使用固定 knownState，参数改变复用任务 ID 被 Host 拒绝。
-- history/catchup、running sync 和原生 revert 核对原有测试继续通过。
-
-### 实施与验证记录（2026-10-10）
-
-- 已完成协议 11 的共享响应选择器、Host 任务参数固定、RuntimeBridge 转发及 Android 已应用基线/事务接入。Codex 为首阶段条件响应生产方；2026-10-10 Pi/DSH 接入同一 source 契约后也可返回 unchanged/state/delta。Pi 每次 preview 核对 SessionManager；DSH 到期重新读取原生 follow opening，无变化核对不推进 seq。接入验证和当前协议版本见 ADR-0024。
-- Windows workspace build、typecheck、lint 通过；`npm test -- --maxWorkers=2` 全量通过 85 个文件、837 项测试。覆盖相同版本确认、live 变化、纯追加、预算回退、固定重试参数及先核对 Codex 原生历史再确认 unchanged。
-- Android Windows 构建完成，368 项单测通过；模拟器上 36 项真实 SQLite instrumentation 测试通过，其中 5 项验证条件响应。覆盖 unchanged 不写库、delta 事务提交、过期请求/unknown 边界拒绝写入及断链 delta 不推进版本。模拟器和构建 daemon 已关闭，占用已释放。
-- 以构建后的选择器和每条 1,000 字符的合成 Entry 测量响应 JSON：30 条 snapshot 为 33,907 bytes，unchanged 为 420 bytes，空 live 的 state 为 478 bytes，3 条 delta 为 3,825 bytes。这是合成数据的序列化大小，不代表实际加密网络流量。
-- 最新 App APK 与测试 APK、校验清单和设备测试日志存于 `.artifacts/app/`，构建 ID 为 `9600b73d-3bc2-45a8-bca2-337db524f2d4`。本次未替换或重启用户 Host，未 push 或部署 Relay；协议 11 需 Host/APP/Relay 协调升级后才能在用户环境生效。Codex 原生核对已通过测试桩验证，真实桌面 GUI 跨端手动验收尚待进行。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

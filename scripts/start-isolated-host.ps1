@@ -30,7 +30,7 @@
   等待「已就绪」的超时，默认 60 秒。
 
 .EXAMPLE
-  pwsh -File docs\testing\isolated-host\start-isolated-host.ps1 -Dsh
+  pwsh -File scripts\start-isolated-host.ps1 -Dsh
 #>
 [CmdletBinding()]
 param(
@@ -43,7 +43,7 @@ param(
     [int]$ReadyTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $RigRoot) { $RigRoot = Join-Path $repo '.scratch\isolated-host' }
 $stateDir = Join-Path $RigRoot 'state'
 $logDir = Join-Path $RigRoot 'logs'

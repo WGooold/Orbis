@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r15 设置与入口（S18、S22、S23、S25）
 package com.orbising.orbis
 
 import android.app.Application

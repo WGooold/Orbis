@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r15 下载飞入（M16）
 package com.orbising.orbis
 
 import android.animation.ValueAnimator

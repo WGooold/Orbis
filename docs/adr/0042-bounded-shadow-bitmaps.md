@@ -16,7 +16,7 @@ Status: accepted（2026-10-23 实现并真机验证：`RenderTarget` 从 186–2
 - 修复 Java 堆之前，同一增长路径最终到 440MB（578 个渲染目标），进程 PSS 1.2GB 被系统 SIGKILL。
 
 `1536x512` 约等于一张聊天卡片的像素尺寸，而卡片上唯一会产生离屏纹理的绘制就是新拟物柔影：
-[Neumorph.kt](../android/app/src/main/java/com/orbising/orbis/Neumorph.kt) 的 `drawOuterBlur` / `drawInnerBlur`
+[Neumorph.kt](../../android/app/src/main/java/com/orbising/orbis/Neumorph.kt) 的 `drawOuterBlur` / `drawInnerBlur`
 把带 `BlurMaskFilter` 的 `Paint` 直接画在硬件加速的 `Canvas` 上。每个 `NeumorphSurface` 每帧画两次模糊
 （dark + light），而 HWUI 为模糊生成的是**蒙版纹理**；卡片尺寸随内容变化，缓存键不断变化，纹理只增不减。
 
@@ -55,11 +55,4 @@ Status: accepted（2026-10-23 实现并真机验证：`RenderTarget` 从 186–2
 
 ## Verification
 
-- 设备实测（Redmi 2407FRK8EC，同一会话滚动 24 次后）：
-  - `RenderTarget`：改前 186–251MB（254–578 个）→ 改后 9.25–19.55MB（14–17 个）；
-  - `GL mtrack`：改前 226–290MB → 改后 31–42MB；
-  - `PSS`：改前 610–816MB → 改后 346–366MB；
-  - `Dalvik Heap`：14–32MB（ADR-0040 生效后）。
-- 外观：同一列表页改前/改后截图逐像素对比（卡片区域），平均差 0.033/255、最大 16（文字抗锯齿），
-  柔影颜色、扩散范围、圆角一致。
-- 单元测试与 `:app:assembleDebug` 通过；长会话滚动无新 OOM/被杀记录。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

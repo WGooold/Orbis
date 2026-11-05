@@ -1,3 +1,7 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - MOT-06 / SC14–16（MOT-06、SC14、C05、C06、R37、M17、V09、V10）
+// - MOT-11 / SC33（MOT-11、SC33、R45、M08、M14）
+// - MOT-13 / SC35、MOT-15 / SC37（MOT-13、SC35、MOT-15、SC37、R47、R49、M20、M12、V13）
 package com.orbising.orbis
 
 import androidx.compose.ui.geometry.Offset

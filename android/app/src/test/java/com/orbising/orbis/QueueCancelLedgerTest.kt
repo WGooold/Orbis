@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-04 `queueCancel`（V22）（V22）
 package com.orbising.orbis
 
 import kotlinx.serialization.json.Json

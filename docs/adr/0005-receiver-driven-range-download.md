@@ -27,7 +27,7 @@
 - **发送方无状态**：Host 侧每条传输只保留 `{deviceId, artifact, path, cancelled}`，没有窗口、没有 ack、没有重试计数；同一 `read` 幂等重读重发。
 - **接收方调度**（`PullScheduler`）：进度唯一权威是 `durableOffset`（`.part` 连续前缀）；`highestIssued - durableOffset ≤ window` 恒成立；超时**只重请求丢失的那一个 chunk**；窗口用 AIMD 调整并由实测 BDP 定增长上限；有交互流量在途时把窗口压到 1 chunk（交互让路）。
 - **回程路径固定**：一次 `read` 的响应在收到该请求的那条路径上发完，跨路径不拆开一次响应。
-- Relay 不托管文件或主动推送，安全边界见 [ADR-0009](./0009-remove-computer-to-phone-push.md)。
+- Relay 不托管文件或主动推送，安全边界见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
 
 ## Consequences
 
@@ -48,7 +48,4 @@
 
 ## Verification
 
-- `PullScheduler` 注入时钟单测：窗口有界、只补洞、乱序不重复请求、AIMD 收缩与增长、交互让路、完成判定。
-- Host 端到端（真 Relay + 真 Host + 假设备）：只请求 `[2,6)` 就只回该段；越界回 `read.failed`；`done` 后同 transferId 的 `read` 不再回帧。
-- Reducer 单测：`artifact.started` 带 `mode:"pull"` 进入 pull，缺失时 `transferMode == null` 回退；`artifact.read.failed` 按 transferId 标失败。
-- 指标（待 ticket 04 实测）：88 MB 下完并校验 sha256；期间 `session.sync` P95 不超过空闲基线的 2 倍；中继 `bufferedAmount` 峰值 < 16 MiB；丢一片时重传字节 ≈ 1 MiB。**（其中「P95 ≤ 空闲基线 2 倍」已被 [ADR-0010](./0010-write-layer-slicing.md) 更正为绝对上界 `(水位 + 一件) / 带宽`——下载本来就在占满链路，控制帧必须与已交给 socket 的字节共用同一条管道，相对空闲基线的倍数没有上界。）**
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

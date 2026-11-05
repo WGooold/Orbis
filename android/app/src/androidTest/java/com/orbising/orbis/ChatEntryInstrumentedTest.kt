@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 转场（M07、M08、V13）
 package com.orbising.orbis
 
 import android.app.Application

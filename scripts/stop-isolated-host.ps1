@@ -18,7 +18,7 @@ param(
     [switch]$StopRelay
 )
 $ErrorActionPreference = 'Stop'
-$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $RigRoot) { $RigRoot = Join-Path $repo '.scratch\isolated-host' }
 $stateDir = Join-Path $RigRoot 'state'
 $pidFile = Join-Path $RigRoot 'logs\host.pid'

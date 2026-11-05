@@ -4,7 +4,7 @@
 
 状态：accepted（2026-10-27 已完成协议、四种后端、Host 与 Android 接入；构建和验收范围见实施记录。各运行环境的升级状态须单独核对）
 
-实施跟踪：[ticket 依赖与验收记录](../architecture/tool-content-implementation.md)，GitHub #16–#24。接受决策不代表生产运行路径已完成切换。
+实施跟踪：[ticket 依赖与验收记录](../../packages/host/src/tool-content-service.test.ts)，GitHub #16–#24。接受决策不代表生产运行路径已完成切换。
 
 关联：[ADR-0005](0005-receiver-driven-range-download.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0038](0038-wire-payload-truncation.md)、[ADR-0044](0044-bounded-codex-live-publish.md)
 
@@ -12,7 +12,7 @@
 
 ### 实施前已确认的实现与问题
 
-以下记录本决定之前的代码行为；本地新实现已替换工具载荷路径，具体符号和验证见[实施记录](../architecture/tool-content-implementation.md)。
+以下记录本决定之前的代码行为；本地新实现已替换工具载荷路径，具体符号和验证见[实施记录](../../packages/host/src/tool-content-service.test.ts)。
 
 1. Codex 的 `liveMessages` 和 `liveTools` 分别保存工具调用消息和工具状态，`#liveCheckpoint` 将两者完整放入 `session.patch`。参数可能同时出现在消息的 `tool_call.arguments` 和工具的 `detail.arguments`；输出增量累计到 `detail.output`。对应实现为 [`codex-runtime.ts`](../../packages/host/src/codex-runtime.ts) 的 `#handleNotification`、`#liveCheckpoint`、`#publishSourcePatch`。
 2. Codex `#completeItem` 按原始 item 顺序提交历史。前序 item 未完成时，后续已完成工具仍属于 live。该规则保证实时构造与历史重建的顺序和 parent 一致，但完整参数与结果因此可能长期留在每份 live checkpoint 中。
@@ -210,20 +210,4 @@ Codex 历史详情读取首批采用 full turns 整页 RPC，按最近 turn 向�
 
 ## Implementation and verification
 
-实施顺序：先定义 schema、内容身份/版本、预算及迁移；再实现统一 adapter 内容接口和摘要生成；接入 Host 模型与有界读取；最后实现 App 工具活动、详情与缓存，并协调切换协议。不得只改 App 外观后宣布解决带宽问题。
-
-必须覆盖以下验收，结果分别记录为模拟测试、真实后端测试和设备测试：
-
-1. Codex、codexDesktop、Pi、DSH 的正常、失败、取消及未知工具使用同一显示契约；新增后端不需要 App 解释原生 JSON。
-2. 单工具产生 10 MiB 输出、大型结构化参数和含媒体的 MCP 结果时，默认 patch/snapshot/历史页/loopback/Registry 中没有完整原文、base64 或双份参数；工具字段满足单项、累计及 envelope 预算。
-3. 复现前序未完成、后续 8 个及大量工具完成的情况：摘要可恢复且顺序正确，库存超单页时分页，不伪造完整、不漏工具；前序提交后历史与 live 原子切换。
-4. 用户不打开详情时没有原文范围请求；打开后只读请求范围，关闭、后台、切换或断线后停止；其他设备不收到详情，工具执行不受查看器取消影响。
-5. UTF-8 多字节、JSON 转义、超长单行、多字段 JSON 和二进制引用均满足实际 JSON 字节预算；结构化片段不被错误解析成完整 JSON。
-6. 固定版本读取遇到持续追加、最终结果替换、revert、Host/producer 重启、缓存淘汰和原生缺内容时，不混版拼接、不返回假空成功；缺口和失效明确。
-7. Pi 的消息结束早于落盘、DSH 的流式结束早于 canonical event、Codex 的工具乱序结束及 `aggregatedOutput` 均有真实形状 fixture；来源不支持按需全文时准确标明能力。
-8. 故意丢工具增量、延迟库存页、分页期间持续变化和缓冲溢出后，基线可恢复；详情错误不污染聊天 head、coverage、source seq 或 applied。
-9. 两设备同时查看、慢链路、停止读取、大结果导出及 busy 重试时，发送队列、临时磁盘和缓存占用均有界，聊天、审批和停止命令仍可处理。
-10. 旧缓存升级在事务失败与 App 重启后可恢复，不清配对数据；相同原生输入生成相同摘要、locator 和历史投影，不将临时读取身份写进 canonical Entry。
-11. 诊断记录按作用域分别统计摘要/正文/详情的实际字节、请求数、缓存命中、缺口、队列和存储上限命中；只记录身份和计数，不记录工具原文。以同一输入序列对比重构前后实际传输量，不从单一峰值推算固定节省比例。
-
-真实 Host/App 联动使用隔离 Host 测试台；用户当前 Host 的更新、停止或重启，以及 push、发版、部署分别遵守仓库授权约束。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

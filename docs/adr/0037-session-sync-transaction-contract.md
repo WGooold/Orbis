@@ -147,7 +147,4 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 
 ## 验证
 
-- 状态机测试：受理 → `pending` → abort → 重试 → `committed`；ack 丢失后重试得到 `unchanged`。
-- 2026-11-02 回归：`session-sync-tasks.test.ts` 验证首次 ACK 终态、已提交请求不重派、响应前 / abort 后 ACK 忽略，以及 queued / processing 重派期间前次 ACK 仍有效；iOS `StoreTests` 验证新完整 baseline 替代旧 preview、不完整 baseline 的恢复提示及精确拒收回声过滤。旧 Host / iOS 实现回放新增用例均失败，修复后 Host 相关 91 项、iOS 338 项通过，App / UI Test 包构建通过。设备结果、R43 与手动未跑范围见 [UI 回归方案](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261102-session-sync-rejected/`；不据核心测试提升 UI 验收状态。
-- 不得回归 ADR-0013 的验收条款：延迟超窗、响应丢失、换路、离线设备、多设备、多 Runtime 下不形成重复响应积压；当前聊天能完成或显示可恢复错误。
-- 明确禁止的回归：任何路径不得让 `sessionSyncFailures` 之类的会话级字段阻止新事务受理。
+[测试规则](../../AGENTS.md#测试)；[StoreTests.swift](../../ios/Orbis/Tests/StoreTests.swift)；[session-sync-tasks.test.ts](../../packages/host/src/session-sync-tasks.test.ts)；[原始证据](../../.artifacts/)。

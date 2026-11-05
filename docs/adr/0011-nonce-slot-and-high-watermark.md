@@ -79,4 +79,4 @@ n <= last → 静默丢弃（返回 undefined/null + onStale 计数），不是�
 
 ## 2026-11-05 原生五流的显式扩展
 
-[ADR-0065 §11](0065-native-quic-relay-transport.md#11-history--catchup--bulk-独立五流2026-11-05) 在旧三槽位不变的前提下追加 history=4、catchup=5。只有已认证能力被双方接受的 E2E 会话可使用；HS1 与旧 MAC / 18 基础格式保持，未协商拒绝扩展 channel。每个 channel 独立计数 / 高水位，ch 仍进 AAD；没有重用 nonce、降低防重放或在一个计数域下并行拆流。LAN 与旧端保持原三通道。功能回归见[方案](../testing/native-quic-five-stream-functional-regression.md)，本轮不再性能测量。
+[ADR-0065 §11](0065-native-quic-relay-transport.md#11-history--catchup--bulk-独立五流2026-11-05) 在旧三槽位不变的前提下追加 history=4、catchup=5。只有已认证能力被双方接受的 E2E 会话可使用；HS1 与旧 MAC / 18 基础格式保持，未协商拒绝扩展 channel。每个 channel 独立计数 / 高水位，ch 仍进 AAD；没有重用 nonce、降低防重放或在一个计数域下并行拆流。LAN 与旧端保持原三通道。功能回归见[方案](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，本轮不再性能测量。

@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-01 `quit`（V11 r27）（V11）
 import Foundation
 import Testing
 @testable import OrbisCore

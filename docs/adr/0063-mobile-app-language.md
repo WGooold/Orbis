@@ -16,14 +16,8 @@ Status: accepted（用户授权整个 App；实施与设备验收分别记录）
 
 ## 影响与验证
 
-新增 S27；修订 S16、S19、S22；关联 S05、S08、S13、S25、M11、M20、V01–V03、V05–V08、V13。全端文案改动需执行既有双端 L1–L4、C01–C18、A1–A4，宽屏 A5，并比较同设备同配置基线。新增 R62：首次中文 / 英文 / 不支持语言启动、手动切换、重启持久化、回到系统、系统变化、窄屏长英文、辅助功能、保留草稿和原文。
-
-单元测试覆盖语言解析、偏好回退、模板参数、双端目录一致性、Host UI 文案与不透明参数；设备测试覆盖设置选项、全局即时切换、导航 / 草稿保留，以及英文权限操作仍发送原 setting / option 身份。运行记录见 `.artifacts/ui-regression/20261104-app-language/summary.md`；设备阻塞不能记为验收通过。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 2026-11-04 实施记录（验证中）
 
-共享目录 1,481 条、iOS 核心 374 / 374、Android JVM 703 / 703 与双端 App / UI 测试包构建通过。用户追加模拟器测试后已实际完成同设备基线 / 候选全量；此前排队阻塞只作历史记录。画面发现并修复 iOS SE 英文历史标题单行截断、Android 权限等待按钮在 1.5 字体下截断；最终生产 App 上 iOS SE 和 iPad 语言专项各 3 / 3，Android 设置 A1–A4 整类共 32 / 32。系统语言启动、即时切换、重启持久化、原文 / 草稿及权限身份保留有自动证据。
-
-Android 基线 183 项为 169 过 / 7 失败 / 7 assumption；最终生产 App 全量 192 项为 177 过 / 8 失败 / 7 assumption。7 项失败的异常首行和测试调用帧与基线一致；额外权限测试把 Compose 未使用的段落预留宽度误判为文字溢出，改为逐行边界、未省略、完整末字符与高度检查后，同一 App 的设置四组 32 / 32 通过，原全量失败仍保留。iOS SE 基线 89 项为 82 过 / 7 失败，候选 93 项为 82 过 / 11 失败；连接信息改用逐项短滚动，三个选择器按真实中文辅助功能组合标签匹配后，4 / 4 复测通过。其余 7 项中 5 项与基线断言及报错一致，长聊天工具展开的失败表现不同，另有同期回复卡片几何用例失败，均未解决；不能据总数声称失败集合未扩大。
-
-已查看 iOS SE 全量 193 张、SE / iPad 各 40 张英文 A1–A4 预览、两端语言专项和 Android 最终全量 331 张及最终设置 44 张。iPad 属于宽屏专项，未跑 iPad 全量；截图与自动夹具不替代 C01–C18、实际屏幕阅读器、从系统设置切换语言再回前台、真实 Host 和真机门禁。完整验收保持未完成。最终包快照 `products-r9.json`、原始失败 / 复测 / 图像清单及已核验释放的设备 / ADB / 构建资源见证据目录 `summary.md`、`manual-checklist.md`、`cleanup-resume-final.json`。
+[根部测试约束](../../AGENTS.md#测试)；[LocalizationTests.swift](../../ios/Orbis/Tests/LocalizationTests.swift)；[orbis](../../android/app/src/test/java/com/orbising/orbis)。

@@ -48,12 +48,4 @@ Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本�
 
 ## Consequences and verification
 
-- 带截图的会话不再把图片字节带进同步状态，历史体积回到文本量级；`session_entry_too_large` 不再由普通截图触发（ADR-0035）。
-- 表示统一后，"后端没把图丢掉"成为可断言的事实：同一份原生历史投影两次必须逐字节相等。
-- 代价：手机仍然看不到图片（今天也看不到），且**裁剪规则一变，同一 Entry ID 的 `data` 就变**——按 ADR-0025 那属于 corrected entry，会换 source epoch。规则必须一次定稳，不要在实现里随口加字段。
-- 需要执行的验证（实现时补）：
-  - Pi：读一张 ≥1MB base64 的截图，`entry.data` 与 `tool.finished` 事件内都搜不到 `data` 字段，且长度受预算约束；
-  - Pi：用户粘贴图与 `read` 走同一规则；
-  - Codex：工具结果含 image 块时，正文不出现 base64；
-  - DSH：占位文本与可选 path ref 不变形；
-  - 三个后端的同一原生历史投影两次逐字节相等。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

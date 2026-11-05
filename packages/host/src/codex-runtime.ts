@@ -2737,14 +2737,14 @@ export class CodexRuntime implements AgentBackend {
     const thread = this.#threads.get(threadId);
     if (thread !== undefined && result.status === "complete") thread.notifications.resolve("codex.refresh", result.operationId);
     if (thread !== undefined && result.status !== "complete") {
+      // Opening the GUI and receiving its history response are separate phases. A normal
+      // wait for that response must not tell the phone that the completed rewind failed.
+      const awaitingConfirmation = result.status === "awaiting_confirmation";
       const hint = result.reason === "desktop_refresh_wrapper_upgrade_required"
         ? "请更新 Host，并关闭后重新打开 Codex 桌面版以加载新包装器"
         : result.reason === "desktop_refresh_client_version_unverified"
           ? "当前 Host 尚未支持此 Codex 桌面版本的自动刷新；请更新 Host，或手动归档、撤销归档并重新打开该会话"
           : "请手动归档、撤销归档并重新打开该会话";
-      // Opening the GUI and receiving its history response are separate phases. A normal
-      // wait for that response must not tell the phone that the completed rewind failed.
-      const awaitingConfirmation = result.status === "awaiting_confirmation";
       thread.notifications.upsert({ code: "codex.refresh", occurrenceId: result.operationId,
         scope: { operationId: result.operationId }, severity: awaitingConfirmation ? "info" : "warning", lifecycle: "condition",
         message: awaitingConfirmation ? "历史已回退，正在等待桌面历史加载确认" : `历史已回退，但桌面刷新尚未完成；${hint}` });

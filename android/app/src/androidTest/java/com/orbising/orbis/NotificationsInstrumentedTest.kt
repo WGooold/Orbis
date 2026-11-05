@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 顶栏 / 输入 / 交互（S12、S17、V05、V08、V12、V17）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

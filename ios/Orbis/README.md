@@ -15,9 +15,9 @@
 - 会话目录长按条目进入多选，点按增减选择，顶部批量归档或恢复；搜索、筛选、切换电脑或关闭目录清空选择。单选未归档会话时，顶部保留“在电脑继续会话”入口。
 - 协议 v17、Keychain 身份、CryptoKit 端到端加密、LAN / Relay 两路径与 Host 固定选路、最近历史预览及更早历史分页。
 
-逐页完成项、与 Android 尚有的差距和验收范围见 [UI / UX 对齐记录](docs/android-ui-parity.md)。
+逐页完成项、与 Android 尚有的差距和验收范围见 [UI / UX 对齐记录](UITests/OrbisUITests.swift)。
 
-不涉及界面渲染的数据、协议与 Host 交互对齐范围见 [核心对齐记录](docs/android-core-parity.md)。
+不涉及界面渲染的数据、协议与 Host 交互对齐范围见 [核心对齐记录](Tests/ProtocolTests.swift)。
 
 ## 构建与运行
 
@@ -95,4 +95,4 @@ xcodebuild -project ios/Orbis/Orbis.xcodeproj -scheme Orbis \
 
 测试结果包保存各页面的浅色 / 深色截图。Debug 可用 `--preview-screen=pairing|home|drawer|new-session|chat|slash|history|approval|tool|downloads|status|providers` 显式启动隔离预览；加 `--preview-dark` 查看深色。Release 不包含预览夹具。
 
-连接状态页支持 Claude Code 切换，以及 Claude Code / Codex 当前官方订阅的 5 小时、周剩余配额查询。详见 [功能说明](../../docs/agents/claude-providers-and-subscription-quota.md)。
+连接状态页支持 Claude Code 切换，以及 Claude Code / Codex 当前官方订阅的 5 小时、周剩余配额查询。详见 [ADR-0019](../../docs/adr/0019-host-provider-management.md)。

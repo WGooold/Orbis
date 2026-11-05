@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 下载 / 文件（S09、S15、S20、S21、M13、V19）
+// - 聊天视口 / 内容（S11、S20、M03、V01、V04、V09、V14）
 package com.orbising.orbis
 
 import android.app.Application

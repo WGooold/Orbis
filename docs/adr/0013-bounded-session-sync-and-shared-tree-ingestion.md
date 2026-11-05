@@ -121,9 +121,4 @@ rollout 选择优先使用 app-server 明确返回的文件路径，并核对 `s
 
 ## Verification
 
-- 三种响应乱序、重复、交叠，最终节点集合和 parent 关系一致；跨分支共同前缀只存一份。
-- `replace` 不覆盖冲突节点；失败整批回滚，旧树、进度和配对数据保留；迟到旧会话/旧分支响应无法写入。
-- preview 末尾页落盘不跳过前面的缺口；补齐后自动连接，进度正确。重启后继续补缺失范围，网络确实少传已缓存片段。
-- 大历史、多字节文本、大 timing、单个超大 Entry 下字节预算生效，两后端 range 语义相同。
-- 延迟超过原 8 秒窗口、响应丢失、换路、离线设备、多设备和多个 Runtime 下，不形成重复响应积压；队列有明确上界或回落，当前聊天能完成或显示可恢复错误。
-- 使用真实加密/切片/接收处理的有界慢链路回归，并验证数据库、reducer 与实时 tail；除单元测试外保留 Android SQLite 事务验证和实际 APP 加载验证记录。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

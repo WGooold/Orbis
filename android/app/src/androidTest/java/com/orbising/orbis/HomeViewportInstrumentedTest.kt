@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r15 首页 / 目录视口与下拉刷新（M15、V21）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

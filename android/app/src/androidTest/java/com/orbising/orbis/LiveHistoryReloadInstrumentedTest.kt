@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 聊天视口 / 内容（S11、S20、M03、V01、V04、V09、V14）
+// - 防止同一 Session / epoch / head / 边界的历史在连接重建后绕过缓存或误报完成；真实环境入口为显式 opt-in。
 package com.orbising.orbis
 
 import android.app.Application

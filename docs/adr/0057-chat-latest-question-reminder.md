@@ -4,7 +4,7 @@
 
 Status: accepted（交互已确定；代码与回归同步实施，完整设备门禁完成前不记为验收通过）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S24；S10、S13、S17、V01–V04、V06、V09、V17–V18；[ADR-0046](0046-mobile-ui-stability-and-material.md) §1、§3；[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)；[UI 回归方案](../testing/ui-regression.md)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S24；S10、S13、S17、V01–V04、V06、V09、V17–V18；[ADR-0046](0046-mobile-ui-stability-and-material.md) §1、§3；[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)；[UI 回归方案](../../AGENTS.md#测试)。
 
 ## Context
 
@@ -21,15 +21,11 @@ Status: accepted（交互已确定；代码与回归同步实施，完整设备�
 
 ## Verification
 
-- iOS `ChatQuestionTests`、Android `ChatQuestionTest`：按消息顺序选择、同文不同身份、助手/工具排除、本地行排除、空内容、附件、Unicode、补页与分支替换。
-- iOS `testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing`、`testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader`；Android `ChatQuestionReminderInstrumentedTest` 四项：初始隐藏、上翻出现、原问题可见时隐藏、两行长文、明暗、点击定位保持非跟随、新源端问题/未确认发送、通知优先和电脑隔离。
-- 原有视口用例继续覆盖流式、补页、拖动与惯性更新、工具展开；不得放宽既有断言。两端 L1–L4 全量、C01–C18、R31 和 A1–A4，宽屏另做 A5。iOS 17 无池内设备时如实记为未运行。
-- 当前结果：iOS 233 项核心测试、App / UI Test 构建及无障碍修正后的 UI Test 构建通过；iOS 全量 65 项有 8 项失败，其中两条新增用例均在刷新后锚点断言失败；同设备基线重跑因已有结果包路径冲突未完成，不能认定失败集合满足基线要求。Android 568 项 JVM 测试、Debug / AndroidTest APK 构建通过；提醒专项 4 项通过。Android API 35 全量 146 项有 4 项失败，均属于同设备基线 139 项中的 5 项失败集合，基线失败集合子集条件通过。C01–C18、S24 手动检查和 A1–A5 尚未完成，功能整体不记为验收通过。
-- 本轮证据：`.artifacts/ui-regression/20261101-question-reminder/`，包含原始失败 `.xcresult`、日志、设备截图与构建结果。每层实际运行结果与未覆盖项应持续记录，不能以定向测试替代全部门禁。
+[测试规则](../../AGENTS.md#测试)；[ChatQuestionTest.kt](../../android/app/src/test/java/com/orbising/orbis/ChatQuestionTest.kt)；[ChatQuestionTests.swift](../../ios/Orbis/Tests/ChatQuestionTests.swift)；[ChatQuestionReminderInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)；[原始证据](../../.artifacts/)。
 
 ## 2026-11-01 / r31 共用动效修订（已接入，验证中）
 
-[ADR-0058](0058-shared-interaction-motion.md) 统一菜单、选择工具栏、图标反馈、最近提问右上出入及边缘返回。本文先前的导航来源、提示条件、阅读稳定和业务判定保持；对应动效参数以该修订为目标，未完成双端门禁不记为验收通过。实施与测试映射见 [MOT ticket](../agents/interaction-motion-tickets.md)。
+[ADR-0058](0058-shared-interaction-motion.md) 统一菜单、选择工具栏、图标反馈、最近提问右上出入及边缘返回。本文先前的导航来源、提示条件、阅读稳定和业务判定保持；对应动效参数以该修订为目标，未完成双端门禁不记为验收通过。实施与测试映射见 [MOT ticket](0058-shared-interaction-motion.md)。
 
 ## 2026-11-02 / r35 交互补充（已接入，验证中）
 

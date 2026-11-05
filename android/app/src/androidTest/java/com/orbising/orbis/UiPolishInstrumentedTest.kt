@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - r15 流式顺序（M04）
+// - 材质 / 字形 / 控件（S01、S09、S12、M04、V15）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

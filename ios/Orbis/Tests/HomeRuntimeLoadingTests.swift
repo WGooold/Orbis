@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - MOT-21 / SC43（MOT-21、SC43、R55、S18、V13、V18）
 import Foundation
 import Testing
 @testable import OrbisCore

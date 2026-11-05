@@ -66,10 +66,4 @@ Codex 的 live 更新在 `CodexRuntime.#touchSource` 内合并，默认窗口为
 
 ## Verification
 
-必须覆盖以下行为：
-
-1. Codex 在 100ms 内的 burst live 更新只发布一个递增 seq 的 patch；同步请求会先 flush pending patch。
-2. `msg` 和 `ctl` 队列分别受预算限制；预算不足时不会调用 `seal()`，不会推进 E2E 序号，也不会进入 mux。
-3. 已封装帧不会因普通队列达到预算而被静默丢弃；写失败仍按队首重试。
-4. 普通队列准入拒绝会记录有来源的诊断并摘除路径；新握手后可以通过现有 `session.sync` 恢复当前 Codex checkpoint。
-5. 双 Codex 会话、慢客户端、停止读取、控制帧可达性和重连恢复测试通过；`sync busy` 诊断能区分 `message_byte_limit`、`sync_byte_limit`、`delivery_limit` 与 `path_unavailable`。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

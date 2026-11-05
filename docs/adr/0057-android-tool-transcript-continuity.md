@@ -4,7 +4,7 @@
 
 Status: implemented（Android 修复与专项验证完成；完整 UI 回归门禁及真机验收未完成，不能记为全量验收通过）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[流式呈现与阅读规则](0046-mobile-ui-stability-and-material.md)；[UI 回归方案](../testing/ui-regression.md) 的 UI-02、R03 / R04、A1–A4。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[流式呈现与阅读规则](0046-mobile-ui-stability-and-material.md)；[UI 回归方案](../../AGENTS.md#测试) 的 UI-02、R03 / R04、A1–A4。
 
 ## Context
 
@@ -60,19 +60,7 @@ Android 的 Pi 会话会短暂只剩一条工具消息，顶部仍有“加载�
 
 ## Verification
 
-本地证据目录：`.artifacts/ui-regression/20261101-pi-tool-continuity/`。最终修复使用 `atomic-` 前缀证据；此前 `final-` 前缀属于仍有交接回落的中间版本，不能当成最终通过记录。汇总与校验见该目录的 `summary.md`、`verification.json`、`manual-checklist.md`、`cleanup.json`。日志、录屏和安装包留在本机证据目录，不随本 ADR 提交。
-
-| 检查 | 结果与边界 |
-| --- | --- |
-| Android JVM / 构建 | 564 项单元测试通过，含本次新增 11 项；Debug 与 AndroidTest 构建通过 |
-| A1–A4 专项 | 每种配置 11 项设备用例全部通过，共 44 次；覆盖新增连续性用例及既有阅读 / 跟随用例 |
-| 真实 Pi | 隔离 Host 上六次实际 bash 开始 / 结束、七个模型步骤；7,105 帧中消息数量零回落，最终 idle、14 条消息，捕获用例通过；已审阅相关录屏帧 |
-| 同设备全量对照 | 基线 139 项：121 通过 / 11 失败 / 7 跳过；最终 142 项：123 通过 / 12 失败 / 7 跳过。额外失败是聊天冷进入超过 500ms；按回归方案 §3.2 允许的一次重试通过，三次绘制耗时为 374.34 / 110.54 / 117.68ms。允许重试后剩余失败集合与基线 11 项相同，原始失败与重试证据均保留 |
-| 跳过与未完成 | 全量中的真实捕获用例随后单独执行通过，其余六项 opt-in 用例未运行；完整 L4、手动 C01–C18、iOS、本次新的 Claude / Codex 真实输出及真机验收未完成 |
-
-对照包来自共享的未提交工作树，不能称为干净提交的全量基线；对照用 `RemoteState.kt` 与当时 HEAD 一致。最终六个 Kotlin 文件的 SHA-256 已记录于 `verification.json`，用于区分后续并行改动。局部通过不替代完整门禁。
-
-本任务独占的 Host / Relay / Pi、模拟器和私有 ADB 已退出，设备设置已恢复，自己的设备及构建锁已释放；资源核对见 `cleanup.json`。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## Consequences
 

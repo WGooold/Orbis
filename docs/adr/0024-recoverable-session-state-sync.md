@@ -250,41 +250,8 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 **共同机制**：`RecoverableSessionSource` 在传输之前持有累计消息、工具、turn 和版本。同步读取得到独立 checkpoint，不受之后的对象修改影响。canonical 新增与 live 副本移除在一笔 source 事务中发布；结束但未持久化的消息仍可恢复。历史祖先补页不推进当前状态版本；原生节点修正、删除或当前 head 回退时建立新 epoch，先发布 unknown，再通过 preview 恢复。只凭正式 ID / 源端映射判定提交，不按正文猜身份。
 
-- **Pi**：extension 从 `message_update` 的原生完整 partial message 累计正文和工具调用，而不是依赖网络 delta 拼接。`message_end` 保留最终正文；SessionManager 的原生对象身份将临时 ID 与 Entry 对应，turn 边界、preview 和 15 秒节拍核对 append。即使 turn_end 通知没有送达手机，后续 checkpoint 仍能移除已 canonical 化的副本。tree/compaction 切换也核对源端。单个 token 更新不重复扫描整棵历史树。
-- **Pi 晚接入边界**：运行中 reload 时，ExtensionContext 不能提供所有已生成内容或完整工具集合，因此 `inventoryComplete=false`，不把未观察对象声明为不存在；后续原生完整消息可以补正文，idle/settled 核对后恢复完整 inventory。源端内存未持久化，进程崩溃后无法恢复原生未保存的 token。
-- **DSH Web**：follow 的原生 snapshot 同时重建历史 tail、当前 turn、assistant prefix 与工具状态。attempt 的结束帧早于 canonical 事件时保留最终正文及其 `outcome.seq` 身份；提交时一次移除副本。preview 至少每 15 秒重新打开所属原生 follow 取得新基线，核对任务合并；无实质变化的重取不推进 seq，仍可返回 unchanged。原生事件跳号、chunk 缺口和来源断开不能冒充完整状态；来源代次检查拒绝旧 follow callback 和迟到页。完成 attempt 的迟到 chunk 不能复活副本。
-- **DSH 有界历史**：原生 follow tail 不保证覆盖 root。选择器接受 adapter 明确声明的已验证 tail parent 边界，保留真实 parent，返回 `hasOlder=true` / 不完整范围，随后由 history 补祖先；不伪造 root、不把任意缺失 parent 当作合法 tail。head/inventory 完整性与祖先覆盖仍是不同事实。running tail 未包含当前 turn 起点时，inventory 保持不完整。
-- **ACP**：legacy/test adapter 同样累计源端状态并在原生历史读回后提交；默认仍是 Web，没有新增 ACP 自动 fallback，也不以 wire chunk 伪造 canonical Entry。
-- **预算**：正常提交的 Entries 只在 256 个节点 / 256 KiB patch 预算内附带，超预算由 checkpoint/pages 恢复。live 数量或正文超预算时明确恢复失败，不截断后声称 inventory 完整；大 checkpoint 分块仍未实现。
-
-验证记录：
-
-- Windows workspace build、typecheck、lint 全部通过；`npm test -- --maxWorkers=2`：88 个文件、876 项测试通过。生产方用例覆盖 Pi 断线恢复 / 缺失 turn_end、结束到 append 的窗口、运行中 reload 的未知 inventory、DSH 静默漏完成后的原生重取、旧 follow 隔离、有界 tail / 历史补页及完成提交。
-- `scripts/windows/android-build.ps1 :app:testDebugUnitTest --console=plain` 输出 BUILD SUCCESSFUL；JUnit XML 确认 41 个文件、378 项测试，failure/error 均为 0。外层命令采集在 Gradle 完成后超时；另行确认 wrapper 已退出、资源 operation lease 已释放。本次没有新增 Android 消费方重复测试，也未重跑设备 SQLite instrumentation。
-- 隔离的真实 Pi CLI + 临时 home + 本地假模型验证：累计正文、message_end 早于 append 时保留 live、原生对象身份提交后移除副本、无旧生命周期事件。临时验证 harness 已删除。
-- `node scripts/test-dsh-web.mjs` 通过：隔离官方 DSH Web、本地假模型、浏览器↔APP 消息、工具、队列、归档，以及新接入的版本化提交、checkpoint 空 live 恢复和 unchanged 确认。未使用用户 Host、正在使用的浏览器服务或付费模型。
-- 本次未 push、发布、安装 APK或重启用户 Host。构建后的 dist 已生成，但正在运行的 Host / Pi 仍使用原先加载的实现；需获得独立更新/重启授权后才在用户会话生效。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。
 
 ## 故障注入验收
 
-最终判据是手机状态投影等于已确认的源端状态，而不是仅检查某个事件 handler 是否被调用。至少覆盖：
-
-| 注入场景 | 必须得到的结果 |
-| --- | --- |
-| 丢 started、前缀或中段 delta | 缺口触发恢复；完整草稿可取时正文补齐，拿不到时明确不完整 |
-| 丢最后一个 finished/commit/idle，之后无事件 | 周期核对后最终消息及运行态正确，工具不永久 running |
-| Pi 到 Host 断线，手机到 Host 始终正常 | 从 Pi 源端 checkpoint 恢复，不拿 Host 未收到的事件缓存冒充完整状态 |
-| 丢全部 mapping，canonical 先于完成通知出现 | 一个 canonical 结果，旧 live 退出，不按文本猜身份 |
-| checkpoint v24 延迟，本地已到 v26 | 不回退；从 v24 恢复的客户端只重放连续的后续事务 |
-| 重复/延迟 patch、旧 epoch 响应、切路 | 不重复拼接、不复活旧 turn，不凭任意迟到 epoch 切换源 |
-| ctl idle 先于 msg finish | 不删除 live/timing 身份，不依赖跨通道先后完成提交 |
-| running sync；读页期间新增 turn；旧页在 revert 后到 | 运行态连续，分页不倒退 head、不清 live |
-| Host/adapter 重建，旧 live 与新 epoch 共存于网络 | 新握手建立基线，旧 epoch 不复活；原生未知前缀明确标记 |
-| 原生 revert 通知缺失；原生运行态变化但 head 不变 | 源端周期权威对账发现差异，手机恢复到新状态 |
-| revert 读取期间外部启动新 turn/再次 revert | 过期读取不提交，不把旧 item 接回新历史 |
-| 权威重建修正同 ID 的 parent/data | 新 epoch 通过 checkpoint 事务修正缓存；旧响应不覆盖，非法重复/循环仍回滚 |
-| 超大 checkpoint、分块丢失、慢链路、缓冲超限 | 不应用半份完整集合；资源有界，恢复可重试，不无限积压 |
-| 手机崩溃于 Entry 入库后、内存 seq 更新前 | 重启 checkpoint 后幂等恢复，不依赖未持久化的 live/seq |
-| outbox 确认丢失、另一设备收到定向页 | pending 不被 live 替换删除；定向响应不制造共享版本假缺口 |
-
-需要 reducer/adapter 故障测试、Android SQLite 事务验证及真实链路断连/延迟验证。当前已执行 Protocol、三个 backend 的源端恢复测试、Android reducer 单测及部分隔离原生链路检查；全部故障矩阵及真实 GUI/TUI、设备链路验收尚未完成，不能将这些结果视为全流程完成。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

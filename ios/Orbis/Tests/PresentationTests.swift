@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 防止目录、会话与消息投影改变身份、排序、阅读锚点或状态表达。
 import Foundation
 import Testing
 

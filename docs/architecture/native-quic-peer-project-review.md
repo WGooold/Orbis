@@ -1,6 +1,6 @@
 # 原生 QUIC：成熟项目对照与当前性能诊断
 
-日期：2026-11-04。关联 [ADR-0065](../adr/0065-native-quic-relay-transport.md)、[完整公网报告](../testing/native-quic-public-performance-20261104.md)、[历史传输故障](native-quic-transport-lessons.md)。本轮只做源码复核、只读现场检查和本地计量验证，不修改生产服务或业务协议。
+日期：2026-11-04。关联 [ADR-0065](../adr/0065-native-quic-relay-transport.md)、[完整公网报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-public-performance-20261104.md)、[原生传输回归](../../native/relayquic)。本轮只做源码复核、只读现场检查和本地计量验证，不修改生产服务或业务协议。
 
 ## 结论与证据级别
 

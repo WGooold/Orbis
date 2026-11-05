@@ -141,13 +141,7 @@ block.text = (block.text ?? "") + event.delta;
 
 ### 必须新增的测试（缺一不算排除 bug）
 
-1. 流式跑一轮（含工具调用与结果）后，断言已入模型的 entry 深度相等且未被修改（`Object.isFrozen` + 内容摘要不变）。
-2. 同一 entry 连续重发两次必须都被接受。
-3. 同一 entry 替换 100 次后，模型总字节与首次一致。
-4. 工具结果晚于调用到达时，调用行必须更新为完成态。
-5. 本地临时行收到权威行后必须合并，不得重复。
-6. 相同条目数、不同内容时，DSH 显示索引必须重建。
-7. 日志长度变短（截断）后必须强制重建索引。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ### 前置依赖与顺序
 
@@ -163,6 +157,4 @@ block.text = (block.text ?? "") + event.delta;
 
 ## 验证
 
-- 上述 7 条测试全部实现并通过。
-- 回归基线：ADR-0013 的验收条款（延迟超窗、丢包、换路、多设备下不积压；当前聊天能完成或显示可恢复错误）不受影响。
-- 性能核对不靠推断：D3 已有实测数字；D1/D2 在实施后必须新增测量（每次事件的模型层开销、每次 patch 的投影开销），并与本文记录对比后再决定是否继续优化。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

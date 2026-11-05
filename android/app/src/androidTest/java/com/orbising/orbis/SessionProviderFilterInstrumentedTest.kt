@@ -1,3 +1,6 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - MOT-14 / SC36（MOT-14、SC36、R48、M22、V21）
+// - 目录（S15、S19、M06、M09、V17）
 package com.orbising.orbis
 
 import android.graphics.Bitmap

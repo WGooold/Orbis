@@ -37,11 +37,4 @@ and normal encrypted session handshake. The app's manual input accepts the JSON.
 
 ## Verify and retire
 
-Run `docker exec orbis-review-host node /app/scripts/review-demo/probe.mjs --live`
-once for the real model test. This consumes a normal small API request and creates
-a paired test device and a real Pi conversation in the demonstration environment.
-Do not claim real iOS UI testing from this protocol probe alone.
-
-After review, remove the Nginx review includes, validate/reload Nginx, then stop and
-remove `orbis-review-host` and revoke its dedicated API key. Preserve or deliberately
-delete its private state separately. Never delete production Relay files.
+[根部测试约束](../../AGENTS.md#测试)；[probe.mjs](probe.mjs)；[cleanup.mjs](cleanup.mjs)。

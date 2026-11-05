@@ -151,6 +151,4 @@ Codex 侧另有直接证据：连接桌面版 app-server（`ws://127.0.0.1:56578
 
 ## 验证
 
-- 用 Codex 实测样本（某线程 829 个 item，最大 1.12MB）回归：截断后该 Entry 能被正常发送，preview 与 history 都不再失败。
-- 回归 ADR-0013 的验收条款：不产生重复响应积压，当前聊天能完成或显示可恢复错误。
-- 回归 ADR-0035：同一会话的多次 sync 不得因为截断产生"看起来没变"而漏更新（构造尾部变化的用例）。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

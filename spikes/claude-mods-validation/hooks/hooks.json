@@ -1,4 +1,0 @@
-{
-  "description": "Observe documented Claude Code events without changing their contents",
-  "modules": ["./register.ts"]
-}

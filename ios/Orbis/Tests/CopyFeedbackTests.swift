@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 复制反馈 / M05（M05、V16、SC23、MOT-08）
 import Foundation
 import Testing
 @testable import OrbisCore

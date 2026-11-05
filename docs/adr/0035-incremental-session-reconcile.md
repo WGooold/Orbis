@@ -157,28 +157,4 @@ Claude 长会话恢复现场：原生历史 1,055 条，已运行 Host 的 `prev
 
 ## Consequences and verification
 
-- 带图的会话从 O(全历史字节) 回到 O(变化量)：73 张图的会话单次 sync 从 ~400ms 回到 1ms 量级；纯文本长会话也同样受益（大文本历史此前是同一形状的成本）。
-- 回合内的成本从 O(token × live) 降到 O(token)：读图之后的后续输出不再为那份 base64 反复付钱；不再每个 token 发一份完整 live 快照。
-- 加载聊天历史从 O(S²/每页条数) 回到 O(页)：30MB 会话翻完 428 页实测 **70.7s → 1.1s**，单页 165ms → 2.6ms，峰值 heap 617MB → 191MB（`--scene pages`）。
-- 发件侧：同样 400 × 1MB 打到「不读的对端」，RSS 增长 **417MB → 13MB**（`--scene sendqueue`）。
-- 会话库列表：单次扫描成本不变（2.0s / 205MB 峰值），但同一进程内从「每次连上都扫」变成「每 60s 最多一次 + 显式失效」，连接抖动不再重复付这笔钱。
-- 状态语义不变：同一份历史反复 sync 不产生新 epoch，内容真变了才产生 corrected。
-- 风险点：指纹必须覆盖所有会改变线上表示的字段（`parentId`、`type`、`timestamp`、`data`）；漏字段的表现是"手机不刷新"，因此指纹计算要以整条 Entry 为输入，只在算法上避免重复序列化，不能改用抽样判据。
-- 回合内的比较成本由 §12 消掉（60KB 正文 ≈ 0.03ms/token）；**更大的那块是 §13 的"白构造 patch"**：live 里有一个 1MB 工具结果时每 token 白付 1.57ms（clone 0.33 + stringify 1.25），而 patch 必被丢弃。两条都做完，长回合的每 token 成本才真正与 live 体积无关。
-- 在此之前，长正文回合的成本仍随"正文长度 × token 数"增长，只是系数已经小了 3–10 倍。
-- 按后端分列（2026-10-22 状态）：
-  - **Pi**：§1/§2/§3/§7/§8/§9/§10 全部实现；canonical Entry 与 live 工具结果已按 ADR-0034 裁剪。
-  - **DSH（终端）**：增量 `reconcile`、`prepare`/`select` 拆分、显示索引已生效；整份日志读按 §16 改成"首次官方 API + 之后按追加帧增量"（实测 373ms → 7ms → 未变 0ms）。原先"文本量级、风险低"的判断已被实测推翻。
-  - **DSH Web**：历史来自 `session/page` 的游标分页（`throughSeq` / `beforeSeq` / `maxMessages`），本来就只取一页；配合 `SessionSyncPreparer` 与显示索引，§11 对它不需要额外工作。
-  - **Codex**：增量 `reconcile` 与显示索引已生效，但它不经过 `RecoverableSessionSource`，本来就只在中继历史时付全量投影；`resultText` 内联 base64 的问题仍在（ADR-0034 §5）。
-- 需要的验证（实现时补齐）：
-  - 同一份历史连续 sync 两次：第二次不 clone、不递增 seq、响应与第一次一致（除 syncId）；
-  - 同一 Entry ID 内容被修正：仍换 epoch 并按 ADR-0024 重建基线；
-  - 带 73 张图的会话：单次 sync 回到毫秒级，且事件循环不被单次调用卡住；
-  - 超大 Entry 的失败路径带诊断，且普通截图不再命中；
-  - live 工具结果的内联载荷在落盘后不再驻留；
-  - 含 1MB live 工具结果的回合：每个 delta 的耗时不随 live 字节数增长（对照 0.31ms/token 基线），且不因回合变长而超线性；
-  - 分页：同一会话翻完全部页，总耗时随页数线性、每页耗时与 S 无关（`scripts/perf/session-memory-stress.mjs --scene pages --session-mb 30`），且来源版本未变时命中缓存不重算；
-  - DSH / Codex 接 §10 缓存后：同一条长历史翻页的每页耗时不再随 S 增长（当前仍会）；
-  - Codex 工具结果含图：正文不出现 base64（ADR-0034 §5 落地后补）；
-  - §12/§13：`--scene turn` 实测 1MB live = 0.00ms/token、20KB = 0.07ms/token，与体积无关；“净效果为零（仅标量翻转）的事务不推进 seq”与“超预算 live 不发 truncated patch”各有独立用例。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

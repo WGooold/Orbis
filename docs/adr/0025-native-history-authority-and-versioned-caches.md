@@ -54,11 +54,7 @@ Entry、版本、timing、cursor、coverage 和 epoch 激活在一笔 SQLite 事
 
 ## Verification
 
-- 正常、遗漏及延迟 revert 通知后，原生核对得到相同 parent、正文与 head；纯追加不触发全缓存失效。
-- 新 epoch checkpoint 修正同 ID 并原子替换旧缓存；unknown、未握手 ready patch、retired 页和过期读取不能改写磁盘或画面。
-- 同 epoch 迟到页只补缺口，不覆盖较新节点；局部页不删除页外节点，不切换 head/live。
-- 重挂 parent 后 coverage 重算；非法重复、自环、跨缓存循环及失去归属时，epoch/cursor/coverage 一起回滚。
-- checkpoint 与连续缓冲 patch 的 canonical 提交保持持久化与投影一致；重启加载行版本后仍能拒绝旧数据。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 实施验证（2026-10-10）
 

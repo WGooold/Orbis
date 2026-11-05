@@ -1,9 +1,0 @@
-{
-  "extends": "./.claude-plugin/types/tsconfig.json",
-  "include": [
-    "./hooks/**/*.ts",
-    "./tests/**/*.ts",
-    "../../packages/claude-mod/src/**/*.ts",
-    "../../packages/claude-mod/tests/**/*.ts"
-  ]
-}

@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-06 `waiting`（V10）（V10）
 package com.orbising.orbis
 
 import org.junit.Assert.assertEquals

@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-09 prompt / skill Slash（V10）（V10）
 /**
  * CodexRuntime 的映射测试：不跑真 app-server，用一个可脚本的假客户端，
  * 验证 thread 列表 → 目录条目、turn/item 事件流 → runtime 事件、审批闭环。

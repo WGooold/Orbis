@@ -417,35 +417,7 @@ Pi 的 live → entry 映射、Codex 的 `persistedEntryId` 等现有身份链�
 
 ## Verification
 
-- 两端为待确认发送状态机编写纯逻辑单元测试，覆盖：各后端的对应方式（同 id、`clientMessageId`、alias）、
-  `replace` 后不复活、重复正文、锚点顺序、队列接管与隐藏、失败 / 未确认 / 兜底删除、Session 切换隔离。
-- Host / 协议测试覆盖：Pi 用户消息的认领、Codex 字段、DSH Web 的 `rpcId` 投影、
-  Claude transcript 对应关系，以及显示投影复制该字段。
-- 相关核心测试、原生构建和隔离模拟器 UI 回归通过。不连接生产 Host，也不操作用户真机。
-- 当前工作区有其他未提交改动；只修改本决策涉及的代码。
-
-### 2026-11-01 扩展的验证（已实施，结果见文末 OPT-10）
-
-- **账本不变量测试**（两端用例一一对应）：L1–L11 各有专门用例；另用随机事件序列（回执乱序与重复、断线重连、
-  旧版本快照、换电脑、期限到、前置失败）驱动账本，每一步断言：没有超过期限仍停在 `sent` / `accepted` 的操作；
-  终态不回退；删除全部操作后叠加结果等于权威状态；没有操作被自动重发。
-- **两端状态机单测**（iOS / Android 用例一一对应）：
-  - `waiting`：三种前置操作、同会话顺序、附件失败只影响本条、配置 / 启动失败连带、断线不改变、草稿副本恢复；
-  - 产生对话的 Slash：App id 精确落地、展开正文替换后身份不变、无声明时兼容兜底；
-  - 撤回：`cancelled`、`already_delivered`、`not_cancelable`、断线 / 无回执及重连核对；
-  - 归档：拒绝恢复原位、回执后目录仍为旧状态、60 秒重读、断线保持、批量逐张核对；
-  - 回答：收起与摘要、敏感输入不回显、拒绝恢复答案、请求失效、未确认与快照核对；
-  - 通知：本设备隐藏、快照确认与重新显示、断线保持；
-  - 模型 / 思考级别：切换中、确认、规范化、失败连带等待消息、连续选择、断线读回；
-  - 启动：立即进入、草稿迁移、等待消息、失败原位、超时、返回首页不取消；
-  - 共用：同一对象冲突禁用、换电脑 / 重新配对失效、首页关闭断线保持隐藏。
-- **Host / 协议**：`slash.execute` 的 App id 及各后端为 `prompt` / `skill` 产生的用户消息声明 `clientMessageId`；
-  ADR-0055 AIN-01 的命令集合对照仍然通过。
-- **设备 UI**：两端扩展乐观操作用例，断言结果在回执前呈现、拒绝后回到原位置（坐标容差 ≤ 1pt/dp）、
-  阅读锚点和视口不动、正文只出现一次、减少动画路径语义一致。用例名随实施登记到 UI 回归方案 §3.3。
-- **手动**：UI 回归方案 R26（列表与面板类操作）、R27（等待前置操作的发送、模型切换与启动）。
-- 门禁按 ADR-0051 与 UI 回归方案：两端 L1–L4、C01–C18、V07、V10–V12、V22 专项和 A1–A4；
-  未运行或阻塞的项目如实记录，不记为通过。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## Consequences
 
@@ -463,56 +435,11 @@ ADR-0055 的 outbox 结算（§7.7），因此发送存在一次交接，两端�
 
 ## 实施结果
 
-### Host 与协议
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
-- `ChatMessageSchema.clientMessageId` 为可选字段；显示投影只为 user 角色复制该字段，没有改动 `projectionVersion`。
-- Pi：`PhoneSendClaims` 在调用 `pi.sendUserMessage` 前登记，空闲直发和队列出队两条路径都会登记。
-  用户角色的 `message_start` 只认领文本内容完全相同的最早一条登记，开始和结束事件都会标注；
-  发送失败时撤销登记。
-- Codex：`item/started` 写入 source live 行时仍以原生 item id 为键，同时声明 `clientMessageId`。
-  客户端在 source 模式下只读取 checkpoint 的 live 行，不处理生命周期事件，所以这一步不能省略。
-  完成后的行继续使用 App id 和 `persistedEntryId`。
-  canonical Entry（`#appendEntry`）也声明 `clientMessageId`，`messageId` 仍是 item id。首轮实施漏了这一步：
-  用户消息的 `item/started` 和 `item/completed` 几乎同时到达，生产环境的 source 合并窗口
-  （`CODEX_SOURCE_COALESCE_MS`）会把两次改动合成一份 patch。live 行在发布前就已退场，手机只看到 item id 的 Entry；
-  Android 又不处理 `turn.finished` 的映射，于是本地行和权威行会在整轮回合里并存，直到 §4 兜底收尾。
-  Codex 0.165 的 `thread/read` 和 rollout 都保存该 item 的 client id（rollout 写作 `client_id`），
-  因此重连后重新读取的 Entry 仍带同一个值，重复完成同一 item 也不会被当成改写。
-- DSH Web：用户消息带 `source.rpcId` 时投影为 `clientMessageId`。该值写在原生日志里，重启后读取历史仍然保留。
-- Claude：`ClaudeModsBridge.sendCommand` 接受 `user_message` 时登记实际提交的正文。transcript 刷新后，
-  只匹配登记之后新增、正文完全相同的用户行；最多登记 16 条，保留 10 分钟。标注结果按条目对象缓存，
-  重复同步返回同一个对象，不会让内容变更信号失效。
-- DSH ACP（遗留）没有改动 Host。iOS / Android 在 source 模式下都不处理 `turn.finished` 事件，
-  因此 ACP 的本地行实际依靠 §4 的兜底规则收尾。生产 DSH 使用 Web 路径。
+## 后续操作
 
-### 客户端
-
-- iOS 的 `PendingSendOutbox` 和 Android 的 `PendingSends.kt` 是两套同构的纯状态机，
-  状态、规则和测试用例一一对应。iOS 每次发布消息前对账；Android 在统一的 `updateState`
-  出口对账，因此每次状态变化都会核对。
-- 消息回执会更新对应的本地行，不再弹出全局错误横幅。客户端合成的 `cancelled` 视为未确认，不视为失败。
-- 输入框在消息写入通道后立即清空；Android 发送键也不再等待回执才解锁。
-- 失败行提供“重新发送”“放回输入框”“删除”。重新发送使用新的 App id，并按当前状态选择投递方式：
-  空闲时直发；忙时使用 `followUp`；原消息是 `steer` 且后端不是 Claude 时继续使用 `steer`。
-- 权威状态版本按 Session 计数：iOS 在快照被接受或完整 patch 应用后加一；
-  Android 在同步命令完成或 source 序号推进后加一。
-
-## 其他操作的乐观评估（实施后补充；2026-11-01 由 §5 取代）
-
-下表是 2026-10-30 按原 §5 三个条件（可核对、可恢复、不诱导危险后续操作）得出的结论，保留作历史记录。
-现行分级和规则见 §5–§7；其中首页关闭的结论不变。
-
-| 操作 | 结论 | 理由 |
-| --- | --- | --- |
-| 首页左滑关闭、多选关闭会话 | **本轮实施** | `runtime.offline` 可以核对结果；被拒绝时卡片可以恢复；隐藏卡片不会触发其他操作 |
-| 抽屉归档 / 取消归档 | 建议下一步实施 | `session.archive.changed` 可以核对；Android 已跟踪请求和 30 秒超时，iOS 还没有回执跟踪，需要先补上 |
-| 撤回排队消息 | 可以实施，但要处理竞态 | 撤回和交付可能同时发生；`already_delivered` 时要恢复并提示消息已进入上下文，不能让用户以为已经撤回 |
-| 回答审批 / 交互 | 维持现状 | 已有本地 `submitted` 状态；回答只能生效一次，失败时会恢复 |
-| 停止 | 不乐观 | 不能在源端确认前声称 agent 已停止；只显示“停止中” |
-| 模型、思考级别、权限 | 不乐观 | 有效设置必须由后端确认（ADR-0031）；先显示新值可能让用户在错误配置下继续发送 |
-| Rewind、分支跳转、`/new`、`/fork` | 不乐观 | 这些操作会切换会话或改写可见历史；失败后无法自然恢复阅读位置和草稿 |
-| 新建、恢复会话 | 不乐观 | 需要 Host 实际拉起进程；可以显示“启动中”，但不能当成会话已上线 |
-| 关闭通知、草稿、附件选择 | 无需处理 | 这些本来就是客户端本地状态 |
+旧逐操作评估已由§5–§7的统一分类与账本规则替代；不保留相反的旧测试目标。
 
 ### 首页关闭的乐观规则（本轮实施）
 
@@ -526,34 +453,7 @@ ADR-0055 的 outbox 结算（§7.7），因此发送存在一次交接，两端�
 
 ## 验证与证据
 
-均在专用模拟器和独立数据上运行；没有连接生产 Host，也没有操作用户真机。
-
-- TS：`npm run typecheck`、变更文件 ESLint 通过。`vitest` 共 1435 项通过、11 项失败；
-  失败集中在 5 个 Windows 平台用例文件（`spawner`、`desktop-terminal`、`codex-shim`、`sessions`、`runtime-log`）。
-  它们不引用本次改动的模块，断言内容是 Windows 路径和 `powershell.exe`，本次改动 Host 前就已失败。
-  新增或扩展的测试覆盖：显示投影字段、Pi 认领、Codex live 行与事件、DSH Web `rpcId`、
-  Claude transcript 认领和对象复用。补充修复后新增两项 Codex 测试：生产合并窗口下只发布 canonical Entry、
-  `thread/read` 与 rollout 重放保留 client id。撤掉修复后，这两项都会失败。
-  Android 新增一项 reducer 测试：只收到 canonical 快照（经 SQLite 读回）也能消掉本地行。
-- iOS：**191 项核心测试**通过，其中新增 9 项状态机测试，并按新决策改写了 Store 发送测试。
-  专用模拟器“Orbis Optimistic Send”（iPhone 17 / iOS 27.0）上的 UI 回归通过：
-  - 乐观发送：Pi 式延迟回执下，气泡立即出现并显示“发送中”；回执后由 entry 行替换，正文只出现一次。
-    被拒绝时显示原因，可以放回输入框。
-  - 首页关闭：在确认前隐藏；被拒绝后卡片回到原位，并显示带上下文的错误提示。
-  - 原有的短滑回弹、长滑关闭、多选关闭、复制 / Rewind、草稿和队列撤回测试也已通过。
-  预览参数 `--preview-send=pi|fail`、`--preview-close=slow|fail` 只在 UI 预览中生效。
-- Android：**496 项单元测试**通过，Debug APK 和 AndroidTest 编译通过。
-  专用 AVD `Orbis_UI_Polish_35`（emulator-5582，因崩溃对话框改用无窗口软件渲染）上
-  **9 项设备测试**通过：新增的待确认气泡和乐观关闭测试，以及首页左滑、多选、长会话进入和阅读位置测试。
-  第一次运行时，冷启动模拟器上的长会话首次进入为 1005 ms，超过 500 ms 预算；
-  热身后的三次完整运行首次进入为 430 / 410 / 126 ms，均通过。冷启动这次只作为环境记录，
-  不作为本次改动的性能结论。
-- 证据目录 `.artifacts/optimistic-send/`：`ios-ui-send2.xcresult`、`ios-ui-close2.xcresult`、
-  `shots-send/`、`shots-close2/`、`ios-core-final.log`、`android-final.log`、`android-device.log`、
-  `ts-vitest.log`、`ts-typecheck.log`。
-
-仍待真机验证：在真实 Pi / Claude 会话中确认正文与登记完全一致，确认弱网断线后未确认行的转换，
-以及 Claude `/quit` 实际退出所需时间。如果超过 15 秒，卡片会先恢复，进程退出后再消失。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 2026-11-01 输入生命周期补充
 
@@ -563,7 +463,7 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
 
 ## 2026-11-01 操作账本实施（OPT-00、OPT-01）
 
-工作区 `.claude/worktrees/optimistic-actions`（分支 `feat/optimistic-actions`，基线 `ec5b7af`），未提交。
+原实施基线为`ec5b7af`，后续随r32合入；不把早期工作树状态当当前交接。
 
 - **OPT-00 账本核心**：iOS `OperationLedger.swift`、Android `OperationLedger.kt`，纯值、不做 IO、不计时。
   两端各 22 项单测覆盖 L1–L11，另有 5 组固定种子随机序列逐步断言 §7 的六条性质。
@@ -572,15 +472,7 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
   在线列表（`device.ready`、`runtime.online` / `runtime.offline`）、设备私有回执读取和统一时钟都作为账本输入。
   首页隐藏卡片 = 未结算的 `quit` 叠加。删除 iOS `closingRuntimes` / `closeFinished`、Android `closingRuntimes` /
   `watchClosingRuntime` 及各自计时。关闭命令不再进入通用的 `runtimeActions` / `pendingCommands` 跟踪。
-- **验证**：iOS SwiftPM 全量 260 项通过（含 `QuitLedgerTests` 13 项）；Android 单元全量 583 项通过（含 `QuitLedgerTest` 12 项），
-  `assembleDebug`、`assembleDebugAndroidTest` 与 iOS `build-for-testing` 通过。把断线改回“直接恢复卡片”的变异，
-  iOS 有 4 项、Android 有 5 项失败。共享池设备上的定向用例：iOS（iPhone 17 / iOS 27.0）
-  `testSwipeCloseHidesBeforeConfirmationAndRestoresOnRejection`、`testHomeLongPressSelectsAndClosesOnlyCheckedSessions`、
-  `testHomeShortSwipeReboundsAndLongSwipeClosesOnlyThatRuntime`、`testSwipeRightFromLeftSideOpensDirectory` 通过；
-  Android（`Orbis_UI_Polish_35`，API 35）`OptimisticActionsInstrumentedTest`（2）、`HomeSwipeCloseInstrumentedTest`、
-  `HomeSelectionInstrumentedTest` 通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-01/`。
-- **未完成**：手动 R27 的“关闭后断线再重连”一项未执行；UI 回归全量门禁（L1–L4、C01–C18、A1–A4）归 OPT-10；
-  真实 Host 上的断线核对未验证。
+- **验证与未验收**：账本不变量、变异对照与关闭定向结果见`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-01/`；后续r32补关闭后断线设备用例，真实Host核对与完整用户仍未验收，统一见UI回归§6。
 
 ## 2026-11-01 其余种类实施（OPT-H1、OPT-02–OPT-10）
 
@@ -604,22 +496,24 @@ ADR-0055 的本轮实现保留 Host 队列接管后的隐藏恢复副本，直�
 - **OPT-09 Slash 消息**：`slash.execute` 带可选 `messageId`；Codex skill 把它声明为 `clientUserMessageId`，两端按消息乐观显示；
   DSH Web skill 自 2026-11-02 起同样声明；Claude 用户命令与 Pi prompt 模板暂走 §4 兼容兜底（§7.6 缺口 7）。
 
-### 验证（OPT-10，2026-11-01）
+### OPT实施索引
 
-- 单元：iOS SwiftPM 331 项通过（含各种类 Ledger 测试）；Android JVM 664 项通过；Host `host-service`、`codex-runtime` 与 protocol 共 363 项通过，相关文件 lint 通过；全量 typecheck 仅有 main 既有的 `pi-extension` `inputState` 一处错误（本分支未改动这两个包）。
-- iOS 设备（池内 iPhone 17 `Orbis Layout Regression`，iOS 27.0，显式 UDID，`-parallel-testing-enabled NO`）：`OrbisUITests` 全量 67 项，
-  59 通过、8 失败。同设备在 main `e4df87a` 的构建上重跑这 8 项，全部同样失败，本分支未新增失败。其中
-  `testApprovalOverlayKeepsComposerStableWhileSubmitting`、`testToolExportAndInteractionDraftSwitching` 的失败原因是预览夹具：
-  夹具声明 `interactions` 领域为空，旧的 `interaction.requested` 事件被正确忽略。本分支改为把夹具请求放进该领域，并补充预览回执开关
-  （`--preview-respond-reject`、`--preview-launch-fail`、`--preview-model-switch`）及 4 项新用例（审批拒绝、启动立即进入与失败原位、模型切换中发送、A1–A4 外观矩阵）；结果见 UI 回归记录。
-- 人工截图审阅发现 iOS 启动页标题显示占位 id（`launch:…`）：合成的启动 Runtime 未带 `sessionName`，`sessionTitle` 退回到 sessionId。已修正为启动目标名称，并在 `LaunchLedgerTests` 与设备用例中断言。
-- Android 设备（池内 `Orbis_UI_Polish_35`，API 35，私有 adb 端口 + `am instrument` 逐类运行）：151 项，138 通过、5 失败、8 项因需隔离 Host
-  夹具跳过。`SessionArchiveSelectionInstrumentedTest#busyPendingAndDisconnectedSelectionsCannotBeArchived` 仍断言旧行为（归档未结算时
-  卡片留在原列表），已按 §6.4 改写为同等严格的新断言，重跑通过；其余 4 项在 main 构建上同设备同样失败。新增
-  `OptimisticPresentationInstrumentedTest` 5 项通过。
-- A1–A4：Android `OptimisticPresentationInstrumentedTest` 在夜间、字体 1.5、关闭动画下各 5 项通过（设备设置用后恢复）；iOS `testOptimisticStatesAcrossAppearances` 覆盖浅 / 深色、XXXL、减少动画，并在池内 iPhone SE（375pt）重跑。截图已逐张查看。
-- 未完成：手动 C01–C18、R26 / R27 的逐项人工操作与真实 Host 上的断线 / 回执核对未执行（本机隔离 Host 夹具仅有 Windows 脚本；本机没有可由代理操作的模拟器 GUI，人工路径以脚本化交互加截图 / 录屏逐帧审阅代替，不等同人工验收）。
-  不记为验收通过。证据：`.artifacts/ui-regression/2026-11-01-optimistic-actions/opt-10/`。
+旧实施草稿并入本索引；具体账本契约以§5–§7为准，设备 / 用户 / 真实Host未验收状态保留。
+
+| 编号 | 已实施范围 | 边界 |
+| --- | --- | --- |
+| OPT-00 | 纯值账本 / L1–L11 | 不做IO / 自计时 |
+| OPT-H1 | Host设备私有回执 | 按原请求ID核对 |
+| OPT-01 | 接线 / quit | 真实Host断线未验收 |
+| OPT-02 | dismiss | 设备 / 用户状态见OPT-10 |
+| OPT-03 | archive | 成功回执后叠加保持到目录体现 |
+| OPT-04 | queueCancel | 按真实cancelled / delivered / 不可取消核对 |
+| OPT-05 | respond | 敏感回答不回显，拒绝恢复 |
+| OPT-06 | send / waiting | 附件 / 顺序 / V17副本，结算由ADR-0055 outbox负责 |
+| OPT-07 | config | 前置确认 / 连带等待消息 |
+| OPT-08 | launch | 恢复缓存 / 等待行 / 上线顺序 / 焦点交接 |
+| OPT-09 | prompt / skill Slash | 原生声明clientMessageId；未声明沿§4兼容兜底 |
+| OPT-10 | 验收登记 | r32自动与外观有证据，用户R26 / R27及真实Host未完 |
 
 ## 2026-11-02 收尾（ADR-0051 r32）
 

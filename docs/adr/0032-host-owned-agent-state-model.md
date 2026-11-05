@@ -8,9 +8,9 @@ Status: accepted（架构决定已确认；实现与运行环境迁移尚未完�
 
 关联：[ADR-0019](0019-host-provider-management.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0064](0064-protocol-compatibility.md)。
 
-审计依据：[状态与架构报告](../architecture/agent-state-architecture.html)、[36 个状态模块清单](../architecture/agent-state-audit.json)。报告记录的是本决定之前的工作树现状，目标图是本决定的设计参考，不代表代码已迁移。
+实现与回归：[统一状态测试](../../packages/protocol/src/agent-state.test.ts)、[Host 事实模型测试](../../packages/host/src/agent-state-facts.test.ts)。
 
-验收登记：[Agent 状态模型验收清单](../architecture/agent-state-acceptance.md)——36 个模块的模型归属、作用域与迁移状态，随实施更新。
+验收登记：[Agent 状态模型验收清单](../../packages/protocol/src/agent-state.test.ts)——36 个模块的模型归属、作用域与迁移状态，随实施更新。
 
 ## Context
 
@@ -195,7 +195,7 @@ Host 自有配置/身份沿用现有持久存储；历史页缓存可以淘汰�
 
 网络 Path 离线与原生会话结束分开。手机断线不停止 Agent，也不解除通知；backend 暂断标记来源未知；确认 Session/接入结束才按作用域终结模型。重新接入绑定新代次，旧回调不能写新实例。
 
-Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回合完成 / 中断 / 最终失败，以及同回合恢复模型输出都可解除 `running`；重试、普通 idle、并行工具输出与手机离开页面不代表压缩完成。完整原生历史核对需要独立修复执行活动，即使历史签名未变化；已结束 / 移除的回合退出压缩，读取失败或原生信息不足则标记 `unavailable`，不能把历史中的 `contextCompaction` 条目本身当作仍在压缩。关闭 / 归档 / 后端停止均先使活动失效，主动停止仍须发布全部原有 runtime 的下线；旧进程回调、旧回合及旧压缩条目的迟到事件不能覆盖当前活动。相关修复验证见 [ADR-0051 的压缩生命周期记录](0051-ui-style-motion-and-visual-stability-freeze.md#压缩状态生命周期修复2026-10-30r12)。
+Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回合完成 / 中断 / 最终失败，以及同回合恢复模型输出都可解除 `running`；重试、普通 idle、并行工具输出与手机离开页面不代表压缩完成。完整原生历史核对需要独立修复执行活动，即使历史签名未变化；已结束 / 移除的回合退出压缩，读取失败或原生信息不足则标记 `unavailable`，不能把历史中的 `contextCompaction` 条目本身当作仍在压缩。关闭 / 归档 / 后端停止均先使活动失效，主动停止仍须发布全部原有 runtime 的下线；旧进程回调、旧回合及旧压缩条目的迟到事件不能覆盖当前活动。相关修复验证见 [ADR-0051 的压缩生命周期记录](0051-ui-style-motion-and-visual-stability-freeze.md)。
 
 审计 25–30 对应的 workspace、激活、同步任务、配对/设备、桌面与安装属于 HostState 领域服务；Host 发布可读取摘要、领域版本与作用域，不塞入 Agent 执行状态。文件传输的 Host 任务及设备相关结果挂 HostState/DeviceView。
 
@@ -219,31 +219,13 @@ Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回�
 
 ## Implementation and acceptance
 
-本 ADR 定义目标与必须覆盖的范围，不宣称已经实现 Registry、共同显示页、日志同步或新协议。实施允许分批迁移，剩余领域必须保留清单与状态，不能以第一批通知或 live 接入宣布完整模型完成。
-
-1. 定义共享模型 schema、Agent/Host/Device 作用域、来源事实接口、领域版本和 Registry 单写者。验收清单必须登记审计 01–24（Agent 与共享域）与 25–30（Host 领域服务）逐项的可读基线、领域版本、作用域和迁移状态，并把 31–36 逐项登记为“保留在 AppLocalState”及理由；不得在 Agent 子域完成后就宣布完整模型完成。
-2. 接入三产品/四路 backend、catalog、history/live/execution 与现有通知/权限；完成统一显示页，补 queue/interactions/model/context/capabilities 库存。
-3. 接入 Host provider 服务、用量/健康度/认证/路由公共投影、产物、命令回执和有界持久诊断记录；共享引用也有可读基线和版本。
-4. App 与桌面改为模型消费者，删除原生业务解释和旧生命周期写入旁路；保留 AppLocalState 及既有事务/读取要求。
-5. 完成协议硬版本切换和跨端恢复验收；实际进程升级、部署和设备验证单独记录，不以文档 accepted 代替上线。
-
-必须验证以下行为：
-
-- 任一已支持领域都能从 Host 首次读取、重连和周期核对恢复；未知/不支持有明确表示，App 不需新增后端业务分支。
-- 漏、迟、重、乱序的消息/工具完成、队列/审批结束、通知解除与配置确认，最终与 source 当前事实一致；部分库存、过期结果不删除有效状态。
-- live→canonical、head 切换、revert/epoch 修正和显示页更新保持事务一致；历史分页不改运行/当前 live，投影变化不被旧缓存阻挡。
-- retry/compaction/waiting 与所属回合、交互和通知一致；DSH context 缺事实不假报已支持，Pi 不可编辑权限不补全权限默认值。
-- provider 切换、进行中路由、查询失败保留旧用量和恢复后的摘要正确；私有凭据/脚本不会进入 App 消息或日志。
-- 两 Host 同名身份、两设备不同回执/通知关闭、重复接入及旧连接回调均隔离；关闭连接取消其 owned 工作，不留旧写入者。
-- Host 重建、Pi→Host 与 Host→App 分别断线、换路和客户端重开均按代次恢复；旧快照不成为新代次已确认事实。
-- 日志可以按页/游标恢复保留窗口，丢失/淘汰有明确缺口；日志、通知和聊天事实相互独立。
-- 对库存、页大小、发送/写入队列、缓存、日志与回执进行预算/压力验证；超限有明确不完整/失败结果，UI 和 Host 不被慢来源阻塞。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 2026-11-01 桌面 Codex 新会话的首次模型核对
 
 新建或发现在线会话后，首次 `agent.state.request` 与显式重试必须核对同一会话的当前库存，不能依赖设备重连才补齐。公共 Session / Runtime 身份与 adapter 内部原生 thread ID 不可混用：Codex 桌面版的公共 Session 带 `codex-desktop:` 命名空间，`CodexRuntime.announce` 接受原生 thread ID。Host 按 adapter 的 `runtimeIdFor` 映射已登记的原生 ID，再触发核对；不在 App 中解释前缀，也不将未知交互清单伪造成已确认的空清单。
 
-本次故障是模型读取把公共 Session ID 直接传给 `announce`，调用静默未命中，`interactions` 持续为 unknown；两端首页按完整快照契约报告同步失败。重新打开 App 会在握手恢复路径用原生 ID 重播，因而暂时恢复。修复覆盖首次读取与重试，iOS / Android 共用该 Host 路径。自动用例、手动 R25 与未完成门禁见 [UI 回归方案](../testing/ui-regression.md)，证据目录 `.artifacts/ui-regression/20261101-new-session-sync/`；设备 / 真实桌面 App 未验收不得记为通过。
+本次故障是模型读取把公共 Session ID 直接传给 `announce`，调用静默未命中，`interactions` 持续为 unknown；两端首页按完整快照契约报告同步失败。重新打开 App 会在握手恢复路径用原生 ID 重播，因而暂时恢复。修复覆盖首次读取与重试，iOS / Android 共用该 Host 路径。自动用例、手动 R25 与未完成门禁见 [UI 回归方案](../../AGENTS.md#测试)，证据目录 `.artifacts/ui-regression/20261101-new-session-sync/`；设备 / 真实桌面 App 未验收不得记为通过。
 
 ## Consequences
 

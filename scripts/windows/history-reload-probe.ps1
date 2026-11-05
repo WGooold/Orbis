@@ -1,4 +1,8 @@
-﻿[CmdletBinding()]
+﻿<#
+Orbis 测试用途（场景与判定见本文件断言）：
+- 验证已有在线会话的进程重开与真实上滑；PASS / FAIL / INCONCLUSIVE 由脚本判定，缺同窗口对照不算通过。
+#>
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [ValidatePattern('^[A-Za-z0-9._:-]+$')] [string] $Serial,
     [string] $LeaseOwner,

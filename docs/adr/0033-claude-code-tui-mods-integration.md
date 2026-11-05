@@ -4,7 +4,7 @@
 
 Status: accepted（接入方向已确认；Host/插件已对齐其他后端的主要能力并在 v2.1.312 真实 TUI 验证，v2.1.287 最低版本、Windows 终端启动和手机实机界面尚未验收）
 
-关联：[ADR-0003](<0003-runtime-owned-slash-command-menu.md>)、[ADR-0021](<0021-codex-terminal-host-attachment.md>)、[ADR-0025](<0025-native-history-authority-and-versioned-caches.md>)、[ADR-0026](<0026-host-selected-session-sync.md>)、[ADR-0031](<0031-host-permission-management.md>)、[ADR-0032](<0032-host-owned-agent-state-model.md>)。
+关联：[ADR-0003](0003-runtime-owned-slash-command-menu.md)、[ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0032](0032-host-owned-agent-state-model.md)。
 
 ## Context
 
@@ -20,18 +20,18 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
 
 | 事实 | 官方来源 | 证据边界 |
 | --- | --- | --- |
-| CLI v2.1.287 正式加入 Claude Mods；更新说明为 `Added Claude Mods: plugins may now modify deeper behavior` | [v2.1.287 Release](<https://github.com/anthropics/claude-code/releases/tag/v2.1.287>)、[Release 元数据](<https://api.github.com/repos/anthropics/claude-code/releases/tags/v2.1.287>) | `published_at` 为 `2026-10-01T18:00:22Z`，即北京时间 2026-10-02 02:00:22；这是 GitHub Release 公开时间，不是最早内测或所有分发渠道的上线时间 |
-| 官方要求终端使用 v2.1.287 或更新版本；Desktop 内置 Claude Code 从 v2.1.286 支持 Mods | [Mods overview：Turn mods on or off](<https://code.claude.com/docs/en/plugins/mods/overview#turn-mods-on-or-off>)、[Create a mod](<https://code.claude.com/docs/en/plugins/mods/create>) | Desktop 的起点不能用于降低 CLI/TUI 最低版本；早期存在 function hooks 开关，不据此承诺旧版支持 |
-| Mods 可观察提示词、工具和回合，处理命令，读取会话并扩展界面 | [Mods overview](<https://code.claude.com/docs/en/plugins/mods/overview>)、[Events](<https://code.claude.com/docs/en/plugins/mods/events>)、[Reference](<https://code.claude.com/docs/en/plugins/mods/reference>) | 当前 reference 以 v2.1.290 为描述基线，并包含明确标注更高版本的新增项；不能反推所有接口均在 v2.1.287 首发可用 |
-| `$.prompt.submit({ text, asUser: true })` 可向当前会话提交用户输入，但等待 idle 后启动回合；`$.turn.abort`、`$.command.run` 等列于公开 API | [API：Start a turn from a background job](<https://code.claude.com/docs/en/plugins/mods/api#start-a-turn-from-a-background-job>)、[Reference：Mods API methods](<https://code.claude.com/docs/en/plugins/mods/reference#mods-api-methods>) | 不据此宣称原生 steer、follow-up、工作中队列或任意命令均支持；接口存在不证明停止范围、成功确认或交互完整性 |
-| 目标版本加载 mod 后生成的类型声明是该构建的具体接口依据；声明及 API 可随版本变化 | [Create a mod：Get type definitions for your version](<https://code.claude.com/docs/en/plugins/mods/create#get-the-types-for-your-build>) | 当前网页和 GitHub 类型副本不能取代目标二进制的声明及运行验证 |
-| Channels 是与 Mods 分开的公开 MCP 扩展机制：可向打开的 TUI 注入消息，双向 channel 可提供回复工具；声明 permission capability 后可 relay 工具审批 | [Channels](<https://code.claude.com/docs/en/channels>)、[Channels reference：Relay permission prompts](<https://code.claude.com/docs/en/channels-reference#relay-permission-prompts>) | Research Preview；需要 claude.ai 或 Anthropic Console API key，受 Anthropic provider、组织策略和 allowlist 限制。工具审批通过短 `request_id` 与 `allow`/`deny` 回答，本地与远程先回答者生效；不覆盖 project trust、MCP server consent 或 AskUserQuestion。它不是 Mods resolver，也不提供完整 Host 同步协议 |
-| 传统 Claude Code Hooks 与 Mods hooks 是两套接口。`PermissionRequest` 可对即将显示的工具权限请求返回 `allow` / `deny`；`PreToolUse` 可拦截 `AskUserQuestion` 并以 `updatedInput.answers` 提交答案 | [Hooks：PermissionRequest](<https://code.claude.com/docs/en/hooks#permissionrequest>)、[Hooks：PreToolUse decision control](<https://code.claude.com/docs/en/hooks#pretooluse-decision-control>) | `PermissionRequest` 输入含 `session_id`、`tool_name` 和 `tool_input`，但不含 `tool_use_id`；`PreToolUse` 有 `tool_use_id` 且会对每个工具调用运行。命令 Hook 默认等待上限为 600 秒。外部 UI/Host 可由 hook 进程同步等待并通过结构化 JSON 返回决策/答案；这是文档契约允许的实现方式，尚未在 v2.1.310 本机 TUI 实测。它不提供任意 TUI composer 输入接口 |
-| Agent SDK 可枚举本地会话及读取 transcript 消息 | [Agent SDK sessions](<https://code.claude.com/docs/en/agent-sdk/sessions>)、[TypeScript reference](<https://code.claude.com/docs/en/agent-sdk/typescript#listsessions>) | `listSessions()` / `getSessionMessages()` 是 SDK 的 transcript API，不代表 Mods 可读取这些内容，也不证明能附着或控制既有 TUI 的同一实时执行实例 |
-| Remote Control 将本机 Claude Code 会话连接到 Claude App / claude.ai | [Remote Control](<https://code.claude.com/docs/en/remote-control>) | 需要支持的 claude.ai 订阅登录；不支持 API key、非 Anthropic `ANTHROPIC_BASE_URL`、Bedrock、Google Agent Platform 或 Microsoft Foundry。它是官方客户端功能，不是面向 Orbis 的自定义 Host API |
-| Mods 以用户权限运行、不受 Claude 的 Bash sandbox 隔离；可接触文件、凭据、进程及网络，但不能改变原生权限提示展示的内容 | [Mods overview：What a mod can reach](<https://code.claude.com/docs/en/plugins/mods/overview#what-a-mod-can-reach>)、[API：Reach files, processes, and the network](<https://code.claude.com/docs/en/plugins/mods/api#reach-files-processes-and-the-network>) | bridge 必须自行约束远程操作，不把 Mods 的机器权限直接授予手机 |
+| CLI v2.1.287 正式加入 Claude Mods；更新说明为 `Added Claude Mods: plugins may now modify deeper behavior` | [v2.1.287 Release](https://github.com/anthropics/claude-code/releases/tag/v2.1.287)、[Release 元数据](https://api.github.com/repos/anthropics/claude-code/releases/tags/v2.1.287) | `published_at` 为 `2026-10-01T18:00:22Z`，即北京时间 2026-10-02 02:00:22；这是 GitHub Release 公开时间，不是最早内测或所有分发渠道的上线时间 |
+| 官方要求终端使用 v2.1.287 或更新版本；Desktop 内置 Claude Code 从 v2.1.286 支持 Mods | [Mods overview：Turn mods on or off](https://code.claude.com/docs/en/plugins/mods/overview#turn-mods-on-or-off)、[Create a mod](https://code.claude.com/docs/en/plugins/mods/create) | Desktop 的起点不能用于降低 CLI/TUI 最低版本；早期存在 function hooks 开关，不据此承诺旧版支持 |
+| Mods 可观察提示词、工具和回合，处理命令，读取会话并扩展界面 | [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[Events](https://code.claude.com/docs/en/plugins/mods/events)、[Reference](https://code.claude.com/docs/en/plugins/mods/reference) | 当前 reference 以 v2.1.290 为描述基线，并包含明确标注更高版本的新增项；不能反推所有接口均在 v2.1.287 首发可用 |
+| `$.prompt.submit({ text, asUser: true })` 可向当前会话提交用户输入，但等待 idle 后启动回合；`$.turn.abort`、`$.command.run` 等列于公开 API | [API：Start a turn from a background job](https://code.claude.com/docs/en/plugins/mods/api#start-a-turn-from-a-background-job)、[Reference：Mods API methods](https://code.claude.com/docs/en/plugins/mods/reference#mods-api-methods) | 不据此宣称原生 steer、follow-up、工作中队列或任意命令均支持；接口存在不证明停止范围、成功确认或交互完整性 |
+| 目标版本加载 mod 后生成的类型声明是该构建的具体接口依据；声明及 API 可随版本变化 | [Create a mod：Get type definitions for your version](https://code.claude.com/docs/en/plugins/mods/create#get-the-types-for-your-build) | 当前网页和 GitHub 类型副本不能取代目标二进制的声明及运行验证 |
+| Channels 是与 Mods 分开的公开 MCP 扩展机制：可向打开的 TUI 注入消息，双向 channel 可提供回复工具；声明 permission capability 后可 relay 工具审批 | [Channels](https://code.claude.com/docs/en/channels)、[Channels reference：Relay permission prompts](https://code.claude.com/docs/en/channels-reference#relay-permission-prompts) | Research Preview；需要 claude.ai 或 Anthropic Console API key，受 Anthropic provider、组织策略和 allowlist 限制。工具审批通过短 `request_id` 与 `allow`/`deny` 回答，本地与远程先回答者生效；不覆盖 project trust、MCP server consent 或 AskUserQuestion。它不是 Mods resolver，也不提供完整 Host 同步协议 |
+| 传统 Claude Code Hooks 与 Mods hooks 是两套接口。`PermissionRequest` 可对即将显示的工具权限请求返回 `allow` / `deny`；`PreToolUse` 可拦截 `AskUserQuestion` 并以 `updatedInput.answers` 提交答案 | [Hooks：PermissionRequest](https://code.claude.com/docs/en/hooks#permissionrequest)、[Hooks：PreToolUse decision control](https://code.claude.com/docs/en/hooks#pretooluse-decision-control) | `PermissionRequest` 输入含 `session_id`、`tool_name` 和 `tool_input`，但不含 `tool_use_id`；`PreToolUse` 有 `tool_use_id` 且会对每个工具调用运行。命令 Hook 默认等待上限为 600 秒。外部 UI/Host 可由 hook 进程同步等待并通过结构化 JSON 返回决策/答案；这是文档契约允许的实现方式，尚未在 v2.1.310 本机 TUI 实测。它不提供任意 TUI composer 输入接口 |
+| Agent SDK 可枚举本地会话及读取 transcript 消息 | [Agent SDK sessions](https://code.claude.com/docs/en/agent-sdk/sessions)、[TypeScript reference](https://code.claude.com/docs/en/agent-sdk/typescript#listsessions) | `listSessions()` / `getSessionMessages()` 是 SDK 的 transcript API，不代表 Mods 可读取这些内容，也不证明能附着或控制既有 TUI 的同一实时执行实例 |
+| Remote Control 将本机 Claude Code 会话连接到 Claude App / claude.ai | [Remote Control](https://code.claude.com/docs/en/remote-control) | 需要支持的 claude.ai 订阅登录；不支持 API key、非 Anthropic `ANTHROPIC_BASE_URL`、Bedrock、Google Agent Platform 或 Microsoft Foundry。它是官方客户端功能，不是面向 Orbis 的自定义 Host API |
+| Mods 以用户权限运行、不受 Claude 的 Bash sandbox 隔离；可接触文件、凭据、进程及网络，但不能改变原生权限提示展示的内容 | [Mods overview：What a mod can reach](https://code.claude.com/docs/en/plugins/mods/overview#what-a-mod-can-reach)、[API：Reach files, processes, and the network](https://code.claude.com/docs/en/plugins/mods/api#reach-files-processes-and-the-network) | bridge 必须自行约束远程操作，不把 Mods 的机器权限直接授予手机 |
 
-2026-10-14 制定本 ADR 时未进行目标版本的插件加载、类型检查或真实 TUI 双向操作测试；以上链接只证明上游事实。2026-10-26 按用户要求仅验证最新版 v2.1.310，沿用当前供应商配置完成类型检查、插件校验、模拟测试及部分真实 TUI 操作，详见[验证报告与独立探针](../../spikes/claude-mods-validation/README.md)。插件提交及真实回复、等待 idle 的排队、无工具主回合停止、过期停止拒绝、基础 clear/resume 和 idle reload 已观察；模型主动工具调用、原生交互回答及完整历史恢复尚未通过验收。这不是 Host/App 双向接入验收，也不改变 §2 的最低版本要求。官方网页会更新，实施时仍须逐版本记录生成类型和测试结果。
+2026-10-14 制定本 ADR 时未进行目标版本的插件加载、类型检查或真实 TUI 双向操作测试；以上链接只证明上游事实。2026-10-26 按用户要求仅验证最新版 v2.1.310，沿用当前供应商配置完成类型检查、插件校验、模拟测试及部分真实 TUI 操作，详见[验证报告与独立探针](0033-claude-code-tui-mods-integration.md)。插件提交及真实回复、等待 idle 的排队、无工具主回合停止、过期停止拒绝、基础 clear/resume 和 idle reload 已观察；模型主动工具调用、原生交互回答及完整历史恢复尚未通过验收。这不是 Host/App 双向接入验收，也不改变 §2 的最低版本要求。官方网页会更新，实施时仍须逐版本记录生成类型和测试结果。
 
 ## Decision
 
@@ -113,11 +113,7 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 ### 7. 实施记录（2026-10-29）
 
-- **历史权威**：Host 直接读取原生 transcript（`<CLAUDE_CONFIG_DIR 或 ~/.claude>/projects/*/<sessionId>.jsonl`），按 `uuid` / `parentUuid` 投影为标准条目，经 `RecoverableSessionSource` + `SessionSyncPreparer` 回答 `session.sync`，与 DSH 后端同一路径。`isMeta`、侧链（子 Agent）、附件、系统行不进主路径，但仍参与父链解析；多块 `tool_result` 拆成独立条目；空 thinking（仅签名）不显示；压缩摘要投影为 `compaction`。bridge 的 `session.append` 只通告行身份，正文以磁盘行为准，不从文本推断身份。`$.session.messages()` 在 v2.1.312 的测试环境无法取得返回形状，未采用。
-- **实时内容**：`turn.step` 流式输出与工具事件进入会话源的 live 状态。2026-10-31 修订：按 §13 的原生步骤归属建立 UUID 集合；原子交接发生在步骤边界，不再等整轮结束统一清空。结束轮次的兜底清理仅处理本轮消息，已报告但尚未落盘的步骤保留到后续核对。
-- **插件登记**：安装 Host 默认调用 Claude 自己的 `claude plugin marketplace add <插件目录>` 与 `claude plugin install orbis-host-session-link@orbis-host --scope user`；Windows 安装器直接登记，macOS 拖拽安装与便携包在首次打开 Host 时登记。插件目录同时是本地 marketplace，Claude 原地加载，应用更新后重新打开 Host 时重新指向，不依赖 Relay 激活。未安装 Claude Code 时跳过；安装后重开 Host 会重试。设置“让终端里运行的 Claude Code 连接 Orbis”默认开启，关闭时 `uninstall` 并移除 marketplace，更新保留显式关闭。Windows 卸载器也移除插件；macOS 删除应用前可先关闭此项。原登记命令在 v2.1.312 隔离配置下实测通过。
-- **客户端**：iOS / Android 新增 `claude` 身份（名称、配色、中性图形标记）、目录筛选；Claude 会话不提供附件入口，运行中发送直接按 follow-up 提交，不提供 Steer；新建会话列表不含 Claude（Host 的 `launchableAgents` 也排除它）。
-- **仍未验收**：见 §8 末尾。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。
 
 ### 8. 对齐其他后端（2026-10-29）
 
@@ -192,13 +188,13 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 - 修复已打开 Claude 会话时首页连接胶囊长时间显示“同步失败”的初始化缺口：`announce` 原先只重播元数据与命令，完整 `interaction.snapshot` 直到 `session.sync` 完成才发布；首次统一状态读取因此得到 unknown 的交互领域，恢复依赖后续历史同步。
 - `ClaudeBackend.announce` 对在线 Mods / Hook runtime 立即发布 Hook bridge 持有的完整待答清单，包括明确的空清单；新设备握手、首页读取 / 重试与历史同步完成共用此入口。离线 runtime 不发布空清单，已有审批保持原身份及等待状态。历史尚未读完不影响首页需要的 identity / execution / interactions；历史、发送与审批完成仍按原有权威回执确认。
-- 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
+- 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [UI 回归方案](../../AGENTS.md#测试) §6 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
 
 ### 17. 长会话 resume 后历史停更（2026-11-03）
 
 真实运行 Host 的只读加密探针确认：Claude 原生追加正常，Host preview 的 head / seq 却停留在恢复前；指定最新 head 时返回 `session_sync_model_rejected`。根因和共用 source 修复按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03)：首次恢复超过 256 条 canonical 条目不能永久占住增量发布队列，必须通过 unknown 边界和有界 checkpoint 收敛。此故障不依赖 Claude 的额度确认页，也不要求重新执行已收到的手机消息。
 
-恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [UI 回归方案](../testing/ui-regression.md) §6 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
+恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [UI 回归方案](../../AGENTS.md#测试) §6 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
 ### 18. macOS 启动脚本执行确认（2026-11-03，源码验证 / 未部署）
 
@@ -206,7 +202,7 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 macOS 启动器须等待 `open` 的退出结果（15 秒上限），再等待脚本在真实 TTY 执行后的私有回执（10 秒上限）。没有回执时清理本次脚本 / 临时设置并明确说明“Terminal 未确认执行 Claude Code 启动脚本”，取消相应 bridge 等待；回执仅证明脚本已运行，连接成功仍只认原生 hello。Windows 路径与 Codex 原有错误文案保持；不自动重试、不回答系统提示、不终止既有 TUI。
 
-关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [UI 回归方案](../testing/ui-regression.md) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
+关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [UI 回归方案](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
 
 ### 19. 主回合与后台子任务（2026-11-03）
 
@@ -221,13 +217,4 @@ macOS 启动器须等待 `open` 的退出结果（15 秒上限），再等待脚
 
 ## Verification and consequences
 
-先在隔离的官方 TUI 中验证 bridge，再进行 Host/App 集成。最低版本及选定当前版本均须记录实际测试结果：
-
-1. 电脑发消息，手机获得原生消息、回复及工具；手机发消息，电脑显示同一 Session 的输入及结果；没有第二个执行实例或重复执行。
-2. 中途加入流式回合能恢复已生成内容；live 到 canonical 无重复；有界历史读取不把缺失 parent/head 报完整。
-3. 本地和手机分别停止、批准、拒绝或回答问题，两端状态收敛；竞答、重复、取消和迟到回答不误放行。
-4. 手机/Host 断线、重连、Host 重建、mod reload、会话切换和压缩后能重取基线；旧代次命令不作用于新 Session，源端执行不因传输断线被结束。
-5. 多 TUI、同 cwd、多设备及多 Host 的身份、回执和交互隔离；低版本、策略禁用、能力缺失、外发溢出及来源未知均明确报告。
-6. bridge 只使用经验证的原生 API，正常观察不改写用户提示词/工具结果或权限规则；认证失败时不接受远程操作，凭据和未经脱敏的诊断不发送到手机。
-
-本决定选择 Mods 作为 Claude Code 官方 TUI 的接入路径，不宣称上游已经提供完整远程控制服务，也不宣称 Orbis 已完成 Claude 支持。兼容性清单、原生交互缺口、实现状态和实际迁移必须分别记录。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

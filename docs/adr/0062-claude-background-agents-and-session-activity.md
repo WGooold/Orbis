@@ -62,17 +62,4 @@ App 的左滑、选择 / 批量关闭按已确认的 quit 能力启用；能力�
 
 ## 实施与验证记录（2026-11-03）
 
-- 原生清单在既有 750ms poll 中串行读取，不阻塞主命令轮询；不变清单每 3 秒发送确认心跳，Host 去重投影。读取超过 3 秒、解析失败或超过 256 项均转 unknown；Host 超过 5 秒未收到有效清单即撤回确定性和 quit。重连先发布 unknown，保留最后清单，只有完整 ready 快照可以按缺席移除。退出前及异步进程身份核对后均检查任务门禁。
-- 子工具 / 子回合完成保留 agentId、toolCallId；主回合完成只结算主循环审批。孤立子 Hook 或缺少 agentId 的子 transcript 请求交回原生处理，不猜父会话或创建独立卡片。
-- 双端复用生产折叠 / 按压组件，以 Runtime + Session 隔离展开状态；主输入 / stop 继续读原 phase。首页左滑、长按选择、批量关闭以及实际发送入口均按 quit 能力核对，能力变化撤销旧选择。
-- Node 全量 160 文件、1704 通过 / 5 条件跳过；Claude 官方插件测试 runner 19 / 19（模拟 API，不是实际模型执行），plugin validate、TypeScript 与受影响 ESLint 通过。Swift 359 / 359、Android JVM 689 / 689，iOS Simulator Debug / UI test bundle、Android Debug / AndroidTest 均构建通过。
-- 两端共用设备入口均等待 40 秒后被其他任务设备锁阻塞，没有启动设备。L3–L4、C01–C18 / R61 / A1–A4、iPad、同设备基线对照与真实隔离 Claude TUI 子任务联动未运行，不能记验收通过。
-- 源码与证据在 `.artifacts/ui-regression/20261103-claude-background-agents/summary.md`；未安装本次包、未部署 Relay 或重启用户 Host。协议升级的启用须随完整配套交付进行，不能只重启旧安装包验证此功能。
-
-## 无设备补验与提交范围（2026-11-04）
-
-用户在再次定向终止旧模拟器仍未退出后，选择保留现场、继续无设备验证，并保留此前提交本次改动的要求。以 `df02972` 为基点建立只含本任务及共享资源解锁文档的独立候选快照，排除其他图标、回答反馈和 Codex 未提交修改；原工作区内容不回退。
-
-候选 Node 全量 1704 通过 / 5 既有条件跳过，官方 Mod runner 19 / 19、TypeScript / 受影响文件 ESLint 通过；Swift 359 / 359、iOS App 与 UI test bundle 构建通过；Android JVM 685 / 685、Debug / AndroidTest 构建通过。Android 比原共享工作区 689 项少的 4 项属于排除的其他任务测试。首次隔离 iOS 构建暴露提交范围漏选 `RuntimeStatusLabel` 文案 / 状态色改动，补入同文件的本任务片段后重新通过，原失败保留。
-
-本轮没有启动模拟器或连接用户 Host，没有执行 L3–L4、C01–C18、R61、A1–A4、同设备基线或真实 Claude TUI 联动。旧 emulator PID 15559 在 SIGTERM / SIGKILL 后仍监听 5680 / 5681，设备保护锁保留；本任务维护锁与所有构建租约均已释放。提交不代表设备验收或部署，S26 保持已实施 / 未验收。证据：`.artifacts/ui-regression/20261104-claude-background-validation/summary.md`。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

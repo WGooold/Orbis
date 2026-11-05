@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 状态 / 供应商（S19、S22）
 package com.orbising.orbis
 
 import android.content.Context

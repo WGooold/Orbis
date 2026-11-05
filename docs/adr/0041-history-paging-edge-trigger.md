@@ -49,5 +49,4 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 
 ## Verification
 
-- 单测（`HistoryPagingTest`）：同一 index 的重复通知不触发；离开顶部再进入触发；加载中/无更多/失败时不触发；首次组合不触发。
-- 设备：停在顶部 10 秒，`range=history` 不增加；每上滑一次最多一页；流式输出期间入站队列不出现持续积压（与 ADR-0040 的验证共测）。
+[测试规则](../../AGENTS.md#测试)；[HistoryPagingTest.kt](../../android/app/src/test/java/com/orbising/orbis/HistoryPagingTest.kt)；[原始证据](../../.artifacts/)。

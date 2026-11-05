@@ -51,36 +51,11 @@ macOS Claude 开窗回执补充（2026-11-03）：按 [ADR-0033 §18](0033-claud
 
 ## 验证计划
 
-1. 每种后端新目录启动、恢复、已有信任、显式禁用、配置错误、自定义配置目录。
-2. 检查所有生产启动入口；Pi 两种模式、Codex remote 与独立 TUI、Claude 桌面与手机、DSH 两个协议均有对应测试。
-3. 核对目标目录、argv、配置字段、调用顺序与握手，确保不改运行中工具审批、不自动批准第三方授权。
-4. 真实原生启动 smoke 与移动端完整回归分别记录。构建 / 模拟通过不能替代真实账号、Windows 或设备验证。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 实施与结果
 
-### 源码实施
-
-- `packages/host/src/agent-startup.ts`：Pi 的公开 `--approve` 接入 TUI / RPC 及桌面入口，只对本进程生效；Codex 独立 TUI 用进程配置，remote TUI 用实际 app-server 的 `config/read` / `config/batchWrite`，仅写所选目录的 `trust_level`。配置写入失败不登记 pending；新建 thread 前先处理需要持久化的授权。
-- `claude-startup.ts` / `claude-launcher.ts`：读取当前配置目录、cwd 项目设置、适用的 Git 主 checkout local 设置和文件型 managed settings。正确读取 `pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly`；对管理范围无法确认的 Orbis mod 保守报错，不豁免策略。`allowManagedHooksOnly` 要求管理配置启用 Orbis 插件。
-- 项目 MCP 决策：本次用户启动授权已声明的具名服务器，排除 `disabledMcpjsonServers`；仅用私有临时 settings 文件传递，退出 / 开窗失败清理，不写 `enableAllProjectMcpServers`，不批准 OAuth，不更改工具权限。无项目 MCP 时不附加设置。此行为扩展早期仅处理目录信任的范围。
-- Claude 登录预检只读取状态，不输出原生账户详情；明确桌面 setup 保留原生登录 / 初始化入口，手机启动缺登录时不打开等待登录的终端。失败取消 `ClaudeModsBridge` 等待；真实 hello 才完成手机会话启动。
-- `dsh-client.ts`：initialize 期间收到无处理器的原生交互请求时拒绝并中止准备，避免仅等到超时。ACP / Web 现有服务认证、session API 及运行中审批继续由原适配器负责。
-- `macos-agent-terminal.ts`：桌面 Pi / Codex 使用私有、自删 `.command` 文件和系统 `open`，避免为开终端请求 Apple Events 自动化授权；只写明确允许的非凭据环境字段，不复制全部 Host 环境。
-
-### 验证与交付边界
-
-- 提交前隔离复核：仅导出本次暂存内容，Host / DesktopRuntime / 后端生命周期共 74 项通过、2 项 Windows 条件未运行，lint 通过。该快照与提交前主线 `eafee84` 的独立 `npm run typecheck` 均在 `packages/pi-extension/src/index.ts:514` 报同一个 `RuntimePort.inputState` 缺失错误；完整共享工作树的较早类型检查通过不能代替本次提交快照通过。未把其他任务的 RuntimeBridge 修改并入本提交；日志见 `.artifacts/ui-regression/20261101-agent-on-demand/commit/`。
-
-- App 按需启动专项（r30，手动编号 R32；R31 保留给最近提问提示）：Host / DesktopRuntime 61 项通过，含两类 runtime 已接入时不调用启动回调的加密链路回归；Codex Desktop / DSH Web 生命周期 13 项通过，2 项 Windows 条件用例未运行。类型检查、lint、Android 571 JVM 与 Swift Core 237 项通过。iPhone 17 全量 67 项为 55 通过 / 12 失败，其中新增 DeepSeek 用例因原生合并辅助功能标签定位错误而失败，修正测试定位后新建页整组 2 项通过，覆盖浅色、深色、XXXL 与减少动画。Android 两次设备尝试因 ADB 断开 / 崩溃未得到有效仪器结果；完整 C01–C18、375pt 窄屏及 R32 真后端仍未验收。证据与所有失败保留在 `.artifacts/ui-regression/20261101-agent-on-demand/summary.md`；未部署当前 Host 安装包。
-- 相关 Host 自动回归、类型检查和 lint 的最终命令 / 退出码见 `.artifacts/ui-regression/20261101-agent-startup/summary.md`；不得将全工作区并发改动归为本任务。
-- Pi 1.4.0 隔离原生 RPC 对照：`--no-approve` 不加载项目 prompt，`--approve` 加载；两次都收到原生响应，未创建持久信任文件。未调用模型。
-- Codex 0.165.0 隔离 `CODEX_HOME` 原生 app-server：项目写入返回 `ok`，其他配置未变化；不等同于 TUI / Desktop / Windows 实机验收。
-- Claude 2.1.316 在全新嵌套 Git 项目直接进入 composer，具名 MCP fixture 进程确实启动；未手动回答项目 / MCP 确认。证据为 `claude-mcp-terminal.json` 与 `mcp-native-started.json`。会话曾出现在 Host 诊断中，但后续只读 poll 未确认，不能以该次 smoke 声称完整连接门禁通过。较早目录信任真实握手证据仍见 ADR-0033 §14。
-- 未完成：Windows 真终端、Codex Desktop 新账号、DSH 真后端各类首次准备、两端 L1–L4 / C01–C18 / A1–A4 与启动专项 R29 / R30。当前 Host 安装包未替换或重启，此处是源码和局部原生验证，不是全平台交付。
-
-### 尚未支持的首次流程
-
-不能声明“所有首次审批均可在手机完成”。账号登录 / MFA、MCP OAuth、Claude 首次 onboarding / 第三方 Mods 自有授权、操作系统授权，以及 MDM / 服务端管理策略的完整有效配置检测，仍缺少统一手机处理接口；现有实现只能对可识别条件提前失败，对其余条件等待真实握手或明确超时。后续若实现登录链接 / 设备码 / 启动前审批面板，必须另补协议、两端交互、敏感状态生命周期与真实设备验收。不得以写入 onboarding 完成标记、demo 模式或模拟确认掩盖缺口。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 依据
 

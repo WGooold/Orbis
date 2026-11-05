@@ -183,13 +183,4 @@ GUI 重开时的 `thread/queue/list` 是只读查询，不属于用户并发操�
 
 ## Verification（未来实施验收）
 
-- 用户消息和助手回复边界准确；最后一轮回复为 no-op；原生 thread 和 Orbis Session 身份不变。
-- 手机回退后，两端加载同一保留历史；桌面/TUI 原生回退后，手机也更新。确认通知收到与 transcript 刷新分别成立。
-- 自身广播先于响应、重复通知、连续回退、迟到 item、分页读取交叠和 Host 重连时，不重复 revert，不把旧尾部接回当前历史。
-- 保留节点在实时、重放和 Host 重启后的 canonical 表示完全一致；真实冲突仍被拒绝，旧尾部缓存保留且不成为当前 leaf。
-- 在干净进程、Host 重启、重复 `thread/turns/list`、resume 和 revert 后，确定性重建产生字节级相同的 Entry 表示；旧 canonical 迁移或受控重建有明确结果。
-- revert 读取期间插入新 turn、第二次 revert、重复/迟到 `thread/reverted` 和 Host 重连时，旧协调代次不能提交或复活历史。
-- 桌面 archive/unarchive/open 任一步失败、结果未知及补偿失败均可恢复；Host 在各阶段意外退出后可核对未完成流程。子 thread 原归档/loaded 状态、正在工作或已归档但重新加载的 child、手工并发归档和 rollout 路径变化处理正确。
-- TUI 仅关闭有可信归属的目标实例；切换 thread 后仍能准确识别；watchdog 不误下线；重开失败不影响其他终端。
-- 操作与新 turn、排队任务、审批或外部手工操作竞争时不自动中断新工作；成功回退后的刷新重试不再次回退。
-- 使用真实桌面 GUI 和 Windows TUI 验证历史加载与后续消息，而非仅断言 RPC 成功；升级 Codex 后重复相应兼容性验收。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。

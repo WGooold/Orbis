@@ -62,48 +62,11 @@ Relay 的带宽成本、延迟、并发与文件吞吐需要实际验证；不�
 
 ## Verification
 
-| 场景 | 验收要求 |
-| --- | --- |
-| 无可用 LAN | 直接建立 Relay E2E，启动、交互与重连正常 |
-| 两条路径可用 | 始终选择 LAN；先连 Relay 后连 LAN 也会切换；Host 公告与手机出站路径一致 |
-| 路径故障与恢复 | LAN 断开回落 Relay、恢复切回；Relay 故障不误伤有效 LAN；两路均断开才离线 |
-| 旧设置与非法载荷 | 旧排序不再读取、下发或生效；未知控制和非法路径不能改变选路；两种入口均拒绝不匹配版本 |
-| 聊天、同步与文件 | 序号、重放保护、队列边界、去重、同步事务和持久化续传规则保持；无跨 Host 污染 |
-| 两端设置及连接显示 | 没有排序入口和保存逻辑；仅显示实际 LAN / Relay 状态；管理边界准确 |
-| 构建、升级与发布 | 三端构建通过，依赖与包内容一致；配对、身份与用户数据保留；同版切换及 Relay 容量验证有记录 |
-
-设备和网络验收遵守[隔离测试说明](../testing/isolated-host/README.md)，使用隔离状态与合成会话。
+[测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 实施与验证记录
 
-2026-10-30，代码在独立 worktree 完成，实施基线为 `aa6dd8b`。已适配并合入 main 的当前供应商与首页实现；生产发布尚未执行。
-
-已完成：两路径协议与连接摘要、固定选路、设置及全部下游偏好逻辑删除、依赖及项目引用清理、配置与部署文档更新。三端统一协议 16。仓库文档、历史 ADR、审计报告和预览图统一使用 LAN / Relay；非法输入测试使用通用不支持路径与控制载荷。
-
-| 范围 | 已有验证结果与边界 |
-| --- | --- |
-| Node | 构建、类型检查和 lint 通过；可移植套件 137 个文件、1377 项通过、5 项跳过；包括加密 LAN / Relay 传输、故障恢复和未知控制不改变选路 |
-| 最终协议复核 | 连接摘要收紧至两条后，协议、HostService 和 HostState facts 共 63 项再次通过 |
-| Android | 479 项单测通过，无失败或跳过；Debug APK 构建通过；lint 为 0 错误、15 警告；非法路径公告不改变生效路径 |
-| iOS | 173 项核心测试、15 个 suite 通过；包含隔离 localhost Relay / LAN、重连、双 Host 与加密文件传输；Simulator Debug 构建和包内运行时依赖检查通过 |
-| iOS 设置页 | 1 项 UI 回归通过，截图确认没有排序控件，供应商入口与切换流程正常 |
-| 运行包与产物 | Host 打包 Node v22.23.2 及 50 个运行依赖；包内 Node 加载协议 16 并验证两路径约束；Host 运行包、Android APK 和 iOS 应用包的依赖清单与文件检查通过 |
-
-文档统一后重新执行定向回归：Node 协议 / HostService 59 项、Android LAN 2 项、iOS Store 54 项通过，修改的 TypeScript 文件 lint 通过。
-架构报告的 6 个页面、36 个模块详情、筛选、源码展开、Escape 关闭和桌面 / 手机横向布局检查通过，重新生成并复核 3 张预览图，无脚本错误或外部网络请求。
-
-Android lint 同时修复基线 `StreamingText.kt` 的字体常量组合：改用等价的 `BOLD_ITALIC` / `BOLD` / `ITALIC` / `NORMAL` 分支，字体行为保持。
-
-本机 Node 全量测试有 11 项 Windows 平台假设失败，涉及 `codex-shim.test.ts`、`desktop-terminal.test.ts`、`sessions.test.ts`、`spawner.test.ts` 和 `packages/pi-extension/src/runtime-log.test.ts`。
-上述 1377 项为排除这五个文件后的可移植套件，不代表 Windows 全量套件通过。日志、截图、lint 报告与包审计保存在 worktree 已忽略的本地构建产物目录。
-
-2026-10-30 合并验收：在包含当前首页及状态变更的集成版本上，Node 可移植套件 140 个文件、1429 项通过、5 项跳过；Android 520 项单测通过、应用与仪器测试包构建及 lint 通过；iOS 200 项核心测试、17 个 suite、Simulator Debug 构建与运行时依赖检查通过。类型检查与 lint 通过。共享池内 iPhone SE 的 `testFixedRoutingAndStatusProviderSwitch` 通过，确认没有排序或空设置入口且供应商切换正常；最新供应商与配额界面保持。纳入最新首页与 Codex 生命周期提交后，最终协议、选路、DeviceLink、HostService 与 Codex 共 248 项定向回归再次通过，重建、类型检查及 lint 通过。结果保存在原 worktree 的 `.artifacts/merge-back/`。
-
-集成时供应商功能已移至连接状态页，故删除空设置页及其导航、预览入口，并按 ADR-0051 的 S18–S19 更新冻结基线至 r13；相关首页与 Codex 在途改动按原归属保留，不纳入本次功能提交。
-
-发布前仍需执行 Windows 全量测试、Windows / macOS 原生安装包和正式签名移动产物验证、Android 连接状态页仪器测试、真机覆盖升级与实际网络故障切换、Relay 容量验证及生产版本切换。
-
-生产 Host / Relay、真实会话与配对数据均未修改。代码实施和线上发布分别验收。
+[根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。
 
 ## 2026-11-04 原生 QUIC 补充
 

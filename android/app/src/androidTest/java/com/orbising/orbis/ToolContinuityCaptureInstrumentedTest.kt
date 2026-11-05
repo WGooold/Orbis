@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 需要隔离 Host（V20）
 package com.orbising.orbis
 
 import android.content.Context

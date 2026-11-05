@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - MOT-20 / SC42（MOT-20、SC42、R54、S24、V01、V03）
 package com.orbising.orbis
 
 import androidx.compose.foundation.lazy.LazyListState

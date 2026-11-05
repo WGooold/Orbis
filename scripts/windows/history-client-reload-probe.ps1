@@ -1,3 +1,7 @@
+<#
+Orbis 测试用途（场景与判定见本文件断言）：
+- 验证已有在线 Codex 的客户端 / 连接重建后同窗口缓存复用；不代表进程重开或完整 UI 锚点验收。
+#>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [ValidatePattern('^[A-Za-z0-9._:-]+$')] [string] $Serial,

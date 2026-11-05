@@ -195,27 +195,7 @@ APP 对同一 Host 代次、同一归属只接受较新的完整集合，首次�
 
 ## 10. 验证矩阵
 
-| 场景 | 必须验证的结果 |
-| --- | --- |
-| 重连提示与 sandbox / config / refresh 告警同时存在 | 多项独立展示，重连恢复只结束自己的 condition |
-| 相同文字从重试变成最终失败 | 原生语义决定结果，原子替代，不按字符串相等漏掉变更 |
-| 连续重试、重复请求终态、重复来源批次 | 同 occurrence 幂等，不无限增长，不延长 outcome 期限 |
-| 其他 turn 的输出、迟到报错、旧 refresh operation 成功 | 不结束或复活当前归属的通知 |
-| 来源→Host 最后一个 resolve 丢失，随后没有新聊天 | 来源集合核对修复；若原生不可重取，明确未知，不伪报健康 |
-| Host→APP 最后一个解除快照丢失 | 前台周期核对 / 重连完整集合清除，正文 unchanged 不阻止修复 |
-| 通知快照先于 / 后于 session.patch、ctl / msg 插队 | 两套版本各自安全；不绕过来源分支和回合核验 |
-| 新版本快照先到、旧版本晚到；通知 seq 跳跃 | 完整新版本生效，旧版本不回退，无需逐项回放 |
-| 来源核对失败、局部列表、资源超限 | 不将缺席当作解除，保留最后已知集合并明确未知 |
-| Pi 重连，手机到 Host 始终在线 | 完整来源重播恢复条件状态，不只重播 capabilities |
-| DSH socket 已连，但会话流尚未恢复 | 恢复提示继续有效，状态确认后结束 |
-| Host 重建、旧高 transport sequence、旧生产者回调 | 握手建立新代次基线，旧序号不压制新基线，旧实例不能复活通知 |
-| 原生 revert / 分支切换 / Session 重新激活 | 只结束已经确认失效的归属，当前 sandbox 等独立问题保留 |
-| 两台设备，只有一台提交回答失败或关闭提示 | 提交失败与关闭按设备隔离；共享源端故障仍可见 |
-| 手机切换会话后收到旧定向快照 | 归位原会话或丢弃，不污染新会话 |
-| Host 到期 / 手机时钟偏移 / APP 暂停后恢复 | Host 到期为权威；重取后无过期 outcome，不靠手机猜 condition 恢复 |
-| 通知过期、用户关闭、归属结束 | 审批不被隐式提交，失败历史、消息 / 队列 / 传输结果仍保留 |
-
-需要 Host store 和来源适配的故障注入单测、协议拒绝非法归属 / 超限数据测试、Android reducer 测试，以及真实断连 / 重连 / 多设备验证。测试桩通过、APK 构建完成和用户运行的 Host 已加载修复是不同的验证事实，应分别记录。
+[根部测试约束](../../AGENTS.md#测试)；[notification-store.test.ts](../../packages/host/src/notification-store.test.ts)；[NotificationsTests.swift](../../ios/Orbis/Tests/NotificationsTests.swift)。
 
 ## 11. 取舍
 
@@ -229,24 +209,4 @@ APP 对同一 Host 代次、同一归属只接受较新的完整集合，首次�
 
 ## 12. 实施与验证记录
 
-2026-10-10，协议 12 的共享模型、Host 中间层、Codex / Pi / DSH 来源适配和 Android 多通知展示已接入。第 7 节逐项记录代码状态与原生限制。来源尚未完成核对时，Host 确认的过期、解除和设备关闭通过 `removedNotificationIds` 单独生效；Android 保留其他未知 condition，避免已结束提示长期挂在顶部。
-
-| 验证 | 本次结果与边界 |
-| --- | --- |
-| Windows 工具链 | Node 为 `C:\nvm4w\nodejs\node.exe`；Android 使用 Windows JDK、SDK 和串行构建入口 |
-| TypeScript / workspace 构建 | `npm run typecheck`、`npm run build` 通过，运行时 dist 已生成 |
-| Node 全量测试 | 88 个测试文件、877 项测试通过，包含协议、Host store 和来源故障注入测试 |
-| 加密 Relay socket | 真实 socket 与加密 Envelope 测试通过；两台设备的通知关闭视图隔离已覆盖。来源使用测试桩，不代表真实 Agent 产品联调 |
-| ESLint / 差异检查 | 本轮修改的通知协议和 Host store 文件 ESLint 通过；`git diff --check` 通过 |
-| Android 单测 | 41 个测试文件、379 项测试通过，无失败、错误或跳过 |
-| Android Lint | `:app:lintDebug` 通过，0 个错误、25 个警告；完整报告随 APK 保存在 `.artifacts/app/android-lint.xml` |
-| Android 构建 | App APK 与测试 APK 已生成并校验 SHA-256；来源清单使用相同 buildId `6e42bae0-ea52-4da8-bea2-c9d20144ce49` |
-| Android Compose 界面测试 | 2 项测试已编译：多通知独立恢复 / 精确关闭，以及不完整库存保留未知状态。尚未运行验收，不能记为通过 |
-| 真实原生链路 | Codex、Pi、DSH 的相关适配单测及桌面协调器 fixture 通过；真实断连、Windows sandbox readiness、TUI / 手动刷新和分支提示仍待产品联调 |
-| 用户运行环境 | 本次未停止、重启或覆盖安装用户 Host，未 push、发版或部署。当前运行环境尚未确认加载本次修复 |
-
-模拟器尝试在安装后记录到 0.93 GB 可用内存，低于本机 1.5 GB 运行停止阈值，因此在 instrumentation 开始前关闭了本任务实例；adb serial、进程退出和占用释放均已确认。最终验证时可用内存约 1.37 GB，未再次启动模拟器，也未操作用户实体设备。
-
-最新本地产物为 `.artifacts/app/app-debug.apk`、`app-debug-androidTest.apk`、对应来源清单、SHA-256 清单和验证记录；目录只保留本次结果。Node 构建结果保留在各 workspace 的生成目录，未覆盖正在使用的 `.artifacts/host/OrbisHost`。
-
-运行环境生效需要 Protocol / Host / Pi extension / APP / Relay 的协议 12 协调更新。Host 更新或重启，以及 push、发版和部署分别遵守本次授权规则；代码、单测及本地 APK 完成不表示这些操作已获授权或已经执行。
+[根部测试约束](../../AGENTS.md#测试)；[notification-store.test.ts](../../packages/host/src/notification-store.test.ts)；[NotificationsTests.swift](../../ios/Orbis/Tests/NotificationsTests.swift)。

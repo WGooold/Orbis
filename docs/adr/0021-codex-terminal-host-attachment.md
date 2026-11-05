@@ -49,7 +49,7 @@ remote TUI. It checks terminal, endpoint, executable and session identity; close
 rechecks PID / start time before signalling and waits for native exit. The
 app-server and Desktop processes are never treated as terminal windows.
 Verification and remaining device / manual gates are recorded under R56 in
-[UI regression](../testing/ui-regression.md). This revision is under validation;
+[UI regression](../../AGENTS.md#测试). This revision is under validation;
 it does not claim the running user Host has been upgraded.
 
 Adoption must join the existing thread with `thread/resume` without configuration overrides. `thread/started` and `thread/status/changed` are global broadcasts, but merely reading `thread/turns/list` does not subscribe the Host connection to items, turns or effective permission changes. The resume response supplies the initial history, model and permissions; subsequent notifications keep them current. Codex 0.160.0 rejects resume before the first message materializes the rollout, so Host retains the empty session and retries on status broadcasts and its existing TUI window watcher. An absent rollout at that stage is not a permanent history error. Notifications received during resume are applied after the history snapshot to preserve newer state. TUI `/new` and `/resume` switches use the same subscription path.
@@ -64,4 +64,4 @@ An isolated real PTY test of Codex 0.166.0 confirms that the TUI broadcasts an e
 
 Host retains the existing next-turn `/model` and `/thinking` overrides without a settings RPC. It tracks the last native model and effort separately: unchanged values repeated by a permission update or the first successful subscription preserve those overrides. A changed native value or native confirmation of the selected value takes ownership of that field again; model and effort reconcile independently, including an explicit native null effort. Ordinary resume uses the same rule. This restores the existing selection semantics without forcing materialization or submitting a synthetic user message.
 
-Regression tests are `codex-permission-settings.test.ts` and `codex-terminal-sync.test.ts`; UI mapping and validation limits are recorded under R27 / R56 in [UI regression](../testing/ui-regression.md). Evidence is in `.artifacts/ui-regression/20261103-codex-permission-model/`. Complete device/manual acceptance and deployment are separate from these native and adapter results.
+Regression tests are `codex-permission-settings.test.ts` and `codex-terminal-sync.test.ts`; UI mapping and validation limits are recorded under R27 / R56 in [UI regression](../../AGENTS.md#测试). Evidence is in `.artifacts/ui-regression/20261103-codex-permission-model/`. Complete device/manual acceptance and deployment are separate from these native and adapter results.

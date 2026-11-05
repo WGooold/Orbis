@@ -10,13 +10,13 @@ Status: accepted（用户授权先写 ADR 再实施；代码、设备门禁、�
 
 2026-11-04 当前决策：在现有 Relay 路径下提供可互换的 WS / QUIC adapter；首次连接和运行中切换使用同一选择入口，详见 §3。QUIC 按现有 ctl/msg/bulk 拆为三流并使用 Go 原生优先级，详见 §6。§8 给出原业务契约、适用优势与量化验收。当前 v2 三流、双端运行中切换和每 Host 模式存储已实现；代码自动验证、设备及线路收益分别登记，尚未发布。
 
-范围修订：保留历史故障回归与现有资源护栏，但撤回“新增 Node↔Go 信用协议、全链路预算重构、端到端 epoch 格式是替换 WS 的统一前置条件”。先复用现有协议和恢复入口，仅对测试证实的传输边界差异做必要修改。历史依据见[传输 ADR 故障审查](../architecture/native-quic-transport-lessons.md)，实施范围以本文为准。
+范围修订：保留历史故障回归与现有资源护栏，但撤回“新增 Node↔Go 信用协议、全链路预算重构、端到端 epoch 格式是替换 WS 的统一前置条件”。先复用现有协议和恢复入口，仅对测试证实的传输边界差异做必要修改。历史依据见[原生传输回归](../../native/relayquic)，实施范围以本文为准。
 
-按 [NQ-00～NQ-08 tickets](../agents/native-quic-tickets.md) 实施：共用接口与选择、Relay-only 切换、三流与平台接入、因果屏障、原功能回归、性能与设备门禁依次留证。NQ-01～NQ-06 已接入；NQ-07 保存原功能基点与候选对照；NQ-08 仍有设备、完整压力与现场门禁，详见 ticket 的证据与缺口。
+NQ-00～NQ-08 的实施依次覆盖共用接口与选择、Relay-only 切换、三流与平台接入、因果屏障、原功能回归、性能与设备门禁。NQ-01～NQ-06 已接入；NQ-07 保存原功能基点与候选对照；NQ-08 仍有设备、完整压力与现场门禁，证据与缺口见 [原功能回归记录](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md)。
 
 基点：`df02972350e00ee4330b311831626b71c8035678`，独立工作树 `orbis-native-quic` / `feat/native-quic`。主工作树 ADR-0062 / r44、ADR-0063 / R62 / r45 多语言及 R63 / r46 回复卡片增长不纳入本分支。为避免合并编号冲突，本专项于重启续跑时由 ADR-0063 / R62 改为 ADR-0064 / R64，随后改为 ADR-0065 / R65，本轮活动回归号改为 R67；历史提交与证据保留原号，不改写原始结果。
 
-关联：[ADR-0050](0050-fixed-lan-relay-routing.md)、[ADR-0060](0060-mobile-relay-history-performance.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0011](0011-nonce-slot-and-high-watermark.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)。显示约束：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S18 / S23、V05、V09–V12、V16–V18、V22；验证：[UI 回归](../testing/ui-regression.md) R67。
+关联：[ADR-0050](0050-fixed-lan-relay-routing.md)、[ADR-0060](0060-mobile-relay-history-performance.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0011](0011-nonce-slot-and-high-watermark.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)。显示约束：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S18 / S23、V05、V09–V12、V16–V18、V22；验证：[UI 回归](../../AGENTS.md#测试) R67。
 
 ## Context
 
@@ -105,7 +105,7 @@ NQ-03 wire：新增 ALPN `orbis-relay-v2`（业务协议版本不变）。手机
 
 Go v2 每流初始接收窗口 256 KiB、最大 4 MiB，连接初始 1 MiB、最大 12 MiB；独立 writer 与有界按流队列，WS 汇聚仍串行。上述是候选上限，须经过 Q09 / Q12 / Q13 量测，不能以窗口值推导吞吐或延迟保证。连接关闭取消所有 reader/writer 并等待退出；同 channel FIFO 不变，跨 channel 不提供总序。
 
-复核固定版本 quic-go v0.65.0 官方文档和标签源码，并追踪 Host 分类、双端上传、nonce 高水位、HS1–HS3、Host bootstrap、片重组、snapshot ACK、pull 窗口及 WS mux。完整来源、代码入口和未定项见 [传输复核](../architecture/native-quic-transport-review.md)。
+复核固定版本 quic-go v0.65.0 官方文档和标签源码，并追踪 Host 分类、双端上传、nonce 高水位、HS1–HS3、Host bootstrap、片重组、snapshot ACK、pull 窗口及 WS mux。完整来源、代码入口和未定项见 [原生传输实现与回归](../../native/relayquic)。
 
 - **流映射**：一个连接内由手机打开 ctl / msg / bulk 三条双向流，每条声明唯一角色；同一密码学 channel 不按文件 / runtime / 消息拆流，不并发重排同 channel 的 piece 或解密。未知 / 重复角色拒绝，MaxIncomingStreams 和流信用释放按角色生命周期设计。
 - **Go 调度**：每流独立 FIFO writer，使用 `SetPriority`，初始候选 ctl `(0,false)`、msg `(3,true)`、bulk `(7,true)`。数值表达现有相对顺序，不是权重或测得的最优值；不再在一个 QUIC writer 前另造网络调度器。Host / Node WS mux、Go → WS 的汇聚和业务准入保留。Android 已采用三个逐流 IO worker，Apple 已把 isSending 改为逐 lane 在途集合；WS 保持单写入者。
@@ -126,7 +126,7 @@ Go v2 每流初始接收窗口 256 KiB、最大 4 MiB，连接初始 1 MiB、最
 
 ### 7. 历史故障对本次设计的约束（2026-11-04）
 
-逐项依据、源码入口和旧决定的替代关系见[历史传输审查](../architecture/native-quic-transport-lessons.md)。本节补充 §6，并明确 §5 的队列越界关闭只是 v1 候选记录。
+逐项依据、源码入口和旧决定的替代关系见[原生传输回归](../../native/relayquic)。本节补充 §6，并明确 §5 的队列越界关闭只是 v1 候选记录。
 
 - **按层处理压力**：Host 按 ADR-0013 / 0044 在 seal 前准入，普通队列超预算时仍允许明确摘除路径；Go / Relay 持有密文，不擅自丢片、合并业务或重放命令；手机只对已认证、重组完成的载荷执行 ADR-0040 的有界丢弃 / 计数 / 限频恢复，不因此断线。不能用其中一层的规则覆盖另外两层。
 - **桥接压力做对照验证**：Node 的 mux.enqueue 并不执行硬性准入，Go 读空 loopback 可能隐藏公网积压，停止单条 WS 读取又可能挡住后续 ctl / ping。保留现有 Host 准入、WS mux 和适配器有界队列，Q13 对照 WS 测积压 / 心跳 / 回收。若出现新增失控，修复造成差异的适配边界；不先引入新的 Node↔Go 信用协议或业务流控协议。容量耗尽可明确使路径失败，但日常负载下重连风暴不通过验收。
@@ -205,44 +205,11 @@ Q06/Q12 的弱网与快网门槛继续有效，新增要求两段均实际使用
 
 ## Verification
 
-**回归的首要目标是原有项目功能不退化。** Q01–Q04 的收发 / 加密 / 交接测试只是底层专项，不能据此宣布“项目功能回归通过”；性能收益也不能抵消功能失败。复用已有 `host-service.test.ts` 的真实 HostService / Relay / 参考手机及原断言，分别在 WS 和真实 QUIC 公网段替代链路上执行：配对、目录、命令 / 事件、历史同步、工具 / 文件详情、上传 / 下载、通知、供应商及各 Agent 接线、断线恢复、LAN 优先都按原功能结果判定。测试中的平台 / Agent 替身边界保持原状，不把该层结果冒充原生 App、真实 Agent 或 UI 验收。
-
-双端既有单元 / UI 全套、C01–C18 / A1–A4 与切换中的业务场景继续作为独立门禁；覆盖范围及逐功能断言见 [原功能回归矩阵](../testing/native-quic-functional-regression.md)。测试接入应只替换夹具的手机↔Relay 传输，不复制一套简化业务、不删用例、不放宽断言或超时。当前 WS 基点、候选 WS、候选 QUIC、候选双向切换分别留证；失败以同配置基点实际重跑对照，不能仅凭“没有修改那个文件”归为既有问题。
-
-| ID | 必须验证的结果 |
-| --- | --- |
-| Q01 | 真实 QUIC 双向转发与原 WS 内容逐字节相同；握手、多个帧、部分读取与多字节 UTF-8 正确；上限前后、零长度、截断、坏 JSON、额外流拒绝；慢读者下预算有界 |
-| Q02 | 证书 / 域名错误拒绝；ALPN / 传输版本错误不进入业务；固定 loopback 目标，客户端不能提供任意代理地址；首帧超时、并发上限与取消回收 |
-| Q03 | 无宣告、UDP 黑洞、QUIC 失败时在预算内回退；只有获胜通道认证；取消、换 Host 和旧回调不影响新连接；ready 后断线不重放命令 |
-| Q04 | 实际 Node Relay + 原生 QUIC + 隔离设备凭据：认证、E2E 转发、协议错误、断开与重连；Host WS 与手机 QUIC 互通；原 WS 全套行为保留 |
-| Q05 | 两端配对、目录、聊天、流式输出、上传 / 下载、切 Host、LAN↔Relay、后台 / 恢复、正在发送时断网；来源 ACK 与 pending / unknown / failed 保持，消息身份与阅读锚点不变 |
-| Q06 | 同手机、同服务器、同时间窗口对比直连 WS / WS 经同机 Hysteria 2 / 原生 QUIC；报告地址族、网络、RTT、丢包条件、卡顿时长、断线次数、恢复耗时和 p50/p95，不把本机测试当真实线路改善 |
-| Q07 | 三流角色声明、每 channel 顺序 / 防重放、未知 / 重复流拒绝；提前到达的 msg/bulk 不越过握手 / bootstrap 屏障 |
-| Q08 | 三流 writer 独立，慢 bulk 不挡新 ctl 入库；丢包时明确记录重传优先的限制；WS 汇聚有界保序 |
-| Q09 | 三端窗口 / BDP、连接信用耗尽、慢消费者、连接与总体内存预算、部分写入错误、取消与流信用释放 |
-| Q10 | HS3 与上传、bootstrap 与 msg 竞争；host.online / 重新 HS1 的旧上下游队列 / piece 隔离；LAN↔Relay 和 Apple group ↔ Go 三流互通 |
-| Q11 | 长耗时 / 重复 sync、pending / busy、ACK 丢失与迟到冲突终态；SQLite / 库存依赖、上传写入与下载补洞；ctl 先到、未知操作及多 Host 隔离 |
-| Q12 | 同一业务夹具的快 LAN / 高 RTT / 1、5、50 Mbit/s 对照；分开测 WS 节拍、上传单块 / 下载窗口、同 channel 竞争、各层积压 / RSS 与消费成本 |
-| Q13 | 源端准入、Node / Go 密文积压、手机消费溢出分别注入；有界桥接及总预算、WS 心跳 / 控制进展、无重连风暴、路径恢复与多连接资源回收 |
-| Q14 | ws/quic/auto 选择矩阵；WS→QUIC→WS 和反向循环；候选失败保留现任、认证原子接替、旧回调 / 上行隔离、快速改选只执行最后请求；强制模式不静默回退；切换不关闭 LAN / 其他 Host、不重放已接受操作 |
-
-自动阶段执行 Go race / 帧与真实 QUIC 集成、Node Relay 与相关协议 / Host 回归、Swift 核心、Android JVM 与双端构建。设备阶段严格按共享入口与构建租约执行受影响双端 L1–L4、C01–C18、R67 及 A1–A4；同设备同配置比较失败集合，不跳过或放宽既有用例。证据存于 `.artifacts/ui-regression/20261104-native-quic/`。生产手机 / Hysteria 对照未执行时标记未验证。
+[测试规则](../../AGENTS.md#测试)；[host-service.test.ts](../../packages/host/src/host-service.test.ts)；[原始证据](../../.artifacts/)。
 
 ## 实施与验证记录
 
-- 2026-11-04 NQ-01：按 [NQ tickets](../agents/native-quic-tickets.md) 完成双端共用 socket 接口、首次连接 ws/quic/auto 与实际承载查询；强制 WS 不发现、强制 QUIC 失败不回退、auto 仅准备期回退。Android JVM 690/690、Swift 核心 365/365、两端 App / Android 测试包构建通过，原 HostService WS / QUIC 各 54/54，0 测试跳过；自动证据见 `.artifacts/quic-review/nq01-summary.md`。每 Host 配置、运行中切换 / close-join、三流及全部设备 / 现场门禁仍未完成，Q14 只增加选择部分覆盖。未借用设备；构建、夹具进程与租约按 `nq01-cleanup.json` 核验。
-
-- 2026-11-04 原项目功能回归：按用户澄清将“旧功能不退化”列为首要门禁，新增逐功能矩阵。复用原 `host-service.test.ts`，仅替换参考手机 Relay 接口，54 项原测试在 WS / 真实 QUIC 模式各 54/54，原断言和超时保持；真实 HostService / Relay 与参考手机 E2E参与，原 Agent 替身边界不变。该结果不覆盖原生移动端 / UI、尚未实现的运行中切换控制器或三流；不把底层专项计数作为项目回归完成。全套 Node、同依赖基点比较与资源证据见 `.artifacts/quic-review/functional-summary.md`。
-
-- 2026-11-04 范围收窄 / 切换设计：补 §3 / §8 / Q14，撤回新增信用协议、全链路预算重构与端到端 epoch 格式的统一前置要求。Node 原来保留同设备旧上行，新增测试复现旧连接不退休，再补认证后原子接替、旧连接上行守卫与 mux 清理。新增真实 Host / E2E 的 WS/QUIC 同业务对照与两方向交接测试；TypeScript / lint 通过，Node 定向 183/183，Go race 17 个顶层 Test、4 个子用例及 fuzz seed 通过、测试跳过 0。证据 `.artifacts/quic-review/replacement-summary.md`。当前测试仍使用 v1 单流；手机模式 API、运行中切换控制器、三流、性能与设备门禁尚未完成，不记 Q14 全部通过。未改手机业务源码或借用移动端构建 / 设备资源。
-
-- 2026-11-04 历史复核：补充 §7 / Q11–Q13，区分 0040 解密后消费恢复与 0044 封帧前路径摘除；确认 Node enqueue 不提供硬性准入、Go 候选仍缺端到端背压与总预算。仅更新文档，未实施三流或新增业务 / 网络测试；历史测量不转记为本次验证。L0 见 `.artifacts/quic-review/history-l0.json`。
-
-- 2026-11-04 复核修订：新增 §6 / Q07–Q10；旧 Q01 的额外流拒绝继续作为 v1 用例保留，三流 wire 新增角色白名单用例。此前所有通过项只覆盖单流候选，不能计作三流 / 屏障 / Apple 上行调度或真实网络收益。此次只修改文档，验证 L0；未借用设备或构建资源。
-
-- 2026-11-04：创建独立工作树并先登记本 ADR；Q01–Q06 待实施 / 验证。当时编号 R61 留给主工作树后台子任务，本专项追加 R62；现按上文编号说明迁移至 R67。没有完成设备门禁，不增加已交付计数。
-
-- 2026-11-04 实施：首份 ADR 提交 `24a3fc5`，最终写入端调度补充先提交 `27747a3`。Node 发现、Go 适配器 / 单 writer 优先队列、Android gomobile 与连接选择、iOS Network.framework 与 WSS 回退已接入。Go race 17 项、Swift 核心 359 项（含真实 Apple ↔ Go）、Android JVM 686 项及两端构建通过；TypeScript / Relay 40 项通过。Node 全量 1,703 通过 / 2 失败 / 5 跳过，失败为本次未修改的 Codex launcher 用例，未基点复跑，不记全量通过。共享设备门禁被其他任务 Android 锁阻塞，Android JNI、完整双端 L3 / L4、人工与真实线路 Q06 尚未完成。Q01–Q04 为部分自动覆盖（并发上限、首帧超时、iOS 回退竞态等仍须补齐），不升级成设备或现场验收。部署 / 构建操作说明见 [原生 QUIC](../native-quic.md)，证据见 `.artifacts/ui-regression/20261104-native-quic/`。
+[根部测试约束](../../AGENTS.md#测试)；[relayquic](../../native/relayquic)；[src](../../packages/host/src)；[run-native-quic-perf.py](../../scripts/run-native-quic-perf.py)。
 
 ## 依据
 
@@ -252,22 +219,22 @@ Q06/Q12 的弱网与快网门槛继续有效，新增要求两段均实际使用
 - Go Mobile：https://pkg.go.dev/golang.org/x/mobile/cmd/gomobile
 - Hysteria 2 协议：https://v2.hysteria.network/docs/developers/Protocol/
 
-2026-11-04 v2 实施：三流、逐流原生优先级、双端选择 / 切换、bootstrap 与旧队列修复已接入。原业务回归及本机专项见 [tickets](../agents/native-quic-tickets.md) 和 `.artifacts/quic-review/nq-final-summary.md`；设备与 Q06/Q12/完整 Q13 保持未验收，默认 WS，未部署生产。
+2026-11-04 v2 实施：三流、逐流原生优先级、双端选择 / 切换、bootstrap 与旧队列修复已接入。原业务回归及本机专项见 [原功能回归记录](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md) 和 `.artifacts/quic-review/nq-final-summary.md`；设备与 Q06/Q12/完整 Q13 保持未验收，默认 WS，未部署生产。
 
-2026-11-04 最终本机回归补充：Swift 370/370（含 WS HS3 写完成就绪回归）、Android 693/693；HostService 原 54 项加 3 项业务交接在 WS / v2 QUIC 各 57/57。交接覆盖未确认命令不重复分发、待回答交互、snapshot 未 applied、上传持久前缀 / 在途 read、下载补洞及 SHA-256。Node 全套 1718 项为 1711 通过 / 2 基点已有失败 / 5 原跳过，原 1701 项状态一致，新增 17 项通过。测试桥只接受并报告 v2，原手机参考实现补原协议分片；没有修改原用例断言或超时。Q11/Q14 的真实移动端存储 / 写盘故障组合和设备 / 现场门禁仍未完成，详见 tickets 与最终证据。
+2026-11-04 最终本机回归补充：Swift 370/370（含 WS HS3 写完成就绪回归）、Android 693/693；HostService 原 54 项加 3 项业务交接在 WS / v2 QUIC 各 57/57。交接覆盖未确认命令不重复分发、待回答交互、snapshot 未 applied、上传持久前缀 / 在途 read、下载补洞及 SHA-256。Node 全套 1718 项为 1711 通过 / 2 基点已有失败 / 5 原跳过，原 1701 项状态一致，新增 17 项通过。测试桥只接受并报告 v2，原手机参考实现补原协议分片；没有修改原用例断言或超时。Q11/Q14 的真实移动端存储 / 写盘故障组合和设备 / 现场门禁仍未完成，详见 [原功能回归记录](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md) 与最终证据。
 
-2026-11-04 重启后验证：Android JNI 共享 API 35 专项 1/1，iOS SE / iOS 27.0 App 宿主 `OrbisTransport` 专项 2/2 通过，覆盖 TLS 域名、auto / quic、三流 Unicode / 256 KiB 帧与取消，以及加密业务双向切换、重握手和 LAN 保持。Go 新增生产 30 秒 bulk 写期限及 12 次显式重连 / 上游释放专项，race 全套 28 顶层 / 38 含子用例通过。双端原功能同设备对照完成：Android 含 rich / slow-sync / 原配对补测并去重后，基线 171 通过 / 9 失败 / 2 assumption，候选 173 / 8 / 2；iOS 原 88 项两版均 83 通过 / 5 失败 / 0 跳过。没有新增失败或缺失原用例；已有失败仍保留。默认 WS / preview 原套件与实际 QUIC 专项分别计证，不据此声称完整 QUIC UI、真实手机或线路收益已验收。Xcode 对象编号冲突已消除，重建 App 文件哈希不变；所有本任务资源已核验释放。证据见 [tickets](../agents/native-quic-tickets.md) 及 `.artifacts/ui-regression/20261104-native-quic-reboot/`；完整事务 / 写盘故障、RSS / 长期压力、线路 / 人工和 iOS 17 缺口保持。
+2026-11-04 重启后验证：Android JNI 共享 API 35 专项 1/1，iOS SE / iOS 27.0 App 宿主 `OrbisTransport` 专项 2/2 通过，覆盖 TLS 域名、auto / quic、三流 Unicode / 256 KiB 帧与取消，以及加密业务双向切换、重握手和 LAN 保持。Go 新增生产 30 秒 bulk 写期限及 12 次显式重连 / 上游释放专项，race 全套 28 顶层 / 38 含子用例通过。双端原功能同设备对照完成：Android 含 rich / slow-sync / 原配对补测并去重后，基线 171 通过 / 9 失败 / 2 assumption，候选 173 / 8 / 2；iOS 原 88 项两版均 83 通过 / 5 失败 / 0 跳过。没有新增失败或缺失原用例；已有失败仍保留。默认 WS / preview 原套件与实际 QUIC 专项分别计证，不据此声称完整 QUIC UI、真实手机或线路收益已验收。Xcode 对象编号冲突已消除，重建 App 文件哈希不变；所有本任务资源已核验释放。证据见 [原功能回归记录](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md) 及 `.artifacts/ui-regression/20261104-native-quic-reboot/`；完整事务 / 写盘故障、RSS / 长期压力、线路 / 人工和 iOS 17 缺口保持。
 
 
-2026-11-04 全链路实现 / 本机验证：§9 / NQ-09～NQ-11 已落地，四种 Host/手机组合各 104/104、Node 默认全套 1727 通过 / 0 失败 / 5 原跳过、Go race 含真实 Node 45 测试事件通过，macOS runtime 包内 helper 默认路径 QUIC→WS→QUIC 通过。Host 断链专项在 QUIC 列关闭 / 重开 Host QUIC 接入而保持手机连接。快照测试明确允许 ctl 受理先到、继续要求原快照，不改变协议为跨流全序；初次失败与修订详见[原功能回归](../testing/native-quic-functional-regression.md)。双端原自动对照与专项结果保持原覆盖边界，完整真机 / UI / 手动、Windows 安装器、长期压力尚未验收；公网结果独立记录。
+2026-11-04 全链路实现 / 本机验证：§9 / NQ-09～NQ-11 已落地，四种 Host/手机组合各 104/104、Node 默认全套 1727 通过 / 0 失败 / 5 原跳过、Go race 含真实 Node 45 测试事件通过，macOS runtime 包内 helper 默认路径 QUIC→WS→QUIC 通过。Host 断链专项在 QUIC 列关闭 / 重开 Host QUIC 接入而保持手机连接。快照测试明确允许 ctl 受理先到、继续要求原快照，不改变协议为跨流全序；初次失败与修订详见[原功能回归](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md)。双端原自动对照与专项结果保持原覆盖边界，完整真机 / UI / 手动、Windows 安装器、长期压力尚未验收；公网结果独立记录。
 
-2026-11-04 NQ-12 公网测量 / 报告完成：[完整公网报告](../testing/native-quic-public-performance-20261104.md)覆盖 Mac Host→真正 Relay→同 Mac Go 参考端的两段公网，3 场景 × 2 承载 × 5 轮共 30 次尝试全部保留。QUIC 下载 / 上传有效吞吐中位数为 0.139809 / 0.279618 Mbit/s，加压控制探针 6000/6000 最终返回；下载五轮均排空超时，第 5 轮 p95 12.79 秒。WSS 下载无完整窗口，上行仅 1/5 完成且吞吐相同，不能宣称吞吐提速。临时资源已独立核验释放；生产入口、真实手机 / Hysteria、Q12 性能目标、完整文件及长期容量未通过或未验收，默认 WS 与原发布门禁保持。
+2026-11-04 NQ-12 公网测量 / 报告完成：[完整公网报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-public-performance-20261104.md)覆盖 Mac Host→真正 Relay→同 Mac Go 参考端的两段公网，3 场景 × 2 承载 × 5 轮共 30 次尝试全部保留。QUIC 下载 / 上传有效吞吐中位数为 0.139809 / 0.279618 Mbit/s，加压控制探针 6000/6000 最终返回；下载五轮均排空超时，第 5 轮 p95 12.79 秒。WSS 下载无完整窗口，上行仅 1/5 完成且吞吐相同，不能宣称吞吐提速。临时资源已独立核验释放；生产入口、真实手机 / Hysteria、Q12 性能目标、完整文件及长期容量未通过或未验收，默认 WS 与原发布门禁保持。
 
 2026-11-04 成熟项目复核：[Hysteria / TUIC / Syncthing 源码对照](../architecture/native-quic-peer-project-review.md)查实上游 Reno 与 Hysteria 分支控制器的差异，并量化现有编码和整块计量；本机分片 / backlog 不等于网络 cwnd，不能仅凭窗口、JSON 或 loopback WS 判定公网低速根因。先补连续字节基线、每层供给 / 阻塞和 ConnectionStats / qlog，再决定 adapter 或控制器修订；本轮没有修改实现或改写已保留的公网失败。
 
-同日按用户指令先登记[分层诊断方案](../testing/native-quic-layered-diagnostics.md)，再实施隔离 TLS / QUIC 连续字节夹具与业务负载对照。`ORBIS_QUIC_DIAGNOSTICS_FILE` 仅在显式指定路径时启用按秒聚合的传输元数据，缺省不记录，统计不包含正文或凭据；不改变发送调度、窗口、E2E、恢复或默认承载。原 / 流水线负载只属于测试夹具，不能转记为产品上传策略变更。正式结果和清理须独立回查，尚未执行的控制器 / 真手机门禁保持。
+同日按用户指令先登记[分层诊断方案](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-diagnostics.md)，再实施隔离 TLS / QUIC 连续字节夹具与业务负载对照。`ORBIS_QUIC_DIAGNOSTICS_FILE` 仅在显式指定路径时启用按秒聚合的传输元数据，缺省不记录，统计不包含正文或凭据；不改变发送调度、窗口、E2E、恢复或默认承载。原 / 流水线负载只属于测试夹具，不能转记为产品上传策略变更。正式结果和清理须独立回查，尚未执行的控制器 / 真手机门禁保持。
 
-分层首轮执行完成：[结果](../testing/native-quic-layered-results-20261104.md)保留 D1 的 20/20 原始接收窗口和 D2/D3 的 24/24 双段负载窗口。原负载 QUIC 下载 / 上传中位数约 15.10 / 1.68 Mbit/s，WSS 约 8.81 / 7.55；控制 p95 的场景中位数降低约 62%–95%，吞吐没有一致胜负。独立测试 UDP socket 晚期累计 drops 至少 8184，容器累计 throttling 约 6.46 秒；接收条件、算法和业务供给需进一步单变量对照。20 秒新窗口通过不改写旧 60 秒失败，不等于完整文件 / 真机 / Q12 或发布验收。全部本任务资源已核验释放。
+分层首轮执行完成：[结果](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-results-20261104.md)保留 D1 的 20/20 原始接收窗口和 D2/D3 的 24/24 双段负载窗口。原负载 QUIC 下载 / 上传中位数约 15.10 / 1.68 Mbit/s，WSS 约 8.81 / 7.55；控制 p95 的场景中位数降低约 62%–95%，吞吐没有一致胜负。独立测试 UDP socket 晚期累计 drops 至少 8184，容器累计 throttling 约 6.46 秒；接收条件、算法和业务供给需进一步单变量对照。20 秒新窗口通过不改写旧 60 秒失败，不等于完整文件 / 真机 / Q12 或发布验收。全部本任务资源已核验释放。
 
 ## 10. 先隔离当前聊天与后台历史（2026-11-04）
 
@@ -277,9 +244,9 @@ Q06/Q12 的弱网与快网门槛继续有效，新增要求两段均实际使用
 
 本轮不新增加密通道、nonce 槽位、业务字段或版本探测，保持 18 / 19 的原基础格式；不据帧可解析就宣称真实旧 App 现场验收。源版本 / 基线依赖、单个大 preview、连接拥塞和客户端落库停顿仍可能等待，拆流不保证解决全部卡顿。
 
-实施 / 验收按 [NQ-13 试验方案](../testing/native-quic-chat-history-isolation.md)。必须有 shared/background 的受控基线对照、同 lane FIFO / 乱序认证、历史消费溢出恢复及原功能回归；真实公网 / 手机独立测，不以下载或 ctl 探针作聊天通过依据。默认 WS/shared，未验收不得发布为新默认。
+实施 / 验收按 [NQ-13 试验方案](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-chat-history-isolation.md)。必须有 shared/background 的受控基线对照、同 lane FIFO / 乱序认证、历史消费溢出恢复及原功能回归；真实公网 / 手机独立测，不以下载或 ctl 探针作聊天通过依据。默认 WS/shared，未验收不得发布为新默认。
 
-NQ-13 试验后修订：最终只对后台 catchup 隔离。手动 history 是用户当前读取需求，与 preview / live 一起保留 msg；不能因为与后台补齐同为旧条目就降级。公网诊断 JSON 的背景速率不统一，结果与边界见[试验报告](../testing/native-quic-chat-history-results-20261104.md)，原数据保留。两段 QUIC 的交互 msg 探针 p95 中位数 6.022→0.569 秒，同时后台 goodput 中位数 6.82→1.15 Mbit/s；这支持隔离方向，不构成手机聊天显示、吞吐或发布验收。实验默认关闭。
+NQ-13 试验后修订：最终只对后台 catchup 隔离。手动 history 是用户当前读取需求，与 preview / live 一起保留 msg；不能因为与后台补齐同为旧条目就降级。公网诊断 JSON 的背景速率不统一，结果与边界见[试验报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-chat-history-results-20261104.md)，原数据保留。两段 QUIC 的交互 msg 探针 p95 中位数 6.022→0.569 秒，同时后台 goodput 中位数 6.82→1.15 Mbit/s；这支持隔离方向，不构成手机聊天显示、吞吐或发布验收。实验默认关闭。
 
 ## 11. history / catchup / bulk 独立五流（2026-11-05）
 
@@ -293,8 +260,8 @@ NQ-13 试验后修订：最终只对后台 catchup 隔离。手动 history 是�
 
 验收：新旧端能力与 MAC / nonce / 防重放、五流角色与 FIFO、Host 两侧 IPC、同步 preview/history/catchup + applied/ACK、详情及文件、路径丢失 / 重握手 / WS↔QUIC / LAN 保持和原业务全量；双端核心、构建与同设备原 UI 套件对照。中间失败及既有失败如实保留。此次不新增性能门槛，不使用此前测量承诺五流收益，不部署或安装用户设备。按 NQ-14 留证，未执行的人工 / 真机与发布门禁不计通过。
 
-实施与功能证据见[五流结果报告](../testing/native-quic-five-stream-results-20261105.md)；活动专项 R67，历史证据编号保持原值。核心自动通过与双端设备、既有失败、未执行门禁分别记录。
+实施与功能证据见[五流结果报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)；活动专项 R67，历史证据编号保持原值。核心自动通过与双端设备、既有失败、未执行门禁分别记录。
 
 ## 12. 与协议18/19兼容Host集成（2026-11-05）
 
-ADR-0064要求首个有效加密请求绑定Relay业务版本，再发布版本相关ready。QUIC双端因此在同一ctl流依次发送HS3与原有只读host.lan.request，明确携带当前业务版本；其余业务仍等认证后Host ready，不把Relay明文ready当成功。该引导不重放业务命令、不引入新字段或改变旧协议。Node旧18/19与四承载组合、Android引导明文 / 版本和真实Apple↔Go覆盖此顺序，结果见[主分支集成报告](../testing/native-quic-main-integration-20261105.md)。默认WS/shared与既有未验收状态保持。
+ADR-0064要求首个有效加密请求绑定Relay业务版本，再发布版本相关ready。QUIC双端因此在同一ctl流依次发送HS3与原有只读host.lan.request，明确携带当前业务版本；其余业务仍等认证后Host ready，不把Relay明文ready当成功。该引导不重放业务命令、不引入新字段或改变旧协议。Node旧18/19与四承载组合、Android引导明文 / 版本和真实Apple↔Go覆盖此顺序，结果见[主分支集成报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)。默认WS/shared与既有未验收状态保持。

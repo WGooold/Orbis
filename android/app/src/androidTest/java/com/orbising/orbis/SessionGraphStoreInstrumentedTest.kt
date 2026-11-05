@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - 非 UI 但在同一设备套件
 package com.orbising.orbis
 
 import android.content.Context

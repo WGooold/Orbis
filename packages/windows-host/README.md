@@ -93,4 +93,4 @@ Port 465 uses TLS; other ports require STARTTLS. Any suitable SMTP provider may 
 
 `npm run lint`, `npm run typecheck`, `npx vitest run --maxWorkers=2`, native CTest, and the packaged executable smoke test. Mail tests use an in-memory sender. Real SMTP delivery and a clean-machine Windows install remain separate acceptance steps when the provider and distribution environment are available.
 
-Claude Code provider switching and official Claude/Codex 5-hour / weekly quota queries are available in Host and both mobile apps. See [the feature guide](../../docs/agents/claude-providers-and-subscription-quota.md) for configuration ownership, login storage, and query behavior.
+Claude Code provider switching and official Claude/Codex 5-hour / weekly quota queries are available in Host and both mobile apps. See [ADR-0019](../../docs/adr/0019-host-provider-management.md) for provider-management and credential boundaries.

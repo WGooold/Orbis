@@ -4,7 +4,7 @@
 
 Status: accepted（契约已确定，按本文开始实施；未完成的实现和验收不得记为通过）
 
-关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[UI 回归](../testing/ui-regression.md)。
+关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[UI 回归](../../AGENTS.md#测试)。
 
 受影响 feature：V05、V09–V10、V12、V16–V18；关联 S16–S17、V03、V07。不新增视觉 feature 编号，不改变布局、滚动、消息身份或既有动效。
 
@@ -150,40 +150,7 @@ Slash 准入由后端解释已发布目录：只读查询可以执行；权限�
 
 ## Verification
 
-2026-11-03 I03 Android 配置 composer 修复：ADR-0049 §6.7 的模型 / 思考条件乐观操作由配置账本独占回执；本地受理后释放 composer，成功仍须权威配置确认，失败 / 未确认仍由账本呈现。此类操作不进入下述普通 Slash 的“保留命令并等待通用回执”分支；未写入仍保留草稿。`ConfigComposerInstrumentedTest` 覆盖 Codex / Pi、重复选择、拒绝和未写入；既有 `ConfigLedgerTest` 保留确认前消息等待与断线矩阵。结果见 UI 回归 R27，真实后端未跑不得记为通过。
-
-2026-11-02 Codex 终端激活补充：OS 接受开窗不等于原生 TUI 已启动。macOS 等待真实 TTY 的启动回执，失败按既有 `spawn_failed` 路径呈现；只释放本次新增且未运行 / 未等待审批的订阅，既有或运行中的会话不被开窗失败打断。历史创建来源不替代用户本次选择的终端后端，不通过迁移后端、删除写锁或重发输入修复可见窗口。自动测试映射与 R56 记录见 UI 回归方案，未验收状态保持。
-
-### 必须实现的自动覆盖
-
-| 用例组 | 覆盖 |
-| --- | --- |
-| AIN-01 协议全集 | 20 个 RuntimeCommand 与输入拥有者登记集合完全相同；类型新增必须补矩阵；未来未知类型明确拒绝 |
-| AIN-02 准入矩阵 | §3 全部 G 与 §4 每行×输入组；叠加等待+压缩、启动+停止、重连+旧结果、配置+消息；后端能力差异 |
-| AIN-03 回执 | pending 不冒充 success；重复同内容只执行一次、冲突拒绝；throw、未回执、超时、断线、旧代次、迟到结果、容量满 |
-| AIN-04 Codex | 独立 / 自动压缩、缺 turn/completed、原生 idle / 历史修复、steer / followUp、启动屏障、连续多条、启动失败、撤回与关闭竞态；终端 / 桌面共用实现 |
-| AIN-05 Pi / Claude / DSH | Pi 压缩互斥和投递失败；Claude 主回合 / 独立压缩 / 同批提交与停止；DSH Web 原生 queue 失败、ACP 不支持路径；附件不丢失 |
-| AIN-06 双端 outbox | unconfirmed 不自动重发、精确落地仍消除；队列 accepted / rejected / cancelled / delivered；断线与切换隔离；无永久发送中 |
-| AIN-07 专用服务 | 读取范围 / 工具 / 差异 / 传输的成功、失败、取消、目标失效及结果私有；Agent busy 不误拦 |
-
-Host / 协议 / adapter 全量测试、类型检查及变更文件 lint 必须运行。两端 L1–L4、C01–C18、V05/V10/V12/V16–V18 专项和 A1–A4 按 UI 回归方案执行；共享池和构建租约遵循 AGENTS.md。须保留同设备同配置基线，不能将协议夹具当真实 TUI / UI 验收。
-
-新增专项 R24：各 Agent 在 idle、运行、审批等待、压缩、停止、恢复 / 断线时提交文本+附件、followUp / steer、Slash、回答、撤回；逐项观察受理、成功、明确失败和未确认；双端无重复、无永久转圈，失败输入可找回。测试若无法取得兼容设备 / 原生后端，明确记录缺口。
-
-### 实施顺序与验收登记
-
-1. 本文与 ADR-0051 / 回归映射先落盘，再改业务实现。
-2. 完成协议输入分类 / 回执生命周期，补齐后端准入和队列的成功、失败与核对路径。
-3. 接入双端未确认和恢复语义，补自动与设备用例。
-4. 保存证据到 `.artifacts/ui-regression/`，逐项记录已实施 / 测试通过 / 未跑 / 阻塞，不以本 ADR accepted 代表交付完成。
-
-实施中（2026-11-01）：协议输入拥有者与状态准入、Host 私有回执去重 / 重放 / 有界未确认、无效输入的关联失败、Codex 压缩与队列 / 停止 / 关闭路径、Pi 投递与压缩互斥、Claude 主回合与压缩提交互斥、DSH 原生失败 / 未确认、双端排队 / 未确认与恢复副本已实现。Codex 的原生用户消息事实优先于丢失的 RPC 回执，不能把实际落地的消息或所属文件捕获标为提交失败。
-
-补充边界（2026-11-01）：断线、Host 接受状态丢失或队列快照缺项本身不能证明未投递；双端 outbox 保持 unconfirmed，直到有精确消息或原生投递证据，明确撤回才删除隐藏恢复副本。Codex 连续 steer 在 turn 启动 / 停止窗口只作用于其所属 turn，不对下一条排队 turn 重复中断。iOS / Android Slash composer 在明确成功前保留原命令与参数，失败或未确认可直接核对 / 重试，不因通道写入成功而清草稿。
-
-代码回归结果（2026-11-01）：Node 全量 1647 通过 / 5 跳过，类型检查和 lint 通过；定向协议 / Host 生命周期 192 通过、Codex 边界 174 通过、Claude 插件 15 通过；iOS Swift 233 通过、构建通过，iOS 状态专项 3 项通过。Android JVM / APK / AndroidTest 构建通过；Android 输入定向 5 项通过，含 A1–A4 下队列 / 未确认状态定向 3 项通过。iOS 全量 64 项为 58 通过 / 6 失败，失败集合与同设备同配置基线 61 项中的 6 项完全相同；Android 全量 143 项为 137 通过 / 6 失败，基线 138 项有 5 项失败，新增的是 `composerHasNoEmptyNoticeSlotAndKeepsCriticalUsageVisibleWithSlashInput` 截图捕获超时，单独复跑通过，原始失败仍保留。手动核心 C01–C18 尚未完成；Android 无真实隔离 Agent Host，真实 Pi / Codex / Claude / DSH 后端状态矩阵 R24 未执行。详见 `.artifacts/ui-regression/20261101-agent-input-lifecycle/summary.md`；未通过全部门禁前不记为所有状态的完整交付。
-
-上次诊断的 4 项测试仅证明旧行为。本轮证据目录为 `.artifacts/ui-regression/20261101-agent-input-lifecycle/`；代码级与设备门禁持续登记，完整通过结果、失败集合与真实后端缺口以该目录最终 summary 为准。未完成完整门禁前不记为全状态交付。
+[测试规则](../../AGENTS.md#测试)；[ConfigLedgerTest.kt](../../android/app/src/test/java/com/orbising/orbis/ConfigLedgerTest.kt)；[ConfigComposerInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/ConfigComposerInstrumentedTest.kt)；[原始证据](../../.artifacts/)。
 
 ## Consequences
 

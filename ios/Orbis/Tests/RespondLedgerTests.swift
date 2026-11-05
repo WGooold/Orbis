@@ -1,3 +1,5 @@
+// Orbis 测试用途（场景与判定见本文件断言）：
+// - OPT-05 `respond`（V07、V22）（V07、V22）
 import Foundation
 import Testing
 @testable import OrbisCore
