@@ -4310,6 +4310,7 @@ private fun FeedbackCard(text: String, isError: Boolean) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun InteractionPanel(
     request: PendingInteraction,
@@ -4341,7 +4342,6 @@ internal fun InteractionPanel(
     val expired = isInteractionExpired(request, nowMs)
     val responseEnabled = connected && !expired && !submitting && !request.submitted
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var fullPreview by remember(request.requestId) { mutableStateOf(false) }
     var summaryOverflows by remember(request.requestId) { mutableStateOf(false) }
     var linkError by remember(request.requestId) { mutableStateOf<String?>(null) }
@@ -4394,9 +4394,12 @@ internal fun InteractionPanel(
                             }
                         }
                         // 只有内容真的被截断时才需要展开 / 复制整段；短命令可直接长按选择。
-                        if (summaryOverflows || fullPreview) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (summaryOverflows || fullPreview) FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             NeumorphTextButton(if (fullPreview) L10n.tr("收起内容") else L10n.tr("展开完整内容"), onClick = { fullPreview = !fullPreview })
-                            NeumorphTextButton(L10n.tr("复制内容"), onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(summary)) })
+                            CopyTextButton(L10n.tr("复制内容"), identity = request.requestId) { summary }
                         }
                     }
                     request.externalUrl?.let { url ->

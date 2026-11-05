@@ -130,7 +130,7 @@ internal fun MessageActionHeader(normal: @Composable () -> Unit) {
                 title = { if (shown.copySelection == null && shown.selectAll == null) MotionText(L10n.tr("消息操作"), maxLines = 1) },
                 navigationIcon = { NeumorphIconButton({ state?.dismiss() }, Icons.Rounded.Close, L10n.tr("退出消息操作"), enabled = selection != null) },
                 actions = {
-                    CopyIconButton(L10n.tr("复制消息"), enabled = selection != null) { selection?.text.orEmpty() }
+                    CopyIconButton(L10n.tr("复制消息"), enabled = selection != null, identity = shown.id) { selection?.text.orEmpty() }
                     if (shown.rewind != null) NeumorphIconButton({
                         if (state?.selection?.id == shown.id && shown.rewindEnabled) { state.dismiss(); shown.rewind.invoke() }
                     }, Icons.Rounded.SkipPrevious, "Rewind", enabled = selection?.rewindEnabled == true)

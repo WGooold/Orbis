@@ -53,6 +53,7 @@ import kotlin.math.max
 
 /** ADR-0058. Durations and geometry are semantic shared contracts, never per-screen constants. */
 internal object InteractionMotion {
+    const val CopyFeedback = 2_500L
     const val ReplyGrowth = 180
     const val ReplyArrival = 220
     val ReplyEase = CubicBezierEasing(0.2f, 0f, 0f, 1f)

@@ -1002,9 +1002,10 @@ private struct FullMessageView: View {
     var body: some View {
         VStack(spacing: 16) {
             OrbisPageHeader(title: L10n.tr("完整内容"), closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "doc.on.doc", label: L10n.tr("复制完整内容")) {
-                    if let message = preview?.message { UIPasteboard.general.string = fullMessageText(message) }
-                }.disabled(preview?.message == nil)
+                OrbisCopyButton(label: L10n.tr("复制完整内容"), size: 40) {
+                    guard let message = preview?.message else { return "" }
+                    return fullMessageText(message)
+                }.disabled(preview?.message == nil).accessibilityIdentifier("copy-full-entry-" + entryId)
             }
             if preview?.loading == true { ProgressView(L10n.tr("正在取回…")) }
             if let message = preview?.message {

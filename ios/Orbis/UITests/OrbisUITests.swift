@@ -1868,11 +1868,22 @@ final class OrbisUITests: XCTestCase {
         XCTAssertLessThanOrEqual(copy.frame.maxY, message.frame.minY)
         copy.tap()
         XCTAssertEqual(copy.label, "已复制")
+        let copyFrame = copy.frame
+        Thread.sleep(forTimeInterval: 1.3)
+        copy.tap()
+        Thread.sleep(forTimeInterval: 1.2)
+        XCTAssertEqual(copy.label, "已复制", "The first deadline must not clear a later copy")
+        let restoredCopy = NSPredicate(format: "label == %@", "复制消息")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restoredCopy, object: copy)], timeout: 3), .completed)
+        XCTAssertEqual(copy.frame, copyFrame)
+        copy.tap()
+        XCTAssertEqual(copy.label, "已复制")
         app.buttons["退出消息操作"].tap()
         XCTAssertFalse(copy.exists)
         XCTAssertTrue(app.buttons["历史与分支"].exists)
         message.press(forDuration: 0.6)
         XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        XCTAssertEqual(copy.label, "复制消息", "Reopening actions must not restore a stale checkmark")
         let rewind = app.buttons["rewind-message-m3"]
         XCTAssertTrue(rewind.isEnabled)
         capture("user-message-actions", app: app)
@@ -2461,18 +2472,36 @@ final class OrbisUITests: XCTestCase {
     }
 
     func testTruncatedContentAndToolArguments() {
-        let app = launch("truncated")
+        let appearances: [(String, Bool, [String])] = [
+            ("light", false, []),
+            ("dark", true, []),
+            ("large", false, ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]),
+            ("reduced", false, ["--preview-reduce-motion"]),
+        ]
+        for (name, dark, arguments) in appearances {
+        let app = launch("truncated", dark: dark, arguments: arguments)
         XCTAssertTrue(app.buttons["展开read，已完成"].waitForExistence(timeout: 8))
         app.buttons["展开read，已完成"].tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "/repo/source.swift")).firstMatch.exists)
         XCTAssertTrue(app.staticTexts["已完成工具参数验证。"].exists)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "有内容因超长被截断")).firstMatch.exists)
-        capture("tool-arguments-truncated", app: app)
+        capture("tool-arguments-truncated-" + name, app: app)
         app.buttons["full-entry-truncated-message"].tap()
         XCTAssertTrue(app.staticTexts["完整返回内容：这条消息已按需从电脑取回。"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["复制完整内容"].isEnabled)
-        capture("full-entry", app: app)
+        // previewEntry resolves the display message ID to its authoritative entry (node-1 here).
+        let copy = app.buttons["copy-full-entry-node-1"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        XCTAssertTrue(copy.isEnabled)
+        let before = copy.frame
+        copy.tap()
+        XCTAssertEqual(copy.label, "已复制")
+        capture("full-entry-copied-" + name, app: app)
+        let restored = NSPredicate(format: "label == %@", "复制完整内容")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: copy)], timeout: 4), .completed)
+        XCTAssertEqual(copy.frame, before)
+        capture("full-entry-" + name, app: app)
         app.terminate()
+        }
     }
 
 }

@@ -21,10 +21,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
-import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.runtime.LaunchedEffect
-import kotlinx.coroutines.delay
 import androidx.compose.material3.HorizontalDivider
 import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,7 +37,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -223,22 +218,6 @@ private fun MarkdownList(list: ListBlock, listener: LinkInteractionListener) {
             }
         }
     }
-}
-
-/** Copies [text] and shows a check for 2.5 s; copying again restarts the timer (iOS `OrbisCopyButton`). */
-@Composable
-internal fun CopyIconButton(label: String, size: androidx.compose.ui.unit.Dp = 32.dp, enabled: Boolean = true, text: () -> String) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    var copyGeneration by remember { mutableStateOf(0) }
-    LaunchedEffect(copyGeneration) { if (copied) { delay(2_500); copied = false } }
-    NeumorphIconButton(
-        onClick = { clipboard.setText(AnnotatedString(text())); copied = true; copyGeneration++ },
-        icon = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-        contentDescription = if (copied) L10n.tr("已复制") else label,
-        size = size,
-        enabled = enabled,
-    )
 }
 
 @Composable

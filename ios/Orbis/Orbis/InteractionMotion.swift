@@ -880,6 +880,7 @@ struct OrbisMessageActionHeader<Normal: View>: View {
                     OrbisIconButton(symbol: "xmark", label: L10n.tr("退出消息操作")) { actions.dismiss() }
                     OrbisMotionText(L10n.tr("消息操作")).font(.orbisBody(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
                     OrbisCopyButton(label: L10n.tr("复制消息")) { actions.selection?.text ?? "" }
+                        .id(selected.id)
                         .accessibilityIdentifier("copy-message-" + selected.id)
                     if let rewind = selected.rewind {
                         OrbisIconButton(symbol: "backward.end", label: "Rewind") {

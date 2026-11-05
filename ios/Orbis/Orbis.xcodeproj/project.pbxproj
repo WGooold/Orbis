@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C00500010000000000000001 /* CopyFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00510010000000000000001 /* CopyFeedback.swift */; };
 		C06300010000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
 		C06300010000000000000002 /* LocalizationCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000002; };
 		C06300010000000000000003 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C06320010000000000000001; };
@@ -58,6 +59,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C00510010000000000000001 /* CopyFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyFeedback.swift; sourceTree = "<group>"; };
 		C06310010000000000000001 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
 		C06310010000000000000002 /* LocalizationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalog.swift; sourceTree = "<group>"; };
 		C06310010000000000000003 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
@@ -179,6 +181,7 @@
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
 				C05810010000000000000001 /* MotionGeometry.swift */,
+				C00510010000000000000001 /* CopyFeedback.swift */,
 				C03710010000000000000001 /* QuotaCoinGeometry.swift */,
 				C05810010000000000000002 /* InteractionMotion.swift */,
 				C03310010000000000000001 /* HomePullRefresh.swift */,
@@ -328,6 +331,7 @@
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
+				C00500010000000000000001 /* CopyFeedback.swift in Sources */,
 				C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */,
 				C05800010000000000000002 /* InteractionMotion.swift in Sources */,
 				C03300010000000000000001 /* HomePullRefresh.swift in Sources */,

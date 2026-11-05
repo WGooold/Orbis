@@ -107,6 +107,8 @@
 
 ## MOT-08：所有可点击图标反馈
 
+2026-11-05 SC23 / M05 复制补齐（验证中）：iOS 全文复制、Android 工具参数复制接入共用 2.5 秒反馈；重复点击重计时，消息身份 / 禁用 / 离页不保留旧对勾。Android `CopyFeedbackInstrumentedTest` 覆盖真实剪贴板内容、连续复制、身份 / 禁用 / 重入、文字按钮几何和明暗 / 大字；iOS `CopyFeedbackTests`（4）覆盖共用生产计时器，扩展 `testUserMessageCopyAndRewind` 与 `testTruncatedContentAndToolArguments`（A1–A4）。沿用 C15 / R39 与完整双端门禁，证据和未跑项见 `.artifacts/ui-regression/20261105-copy-feedback/summary.md`；不关单、不新增 feature 或动效参数。
+
 **场景 / feature**：SC18–SC27，兼及所有菜单 / 模态中的图标；M20、M02、M05、M12、M16。
 
 **实际问题**：共用按钮只有材质按压；部分无样式按钮和图标文字按钮绕开组件。

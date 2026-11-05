@@ -177,6 +177,7 @@ r47 侧边栏面板（R65；S02–S04 / S19，关联 S01 / S12 / S13 / S15 / S25
 | 状态 / 供应商 | `SubscriptionQuotaInstrumentedTest`（3，查询 / 翻面、快速接管与减少动画）、`ProviderSelectionInstrumentedTest`（1） | S19、S22 |
 | 下载 / 文件 | `DownloadFileBrowserInstrumentedTest`（3）、`TurnFileChangesInstrumentedTest`（6，含原生 Codex 来源提示及 Pi 预览清单点击、入场期间完整清单 / 首段 diff 到达和关闭重开）、`ChatViewportInstrumentedTest#turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt` | S09、S15、S20–S21、M13、V19 |
 | 材质 / 字形 / 控件 | `UiPolishInstrumentedTest`（3）、`NeumorphInstrumentedTest`（1） | S01–S09、S12、M04、V15 |
+| 复制反馈 / M05 | `CopyFeedbackInstrumentedTest`（4）：最新复制完整期限、真实剪贴板、消息身份 / 禁用 / 重入、文字按钮明暗大字及固定几何、真实审批参数窄屏大字复制；iOS `CopyFeedbackTests`（4）与扩展 `testUserMessageCopyAndRewind`、`testTruncatedContentAndToolArguments`（A1–A4） | M05、V16、SC23 / MOT-08 |
 | 非 UI 但在同一设备套件 | `SessionGraphStoreInstrumentedTest`（32）、`SessionSyncSelectionInstrumentedTest`（6）、`SessionSyncSlowLinkInstrumentedTest`（2） | 缓存 / 同步正确性，全量时一并运行 |
 | 需要隔离 Host | `IsolatedHostPairingInstrumentedTest`（1）；`ToolContinuityCaptureInstrumentedTest`（1，无参数时自动跳过，传入配对载荷与 cwd 时做真实输出逐帧捕获） | 配对；V20 定位 |
 | Pi 连续工具交接 | `ToolContinuityInstrumentedTest`（2，跟随与上滑阅读；连续同 head 更新后父节点补齐） | V20、V09、V01–V04、V18 |
@@ -362,7 +363,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | C12 | 打开设置页（r15 前由“更多操作 › 连接状态”进入，r15 后点右上角齿轮）；检查当前连接事实行；点配额币；打开供应商切换 | 分区顺序正确，底部另有“外观”单选分区；连接延迟以整数毫秒显示，无样本时为“暂不可用”；供应商卡片区（r15 后位于最上方）：44pt/dp 环、固定角标、左倾 24° 实体厚边翻面（r37，R58）；切换菜单透明无底色 | S19、S22–S23、M14 |
 | C13 | 打开首页下载页；整卡暂停 / 继续，长按多选 | 没有旁置按钮；长按多选；r15 后可从右侧滑入、右滑返回首页 | S20、S15、M14 |
 | C14 | 在 Codex 长回合（多次工具调用，消息超过 4 条）结束后查看轮次文件概况；Pi 一轮改动超过 4 个文件时，先直接点击预览中的 `.kt` / `.md` 文件，再展开完整清单后打开作对照；查看器入场期间注入完整清单与首段 diff；关闭重开并左右切换文件；正文滚到中段后快速向下甩回顶部并继续下拉 / 快甩；再从标题区短拉、长拉 | 概况卡在整轮最后一行之后，不在回合中段；概况是单个内凹块，标题行可点开查看器，每个文件一行、状态字母颜色正确，长文件名不被目录挤压，未知行数显示短状态而非“+— −—”；预览升级为完整清单时不崩溃、不改选中文件，直接打开与先展开清单具有相同查看语义；跟手、落位、首尾回弹；只请求已落位文件的详情；正文到顶只在差异区内回弹，卡片不移动不关闭；标题区短拉回弹、长拉或快甩关闭，滑出过程中仍显示当前文件、不变成空白或加载态 | S21、M13、V19 |
-| C15 | 用户消息长按切换页顶栏后复制；助手 / 代码沿用原入口 | 原位对勾，2.5 秒后恢复；重复复制重置计时 | M05、V16 |
+| C15 | 用户消息长按切换页顶栏后复制；助手 / 代码、工具详情、完整内容及 Android 工具参数复制；复制后连续再点、离开重入、切换消息与禁用 | 原位同尺寸对勾，最后一次成功复制 2.5 秒后恢复；不被旧期限提前清除，离开 / 换消息 / 禁用不残留；文字按钮标签不跳动，剪贴板仍保留最新内容。系统文字选择和自动关闭的原生菜单保持平台行为 | M05、V16 |
 | C16 | 切换明暗及经典 / 雾蓝外观后重看 C01、C04、C12 | 明暗四层底板；单层材质外框；柔影方向正确，没有纯黑硬边；选择即时生效 | S01–S04、S25 |
 | C17 | 断开再恢复电脑连接（隔离夹具或预览注入） | 胶囊依次表达连接中 / 同步中 / 同步失败；失败时胶囊旁出现 48 命中的重试；卡片不移位 | S18、V16、V18 |
 | C18 | 两台电脑间切换（iOS `--preview-hosts=2`，Android 夹具） | 首页与目录只显示当前电脑；其他电脑待确认时显示红点；旧卡片不能操作新会话 | S18、V17 |
@@ -533,6 +534,8 @@ M15 r23 回归记录：Android 隔离工作树 L1 / L2（`testDebugUnitTest`、`
 | UI-07 | 两端 | iOS `testBasicConnectionStatusAndDirectoryProviderMismatch`；Android `SettingsEntryInstrumentedTest#settingsPutProvidersFirstAndHaveNoComputerEntries`（含明暗两项）、`StatusScreenTest.connection latency shows host RTT or an unavailable value` | Host `device-link.test.ts` / `host-service.test.ts` 覆盖单路径持续采样、活动路径公告、过期回声与换路隔离；iOS `PresentationTests.connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds` 与 Android `StatusScreenTest` 覆盖取整、缺值、无效值和断线；两端 UI 验证有 / 无样本，Android 还核对路径和读数变化时行位置不动 |
 
 ## 6. 结果记录
+
+2026-11-05 M05 复制反馈补齐（M05 / V16、SC23 / MOT-08、C15 / R39，验证中）：iOS 全文复制、Android 工具参数复制接入共用 2.5 秒反馈；连点重计时，离开 / 禁用 / 换身份清理。受控候选及基线 iOS 核心各 374 项 / App 与 UI 测试包构建通过；随后将生产计时器提取到 `CopyFeedback.swift`，包含 4 项取消 / 重入 / 生命周期测试的集成快照共 378 项及 App / UI 测试包构建通过。Android 各 719 通过 / 1 冻结 Host-18 夹具条件未满足及两包构建通过。Android 正常 / 实际减少动画专项各 11 / 11，含复制 4 / 4；同设备全量基线 199 项为 185 过 / 7 失败 / 7 assumption、候选 203 项为 189 / 7 / 7，具名失败集合相同，无新增失败。七张复制明暗 / 大字 / 审批窄屏图已审阅；iOS 专项 3 项为 1 过 / 2 失败（用户消息入口未找到、全文测试误用显示 ID）；全文选择器已改为真实 entry `node-1`，未在设备复验；该次 SE 模拟器在台北时间 14:51:50–14:53:05 发生 17 次 PosterBoard 崩溃，用户报告连续弹窗并重启电脑，已停止设备测试。重启后核验设备 Shutdown、原测试进程退出并释放本任务遗留构建租约；未继续启动模拟器。iOS 全量对照、完整 L4 / C01–C18 / R39 / A1–A4 / 真机未完成，不记完整验收。共享工作树随后另有 r48 菜单改造，原设备结果只对应保存的受控输入，集成快照的 378 项结果仅覆盖核心与构建；未部署。设备 / 构建资源已按 owner 核验释放，后续 owner 接续使用不干预。证据 `.artifacts/ui-regression/20261105-copy-feedback/summary.md`。
 
 2026-11-04 全 App 中英文 / r45（S27 / SC46 / MOT-25 / R62，已实施、未验收）：最终 App 已完成同设备同配置基线 / 候选全量。Android 基线 183 项为 169 过 / 7 失败 / 7 assumption，候选 192 项为 177 过 / 8 失败 / 7 assumption；7 项异常及测试帧与基线一致，额外权限文本布局检查经实际行边界、完整末字符、无省略和高度诊断修正后，设置 A1–A4 整类 32 / 32 通过，生产 APK 不变，不改写原全量计数。iOS SE 基线 89 项为 82 过 / 7 失败，候选 93 项为 82 过 / 11 失败；连接事实逐项短滚动、DeepSeek / 附件的中文辅助功能组合标签选择器修正后 4 / 4 复测通过，生产 App 不变。剩余 7 项为 5 项基线相同断言及报错、长聊天工具展开不同失败表现、同期回复卡片几何新增用例失败，不能按失败名称或总数认定等价。SE / iPad 语言各 3 / 3，SE / iPad 各 40 张英文 A1–A4 预览、SE 全量 193 张、Android 最终全量 331 张及最终设置 44 张均已看；修复 SE 历史英文标题单行截断和 Android 权限待确认按钮大字截断。iPad 只跑语言 / 宽屏专项；完整 C01–C18、实际系统前后台语言变化、屏幕阅读器、真实 Host / 真机仍未验收。读取 cleanup / result 并核验原 owner、进程、端口、Shutdown 与全局队列，本任务资源全部释放。版本、完整失败集合、图片限制与清理证据见 `.artifacts/ui-regression/20261104-app-language/summary.md`、`manual-checklist.md`、`cleanup-resume-final.json`。
 

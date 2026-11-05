@@ -568,15 +568,16 @@ struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.isEnabled) private var enabled
     let label: String
     var size: CGFloat = 28
     let text: () -> String
-    @State private var copied = false
-    @State private var reset: Task<Void, Never>?
+    @StateObject private var feedback = OrbisCopyFeedback()
 
     var body: some View {
         let p = OrbisPalette(scheme)
-        OrbisMotionButton(action: copy) {
+        let copied = feedback.copied
+        OrbisMotionButton { feedback.perform { UIPasteboard.general.string = text() } } label: {
             ZStack {
                 OrbisActionSymbol(systemName: "doc.on.doc").foregroundStyle(p.secondary)
                     .opacity(copied ? 0 : 1).scaleEffect(copied ? 0.6 : 1)
@@ -588,17 +589,8 @@ struct OrbisCopyButton: View {
         }
         .buttonStyle(NeuIconButtonStyle(selected: false, size: size))
         .accessibilityLabel(copied ? L10n.tr("已复制") : label)
-        .onDisappear { reset?.cancel() }
-    }
-
-    private func copy() {
-        UIPasteboard.general.string = text()
-        copied = true
-        reset?.cancel()
-        reset = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if !Task.isCancelled { copied = false }
-        }
+        .onChange(of: enabled) { _, enabled in if !enabled { feedback.clear() } }
+        .onDisappear { feedback.clear() }
     }
 }
 
@@ -1018,21 +1010,16 @@ private struct OrbisMenuRow: View {
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let item: OrbisMenuItem
     let action: () -> Void
-    @State private var copied = false
+    @StateObject private var feedback = OrbisCopyFeedback()
     @State private var activation = 0
-    @State private var reset: Task<Void, Never>?
     var body: some View {
         let p = OrbisPalette(scheme)
+        let copied = feedback.copied
         Button {
             activation += 1
-            action()
             if item.keepsOpen {
-                copied = true; reset?.cancel()
-                reset = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 2_500_000_000)
-                    if !Task.isCancelled { copied = false }
-                }
-            }
+                feedback.perform(action)
+            } else { action() }
         } label: {
             HStack(spacing: 12) {
                 if let symbol = item.symbol {
@@ -1049,7 +1036,8 @@ private struct OrbisMenuRow: View {
             .disabled(item.disabled)
             .accessibilityLabel(copied ? L10n.tr("已复制") : item.title)
             .accessibilityIdentifier(item.identifier ?? "")
-            .onDisappear { reset?.cancel() }
+            .onChange(of: item.identifier) { _, _ in feedback.clear() }
+            .onDisappear { feedback.clear() }
             .accessibilityAddTraits(item.checked ? .isSelected : [])
     }
 }
