@@ -28,13 +28,7 @@ this private source override from their child environment. The parent Host,
 Desktop wrapper / GUI, native home, provider config and authentication are
 unchanged. Existing histories are not relabelled or migrated.
 
-App selection of `codex` activates the independent terminal backend. A historical
-rollout's `originator` / `source` describes creation context, not the current native
-writer or the user's present client choice; it must not silently reroute an App
-terminal activation to Desktop. The Desktop namespace and already observed
-Desktop ownership guard remain unchanged. Independent app-servers cannot write
-the same loaded thread concurrently; the Desktop warning alone does not establish
-an incorrect route.
+App selection of `codex` activates the independent terminal backend. Historical rollout metadata describes creation context; current selection and observed attachment determine routing and ownership. The Desktop namespace and observed ownership guard remain in effect. Independent app-servers cannot write the same loaded thread concurrently, and that conflict can legitimately produce the Desktop warning.
 
 For macOS, terminal activation opens a private executable `.command` through
 Terminal, using the exact CLI selected for that app-server and `resume --remote`
@@ -52,7 +46,7 @@ Verification and remaining device / manual gates are recorded under R56 in
 [UI regression](../../AGENTS.md#测试). This revision is under validation;
 it does not claim the running user Host has been upgraded.
 
-Adoption must join the existing thread with `thread/resume` without configuration overrides. `thread/started` and `thread/status/changed` are global broadcasts, but merely reading `thread/turns/list` does not subscribe the Host connection to items, turns or effective permission changes. The resume response supplies the initial history, model and permissions; subsequent notifications keep them current. Codex 0.160.0 rejects resume before the first message materializes the rollout, so Host retains the empty session and retries on status broadcasts and its existing TUI window watcher. An absent rollout at that stage is not a permanent history error. Notifications received during resume are applied after the history snapshot to preserve newer state. TUI `/new` and `/resume` switches use the same subscription path.
+Adoption subscribes to the existing thread through `thread/resume`, retaining its native configuration. `thread/started` and `thread/status/changed` are global broadcasts, but merely reading `thread/turns/list` does not subscribe the Host connection to items, turns or effective permission changes. The resume response supplies the initial history, model and permissions; subsequent notifications keep them current. Codex 0.160.0 rejects resume before the first message materializes the rollout, so Host retains the empty session and retries on status broadcasts and its existing TUI window watcher. An absent rollout at that stage is not a permanent history error. Notifications received during resume are applied after the history snapshot to preserve newer state. TUI `/new` and `/resume` switches use the same subscription path.
 
 Terminal-first sessions become visible on the phone after the TUI creates its first thread. Multiple pending terminals in the same working directory are inherently ambiguous and are matched oldest-first; an explicit `codex resume <id>` remains an unmanaged official Codex invocation and is not retroactively claimed. Existing terminals need to be reopened after PATH installation. A machine-wide `codex` installed by another tool needs that single elevation before a bare `codex` reaches Orbis; until then the shim stays installed but unused, and the only user-visible trace is the Settings repair row. Host shutdown leaves the shim installed, but it transparently falls back to standalone Codex until Host is available again.
 

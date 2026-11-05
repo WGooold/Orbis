@@ -10,7 +10,7 @@ Create `/opt/orbis/shared/data` owned by UID/GID 1000 with mode 700. Copy `deplo
 
 Install `deploy/nginx-proxy.conf` as `/etc/nginx/snippets/orbis-proxy.conf`, adapt `deploy/nginx-orbis.conf` to your domain, and obtain a valid TLS certificate with Certbot. Keep the ACME webroot `/var/www/orbis-acme` and Certbot's renewal timer enabled. Validate with `nginx -t` before reloading.
 
-If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges and `real_ip_header CF-Connecting-IP` before enabling `ORBIS_TRUST_PROXY=1`. Never trust arbitrary forwarded client addresses from the public internet. Source ranges: https://www.cloudflare.com/ips/.
+If Cloudflare proxies HTTPS, configure Nginx's trusted Cloudflare address ranges and `real_ip_header CF-Connecting-IP` before enabling `ORBIS_TRUST_PROXY=1`. Use forwarded addresses from the configured trusted proxy ranges. Source ranges: https://www.cloudflare.com/ips/.
 
 Connections use LAN / Relay only, with a fixed LAN-first order (ADR-0050). The Relay requires TCP 443 through the reverse proxy; local discovery and direct connections follow the Host LAN configuration.
 
@@ -35,9 +35,7 @@ LAN uses its socket version only after MAC confirmation. End-to-end encryption
 and existing operation identities are retained. Local macOS arm64 validation has
 passed; Windows / x64 packaging and full old-App device gates remain pending. Host 0.1.14 uses 18
 and does not gain this business compatibility from a Relay-only deployment.
-Acceptance must retain the actual old App binaries and pairing; installing
-Android 0.1.54 cannot substitute for this test. A new compatible Host must be
-delivered before this path can be reported complete.
+Acceptance uses the actual old App binaries and existing pairing, with delivery of the compatible Host recorded separately.
 
 ## GitHub Actions
 
@@ -54,7 +52,7 @@ Create a `production` environment and configure its secrets:
 
 The workflow also accepts the former `PI_REMOTE_*` names for these secrets. Relay runtime configuration prefers `ORBIS_*` and accepts existing `PI_REMOTE_*` values, so a naming upgrade does not require rewriting deployed credentials. The deployment script uses `orbis-relay` for new containers and can replace an existing `pi-remote-relay` container while preserving its original name during rollback.
 
-Push relevant changes to `main`. The full check job runs on Windows; a second job runs the Host path, shell, launcher and Git-hook compatibility tests on macOS; a third job checks the review Host integration on Linux. All three must pass before deployment. Host changes also trigger this workflow because its tests are part of the deployment gate. The deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments have no local shortcut.
+Push relevant changes to `main`. The full check job runs on Windows; a second job runs the Host path, shell, launcher and Git-hook compatibility tests on macOS; a third job checks the review Host integration on Linux. All three must pass before deployment. Host changes also trigger this workflow because its tests are part of the deployment gate. The deploy job archives `git archive HEAD`, uploads via pinned SSH, builds on the server and checks a candidate before switching traffic. Application deployments use this workflow.
 
 2026-11-04 CI cleanup correction: the review portal and process-tree cleanup tests
 also run on Windows, macOS and Linux. The Linux integration job is an additional
@@ -102,16 +100,16 @@ Release order for a tagged build on `main`:
 
 Without those inputs a push-triggered **Relay deploy** still moves the Relay but publishes no downloads. The version in the client, packaging scripts, allowlist (`packages/relay/src/web.ts`) and release workflow must agree: the deploy fails if a file named after the version in `packages/windows-host/CMakeLists.txt` is missing from the artifacts.
 
-**Android build** signs the APK with the release key from the `ORBIS_RELEASE_*` repository secrets and fails unless the signing certificate matches the pinned SHA-256 in the workflow; a different certificate would stop installed clients from upgrading. Local release builds read the same `ORBIS_RELEASE_*` properties from `~/.gradle/gradle.properties` and refuse to build without them. Never publish signing keys.
+**Android build** signs the APK with the release key from the `ORBIS_RELEASE_*` repository secrets and fails unless the signing certificate matches the pinned SHA-256 in the workflow; a different certificate would stop installed clients from upgrading. Local release builds read the same `ORBIS_RELEASE_*` properties from `~/.gradle/gradle.properties` and refuse to build without them. Keep signing keys in the private signing configuration.
 
-**iOS TestFlight** archives the app with automatic signing through an App Store Connect API key (`APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_P8_BASE64`) and uploads it to TestFlight; the build number is the workflow run number. It is independent of the GitHub release. Binary releases belong in GitHub Releases or the download directory, not source history.
+**iOS TestFlight** archives the app with automatic signing through an App Store Connect API key (`APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_P8_BASE64`) and uploads it to TestFlight; the build number is the workflow run number. It is independent of the GitHub release. Store binary releases in GitHub Releases or the download directory.
 
 To publish an existing local Android build, first verify its build-manifest SHA-256 and compare its signing certificate with the current website APK. Upload `orbis.apk` and `orbis.apk.sha256` to a GitHub Release, then dispatch **Relay deploy** with `android_release_tag` and the exact `android_apk_sha256`. The production job verifies the release asset, publishes both files, and downloads them again through the public website to verify their hashes. It preserves the previous APK and checksum outside the public directory and restores them if publication fails. The Android version may remain unchanged for a preview refresh; the pinned hash identifies the exact build.
 
 ## Registration and persistent state
 
-QQ email verification defaults to required. In the console's Service page, the operator may disable it to allow direct Host-bound activation. Do not change this setting as a side effect of deployment. SMTP configuration stays in `shared/relay.env`; see [verification email setup](mail-server.md) for provider and self-hosted sending options. If verification is required and SMTP is absent, existing credentials continue working but new registrations are unavailable.
+QQ email verification defaults to required. In the console's Service page, the operator may disable it to allow direct Host-bound activation. Preserve this operator setting during deployment. SMTP configuration stays in `shared/relay.env`; see [verification email setup](mail-server.md) for provider and self-hosted sending options. If verification is required and SMTP is absent, existing credentials continue working but new registrations are unavailable.
 
-Back up `shared/relay.env`, all `shared/data/` files, and download checksums privately. The Relay device store, registration store and administrator policy/audit store must migrate together. Host pairing keys stay on each computer/phone, never in the server repository. Stop writes briefly for the final state copy when moving servers, then verify hashes and resume traffic.
+Back up `shared/relay.env`, all `shared/data/` files, and download checksums privately. The Relay device store, registration store and administrator policy/audit store must migrate together. Host pairing keys remain private to each computer and phone. Stop writes briefly for the final state copy when moving servers, then verify hashes and resume traffic.
 
-For existing clients with the former Relay URL, keep that hostname as a reverse proxy to the new Relay until clients have migrated. Do not run two independently writable copies of Relay state after cutover.
+For existing clients with the former Relay URL, keep that hostname as a reverse proxy to the new Relay until clients have migrated. Maintain one authoritative writable Relay state after cutover.

@@ -27,7 +27,7 @@
 
 **把 `n` 的两个职责拆开，每条道各自声明它需要哪个。**
 
-### 1. nonce 锚定「发送侧封了几次帧」，不锚定「数据身份」
+### 1. nonce 绑定通道与发送计数
 
 ```
 nonce[0..3]  = uint32BE(channel 槽位)   1=ctl  2=msg  3=bulk   （0 保留不用）
@@ -44,7 +44,7 @@ nonce[4..11] = uint64BE(n)
 ### 2. `ch` 纳入 AAD
 
 `canonEnvelopeAad`：`k/room/from/to/n` 五行 → `k/room/from/to/ch/n` 六行。
-`ch` 参与 nonce 派生后就是"决定能不能解开"的字段，必须认证。
+`ch` 参与 nonce 派生与认证，通道身份随密文完整校验。
 
 ### 3. 接收侧三条道统一只查高水位线
 
@@ -65,7 +65,7 @@ n <= last → 静默丢弃（返回 undefined/null + onStale 计数），不是�
   构造不出 `n > last` 的帧；中继的重放全部落在水位线以下。
 - **负面（可观测性）**：丢帧完全静默。补偿：`onStale` 计数 + 片层 `onRejected`
   计数；端到端兜底不变（交互 `expiresAt`、bulk sha256、会话 `session.sync`）。
-- **协议边界**：AAD 与 nonce 布局不可随实现版本隐式变化。初次引入时协议由 4 升至 5 并重算测试向量；从 18 起的演进按 [ADR-0064](0064-protocol-compatibility.md) 保持基础互通，扩展通道须认证协商。
+- **协议边界**：AAD 与 nonce 布局按已协商协议固定。初次引入时协议由 4 升至 5 并重算测试向量；从 18 起的演进按 [ADR-0064](0064-protocol-compatibility.md) 保持基础互通，扩展通道须认证协商。
 
 ## 实现位置
 
@@ -79,4 +79,4 @@ n <= last → 静默丢弃（返回 undefined/null + onStale 计数），不是�
 
 ## 2026-11-05 原生五流的显式扩展
 
-[ADR-0065 §11](0065-native-quic-relay-transport.md#11-history--catchup--bulk-独立五流2026-11-05) 在旧三槽位不变的前提下追加 history=4、catchup=5。只有已认证能力被双方接受的 E2E 会话可使用；HS1 与旧 MAC / 18 基础格式保持，未协商拒绝扩展 channel。每个 channel 独立计数 / 高水位，ch 仍进 AAD；没有重用 nonce、降低防重放或在一个计数域下并行拆流。LAN 与旧端保持原三通道。功能回归见[方案](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，本轮不再性能测量。
+[ADR-0065 §11](0065-native-quic-relay-transport.md#11-history--catchup--bulk-独立五流2026-11-05) 在旧三槽位不变的前提下追加 history=4、catchup=5。只有已认证能力被双方接受的 E2E 会话可使用；HS1 与旧 MAC / 18 基础格式保持，未协商拒绝扩展 channel。每个 channel 独立计数 / 高水位，ch 仍进 AAD。LAN 与旧端保持原三通道。功能回归见[方案](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，对应本阶段功能验证。

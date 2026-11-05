@@ -2,13 +2,13 @@
 
 日期：2026-11-03
 
-Status: accepted（用户已授权先写 ADR 再实施；Host、Mod 与双端已接入；设备与真实原生联动门禁未完成，尚未验收）
+Status: accepted（Host、Mod 与双端已接入；设备与真实原生联动门禁未完成，尚未验收）
 
 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0058](0058-shared-interaction-motion.md)。新增 S26；修订 S17–S20、V05、V12、V16–V18，关联 M03、M06、M10、M20、V01–V03、V21。回归 R61，动效 SC45 / MOT-24。
 
 ## Context
 
-用户报告 Claude 子代理进入 App 普通会话列表、无法关闭，并且持续输出却显示空闲。Claude 可以在主回合已结束、composer 可接收下一次输入时继续运行后台子代理；因此仅过滤独立卡片或把主回合强制改成 running 都不完整。
+故障现象：Claude 子代理进入 App 普通会话列表、无法关闭，并且持续输出却显示空闲。Claude 可以在主回合已结束、composer 可接收下一次输入时继续运行后台子代理；因此仅过滤独立卡片或把主回合强制改成 running 都不完整。
 
 当前插件只将无 agentId 的 turn.start / turn.complete 投影为主回合，工具事件却没有保留子代理归属；实时 hello 也没有区分交互 TUI 与非交互执行。Codex / Codex Desktop 与 DeepSeek 已在目录和实时发现排除内部子代理，这个可见会话边界可沿用，执行状态采集不能照搬。
 
@@ -18,42 +18,29 @@ Status: accepted（用户已授权先写 ADR 再实施；Host、Mod 与双端已
 
 ### 1. 三类事实分开
 
-- **主回合 execution.phase**：保持原生 idle / running / waiting_local_interaction，继续决定输入 / follow-up / 主回合 stop；子代理状态不能覆盖它。
-- **子任务清单 execution.tasks**：由适配器发布有界完整库存，包含 availability（ready / unknown / unavailable）、items、truncated；每项保存原生 id、可选 parentId、名称 / 类型、状态。身份作用域是 Host / Session / bridge generation / task id。它不是新的普通 Runtime，也不进入历史会话恢复 / 归档 / 批量关闭。
-- **会话展示状态**：App 从上述事实生成汇总文字，不能用于命令准入。等待审批优先；主回合运行 + N 个活跃子任务显示“运行中 · N 个子任务”；主回合空闲 + 活跃子任务显示“N 个子任务运行中”（pending / waiting 分别显示启动 / 等待）；仅在库存已确认且没有活跃子任务时显示空闲。未知库存显示“子任务状态待核对”，并保留最后已知清单。
+主回合 phase、子任务库存与会话展示分别表达事实，输入由主回合和能力准入，汇总状态由已确认库存派生。后台能力按实际 Host / Mod 支持发布，协议兼容按 ADR-0064。
 
-其他后端没有这个来源时不伪造空清单、不改变原状态。原实施按 ADR-0032 升为 19；2026-11-04 按 [ADR-0064](0064-protocol-compatibility.md) 改为保留 18 基础互通，Android 先兼容既有 18 / 19，不能要求旧 Host 先升级。后台子任务的新来源仍需要支持它的 Host / Mod；缺失不伪造为空清单。插件 0.1.6 / bridge 4 要求 agent.list 能力，旧 bridge 不混用。
+任务库存包含 availability、items 与 truncated，以 Host / Session / bridge generation / task id 归属；插件 0.1.6 / bridge 4 使用 agent.list。
+
+参考：[ADR-0064](0064-protocol-compatibility.md)。
 
 ### 2. 采集、恢复与身份
 
-以 `agent.list()` 为库存来源：首次连接先核对，随后在现有 poll 周期内有界读取，内容不变不重复发布；读取失败发布 unknown 并保留上次值。读取与 HTTP 回执绑定原会话 / generation，串行执行，旧会话、旧连接和迟到返回不能覆盖新库存。仅成功的完整快照可以按缺席移除任务；截断 / 非法 / 不完整不得解释为空，也不得静默丢失活跃项。主回合完成不清空库存；子任务完成不结束主回合。重连 / mod reload 必须重取库存，不能依赖启动事件补齐。独立 pane teammate 的存活未经确认时保留 unknown，不制造“全部完成”。
-
-实时桥仅发布受支持的交互终端会话，非交互子执行不注册普通 Runtime；Host 同样验证来源。主会话中的 agentId 用于任务归属，子代理正文与工具明细不混入主回复。历史扫描继续排除 subagents / sidechain；普通独立会话、同 cwd 多 TUI 不按名称 / 路径相似度合并。
-
-Hook 子代理审批保留准确原生 session / request 身份；只有确定的主会话拥有者才能承载，无法确定时返回原生处理，不新造可关闭会话、不自动批准或丢弃问题。撤下误显示 Runtime 只改变投影，不终止进程、不删除 transcript。
+agent.list 提供完整库存，按会话和代次串行核对，内容变化驱动发布；失败保留上次清单并声明未知。普通 Runtime 对应交互会话，子执行与 Hook 审批按原生身份归属。
 
 ### 3. 双端展示
 
-首页与目录继续一张主会话卡，原状态槽显示汇总活动，辅助功能读出相同信息。聊天页在 composer 附近增加 S26 紧凑子任务区；收起显示活动摘要，展开列出任务名、类型、各自状态和父子关系（有精确 parentId 时）。以任务 id 为 key，同名任务不合并；后台更新不自动展开、抢焦点或滚动正文。空且完整时不占空间，未知 / 失败不能闪成“没有任务”。结果正文仍由主代理原生汇报，首版任务区不宣称具备子 transcript 查看能力。
-
-复用共用折叠、自然高度、按钮按压和材质；SC45 属于 Disclosure / M03 与 ActionGlyph / M20，不新设动画参数。保持 48pt/dp 触控区、明暗、窄屏大字与减少动画；面板有界滚动，不挤没 composer。离页 / 换 Session 重置展开，不以任务更新重置用户选择。
+首页和目录汇总主会话活动，聊天通过紧凑子任务区呈现稳定任务身份与已知父子关系。展示复用共用材质、折叠和降级机制，后台更新维护阅读与输入状态。首版提供任务状态，只读子 transcript 能力尚未实现。
 
 ### 4. 控制范围与关闭
 
-主回合 idle 且原生允许时继续发送，即使子任务在工作。主回合 stop 只表示停止该回合，不声称所有子任务停止。当前公开接入尚未验证按 task id 取消的完整回执，因此首版子任务只读，没有无效关闭 / 停止按钮，不用 kill 父进程模拟停止单个子任务。
-
-Host 保留 quit 的进程身份校验，并在子任务活跃、库存未知 / 截断时撤回 quit 能力；直接送来的过期 quit 也必须重新核对后拒绝。说明为“请先在电脑结束子任务，待状态同步后再关闭会话”。这条限制避免无法确认的后台终止范围，不以乐观隐藏冒充结束。没有子任务且取得可核验进程身份时沿用原退出语义。
-
-App 的左滑、选择 / 批量关闭按已确认的 quit 能力启用；能力未就绪或不支持的会话保持可进入，但不先播放关闭再报错。能力变化立即使旧选择失效，批量操作只作用于本次仍有能力的精确 Runtime；Host 最终校验不省略。未知不自动重试。
+控制按原生已验证范围发布，主回合发送与停止遵循自身 phase。关闭能力由完整任务库存和进程身份核验决定，App 按当前能力启用入口，Host 最终核对。首版任务只读，按 task id 取消的完整回执尚未验证。
 
 ### 5. 验证与交付边界
 
-1. 原生 Mod：主 idle + 多子 running、主 running + 子任务、pending / waiting / idle / 三种终态、SendMessage 恢复、嵌套同名任务、非交互执行、库存失败 / 超限、Host 重启与会话切换迟到结果。mock 验证与真实隔离 TUI 分别记录。
-2. Host / 协议：库存完整性、代次、主回合完成不清任务、子任务不改 phase、重连基线、Hook 归属、无效 / 过期 quit，既有 Codex / DSH 过滤回归。
-3. 双端 L1–L4：汇总状态、任务列表、展开稳定、主 idle 仍可发送、无虚假子任务停止、左滑 / 多选关闭能力、断线未知与恢复。不得删改既有断言。
-4. 手动 C01–C18、R61 与 A1–A4（布局另查 iPad）：首页不能假空闲，任务区更新不抢阅读位置 / 草稿 / 键盘，审批归属与生命周期正确；同设备同配置基线比较、截图 / 录屏证据存 `.artifacts/ui-regression/20261103-claude-background-agents/`。
+原生联动、Host 适配与双端展示分别记录验证状态，沿用根部测试规则。实现、设备门禁、人工验收和部署各自保留证据。
 
-未运行、失败、共享池阻塞与原生 API 限制逐项记录；仅单测 / 构建 / 排队不能宣称验收。此 ADR 不授权部署、重启用户 Host 或改动正在使用的 Claude 会话。
+证据：[后台任务回归](../../.artifacts/ui-regression/20261103-claude-background-agents/)。
 
 ## Consequences
 

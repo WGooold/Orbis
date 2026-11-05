@@ -11,13 +11,13 @@
 
 四个标志的来源与权利声明放在 `app/src/main/assets/agent-icon-notices.txt`，随 APK 一并发布：Pi、Codex 与 Claude 标志来自 MIT 许可的图标源，产品名称与标志仅用于标识对应的第三方 agent；DeepSeek 鲸鱼图形是 DeepSeek 的商标，仅用于标识 Orbis 连接的 DeepSeek Harness，不表示官方背书或合作。
 
-配对页使用通用电脑图标和「连接你的电脑」，不强调支持的 agent 数量。后续新增 agent 时延伸会话标识即可，不需要改动配对概念。
+配对页使用通用电脑图标和「连接你的电脑」；Agent 扩展沿用会话身份标识。
 
-`AgentBrand.kt` 集中定义图标、名称和强调色。Pi 使用暖陶色，Codex 使用青绿色，这两个是 Orbis 的界面配色，不宣称是官方品牌规范；DeepSeek 改用官方品牌蓝 `#4D6BFE`，深色主题用同色系的浅色调保证对比。浅色/深色分别提供对比清晰的文字色。页面底板不随 agent 换色，保持新拟物材质连续。
+`AgentBrand.kt` 集中定义图标、名称和强调色。Pi 使用暖陶色，Codex 使用青绿色；DeepSeek 使用官方品牌蓝 `#4D6BFE`，深色主题采用同色系浅色调。各主题保持文字对比和共用材质连续。
 
-Claude 图标在浅色与深色主题中均保留资源原色 `#D97757`，不套用界面强调色；Claude 的文字、按钮与焦点仍使用主题中对比清晰的深浅陶色。iOS `AgentEmblem` 以原色模式显示同一矢量资源。
+Claude 图标在两种主题中使用资源原色 `#D97757`；文字、按钮与焦点使用主题陶色。iOS `AgentEmblem` 以原色模式显示同一矢量资源。
 
 - 在线列表、缓存侧栏、聊天标题、只读历史、新建会话选项和交互弹窗均显示明确的 agent 名称与对应标志。
 - 聊天轮次显示当前 agent 图标与名称；输入占位、发送动作、输入焦点、命令选择跟随当前 agent 的强调色。
-- Agent 身份取自 runtime / session catalog，不根据模型供应商推断。Pi 选择 OpenAI 模型仍显示 Pi。
-- 通用设置、主机连接和下载管理不冒用某个 agent 的页面主题；文件来源仍按原会话标识展示。
+- Agent 身份使用 runtime / session catalog 的声明。
+- 通用页面沿用共用主题，文件来源按原会话标识展示。

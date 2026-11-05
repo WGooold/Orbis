@@ -12,7 +12,7 @@ Windows 桌面 Host 使用 **C++ / Qt / QML**，提供新拟物界面、系统�
 
 DeepSeek Harness 默认接入官方 Web 会话，手机、浏览器和桌面 Host 观察同一个 Session，支持实时流、Steer/Follow-up、队列撤回、工具审批和历史同步；旧 ACP 适配仍保留用于兼容测试。在桌面设置启用，或使用 `node packages/host/dist/cli.js host --dsh`。安装版本、模型配置和能力边界见 [接入说明](docs/deepseek-harness.md)。
 
-本系统不是远程桌面、终端模拟器或电脑管理工具。手机可以**请求** Host 把一个 agent 拉起来——继续一个已经存在的会话，或在手机选定的目录新建一个——但不能指定命令行、不能管理任意进程；`argv` 与 `env` 一律由 Host 构造（见下文「会话激活」）。
+Orbis 提供 Agent 会话的远程观察与操作。手机可请求 Host 继续既有会话或在选定目录新建，启动参数与环境由 Host 构造（见「会话激活」）。
 
 Remote Interaction SDK 是一等能力：第三方扩展把 confirm、select、multi-select 和 input 等交互声明为可移植状态，业务逻辑继续运行在电脑端，Android 使用原生组件渲染并返回经过 SDK 校验的结果。系统不会自动镜像任意终端自定义 UI。
 
@@ -105,7 +105,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\relay.ps1 -Action Restart
 ```
 
-> **配对二维码由 Host 打印，不由 Relay 脚本打印。** `relay.ps1 -Action Start` 只负责把中继跑起来；配对请走下文「配对新设备」的 `orbis pair`。实体手机和电脑需要位于同一局域网；如果 Windows 防火墙拦截了 `8787` 端口，请仅为可信的私有网络放行该端口，不要将明文 Relay 暴露到公网。
+> 配对二维码通过 Host 的 `orbis pair` 生成。`relay.ps1 -Action Start` 启动中继；实体手机和电脑通过可达网络配对，本地明文 Relay 仅用于可信私网。
 
 ### Windows CMD
 
@@ -130,7 +130,7 @@ node packages\relay\dist\main.js
 Orbis Relay listening at ws://0.0.0.0:8787
 ```
 
-Android 客户端同时支持 `wss://` 和本地/私有局域网的 `ws://`。Android 模拟器可使用 `ws://10.0.2.2:8787`；实体手机可使用电脑的局域网地址，例如 `ws://192.168.0.103:8787`。公网地址仍必须使用 `wss://`，不要把明文 `8787` 端口直接暴露到公网。
+Android 客户端支持公网 `wss://` 及本地 / 私有局域网 `ws://`。模拟器可用 `ws://10.0.2.2:8787`，实体手机可用电脑的局域网地址，例如 `ws://192.168.0.103:8787`。
 
 公网部署方式：Relay 容器只把 `8787` 绑定到 `127.0.0.1`，公网 TLS 由服务器现有 Nginx 终止——在现有 TLS `server` 块中包含 `deploy/nginx-relay-location.conf`。该配置使用 `/relay/` 前缀并在转发前移除前缀，因此客户端 Relay 地址应填写：
 
@@ -138,13 +138,13 @@ Android 客户端同时支持 `wss://` 和本地/私有局域网的 `ws://`。An
 wss://example.com/relay
 ```
 
-Relay 仍会收到它所要求的 `/v1/device`、`/v1/runtime`、`/v1/pairings` 和 `/healthz` 路径。不要把 `8787` 直接绑定到公网网卡。
+Relay 仍会收到它所要求的 `/v1/device`、`/v1/runtime`、`/v1/pairings` 和 `/healthz` 路径。`8787` 绑定本机回环地址。
 
 ### 构建与部署
 
 正式 Relay 发布只通过 [Relay deploy](.github/workflows/relay-deploy.yml) 工作流；服务器初始化、Secrets、HTTPS、状态备份和回滚见 [部署指南](docs/deployment.md)。Windows 安装包由 [Windows Host build](.github/workflows/windows-host-build.yml) 工作流构建和验证。
 
-Android 使用 Windows 工具链及 `scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug`，不要绕过构建锁。配置 JDK / SDK 和设备安装方法见 [Android README](android/README.md)。
+Android 使用 Windows 工具链及 `scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug`，统一通过构建租约执行。配置 JDK / SDK 和设备安装方法见 [Android README](android/README.md)。
 
 `packages/*/src` 是实现源，`dist` 只由 `npm run build` 生成。修改源码后先构建，再重启 Host 或 Agent；Pi 的 `/reload` 不会更新已加载的扩展模块。
 
@@ -214,7 +214,7 @@ Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.p
 }
 ```
 
-扩展的**唯一通道是本机 Host 的 loopback 端点**：它在 `session_start` 读 `~/.orbis/loopback.json` 发现 Host 并接上去；**Host 没起来就等它**（每次重连前重读发现文件），不回落到 Relay。中继已不再接受 agent runtime 的连接（`role` 必须是 `host`），而那条回落路本来也只能把明文会话内容播给手机，与「中继零知识」的前提直接冲突。
+扩展通过本机 Host loopback 接入，在 `session_start` 及重连前读取 `~/.orbis/loopback.json`。Host 缺席时等待恢复；Relay 按 `role=host` 接受加密转发连接。
 
 因此顺序是「先起 Host，再起 Pi」。Pi 先起也没关系——它会一直等 Host，Host 起来后自己接上；若仍未接上，在 Pi 里执行一次 `/reload` 即可。
 
@@ -290,7 +290,7 @@ Codex 后端走同一条 `slash.execute` 车道：它在自己的适配层把命
 
 ## 会话激活（Host 拉起 agent）
 
-手机可以请求 Host 把一个 agent 拉起来。这是**有边界的**放开：手机能选目录，不能指定命令。
+手机通过会话身份或所选工作目录请求 Host 激活受支持的 Agent。
 
 两个档位：
 
@@ -301,7 +301,7 @@ Codex 后端走同一条 `slash.execute` 车道：它在自己的适配层把命
 
 差别只在于 `cwd` 从哪来：L1 来自会话记录（两个 backend 的会话记录里都带 `cwd`，所以 L1 不需要向手机要任何参数），L2 由手机选择。会话记录里的 `cwd` 已经不存在时，激活直接失败并回报，**不会静默换一个目录**。
 
-L3「手机直接给命令行」**永久排除**：Host 只为受支持的 agent backend 构造启动参数，`argv` 与 `env` 全部由 Host 构造，spawn 一律走 argv 数组、禁止 shell。手机侧也根本没有输入 `argv` / `env` 的入口。
+Host 为受支持 backend 构造 `argv` 数组与 `env`，激活接口使用结构化会话参数。
 
 **拉起方式**
 
@@ -349,7 +349,7 @@ Android 10 及以上保存到系统“下载”目录，较低版本保存到 Or
 
 ## Remote Interaction SDK
 
-第三方扩展不应了解 Relay 凭据或底层协议。它们通过 SDK 发起结构化交互，同时保留 Pi 原有的本地 UI 作为后备：
+第三方扩展通过 SDK 发起结构化交互，Pi 原有本地 UI 作为后备：
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -384,8 +384,8 @@ SDK 会把每个请求绑定到 runtime、扩展和唯一请求 ID。本地端�
 - 公网 Relay 地址必须使用 TLS（`wss://`）；可信本地网络可以显式使用受限的 `ws://`。
 - 每台设备有独立 `pskRoot`；撤销是设备级的，不影响其他设备，也不必给其他设备重新配对。
 - Host 侧只持久化身份私钥与设备记录（`~/.orbis/`，0600）；Android 用系统加密存储保存自己的身份材料。
-- Relay 始终根据已认证连接和信封路由头转发；客户端声明的 session ID 不能用于选择 runtime。
-- 手机能下达的指令止于「把 agent 拉起来」：可以传 `sessionId` 或 `{ agentKind, cwd }`，不能传命令行或环境变量，Host 只构造受支持 backend 的启动参数（见「会话激活」）。
+- Relay 根据已认证连接和信封路由头转发。
+- 手机以 `sessionId` 或 `{ agentKind, cwd }` 请求会话激活，Host 构造受支持 backend 的启动参数。
 - 已配对设备视为可信，所以不做 cwd 白名单、不做桌面二次确认、不做速率限制——安全由配对与端到端加密提供，不靠校验设备输入。
 - 不提供强制终止/重启/自动恢复进程、包管理、凭据/provider/trust 写入；菜单中的 `/quit` 只请求当前 agent 自行优雅退出。
 - 无法接管的本地扩展 UI 会 fail closed，并显示「需要在电脑处理」；系统不会伪造响应。

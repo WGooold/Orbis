@@ -11,7 +11,7 @@
 - 每轮文件变化元数据、文件名中间省略与扩展名保留，以及点击后按文件 / 分页读取的 unified diff；左右滑动落位后才读取目标文件，相邻页构造不预取详情。
 - 与 Android 同源的 Agent 标识、浅色 / 深色配色、凸起 / 凹陷材质和操作反馈。
 - 首页会话列表保留原生上下拖动与惯性滚动，多选时仍可滚动；左滑关闭按起手卡片与方向锁定，滚动后继续命中对应卡片。左滑会话卡片显露“关闭”，滑动达到卡片宽度的一半后触发一次触感反馈并以灰色提示“松手关闭”；长按会话进入多选，关闭在线会话保留历史，切换电脑或离开首页清空选择。
-- 首页常驻会话列表，电脑行下方不设单独状态行。首版卡片发布前，加载与失败（含原因和“重新加载”按钮）显示在列表空态的位置；发布后，后台同步与失败并入电脑行的连接胶囊（“正在同步” / “同步失败”），失败时胶囊右侧出现重试图标。任何状态都不用全屏加载页替换或遮挡列表，也不推动卡片。收到当前电脑的会话目录及全部卡片的完整身份、执行状态和交互清单后一次呈现；只有确认目录为空才显示空态。刷新、重连、新会话及会话替换期间保留上一版完整卡片，未确认的卡片暂不可操作。磁盘中的历史目录不会作为冷启动在线卡片提前显示。
+- 首页以完整认证快照发布会话列表，后台同步通过连接胶囊呈现；刷新和会话替换维持上一版卡片、稳定阅读几何及真实可操作性。
 - 会话目录长按条目进入多选，点按增减选择，顶部批量归档或恢复；搜索、筛选、切换电脑或关闭目录清空选择。单选未归档会话时，顶部保留“在电脑继续会话”入口。
 - 协议 v17、Keychain 身份、CryptoKit 端到端加密、LAN / Relay 两路径与 Host 固定选路、最近历史预览及更早历史分页。
 
@@ -69,7 +69,7 @@ Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。
 
 传输支持 LAN 和 Relay，Host 固定 LAN 优先、Relay 兜底，通过 `device.path` 宣布当前路径。每条路径独立完成端到端握手并维护密钥、序号与分片重组。设置页不提供连接优先级配置，旧排序不再读取或下发。会话条目与 Host 显示投影已按配对身份持久化，重新连接后先显示缓存，再核对源端状态；缓存本身不会冒充当前已应用基线。统一模型可恢复执行、模型、上下文、权限、命令、审批和队列；通知拥有独立版本与清单恢复。
 
-多台 Host 各自保持认证连接，选择电脑只切换交互目标。系统后台通知和 TestFlight / App Store 分发尚未实现；运行仍依赖前台连接。历史已使用后台 SQLite 增量事务和有界分页，支持完整 timing、固定目标 catchup 与离线分支；下载和上传磁盘工作由独立 worker 完成，持久进度在写盘同步后发布。真实 Host / 真机联调需单独验收，不能据此认定 Android 的全部功能已对齐。
+多台 Host 各自保持认证连接，选择电脑只切换交互目标。系统后台通知和 TestFlight / App Store 分发尚未实现；运行仍依赖前台连接。历史已使用后台 SQLite 增量事务和有界分页，支持完整 timing、固定目标 catchup 与离线分支；下载和上传磁盘工作由独立 worker 完成，持久进度在写盘同步后发布。真实 Host / 真机联调需单独验收，平台对齐范围以对应证据为准。
 
 ## 轮次文件变化验证
 
@@ -81,7 +81,7 @@ Relay 地址支持反向代理路径前缀，例如 `wss://example.com/relay`。
 
 池内 iPhone SE（375pt、iOS 27.0）两项 UI 测试通过，覆盖明暗、XXXL 启动设置、预览减少动画路径、短拖取消、边界回弹、左右翻页按需读取、缓存命中和二进制说明；截图已复核。沿用固定文字 token，XXXL 设置不代表新增全局动态字体能力。结果保存在本机 `.artifacts/turn-file-changes/ios-review-ui-final2.xcresult`，包内动态库检查通过；截至该轮验收，后续摘要排序、租约恢复、缓存上限及上限状态隐藏重试按钮的补丁尚未重新构建设备包或重复 UI 测试。真实 Host / 真机、全后端执行边界和大项目网络压力仍需联调验收。
 
-2026-10-30 合并 `main`（`ee6f7c8`）后统一协议 17，保留固定 LAN / Relay、首页完整快照及连接胶囊、乐观发送对账与供应商 / 配额显示。包含上述补丁的合并版本通过 213 项 Swift 核心测试（18 个 suite，含隔离本地 Relay / LAN 与加密文件传输）、Simulator Debug 编译和包内依赖检查；工程不再引用或打包 WebRTC。日志为 `.artifacts/turn-file-changes/ios-main-merge-core-tests-final.log`、`ios-main-merge-build.log` 与 `ios-main-merge-bundle-check.log`。此前已验收 App 及其哈希保留在同目录的 `ios-main-merge-rollback/Orbis.app` 与 `ios-main-merge-rollback-validation.json`；合并版本产物记录为 `ios-main-merge-validation.json`。本次没有操作模拟器设备或重复 UI 测试，不将既有截图视为合并版本的重新验收。
+2026-10-30 合并 `main`（`ee6f7c8`）后统一协议 17，保留固定 LAN / Relay、首页完整快照及连接胶囊、乐观发送对账与供应商 / 配额显示。包含上述补丁的合并版本通过 213 项 Swift 核心测试（18 个 suite，含隔离本地 Relay / LAN 与加密文件传输）、Simulator Debug 编译和包内依赖检查；工程不再引用或打包 WebRTC。日志为 `.artifacts/turn-file-changes/ios-main-merge-core-tests-final.log`、`ios-main-merge-build.log` 与 `ios-main-merge-bundle-check.log`。此前已验收 App 及其哈希保留在同目录的 `ios-main-merge-rollback/Orbis.app` 与 `ios-main-merge-rollback-validation.json`；合并版本产物记录为 `ios-main-merge-validation.json`。本次没有操作模拟器设备或重复 UI 测试，截图与合并验证分别对应其实际版本。
 
 ## 界面回归
 

@@ -7,4 +7,4 @@ This is a single-context repository.
 - `CONTEXT.md` at the repo root
 - Relevant ADRs under `docs/adr/`
 
-Use the terminology defined in `CONTEXT.md` for issue titles, plans, tests, and implementation notes. If an output would contradict an ADR, call out the conflict explicitly instead of silently overriding it.
+Use the vocabulary in `CONTEXT.md` and make conflicts with an ADR explicit.

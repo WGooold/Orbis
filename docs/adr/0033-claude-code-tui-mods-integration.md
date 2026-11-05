@@ -8,15 +8,13 @@ Status: accepted（接入方向已确认；Host/插件已对齐其他后端的�
 
 ## Context
 
-用户要求的是：电脑保留 Claude Code 官方 TUI，Orbis 手机与这个 TUI 双向操作同一个原生运行实例。电脑提交的消息、回复、工具、运行状态及交互必须同步到手机；手机提交的消息、停止和交互回答必须作用于这个实例，并在电脑上体现原生结果。
-
-另起 Agent SDK 执行器、并发 resume 同一会话、只同步持久历史，均不满足这个要求。Orbis 也不因此成为终端模拟器、远程桌面或通用进程管理器；同步对象是 Agent 领域事实和操作，不是屏幕像素、ANSI 输出或每次按键。
+电脑官方 TUI 与 Orbis 手机共同操作同一个原生运行实例，双端同步 Agent 领域事实与操作结果。
 
 Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，在 Claude Code 内部观察、改写或处理原生事件，并调用 Mods API。这为官方 TUI 内的 bridge 提供了公开扩展路径，但 Mods 本身不是现成的远程控制协议，也不自动保证完整状态恢复或原生交互竞答。
 
 ## Verified facts and sources
 
-以下上游事实核对于 2026-10-14；2026-10-26 的最新版部分验证另见下方记录。区分“上游正式发布事实”“当前文档描述的接口”与“Orbis 实际兼容性”，不把三者混为一谈。
+以下上游事实核对于 2026-10-14；2026-10-26 的较新版本验证另见下文。发布日期、文档接口与 Orbis 兼容性分别记录。
 
 | 事实 | 官方来源 | 证据边界 |
 | --- | --- | --- |
@@ -29,15 +27,15 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
 | 传统 Claude Code Hooks 与 Mods hooks 是两套接口。`PermissionRequest` 可对即将显示的工具权限请求返回 `allow` / `deny`；`PreToolUse` 可拦截 `AskUserQuestion` 并以 `updatedInput.answers` 提交答案 | [Hooks：PermissionRequest](https://code.claude.com/docs/en/hooks#permissionrequest)、[Hooks：PreToolUse decision control](https://code.claude.com/docs/en/hooks#pretooluse-decision-control) | `PermissionRequest` 输入含 `session_id`、`tool_name` 和 `tool_input`，但不含 `tool_use_id`；`PreToolUse` 有 `tool_use_id` 且会对每个工具调用运行。命令 Hook 默认等待上限为 600 秒。外部 UI/Host 可由 hook 进程同步等待并通过结构化 JSON 返回决策/答案；这是文档契约允许的实现方式，尚未在 v2.1.310 本机 TUI 实测。它不提供任意 TUI composer 输入接口 |
 | Agent SDK 可枚举本地会话及读取 transcript 消息 | [Agent SDK sessions](https://code.claude.com/docs/en/agent-sdk/sessions)、[TypeScript reference](https://code.claude.com/docs/en/agent-sdk/typescript#listsessions) | `listSessions()` / `getSessionMessages()` 是 SDK 的 transcript API，不代表 Mods 可读取这些内容，也不证明能附着或控制既有 TUI 的同一实时执行实例 |
 | Remote Control 将本机 Claude Code 会话连接到 Claude App / claude.ai | [Remote Control](https://code.claude.com/docs/en/remote-control) | 需要支持的 claude.ai 订阅登录；不支持 API key、非 Anthropic `ANTHROPIC_BASE_URL`、Bedrock、Google Agent Platform 或 Microsoft Foundry。它是官方客户端功能，不是面向 Orbis 的自定义 Host API |
-| Mods 以用户权限运行、不受 Claude 的 Bash sandbox 隔离；可接触文件、凭据、进程及网络，但不能改变原生权限提示展示的内容 | [Mods overview：What a mod can reach](https://code.claude.com/docs/en/plugins/mods/overview#what-a-mod-can-reach)、[API：Reach files, processes, and the network](https://code.claude.com/docs/en/plugins/mods/api#reach-files-processes-and-the-network) | bridge 必须自行约束远程操作，不把 Mods 的机器权限直接授予手机 |
+| Mods 以用户权限运行、不受 Claude 的 Bash sandbox 隔离；可接触文件、凭据、进程及网络，但不能改变原生权限提示展示的内容 | [Mods overview：What a mod can reach](https://code.claude.com/docs/en/plugins/mods/overview#what-a-mod-can-reach)、[API：Reach files, processes, and the network](https://code.claude.com/docs/en/plugins/mods/api#reach-files-processes-and-the-network) | bridge 按远程能力契约限定操作范围 |
 
-2026-10-14 制定本 ADR 时未进行目标版本的插件加载、类型检查或真实 TUI 双向操作测试；以上链接只证明上游事实。2026-10-26 按用户要求仅验证最新版 v2.1.310，沿用当前供应商配置完成类型检查、插件校验、模拟测试及部分真实 TUI 操作，详见[验证报告与独立探针](0033-claude-code-tui-mods-integration.md)。插件提交及真实回复、等待 idle 的排队、无工具主回合停止、过期停止拒绝、基础 clear/resume 和 idle reload 已观察；模型主动工具调用、原生交互回答及完整历史恢复尚未通过验收。这不是 Host/App 双向接入验收，也不改变 §2 的最低版本要求。官方网页会更新，实施时仍须逐版本记录生成类型和测试结果。
+2026-10-14 制定本 ADR 时未进行目标版本的插件加载、类型检查或真实 TUI 双向操作测试；以上链接只证明上游事实。2026-10-26 验证范围为 v2.1.310，沿用当前供应商配置完成类型检查、插件校验、模拟测试及部分真实 TUI 操作，详见[验证报告与独立探针](0033-claude-code-tui-mods-integration.md)。插件提交及真实回复、等待 idle 的排队、无工具主回合停止、过期停止拒绝、基础 clear/resume 和 idle reload 已观察；模型主动工具调用、原生交互回答及完整历史恢复尚未通过验收。这不是 Host/App 双向接入验收，也不改变 §2 的最低版本要求。官方网页会更新，实施时仍须逐版本记录生成类型和测试结果。
 
 ## Decision
 
 ### 1. 选择官方 TUI 内的 Mods bridge
 
-建立 Orbis bridge mod，在用户已加载 bridge 的 Claude Code 官方 TUI 内观察原生事实、执行受限的原生操作，并通过经过认证的本机通道连接 Host。Host 的 Claude backend 负责接入归属、原生事实归一和核对；统一模型负责校验、提交及客户端投影。
+官方 TUI 内的 bridge 连接本机认证 Host，同一原生实例承接双端操作。原生 Agent 持有执行与历史权威，backend 归一事实，Host 管理标准投影。Host 默认登记插件，用户可在设置中关闭。
 
 ```text
 电脑官方 TUI 输入 ──→ Claude Code 原生会话 / 执行 / 历史
@@ -51,65 +49,37 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
                         Orbis 手机客户端
 ```
 
-两端共享同一个执行实例和会话，不增加第二个执行器。Native Claude Code 继续拥有执行与持久历史的权威；bridge/backend 解释并报告事实；Host 按 ADR-0032 管理标准投影；App 不解释 Claude 原生事件或权限值。
+### 2. 目标版本与兼容性
 
-本 ADR 覆盖 CLI/TUI 接入，Desktop、IDE 聊天面板及 headless SDK 不属于首版支持范围。已运行但未加载 bridge 的 TUI 不自动宣称可控；安装、启用或重新加载插件使用官方支持方式，并尊重组织策略。按 2026-10-29 的产品要求，安装 Host 默认自动登记插件，用户可在设置中关闭。
+最低目标版本为 Claude Code v2.1.287；最低版本和实施版本分别取得兼容性证据。握手按实际版本、实例与已验证能力确认可用性，插件校验、类型检查和真实 TUI 操作分别记录结果。
 
-### 2. 必须支持的版本与兼容性门槛
+### 3. 双向操作范围
 
-- **CLI/TUI 的最低目标支持版本为 Claude Code v2.1.287。** 低于此版本不开放本接入，不通过早期环境开关、二进制补丁或 SDK 自动回退规避。
-- 首版必须对 v2.1.287 和实施时选定的当前正式版本分别完成兼容性验收。`>=2.1.287` 只是必要条件，不是对所有未来版本的无条件兼容承诺。
-- Host 与 bridge 握手必须报告实际 Claude Code 版本、bridge 版本、连接代次、原生会话身份及已确认能力。版本不足、mod 被禁用、能力缺失或核对失败时，发布明确不可用原因，不仅依据版本号宣布 ready。
-- 实施使用目标构建生成的类型声明，运行 `claude plugin validate`、`claude plugin test`，并完成真实 TUI 测试；静态声明或模拟测试不能代替同实例操作验收。
-- 若必要接口只在更高版本可用，须在本 ADR 和兼容性清单中明确提高最低支持版本、记录官方依据及验证结果；不能一边依赖更高版本接口，一边继续声称完整支持 v2.1.287。
+接入覆盖原生身份、消息、历史、执行、交互、配置与恢复，各项能力按原生语义和验证状态发布。
 
-### 3. 双向操作的必需范围
-
-首版完整接入必须覆盖以下领域；未验证的能力不得提前发布为可用。
-
-| 领域 | 接入要求与候选公开入口 |
+| 领域 | 原生入口 |
 | --- | --- |
-| 身份与可用性 | 使用原生 Session 身份和 bridge 实例/代次；正式新增 `agentKind: claude`；AgentKey 仍为 Host、agentKind、Session，runtimeId 仅作在线路由 |
-| 双向消息 | 手机通过 `$.prompt.submit` 提交到当前实例；电脑及手机的原生消息通过 `prompt.submit`、`session.append` 等核对与同步。原生接受、开始和完成分开确认，防止回声重复提交 |
-| 历史与实时内容 | 用 `turn.step`、`tool.call`、`session.append` 等生成统一显示投影，保留稳定消息/工具身份、live 与 canonical 映射。`$.session.messages()` 的有界结果不能假报为完整持久历史；旧历史读取及 parent/head 必须另行验证 |
-| 执行与停止 | 观察 `turn.start` / `turn.complete` 等，手机调用 `$.turn.abort`；以原生结束事实确认效果，不以调用返回或网络断线推断 idle。明确停止是否包含工具、子任务及队列 |
-| 审批与用户问题 | Mods API 没有已验证的既有请求 resolver；但独立的传统 Claude Code Hooks 有结构化处理路径。`PermissionRequest` 可在工具权限请求阶段返回 `allow` / `deny`，`PreToolUse` 可拦截 `AskUserQuestion`，等待手机答案后用 `updatedInput.answers` 返回给同一个工具调用，不需要键盘注入。`PermissionRequest` 缺少原生 `tool_use_id`，但每个同步运行的 hook 进程可携带自己生成的关联 ID 等待对应手机答复；需实现并验证并发、取消、超时、重连和本地/远程竞答。命令 Hook 默认超时 600 秒，不适合作为无限期等待。官方 Channels 仍是另一条独立工具审批 relay，具有短 `request_id` 与本地/远程先回答者语义，但受 Anthropic 认证、组织策略和 allowlist 限制；v2.1.310 当前配置实测 `$.session.authorize() !== null` 为 `false`。`$.session.authorize()` 是供 HTTP 使用的凭据句柄，`$.ui.ask` 创建新问题；二者都不是上述 Hook 的回答机制。Hook 结构化响应来自官方文档契约，尚未在 v2.1.310 本机 TUI 实测 |
-| 命令、模型和权限 | 仅发布能原生执行并确认结果的操作。候选为 `$.command`、`$.config`、`$.session`；权限使用 ADR-0031 的 opaque 设置契约，不通过手机解析 CLI 文案或权限模式 |
-| 生命周期与恢复 | 覆盖 `/clear`、`/resume`、分支、压缩、mod reload 和连接恢复；旧会话命令及回调不能写入新会话。不能假设每次切换都会再次触发 `session.start` |
-
-双向同步不要求两端共享未提交草稿、光标或相同界面布局。工作中输入必须按原生实际投递语义表达；不能把等待 idle 的 `prompt.submit` 包装成即时打断或 Pi steer。仅实现消息收发的阶段性成果可标实验性部分能力，不得宣布本 ADR 的完整 TUI 接入已完成。
+| 会话与消息 | bridge 实例、原生 Session、prompt.submit 与 session.append |
+| 历史与执行 | session.messages、turn 与 tool 事件、turn.abort |
+| 审批与问题 | PermissionRequest / PreToolUse Hook，见 §4 |
+| 命令与设置 | command、config、session API，权限契约见 ADR-0031 |
+| 恢复 | 原生会话生命周期与来源代次核对 |
 
 ### 4. 审批保持原生语义
 
-优先使用公开 Hook 的结构化请求/响应边界。经典 `PermissionRequest` Hook 可把即将发生的工具权限请求发送到 Host，等待明确的手机选择，并对该 hook 调用返回 `allow` 或 `deny`；`PreToolUse` 可将 `AskUserQuestion` 的问题和选项发送到手机，收到答案后对原工具调用返回 `questions` 与 `answers`。这些响应由 Claude Code 消费，不是模拟键盘输入；远程审批/答案 UI、身份关联和传输回执仍由 Orbis 实现。Mods 的 `tool.check`、`$.ui.ask` 与 `$.session.authorize()` 各自不能替代这两个 Hook 契约。
+审批和问题通过官方 Hook 的结构化请求与响应作用于当前原生调用，回答由原生生命周期裁决。手机缺席或结果未知时保留原生处理和核对路径。
 
-`PermissionRequest` 没有原生 `tool_use_id`，需在每个 hook 进程内生成不可猜测的请求 ID，并将答复限定到该进程和 Session；hook 运行受其配置的超时约束，默认 600 秒。`PreToolUse` 有 `tool_use_id`，但对每个工具调用触发，只有匹配 `AskUserQuestion` 时才按问卷流程处理。远程回答、用户在电脑端作答、Session 取消、Hook 超时或 Host 断开同时发生时必须实测 Claude Code 的最终裁决与另一端状态；不能因掉线、超时或结果不明自动批准。
-
-只有手机的明确回答产生 `allow` / `deny`（手机取消问卷返回 `deny`）。Host 不可达、没有设备在线、超时、断开或 Host 退出时，Hook 返回空输出、不做决定，由 Claude Code 原生权限对话框或问题界面继续处理；这不是自动批准，也避免本地用户在手机缺席时被锁死或被统一拒绝。Host 交互超时（570 秒）短于插件脚本请求超时（590 秒）和 Hook 超时（600 秒），保证手机看到的 `expiresAt` 准确。Hook bridge 只在有待答交互时发布 runtime，长期在线状态由 Mods bridge 决定；交互结束后恢复 Mods 报告的运行状态。
-
-当前 bridge 不向手机转发 `allowNotes: true` 的问题（交由原生界面作答），因为 Claude Hook 的 `updatedInput.answers` 只能表达每个问题的字符串答案，不能安全保留独立 notes；该缺口必须在兼容性 ticket 中保留，不能静默丢弃字段。
-
-官方 Channels 可作为另一种有 Anthropic 认证前提的工具审批 relay，不覆盖 `AskUserQuestion`。Agent SDK 的 `canUseTool` 可等待用户回答审批和 `AskUserQuestion`，但只控制 SDK 自己创建/管理的执行，不能附着到现有官方 TUI。尚未通过上述 Hook 的当前 TUI 运行测试前，ADR 只确认官方契约存在，不宣称 Orbis 已支持远程审批或问卷作答。
-
-只有请求仍在当前原生实例中有效，回答才允许提交。本地与远程竞答必须由原生请求生命周期最终裁决；本地缓存只能减少重复，不能证明跨重启恰好执行一次。迟到、重复及已取消的回答返回明确结果或结果未知。
-
-若目标版本无法满足原生交互同步，须记录具体缺口并提升版本或修订方案；不以屏幕抓取、按键注入或默认批准填补后宣称完整支持。
+PermissionRequest 按 hook 进程关联请求；PreToolUse 处理 AskUserQuestion。当前 notes 类问题交由原生界面回答，远程 Hook 的真实 TUI 兼容性仍待验收。配置超时依次为 Host 570 秒、插件脚本 590 秒、Hook 600 秒。
 
 ### 5. 通道、安全与恢复边界
 
-bridge 只连接已验证的本机 Host 认证端点，不向 LAN/Relay 暴露 Mods API 或通用命令执行入口。复用 Host 的设备认证、加密与私有操作回执；手机不能提供任意进程 argv、脚本或目的 URL，也不能把聊天操作变为直接机器控制。
+bridge 使用目标版本支持的公开接口连接认证 loopback，通过有界队列与来源核对恢复。Host 管理远程操作范围，TUI 保持自身生命周期。插件按官方安装机制登记，并保留显式设置。
 
-mod 无普通 Node.js 网络/定时器 API；通道实现须基于目标版本允许的 `$.http`、`$.clock` 等公开接口，或经验证的本机 helper。不能假定原生 WebSocket 或无限长请求可用。事件外发有界排队、批处理和背压，不让手机断线阻塞正常 TUI；超过预算明确记录 gap，并核对来源基线。
+### 6. 纳入统一 Host 模型
 
-来源库存、版本与代次必须可核对。新连接或 reload 后先确认实例和当前 Session，再恢复历史/live/执行/交互等基线；不从日志文字、屏幕 spinner、心跳或旧持久快照复活当前状态。不承诺失去原生确认后的自动重发或跨 Host 重启恰好一次执行。
+Claude 通过来源适配、Registry、版本化同步与 App 镜像接入统一模型；能力未知时明确声明。原生 Session 保持历史权威，协议兼容遵循 ADR-0064，Relay 承担密文路由。
 
-Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确要求，安装 Host 时默认登记 Orbis 插件；macOS 拖拽安装与便携包在首次打开应用时登记，无需 Relay 激活。电脑没有 Claude Code 时跳过，后续打开 Host 时重试；明确关闭的设置在更新时保留。此安装授权不包含升级 Claude Code、终止已有会话、重启 Host、push 或发版。
-
-### 6. 纳入统一 Host 模型，不新增客户端原生分支
-
-按 ADR-0032 完成 Claude 所需的来源 → Registry → 版本化同步 → App 镜像纵向链路；显式身份、统一 displayEntries、执行、交互、权限及能力必须从模型读取，不能只转发 Mods payload。其余领域明确 unknown/unavailable。
-
-原生 Session 仍是持久历史权威，Host 只保存有界当前投影与页缓存。正式协议变更按 [ADR-0064](0064-protocol-compatibility.md) 保持已部署端兼容，新增能力须明确声明。Relay 保持密文转发，不承担 Claude 会话语义。
+参考：[ADR-0064](0064-protocol-compatibility.md)。
 
 ### 7. 实施记录（2026-10-29）
 
@@ -117,13 +87,13 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 ### 8. 对齐其他后端（2026-10-29）
 
-依据目标构建（v2.1.312）加载插件后生成的类型声明，补齐 Pi/DSH 已有而 Claude 缺少的能力；每项只用公开接口，做不到的明确标为不可用。
+依据目标构建（v2.1.312）加载插件后生成的类型声明，补齐 Pi/DSH 已有而 Claude 缺少的能力；能力依据公开接口与实际兼容性发布。
 
 - **会话目录与归档**：Host 扫描 `<config>/projects/<project>/<sessionId>.jsonl`（子 Agent 记录在更深一层，不算会话），每个文件只读头 64 KiB、尾 32 KiB，取目录、首条用户消息与标题（`custom-title` 优先于 `ai-title`）；按大小与修改时间缓存。Claude 没有归档，Host 把已归档会话 ID 记在自己的 `claude-archive.json`，不移动、不改写记录；在线会话拒绝归档。
 - **从手机打开会话**：只能打开官方 TUI，不提供无界面执行（那等于 Agent SDK 后端，见“Alternatives not selected”）。macOS 用 Terminal.app 运行 Host 写入的一次性脚本，Windows 用 Windows Terminal，缺失时用控制台；其他系统报告不可用。脚本带 `ORBIS_CLAUDE_LAUNCH_ID`，插件在 hello 中回报，Host 据此确认打开的就是这个 TUI；60 秒未连上则如实报告（版本、策略或其他启动阻塞）；项目目录信任按 §14 在用户发起启动时处理。用户未安装插件时只为这个 TUI 传 `--plugin-dir`，已安装时不传，避免同一进程跑两个 bridge。`launchableAgents` 只在能打开终端且找到 `claude` 时包含 Claude。
 - **斜杠命令、模型、思考强度**：插件用 `$.command.list()` 上报命令；Host 隐藏会打开 TUI 面板、操作终端或账号、离开会话或计费的内置命令，其余（含技能与自定义命令）以可选参数提供给手机，经 `$.command.run` 执行，输出随回执返回。模型用 `/config` 的 `model` 行（`$.config.list()` 的选项、`$.config.set` 修改）；思考强度走 `/effort`。
 - **运行时元数据**：模型（`$.session.model()`，显示名取自 `/model` 的说明）、上下文用量（`$.session.usage()`）、思考强度（设置中的 `effortLevel`）、标题；权限模式读自记录里的 `permission-mode` 行，只读展示——`$.config` 的 `permissionMode` 是“新会话默认值”，不能改当前会话，Mods 也没有切换接口。
-- **工具卡片**：与 Pi/DSH 共用 ADR-0045 的工具摘要/库存/按需读取；正文从原生记录按 `tool_use_id` 读取。共享摘要函数补上 Claude 的 `Bash`、`file_path`、`Grep`/`Glob`。工具库存页必须带 `claude:<sessionId>` 作为 runtimeId（与会话 ID 不同）。
+- **工具卡片**：与 Pi/DSH 共用 ADR-0045 的工具摘要/库存/按需读取；正文从原生记录按 `tool_use_id` 读取。共享摘要函数补上 Claude 的 `Bash`、`file_path`、`Grep`/`Glob`。工具库存页的 runtimeId 为 `claude:<sessionId>`。
 - **记录投影**：斜杠命令行显示为 `/name args`，本地命令输出与 `!` shell 运行显示为系统行，去掉 Claude 的标签与 ANSI 控制符。
 - **压缩、附件**：`session.compact` 前后上报压缩活动；附件与 Codex/DSH 一样以“附件路径”追加到消息正文。
 - **交互竞答（v2.1.312 实测）**：`PermissionRequest` Hook 等待手机期间，电脑上的原生对话框同时显示；电脑先回答后，插件上报的 `tool.finished`（按工具名与参数匹配 Hook 的 `tool_input`）或回合结束让 Host 关闭手机卡片并标为电脑端完成。`AskUserQuestion` 的 `PreToolUse` Hook 在等待期间会挡住原生问题界面，所以插件在状态行提示并注册 `/orbis-local`（`immediate`，回合中也能运行），把待答交互交回原生界面。插件转发工具参数前剔除 `agentId`、`requestMeta`、`consent` 等引擎保留字段。
@@ -149,15 +119,15 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 ### 11. Host 重启后插件自动重连（2026-10-29）
 
 - 修复插件保留旧 loopback 端口、请求失败后始终重试旧地址的问题。每次轮询重新读取发现文件，端口或 token 改变后使用同一原生 Session / 插件实例重新握手；短暂 HTTP 故障保留同一 Host 的连接代次。
-- 握手串行化；请求绑定握手时的端点，旧请求和旧命令结果不能覆盖新连接。新代次重新发送会话状态，拒绝握手的退避只约束对应的端点与 token。Host 未启动、发现文件暂缺或正在重连时，在 Claude 状态行给出提示。
+- 握手串行化；请求绑定握手时的端点，结果按连接代次隔离。新代次重新发送会话状态，拒绝握手的退避只约束对应的端点与 token。Host 未启动、发现文件暂缺或正在重连时，在 Claude 状态行给出提示。
 - 插件版本提升到 `0.1.1`。Claude 的重复 `plugin install` 不刷新已安装缓存，所以 Host 登记流程追加官方 `plugin update`，确保随 Host 更新的修复进入插件缓存；明确关闭仍保持关闭。已打开的旧版插件需要执行一次 `/reload-plugins` 或重启 Claude Code。
 - 回归覆盖 Host 换端口 / token、发现文件暂缺、临时 HTTP 故障、握手拒绝、认证失效、过期代次与未完成命令隔离。原版不能通过新增重启用例；修复版通过官方插件测试。另以同一插件模块和真实、认证的 loopback HTTP 服务验证连续两次 Host 重建，不调用模型。
 
 ### 12. 运行中 follow-up 延后调用提交 API（2026-10-31）
 
-- 用户报告：Claude 正运行时在 App 再发消息，聊天停在该消息并持续显示“发送中”。代码核对发现插件立即调用等待 idle 的 `$.prompt.submit`，同批多条消息还会并发进入该 API。Host 本来就会立即返回 `pending`，增加同类回执不能解决这个调用时机问题。
+- 故障现象：Claude 正运行时在 App 再发消息，聊天停在该消息并持续显示“发送中”。代码核对发现插件立即调用等待 idle 的 `$.prompt.submit`，同批多条消息还会并发进入该 API。Host 本来就会立即返回 `pending`，增加同类回执不能解决这个调用时机问题。
 - 插件 `0.1.4` 将运行中的手机消息留在 Host 现有、有界且绑定 generation 的命令队列中；插件继续轮询、传递工具事件与处理停止。只在主回合结束、Host 完成轮末快照的 HTTP 确认之后，由下一次轮询提交。原生 `turn.start` 到达前也至多保留一个尚未返回的用户提交。子 Agent 完成不放行主回合的 follow-up；新 Host 不会收到旧代次留下的消息。
-- 原生提交结果仍决定最终成功 / 失败；不提前声称消息已经进入 Claude 上下文，不增加 Steer 或可撤回能力。用户可见发送 / 对账继续遵守 ADR-0049 和 ADR-0051 V10 / V12 / V17，基线规则与参数未变。
+- 原生提交结果决定最终成功 / 失败；发送与对账沿用 ADR-0049 和 ADR-0051 V10 / V12 / V17。Steer 与可撤回能力仍未提供。
 - Claude Code `2.1.314` 官方 `plugin test` 共 13 项通过（新增 5 项），覆盖忙时不调用提交 API、串行提交、停止与工具事件、子 Agent、轮末捕获屏障和代次隔离。前两个新增场景在修复前失败。插件 validate、目标构建生成声明的类型检查、仓库 TypeScript 检查和修改文件 lint 通过；相关 Host 5 个测试文件共 59 项通过。
 - 证据目录：`.artifacts/ui-regression/20261031-claude-busy-send/`。以上是官方插件测试环境与 Host 单测，尚未复现 / 证明真实 TUI 的事件调度阻塞；真实模型、App 联动、两端设备全量与手动回归未验收。未重启或更新用户正在使用的 Host / Claude。
 
@@ -165,14 +135,14 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 - 修复流式 `${turnId}:${stepIndex}` 与原生 UUID 没有关联，导致同一正文同时存在于 live 与 canonical 的缺陷；同时修复轮末重放消息、旧轮异步清理误删新轮，以及迟到结束改变当前轮状态的问题。恢复 ADR-0051 V09 / V17 / V18，未新增 feature 或调整 UI 参数；工具呈现仍遵守 V20。
 - 插件 `0.1.5` / bridge `3` 增加 `turn.step.identity` 能力、`turn.step.row`（写入前预留 UUID）与 `turn.step.finished`（步骤完整 UUID 集合）。只归属主循环 `door=response` 的 assistant 行，子 Agent、用户、工具结果不混入。一个步骤可对应多条持久行，不按正文、时间或数组位置推断身份。已核对 Claude Code `2.1.314` 的生成声明：`session.append.uuid` 是 pinned 稳定身份；下一主步骤或主回合结束是前一步追加集合的确认边界。
-- 预留先于 `next(event)`，Host 暂缓发布该行及其后代，避免并发 sync 提前读到历史副本；在全部声明 UUID 落盘后，复用 `RecoverableSessionSource.reconcile` 的显式 mapping，在同一次事务中发布整组历史并撤下对应流式消息。多个步骤按顺序交接；空 / 签名隐藏的响应无需伪造可见行。步骤完成后释放适配器正文缓存，迟到 chunk 与轮末 `message.finished` 不得重建旧副本。
-- 结束清理在第一次 await 前捕获本轮消息身份，仅撤下该集合；已报告但磁盘迟到的步骤在 3 秒等待到期后继续保留 live，后续 refresh 再交接。重复 start 不清空缓存；旧 turn.complete 不结束新轮。UUID 预留确认丢失时重新握手核对，旧流式步骤仍绑定原 generation，不能向新 Host 补发。
-- Host 与插件必须配套更新；bridge 2 明确拒绝，不能把缺少身份事件的旧插件当成已修复。已打开的旧插件需要执行官方 `/reload-plugins`。本任务没有更新或重启用户正在运行的 Host / Claude。
+- 预留先于 `next(event)`，Host 暂缓发布该行及其后代，避免并发 sync 提前读到历史副本；在全部声明 UUID 落盘后，复用 `RecoverableSessionSource.reconcile` 的显式 mapping，在同一次事务中发布整组历史并撤下对应流式消息。多个步骤按顺序交接；空 / 签名隐藏的响应无需伪造可见行。步骤交接完成后释放适配器正文缓存，并按已完成身份处理迟到事件。
+- 结束清理在第一次 await 前捕获本轮消息身份，仅撤下该集合；已报告但磁盘迟到的步骤在 3 秒等待到期后继续保留 live，后续 refresh 再交接。重复 start 不清空缓存；旧 turn.complete 不结束新轮。UUID 预留确认丢失时重新握手核对，旧流式步骤保留原 generation 归属。
+- Host 与插件配套更新，bridge 3 提供所需身份事件，bridge 2 返回不兼容。已打开的旧插件需要执行官方 `/reload-plugins`。本任务没有更新或重启用户正在运行的 Host / Claude。
 - 回归：`claude-transcript.test.ts`、`claude-mods-bridge.test.ts` 覆盖多 UUID、写入晚于边界、每帧无双份、跨轮清理、迟到 chunk / finish、重复 start 与旧 complete、超过等待期仍保留已声明步骤；官方插件测试覆盖主 / 子步骤隔离、下一请求和主回合结束的顺序。两端设备及手动验证、实际计数与限制见 `.artifacts/ui-regression/20261031-claude-output-identity/summary.md`；R18 对应真实联动检查，不把模拟通过扩大为设备验收。
 
 ### 14. 从 App 启动时登记所选项目的信任（2026-11-01）
 
-- 用户要求从 App 拉起 Claude 后直接连接 Host，不再回电脑确认目录。两个真实 TUI 均停在 workspace trust 对话框，尚未执行插件 `session.start`；Host loopback 正常监听。将用户明确选择工作区并启动会话视为本次项目的授权，在启动 TUI 前登记目录级信任；不在目录扫描、安装插件或后台发现阶段授权。
+- 从 App 启动 Claude 时，所选项目的启动准备包含目录级信任。两个真实 TUI 均停在 workspace trust 对话框，尚未执行插件 `session.start`；Host loopback 正常监听。App 启动操作授权所选项目，启动准备据此登记目录级信任。
 - 采用官方 [Permissions / workspace trust](https://code.claude.com/docs/en/permissions.md#what-runs-before-you-trust-a-folder) 公开的 `projects["<path>"].hasTrustDialogAccepted=true`；默认文件为 `~/.claude.json`，显式 `CLAUDE_CONFIG_DIR` 下为该目录的 `.claude.json`，位置依据 [Claude directory](https://code.claude.com/docs/en/claude-directory.md)。这是项目内容信任，不修改工具权限模式、工具 allowlist、MCP 审批或 Mods 策略，不传 `--dangerously-skip-permissions`，不模拟按键。
 - 路径先 realpath；仓库子目录使用 Git 根，linked worktree 使用主 checkout，嵌套仓库保留独立身份；清理继承的 `GIT_*`，Git 解析失败时停止启动。非仓库使用所选目录，不持久授权主目录或磁盘根目录。自定义配置目录同时传入一次性脚本，避免记录和 TUI 实际读取的配置不一致。
 - 只合并目标项目的信任字段，保留未知字段、账号、MCP 与其他项目；已信任时不重写。Orbis 并发写入串行化，原子替换前复读检测原生进程修改并有限重试；损坏 JSON、错误结构或占用时报错且不开终端。此检测不宣称对不遵循 Orbis 锁的外部写入提供跨进程 CAS。现有配置符号链接保留。
@@ -184,29 +154,29 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 [ADR-0056](0056-agent-startup-readiness-and-consent.md) 承接 §14，并扩展到 Pi / Codex / DeepSeek。Claude 增加具名项目 MCP 的本次临时授权（明确拒绝不覆盖）、登录状态预检、已识别插件 / 管理策略阻塞、启动失败取消等待及私有 settings 文件清理。目录信任函数本身仍只写 `hasTrustDialogAccepted`，不改变工具权限；MCP 的范围扩展由独立启动设置负责。桌面 setup 保留原生登录入口，手机账号授权 / OAuth / onboarding 的完整交互尚未实现。测试映射为 R29（目录信任；早期误用 R19）和 R30（跨 Agent）；实现文件、原生证据和未完成平台见 ADR-0056，不将源码完成写成安装包交付。
 
-### 16. 首页交互基线不等待历史同步（2026-11-02）
+### 16. 首页交互基线独立发布（2026-11-02）
 
 - 修复已打开 Claude 会话时首页连接胶囊长时间显示“同步失败”的初始化缺口：`announce` 原先只重播元数据与命令，完整 `interaction.snapshot` 直到 `session.sync` 完成才发布；首次统一状态读取因此得到 unknown 的交互领域，恢复依赖后续历史同步。
 - `ClaudeBackend.announce` 对在线 Mods / Hook runtime 立即发布 Hook bridge 持有的完整待答清单，包括明确的空清单；新设备握手、首页读取 / 重试与历史同步完成共用此入口。离线 runtime 不发布空清单，已有审批保持原身份及等待状态。历史尚未读完不影响首页需要的 identity / execution / interactions；历史、发送与审批完成仍按原有权威回执确认。
-- 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [UI 回归方案](../../AGENTS.md#测试) §6 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
+- 恢复 ADR-0051 S18 / V16 / V18 的既有约束，不增加 feature、不调整 UI / 动效参数；ADR-0058 无新增交互家族或 MOT 参数。Host 适配器三场景在修改前均失败；修改后与加密设备通道首次读取回归通过。双端设备与完整门禁结果登记到 [测试规则](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261102-claude-home-sync/`，未完成项不记为验收通过。需要随 Host 更新生效。
 
 ### 17. 长会话 resume 后历史停更（2026-11-03）
 
-真实运行 Host 的只读加密探针确认：Claude 原生追加正常，Host preview 的 head / seq 却停留在恢复前；指定最新 head 时返回 `session_sync_model_rejected`。根因和共用 source 修复按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03)：首次恢复超过 256 条 canonical 条目不能永久占住增量发布队列，必须通过 unknown 边界和有界 checkpoint 收敛。此故障不依赖 Claude 的额度确认页，也不要求重新执行已收到的手机消息。
+真实运行 Host 的只读加密探针确认：Claude 原生追加正常，Host preview 的 head / seq 却停留在恢复前；指定最新 head 时返回 `session_sync_model_rejected`。根因和共用 source 修复按 [ADR-0035 §17](0035-incremental-session-reconcile.md#17-超预算-canonical-批次转为-checkpoint-恢复2026-11-03)：首次恢复超过 256 条 canonical 条目时，经 unknown 边界和有界 checkpoint 收敛。此故障不依赖 Claude 的额度确认页，也不要求重新执行已收到的手机消息。
 
-恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [UI 回归方案](../../AGENTS.md#测试) §6 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
+恢复 V09–V10、V16–V18 的既有同步契约；不改变 §13 的步骤身份和原子交接，不新增交互动效。`claude-transcript.test.ts` 覆盖 1,055 条恢复、继续追加与 Host 重开预览；`claude-history-fixture.mjs` 增加可选长前缀，既有 Android 真实加密 / 缓存 / 重连用例复用同一断言。验证、设备门禁与部署状态见 [测试规则](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/summary.md`。
 
 ### 18. macOS 启动脚本执行确认（2026-11-03，源码验证 / 未部署）
 
 现场两次新建都生成了私有 `.command`，系统 `open` 已投递给 Terminal，但脚本仍存在且没有新增 Claude 进程；Host 在 60 秒后记录 `session.activate=failed`。未取得 Terminal 窗口内容，不能把原因定为登录、插件、权限提示或系统故障。原 Claude 进程与最新历史仍正常。
 
-macOS 启动器须等待 `open` 的退出结果（15 秒上限），再等待脚本在真实 TTY 执行后的私有回执（10 秒上限）。没有回执时清理本次脚本 / 临时设置并明确说明“Terminal 未确认执行 Claude Code 启动脚本”，取消相应 bridge 等待；回执仅证明脚本已运行，连接成功仍只认原生 hello。Windows 路径与 Codex 原有错误文案保持；不自动重试、不回答系统提示、不终止既有 TUI。
+macOS 启动器等待 `open` 的退出结果（15 秒上限），再等待脚本在真实 TTY 执行后的私有回执（10 秒上限）。没有回执时清理本次脚本 / 临时设置并明确说明“Terminal 未确认执行 Claude Code 启动脚本”，取消相应 bridge 等待；回执仅证明脚本已运行，连接成功仍只认原生 hello。Windows 路径与 Codex 原有错误文案保持；不自动重试、不回答系统提示、不终止既有 TUI。
 
-关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [UI 回归方案](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
+关联 V12、V16–V18 / R29–R30，沿用现有启动页与错误恢复，不新增交互或动效参数。单测、设备未跑项及现场限制见 [测试规则](../../AGENTS.md#测试) 和 `.artifacts/ui-regression/20261103-claude-resume-sync/launch-followup.md`；此补丁尚未部署，不能声明用户新建故障已修复。
 
 ### 19. 主回合与后台子任务（2026-11-03）
 
-按 [ADR-0062](0062-claude-background-agents-and-session-activity.md) 实施独立任务库存、汇总活动与能力门禁。主回合 idle 不代表后台没有任务；仅过滤普通会话列表不足以修复。`agent.list()` 为库存来源，主回合结束不清任务，未知库存不冒充空闲；非交互子执行不发布普通会话。S26 / R61 未完成设备与真实隔离 TUI 门禁不得记为验收。
+按 [ADR-0062](0062-claude-background-agents-and-session-activity.md) 实施独立任务库存、汇总活动与能力门禁。主回合 idle 不代表后台没有任务；仅过滤普通会话列表不足以修复。`agent.list()` 为库存来源，主回合结束不清任务，未知库存不冒充空闲；非交互子执行不发布普通会话。S26 / R61 的设备与真实隔离 TUI 门禁待完成。
 
 ## Alternatives not selected
 

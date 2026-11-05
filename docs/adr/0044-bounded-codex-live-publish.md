@@ -2,7 +2,7 @@
 
 日期：2026-10-23
 
-2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具内容移出共享 live：工具原文字节追加不再要求重发聊天 patch，库存引用与摘要独立分页/修订。本文的来源合并、普通出站预算及封帧后不得丢信封规则继续适用；工具详情另用有界 bulk 队列。
+2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 将工具内容移出共享 live：工具原文字节追加不再要求重发聊天 patch，库存引用与摘要独立分页/修订。本文的来源合并、普通出站预算及封帧后完整有序交付规则继续适用；工具详情另用有界 bulk 队列。
 
 状态：accepted
 
@@ -27,40 +27,28 @@
 
 ### 1. Codex live patch 采用单独的 100ms 合并窗口
 
-Codex 的 live 更新在 `CodexRuntime.#touchSource` 内合并，默认窗口为 100ms。窗口内的多次 message/tool 更新只保留一次待发布状态；只有 `#flushSourcePatch` 真正发布时才递增 `sourceSeq`。读取 `session.sync` 版本前必须取消定时器并 flush，避免同步响应引用尚未发布的版本。
+Codex live 更新按 100ms 窗口合并，实际发布时推进 sourceSeq；同步读取前 flush 待发布状态。
 
-这延续 ADR-0035 §15 的版本语义，但明确把 CodexRuntime 纳入该规则。合并只降低发布速率，不替代队列上限。
+### 2. 每条路径采用有界出站队列
 
-### 2. 每条路径的普通出站队列必须有界
+每条路径按封装后的字节核算有界队列，普通消息与 bulk 各自保留预算。当前 msg 为 32 MiB、ctl 为 4 MiB，bulk 使用原独立上限。
 
-`OutboundChannelMux` 对每条路径分别记账并限制：
+### 3. 封帧前处理超载
 
-- `msg` 等待队列默认 32 MiB；
-- `ctl` 等待队列默认 4 MiB；
-- `bulk` 继续使用既有独立上限。
-
-这些是应用层等待队列预算，不改变 socket 的 `bufferedAmount` 水位，也不把 `bulk` 预算挪给普通消息。预算按封装后的线上字节估算，诊断按 runtime、session 和 event type 归因。
-
-### 3. 超载必须在 seal 之前处理
-
-调用方在 `DeviceLink.#sendSealed` 封装 E2E 信封、消耗 nonce 和发送序号之前，先向对应 mux 查询该 channel 是否有空间。没有空间时返回拒绝并记录原因，不调用 `seal()`。`sendSessionSnapshot` 继续保留自身的同步并发和 12 MiB wire 预算，并使用同一条普通 `msg` 准入检查。
-
-`OutboundChannelMux.enqueue()` 不负责丢弃已经封好的帧。写入失败的帧仍按 ADR-0010 在队首重试；只有路径会话已经失效、确认新 E2E 会话时才清理旧队列。
+封帧前完成通道准入与预算预留，已封密文按原顺序投递；路径失效与新握手边界负责旧会话清理。同步响应保留自身事务与 12 MiB 线路预算。
 
 ### 4. 普通队列溢出触发路径恢复
 
-普通非 bulk 准入失败表示该路径无法在当前队列预算内继续承载有序业务帧。`DeviceLink` 记录带 path、channel、source 和字节数的诊断，并摘除该路径，让选路器切换到其他路径；没有其他路径时保持不可用，等待下一次握手。旧会话的已封装帧只在路径会话失效/新握手边界清理，不在正常排队过程中静默删除。
+准入失败记录归因并使该路径进入恢复，其他可用路径继续服务；重新握手后按既有同步契约重建基线。
 
-重新握手后，Host 重播 runtime 目录和能力；设备按现有 `session.sync` 恢复协议重新获取当前 checkpoint。Codex 的 epoch/seq、Host 的 `AgentConversationState` 基线校验和设备端 source patch gap 恢复规则不变。这样不会伪造连续 seq，也不会把丢失的 patch 当作已交付。
+### 5. 可归因的诊断记录
 
-### 5. 诊断必须留下可归因记录
-
-每 5 秒最多记录一份队列压力样本，包含总队列字节、普通/ bulk 字节、socket backlog、窗口内入队/写出字节、写错误、最老帧等待时间，以及最多八个来源分组。普通队列准入拒绝另记 path、channel、payloadBytes、queuedBytes 和 source 元数据。日志只保存路由和计数信息，不保存 live 内容。
+诊断记录有界的路径、通道、来源和队列元数据，区分准入、写入与应用阶段；压力采样沿用 5 秒限频和八个来源分组上限。
 
 ## Consequences
 
 - 正常局域网链路上，Codex patch 只保留 100ms 内的最后状态，减少完整 live patch 的发布次数。
-- 慢客户端或停止读取时，普通队列最多占用每路径 36 MiB 的应用层预算，不能再无限增长到数百 MiB。
+- 慢客户端或停止读取时，普通队列最多占用每路径 36 MiB 的应用层预算。
 - 队列溢出会使该路径重新握手，短暂产生一次恢复延迟；这是为了保持 E2E 序号、source epoch/seq 和可恢复 sync 的一致性。
 - `sync busy` 仍可能在同步事务并发数、同步 wire 预算或路径确实不可用时出现，但不再由普通 `session.patch` 无限积压制造。
 

@@ -26,7 +26,7 @@
 - `.artifacts\host\OrbisHost-0.1.11-windows-x64.zip`：便携包。
 - ZIP 同目录的 `.sha256` 文件：校验值。
 
-文件名中的版本号以脚本当前定义为准。每次构建会清空 `.artifacts\host`，只保留本次结果；不要把需要保留的文件放在这里。
+文件名中的版本号以脚本定义为准。`.artifacts\host` 为每次重建的输出目录，长期产物另行保留。
 
 也可以在任意目录使用绝对路径：
 
@@ -56,7 +56,7 @@
 
 `host-rebuild.ps1` 会处理其他安装目录中的 OrbisHost，以避免新版本启动时只激活旧进程。执行前请核对脚本列出的进程。
 
-普通打包脚本不会主动关闭 Host。若进程正使用 `.artifacts\host` 中的文件，打包会拒绝继续。DSH Server 是持久后台，即使退出 Host 也可能继续使用包内 Node；遇到“进程正在从产物目录运行”时，应先核对报错 PID 的可执行路径和命令行，再关闭对应服务。不要按 `node.exe` 名称批量结束进程。
+打包前按报错 PID 的可执行路径与命令行定位占用产物的服务，定向结束所属进程。DSH Server 为持久后台，退出 Host 后仍可能持有包内 Node。
 
 如果当前对话运行于需要停止的 DSH Server，请从独立的本机 PowerShell 窗口执行操作，避免页面断开后失去操作入口。Host 重建脚本不保证重启 DSH Server；完成后可从 Host 打开 DeepSeek Harness，按需启动服务。
 
@@ -94,4 +94,4 @@ Node 路径应为 Windows 路径。默认工具链位置：
 
 `host-rebuild.ps1` 也支持 `-QtRoot` 和 `-CompilerRoot`。打包脚本另支持 `-DefaultRelay`，默认值为 `wss://orbising.com/relay`。
 
-不要省略 `-Package` 来获取可运行产物：无此参数仅执行构建和测试，结束时会清理中间构建目录，并且仍会清空最终产物目录。
+`-Package` 生成可运行产物；普通模式执行构建和测试后清理中间目录与最终输出。

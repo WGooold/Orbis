@@ -1,8 +1,8 @@
 # Isolated Apple review Host
 
 This service uses the released Orbis Host, real Pi runtime and a normal direct
-DeepSeek API connection. The owner requested a fixed review QR that can be scanned
-repeatedly, replacing the previous paired review device each time. This adapter is
+DeepSeek API connection. A fixed review QR supports repeated scans, replacing the
+previous paired review device each time. This adapter is
 installed only in the disposable review service. Production pairing is unchanged.
 
 The review service has its own container, Linux home, Host identity, paired-device

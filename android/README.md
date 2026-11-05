@@ -10,9 +10,9 @@
 scripts/windows/android-build.ps1 testDebugUnitTest assembleDebug
 ```
 
-脚本通过 Windows named mutex 串行化构建，并记录 APK 来源和 SHA-256。产物位于 `android/app/build/outputs/apk/debug/app-debug.apk`。Debug 预览使用本机 Android debug 签名；正式分发应使用私下保存的发布签名，切勿提交签名文件。
+脚本通过 Windows named mutex 串行化构建，并记录 APK 来源和 SHA-256。产物位于 `android/app/build/outputs/apk/debug/app-debug.apk`。Debug 预览使用本机 Android debug 签名；正式分发使用私下保存的发布签名。
 
-构建锁默认使用已有 `D:\android-emulators\leases`；其他机器使用 `%LOCALAPPDATA%\Orbis\android-leases`。可统一配置 `ORBIS_ANDROID_LEASE_DIR`，同机工作树必须共享锁目录。模拟器需要独立 owner 记录；受管设备只通过 `scripts/windows/android-install.ps1` 或构建脚本的 `-InstallSerial` 安装，不能清除或覆盖其他工作树的设备数据。
+构建与设备操作统一按共享租约和 owner 归属执行。Windows 锁默认位于 `D:\android-emulators\leases`，其他机器为 `%LOCALAPPDATA%\Orbis\android-leases`，可通过 `ORBIS_ANDROID_LEASE_DIR` 统一配置；安装入口为 `scripts/windows/android-install.ps1` 或 `-InstallSerial`。
 
 客户端支持 `wss://`，也支持本机、私有局域网和 `.local` 主机的 `ws://` 地址。Android 模拟器连接电脑本地 Relay 时可使用 `ws://10.0.2.2:8787`；实体手机应使用电脑的局域网 IP。公网 Relay 仍必须使用 `wss://`。
 
@@ -36,7 +36,7 @@ LAN 地址不可达或握手失败时自动尝试下一个地址，并定期重�
 
 聊天页入场时即可右滑返回，手势会从页面当前位置接管动画，不等待聊天加载。首页在聊天页下方保留原实例与滚动位置，返回后直接恢复卡片交互；快速轻点卡片也会先绘制按压反馈再打开会话，长按多选与左右滑动仍按原有手势处理。
 
-首页常驻会话列表，电脑行下方不设单独状态行：首版卡片发布前，加载与失败（含原因和“重新加载”按钮）占据列表空态的位置；发布后，后台同步与失败并入连接胶囊（“正在同步” / “同步失败”），失败时胶囊右侧出现 48dp 重试图标，均不推动卡片。仅在收到已认证目录与全部卡片的完整身份、执行和交互信息后一次发布；首次不提前显示空态或半成品卡片，刷新、重连、新会话与会话替换时保留上一版完整卡片，替换中的旧卡片不可操作。重试会重新读取当前电脑的全部在线会话，读取超时会显示明确的重试入口。
+首页以完整认证快照发布会话列表，刷新期间维持上一版卡片与阅读几何；首次加载、失败和重试按发布阶段呈现，后台状态汇入连接胶囊。
 
 首页左滑会话卡片会逐步显露“关闭”操作；滑动达到卡片宽度的一半后触发一次震动并以灰色提示“松手关闭”，松开即发送对应 Runtime 的 `quit` 命令。长按卡片可进入多选并批量关闭，关闭保留历史；返回键退出多选，切换电脑清空选择。Claude Code 由 Host 核对插件报告的进程身份后结束对应进程，需要更新 Host、Claude 插件至 0.1.2 并重新打开会话；无法核对时保留会话并提示重试。
 
@@ -60,7 +60,7 @@ Pi 会话首次取得有效名称或用户消息摘要后，会将显示名称�
 
 会话目录由 Host 聚合下发，按 cwd 分组，Pi、Codex 与 DeepSeek 的会话在同一棵树里，`agentKind` 只做角标。点开一个只有历史、没在跑的会话会触发激活：Host 按会话记录里的原目录把 agent 拉起来；「新建」则进入只读的目录浏览，选好目录后由 Host 在那里起一个全新会话。
 
-手机可以同时配对并连接多台电脑：每台 Host 一条独立的 Relay 与加密会话，主页与会话侧栏只显示当前电脑的会话；主页顶部的电脑行与抽屉底部的「电脑」都可以切换当前电脑（见 ADR-0030 修订）。同一台电脑重复配对按 `hostId` 覆盖旧凭据，不会出现两条记录。会话与目录归属各自的 `hostId`；`sessionId` 只在单台电脑内唯一，两台电脑上的同名会话是两行。会话中的可选 `hostname` 只提供名称，不能生成另一台主机。空会话、离线缓存、主机改名和目录筛选都不改变归属。Session Catalog 按 Host 分文件落盘并校验 Relay、设备与 Host 身份；旧缓存只在原配对的设备命名空间内迁移。新建操作要求当前 Host 的加密连接，切换电脑会使原操作失效。
+手机可以同时配对并连接多台电脑：每台 Host 一条独立的 Relay 与加密会话，主页与会话侧栏只显示当前电脑的会话；主页顶部的电脑行与抽屉底部的「电脑」都可以切换当前电脑（见 ADR-0030 修订）。同一台电脑重复配对按 `hostId` 覆盖旧凭据，不会出现两条记录。会话与目录归属各自的 `hostId`；`sessionId` 只在单台电脑内唯一，两台电脑上的同名会话是两行。会话中的可选 `hostname` 只提供名称，Host 身份由配对记录确定。空会话、离线缓存、主机改名和目录筛选都不改变归属。Session Catalog 按 Host 分文件落盘并校验 Relay、设备与 Host 身份；旧缓存只在原配对的设备命名空间内迁移。新建操作要求当前 Host 的加密连接，切换电脑会使原操作失效。
 
 APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Runtime 后，才根据其当前 Session 读取对应的本地加密 Entry Graph Cache。没有在线 Runtime 的 Session 只能从独立历史入口打开已有缓存，并且只读。聊天页采用聊天气泡布局，普通消息完整显示；thinking 和工具调用默认折叠，点击后查看完整内容。Android 按选中 Runtime 的 leaf 从共享 graph 计算 branch、compaction、custom message、工具关联和显示顺序；同一 Session 的不同 runtime 不会把 sibling branch 合并。graph 同步使用 `sessionId`、graph version、entry digest、leaf、branch fingerprint 和 `syncId`，可验证时只追加缺失 entry，否则完整替换。消息生成期间的内容只作为 runtime/session-scoped overlay，直到持久化 entry 可以关联。取消配对某台电脑时会删除它在本地 Session catalog、graph cache 和传输任务中的记录，其他已配对电脑不受影响；取消最后一台后回到配对页。Slash 菜单来自当前 runtime 发布的 capability manifest；Android 只负责选择命令和参数，并通过统一的 `slash.execute` 提交，Session、分支、上下文、模型和 thinking level 的实际语义均由电脑端的 agent 执行。
 
@@ -68,7 +68,7 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 
 聊天回复末尾可显示 Host 保存的本轮文件增删改概况：先同步文件名、类型和增删行数，展开清单只读取元数据。点文件或“查看详情”后，才按范围读取当前文件的 unified diff；左右滑动具有跟手与落位动效，停稳后读取目标文件，不预取相邻文件正文。已经查看过的范围和阅读位置在当前查看器内保留；关闭、切换电脑或会话、进入后台会取消读取。显示时先从路径取文件名，再中间省略，保留文件名开头和完整扩展名；极窄宽度改为换行，辅助功能仍提供完整路径。旧读取租约失效时保留已读正文与原游标，只重开一次；内容真正过期时停止并显示原因。覆盖不完整、二进制、超限和过期内容均明确显示。此功能使用协议 v17，Host 与双端 App 需要同步升级。
 
-2026-10-30 验证范围：完整 JVM 套件 506 项通过，覆盖摘要版本与预览刷新修复；设备 UI 3 项通过，但早于这两项模型调整。Debug / 测试 APK 随后构建成功。最后的读取租约重开和文件名修复（长目录、无扩展名及点文件）通过 14 项针对性 JVM 回归，未再构建 APK 或重复设备测试，已有安装包不包含这些最终修复。测试日志、结果与包哈希范围记录在工作树本地 `.artifacts/android-turn-file-changes/validation-summary.json`，不能将较早的安装包视为最终源码产物。
+2026-10-30 验证范围：完整 JVM 套件 506 项通过，覆盖摘要版本与预览刷新修复；设备 UI 3 项通过，但早于这两项模型调整。Debug / 测试 APK 随后构建成功。最后的读取租约重开和文件名修复（长目录、无扩展名及点文件）通过 14 项针对性 JVM 回归，未再构建 APK 或重复设备测试，已有安装包不包含这些最终修复。测试日志、结果与包哈希范围记录在工作树本地 `.artifacts/android-turn-file-changes/validation-summary.json`，安装包与最终源码分别记录。
 
 合入 `main` 的 `ee6f7c8` 后保留固定 LAN / Relay、首页状态和乐观发送逻辑，协议统一为 v17。合并源码通过全部 534 项 JVM 测试及应用 / 设备测试源码编译；未重新打包或运行设备，原有 APK 仍为较早的 v16 产物。合并记录见工作树本地 `.artifacts/android-turn-file-changes/main-merge-validation.json`。
 
@@ -89,7 +89,7 @@ APP 启动时只加载并持久化轻量 Session Catalog；用户打开在线 Ru
 
 解析与链接回归在 `MarkdownTest` 中；窄屏表格滚动、表格内下载点击和嵌套内容的真机测试在 `MarkdownInstrumentedTest` 中。
 
-`gradle.properties` 已设置 `android.injected.androidTest.leaveApksInstalledAfterRun=true`。AGP 8.7.3 默认会在设备测试结束时卸载主 APP 和测试 APK，实际导致过配对、本地缓存和设置被清除；不要去掉此设置或覆盖成 false。设备测试会占用手机前台，优先使用测试设备，不在用户正在使用的手机上自动运行。普通升级用 `adb install -r`，无需卸载 APP。
+设备验证统一使用授权测试设备并保留应用数据。`gradle.properties` 的 `android.injected.androidTest.leaveApksInstalledAfterRun=true` 保留测试后的 APP；AGP 8.7.3 默认卸载曾导致配对、缓存和设置丢失。普通升级使用 `adb install -r`。
 
 ```powershell
 .\gradlew.bat testDebugUnitTest
@@ -109,7 +109,7 @@ Claude Code 的隔离模拟器回归使用 `scripts/claude-history-fixture.mjs`�
 Mods HTTP 接口和加密连接验证已有历史、运行中回复、并行工具结果后的流式输出及重连恢复；
 原生记录使用合成数据，配对和缓存存入独立测试目录。
 
-已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](../scripts/windows/history-client-reload-probe.ps1)。必须取得本次设备操作授权；不清缓存、不激活后端，也不重启 Host。
+已有配对和在线 Codex 的只读端到端验收，分别覆盖客户端/连接重建，以及真正的 App 进程重开和 UI 上滑。脚本、覆盖安装、设备占用、截止时间、脱敏证据与 `PASS / FAIL / INCONCLUSIVE` 的判定见 [历史读取验收说明](../scripts/windows/history-client-reload-probe.ps1)。真实设备验收按本次授权范围执行并保留既有状态。
 
 ## 文件
 

@@ -32,79 +32,31 @@ Status: accepted（设计已采纳；实施分阶段进行，本 ADR 不代表�
 
 ### 1. `/tree` 保持原地 revert 的语义
 
-手机历史动作由 Codex Agent backend 将 Entry 换算成原生 turn 边界，再调用 `thread/revert`：
-
-- 选择用户消息：`beforeTurnId` 为该消息所在 turn，删除这一轮及之后的历史，并将原文返回手机输入框供编辑重发。
-- 选择助手回复：`beforeTurnId` 为该回复所在 turn 的下一轮，保留选中回复所在轮；没有下一轮时为 no-op，无需刷新客户端。
-- 无法可靠确定 turn 边界时明确失败，不猜测、不按屏幕消息数量截断。
-
-原生 thread ID、Orbis Session ID 和所属 backend 保持不变。桌面仍使用 `codex-desktop:<thread>` 命名空间；终端保持其原身份。回退不隐式 fork，不把桌面会话改接到终端 app-server。
-
-这里回退的是对话历史，不承诺恢复已执行命令造成的文件或其他外部副作用。被回退的旧尾部可以继续留在 Session Tree Cache 中，但不能继续作为原生 thread 的当前历史。
+回退沿用原生 thread 身份与 beforeTurnId 语义。用户消息定位到其所在轮并回填输入，助手回复定位到下一轮；可见历史以原生回退后的分支为准。
 
 ### 2. 回退、历史重建、客户端刷新分别完成
 
-Codex Agent backend 为一次操作分别记录原生回退结果、权威历史重建结果和客户端刷新结果。
-
-1. 在 thread 空闲、没有排队工作或待处理审批时接受回退。按 thread 串行处理 Orbis 的回退与新 turn 请求，防止重复提交。
-2. 原生回退成功后，分页读取 `thread/turns/list`（`itemsView: "full"`），重建保留历史及 Entry/turn 边界，并更新当前 leaf、能力菜单和手机视图。
-3. 按对应客户端的生命周期执行刷新，使其重新加载保留历史。
-
-回退期间使用视图代次隔离旧 sync 响应和旧回放，处理快照与通知的交叠。对正常恢复阶段的新通知保留缓冲；旧轮次迟到的 item 不得重新接到已回退的当前历史上。本地串行化不能阻止 GUI 或其他原生客户端并发操作；发现新的 turn、回退或手工归档时，重新核对权威状态并停止过期的后续动作，不自动中断用户的新工作。
-
-若回退请求超时而提交结果未知，先核对权威历史，不盲目重发。回退成功后的历史读取或客户端刷新失败，都不把成功回退当作未发生，也不再次执行同一破坏性回退；恢复只重试尚未完成的阶段，并明确报告“历史已回退，刷新失败”或历史仍待确认。
+原生回退、确定性历史重建和客户端重新加载分别确认，以协调代次隔离过期工作。并发原生变化进入同一核对流程。
 
 ### 3. 外部回退进入同一历史协调流程
 
-Codex Agent backend 处理订阅中的 `thread/reverted`，使桌面/TUI 原生发起的回退也能更新手机的当前历史。
-
-手机命令响应和自身收到的广播可能先后任意到达，必须归并到同一次协调操作，避免重复 revert、重复关窗或循环归档。通知只触发历史读取与视图协调，不转换成新的 `thread/revert` 请求。断线后重新订阅并读取权威历史，不能依赖重连后补发旧通知。
-
-外部发起方可能已完成自己的本地截断，例如 TUI 自身 rewind；不因收到广播就自动重启该发起方。自动客户端刷新首先服务手机发起的回退；其他已确认陈旧的受管理客户端，只有在归属和空闲状态明确时才进入刷新流程。
+电脑端和手机端回退共用原生历史协调入口，恢复后原子提交历史与实时状态。
 
 ### 4. TUI 通过受管理实例重开刷新
 
-对可证明由 Orbis 管理、且仍对应目标 thread 的 TUI，采用“关闭对应 TUI、等待退出、以同一 thread 重新打开”的流程。重开使用原 Codex CLI、cwd、app-server endpoint 及适用的启动设置，通过 `codex resume <nativeThreadId> --remote <endpoint>` 加载回退后的历史。
-
-必须有可信的启动登记和实例归属记录，并跟踪 TUI `/new`、`/resume` 后的实际 thread。仅凭进程名、命令行含某个 thread ID 或 endpoint 不足以授权关闭；用户自行运行的 `codex resume <id>` 仍是 ADR-0021 所述的 unmanaged invocation。恢复启动是已有受管理实例的延续，不扩展 shim 对参数化调用的接管范围。
-
-关闭至重开期间保留手机的逻辑 Session 和恢复状态，防止 TUI watchdog 将预期退出当成永久离线并删除订阅。确认旧实例退出后才启动替代实例；重开失败允许单独重试。无法证明归属的 TUI 只协调手机历史，报告电脑端需要手动重开。
+受管理 TUI 通过原实例的受控重开刷新历史，按实例归属确认启动、终止与恢复。
 
 ### 5. 桌面通过临时 archive/unarchive/open 刷新
 
-桌面 backend 经 ADR-0022 的 wrapper 连接 GUI 使用的同一 app-server，执行专用的 thread 刷新流程：
-
-1. 回退及历史重建成功后，调用 `thread/archive`，让 GUI 收到 archive 通知并清除该 thread 的内存状态。
-2. archive 成功后调用 `thread/unarchive`，恢复 thread 的列表与元数据。
-3. 通过 `codex://threads/<nativeThreadId>` 重新打开目标 thread；多 Host 场景使用已验证的桌面 `hostId` 路由，不能拿 Orbis Runtime ID 代替它。
-4. backend 重新确认 loaded/resume、订阅与权威历史。unarchive 或协议链接发送成功本身不等于 GUI 已完成 hydration。
-
-该流程允许 GUI 导航到被回退的 thread。它只管理 thread 生命周期，不关闭桌面应用、wrapper、app-server 或 Host；ADR-0022 的手机 `/quit` 仍只 detach 手机视图。不得复用带 worktree 清理等额外副作用的 GUI 归档动作，也不得把普通用户归档改成自动恢复。
-
-archive 可能停止运行态、移动 rollout，并级联处理派生子 threads。执行前确认整个受影响 subtree 均空闲、无排队工作和待处理审批，包括原本已归档但后来被 collaboration 重新加载的子 thread。记录目标和子 threads 的原归档状态及可观察的 loaded/订阅状态；仅撤销本次刷新造成的变化，原本已归档的子 thread 保持归档。不能可靠确定影响范围、原状态或空闲条件时，不执行自动归档刷新。与用户手工归档并发且无法区分来源时，停止自动补偿并报告待确认状态，不能强行 unarchive。
-
-在调用 archive 前持久记录 backend、原生 thread 身份、影响范围、原状态、本次刷新归属和操作阶段，使 Host 意外退出后仍可识别未完成流程。重连或启动时先核对权威状态，只恢复可证明由本次操作造成的归档或卸载变化，从未完成阶段继续且不再次 revert。记录损坏、归属证据不足或出现无法区分的用户并发操作时，保留当前状态并报告待确认；完成或明确终止后清理恢复记录。
-
-临时 `thread/archived`、`thread/closed` 和 loaded-list 缺席进入刷新状态，不走当前永久下线/抑制发现路径。保留手机 Session 的关联，恢复后重新确认订阅；因 rollout 移动而缓存的路径必须失效并重新解析。
-
-archive 先卸载运行态再提交持久归档，因此 archive 自身失败或超时也可能已经产生副作用。任何步骤失败或提交结果未知时，先核对实际归档、loaded 和订阅状态，再补偿本次造成的变化；恢复本 backend 的订阅和可确认的加载态，不重启用户任务或接管其他客户端。补偿也失败时明确报告仍被归档或卸载的 thread。重试从已知完成的步骤继续，不再次 revert，不重新归档已经恢复并开始工作的 thread。
+桌面刷新使用受控的 archive / unarchive / open 生命周期，副作用前持久记录归属与恢复阶段。执行前核验范围和空闲条件，按实际阶段补偿；未知结果先查询，无法确认时保留待处理状态。
 
 ### 6. 保留 canonical Entry 契约
 
-本 ADR 补充 ADR-0013，不放宽其不可变节点规则：
-
-- 回退更新原生 thread 的 active prefix/leaf 和当前视图，不以删除手机缓存的旧尾部来实现刷新。
-- 保留节点的 ID、parent、type、timestamp、data 在实时完成、历史读取、回退重建及 Host 重启后必须一致。当前依赖旧内存恢复 parent 的做法不是持久稳定性的证明。
-- 同 ID 不同表示仍报告冲突。`mode=replace`、archive/unarchive、重连和重开都不授予覆盖 canonical Entry 的权限；同步失败不清空整个 Session。
-- 冲突修复需要定位表示差异并遵守 ADR-0013 的确定性映射与显式迁移约束。尚未证明一致时保留旧数据并报告错误，不宣称客户端刷新已修复冲突。
+canonical Entry 由原生事实确定性重建，统一校验身份和图结构；原始不可变规则的版本化修订见 ADR-0025。
 
 ### 7. 按版本验证兼容方案
 
-archive 通知驱动 GUI eviction 是当前桌面版本的兼容方案。Codex 升级后重新验证；无法确认兼容性时，保留回退与手机历史协调，明确报告电脑端需手动重开，不反复尝试归档。
-
-2026-10-29 macOS 修复：本机 Codex 应用版本 `26.1023.50603`（bundle build `22391`）的真实包装器握手为 `initialize.clientInfo.version = 26.1023.50603`。此前兼容表只有旧 Windows 版本，导致该 Mac 版本在归档前返回 `desktop_refresh_client_version_unverified`。现加入该握手版本；未识别版本仍保留原生回退，并明确提示更新 Host。回归覆盖 Mac 路径下的手机 `/tree` → revert → archive/unarchive → resume → GUI 分页读取确认，以及按 `com.openai.codex` bundle ID 重新打开目标的 `/usr/bin/open` 参数。这些是隔离自动测试，真实用户会话的 GUI 刷新尚需更新 Host 后现场验收；修复不要求重启 Codex 包装器。
-
-如果上游 GUI/TUI 将来原生支持外部 `thread/reverted` 后重建 transcript，优先采用其原生流程，并在验证后更新本 ADR，移除相应的归档或进程重开补偿。
+兼容实现以实际原生版本与能力为依据，分别取得历史读取、回退和客户端重载证据。
 
 ### 8. Codex 源端一致性是跨端同步的前置条件
 
@@ -112,35 +64,21 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 
 #### 8.1 确定性 canonical 重建
 
-`thread/turns/list`、resume、rollout 回放以及实时 item 汇合必须从同一份原生历史事实，按确定的 turn/item 顺序生成 Entry。不得从上一次 `ThreadState` 的 parent、顺序、接收时间或请求时间推断当前 Entry。
+原生 item 身份、顺序和父链决定 canonical 图。旧表示通过显式、可回滚的缓存迁移修正，并保留原始数据。
 
-2026-10-09 实机确认 `thread/resume` 的历史视图会把部分消息 ID 合成为 `item-1/2/3`，而 `thread/turns/list(itemsView=full)` 为同一消息返回原生 UUID/message ID；同一工具 ID 因而可能接在两个不同父节点下。`thread/start/resume/fork` 响应只用于订阅、会话身份和设置，不能作为 canonical Entry 的来源。初次激活、自动接入和 fork 均须完成 full turns hydrate，再按当前协调代次处理缓冲通知；失败期间不能从通知猜测缺失的历史前缀。原生完整历史为空时保持空图，不用可能滞后的 rollout 复活已回退的尾部；旧格式仅在原生保留 turn 骨架无 items 时使用 rollout，且只接受保留 turn 范围内的记录。
-
-对同一个原生 thread，重复读取、Host 重启、回退后重建必须得到相同的 `entryId`、`parentId`、`type`、`timestamp` 和 `data`。同 ID 的不同表示继续报告 `canonical_entry_conflict`，不能通过换 `sourceEpoch`、清空手机缓存或后到版本覆盖来绕过 ADR-0013 的不可变节点约束。
-
-修正 parent/order 算法可能与 APP 已缓存的旧表示冲突。上线前必须选择一次性的 canonical schema/namespace 迁移，或在受控维护流程中重建受影响缓存；不能把旧表示静默转换成新表示，也不能让正常 sync 无限重试同一冲突。迁移完成后仍保留硬冲突检测。
-
-本次选择 Android Session Tree Cache 的数据库版本 5 显式重建：升级时为已有 Session 登记候选，首次确认其 `agentKind=codex` 后，在同一 SQLite 事务中保存旧 Entry、timing、cursor、coverage 和旧格式记录，再清除该 Session 的活动图与游标。原数据保存在同库的迁移记录中，不改写旧 parent/order 来冒充原生事实。Pi/DSH 不执行重建；新建数据库没有候选；普通 conflict 不触发迁移。事务失败保留原图及待迁移标记，已完成标记使重启和重试幂等。APP 同时作废该 Session 的旧内存投影和在途分页，通过 preview 重新取得当前原生状态，并保留配对及待发送消息。后续同 ID 不同表示仍然硬失败。
-
-本次原生 ID 来源修复使用数据库版本 6、格式 `codex-native-item-ids-v2` 再执行一次显式重建。迁移记录主键改为 `(session_id, canonical_format)`，保留 v5 已完成的旧格式原始归档；v5 中已缓存的临时 ID 和父节点关系另存为新格式迁移归档。直接从更早版本升级时，一次事务处理所有待迁移标记，之后不得因旧标记再次清掉已恢复的图。新库及升级后新建的 Session 无迁移候选，Pi/DSH、配对和待发送消息不受影响；失败或过时写入回滚归档、图、timing、游标和 coverage 一整批。
+2026-10-09 实机确认：thread/resume 可生成 item-1/2/3 等合成 ID，而 thread/turns/list(itemsView=full) 返回原生 UUID。canonical 统一从 full turns 确定性重建，订阅与缓冲通知按协调代次交接；旧 rollout 仅用于原生保留 turn 骨架的兼容范围。
 
 #### 8.2 每 thread 的协调代次和串行提交
 
-每个 Codex thread 维护一个历史协调代次和阶段状态。`thread/revert` 成功后的 turns 读取、外部回退后的 hydrate、resume/attach 重建都必须绑定当前代次；新 revert、新 turn、原生历史变化或确认到的外部操作会使旧读取结果失效。
-
-协调器只允许当前代次提交 `currentHead`、Entry 图和 live 状态。旧读取可以完成并被记录，但不能把旧 item 接回当前历史，也不能重新触发破坏性 revert。读取期间到达的新事件进入有界缓冲，提交后按原生 turn/item 身份重新核对；无法归属当前代次的事件丢弃并触发新的权威读取。
-
-请求超时或结果未知时先核对原生历史，不盲目重发 `thread/revert`。历史读取失败、客户端刷新失败和回退提交失败分别记录，重试从未完成阶段继续，不把已经成功的回退再次执行。
+每个 thread 使用独立协调代次和串行提交边界；异步结果提交前核对归属，回退与恢复共用这一边界。
 
 #### 8.3 内部与外部回退使用同一个入口
 
-手机发起的 revert 响应、订阅收到的 `thread/reverted`、resume 后发现的历史变化，都转换成同一种 `reconcile(reason, generation)` 请求。外部通知只触发权威历史读取，不转换成新的 `thread/revert`，也不单独维护第二套 replay 逻辑。
-
-通知重复、响应先到、通知先到、断线后重新订阅和连续回退都必须归并到同一个当前代次。只有确认 thread 仍属于当前 backend、且新状态已经完成确定性重建后，才发布新的历史状态和客户端刷新动作。
+内部命令与外部原生变化进入同一重建流程，原子交接历史与实时投影。
 
 #### 8.4 与 ADR-0024 的边界
 
-本节负责让 Codex adapter 产生可信的 `currentHead`、canonical Entries 和可恢复 live 状态；ADR-0024 负责这些状态在 Host、Relay 和 APP 之间的版本化复制、checkpoint 恢复、丢包检测和历史分页隔离。两者之间的交界是 `sourceEpoch + seq + sourceReady`：adapter 未完成原生对账时只能发布 `sourceReady=false`，APP 必须原子进入 `restoring/unknown`，隔离上一 epoch 的 head/live/tools，不能继续显示旧 head 同时应用新 epoch patch。
+历史修正遵循 ADR-0024 的版本化恢复契约，来源事实与各客户端缓存按职责分别维护。
 
 ## 实施拆分
 
@@ -151,7 +89,7 @@ ADR-0024 的 checkpoint、patch 和 running sync 只能复制 Codex adapter 已�
 5. 为 Codex adapter 提供 ADR-0024 所需的 checkpoint、live inventory、`sourceReady` 和状态版本（Issue #2）。
 6. APP 完成 epoch 隔离、checkpoint/patch reducer 后，才解除 running sync guard（Issue #3）。
 
-第 1～4 项属于本 ADR 的 Codex 源端和客户端刷新；第 5～6 项属于 ADR-0024 的跨端恢复实现。第 1 项未完成前，不得以同步协议或换 epoch 掩盖 `canonical_entry_conflict`。
+源端与刷新由本 ADR 管理，跨端恢复由 ADR-0024 管理；实施以 canonical 确定性与来源协调为前提。
 
 ### 2026-10-09 Windows 桌面刷新接入
 
@@ -179,7 +117,7 @@ GUI 重开时的 `thread/queue/list` 是只读查询，不属于用户并发操�
 
 原生历史、手机视图和电脑画面的完成状态变得明确，手机回退和桌面/TUI 回退共用历史协调规则。代价是桌面刷新会短暂改变归档与导航状态，终端刷新会打断对应 TUI 的界面，因此需要可靠的实例归属、通知归并和失败补偿。
 
-本决定与 ADR-0013、0021、0022 没有不可调和的冲突；若实施扩大到关闭 unmanaged TUI、终止桌面进程、改变 `/quit` 或覆盖 canonical Entry，则超出本决定并违反现有边界。同步页大小及 running 状态的一般 sync 策略仍由 ADR-0024 负责。
+历史协调与客户端刷新沿用 ADR-0013、0021、0022 的所有权边界；同步范围与 running sync 由 ADR-0024 管理。
 
 ## Verification（未来实施验收）
 

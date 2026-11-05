@@ -13,7 +13,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [ADR-0062](adr/0062-claude-background-agents-and-session-activity.md)：Claude 主回合与后台子任务库存独立，双端活动展示、任务区和关闭能力；r44 / S26 / R61，已接入，设备与真实原生联动待验证。
 - [ADR-0065](adr/0065-native-quic-relay-transport.md)：Host↔Relay↔手机两段原生 QUIC、独立 WS / QUIC 切换与同机 Relay 适配器；[完整公网测试报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-public-performance-20261104.md)保留全部五轮结果，未证明吞吐提速，真实手机与发布门禁分别验收。
 - [QUIC 分层测试方案](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-diagnostics.md)与[诊断结果](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-results-20261104.md)：原始 TLS/QUIC 五轮、双段负载交错对照、传输 / writer / 队列证据；发现测试 socket 接收丢包及 CPU quota 条件，不把信号记为单因果结论或已修复。
-- [五流功能回归](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)：history > catchup > bulk、旧端兼容、四种承载组合与双端原功能对照；本轮不再测速，既有失败和未完成门禁分别记录。
+- [五流功能回归](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)：history > catchup > bulk、旧端兼容、四种承载组合与双端原功能对照；本阶段验证功能，既有失败与待验收门禁分别记录。
 
 - [供应商管理与订阅配额](adr/0019-host-provider-management.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: current architecture decisions and constraints with lasting value. Replaced or duplicate material is removed after useful constraints and references are merged into the current decision. Retired numbers are not reused; Git retains deleted history.

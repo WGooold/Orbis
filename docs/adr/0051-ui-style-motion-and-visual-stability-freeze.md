@@ -2,7 +2,7 @@
 
 日期：2026-10-30；Status: accepted。当前基线：`2026-11-05/r48`。
 
-保留共用材质、原生文本、稳定消息身份、阅读位置及平台手势。新需求可演进；性能优化不得改变既有可见行为。feature 编号只追加，不复用。
+保留共用材质、原生文本、稳定消息身份、阅读位置及平台手势。基线按需求演进，性能优化保持既有可见行为，新增 feature 使用新编号。
 
 当前修订：消息旁菜单与显式选字；iOS 侧栏沿用 r47、Android 恢复原材质；回复卡片、语言、后台任务与统一轻压均维持现有实现。参数、生命周期和边界以实现及测试断言为准。
 
@@ -63,7 +63,7 @@
 | M24 | 实时回复卡片增高与首次出现（r46 已接入，验证中） |
 | V01 | 像素距离跟随 |
 | V02 | 阅读锚点锁定 |
-| V03 | 更新不抢回底部 |
+| V03 | 更新保持阅读位置 |
 | V04 | 分页边沿与显式加载 |
 | V05 | 刷新顶栏固定槽 |
 | V06 | 通知与短反馈覆盖 |
@@ -72,7 +72,7 @@
 | V09 | 稳定消息身份与行复用 |
 | V10 | 乐观发送精确对账 |
 | V11 | 乐观关闭可恢复 |
-| V12 | 不伪造有效配置与完成 |
+| V12 | 配置与完成依据真实确认 |
 | V13 | 缓存首帧与导航响应 |
 | V14 | 首屏工作量与虚拟化 |
 | V15 | 绘制成本有界 |
@@ -95,9 +95,9 @@
 | X10 | Web 动态状态真实性 |
 | X11 | Relay 单设备流量与带宽（已实现，自动验证通过；浏览器实看、部署与用户验收待完成） |
 
-决策入口：[材质、阅读、设置与外观](0046-mobile-ui-stability-and-material.md)；[首帧与延迟构建](0048-online-chat-entry-budget.md)；[整页导航](0054-shared-full-page-navigation.md)；[共用交互、刷新与下载反馈](0058-shared-interaction-motion.md)。UI-01–UI-06、S / M / V / X 及场景原标识保持，不复用。
+决策入口：[材质、阅读、设置与外观](0046-mobile-ui-stability-and-material.md)；[首帧与延迟构建](0048-online-chat-entry-budget.md)；[整页导航](0054-shared-full-page-navigation.md)；[共用交互、刷新与下载反馈](0058-shared-interaction-motion.md)。UI-01–UI-06、S / M / V / X 及场景原标识保持，新场景使用新标识。
 
-核对视觉前先确认实际安装包来源及累积改动，避免对照两版同时引入新材质而误认外观未变。阴影、圆角与材质层级须随受影响行为检查；选测和验收边界遵循 [根部规则](../../AGENTS.md#测试)，自动通过不替代用户验收。
+视觉核对依据已确认来源的安装包与受影响行为，验证和验收分别保留对应证据；选测遵循 [根部规则](../../AGENTS.md#测试)。
 
 代码与证据：[Android 单元测试](../../android/app/src/test/java/com/orbising/orbis/) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/)；[iOS 核心测试](../../ios/Orbis/Tests/) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Host / 协议测试](../../packages/)；[原始证据](../../.artifacts/ui-regression/)。
 

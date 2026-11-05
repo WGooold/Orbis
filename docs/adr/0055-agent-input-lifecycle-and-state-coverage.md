@@ -2,151 +2,116 @@
 
 日期：2026-11-01
 
-Status: accepted（契约已确定，按本文开始实施；未完成的实现和验收不得记为通过）
+Status: accepted（契约已确定，实现与验收状态分别记录）
 
 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[UI 回归](../../AGENTS.md#测试)。
 
-受影响 feature：V05、V09–V10、V12、V16–V18；关联 S16–S17、V03、V07。不新增视觉 feature 编号，不改变布局、滚动、消息身份或既有动效。
+受影响 feature：V05、V09–V10、V12、V16–V18；关联 S16–S17、V03、V07，沿用既有视觉与交互基线。
 
 ## Context
 
 Codex 压缩期间发送可能一直显示“发送中”。隔离协议夹具确认三个代码缺口：独立压缩没有参与发送准入；只有压缩完成和 idle、没有 turn/completed 时队列不补跑；队列先报 delivered，启动失败又没有对应 rejected。正常 turn/completed 则可以继续投递。夹具证明分支存在，尚不能代替用户故障的真实事件序列。
 
-只补一个 compaction 判断不能解决启动、审批、重试、停止、重连和关闭时的同类问题。本文要求所有已声明输入均有拥有者、准入判定、执行或排队路径和结果。处理可以是执行、排队、明确拒绝或待核对，不要求后端在任意状态都能执行任意操作。
+所有已声明输入通过统一的拥有者、准入和结果模型处理，原生能力决定执行、排队、拒绝或待核对。
 
 ## Decision
 
 ### 1. 范围与输入全集
 
-覆盖 pi、codex、codexDesktop、claude、dsh（Web 与仍存在的 ACP 路径）。各后端保持原生能力边界；能力不支持必须明确拒绝，不用另一种操作冒充。
-
-下表穷举当前 `RuntimeCommand` 的 20 个判别值。实现必须用类型穷尽检查和与协议 schema 的集合对照，新增判别值未登记时测试失败。无效或未来未知类型由认证协议入口拒绝，不进入后端。
+各后端按已声明能力处理输入，协议类型、拥有者与结果完整对应；独立 Host 服务和本地操作由各自入口管理。
 
 | 输入组 | 当前判别值 / 内容 | 唯一拥有者与成功证据 |
 | --- | --- | --- |
 | I01 对话 | `user_message`：纯文本、文本加附件、附件输入生成的正文；无 delivery、followUp、steer | 后端队列 / 原生提交；源端用户消息及 clientMessageId / 原生声明映射才证明落地 |
 | I02 撤回 | `user_message.cancel` | 队列拥有者；确认未投递并删除，或 already_delivered / not_cancelable |
 | I03 Slash | `slash.execute`：只读查询、模型 / 思考 / 权限配置、压缩、历史改写 / 会话切换、产生提示的 skill / template、退出及扩展命令 | 后端当前已声明的命令目录；原生执行结果与必要配置 / 会话确认 |
-| I04 权限 | `permissions.update` | 后端 opaque setting / option 校验和源端确认；不能代替单次审批 |
+| I04 权限 | `permissions.update` | 后端校验 opaque setting / option 并确认会话配置 |
 | I05 停止 | `stop` | 当前执行拥有者；原生中断确认、已结束或明确不可取消 |
 | I06 交互 | `interaction.respond`：确认、选项、问卷、自由文本、取消 | 请求拥有者；校验 Host / Session / generation / request / extension / 期限 / 答案结构并取得处理结果 |
 | I07 历史读取 | `session.sync`、`session.entry.request` | SessionSyncTasks / conversation state；带范围和身份的成功或失败 |
-| I08 读取确认 | `session.snapshot.ack` | SessionSyncTasks；幂等消费 applied / rejected，不产生递归 ACK |
+| I08 读取确认 | `session.snapshot.ack` | SessionSyncTasks 幂等消费 applied / rejected |
 | I09 工具读取 | `session.tools.open`、`session.tools.read`、`session.tool.content.read`、`session.tool.content.cancel` | 工具库存 / 读取服务；opened / page / read.failed；取消仅结束自己的读取 |
-| I10 文件审阅 | `session.changes.list`、`session.changes.read`、`session.change.detail.read`、`session.change.detail.cancel` | TurnFileChangeService；对应 summaries / page / failed，取消不作用于 Agent 执行 |
+| I10 文件审阅 | `session.changes.list`、`session.changes.read`、`session.change.detail.read`、`session.change.detail.cancel` | TurnFileChangeService 管理 summaries / page / failed 与读取取消 |
 | I11 文件传输 | `file.download`、`artifact.download`、`artifact.cancel` | HostDownloadService；offer / 进度 / 完成 / 失败 / 取消，按设备私有任务隔离 |
 
-配对、切换电脑、创建 / 激活 / 归档会话、供应商操作、上传、目录浏览、诊断和模型范围读取属于 `DeviceE2ePayload` 的 Host 服务请求，不伪装成 RuntimeCommand。它们继续由各自带 requestId / transferId 的操作拥有者处理；Agent 忙碌不应阻塞独立的 Host 读取或传输。会改变同一 Session / provider 的操作必须遵守下面的互斥、身份和未知结果规则。App 本地草稿、搜索、复制、选择、展开和导航不等待 Agent。
+### 2. 状态按正交事实表达
 
-### 2. 状态是正交事实，不能用一个 busy 布尔覆盖
+传输、归属、执行、活动和输入分别表达原生事实，组合状态按统一准入顺序求值。后台任务库存与主回合分别管理，未知活动通过来源核对恢复。
 
 | 维度 | 状态全集 / 来源 |
 | --- | --- |
 | 传输 | 未配对、未加密就绪、在线、断线、重连；App / DeviceLink |
 | 归属 | 没有 Session、在线绑定、替换中、已关闭 / 归档 / 下线；Host 与后端 |
-| 执行 | idle、running、waiting_local_interaction；未知 / unavailable 是可用性，不能伪造 idle |
+| 执行 | idle、running、waiting_local_interaction；unknown / unavailable 表达来源可用性 |
 | 活动 | 启动中、压缩中、重试 / 退避、停止中、历史核对 / 恢复中、配置更新、供应商切换、关闭中；各有操作 / 回合 / 条目身份 |
 | 输入 | 新建、受理、排队、提交源端、已落地、拒绝、撤回、不可撤回、结果未知、已失效 |
 
-主回合的工具执行 / thinking / 输出流属于 running 的子活动；并行子 Agent 不结束主回合。Claude 后台任务可以跨越主回合，主回合 idle 时继续工作：按 [ADR-0062](0062-claude-background-agents-and-session-activity.md) 独立维护 execution.tasks，汇总展示但不改写主 phase / 输入准入。自动压缩可在 running 内，也可有独立压缩而 execution 为 idle。压缩显示优先级沿用 V05：等待确认优先，显示不改写执行 phase。
-
-所有组合按 §3 的优先级和 §4 的矩阵求值，因此不遗漏“重连 + 压缩 + 审批”等组合。新原生活动无法解释时进入未知并触发核对，不按 idle 放行写操作。
+参考：[ADR-0062](0062-claude-background-agents-and-session-activity.md)。
 
 ### 3. 准入优先级（先匹配先处理）
 
-| 顺序 | 条件 | 处理 |
-| --- | --- | --- |
-| G01 | 身份 / 认证 / schema / 长度 / 附件结构非法 | 写入前拒绝；保留草稿；不给源端副作用 |
-| G02 | 同 operation 身份重复 | 同设备、同目标、同内容重放已有回执或 pending，绝不再次执行；异内容 / 异设备冲突明确失败 |
-| G03 | App 通道尚未写入 | 本地失败，保留输入；不创建已发送假象 |
-| G04 | 已发送后断线、Host / 后端重启、目标代次变化 | 尚未执行可确认拒绝；可能执行的一律 unconfirmed 并核对，不自动重新提交 |
-| G05 | 专用读取 / ACK / 传输 / 本地输入 | 路由到表中拥有者；不被 Agent 的普通 busy 阻塞；各自范围 / 版本仍须校验 |
-| G06 | Runtime 不存在、已关闭、归档、未绑定或后端不可用 | runtime_offline / session_not_found / 明确不可用；绝不落到另一个会话 |
-| G07 | 能力或命令 / 参数不支持 | unsupported_command / option unavailable；不调用未声明原生能力 |
-| G08 | interaction / cancel / stop | 校验其目标并优先处理；不能排在它所解除的等待之后 |
-| G09 | provider 切换 / 关闭 / 历史改写 / 配置互斥正在进行 | 新写操作明确拒绝 busy / switching；不能入一个永远无法继续的队列 |
-| G10 | 历史来源恢复中或执行事实未知 | 新写操作拒绝 state_unavailable，允许核对和目标明确的控制操作；已受理输入保留并核对。已有显式本机历史操作之后提交的输入，可沿既有串行写车道等待该操作及其 hydrate 完成，执行前再次检查目标，不越过历史屏障 |
-| G11 | 已知执行 / 活动 | 按 §4、§5 执行或排队；执行时再次校验同一归属和互斥条件 |
+准入依次核验身份、幂等性、连接、目标、能力与互斥，控制和读取按其拥有者优先处理；容量通过明确背压管理。
 
-不得通过轮询日志文字、正文相似度或本地动画推断成功。缓冲区 / 队列 / 回执容量满时明确 backpressure / queue_full；不得静默淘汰仍待处理的输入。
+| 编号 | 准入原则 |
+| --- | --- |
+| G01 | 写入前完成身份、结构和输入校验。 |
+| G02 | 重复操作按原身份幂等核对。 |
+| G03 | 本地写入失败保留输入与原因。 |
+| G04 | 已发送操作按执行证据结算。 |
+| G05 | 读取、确认和传输由各自拥有者处理。 |
+| G06 | 操作绑定有效目标与后端。 |
+| G07 | 原生调用依据已声明能力。 |
+| G08 | 控制操作按目标优先处理。 |
+| G09 | 冲突写入服从领域互斥。 |
+| G10 | 来源恢复期间维护写入屏障。 |
+| G11 | 执行前复核归属与准入。 |
 
 ### 4. 完整状态 × 输入矩阵
 
-记号：E=当前可执行并跟踪结果；Q=只受理为可见队列、等待原生可执行；R=明确拒绝并给出原因；T=按目标身份执行控制；V=执行专用读取 / 校验契约；U=可能已执行，转未确认并核对。所有 E/Q/T/V 都必须经过 §6 的成功 / 失败路径。
-
-| 状态（通过 §3 后） | 普通消息 | followUp | steer | 撤回队列 | Slash / 配置 | 停止 | 交互回答 | 读取 / 传输 / ACK |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| idle，无活动 | E | E（无需强制入队） | E（无需中断） | T | E，按命令类别 | T：无执行则 not_cancelable | T：仅仍有效请求 | V |
-| 回合启动 / 捕获屏障 | R busy | Q | Q，等待当前启动归属后控制 | T，未提交可撤回 | 查询 E；写 R busy | T / not_cancelable | T | V |
-| running（含 thinking / 工具 / 子 Agent） | R busy | Q | 后端支持则 T+Q / 原生 steer，否则 R | T | 查询 E；写按 §5 | T | T | V |
-| waiting_local_interaction | R busy | Q | 支持则 T+Q，不能冒充回答 | T | 查询 E；写 R busy | T，清理所属请求 | T：校验后提交 | V |
-| 独立压缩，execution=idle | Q，Host 声明真实队列 | Q | Q；没有可取消回合不伪造中断 | T | 查询 E；其他写 R busy | 原生支持则 T，否则 not_cancelable | T | V |
-| running 内自动压缩 | R busy | Q | 原生支持则 T+Q，否则 R | T | 查询 E；写 R busy | T | T | V |
-| 原生重试 / 退避 | R busy | Q | 支持则 T+Q，否则 R | T | 查询 E；写 R busy | T | T | V |
-| 停止处理中 | R busy | Q，等待确切停止结论 | 支持则 Q，不重复中断 | T | 查询 E；写 R busy | 同一停止重放；其他明确 pending / busy | T，已取消则拒绝 | V |
-| 历史核对 / 恢复 | R state_unavailable | R state_unavailable | R state_unavailable | T / U | 查询 E；写 R | T，仅目标已知 | T，仅请求有效 | V |
-| 配置 / provider / 分支 / 会话替换 | R busy | R busy | R busy | T / U | 查询 E；冲突写 R | T，仅当前代次 | T，仅当前代次 | V，旧版本失效 |
-| 关闭中 | R closing | R closing | R closing | 未提交则取消，其余 U | 仅退出结果重放，其余 R | T / not_cancelable | R stale / cancelled | V；无有效范围则失败 |
-| offline / closed / archived | R offline | R offline | R offline | 已知未执行可取消，否则 U | R offline | not_cancelable | R stale / offline | 有已确认缓存则 V，否则明确失败 |
-| 断线 / 重连，已发出 | U | U | U | U | U | U | U | 由范围读取 / 传输拥有者恢复，不能假成功 |
-| 执行或原生活动未知 | R state_unavailable | R state_unavailable | R state_unavailable | T / U | 查询 E；写 R | T，仅有目标身份 | T，仅请求有效 | V，触发核对 |
-
-无 delivery 的 busy 消息继续明确拒绝，保持用户已选择的投递语义；独立压缩的 idle 是唯一新增自动暂存场景，因为 App 依据真实 execution=idle 正常发送。Host 公开同一 App messageId 的队列记录，使客户端知道输入正在等待。客户端不根据“压缩中”文字自行改协议。
+组合状态与输入使用统一准入模型，所有结果进入 §6 的生命周期；具体组合与判定以测试源码为准。独立压缩的 idle 输入由 Host 队列暂存。
 
 ### 5. 后端能力与 Slash 子路径
+
+backend 按已发布命令目录解释读取、配置、历史、退出和对话输入，按原生能力确定准入和成功证据。附件与正文完整提交，独立传输沿用自身生命周期。
 
 | 后端 | 消息 / 队列 | steer / stop | 不支持时 |
 | --- | --- | --- | --- |
 | Pi | 扩展持有待投递输入；isIdle 与压缩 / 队列 / 启动保留位共同判断；原生可执行后逐条投递 | 保持原生 abort + 队列语义，停止和压缩完成要触发核对 / 调度 | 明确 unsupported / not_cancelable |
-| Codex / Codex Desktop | 适配器队列，包含独立压缩暂存；启动保留位保证一次仅一条 | 既有 steer=中断+优先下一条；异步问题原生 steer 保持独立归属 | 没有回合不虚构 turnId；失败或未知按 §6 |
-| Claude Mods | Host 保留命令，插件在主回合、压缩和已有提交保留位均空闲后串行提交 | 不支持 steer，明确 claude_steer_unsupported；stop 等主回合中断事实 | 不借 prompt.submit 等待 idle 冒充立即投递 |
-| DSH Web | 原生 queue / steer，使用 requestId / queue item 身份和原生队列核对；只投影 `source.kind=user` 或旧版未声明来源的用户输入，权限变化、子代理 / 后台完成、插件和自动目标上下文仍由 DSH 消费，不进入用户队列、不结算 App 发送身份；未知显式来源同样排除 | 原生 cancel；审批独立通道 | 原生拒绝 / 不可确认须保留原因 |
-| DSH ACP | 只支持 idle 直发；无原生队列时 followUp / steer 明确失败 | 原生 cancel，不能把 RPC 写入当中断完成 | 明确说明能力限制，保留可重发输入 |
-
-Slash 准入由后端解释已发布目录：只读查询可以执行；权限、压缩、历史改写 / 新会话 / 切换在忙碌或冲突时明确拒绝；模型 / effort 默认同样要求 idle，但 DSH Web 原生已支持带规范化确认的下一轮选型，保持运行中更新下一轮配置的路径，不改变当前请求。会话名称是独立元数据更新，后端原生支持时可运行中执行；skill / template 等产生对话的命令只能 idle 执行，除非后端发布并实现了明确排队能力；退出走独立关闭操作。无法分类的扩展写命令保守要求 idle。命令不在目录或参数无效时立即失败。可查询不代表可修改；配置成功必须先发布原生确认值。
-
-附件不增加独立发送车道：未上传完成不提交；已上传路径与消息正文一起受理、排队和失败；不能先投递正文再悄悄丢附件。仅取消读取 / 下载不取消 Agent；停止 Agent 不清空无关传输。
+| Codex / Codex Desktop | 适配器队列与独立压缩暂存，串行启动 | steer 使用原生中断和优先调度，异步问题独立归属 | 失败与未知按 §6 结算 |
+| Claude Mods | 插件在原生可提交时串行消费 Host 队列 | steer 返回 claude_steer_unsupported；stop 等待原生中断 | 按原生受理事实结算 |
+| DSH Web | 原生 queue / steer；以 requestId 及 queue item 关联人类输入 | 原生 cancel；审批独立通道 | 保留原生拒绝与未确认原因 |
+| DSH ACP | idle 直发；followUp / steer 返回能力限制 | cancel 按原生中断确认 | 保留输入与失败原因 |
 
 ### 6. 生命周期与所有结果路径
 
-命令受理、消息投递、模型执行、历史落地是四个不同事实。`pending` 必须保留 pending，不能写成设备操作 success；队列 accepted 只证明队列受理；`delivered` 只在原生提交确认后发布。消息落地仍用 ADR-0049 的精确身份对应。
+命令受理、队列投递、模型执行和消息落地分别确认；回执按操作身份幂等重放，未知结果通过证据核对，用户重试建立新身份。
 
-| 路径 | 触发 / 证据 | 必须结果 |
-| --- | --- | --- |
-| P01 本地未写入 | 无加密连接、校验失败、写入拒绝 | 保留输入和附件；明确本地原因 |
-| P02 源端明确拒绝 | busy、不支持、容量、参数、权限 / 认证、原生拒绝 | 命令 failure；队列对应 rejected；可重发 / 恢复草稿 |
-| P03 受理为队列 | 排队记录存在 | 命令受理结果与 queue accepted；持续可见、可撤回，不能显示为已落地 |
-| P04 原生确认提交 | 原生 RPC / 消息身份确认 | 对应 delivered；保留 App id；再以 canonical / live 精确对账 |
-| P05 提交前失败 | 捕获 / 参数校验 / 明确未执行错误 | rejected + 失败原因；释放启动位并处理下一项，不能遗失后续队列 |
-| P06 提交后结果不明 | 超时、连接丢失、进程退出、来源不完整 | `unconfirmed`；保存关联并主动核对；不自动重发、不伪报未执行 |
-| P07 撤回成功 / 竞态 | 队列拥有者确认未提交 / 已提交 | cancelled，或 already_delivered / not_cancelable；不能先删后声称撤回 |
-| P08 模型执行结束 | 完成、中断、最终失败 / 原生确认 idle | 只结束所属回合；核对压缩、交互与队列；恢复下一项调度 |
-| P09 重复 / 迟到 | 相同操作 / 旧 generation、turn、item | 重放当前结果或忽略过期回调；不能覆盖新操作，也不能再次执行 |
-| P10 目标结束 / 替换 | 关闭、归档、会话切换、Host / 后端代次替换 | 未提交队列明确拒绝 / 取消，已提交未知；释放自己的资源，旧回调隔离 |
-| P11 核对完成 | 精确消息 / queue / 原生操作证据 | 更新到真实结果；未知可以被证据确认，确定终态不能被普通 pending 回退 |
-| P12 核对仍不能确认 | 有界核对结束、来源始终不可用 | 可见“未确认 / 待核对”与原因及显式核对入口；结束无限转圈，不自动重新执行 |
+当前普通回执预算为 60 秒，确定回执保留至少 5 分钟、上限 4096；在途和未确认记录按容量准入。跨 Host 重启的 exactly-once 保证尚未提供。
 
-回执入口负责同设备+目标+commandId 的有界去重和回执重放；不得因重复请求延长原操作期限。后端异常必须被捕获并路由到发起设备。普通命令未得到终态时，Host 以独立的 60 秒回执预算转 unconfirmed；原生长回合可继续执行，不因该预算中断。后端已确认队列受理后命令可以结束，队列等待时间不以 60 秒伪造成投递失败。队列中仍有进展的长回合可等待，但当前原因必须可取；回合 / 压缩终结事件和已验证原生核对结果都要触发重新调度。未知结果只允许查询证据，自动重投递禁止。
-
-确定回执至少保留 5 分钟、上限 4096；在途和未确认记录不得静默淘汰，满时拒绝新输入。同一个 App messageId 不得通过新 commandId 再次提交；同一 commandId 的合法重复重放原回执，重新发送必须同时生成新消息与命令身份。已确认消息身份及原生幂等保证范围之外，不承诺跨 Host 重启的 exactly-once；重启后通过历史 / 队列核对避免重复。App 在未确认状态不开放直接自动重发，已落地消息仍能精确消除本地行。
+| 编号 | 结果原则 |
+| --- | --- |
+| P01 | 本地失败保留输入与附件。 |
+| P02 | 明确拒绝返回原因及恢复入口。 |
+| P03 | 队列受理持续呈现排队状态。 |
+| P04 | 原生提交与消息落地分别确认。 |
+| P05 | 提交前失败释放保留位并继续调度。 |
+| P06 | 提交后未知保留身份并核对。 |
+| P07 | 撤回按队列拥有者的结果结算。 |
+| P08 | 回合结束核对所属活动和后续队列。 |
+| P09 | 重复与迟到结果按操作身份处理。 |
+| P10 | 目标结束按提交阶段收尾。 |
+| P11 | 权威证据推进真实结果。 |
+| P12 | 核对未果保持可见并提供核对入口。 |
 
 ### 7. 串行、恢复与隔离
 
-每 Session 的写调度只有一个拥有者，IO 不在模型写锁内执行。先保留启动 / 提交位再调用原生；任何 await 之后重新检查 Session 对象、generation、当前活动和目标身份。队列同一次只取一项；失败释放自己的保留位，不清别的回合状态。
+每 Session 的写调度由单一拥有者串行管理，异步结果按目标与代次核验。回合、压缩及恢复事实驱动后续调度，连接恢复重建认证与订阅，业务结果继续按原身份核对。
 
-补跑触发包含：回合完成 / 中断 / 最终失败、压缩完成 / 失败、原生确认 idle、完整来源核对、启动失败后清理、暂时互斥释放。先验证已知可执行，后取项；压缩结束而回合仍 running 时不提前开新回合；普通 idle 不能冒充压缩完成。只有超时而没有原生事实时不能安全补跑。
-
-所有回执、队列、交互、异步回调和恢复请求携带 Host / device / Session / runtime 绑定与来源代次。另一设备的重复 ID、另一个会话的同文和旧代次结果均不得匹配。停止、退出、取消与提交竞态必须只产生与源端事实相符的结果。
-
-2026-11-05 DSH 后端桥接恢复（ADR-0020 / ADR-0056）：自动恢复只重建已有服务的认证连接与原生目录订阅，不重放 P06 / P12 的消息、新建、恢复、停止或权限操作，不把认证探测当作业务成功。与显式 App 激活串行复用；只读探测缺席 / 失败后，显式激活仍可独立确保服务并执行原生会话操作一次。暂停 / Host 代次失效关闭恢复闸门并清理迟到连接；在线状态仍以真实认证与握手为准。
+2026-11-05 DSH 后端桥接恢复（ADR-0020 / ADR-0056）：自动恢复重建已有服务的认证连接与目录订阅，显式激活负责服务准备及原生会话操作；二者串行复用准备过程。暂停和代次失效按所属生命周期收尾，业务结果继续按 P06 / P12 核对。
 
 ### 8. 显示与现有 ADR 的修订
 
-沿用现有气泡操作区、队列区、错误和恢复入口。发送中只表示仍等待受理 / 落地；Host 已确认排队时显示静态“已排队”并允许撤回，不用发送转圈表达整个排队时长。unconfirmed 显示静态“未确认是否送达”和核对入口，不自动重发。读取 / 导航 / 草稿不因 Agent 忙碌失去响应，状态更新不抢阅读位置。
-
-队列接管显示后，App 仍保留隐藏的本地恢复副本（正文、附件、App id、命令与 Session 归属），直到源端用户消息精确落地或用户明确撤回 / 删除；它不是第二份源端事实，也不进入历史缓存。队列行与聊天行只显示一份。队列失败 / 未确认或后端下线时恢复为可见的失败 / 未确认行，不能因 Host 队列的受理回执丢失唯一输入副本。沿用 ADR-0049 的进程内 outbox 范围；本文不新增 App 进程被杀后的明文草稿持久化，也不承诺两个进程同时硬崩溃后的跨重启 exactly-once。
-
-本 ADR 细化 ADR-0032 模块 10–13、17 和 ADR-0049 §3–4，并替代其“Host 队列受理后立即删除本地记录”为“隐藏恢复副本直到落地 / 明确撤回”：源端结果未知不能被成功受理或经过 15 秒解释成已执行；命令超时不等于投递失败；旧兜底删除只适用于已确认原生受理但缺身份映射的兼容路径，不能删除仍排队或 unconfirmed 的输入。ADR-0031 的配置确认与 ADR-0033 的 Claude 主回合串行提交继续有效，压缩活动加入提交互斥。
+界面以明确的发送、排队、未确认和失败状态反馈结果，输入恢复副本保存到精确落地或明确撤回。共用 outbox 与操作账本维护稳定身份、阅读位置和原位恢复，配置确认与主回合串行契约继续适用。
 
 ## Verification
 
@@ -154,4 +119,4 @@ Slash 准入由后端解释已发布目录：只读查询可以执行；权限�
 
 ## Consequences
 
-每一种输入都有责任边界与可观察终点。压缩等活动不再是发送状态机之外的孤立显示，原生不支持或结果未知也不会被无限等待掩盖。代价是需要统一去重和回执预算、适配器调度互斥、可恢复的投递结果以及跨状态回归；未来状态或输入类型必须同步扩展矩阵和测试。
+每一种输入都有责任边界与可观察终点。压缩等活动不再是发送状态机之外的孤立显示，原生不支持或结果未知也不会被无限等待掩盖。代价是需要统一去重和回执预算、适配器调度互斥、可恢复的投递结果以及跨状态回归；后续演进同步维护准入模型与相关验证。

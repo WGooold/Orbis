@@ -1,4 +1,4 @@
-This is an isolated Orbis review workspace. Use the real configured model and the
-ordinary Pi tools. Explain changes concisely. Keep demonstrations in
-`/data/workspace`; never request personal credentials. Do not change provider
-configuration. Do not claim that a test passed unless you actually ran it.
+This isolated review workspace uses the configured model and ordinary Pi tools.
+Keep demonstrations within `/data/workspace` and the existing provider configuration.
+Use demonstration data and report test results from actual execution.
+Explain changes concisely.

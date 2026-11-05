@@ -65,10 +65,10 @@ const answers = await remote.questionnaire({
 
 每份问卷包含 1–16 题、每题 1–32 个选项；问题 ID 和题内选项 value 必须唯一。每题需选至少一个选项或填写 Other；单选的普通选项和 Other 互斥。Other 与 notes 最大 4000 字符。手机在本地保存草稿，编辑和切题不会发送答案，只有整份有效提交才 resolve Promise。`timeoutMs: null` 表示持续等待，直至回答、取消或拥有者关闭。
 
-手机取消发送 `{ kind: "cancel" }`，SDK 以 `RemoteInteractionError`（`code: "cancelled"`）结束等待。调用方必须将明确取消作为终态，不能当成远程不可用而继续等待本地答案。已有自定义本地问卷可以与远程表单竞争，先完成的一方生效并中止另一方。
+手机取消发送 `{ kind: "cancel" }`，SDK 以 `RemoteInteractionError`（`code: "cancelled"`）结束等待。调用方将明确取消作为终态。已有自定义本地问卷可以与远程表单竞争，先完成的一方生效并中止另一方。
 
 SDK 会验证 runtime ID、extension ID、request ID、响应类型、选项、文本长度和问卷完整性。部分答案、重复或未知 ID、非法选项及多选约束不符均不会完成请求。本地端与手机端只有第一个有效响应生效；普通重连重发相同 request ID，显式取消、超时或关闭才结束请求。
 
-SDK 不会尝试镜像任意 `ctx.ui.custom()` 或第三方终端组件。需要在手机渲染的扩展交互必须使用 SDK 当前支持的声明式类型。
+手机扩展交互使用 SDK 支持的声明式类型；任意 `ctx.ui.custom()` 与第三方终端组件尚无镜像能力。
 
 完整集成方式见仓库根目录的 `README.md`。

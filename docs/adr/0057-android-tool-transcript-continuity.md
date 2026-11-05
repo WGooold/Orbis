@@ -2,9 +2,9 @@
 
 日期：2026-11-01
 
-Status: implemented（Android 修复与专项验证完成；完整 UI 回归门禁及真机验收未完成，不能记为全量验收通过）
+Status: implemented（Android 修复与专项验证完成；完整 UI 回归门禁及真机验收未完成）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[流式呈现与阅读规则](0046-mobile-ui-stability-and-material.md)；[UI 回归方案](../../AGENTS.md#测试) 的 UI-02、R03 / R04、A1–A4。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[流式呈现与阅读规则](0046-mobile-ui-stability-and-material.md)；[测试规则](../../AGENTS.md#测试)。
 
 ## Context
 
@@ -19,33 +19,23 @@ Android 的 Pi 会话会短暂只剩一条工具消息，顶部仍有“加载�
 
 ### 1. 源端进度与显示分支分别记录
 
-在 Android `RuntimeConversation` 中增加 `retainedProjectionLeafId`，记录因缺父而保留的实际显示分支。`sourceHeadLeafId`、源序号和 epoch 继续表示已接收的源端事实，不能以它们前移来证明画面已经完成交接。
-
-判断连续性时使用 `retainedProjectionLeafId ?: sourceHeadLeafId`。重复 head、后继条目、恢复 checkpoint 和后续历史合并必须相对被保留的显示锚点判断，直到确认新分支可完整接续或发生有依据的分支切换。
+RuntimeConversation 以 retainedProjectionLeafId 记录实际保留的显示分支，以 sourceHeadLeafId 与源版本记录接收进度；连续性核验基于显示锚点。
 
 ### 2. 缺父时保留已显示内容，状态事实继续更新
 
-同一源 epoch 内，新 head 因缺父无法连接显示分支时，保留已经显示的 canonical 行、实时正文和实时工具行。完整 live inventory 中暂未列出的行不能在这个阶段提前消失。
-
-保留内容不等于保留旧执行事实：工具状态、轮次状态及实时更新仍按源端数据推进，不能为了画面稳定把已经完成的工具继续显示为运行中。等待期间维持 `isChatSyncing=true`，不发送已经完成应用的确认；沿用现有恢复请求取得缺失条目及完整 checkpoint。
+同 epoch 缺父期间保留已确认的 canonical / live 投影，执行与工具状态继续随来源更新。现有恢复入口取得父链和完整 checkpoint，应用确认随完整交接推进。
 
 ### 3. canonical 与实时内容由完整源状态一次交接
 
-历史 / catchup 页只有 canonical 条目，没有完整实时库存。因此，即使该页刚好补齐缺失父节点，也只沿保留的分支补入历史，不能在这一帧引入新 canonical 内容并留下旧实时副本。处于保留状态时，缓存首屏种子也不能替换现有会话。
-
-只有包含完整源状态和实时库存的 checkpoint / patch 在父链可接续后，才能一次发布新的 canonical 投影并对账实时行，清除 `retainedProjectionLeafId`。交接后内容只保留一份；不能先删实时行再补 canonical 行，也不能先发布两份再清理。对账使用已有消息 / 条目身份，不增加按正文猜测的去重。
+历史页补充保留分支；父链完整后，由携带完整实时库存的 checkpoint / patch 原子交接 canonical 与 live，并按稳定身份解除保留锚点。
 
 ### 4. 保留状态有明确边界
 
-- 已确认的 rewind 或分支切换遵守权威分支，不因连续性保护永久保留旧分支消息。
-- 源 epoch 切换、未知源边界及缓存重建清理保留锚点；旧锚点不得跨源或跨会话复用。
-- 缺失条目长期未到时保持核对语义，依赖现有恢复机制收敛；不把保留画面当成同步完成。
+显示锚点随来源代次、Session 和缓存生命周期管理，已确认分支切换按权威历史更新，未完成恢复保持核对状态。
 
 ### 5. 范围与取舍
 
-本次恢复既有 V20 / UI-02 约束，不新增 feature ID，不调整 UI 基线版本、视觉 token、工具卡形态、动画或跟随 / 阅读 / 分页参数。修改范围为 Android 会话状态与缓存重建清理；没有修改共享协议、Host 或 iOS 实现。
-
-不采用固定等待、减少工具刷新、隐藏历史入口或渲染层防抖。这些方法不能证明父链完整，也不能保证慢链路、多次更新及历史回补时正确交接。独立保存显示锚点增加少量状态管理，但让“收到哪一步”和“显示哪一步”各自有明确含义。
+本修复在 Android 会话状态和缓存清理中恢复既有连续性契约，显示锚点明确区分源端接收与画面交接。UI、协议与其他平台沿用既有基线。
 
 ## Implementation
 
@@ -66,4 +56,4 @@ Android 的 Pi 会话会短暂只剩一条工具消息，顶部仍有“加载�
 
 缺父窗口不再发布孤立结果，也不在历史回补时产生 canonical / live 双份内容。源端事实仍可前进，用户已读内容和分页边界保持连续；完整状态到齐后一次完成交接。
 
-若源端迟迟不提供可接续父链或完整 checkpoint，客户端会继续显示保留内容及核对状态；该恢复依赖仍存在。已知全量失败和未执行门禁继续登记在 [UI 回归证据](../../.artifacts/ui-regression/20261101-pi-tool-continuity/summary.md)，不得把本次提交描述为完整双端验收。
+若源端迟迟不提供可接续父链或完整 checkpoint，客户端会继续显示保留内容及核对状态；该恢复依赖仍存在。已知全量失败和未执行门禁继续登记在 [UI 回归证据](../../.artifacts/ui-regression/20261101-pi-tool-continuity/summary.md)，完整双端验收仍待完成。

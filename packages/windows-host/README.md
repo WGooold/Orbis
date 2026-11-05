@@ -56,7 +56,7 @@ The same Qt sources are packaged by `.github/workflows/macos-host-build.yml`, tr
 
 The `.app` includes Qt, Node, npm and the runtime dependency closure in `Contents/Resources/runtime`. Activation credentials use the native macOS Keychain; the local activation file contains only an opaque reference. Login startup uses a per-user LaunchAgent. Pi and Codex terminal shortcuts open Terminal, which may request macOS automation permission. The Windows Codex PATH shim and Codex Desktop wrapper integration are not available on macOS in this preview.
 
-Starting or resuming Pi from a phone also opens its interactive interface in Terminal. A requested terminal window must open successfully; a failed launch reports an activation error instead of starting a headless RPC session. Explicit headless mode remains available to integrations that request it.
+Starting or resuming Pi from a phone also opens its interactive interface in Terminal. A TUI activation succeeds after its terminal opens; launch failure reports an activation error. Explicit headless mode remains available to integrations that request it.
 
 These previews are ad-hoc signed, without Developer ID signing or Apple notarization. Native execution and clean-machine installation still need validation on Macs. Updates open the verified DMG; quit Host and drag the replacement app into Applications to install. A build uploads CI artifacts only: it does not create a Release, upload website downloads or deploy the Relay. Publishing the two DMGs and their checksum files to the website remains a separate authorized operation.
 
@@ -74,7 +74,7 @@ Codes expire after 10 minutes, can be used once, allow five verification attempt
 
 The Relay console's Service page defaults to requiring QQ verification. Turning it off allows new Hosts to activate without mail, while preserving one-Host credential scope and source rate limits. Turning it back on affects only new activations; existing Host credentials remain valid. Windows 0.1.1 reads the current policy before showing the activation controls.
 
-Configure server-side SMTP through environment variables, never through the Windows client:
+Configure SMTP through the Relay server environment:
 
 ```dotenv
 ORBIS_SMTP_HOST=smtp.example.com

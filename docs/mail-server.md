@@ -14,23 +14,19 @@ ORBIS_SMTP_PASSWORD=replace-with-a-unique-random-password
 ORBIS_SMTP_FROM=Orbis <noreply@example.com>
 ```
 
-Port 465 uses implicit TLS. Other ports require STARTTLS. The configured hostname must match a valid certificate; certificate verification must remain enabled. Docker environment files take the sender value literally, so do not add shell quotes around it. Check connectivity and SMTP authentication **from the Relay container**, not only from the server shell.
+Use authenticated SMTP with a valid certificate and matching hostname, and verify connectivity from the Relay container. Port 465 uses implicit TLS; other ports use STARTTLS. Docker environment files take the sender value literally, including any quote characters.
 
-Run the repository's **Relay deploy** GitHub Actions workflow after changing the environment. The existing container retains its previous environment until replaced. The workflow skips an already deployed commit; use a new reviewed commit when applying a configuration change. Do not restart or replace the application manually as a deployment shortcut.
+Apply SMTP environment changes through the repository’s **Relay deploy** workflow using a new reviewed commit. Replacing the container loads the new environment.
 
-`GET /v1/registration/status` reports `mailConfigured`, `qqEmailVerificationRequired`, and `enabled`. Configuration presence does not establish successful delivery: request a code through `POST /v1/registration/code` with an operator-authorized QQ recipient and a test Host ID, inspect SMTP delivery logs, and confirm actual receipt. Do not activate a test Host or log/return its code merely to test email transport.
+`GET /v1/registration/status` reports `mailConfigured`, `qqEmailVerificationRequired` and `enabled`. Verify delivery through `POST /v1/registration/code` using an authorized QQ recipient and a test Host ID, keeping the code private and confirming mailbox receipt.
 
 ## Self-hosted sending service
 
 A lightweight setup uses Postfix for transport and queues, Dovecot **only for SMTP authentication**, and OpenDKIM for signing. It does not need webmail, IMAP, POP3, or user mailbox login services.
 
-- Listen on TCP 465 for authenticated TLS submission. Enforce sender ownership so the Orbis account can send only as `noreply@your-domain`.
-- Listen on TCP 25 for delivery-status messages and the `postmaster`/`abuse` role addresses. Store these locally in a restricted administrative mailbox; this does not create a personal inbox service. Reject nonexistent recipients during SMTP and never accept unauthenticated relay to external domains.
-- Dovecot authenticates against a dedicated password file containing a salted password hash. Disable OS/PAM login and all mailbox protocols. Provide its auth socket only to Postfix.
-- OpenDKIM signs the authorized sender using a 2048-bit private key readable only by its service account. Sign authenticated application submissions, never untrusted incoming mail claiming your domain. Keep its milter socket on loopback and defer mail if signing is unavailable.
-- Use the mail hostname's valid TLS certificate and reload Postfix from the certificate renewal deploy hook. Keep the ACME challenge route and renewal timer operational.
-- Configure message size, submission rate, recipient and queue lifetime limits. If Fail2ban monitors Postfix, verify its filter sees the actual log source: Ubuntu's `postfix@-.service` journal unit may differ from the filter's default `postfix.service`. Watching `/var/log/mail.log` is an alternative when rsyslog writes that file.
-- Restrict private files and backups. Monitor `postqueue -p`, delivery failures, certificate expiry, and storage used by local delivery-status messages. Do not commit mailbox contents, logs containing recipient data, SMTP passwords, DKIM private keys, or environment files.
+Use authenticated TLS submission on TCP 465, recipient-validated delivery-status reception on TCP 25, and dedicated Dovecot authentication through a private Postfix socket. OpenDKIM signs authenticated application submissions using a restricted 2048-bit key and loopback milter.
+
+Keep certificate renewal, bounded queues, private backups and delivery monitoring operational. Sender ownership and service-account access define the mail boundary. If Fail2ban uses journald, match the actual Postfix unit; Ubuntu may use `postfix@-.service`.
 
 ### DNS and network
 
@@ -45,7 +41,7 @@ For a dedicated sender on `203.0.113.10`, replace the example addresses and publ
 | TXT | `selector._domainkey` | The generated DKIM **public** key |
 | TXT | `_dmarc` | `v=DMARC1; p=none; adkim=s; aspf=s` |
 
-The MX accepts delivery-status messages for the application sender; it does not imply a user-facing inbox. Keep only one SPF policy per name, merging other authorized senders if the domain already sends through another provider. Start DMARC with `p=none` during validation; tighten policy after checking the actual messages and accounting for every legitimate sender. Do not configure a reporting address unless it exists and is monitored.
+The MX handles application delivery-status messages. Maintain one SPF policy per name and validate DMARC with `p=none` before tightening it. Reporting addresses belong to monitored mailboxes.
 
 Cloudflare's ordinary HTTP proxy does not transport SMTP. The mail A record must be DNS only; the website's records may remain proxied. Publishing this A record exposes the mail server IP. If mail shares the website origin, that origin is consequently public too.
 
@@ -53,11 +49,7 @@ Ask the IP provider to set **PTR/rDNS** to `mail.example.com`. Confirm both forw
 
 ### Verify before enabling registration
 
-1. Resolve A, MX, SPF, DKIM, and DMARC through authoritative and public resolvers. Confirm `opendkim-testkey -d YOUR_DOMAIN -s YOUR_SELECTOR -vvv` succeeds. Its `key not secure` diagnostic refers to DNSSEC and is separate from `key OK`.
-2. Validate the TLS chain and hostname on 465, successful authentication, and rejection of anonymous submission, external relay, unknown local recipients, and authenticated sender spoofing.
-3. Deliver a message locally and verify its DKIM signature. Verify an unauthenticated incoming message is not signed as your domain.
-4. Send to an explicitly authorized QQ recipient. An SMTP `250` response means the receiving server accepted the message; confirm actual mailbox receipt separately, including spam placement.
-5. Deploy the SMTP environment through GitHub Actions, confirm the deployed commit and public health, then request a real code through the registration endpoint. Keep the QQ verification policy unchanged.
+Verify public DNS, DKIM, authenticated TLS, sender ownership and recipient handling before enabling registration. `opendkim-testkey -d YOUR_DOMAIN -s YOUR_SELECTOR -vvv` checks the published key; its DNSSEC diagnostic and key validity are separate results. Confirm actual receipt at an authorized QQ mailbox, then verify the deployed environment and registration path while preserving the operator’s policy.
 
 ## Production Resend SMTP
 
@@ -71,6 +63,6 @@ ORBIS_SMTP_PASSWORD=domain-scoped-sending-only-resend-api-key
 ORBIS_SMTP_FROM=Orbis <noreply@orbising.com>
 ```
 
-Verify `orbising.com` in Resend and publish the DNS records provided for that domain. Keep existing DNS records unless a specific record conflicts; do not point the website or the existing `mail` A record at Resend. Resend manages the outbound IP and its reverse DNS. The self-hosted checks above apply only when using the local mail transport.
+Verify `orbising.com` in Resend and publish its supplied sending records alongside the existing website and mail records. Resend manages outbound IP and reverse DNS; the self-hosted checks apply to local mail transport.
 
 Use a sending-only API key restricted to `orbising.com` as the SMTP password. Keep setup credentials, sending keys and private configuration backups outside the repository with mode `600`. Confirm TLS and SMTP authentication from the Relay container, apply the environment through the Relay deploy workflow at a new commit, and verify `mailConfigured` after deployment. Preserve the operator's QQ verification policy and test delivery only to an explicitly authorized recipient.

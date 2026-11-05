@@ -6,7 +6,7 @@
 
 当前最明确的偏差，是用上游 quic-go 默认 Reno 的三流替换，期待复现 Hysteria 的弱网表现；此前虽记录了 Reno 的差异，却没有把拥塞算法对照和分层诊断作为公网测速的前置条件。另一个确定的问题在性能诊断：仅有业务整块吞吐和控制 RTT，没有底层连续字节基线、拥塞 / 流控证据，不能判定 0.14–0.28 Mbit/s 的根因。
 
-Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本线路低吞吐的唯一或主要原因**。三条可靠流、保留原 E2E / 应用回执、复用业务的方向有依据；不应在没有分层证据时重写业务、去掉 E2E、改为不可靠 DATAGRAM，或把全部帧改成独立 stream。
+Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本线路低吞吐的唯一或主要原因**。三条可靠流、保留原 E2E / 应用回执和复用业务的方向有依据；后续优化按分层证据选择。
 
 ## 1. 查了哪些项目
 
@@ -32,7 +32,7 @@ Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本�
 
 当前 [go.mod](../../native/relayquic/go.mod) 固定上游 quic-go v0.65.0。源码 `internal/ackhandler/sent_packet_handler.go` 明确以 `NewCubicSender(..., true /* use Reno */)` 初始化；本机依赖文件与该官方标签原文 SHA-256 一致，见 `quic-go-match.json`。类名有 Cubic 不表示实际启用了 Cubic。
 
-[quic-go 官方文档](https://quic-go.net/docs/quic/congestion-control/)说明默认 NewReno、没有公开的运行时控制器配置。Hysteria / sing-quic 的 `SetCongestionControl` 来自各自分支，不能向我们现在的 `quic.Config` 随意加一项 `bbr`。如果后续对照证明值得采用，须单列库分支、许可、升级与跨平台维护成本。
+[quic-go 官方文档](https://quic-go.net/docs/quic/congestion-control/)说明默认 NewReno、没有公开的运行时控制器配置。Hysteria / sing-quic 的 `SetCongestionControl` 来自各自分支，不能向我们现在的 `quic.Config` 随意加一项 `bbr`。控制器选型综合性能证据与长期维护成本。
 
 [三流优先级](../../native/relayquic/multistream.go)只选择哪个待发 stream 先使用连接发送额度，不扩大拥塞窗口、不保证带宽。ctl 优先改善已观察到的交互可用性，bulk 不因此获得 Hysteria 式的发送行为。Apple 使用 Network.framework，拥塞控制不是我们这份 Go 配置可统一控制的，Go 参考端结果不能直接外推到 iOS。
 
@@ -42,7 +42,7 @@ Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本�
 
 [OutboundChannelMux](../../packages/protocol/src/outbound-mux.ts)仍以合计 `backlog` 配合 64 KiB 水位 / 1 ms 复查决定何时继续提交 msg / bulk；[NativeQuicSocket](../../packages/host/src/relay-socket.ts)将三 lane 的待写量相加，helper 的 writer 完成回执后减账。这样会在数据交给 QUIC 之前继续受应用准入影响，并没有完全委托给独立流调度。
 
-这不是“必须删除旧 mux”的证据：它仍保护已封帧队列与 WS 分支，必须保留有界内存和 FIFO。需要采集每 lane 待写量、writer 耗时和 `notifyDrained` 机会，验证 QUIC 是否因供给不足而空转，再考虑在 adapter 边界提供逐 lane 可写 / 已消化通知。不得直接提高所有水位或取消护栏。
+旧 mux 仍承担已封帧队列与 WS 分支的有界内存和 FIFO 职责。adapter 调整依据逐 lane 的待写量、writer 耗时与 `notifyDrained` 观测，保持现有资源边界。
 
 **64 KiB 本地待写水位不等于 64 KiB 网络拥塞窗口。** 回执在本地 Write 完成时释放，QUIC 内部还可有发送中 / 在途数据；不能简单用 `64 KiB / RTT` 断言其吞吐上限。旧注释中的 `水位 / 轮询周期` 也只是特定定时供给模式下的估算，不是当前整链路硬上界。
 
@@ -52,7 +52,7 @@ Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本�
 
 这些成本值得 profile，但原 WS 和用户通过 Hysteria 转发的 Orbis 也保留原 E2E / JSON。它们不能单独解释“原生 QUIC 未复现 Hysteria”或数百倍速度差，当前资源采样也不足以证明 JSON CPU 饱和。删除业务加密、直接上新二进制协议不属于已证明必要的修复。
 
-### 2.4 流控窗口与 UDP 缓冲：需观测，不盲目调参
+### 2.4 流控窗口与 UDP 缓冲的观测依据
 
 当前 v2 每流接收窗口初始 256 KiB / 最大 4 MiB，连接初始 1 MiB / 最大 12 MiB；[配置入口](../../native/relayquic/multistream.go)。小于 Hysteria 的初始值，但 quic-go 会自动调整窗口。
 
@@ -74,13 +74,10 @@ Reno 与 Hysteria / TUIC 的差异已经查实，但**尚未证明 Reno 是本�
 
 ## 4. 接下来的诊断顺序和判据
 
-| 顺序 | 对照 | 如何据此决定改哪里 |
-| --- | --- | --- |
-| 1 | 固定同服务器、同路线与测试端：原始 TLS 与原始 QUIC 连续读写，逐秒字节计数；记录实际单段 RTT、丢包 / cwnd / flow control。独立双向，业务校验与线路字节分开。 | 原始 QUIC 也慢且持续 congestion-limited，再优先查路径和控制器；不要先改业务 mux。 |
-| 2 | 在同一环境对比原始 QUIC、现有长连接帧 adapter、完整 E2E / 原业务负载，记录每层字节 / 排队 / CPU。保留原上传单块和下载窗口作为业务列，另设连续供给诊断列。 | 原始快而 adapter 慢，修本机桥接、逐 lane 背压和供给；adapter 快而业务慢，查业务窗口 / 落盘 / 消费。 |
-| 3 | 仅在相同传输夹具中对比默认 Reno 与可维护的 BBR 实现；有明确带宽参数时再评估 Brutal。包含丢包、低带宽和控制长尾，不能只测峰值。 | 同条件有稳定收益且资源 / 原功能回归通过，才提出控制器实现决策。公开 API 不支持的部分不能写成已实现配置。 |
-| 4 | 同物理手机和同服务器：WSS、通过该 Hysteria 服务的 WSS、原生 QUIC；记录两段承载和代理路径。 | 这是判断是否复现用户改善的最终现场证据；Mac / Go 参考端和协议基线不能替代。 |
+诊断采用同条件的分层测量，按实际瓶颈选择优化，并以真实手机路径验证收益。
 
-可直接使用固定 quic-go 的 `Conn.ConnectionStats()` 获取 RTT、拥塞窗口和收发 / 丢失统计，并用 [qlog](https://quic-go.net/docs/quic/qlog/)补充 recovery / 流控事件；不能只设置 `QLOGDIR` 却没有给 `quic.Config.Tracer` 接线。诊断接入隔离夹具，限量保存，不采集生产凭据。
+先建立原始 TLS / QUIC 连续字节基线，再对照 adapter 与完整业务负载；控制器对照和手机 Hysteria 路径分别取得证据。每层记录吞吐、排队与资源表现，保留原始失败及未完成验收状态。
 
-本轮没有改变默认 WS、三流设计、加密格式、回执、applied、文件恢复和未知操作处理，也没有新增 UI / feature / 验收通过项。原完整回归与真实手机 / 长期压力门禁保持原状态。
+固定 quic-go 的 `Conn.ConnectionStats()` 提供 RTT、拥塞窗口及收发 / 丢失统计；[qlog](https://quic-go.net/docs/quic/qlog/)通过 `quic.Config.Tracer` 接入。诊断使用隔离夹具并限量保存元数据。
+
+本轮为源码与测量复核，默认 WS、三流设计及业务契约保持原状；完整设备、真实手机与长期压力门禁仍待验收。

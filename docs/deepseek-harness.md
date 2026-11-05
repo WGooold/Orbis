@@ -4,7 +4,7 @@ Orbis 的 `dsh` 后端默认接入官方 Web 会话：Host 连接本机 `dsh web
 
 ## 已验证版本与资料
 
-2026-09-24 在 Windows Node.js 22.23.2 上验证了 `@deepseek-ai/dsh@0.1.7-rc.1`。查询时 npm 的 `next` 指向这个版本，`latest` 仍为 `0.1.5-rc.3`；不要用无版本的重装命令把已有安装降级。DSH 要求 Node.js 22.19+ 或受支持的更高版本。
+2026-09-24 在 Windows Node.js 22.23.2 上验证了 `@deepseek-ai/dsh@0.1.7-rc.1`。查询时 npm 的 `next` 指向这个版本，`latest` 仍为 `0.1.5-rc.3`；重装采用已核对的明确版本。DSH 要求 Node.js 22.19+ 或受支持的更高版本。
 
 本次适配对照官方 GitHub tag `dsh-v0.1.7-rc.1`（`46a7f68b0922371ce7144b668b90e377d8e799f4`）：
 
@@ -41,13 +41,13 @@ node packages/host/dist/cli.js host --dsh
 node packages/host/dist/cli.js host --codex --dsh
 ```
 
-保持原有 Host 配对、Relay 与凭据配置。桌面与 CLI Host 不要同时占用同一个 Host 身份。开发配对脚本也接受 `node scripts/host-pair.mjs --dsh`。
+保持原有 Host 配对、Relay 与凭据配置。每个 Host 身份由一个实例独占。开发配对脚本也接受 `node scripts/host-pair.mjs --dsh`。
 
 Orbis 自动查找 npm 安装的 `@deepseek-ai/dsh/lib/bin.js`，使用 Windows Node 直接运行，不通过 shell 拼接手机参数。自动检测失败时，在桌面设置中填写该 JavaScript 入口的绝对路径，或为 CLI 设置 `ORBIS_DSH_ENTRY`。
 
 ## 本机模型配置
 
-DSH 的模型凭据仍由本机 dsh 管理。可以使用已有凭据配置或 Host 进程继承的 `DEEPSEEK_API_KEY`；不需要把 API key 填到 Android，也不要写入 Orbis 仓库。
+DSH 的模型凭据仍由本机 dsh 管理。可以使用已有凭据配置或 Host 进程继承的 `DEEPSEEK_API_KEY`；凭据保存在本机配置或私有环境中。
 
 Harness home 默认是 `~/.dsh`，可用 `DSH_HOME` 覆盖。Orbis 默认连接 `web` profile；已有 Web 服务可在桌面设置中填写完整的 loopback 启动链接（含 `?token=`），否则 Host 会按 descriptor 复用或启动自己的 Web 服务。home 级 `$DSH_HOME/cordis.patch.yml` 会在 profile 后应用；同一行的 `config` 是整体替换，不是字段深合并。供应商切换等待 DSH 原生热更新加载补丁，并通过本机 credentials API 更新凭据。正在运行任务或等待审批时先结束任务；原生只读环境变量覆盖凭据时会拒绝切换并回滚，需自行调整 Web 启动环境。
 

@@ -2,15 +2,15 @@
 
 LAN / Relay routing follows [ADR-0050](0050-fixed-lan-relay-routing.md).
 
-Status: accepted - requested on 2026-09-22.
+Status: accepted (2026-09-22).
 
 The Relay serves the Orbis product website and an operator console from its existing HTTP listener. Production publishes them below the existing `/relay/` reverse-proxy prefix, so every browser URL and API call is relative to the served document. Static files use an explicit allowlist and a restrictive Content Security Policy. The public site reports live registration availability and only advertises download artifacts that have both an allowed filename and a valid SHA-256 sidecar.
 
-The operator console is a Relay administration surface. It reports Relay health, registered and currently visible Hosts, device credentials, connection counts, and bounded audit events. It can disable a Host on Relay transport or revoke a device's Relay credential. These operations close matching Relay WebSockets and persist their result. They do not remove Host-side pairing trust or control LAN paths, and the Relay still cannot decrypt conversation or file payloads.
+The operator console is a Relay administration surface. It reports Relay health, registered and currently visible Hosts, device credentials, connection counts, and bounded audit events. It can disable a Host on Relay transport or revoke a device's Relay credential. These operations close matching Relay WebSockets and persist their result. Host pairing owns trust across transports; conversation and file payloads use E2E.
 
-`ORBIS_ADMIN_TOKEN` remains the long-lived server secret and is never placed in browser storage. A successful same-origin login exchanges it for a random, HttpOnly, SameSite Strict cookie and a CSRF token; sessions expire after eight hours. Login attempts are rate limited, mutations require the session, matching origin, and CSRF token, and the operator state is stored separately from device credentials. The existing bearer-token CLI administration API remains available as an independent operator path.
+`ORBIS_ADMIN_TOKEN` remains a server-side secret. A successful same-origin login exchanges it for a random, HttpOnly, SameSite Strict cookie and a CSRF token; sessions expire after eight hours. Login attempts are rate limited, mutations require the session, matching origin, and CSRF token, and the operator state is stored separately from device credentials. The existing bearer-token CLI administration API remains available as an independent operator path.
 
-This does not introduce the browser management server excluded by ADR-0014. That exclusion concerns a local server in the Windows Host. The console is hosted by the public Relay and manages only information and authority already owned by that Relay.
+The public Relay hosts the console, whose authority is limited to Relay-owned state.
 
 ## 2026-11-05: per-device bandwidth (X11)
 
@@ -22,12 +22,12 @@ Windows downloads remain release artifacts rather than source-tree files. The au
 
 ## 2026-11-03: cinematic public homepage (r39, verification in progress)
 
-The user requested replacing the previous marketing statements with the visual language and demonstrations from `../video/claude` (reference commit `0803434`).
+The public homepage uses the visual language and demonstrations from `../video/claude` (reference commit `0803434`).
 
 [根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。
 
 ## 2026-11-03: source-faithful interaction revision (r41, verification in progress)
 
-Following the user's review, feature explanations and side captions are removed.
+The public homepage presents feature names and demonstrations directly.
 
 [根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

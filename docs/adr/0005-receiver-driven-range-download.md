@@ -20,14 +20,14 @@
 
 ## Decision
 
-手机请求型下载改为**接收方驱动的范围请求（pull-range）+ 流水线**：
+下载采用接收方驱动的范围请求与流水线，完成判定由接收方负责；协议演进遵循 [ADR-0064](0064-protocol-compatibility.md)。
 
-- **单一数据面**：下载使用范围请求，不保留旧 stream + ACK 路径；协议演进遵循 [ADR-0064](0064-protocol-compatibility.md)。
-- **协议**：设备发 `artifact.read { transferId, requestId, offset, length }`（长度 ≤ 1 chunk），Host 只按范围读盘回一个既有格式的分片帧；读不了回 `artifact.read.failed`。设备完成并校验 sha256 后发 `artifact.done`，Host 据此释放上下文。取消复用既有 `artifact.cancel` 命令。**pull 路径上没有 `artifact.ack`，Host 也不发 `artifact.finished`**——完成判定在接收方。
-- **发送方无状态**：Host 侧每条传输只保留 `{deviceId, artifact, path, cancelled}`，没有窗口、没有 ack、没有重试计数；同一 `read` 幂等重读重发。
-- **接收方调度**（`PullScheduler`）：进度唯一权威是 `durableOffset`（`.part` 连续前缀）；`highestIssued - durableOffset ≤ window` 恒成立；超时**只重请求丢失的那一个 chunk**；窗口用 AIMD 调整并由实测 BDP 定增长上限；有交互流量在途时把窗口压到 1 chunk（交互让路）。
-- **回程路径固定**：一次 `read` 的响应在收到该请求的那条路径上发完，跨路径不拆开一次响应。
-- Relay 不托管文件或主动推送，安全边界见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
+- 设备以 `artifact.read { transferId, requestId, offset, length }` 请求一块数据；Host 读盘响应，失败返回 `artifact.read.failed`。
+- 设备完成摘要校验后发送 `artifact.done`，取消使用 `artifact.cancel`；Host 据此释放传输上下文。
+- Host 保存设备、文件和取消状态，并支持幂等范围读取；接收方以持久前缀管理窗口、超时重读与交互让路。
+- 单次响应沿请求的入站路径完成。Relay 的加密路由边界见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
+
+`PullScheduler` 的窗口满足 `highestIssued - durableOffset ≤ window`，采用 AIMD 和实测 BDP 调整；存在交互流量时使用单块窗口。
 
 ## Consequences
 

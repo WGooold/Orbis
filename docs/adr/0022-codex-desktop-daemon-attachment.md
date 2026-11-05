@@ -28,16 +28,7 @@ labelled App-created terminal threads as Desktop. The terminal spawn boundary
 clears this override; the Desktop wrapper and GUI keep their own environment.
 The isolated native reproduction is recorded with R56.
 
-2026-11-02 ownership clarification: a rollout's historical `originator` (including
-`Codex Desktop`) or `source=vscode` does not prove its current backend ownership.
-App terminal selection, observed native attachment and the current writer are
-separate facts. Do not automatically migrate an App `codex` activation to
-`codexDesktop` from those historical fields. A thread loaded in the independent
-terminal app-server can legitimately produce the Desktop message that it is open
-in another application. Its missing terminal window is a launcher / lifecycle
-defect covered by [ADR-0021](0021-codex-terminal-host-attachment.md), not sufficient
-evidence to reassign a live thread. No automatic takeover, lock deletion or
-interruption of running user work is introduced.
+2026-11-02 ownership clarification: historical rollout metadata describes creation context. App selection, observed native attachment and the current writer determine present ownership. A thread loaded in the terminal app-server can legitimately produce the Desktop warning that it is open in another application. Missing terminal windows are handled by the launcher / lifecycle repair in [ADR-0021](0021-codex-terminal-host-attachment.md); existing running work retains its ownership.
 
 Desktop integration requires a compatible installed Codex CLI and a running, reachable desktop daemon. If the desktop connection fails, desktop sessions are unavailable while terminal sessions continue independently. If the connection drops after startup, Host reports attached desktop Sessions offline and re-attaches on its next poll once the desktop side answers again; no Host restart is needed. Host owns no desktop process and cannot repair or restart it. The polling interval adds small metadata traffic even while no desktop thread is active. The same watch publishes one attach state — `unsupported`, `notInstalled`, `closed`, `attached` or `error` — with a user-facing reason on `device.ready`, so the Windows Host diagnostics page and the phone connection status page can say why desktop sessions are or are not available instead of only showing them missing. A failed attach is a reported state, not a silent one.
 
@@ -53,7 +44,7 @@ The entry is the user-level environment variable `CODEX_CLI_PATH`, which the des
 
 Rejected alternative: replacing the CLI the desktop application provisions into `%LOCALAPPDATA%\OpenAI\Codex\bin\<key>\codex.exe`. Those keyed directories are cache keys rather than content hashes (the directory name is not the hash of the file inside), so such a replacement is not integrity-checked — but the application provisions a fresh keyed copy when its own version or paths change, so a replaced binary silently stops being used and the attach breaks again after every desktop update. It would also require keeping the displaced real CLI aside, since the wrapper's own lookup must not find itself.
 
-Orbis stages `codex-launcher.exe` and the pinned `node.exe` outside its own install directory (`%LOCALAPPDATA%\Orbis\wrapper`) and points the desktop application at that copy. Both stay resident for the whole desktop session, so living inside the runtime would lock files that a Host update has to replace. The wrapper's JavaScript stays in the install directory: it is read once at startup and never held open, so it can be replaced at any time. A generated stub at the staged script location forwards to that implementation, which keeps the launcher's self-relative lookup working for a launch Orbis did not perform. Staging is idempotent and the stub must never point inside the staged tree: a self-referential stub kills the wrapper process, and a desktop application that cannot reach its own app-server falls back to an in-memory one and reports that it cannot load organization settings safely — a failure that looks like a network or policy problem rather than a wrapper problem.
+Orbis stages `codex-launcher.exe` and the pinned `node.exe` outside its own install directory (`%LOCALAPPDATA%\Orbis\wrapper`) and points the desktop application at that copy. Both stay resident for the whole desktop session, so living inside the runtime would lock files that a Host update has to replace. The wrapper's JavaScript stays in the install directory: it is read once at startup and never held open, so it can be replaced at any time. A generated stub at the staged script location forwards to that implementation, which keeps the launcher's self-relative lookup working for a launch Orbis did not perform. Staging is idempotent and the stub points to the implementation in the install directory: a self-referential stub kills the wrapper process, and a desktop application that cannot reach its own app-server falls back to an in-memory one and reports that it cannot load organization settings safely — a failure that looks like a network or policy problem rather than a wrapper problem.
 
 ### Revision 2026-10-08: launch the registered desktop application
 

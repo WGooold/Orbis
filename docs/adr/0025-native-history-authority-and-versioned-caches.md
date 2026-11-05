@@ -20,29 +20,15 @@ Status: accepted
 
 ### 1. 原生历史决定事实，旧缓存只用于发现失效
 
-Codex 原生保留历史是当前历史的权威。adapter 从完整原生 turns 的顺序、item ID 和内容确定性生成 Entries；旧 parent/order 不参与生成。通过协调代次、通知缓冲及多页一致性核验的重建结果可以修正旧表示，旧缓存不能否决它。
-
-旧图比较只判断缓存代次是否失效：共享 Entry 变化、顺序修正或旧尾部删除时建立新 epoch，先发布 unknown 边界，再发布 ready 状态。纯追加保持 epoch，推进 seq。已进入新 epoch 的 revert 不重复建立代次。实时通知重复 ID 却内容不同时触发原生重读，不猜测覆盖，也不留下永久 conflict。
-
-原生读取失败、不完整或过期时不发布 ready；非法重复节点等结构错误仍失败。full turns hydrate、确定性时间占位、工具规范化及旧格式 fallback 边界继续有效。原生无法恢复的 live 内容仍按 ADR-0024 声明不完整。
+原生历史决定当前事实，adapter 确定性映射经过来源核对的完整历史。缓存差异通过 epoch 隔离，纯追加通过 seq 推进；来源与结构验证决定 ready 状态。
 
 ### 2. APP 信任 Host 的已验证状态，版本决定写入资格
 
-复用 `source.epoch/seq/ready`，不增加另一套历史 revision。APP 写 SQLite 前执行与 reducer 相同的检查：连接、设备、Runtime、Session、请求、范围、分支代次、retired epoch 和 checkpoint 完整性。
+APP 按归属、范围、结构和 source 版本接受 Host 状态；完整恢复基线激活缓存 epoch，行版本裁决迟到页面。内存与 SQLite 共享校验，并在同一事务更新历史、timing、cursor、coverage 与代次。
 
-不同 epoch 的 ready patch 不能激活缓存；unknown 只隔离旧画面并请求 checkpoint。经恢复握手接受的完整 ready preview 才能激活新缓存 epoch。在一笔事务中清除该 Session 的旧 Entries、timing、cursor 与 coverage，再写本次有界页；空历史也提交 epoch 和空缓存。既有迁移诊断记录、配对数据和其他 Session 不受影响。
+### 3. 范围与事务提交
 
-同 epoch 的有效权威结果可以更新同 ID 的 parent/type/timestamp/data。每个 Entry 和 timing 保存已接受 seq；迟到页可以补缺失节点，却不能覆盖较新版本的节点。内存和 SQLite 使用相同规则。未来 patch 先有界缓冲，连续版本或 checkpoint 恢复后一起入库，不提前改变当前缓存。
-
-这里信任的是通过归属、版本、范围和结构验证的 Host 结果，不采用“最后到达者获胜”。
-
-### 3. 覆盖范围与提交必须明确
-
-所有版本化页面携带 source；只有 preview 带当前 head/live checkpoint。history/catchup 只能补当前已接受 epoch 的缓存，不能切换 epoch、head 或运行态。页外缺席不表示删除。
-
-完整原生重建通过新 epoch 使旧范围失效；一个 30 条 preview 仍只是有界范围，祖先按需重新加载。禁止自环、可证明的 parent 循环、同一 packet 内不同内容的重复 ID。parent 修正时，已有 verified depth 和连续覆盖在同一事务失效并重新推导。
-
-Entry、版本、timing、cursor、coverage 和 epoch 激活在一笔 SQLite 事务提交。失败整批回滚，不能出现新 epoch 配旧图；提交后才发布投影。重启读取持久化的缓存代次和行版本，不靠进程内 seq 推断磁盘归属。
+每页声明 source 与实际范围，preview 提供当前 head / live checkpoint，history / catchup 补充已接受代次的缓存。原生重建按代次使旧范围失效，完整事务提交后发布投影。
 
 ## Consequences
 

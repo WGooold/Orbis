@@ -8,7 +8,7 @@ Status: accepted
 
 2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 明确本文"范围预算/背压"被拒时的设备语义：拒绝是重试信号，不是终态失败；Host 的准入参数不动。
 
-2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的 `unchanged`/`state`/`delta` 选择补上提交语义：只有设备确认 applied 才视为 committed；ack 丢失后重试必须得到 `unchanged`，不得重复内容或回退视图。本文的范围预算与条件响应选择继续有效。
+2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 为本文的 `unchanged`/`state`/`delta` 选择补上提交语义：设备确认 applied 后记为 committed，ack 丢失后的重试返回 `unchanged`。本文的范围预算与条件响应选择继续有效。
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0064](0064-protocol-compatibility.md)。
 
@@ -22,42 +22,19 @@ Status: accepted
 
 ### 1. APP 报告已应用事实，源端决定内容
 
-保留 `session.sync` 三个范围。preview 可携带 `knownState={epoch, seq, head}`，表示 APP 已在当前 Session 成功持久化相关 Entries，并完整应用该版本的 head/live。它不是 metadata 宣告的版本、收到的最高 seq，也不是整条历史覆盖证明。
-
-只有 source ready、完整显示基线存在、没有待恢复缺口且历史 head 在当前 epoch 的缓存中时，APP 才发送 knownState。首次加载、进程重启尚未建立 live 基线、unknown、缓冲缺口、缓存缺失和显式重试均不提供该事实。逻辑任务创建时固定 knownState；重试不能改参数。
-
-已经拥有可用 applied 基线时，周期核对直接请求源端，不重复读取、解密本地同一 tail；首次显示与缺口恢复仍使用现有本地优先加载。
-
-`maxEntries=30` 继续作为页面预算，不能再当作每次必须下载的内容量。通用 Host 负责路由、关联及背压，Agent backend 使用共享选择算法确定实际范围，不新增 Host 聊天数据库。
+APP 以固定的 knownState 报告当前 Session 已持久化、已完整应用的基线；backend 根据来源核对与页面预算选择响应，Host 管理统一模型与背压。首次显示和缺口恢复沿用本地缓存及完整恢复路径。
 
 ### 2. preview 的四种明确响应
 
-响应携带 `selection`，源端按以下规则选择：
-
-- `unchanged`：同 epoch、同 seq、同 head，并且源端 checkpoint ready 且 head/live inventory 完整。只传版本和检查点，不传 Entries、timing 或 live 正文。它只能确认已有基线，不能建立新基线或修复缺口。
-- `state`：同 epoch 的已应用 head 未变化，但 seq 增长。返回完整当前 checkpoint/live，不传旧历史。
-- `delta`：同 epoch、seq 增长，已应用 head 是当前分支的祖先，缺失的连续后缀能装入一个页面。只返回该后缀及完整当前 checkpoint/live；`mode=append`。
-- `snapshot`：没有可信已应用基线、epoch 变化、head 不在当前分支、源端未就绪/不完整，或者缺失后缀超过页面预算。返回有界最新 tail 与明确完整性的 checkpoint，沿用既有恢复及缺口分页机制。
-
-缺失后缀超预算时不假报 delta 已完整补齐；恢复快照先显示最新有界范围，缺失祖先继续由现有 history/catchup 固定边界分页补齐。所有响应继续遵守 Entry 数、256 KiB 正常预算及 1 MiB 单 Entry 硬限制。history/catchup 仍只补历史缓存，不移动 head/live。
-
-同 epoch 的历史演进必须是纯追加；已提交节点的正文、parent 或顺序修正遵守 ADR-0025，切换 epoch。否则“head 不变时只传 live”的判断无法恢复被修正的旧节点。
-
-源端不能证明完整当前状态时，不得返回 unchanged/state/delta。Pi、DSH 已接入 source checkpoint（接入与晚接入完整性边界见 ADR-0024），与 Codex 复用共享选择器。Pi 运行中 reload、DSH 未覆盖当前 turn 的有界 tail、来源断开或原生读取失败时仍返回明确 snapshot / unknown；不能以 head 相同伪造版本一致。
+preview 按可信基线选择 unchanged、state、delta 或 snapshot：分别确认现有版本、更新 checkpoint、补连续后缀或恢复有界基线。来源完整性和已接受代次决定资格，历史范围按页补齐；原生修正通过新 epoch 收敛。
 
 ### 3. 原生核对、事务和迟到响应保持有效
 
-Codex preview 仍在规定间隔核对原生历史/运行态，然后才选择响应；不能因为客户端报告相同版本就跳过原生核对，导致桌面 revert 永久不可见。
-
-state/delta/snapshot 仍共用持久化入口：归属、范围、source、epoch 和结构校验成功，SQLite 事务提交后，才能发布完整状态。delta 不得让未接受 epoch 的节点越过握手边界。
-
-unchanged 必须匹配请求固定的 knownState，且当前 APP 仍在同 epoch、ready、已应用至少该版本。它只完成对应任务，不写库、不重投影、不改变滚动位置或旧历史边界。期间到达的更新 patch 保留；期间出现的版本缺口、unknown 或 epoch 切换继续恢复，不能被旧 unchanged 清除。
-
-APP 显式重试强制完整恢复；普通周期核对允许条件响应。断线后如同一进程仍保有完整已应用基线，可以条件核对；源端重启产生新 epoch 时自动走 snapshot。响应丢失仍使用现有稳定任务 ID 和有界退避重试。
+条件响应建立在原生核对和事务持久化之上。响应与固定请求及当前状态共同校验，迟到结果按版本归属处理；显式重试恢复完整基线，周期核对复用已应用事实。
 
 ### 4. 协议与实施边界
 
-条件响应初次引入于协议 11；当前演进遵循 ADR-0064 的兼容要求。Relay 不参与响应选择，不读取会话语义。此决定替代 ADR-0013/0024 中 preview 每次固定携带有界 tail 的要求，其余权威、范围、持久化及传输约束保留。
+条件响应初次引入于协议 11，后续演进遵循 ADR-0064；源端选择响应，Relay 路由密文，既有权威、范围与持久化契约继续适用。
 
 ## Verification
 

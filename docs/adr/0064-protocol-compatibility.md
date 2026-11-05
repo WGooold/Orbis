@@ -2,71 +2,56 @@
 
 日期：2026-11-04（Asia/Taipei）
 
-修订：2026-11-05（Asia/Taipei），确认以 Relay＋Host 承担旧 App 兼容。
+修订：2026-11-05（Asia/Taipei），旧 App 兼容由 Relay＋Host 承担。
 
 Status: accepted（第一阶段 Android 已合并，第二阶段 Relay 18 / 19 外层兼容已部署；第三阶段 Relay＋Host 保留旧 App 的决策已确认，Host 18 / 19 双向业务适配已实现，设备 / 跨平台与真实旧包门禁未验收）
 
-关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0062](0062-claude-background-agents-and-session-activity.md)。协议演进不再要求所有组件版本完全相等或禁止能力协商；认证、E2E、核心字段验证、身份与真实回执约束继续生效。Relay 仅接受 Host、仅转发密文的安全边界见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
+关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0062](0062-claude-background-agents-and-session-activity.md)。版本与能力按实际实现协商，认证、E2E、身份及回执保持原契约。Relay 的认证与密文路由见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
 
 ## Context
 
 Claude 后台子任务提交 `20a9898` 将共享协议、Android 和 iOS 从 18 升至 19。后续本地 App 包继承了 19，而线上 Relay 与已安装 Host 仍为 18。精确版本校验使分批安装直接断连；两个不同协议的 Android 包仍共用 0.1.53 / versionCode 54，进一步妨碍识别。
 
-用户最初要求从 19 起互通；2026-11-04 进一步明确将现有 18 也纳入兼容，最低基线改为 18，仅拒绝 17 及以下。用户同时要求采用常规解决方案，先核对正式规范，不凭空设计。现有线上 18 必须纳入真实旧实现测试，不能要求它先升级才算兼容。
+2026-11-04 起，最低兼容基线为协议 18；兼容设计依据正式规范，并以已部署旧实现验证互通。
 
-2026-11-05 用户报告手机 App 0.1.53 提示“电脑端拒绝了请求 / Orbis 协议版本不兼容”。现场确认 Mac Host 0.1.14 的内置协议为 18，界面已连接 Relay；Relay `8601e6508523` 的 18 / 19 外层入口正常。这与此前 Host–Relay 认证失败分属不同边界，不能以 Relay 部署成功宣称手机–Host 业务已互通。用户考虑到 Host / App 由用户持有、可能不同步升级，明确选择 **Relay＋Host** 方案，保留现有 App 可用。0.1.53 曾存在不同协议构建，后续验收必须记录真实旧包来源与哈希。
+2026-11-05，手机 App 0.1.53 显示“电脑端拒绝了请求 / Orbis 协议版本不兼容”。现场 Mac Host 0.1.14 的内置协议为 18，已连接 Relay；Relay `8601e6508523` 的 18 / 19 外层入口正常，手机–Host 业务兼容仍有缺口。分批升级采用 Relay＋Host 方案，保留现有 App。0.1.53 曾存在不同协议构建，旧包互通证据按包来源与哈希区分。
 
 ## 依据与适用边界
 
-1. [Semantic Versioning 2.0.0 §6–8](https://semver.org/#spec-item-6)：兼容修复 / 新功能与破坏性改动分别管理。它是 API 版本规则，不自动解决网络协议握手。
-2. [Google AIP-180](https://google.aip.dev/180)：兼容性包括序列化与语义；同一大版本不能删除 / 重命名已有组件、更改字段类型或语义，新增字段不能破坏旧请求和旧行为。
-3. [Microsoft LSP 3.17 协议](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md)及[初始化规则](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/general/initialize.md)：通过初始化时交换 capabilities 保持新功能兼容；未知能力忽略，未声明能力视为不支持。
-4. [RFC 8446 §4.2.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.1)：TLS 用支持版本的交集协商版本，不能只凭对端版本数字更大就认定能处理其报文。本文借鉴版本协商模式，不将 Orbis 宣称为 TLS 实现，也不改加密算法。
-5. [ProtoJSON 的 JSON Wire Safety](https://protobuf.dev/programming-guides/json/#json-wire-safety)：JSON 解析器拒绝未知字段会使加字段也破坏旧端；未知字段的处理必须明确，不能假设“可选字段自然兼容”。Orbis 使用自己的 JSON schema，本文不要求迁移 Protobuf。
-6. [JSON-RPC 2.0 §5.1](https://www.jsonrpc.org/specification#response_object)：未知方法以错误回执终结请求，不能返回成功；该原则沿用至 Orbis 的现有请求 / 命令身份与回执。
+- [Semantic Versioning 2.0.0 §6–8](https://semver.org/#spec-item-6)：区分兼容与破坏性 API 变更。
+- [Google AIP-180](https://google.aip.dev/180)：兼容性包含序列化及行为语义。
+- [LSP 3.17](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md)及[初始化规则](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/general/initialize.md)：通过已声明能力启用功能。
+- [RFC 8446 §4.2.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.1)：协商双方实际支持的共同版本；本文借鉴协商模式，Orbis 加密实现保持原状。
+- [ProtoJSON Wire Safety](https://protobuf.dev/programming-guides/json/#json-wire-safety)：字段扩展性取决于解析规则；Orbis 继续使用自身 JSON schema。
+- [JSON-RPC 2.0 §5.1](https://www.jsonrpc.org/specification#response_object)：未知方法以关联错误终结请求。
 
 ## Decision
 
 ### 1. 以 18 为永久最低共同协议
 
-新实现必须支持当前已部署的协议 18；未来最新修订为 19、20、21 时也继续实现 18 的基础格式和语义。仅拒绝 17 及以下。共同支持 18 才是持续互通的原因，不能将数字 >= 18 当成报文一定兼容的证据。
-
-产品版本、实现修订、连接使用的 wire version 和功能能力分别记录。当前生产端严格要求 18 且不接受未知认证字段，所以与它通信必须发送原样的 18 认证 / 帧 / 业务消息，不能向它发送新增握手字段后期待忽略，也不能只放宽新 App 的接收条件。
-
-新增兼容功能不再无条件递增“必须精确匹配”的硬版本；发行修订单独递增。未来新格式必须保留 18 的序列化 / 处理能力；旧实现已经发布的 19 仍需按原样识别，不假设它已经实现本 ADR 的能力协商。
+协议 18 是持续互通基线，新实现保留其已部署格式与语义，并识别已发布 19。产品修订、实际 wire version 与功能能力分别记录。
 
 ### 2. 握手协商共同版本，功能独立协商
 
-- 使用双方实际支持的协议集合 / 范围求交集，选择双方已实现的共同版本；交集为空明确拒绝。范围只可表示连续、实际实现且经过验证的版本，不虚报支持。
-- 对端只支持 18 时，未来 19 / 20 / 21 实现仍使用 18 基础格式交互，不能只放过认证然后发送它不认识的新版格式。
-- 同一连接的版本选择在认证 / 握手中确定，后续消息与文件分片按选择版本处理。Relay 路由版本与 App–Host E2E 版本作用域分别维护，Relay 不能替终端协商业务功能。
-- 首先兼容既有 18 严格握手。对新实现的版本 / 能力信息，只能在已建立的认证通道、已有可扩展字段或明确支持的协商入口中交换；不增加旧端不接受的必需字段，不另开旁路握手端点。
-- 新功能按 LSP 模式声明并核对 capabilities；不存在的能力就是不支持。已有 Runtime commands / capabilities 尽量复用，协议层接收能力与后端命令能力须分清。
-- 兼容指基础功能可以继续用，不代表旧 App 自动获得新界面，或旧 Host 自动执行新操作。
+连接在认证边界选择双方实际实现的共同格式，功能在已有认证通道按能力启用。Relay 路由版本与端到端业务版本分别管理，旧 strict 握手使用其原格式。
 
 ### 3. 采用兼容的 schema 演进
 
-保留已有字段、类型、必需性与语义。新字段采用可选形式，缺失时必须保持旧行为；不能用默认成功、默认空清单或假确认填补未知。响应 / 状态中的可忽略新增信息和能力对象允许未知字段，已知字段仍完整验证。
-
-请求中的新增字段若影响副作用或语义，只能在接收方声明能力后发送；不允许忽略后执行另一种操作。未知操作应给出同一 requestId / commandId 的“不支持”结果，不能挂起或假成功。未知状态枚举不能解释为空闲、完成或允许关闭。
-
-本次不引入自定义的通用 `extensions` 容器，也不把全部 strict schema 批量改成宽松。逐类确定：哪些是可扩展的状态 / 能力，哪些是必须严格验证的命令 / 身份 / 加密边界。
-
-二进制帧只在已实现、已协商的布局内互通；magic、kind、长度、偏移、nonce / AEAD 和边界校验保持。不得按未来修订号随意改写版本字节或将大整数截断到一个字节。
+schema 保持既有字段语义，按消息类别声明扩展性；影响副作用的新功能在能力确认后发送。未知操作以关联错误终结，状态与二进制布局保持完整验证。
 
 ### 4. 一次性迁移与发行
 
-保留第一阶段“新 App 直接连接既有 Relay / Host 18”的能力；2026-11-05 起本次修复的交付主路径为“更新 Relay＋Host，保留旧 App”，详见 §6。已发布的精确匹配 19 包同样不因文档更新自动获得协商能力，需要测试其原有行为。Relay 仅在明确的认证版本拒绝、尚未形成业务通道时，在新连接中选择另一种实际支持的格式；既有 LAN 不返回版本错误，只丢弃未知首帧，因此仅在 HS1 超时且尚未发送 HS3 / 业务消息时，可用新连接和新临时密钥探测另一种已实现格式。MAC 验证失败、凭据失败、业务失败和未知操作结果不得触发格式重试或重复提交。
-
-同一产品的不同交付递增其版本号；记录源提交、支持协议和能力，避免仅凭 0.1.53 判断包内容。开发、验证与实际安装 / 部署分别记录；各阶段的用户授权与交付状态见下方阶段记录。第三阶段不以安装新手机包作为修复或验收前置条件。
+分批发行保留旧端基础互通，当前交付路径更新 Relay＋Host 并保留旧 App。格式探测限于尚未形成业务通道的明确兼容失败，新连接与临时密钥隔离探测；操作结果继续按原身份核对。交付记录源提交、包哈希、格式与实际部署状态。
 
 ### 5. UI 与验证边界
 
-影响 S18、V05、V12、V16–V18 的连接和状态真实性，不新增视觉 feature 或动效参数。沿用 ADR-0058 现有连接 / 错误反馈；不能因未知字段清空会话、改变消息身份、重播入场或抢阅读位置。专项暂登记 R64，实施前核对当前回归编号；双端 L1–L4、C01–C18、A1–A4 与同设备基线分别记录。
+兼容修复沿用现有连接、错误和状态反馈，保持消息身份、阅读与动效。实际旧包互通、跨平台设备和人工验收分别记录。
 
 ### 6. Relay＋Host 承担兼容，保留已安装 App（2026-11-05）
 
-本次选择更新 Relay＋Host；现有手机 App 无须为恢复基础功能升级、卸载或重新配对。Relay 已部署的外层兼容继续保留，剩余交付重点是 Host 的双向业务适配。旧 Host 0.1.14 需要安装实现本节的兼容 Host；“保留旧 App”不意味着已发布的 Host / App 都不更新就能互通，也不表示仅更新 Relay 可以修复所有业务差异。
+Relay 适配认证路由外层，Host 在端到端业务边界按设备格式完整收发，App 沿用其已发布能力。业务适配保持加密、身份、原语义与真实回执；长期演进由 Host 保留旧 App 的基础互通。
+
+Host 0.1.14 需升级至实现本节的兼容版本，0.1.15 已接入适配；真实旧包和完整设备门禁仍待验收。
 
 | 组件 | 兼容责任 | 本次升级范围 |
 | --- | --- | --- |
@@ -74,72 +59,41 @@ Claude 后台子任务提交 `20a9898` 将共享协议、Android 和 iOS 从 18 
 | Host | 实现旧 App 18 / 19 的接收校验、请求处理、响应 / 状态投影和文件帧序列化；按每台设备、每条路径的业务版本交互 | 兼容实现已接入 Host 0.1.15；本机 macOS arm64 构建通过，Windows 交付与门禁待完成 |
 | App | 保留原包、协议行为、配对身份与已有基础功能；新功能只在其能力范围内启用 | 本次不要求更新；0.1.54 的升级路径继续作为可选方案 |
 
-Relay 不持有 App–Host 会话密钥，无法转换密文中的业务版本、字段或命令。不得为集中兼容将密钥交给 Relay、终止端到端加密，或将明文业务转发到新增旁路。业务适配在 Host 解密并验证身份之后、按设备格式重新加密之前完成；保持请求 / 命令 / 消息身份、真实回执和原执行语义。
-
-Host 的“支持 18 / 19”必须覆盖完整收发链路，包含首次握手后的第一条 ready、请求 / ACK、状态 / 历史、通知、上传下载、分片及重连。不能只放宽 `protocolVersion` 校验，再用统一的最新版格式向所有 App 发送。Relay 外层版本与 E2E 业务版本分别确定；不能依据已被 Relay 改写的目标外层或 Host 自身常量推断 App 能力。与真实旧包互通时，不要求旧包先支持新增协商字段；版本确定须在发送该端不能解析的业务消息之前完成，并纳入真实旧实现验证。
-
-长期演进保留协议 18 基础格式和已发布 19 的适配，新 Host 继续承担旧 App 兼容。新增功能采用 §2–§3 的能力门禁，未声明支持就沿用旧行为；基础功能可用不代表旧 App 获得新功能。未来 App 自身发布新版本时继续保留对旧 Host 的兼容，避免两端绑定同次发行。尚未实现的未来格式不按版本整数自动放行。
-
 ## Verification
 
 [测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
 
 ## 第一阶段：Android 兼容当前 18（2026-11-04）
 
-用户追加要求先恢复 18 兼容。本阶段只实现 Android 18 / 19，不把未来所有整数都当成已实现的格式；当前 `PROTOCOL_VERSION = 19` 保留，共享 Node / iOS 与线上部署本阶段不改。
+Android 实现已发布 18 / 19 的兼容，当前 `PROTOCOL_VERSION = 19` 保留。本阶段共享 Node、iOS 及线上部署保持原状。
 
-- Relay 首先按原样的 18 认证及帧格式发送，不新增旧 schema 不认识的字段。仅认证阶段明确 `protocol_version_mismatch` 且加密通道尚未建立时，新建一次连接尝试已实现的 19；unauthorized / 网络错误不触发格式重试。既有 LAN、Host 身份和操作账本不因重试而重建。
-- Relay 外层版本、Host 的加密业务版本与 LAN 版本分别选择；Host 版本从成功 MAC 握手与已认证的 device.ready 核对。所有业务请求、命令、ACK 和排队消息在发送边界使用相应 Host / Path 格式，原操作 ID 与命令内容保留。上传分片字节也使用相应 Host / Path 版本。
-- LAN 先尝试 18；未完成握手的纯 HS1 超时可重新连接、换临时密钥尝试 19。失败 MAC 不重试另一个格式，LAN 不接收 Relay 凭据；已建立通道后的断线不重发业务命令。
-- 接收层对 JSON / E2E 外层、通知、状态、文件审阅和二进制文件帧接受已实现的 18 / 19，17 及以下及非法版本仍拒绝。不能将数字字符串、分数、null / 容器误判为有效版本。20 及未来版本的持续兼容与显式能力协商留给后续阶段，不能把本阶段写为整个 ADR 已完成。
-- Android 交付标识递增为 0.1.54 / versionCode 55，避免与此前 0.1.53 的不同协议包重名。导入当前 Android 工作区原有中英文、卡片等改动作为构建基线，并以逐文件哈希记录；它们不是本兼容补丁的新增功能。主工作树未被修改。
+Relay 认证优先使用 18，明确格式不兼容时在业务通道建立前以新连接尝试 19。LAN 优先 18，纯 HS1 超时后可使用新连接与临时密钥尝试 19；MAC 失败按认证失败处理。Relay 外层、Host 业务与 LAN 分别选择格式，业务出口及上传分片沿用相应路径版本和原操作身份。接收层完整校验已实现的 18 / 19 格式。
 
-第一阶段核心 / 设备、首轮MockWebServer清理失败与runner错误、源码 / APK哈希和资源核验统一见UI回归§6及`.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`。同设备全量无新增失败不等于旧App＋新Host的第三阶段验收；完整用户 / 真机与真实模型未完成。
+Android 发行标识为 0.1.54 / versionCode 55，区分此前 0.1.53 的不同协议构建；构建基线包含工作区既有中英文、卡片等修改，逐文件哈希留在证据中。
+
+核心与设备结果、首轮 MockWebServer 清理失败和 runner 错误、源码 / APK 哈希及资源核验见 `.artifacts/ui-regression/20261104-protocol19-compatibility/summary.md`。完整用户、真机与真实模型验收待完成，第三阶段旧 App＋新 Host 互通单独验证。
 
 ## 第二阶段：Relay 接受已部署 Host / App 18（2026-11-04）
 
-Relay `b59f99755b86` 部署后仍使用严格协议 19 认证，已安装 Host 0.1.13
-（实际协议 18）因而无法重连。第一阶段仅修改 Android，未覆盖 Host–Relay 边界。
-用户授权修复、push 并部署；此前部署前漏掉了既有 Host 18 的兼容核验。
+Relay `b59f99755b86` 的严格协议 19 认证使已安装 Host 0.1.13（实际协议 18）无法重连。修复版本 `8601e6508523` 已部署，接受经完整 schema 和凭据校验的 18 / 19 外层，并将版本绑定至 socket；ready 和路由帧按接收 socket 的认证版本序列化，完整 Envelope 保持原样。
 
-本阶段只演进 Relay 的独立传输外层，已核对真实 Host 18 的认证、ready 和
-Envelope 格式与 19 的差异仅为该外层版本字面量。显式接受 18 / 19，在完整
-schema 校验和凭据认证成功后按 socket 绑定版本；后续帧不得中途切换。ready
-及转发帧按接收 socket 的已认证版本序列化，不添加旧 strict schema 不接受的
-握手字段。完整 Envelope（hdr、MAC、ct、内部业务版本、分片）保持原样；不做
-解密、业务重试或操作 ID 改写。17 / 20 及畸形版本继续拒绝，不虚报未来格式。
+本阶段仅覆盖 Relay 传输外层。既有 Host 18 与 Android 0.1.54 使用各自已实现的 18 E2E 格式，Host / iOS 19 的业务兼容由后续阶段承担。用户 Host、手机包、配对与生产凭据保持原状。
 
-兼容 schema 独立于原有 loopback 与 E2E schema；不据此声称新 Host / iOS 19
-已支持 18 业务消息。已安装 Host 18 与 Android 0.1.54 可继续使用各自已实现的
-18 E2E 格式。本阶段不改变 UI / 消息投影、状态语义、动效或手机包，不重启
-用户 Host、不修改配对与生产凭据。
-
-部署门禁在 Windows 全量测试基础上，将 Relay 18 / 19 四组合、原样握手 / 密文 /
-回执 / 二进制 / 片帧、凭据和身份拒绝、同连接版本绑定纳入 macOS 和 Linux 必跑
-用例；Linux 另跑完整 protocol / Relay 套件。上线后核对 Actions、服务器部署
-标记、公网健康提交，并以无效测试凭据验证公网 18 / 19 已进入认证检查、17 / 20
-仍被版本门禁拒绝。真实已安装 Host 18 模块的隔离本地验证与部署证据保存至
-`.artifacts/deploy/20261104-relay-protocol18/`；不把测试进程冒充用户线上 Host，
-不把传输互通表述为全部 UI / 真机门禁已完成。
-
-服务器脚本还在切换前检查隔离候选的实际 WebSocket 版本门禁，切换后在原有回滚
-边界内检查公网路径；两处均使用随机无效测试凭据，不注册 Host / App、不读取真实
-凭据、不改写用户会话。HTTP 健康但拒绝现有 18 的候选因此不能切入生产。
-
-第二阶段本地247项与未修改旧Host模块隔离验证有通过 / 负对照证据，原始目录见上；它们只证明所测传输与协议链，不代替第三阶段业务 / 旧App / 用户验收。
+本地 247 项及旧 Host 模块隔离验证保留通过与负对照证据；CI、候选版本门禁、服务器部署标记和公网路径分别核对。候选与公网探针使用随机无效凭据验证版本准入。证据见 `.artifacts/deploy/20261104-relay-protocol18/`，完整 UI、真机及第三阶段业务验收待完成。
 
 ## 第三阶段：Relay＋Host 保留旧 App（2026-11-05）
 
-Host 0.1.15 的双向业务适配已在隔离工作树 `codex/host-protocol18-19-compatibility` 实施，并于本次合并回 `main`；尚未部署或替换用户 Host；手机产品代码未修改。macOS arm64 预览构建已完成，Windows / macOS x64 与完整设备 / 手动 / 真实旧包门禁未完成，不记为第三阶段验收通过。
+Host 0.1.15 的双向业务适配已在隔离工作树 `codex/host-protocol18-19-compatibility` 实施并合并回 `main`。macOS arm64 预览构建完成；尚未部署或替换用户 Host，手机产品代码保持原状。Windows、macOS x64、完整设备、手动与真实旧包门禁待完成。
 
 ### 实现边界
 
-- 核对协议 18→19 的实际 schema 差异：根版本字面量、`execution.tasks` 事件和 execution 状态的可选 `tasks` 字段。内部继续使用严格 19 schema，只在 Host 边界适配已实现的 18 / 19，不自动接收未来整数；业务支持集合独立于 Relay 支持集合。
-- 已发布 HS1 / HS2 / HS3 没有业务版本字段。Relay 端在 MAC 确认后，等待旧 Android / iOS 原本即会发送的第一条合法加密请求（通常为 `host.lan.request`），完整校验后绑定该路径的业务版本，再发送首次 ready / 状态并执行同一请求一次；不新增旧包不认识的握手字段，不用 Relay 改写后的外层推断业务版本。
-- LAN 保留 socket 原始帧版本，并在成功 MAC 确认后采用它发送首次 ready。会话内禁止换业务版本；新握手清除原选择，未确定格式的路径不参与活动路径选择。非法首请求沿入站路径返回带原 ID 的 versionless 错误，不虚报 ready。
-- 所有数据出口汇入 HostDeviceSession 的封帧边界，包含直接发送的历史同步 / 工具内容。对 18 只删除 execution 状态的新增 `tasks`、抑制不支持的后台任务事件；不递归删用户 / 工具数据，不改变消息 / 请求 / 回执身份。抑制发生在分配 AEAD nonce 之前。
-- 上传 / 下载二进制先按已选格式完整解码验证，再转换为对应 18 / 19 帧；保留 magic、kind、长度、偏移和原始内容验证。旧本机 Pi loopback 的 18 注册、事件与命令同样适配，避免升级 Host 断开现有扩展。
-- Relay 外层部署与密文边界保持；本次新增自动测试纳入 Relay 部署和 macOS Host 构建的 CI 门禁。当前分支尚未 push，不能将本地通过写成 Actions 已通过。macOS / Windows 原生构建流程均追加对实际打包 runtime 的七项兼容契约，防止源码通过而包内代码陈旧。
+内部使用严格 19 schema，Host 边界完整适配已发布 18 / 19。两版差异为根版本字面量、`execution.tasks` 事件及 execution 状态的可选 `tasks`；业务支持集合独立于 Relay。
+
+已发布 HS1 / HS2 / HS3 没有业务版本字段。Relay 路径完成 MAC 确认后，以首条合法加密请求绑定业务版本，再发送 ready / 状态并执行该请求一次。LAN 保留原始 socket 帧版本，MAC 成功后据此发送首次 ready；版本随握手代次绑定。非法首请求沿入站路径返回带原 ID 的 versionless 错误。
+
+HostDeviceSession 统一出口封帧，18 投影仅适配新增任务字段与事件，并在 AEAD nonce 分配前处理。上传 / 下载二进制按所选格式完整验证与转换；本机 Pi loopback 同样适配 18 注册、事件与命令。身份、原始业务内容及密文路由保持原语义。
+
+兼容测试已接入 Relay 部署和 Host 构建 CI，macOS / Windows 原生构建核对实际打包 runtime 的兼容契约。记录时分支尚未 push，Actions 结果待确认。
 
 ### 当前验证记录
 

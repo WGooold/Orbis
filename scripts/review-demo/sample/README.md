@@ -11,7 +11,7 @@ Try asking the agent to:
 
 You can inspect streamed responses, tool calls, session history and files in Orbis.
 Changes and conversations are shared among the Apple review devices connected to
-this demo. Do not enter private information here.
+this demo. Use demonstration data.
 
 This environment has Pi only. Codex Desktop, Claude Code and DeepSeek desktop
 integrations require their respective software on the user's own computer.

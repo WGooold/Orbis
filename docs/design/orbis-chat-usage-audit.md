@@ -17,19 +17,19 @@
 | transfer task | 某次上传或下载 | 暂停、续传、重试、取消、删除本机记录 |
 | background task | Claude 原生子代理 / teammate 库存项 | 当前版本只读查看状态与父子关系 |
 
-所有请求都必须维持 Host、Session、Runtime 和来源代次归属；同名会话、相同正文或同一目录不能替代身份。连接、主回合执行、压缩 / 重试活动、后台任务和发送回执是独立事实。证据：[RemoteViewModel.kt:277](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt#L277)、[RemoteState.kt:65](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L65)、[ADR-0055:133](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L133)、[ADR-0062:19](../adr/0062-claude-background-agents-and-session-activity.md#L19)。
+请求保持 Host、Session、Runtime 与来源代次身份。连接、主回合执行、压缩 / 重试活动、后台任务和发送回执是独立事实。证据：[RemoteViewModel.kt:277](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt#L277)、[RemoteState.kt:65](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L65)、[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#7-串行恢复与隔离)、[ADR-0062](../adr/0062-claude-background-agents-and-session-activity.md#1-三类事实分开)。
 
 ## 2. 在线、历史、缓存与恢复
 
 ### 2.1 打开已在线会话
 
-用户先确定电脑，再点在线会话卡；目录项如果存在同 Session 的 live Runtime，也进入该 Runtime。聊天先呈现已有缓存，再订阅和同步源端内容，缓存显示不以网络往返完成为前提。首次进入以已缓存末尾内容为入口；用户向上阅读、分页或打开详情之后，后台同步不能不断抢回底部。
+用户先确定电脑，再点在线会话卡；目录项如果存在同 Session 的 live Runtime，也进入该 Runtime。聊天先呈现已有缓存，再订阅和同步源端内容，缓存显示不以网络往返完成为前提。首次进入以已缓存末尾内容为入口；用户向上阅读、分页或打开详情之后，后台同步维护当前阅读锚点。
 
-Android 选择时设置当前 Runtime、发布缓存会话并清除离线选择；iOS 先种入缓存，再发布消息和同步。返回只是导航，不停止 Agent。证据：[HostConnection.kt:805](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L805)、[OrbisStore.swift:581](../../ios/Orbis/Orbis/OrbisStore.swift#L581)、[ADR-0048:29](../adr/0048-online-chat-entry-budget.md#L29)。
+Android 选择时设置当前 Runtime、发布缓存会话并清除离线选择；iOS 先种入缓存，再发布消息和同步。返回只是导航，不停止 Agent。证据：[HostConnection.kt:805](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L805)、[OrbisStore.swift:581](../../ios/Orbis/Orbis/OrbisStore.swift#L581)、[ADR-0048](../adr/0048-online-chat-entry-budget.md#decision)。
 
 ### 2.2 点击没有在线 Runtime 的历史目录项
 
-两端当前默认行为不同，不能合写为同一路径。
+两端当前默认行为如下。
 
 | 平台 | 用户点击后的实际路径 | 后续行为 |
 | --- | --- | --- |
@@ -48,9 +48,9 @@ Android 选择时设置当前 Runtime、发布缓存会话并清除离线选择�
 
 ### 2.4 在电脑恢复会话
 
-恢复以 Session 和 Agent 类型定位，不能悄悄落到其他会话。供应商不匹配会被拒绝；Android 激活入口还明确要求先恢复已归档会话。提交后立即进入“启动中”占位聊天，可编辑草稿和创建等待启动的消息。已有缓存先显示；启动失败或未确认在原位说明，提供重试与返回。返回不取消启动，后来成功也不强制把用户拉回。
+恢复以 Session 和 Agent 类型定位。供应商不匹配会被拒绝；Android 激活入口还明确要求先恢复已归档会话。提交后立即进入“启动中”占位聊天，可编辑草稿和创建等待启动的消息。已有缓存先显示；启动失败或未确认在原位说明，提供重试与返回。返回不取消启动，后来成功也不强制把用户拉回。
 
-“已受理启动”不等于 Runtime 已上线。用户明确重试是新的操作，不应由超时自动重复创建。证据：[HostConnection.kt:546](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L546)、[HostConnection.kt:576](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L576)、[OrbisStore.swift:1085](../../ios/Orbis/Orbis/OrbisStore.swift#L1085)、[OrbisStore.swift:1107](../../ios/Orbis/Orbis/OrbisStore.swift#L1107)、[ChatView.swift:118](../../ios/Orbis/Orbis/ChatView.swift#L118)、[ADR-0049:258](../adr/0049-optimistic-send-and-source-reconciliation.md#L258)。
+“已受理启动”不等于 Runtime 已上线。用户明确重试建立新的操作身份。证据：[HostConnection.kt:546](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L546)、[HostConnection.kt:576](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L576)、[OrbisStore.swift:1085](../../ios/Orbis/Orbis/OrbisStore.swift#L1085)、[OrbisStore.swift:1107](../../ios/Orbis/Orbis/OrbisStore.swift#L1107)、[ChatView.swift:118](../../ios/Orbis/Orbis/ChatView.swift#L118)、[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#68-新建--恢复会话即时反馈)。
 
 ## 3. 输入、停止、队列与结果恢复
 
@@ -67,96 +67,83 @@ Android 选择时设置当前 Runtime、发布缓存会话并清除离线选择�
 
 证据：[MainActivity.kt:2073](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2073)、[MainActivity.kt:2189](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2189)、[ChatView.swift:504](../../ios/Orbis/Orbis/ChatView.swift#L504)、[Presentation.swift:76](../../ios/Orbis/Orbis/Presentation.swift#L76)。Android 的停止 / 发送判定只看运行和空正文；iOS 同时考虑附件是否为空，差异见第 6 节。
 
-两端发送入口检查正文与目标；上传失败 / 取消的附件先处理。上传未完成、模型 / effort 切换未确认、会话启动中或前一条本机等待输入未就绪时，可以先产生本机 `Waiting` 消息。它标明等待原因，前置条件完成才写入通道。不能先发送正文再漏掉附件。证据：[HostConnection.kt:1210](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1210)、[OrbisStore.swift:1624](../../ios/Orbis/Orbis/OrbisStore.swift#L1624)、[ADR-0049:183](../adr/0049-optimistic-send-and-source-reconciliation.md#L183)。
+两端发送入口检查正文与目标；上传失败 / 取消的附件先处理。上传未完成、模型 / effort 切换未确认、会话启动中或前一条本机等待输入未就绪时，可以先产生本机 `Waiting` 消息。它标明等待原因，前置条件完成才写入通道。正文与附件完整提交。证据：[HostConnection.kt:1210](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1210)、[OrbisStore.swift:1624](../../ios/Orbis/Orbis/OrbisStore.swift#L1624)、[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#62-等待前置操作的消息)。
 
 ### 3.2 后端的投递语义并不相同
 
 | 后端 | 跟进、插入和停止的范围 |
 | --- | --- |
 | Pi | 扩展持有待投递输入，原生可执行时逐条投递；使用原生 abort 与队列语义 |
-| Codex / Codex Desktop | 适配器持有队列；既有 `steer` 是中断当前回合并优先下一条，不能描述成任意时刻无缝注入当前模型请求 |
+| Codex / Codex Desktop | 适配器持有队列；既有 `steer` 是中断当前回合并优先下一条 |
 | Claude Mods | 仅支持跟进排队，不支持 `steer`；停止等待主回合中断事实 |
 | DSH Web | 原生 queue / steer / cancel，并按原生请求和队列身份核对 |
 | 旧 DSH ACP | 只支持 idle 直接发送；没有原生队列时 followUp / steer 明确失败，保留可恢复输入 |
 
-以上为 [ADR-0055:98](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L98) 的后端契约，不表示手机已经为每种不支持情况隐藏了所有按钮。独立 HTML 应标明当前 Agent，避免虚构全后端一致的“随时插话”。
+以上为 [ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#5-后端能力与-slash-子路径) 的后端契约，不表示手机已经为每种不支持情况隐藏了所有按钮。设计稿按当前 Agent 呈现已声明的投递能力。
 
 ### 3.3 所有状态下的准入与反馈
 
-完整状态矩阵由 [ADR-0055:55](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L55) 定义。下表保留影响用户理解的关键差别；实际能力和最终准入仍由 Host / 后端确认。
+完整状态矩阵由 [ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#3-准入优先级先匹配先处理) 定义。下表保留影响用户理解的关键差别；实际能力和最终准入仍由 Host / 后端确认。
 
-| 状态 | 新输入与配置 | 控制、读取及反馈 |
-| --- | --- | --- |
-| idle，无其他活动 | 普通消息可执行；followUp / steer 无需强制排队或中断 | 没有可停回合时 stop 可返回 `not_cancelable` |
-| 回合启动 / 捕获屏障 | 普通消息 busy；跟进和支持的插入等待 | 队列尚未提交可撤回；停止以确切目标为准 |
-| running，包括 thinking / 工具阶段 | 无 delivery 的普通消息 busy；followUp 排队；steer 按后端能力 | 审批、停止、队列撤回不应排到其所解除的等待之后 |
-| waiting_local_interaction | 普通消息 busy；followUp 可排队；steer 不能冒充审批回答 | 对仍有效的请求提交答案；停止只清理所属请求 |
-| 独立压缩，execution 仍为 idle | 普通输入可被 Host 明确受理为可见队列 | App 不根据“压缩中”文案擅自改变发送协议；无回合不能伪造中断 |
-| 回合内压缩、重试 / 退避 | 与忙碌回合对应；跟进等待，配置写入受限 | 读取 / 传输独立运行，显示真实活动 |
-| 停止处理中 | 普通消息 busy；跟进等停止结论 | 不重复中断；不能在没有原生事实时显示“已停止” |
-| 历史核对 / 恢复，执行事实未知 | 新写入 `state_unavailable`，已受理输入保留并核对 | 允许读取、核对和目标已知的控制 |
-| 配置 / provider / 分支 / 会话替换中 | 冲突写入 busy；特定配置前置可由本机消息等待 | 不越过历史或会话替换屏障，不把旧响应写入新会话 |
-| 关闭中 | 新输入 closing，不能进入无法继续的队列 | 未提交队列可取消；已可能提交的结果保持未知 |
-| offline / closed / archived | 在线写入不可用 | 有缓存可读；无有效范围的读取明确失败 |
-| 已提交后断线 / 重连 | 可能已经执行的操作转未确认 | 查询证据，不自动重发；传输按自己的续传契约恢复 |
+输入准入依据连接、目标、执行、原生活动与能力组合求值；控制、读取和传输由对应拥有者处理。实际判定以 [ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md) 与实现为准。
 
 当前双端 composer 的发送 / 停止主分支主要检查 `status == running`。因此不能把上表说成“每个客户端按钮都已按全部状态独立禁用”；源码 UI、Host 契约和真实设备行为需分开验证。
 
 ### 3.4 消息气泡下的发送状态
 
-| 状态 | 用户看到 / 能做什么 | 不应解释为什么 |
-| --- | --- | --- |
-| Sending / Accepted | 发送中，等待受理、提交或精确落地 | 不表示模型已执行或历史已保存 |
-| Waiting | 显示等待附件、配置、启动或前一条的原因 | 尚未写入的本机消息不是 Host 队列 |
-| Queued | 静态“已排队”，满足条件可撤回 | 不能用无限发送转圈暗示网络卡住 |
-| Failed | 失败原因；重新发送、放回输入框、删除 | 重发是新消息 / 命令身份，不是把旧未知操作重放 |
-| Unconfirmed | “未确认是否送达”；核对、删除本机行 | 没有直接重发；删除本机行不证明电脑没收到 |
+| 状态 | 呈现与操作 |
+| --- | --- |
+| Sending / Accepted | 显示发送进度，等待原生提交与身份确认 |
+| Waiting | 显示本机前置等待原因 |
+| Queued | 显示真实排队状态和可用撤回入口 |
+| Failed | 显示原因及重发、恢复草稿、删除操作 |
+| Unconfirmed | 显示待核对结果及显式核对入口 |
 
 证据：[PendingSends.kt:4](../../android/app/src/main/java/com/orbising/orbis/PendingSends.kt#L4)、[MainActivity.kt:3772](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L3772)、[HostConnection.kt:1307](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1307)、[ChatView.swift:548](../../ios/Orbis/Orbis/ChatView.swift#L548)。
 
-命令受理、队列受理、原生投递、模型执行与 canonical 历史落地分别需要证据。`accepted` 不等于 `delivered`，`delivered` 也不替代最终消息身份对账。不得用正文相似、动画结束或经过一段时间猜成功。未确认需保留静态提示和显式核对入口，不自动重复执行。详见 [ADR-0055:110](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L110)。
+命令受理、队列受理、原生投递、模型执行与 canonical 历史落地分别需要证据。`accepted` 不等于 `delivered`，`delivered` 也不替代最终消息身份对账。结果未知时保留可见状态和显式核对入口。详见 [ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#6-生命周期与所有结果路径)。
 
 ### 3.5 队列怎么撤回
 
-输入被 Host 接受排队后，用户可在 composer 上方看到内容、投递方式和状态。只有仍可撤回的 accepted 项开放撤回；撤回未确认时禁用重复撤回。已经交给 Agent 则显示 `already_delivered` / `not_cancelable` 对应结果，不能宣称删除成功。
+输入被 Host 接受排队后，用户可在 composer 上方看到内容、投递方式和状态。只有仍可撤回的 accepted 项开放撤回；撤回未确认时禁用重复撤回。已经交给 Agent 则显示 `already_delivered` / `not_cancelable` 对应结果，按实际结果反馈。
 
-Android 为有界竖向列表，iOS 单项一张卡、多项横向卡片。同一条输入不能同时在队列和 transcript 重复显示；客户端仍保留隐藏的正文、附件和身份恢复副本，直到精确落地或用户明确撤回 / 删除。这个副本不是权威历史，也不保证进程硬退出后的持久 outbox。证据：[MainActivity.kt:4117](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L4117)、[ChatView.swift:1533](../../ios/Orbis/Orbis/ChatView.swift#L1533)、[ADR-0049:196](../adr/0049-optimistic-send-and-source-reconciliation.md#L196)、[ADR-0055:143](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L143)。
+Android 为有界竖向列表，iOS 单项一张卡、多项横向卡片。同一输入按身份在队列与 transcript 间交接；客户端仍保留隐藏的正文、附件和身份恢复副本，直到精确落地或用户明确撤回 / 删除。这个副本不是权威历史，也不保证进程硬退出后的持久 outbox。证据：[MainActivity.kt:4117](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L4117)、[ChatView.swift:1533](../../ios/Orbis/Orbis/ChatView.swift#L1533)、[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#63-撤回排队消息)、[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#8-显示与现有-adr-的修订)。
 
 ## 4. 审批、问题和远程交互
 
 用户遇到单个 confirm 时，可直接在 composer 上方的浮层允许 / 拒绝；多请求或其他表单类型提供“打开”入口，进入远程交互工作区并切换请求。支持确认、单选、多选、问卷与文本输入。输入草稿与请求身份绑定；收起工作区不代表提交，也不能把一般聊天正文当作答案。
 
-操作对象是确切 `requestId`、扩展及所属会话。请求过期、正在提交、断线时不能重复回答；来源已消失或被取消也不能补交旧答案。提交受理后面板可暂收起并在原位显示摘要；失败且请求仍有效时恢复面板与答案。成功回执与请求真的从库存消失仍须核对，不能用关闭面板冒充已审批。
+操作对象是确切 `requestId`、扩展及所属会话。请求过期、正在提交、断线时不能重复回答；来源已消失或被取消也不能补交旧答案。提交受理后面板可暂收起并在原位显示摘要；失败且请求仍有效时恢复面板与答案。成功回执与请求真的从库存消失仍须核对，按请求拥有者的事实结算。
 
-证据：[InteractionWorkspace.kt:59](../../android/app/src/main/java/com/orbising/orbis/InteractionWorkspace.kt#L59)、[InteractionView.swift:11](../../ios/Orbis/Orbis/InteractionView.swift#L11)、[InteractionView.swift:105](../../ios/Orbis/Orbis/InteractionView.swift#L105)、[OrbisStore.swift:657](../../ios/Orbis/Orbis/OrbisStore.swift#L657)、[ADR-0049:220](../adr/0049-optimistic-send-and-source-reconciliation.md#L220)。
+证据：[InteractionWorkspace.kt:59](../../android/app/src/main/java/com/orbising/orbis/InteractionWorkspace.kt#L59)、[InteractionView.swift:11](../../ios/Orbis/Orbis/InteractionView.swift#L11)、[InteractionView.swift:105](../../ios/Orbis/Orbis/InteractionView.swift#L105)、[OrbisStore.swift:657](../../ios/Orbis/Orbis/OrbisStore.swift#L657)、[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#65-回答审批--问卷取消提问)。
 
 ## 5. Slash、模型、effort 与权限
 
 ### 5.1 原生命令菜单
 
-用户在 composer 输入 `/` 后，从 Runtime 当前发布的目录选择命令；目录包含内置命令、skill、prompt template 和扩展，并带参数候选与要求。手机不维护一份假定所有 Agent 通用的自由命令表。未选择的自由 `/...`、不存在的命令或非法参数不能直接执行。
+用户在 composer 输入 `/` 后，从 Runtime 当前发布的目录选择命令；目录包含内置命令、skill、prompt template 和扩展，并带参数候选与要求。手机不维护一份假定所有 Agent 通用的自由命令表。提交依据当前目录及参数校验。
 
-产生对话的 skill / template 走消息发送与恢复路径；模型 / thinking 走配置账本；`tree` 打开历史页面，不把节点 ID 粘进正文。命令是否只读、能否在忙碌时执行由后端能力决定。证据：[HostConnection.kt:1405](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1405)、[MainActivity.kt:2658](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2658)、[ChatView.swift:1393](../../ios/Orbis/Orbis/ChatView.swift#L1393)、[ADR-0003](../adr/0003-runtime-owned-slash-command-menu.md)、[ADR-0055:106](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L106)。
+产生对话的 skill / template 走消息发送与恢复路径；模型 / thinking 走配置账本；`tree` 打开历史页面，不把节点 ID 粘进正文。命令是否只读、能否在忙碌时执行由后端能力决定。证据：[HostConnection.kt:1405](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1405)、[MainActivity.kt:2658](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2658)、[ChatView.swift:1393](../../ios/Orbis/Orbis/ChatView.swift#L1393)、[ADR-0003](../adr/0003-runtime-owned-slash-command-menu.md)、[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#5-后端能力与-slash-子路径)。
 
 ### 5.2 看模型与调整思考级别
 
-Android 顶栏显示模型与 thinking，切换主要经 Slash 命令和参数菜单。iOS 还可以点聊天标题打开“会话信息”，查看模型、原生供应商、思考级别、上下文、执行状态、重试 / 压缩、耗时及各状态来源；有合法 model / thinking 选项时直接点选。iOS 信息页还提供“核对会话状态”。没有读到、不可用、部分状态都不能显示成已核对。
+Android 顶栏显示模型与 thinking，切换主要经 Slash 命令和参数菜单。iOS 还可以点聊天标题打开“会话信息”，查看模型、原生供应商、思考级别、上下文、执行状态、重试 / 压缩、耗时及各状态来源；有合法 model / thinking 选项时直接点选。iOS 信息页还提供“核对会话状态”。来源状态按已核对、部分或不可用分别呈现。
 
 证据：[MainActivity.kt:1995](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L1995)、[ChatView.swift:227](../../ios/Orbis/Orbis/ChatView.swift#L227)、[ChatView.swift:1625](../../ios/Orbis/Orbis/ChatView.swift#L1625)。本次检查的 Android 顶栏没有同等标题点击信息面板，不据此推断整个应用完全没有其他诊断入口。
 
-模型 / effort 一般要求 idle；DSH Web 支持运行中更新下一轮配置，不修改正在执行的请求。选中值可以先显示“切换中”，确认后才去掉标记。此时发送的消息先在本机等配置，不能以旧配置执行；切换失败则回确认前的值，并使依赖它的等待消息失败。断线 / 超时显示未确认并读取源端配置；连续选择保留最新意图。
+模型 / effort 一般要求 idle；DSH Web 支持运行中更新下一轮配置，不修改正在执行的请求。选中值可以先显示“切换中”，确认后才去掉标记。此时发送的消息先在本机等配置；切换失败则回确认前的值，并使依赖它的等待消息失败。断线 / 超时显示未确认并读取源端配置；连续选择保留最新意图。
 
-Codex 还有重要对账边界：首次输入前 Host 已保存的下一轮 model / effort 选择，不得被权限快照、首次订阅或 resume 重复报告的旧原生值覆盖；两个字段独立核对。原生真正改变字段或确认目标值后再交回该字段的原生来源。证据：[ADR-0049:242](../adr/0049-optimistic-send-and-source-reconciliation.md#L242)、[ADR-0061:31](../adr/0061-codex-selection-and-native-settings-reconciliation.md#L31)。
+Codex 还有重要对账边界：首次输入前 Host 已保存的下一轮 model / effort 选择，在重复原生观测中保持，两个字段独立核对。原生真正改变字段或确认目标值后再交回该字段的原生来源。证据：[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#67-模型与思考级别条件乐观)、[ADR-0061](../adr/0061-codex-selection-and-native-settings-reconciliation.md#1-分开保存选型和原生观测)。
 
 ### 5.3 会话权限
 
-用户从 cwd / Git 信息旁的权限入口打开当前会话权限。Host 提供 summary、details、setting ID、选项、当前值及禁用原因；手机按这些 opaque 值提交，不能根据 Agent 名字推测“完全权限”。会话权限不是一次性审批，也不是 App 全局默认，不应产生一个模型回合。
+用户从 cwd / Git 信息旁的权限入口打开当前会话权限。Host 提供 summary、details、setting ID、选项、当前值及禁用原因；手机按这些 opaque 值提交，按 Host 的原生权限投影呈现。权限更新作用于当前会话配置，审批与 App 默认设置分别管理。
 
 - Android 先选值，再点“应用到当前会话”；组件要求连接、idle、没有待确认设置及禁用原因。聊天调用处还要求权限来源 ready、没有交互和队列。
 - iOS 点选项直接提交；状态层要求安全连接、idle、无有效交互、无待处理动作、选项合法且没有 disabledReason。
-- 权限不能乐观勾选成功，要等真实确认。信息缺失也不能视为完全授权；Android 会说明由电脑管理，iOS 当前 composer 没有 metadata 时不显示该入口。
+- 权限等待真实确认，信息缺失时呈现实际可用性；Android 会说明由电脑管理，iOS 当前 composer 没有 metadata 时不显示该入口。
 
-证据：[RuntimePermissions.kt:66](../../android/app/src/main/java/com/orbising/orbis/RuntimePermissions.kt#L66)、[RuntimePermissions.kt:109](../../android/app/src/main/java/com/orbising/orbis/RuntimePermissions.kt#L109)、[MainActivity.kt:2137](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2137)、[ChatView.swift:491](../../ios/Orbis/Orbis/ChatView.swift#L491)、[ChatView.swift:1453](../../ios/Orbis/Orbis/ChatView.swift#L1453)、[OrbisStore.swift:1558](../../ios/Orbis/Orbis/OrbisStore.swift#L1558)、[ADR-0031:15](../adr/0031-host-permission-management.md#L15)。
+证据：[RuntimePermissions.kt:66](../../android/app/src/main/java/com/orbising/orbis/RuntimePermissions.kt#L66)、[RuntimePermissions.kt:109](../../android/app/src/main/java/com/orbising/orbis/RuntimePermissions.kt#L109)、[MainActivity.kt:2137](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2137)、[ChatView.swift:491](../../ios/Orbis/Orbis/ChatView.swift#L491)、[ChatView.swift:1453](../../ios/Orbis/Orbis/ChatView.swift#L1453)、[OrbisStore.swift:1558](../../ios/Orbis/Orbis/OrbisStore.swift#L1558)、[ADR-0031](../adr/0031-host-permission-management.md#decision)。
 
 ## 6. 手机附件与电脑文件
 
@@ -164,9 +151,9 @@ Codex 还有重要对账边界：首次输入前 Host 已保存的下一轮 mode
 
 典型路径：点回形针 → 系统文件选择器多选 → composer 出现附件 chip 与上传状态 → 输入正文并发送。源码单次选择取最多 10 个，单文件上限 100 MiB；不把该上限解释成已经证明所有跨批选择场景都严格累计限额。文件上传到会话 cwd 下约定的 `.orbis-uploads/`，iOS 路径还按内容 hash 分组。消息引用完成后的 Host 文件路径，上传与消息提交是两个步骤。
 
-附件不是独立投递通道：正文与路径一起进入同一 delivery、排队和失败流程。上传未完可以先等待；失败 / 取消附件需要用户处理。不能把通用文件上传描述成已实现所有模型原生图像 / 多模态 content parts。
+附件不是独立投递通道：正文与路径一起进入同一 delivery、排队和失败流程。上传未完可以先等待；失败 / 取消附件需要用户处理。当前实现采用附件路径语义，模型原生图像 / 多模态 content parts 的覆盖仍有限。
 
-证据：[ArtifactUploadStore.kt:46](../../android/app/src/main/java/com/orbising/orbis/ArtifactUploadStore.kt#L46)、[MainActivity.kt:1695](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L1695)、[FileTransfers.swift:311](../../ios/Orbis/Orbis/FileTransfers.swift#L311)、[ADR-0012:19](../adr/0012-receiver-driven-upload.md)、[ADR-0055:108](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L108)。
+证据：[ArtifactUploadStore.kt:46](../../android/app/src/main/java/com/orbising/orbis/ArtifactUploadStore.kt#L46)、[MainActivity.kt:1695](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L1695)、[FileTransfers.swift:311](../../ios/Orbis/Orbis/FileTransfers.swift#L311)、[ADR-0012:19](../adr/0012-receiver-driven-upload.md)、[ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#5-后端能力与-slash-子路径)。
 
 点附件叉号时，未传完的取消传输，已传完的从这条待发消息移除。发送受理后清掉 composer 的附件关联，不等于取消已交给等待消息的上传。附件关联由状态层保存，不只存在于一个页面的瞬时布局中。证据：[MainActivity.kt:2147](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2147)、[MainActivity.kt:2244](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2244)、[RemoteViewModel.kt:392](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt#L392)、[ChatView.swift:565](../../ios/Orbis/Orbis/ChatView.swift#L565)、[FileTransfers.swift:343](../../ios/Orbis/Orbis/FileTransfers.swift#L343)。
 
@@ -175,7 +162,7 @@ Codex 还有重要对账边界：首次输入前 Host 已保存的下一轮 mode
 | 场景 | Android 当前源码 | iOS 当前源码 | 审计判断 |
 | --- | --- | --- | --- |
 | 只有附件，没有正文 | `canSubmitInput` 空正文返回 false；运行时空正文又按停止模式判断 | `canSubmit` 允许非空附件，停止按钮也检查附件为空；发送可生成默认正文 | Android 底层支持附件正文兜底，不等于当前 UI 已开放纯附件发送 |
-| running followUp / steer 带附件 | 三个运行中分支只调用 `sendMessage(input, delivery)`；facade 附件参数默认空列表 | 所有非 Slash delivery 都传附件 IDs | Android 这些分支未提交当前附件，属于源码路径缺口，不应复制成产品规则 |
+| running followUp / steer 带附件 | 三个运行中分支只调用 `sendMessage(input, delivery)`；facade 附件参数默认空列表 | 所有非 Slash delivery 都传附件 IDs | Android 这些分支未提交当前附件，属于待修复的源码路径缺口 |
 | idle 带附件 | 显式传完成路径与上传 task IDs | 传附件 IDs，状态层等待完成 | 两端存在正常附件提交路径 |
 
 Android 证据：[MessagePresentation.kt:201](../../android/app/src/main/java/com/orbising/orbis/MessagePresentation.kt#L201)、[MainActivity.kt:2658](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2658)、[MainActivity.kt:2078](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2078)、[MainActivity.kt:2236](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2236)、[RemoteViewModel.kt:374](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt#L374)。iOS 证据：[ChatView.swift:103](../../ios/Orbis/Orbis/ChatView.swift#L103)、[ChatView.swift:515](../../ios/Orbis/Orbis/ChatView.swift#L515)、[ChatView.swift:565](../../ios/Orbis/Orbis/ChatView.swift#L565)。
@@ -196,43 +183,43 @@ iOS 在缓存会话里显示“查看这个分支的缓存”，只切本地缓�
 
 ### 7.2 消息菜单与 Rewind
 
-当前 r48 将消息操作菜单和显式文字选择分开：打开消息菜单后可复制消息、选择文字；满足条件的用户消息还有 Rewind。选择文字进入只读选择层，不能继续使用旧版“长按即自动选字并替换顶栏”的描述。
+当前 r48 将消息操作菜单和显式文字选择分开：打开消息菜单后可复制消息、选择文字；满足条件的用户消息还有 Rewind。选择文字进入只读选择层。
 
 Rewind 只为当前路径上、Host 历史目录声明可操作的用户节点提供；连接就绪、主回合 idle 且没有相关待处理动作时才开放。历史改写不乐观，等确认后重建聊天，必要时恢复原文到输入框。证据：[MessageActions.kt:25](../../android/app/src/main/java/com/orbising/orbis/MessageActions.kt#L25)、[MainActivity.kt:2386](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2386)、[ChatView.swift:298](../../ios/Orbis/Orbis/ChatView.swift#L298)、[OrbisStore.swift:636](../../ios/Orbis/Orbis/OrbisStore.swift#L636)、[ADR-0051:607](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)。
 
 ### 7.3 不同后端的“回到这里”
 
-| 后端 | 当前语义 | 对用户必须说清楚的边界 |
+| 后端 | 当前语义 | 作用范围 |
 | --- | --- | --- |
 | Pi | 同 Session 内换历史 leaf | 不等同 Git checkout |
 | Codex / Codex Desktop | 同 Session / thread 原地回退；用户节点退到该轮前，助手节点保留所选完整轮 | 不隐式 fork，不回滚工作区文件；回退、历史刷新与电脑显示刷新是不同结果 |
-| DSH | 原生 fork 可返回新的 Session ID；App 打开新 Session 并把编辑草稿交给它 | 原会话保留，不能用 Codex 的原地截断文案概括 |
+| DSH | 原生 fork 可返回新的 Session ID；App 打开新 Session 并把编辑草稿交给它 | 原会话保留，编辑后的输入属于新分支 |
 
-这张表只描述已核对的后端路径，不为其他后端补造相同行为。Android 在回执中明确区分新 Session 与原地移动，iOS 也根据返回 Session 身份决定激活还是刷新。证据：[MainActivity.kt:1808](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L1808)、[OrbisStore.swift:1607](../../ios/Orbis/Orbis/OrbisStore.swift#L1607)、[ADR-0023:33](../adr/0023-codex-revert-and-client-refresh.md#L33)。
+这张表只描述已核对的后端路径，不为其他后端补造相同行为。Android 在回执中明确区分新 Session 与原地移动，iOS 也根据返回 Session 身份决定激活还是刷新。证据：[MainActivity.kt:1808](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L1808)、[OrbisStore.swift:1607](../../ios/Orbis/Orbis/OrbisStore.swift#L1607)、[ADR-0023](../adr/0023-codex-revert-and-client-refresh.md#1-tree-保持原地-revert-的语义)。
 
 ### 7.4 输入区 Git branch 是另一件事
 
-cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对应的 Git 分支或 detached HEAD。它只读，不执行 checkout，也不向 Agent 发一条命令。状态尚未同步、非仓库或未获取到分支时明确显示对应事实。顶栏“历史与分支”因此用时钟入口，不能把它和 Git 分支行合成一个“切换分支”。证据：[MainActivity.kt:2035](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2035)、[ComposerSessionInfo.kt:68](../../android/app/src/main/java/com/orbising/orbis/ComposerSessionInfo.kt#L68)、[HostConnection.kt:865](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L865)、[OrbisStore.swift:592](../../ios/Orbis/Orbis/OrbisStore.swift#L592)。
+cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对应的 Git 分支或 detached HEAD。它只读，不执行 checkout，也不向 Agent 发一条命令。状态尚未同步、非仓库或未获取到分支时明确显示对应事实。顶栏“历史与分支”因此用时钟入口，Git 分支行保持独立只读语义。证据：[MainActivity.kt:2035](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2035)、[ComposerSessionInfo.kt:68](../../android/app/src/main/java/com/orbising/orbis/ComposerSessionInfo.kt#L68)、[HostConnection.kt:865](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L865)、[OrbisStore.swift:592](../../ios/Orbis/Orbis/OrbisStore.swift#L592)。
 
 ## 8. Thinking、工具详情和轮末文件审阅
 
 ### 8.1 回复如何阅读
 
-聊天按用户消息与助手回合组织，thinking 可折叠；tool call 与 result 合并显示，避免把原始工具回执当成另一个助手回答。工具概要可含名称、状态、耗时、退出码、错误和省略说明。打开本地概要不应自动读取所有原文，长会话也不能为了展示折叠标题而预取完整输出。
+聊天按用户消息与助手回合组织，thinking 可折叠；tool call 与 result 合并显示，避免把原始工具回执当成另一个助手回答。工具概要可含名称、状态、耗时、退出码、错误和省略说明。完整原文按显式查看操作读取。
 
 ### 8.2 工具原文的原生路径
 
 典型步骤：展开工具概要 → 点“参数 / 输出 / 结果”的明确读取入口 → 进入工具详情 → 读取下一页或开启跟随输出 → 按需复制已读取内容、导出当前部分或取消导出。iOS 导出完成还可分享导出文件。
 
-详情有读取范围、分页、是否 final、来源缺口和内存保留窗口。到当前范围末尾不一定表示工具停止；空文本、尚未产生、不可用、被截断和不可恢复缺口是不同状态。取消详情读取或导出只取消该次读操作，不停止 Agent。离页 / 进入后台时关闭读取应保留准确作用域，不能误取消别人的工具。
+详情有读取范围、分页、是否 final、来源缺口和内存保留窗口。到当前范围末尾不一定表示工具停止；空文本、尚未产生、不可用、被截断和不可恢复缺口是不同状态。取消详情读取或导出只取消该次读操作，不停止 Agent。离页与后台取消按读取归属管理。
 
-证据：[ToolViews.kt:35](../../android/app/src/main/java/com/orbising/orbis/ToolViews.kt#L35)、[ToolViews.kt:115](../../android/app/src/main/java/com/orbising/orbis/ToolViews.kt#L115)、[ChatView.swift:929](../../ios/Orbis/Orbis/ChatView.swift#L929)、[ChatView.swift:1074](../../ios/Orbis/Orbis/ChatView.swift#L1074)、[ToolDetailView.swift:4](../../ios/Orbis/Orbis/ToolDetailView.swift#L4)、[ADR-0045:42](../adr/0045-tool-summaries-and-on-demand-content.md#L42)。
+证据：[ToolViews.kt:35](../../android/app/src/main/java/com/orbising/orbis/ToolViews.kt#L35)、[ToolViews.kt:115](../../android/app/src/main/java/com/orbising/orbis/ToolViews.kt#L115)、[ChatView.swift:929](../../ios/Orbis/Orbis/ChatView.swift#L929)、[ChatView.swift:1074](../../ios/Orbis/Orbis/ChatView.swift#L1074)、[ToolDetailView.swift:4](../../ios/Orbis/Orbis/ToolDetailView.swift#L4)、[ADR-0045](../adr/0045-tool-summaries-and-on-demand-content.md#1-分离工具摘要内容引用和原始内容)。
 
 ### 8.3 轮末文件审阅
 
 典型步骤：读完助手回合 → 查看轮末文件概况 → 点某文件 → 独立 diff 查看器 → 左右切换文件 / 加载文件清单 → 返回聊天。原生已接入文件名、增删数、差异行号与颜色、文件状态、清单分页、按文件读取、缓存和版本隔离。只在选中文件落位后读正文，邻页外壳不等于已经预取相邻文件 diff。
 
-这里的范围是“本轮净变化”，不是 `git diff HEAD` 的整个当前工作区，也不提供代码撤销按钮。文件后来再次改动不能改变已冻结的历史审阅内容。partial / unavailable / binary / 超限等状态不能显示成“没有变化”。
+这里的范围是“本轮净变化”，不是 `git diff HEAD` 的整个当前工作区，也不提供代码撤销按钮。历史审阅绑定冻结版本，覆盖与可用性按实际来源呈现。
 
 | 来源 | 当前实现边界 |
 | --- | --- |
@@ -241,19 +228,19 @@ cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对
 | DSH Web | 时间窗快照，尚无执行前屏障，明确 partial；不拿另一套原生 changes 接口假装同一来源 |
 | 空原生 diff | 可能是净文本为零或记录失效，不能证明整个工作区无修改 |
 
-证据：[TurnFileChangesView.swift:15](../../ios/Orbis/Orbis/TurnFileChangesView.swift#L15)、[TurnFileChangeViews.kt:63](../../android/app/src/main/java/com/orbising/orbis/TurnFileChangeViews.kt#L63)、[ADR-0052:175](../adr/0052-turn-file-changes-and-on-demand-diff.md#L175)、[ADR-0052:190](../adr/0052-turn-file-changes-and-on-demand-diff.md#L190)、[ADR-0052:198](../adr/0052-turn-file-changes-and-on-demand-diff.md#L198)。
+证据：[TurnFileChangesView.swift:15](../../ios/Orbis/Orbis/TurnFileChangesView.swift#L15)、[TurnFileChangeViews.kt:63](../../android/app/src/main/java/com/orbising/orbis/TurnFileChangeViews.kt#L63)、[ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md#9-初版实现接入与剩余验收)、[ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md#9-初版实现接入与剩余验收)、[ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md#91-2026-11-01codex--codex-desktop-原生轮次记录验证中)。
 
-工具分页、跟随、导出及完整 diff 阅读是原生深层功能。独立 HTML 可以选取代表状态演示，但文档和入口文案必须明确演示深度；不能因为页面没有模拟全部网络细节，就声称原生没有这些能力，也不能把静态示例标为已从真实电脑读到。
+工具分页、跟随、导出及完整 diff 阅读属于原生深层功能；独立设计稿按实际演示深度说明范围，源码接入与真实读取分别记录。
 
 ## 9. Claude 后台子任务
 
-主回合与后台任务可以同时拥有不同状态。主回合 idle 时即使仍有子任务运行，composer 仍按主回合允许正常输入；不能因为存在后台工作就永久变为停止按钮。主回合 stop 也不承诺全部子任务停止。
+主回合与后台任务可以同时拥有不同状态。主回合 idle 时即使仍有子任务运行，composer 仍按主回合允许正常输入。主回合 stop 也不承诺全部子任务停止。
 
-用户在 composer 附近点开紧凑子任务区，看到任务名、kind、status 及可确认的 parent 关系；列表最大高度 160，内部滚动。任务以真实 ID 区分，同名不合并。未知 / 读取失败时保留最后已知清单并说明“正在核对”，不能闪成没有任务；其他后端没有来源时不伪造空清单。
+用户在 composer 附近点开紧凑子任务区，看到任务名、kind、status 及可确认的 parent 关系；列表最大高度 160，内部滚动。任务以真实 ID 区分，同名不合并。未知 / 读取失败时保留最后已知清单并说明“正在核对”；来源缺席时明确呈现可用性。
 
-首版只读，没有子 transcript 查看、逐项 stop 或停止全部后台任务。活跃任务、库存未知 / 截断时撤回 quit 能力；用户须先在电脑结束子任务，待状态同步后再关闭主会话。后台子任务不进入普通会话目录、历史恢复、归档或批量关闭。
+首版只读，没有子 transcript 查看、逐项 stop 或停止全部后台任务。活跃任务、库存未知 / 截断时撤回 quit 能力；子任务在电脑结束并完成状态同步后，主会话恢复关闭能力。后台子任务不进入普通会话目录、历史恢复、归档或批量关闭。
 
-证据：[BackgroundTasks.kt:18](../../android/app/src/main/java/com/orbising/orbis/BackgroundTasks.kt#L18)、[ChatView.swift:1696](../../ios/Orbis/Orbis/ChatView.swift#L1696)、[RemoteState.kt:89](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L89)、[RemoteState.kt:109](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L109)、[ADR-0062:19](../adr/0062-claude-background-agents-and-session-activity.md#L19)、[ADR-0062:41](../adr/0062-claude-background-agents-and-session-activity.md#L41)。
+证据：[BackgroundTasks.kt:18](../../android/app/src/main/java/com/orbising/orbis/BackgroundTasks.kt#L18)、[ChatView.swift:1696](../../ios/Orbis/Orbis/ChatView.swift#L1696)、[RemoteState.kt:89](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L89)、[RemoteState.kt:109](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt#L109)、[ADR-0062](../adr/0062-claude-background-agents-and-session-activity.md#1-三类事实分开)、[ADR-0062](../adr/0062-claude-background-agents-and-session-activity.md#4-控制范围与关闭)。
 
 ## 10. 返回、停止、关闭、归档与删除
 
@@ -268,9 +255,9 @@ cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对
 | 删除下载记录与本机文件 | 手机任务与本地副本 | 不删除电脑源文件 |
 | 删除本机失败 / 未确认消息行 | 客户端恢复副本 | 不删除电脑历史，也不能证明旧输入从未执行 |
 
-关闭必须先确认当前能力。能力未就绪、原生不支持、子任务活跃 / 未知时拒绝；不能先让卡片消失再假装已退出。关闭操作本身允许账本乐观隐藏，重连后仍在运行则恢复并说明未确认；停止、权限与历史改写则不乐观完成。证据：[HostConnection.kt:1504](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1504)、[HostConnection.kt:1573](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1573)、[OrbisStore.swift:1310](../../ios/Orbis/Orbis/OrbisStore.swift#L1310)、[OrbisStore.swift:1885](../../ios/Orbis/Orbis/OrbisStore.swift#L1885)、[ADR-0049:349](../adr/0049-optimistic-send-and-source-reconciliation.md#L349)。
+关闭按当前能力准入。能力未就绪、原生不支持、子任务活跃 / 未知时拒绝。关闭操作本身允许账本乐观隐藏，重连后仍在运行则恢复并说明未确认；停止、权限与历史改写则不乐观完成。证据：[HostConnection.kt:1504](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1504)、[HostConnection.kt:1573](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1573)、[OrbisStore.swift:1310](../../ios/Orbis/Orbis/OrbisStore.swift#L1310)、[OrbisStore.swift:1885](../../ios/Orbis/Orbis/OrbisStore.swift#L1885)、[ADR-0049](../adr/0049-optimistic-send-and-source-reconciliation.md#75-操作种类)。
 
-归档需要安全连接、已知会话类型且没有同项操作在处理。没有在线 Runtime 的会话可归档；在线 Pi / Claude 必须先退出，在线 Codex / DSH 等路径要求空闲。Android 对 Codex / DSH 显式检查一个关联 Runtime 的 idle；iOS 检查该 Session 的所有在线 Runtime 均 idle。两端恢复归档都针对 Session，不由关闭在线卡片替代。证据：[SessionDrawer.kt:839](../../android/app/src/main/java/com/orbising/orbis/SessionDrawer.kt#L839)、[SessionViews.swift:289](../../ios/Orbis/Orbis/SessionViews.swift#L289)、[OrbisStore.swift:1177](../../ios/Orbis/Orbis/OrbisStore.swift#L1177)。
+归档需要安全连接、已知会话类型且没有同项操作在处理。没有在线 Runtime 的会话可归档；在线 Pi / Claude 先退出，在线 Codex / DSH 等路径要求空闲。Android 对 Codex / DSH 显式检查一个关联 Runtime 的 idle；iOS 检查该 Session 的所有在线 Runtime 均 idle。两端恢复归档都针对 Session，不由关闭在线卡片替代。证据：[SessionDrawer.kt:839](../../android/app/src/main/java/com/orbising/orbis/SessionDrawer.kt#L839)、[SessionViews.swift:289](../../ios/Orbis/Orbis/SessionViews.swift#L289)、[OrbisStore.swift:1177](../../ios/Orbis/Orbis/OrbisStore.swift#L1177)。
 
 ## 11. 下载到手机的完整路径
 
@@ -281,11 +268,11 @@ cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对
 - iOS 还可在下载页直接输入电脑文件的完整路径。
 - 点聊天中的电脑文件路径或 artifact 卡，同样创建该 Host 的下载任务。
 
-文件浏览是远端电脑文件系统，不是选择手机保存目录。已配对设备能够请求 Host 账户可读取的文件，是否存在、是否可读仍由源端检查。证据：[MainActivity.kt:2035](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2035)、[RemoteFileBrowser.kt:149](../../android/app/src/main/java/com/orbising/orbis/RemoteFileBrowser.kt#L149)、[DownloadView.swift:24](../../ios/Orbis/Orbis/DownloadView.swift#L24)、[ADR-0005:5](../adr/0005-receiver-driven-range-download.md)。旧 ADR 中已注明被替代的主动推送内容不能作为现有能力。
+文件浏览是远端电脑文件系统，不是选择手机保存目录。已配对设备能够请求 Host 账户可读取的文件，是否存在、是否可读仍由源端检查。证据：[MainActivity.kt:2035](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2035)、[RemoteFileBrowser.kt:149](../../android/app/src/main/java/com/orbising/orbis/RemoteFileBrowser.kt#L149)、[DownloadView.swift:24](../../ios/Orbis/Orbis/DownloadView.swift#L24)、[ADR-0005:5](../adr/0005-receiver-driven-range-download.md)。当前下载入口以接收方驱动协议为准。
 
 ### 11.2 任务状态与完成后的操作
 
-下载任务按 Host 隔离，显示文件名、进度、状态及必要错误。进行中点击暂停，失败点击重试，暂停点击继续；重启传输保留可用偏移，断线按传输生命周期暂停。换页面不等于换任务归属。收到全部字节仍须完成长度 / hash 验证，不能提前发布完成文件。
+下载任务按 Host 隔离，显示文件名、进度、状态及必要错误。进行中点击暂停，失败点击重试，暂停点击继续；重启传输保留可用偏移，断线按传输生命周期暂停。换页面不等于换任务归属。收到全部字节仍须完成长度 / hash 验证，验证完成后发布本地文件。
 
 | 操作 | Android | iOS |
 | --- | --- | --- |
@@ -297,34 +284,19 @@ cwd 旁的分支名来自 Host 的 `runtime.git.request`，展示工作目录对
 
 证据：[HostConnection.kt:1841](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt#L1841)、[FileTransfers.swift:247](../../ios/Orbis/Orbis/FileTransfers.swift#L247)、[MainActivity.kt:2750](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2750)、[MainActivity.kt:2885](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2885)、[DownloadView.swift:56](../../ios/Orbis/Orbis/DownloadView.swift#L56)、[DownloadView.swift:64](../../ios/Orbis/Orbis/DownloadView.swift#L64)。
 
-## 12. 独立 mobile HTML 应保留什么
+## 12. 独立设计稿的表达原则
 
-这份审计不要求在一个演示文件里实现真实 Host、网络传输或每个深层工具读取器。它要求保留原生用户心智中不可互换的对象、状态和动作；主任务的 HTML 覆盖与测试应单独记录。
-
-| 页面 / 场景 | 最少需要表达的语义 | 可以单独说明演示范围的深层功能 |
-| --- | --- | --- |
-| 进入聊天 | 当前电脑、Agent、Session、在线 / 缓存 / 启动状态；保留阅读与草稿 | 真实缓存分页、源端订阅、恢复握手 |
-| composer | idle / running、停止、followUp / steer 能力差别、附件等待 | 完整后端状态矩阵的网络竞态 |
-| 发送恢复 | 已受理、排队、失败、未确认；核对与明确重发区别 | 精确消息身份账本与重连事务 |
-| 交互面板 | 请求级允许 / 拒绝 / 表单提交，不把收起当审批 | 所有问卷 schema 与秘密字段持久化策略 |
-| 模型 / 权限 | 当前来源、切换中 / 未确认；权限等真实确认 | 原生字段级对账、provider 热加载 |
-| 历史 | 只预览与实际历史移动分开；后端回退 / fork 差别 | 全历史图、完整原生桌面刷新 |
-| Git 与文件审阅 | Git branch 只读；轮末 diff 的来源和 partial 范围 | 大文件分页、版本缓存和逐文件读取 |
-| tools / thinking | 折叠概要、明确按需读取入口、缺口提示 | 全量工具原文分页、跟随输出、导出 |
-| 后台任务 | 主回合与后台活动独立；清单只读 | 尚未实现的逐个停止 / 子 transcript 不得伪装已支持 |
-| 关闭 / 归档 / 下载 | Runtime、Session、本地传输三个操作对象分开 | 真正进程退出、文件传输与系统分享 |
-
-源码差异应作为审计发现保留，不能静默转成规范：Android 纯附件与运行中附件缺口、目录默认恢复与 iOS 缓存优先、权限应用步骤、下载完成动作、离线历史分支能力均已在本文列明。HTML 选择统一体验时，可以改进表现，但不能称这些双端路径原本就完全一致。
+独立设计稿沿真实领域对象与原生能力组织操作，以明确状态呈现受理、执行、失败和核对。设计简化及源码平台差异分别记录，演示深度随入口说明；具体功能关系见[设计稿](orbis-menu-concept.md)。
 
 ## 13. 验证边界与后续证据
 
-本次验证范围是源码 / ADR 阅读、关键调用链交叉核对，以及新增 Markdown 的本地链接和格式一致性。按[影响选测策略](../../AGENTS.md#测试)，纯文档无需构建或设备回归。未执行任何原生操作，不占用设备、构建目录、端口或后台进程租约。
+本文依据源码、ADR 和关键调用链交叉核对，并完成文档静态检查；原生运行与设备验收以对应历史证据为准。
 
-| 结论层级 | 本审计能够说明的内容 | 不能据此说明的内容 |
-| --- | --- | --- |
-| 源码路径 | 控件入口、调用参数、状态检查、平台差异 | 用户当前安装包已包含；真实后端全部返回符合预期 |
-| ADR 契约 | 操作语义、身份归属、未知与失败恢复、能力限制 | 每条契约均已在所有客户端分支完备落地 |
-| 历史验证记录 | 相关文档明确保留已运行与未运行范围 | 累加历史测试数量当作当前源码完整复测 |
-| 本次文档检查 | 引用目标存在、行号范围有效、正文与已查证据一致 | 原生功能验收、性能数据、真实设备使用结论 |
+| 证据 | 对应范围 |
+| --- | --- |
+| 源码路径 | 入口、参数、状态检查与平台差异 |
+| ADR 契约 | 领域语义、身份与恢复原则 |
+| 历史记录 | 对应版本实际执行的验证 |
+| 文档静态检查 | 引用、结构与所读事实一致性 |
 
-既有未完成项必须保留：完整输入状态真实后端门禁见 [ADR-0055:180](../adr/0055-agent-input-lifecycle-and-state-coverage.md#L180)；Codex 选型对账的实施 / 验证边界见 [ADR-0061:75](../adr/0061-codex-selection-and-native-settings-reconciliation.md#L75)；Claude 后台任务设备与真实原生联动未验收见 [ADR-0062:63](../adr/0062-claude-background-agents-and-session-activity.md#L63)；轮次文件审阅仍有真实后端、网络、可访问性和手动门禁缺口，见 [ADR-0052:194](../adr/0052-turn-file-changes-and-on-demand-diff.md#L194)、[ADR-0052:209](../adr/0052-turn-file-changes-and-on-demand-diff.md#L209)。消息菜单、复制反馈等新基线仍以 [ADR-0051 的验证记录](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) 为准。本文不把“已接入 / 验证中”提升为“验收通过”。
+待完成验收包括：完整输入状态真实后端门禁见 [ADR-0055](../adr/0055-agent-input-lifecycle-and-state-coverage.md#verification)；Codex 选型对账的实施 / 验证边界见 [ADR-0061](../adr/0061-codex-selection-and-native-settings-reconciliation.md#验证与实际完成范围)；Claude 后台任务设备与真实原生联动未验收见 [ADR-0062](../adr/0062-claude-background-agents-and-session-activity.md#实施与验证记录2026-11-03)；轮次文件审阅仍有真实后端、网络、可访问性和手动门禁缺口，见 [ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md#evidence)、[ADR-0052](../adr/0052-turn-file-changes-and-on-demand-diff.md#evidence)。消息菜单、复制反馈等新基线仍以 [ADR-0051 的验证记录](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) 为准。各项状态以其实际证据为准。

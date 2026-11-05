@@ -44,7 +44,7 @@ APP 从第一个版本起就把"已配对电脑"当成单数：`CredentialStore`
 - 下载与上传任务带上 `hostId`；旧记录在只有一台 Host 时迁移认领，多于一台时保持隐藏，绝不复制进每台 Host 的拉取调度器。
 - 上传、草稿、别名、历史缓存、最近打开的会话同样按 `(device, hostId, …)` 或 `hostId` 寻址。
 
-### 4. 配对不打扰在线连接
+### 4. 配对与在线连接独立
 
 新增电脑使用独立的 `RelayClient` 完成 `pair-accept`，不复用任何已在线连接，也不做全量 `disconnect()`。旧实现的"配对独占连接"约束因此消失；`pairingAwaitingAccept` 只保留为单连接内的兼容标志。
 

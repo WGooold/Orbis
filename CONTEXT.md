@@ -1,88 +1,74 @@
 # Orbis
 
-Orbis lets a paired mobile device observe and operate the coding agents a resident computer-side Host manages — today Pi, Codex and DeepSeek Harness — without becoming a terminal emulator, remote desktop, or process manager.
+Orbis lets a paired mobile device observe and operate the coding agents a resident computer-side Host manages — today Pi, Codex and DeepSeek Harness.
 
 ## Runtime and routing
 
 **Mobile client**:
 A native phone UI that acts as the remote frontend for the agent sessions a Host serves.
-_Avoid_: Terminal emulator, remote desktop
 
 **Host**:
 The resident computer-side process that owns the pairing identity, device records, encrypted channels, transport paths, file serving, and the aggregated session directory. ADR-0032 additionally makes it the owner of the unified Agent state model and the client-facing projections of shared Host services; that architecture decision is accepted, and the model now carries real facts for the Host-side domains (the per-module migration state lives in `packages/protocol/src/agent-state.test.ts`). Agent backends interpret native business semantics; the common Host model manager validates and publishes their standardized facts.
-_Avoid_: Relay proxy, desktop gateway
 
 **Agent backend**:
 One computer-side agent integration behind the Host, addressed by an `agentKind`; it discovers, activates, drives, and reports the sessions of one agent product and integration path. It owns native interpretation, verified recovery, and the standardized facts supplied to the Host Agent state model (ADR-0032).
-_Avoid_: Generic agent abstraction
 
 **Agent kind**:
-The `pi` | `codex` | `codexDesktop` | `dsh` discriminator that labels a session and selects a backend. Codex terminal and desktop are separate integration paths for the same agent product. It never selects a client-side display-projection rule. DSH connects to the authenticated local Web service and reads canonical events through its native RPC; see ADR-0020.
-_Avoid_: Backend branch in UI logic
+The `pi` | `codex` | `codexDesktop` | `dsh` discriminator that labels a Session and selects its backend. Codex terminal and desktop are separate integration paths for the same agent product. DSH uses its authenticated local Web service and native event RPC; see ADR-0020.
 
 **Agent state model**:
-The Host-managed logical state for one agent Session, keyed by Host, agent kind and Session identity. It covers history and head, live messages and tools, execution, delivery, interactions, permissions, model and context, capabilities and resources, notifications, and references to providers, workspace, artifacts and diagnostic records. Native execution and history remain source authority; the Host owns the standardized client-facing projection. See ADR-0032; this is the accepted target architecture, not a claim that the current implementation has completed it.
-_Avoid_: Event forwarding wrapper, a full-history database, a model-provider selection
+The Host-managed logical state for one agent Session, keyed by Host, agent kind and Session identity. It covers history and head, live messages and tools, execution, delivery, interactions, permissions, model and context, capabilities and resources, notifications, and references to providers, workspace, artifacts and diagnostic records. Native execution and history remain source authority; the Host owns the standardized client-facing projection. See ADR-0032 for the accepted architecture and the implementation status of each domain.
 
 **Device view**:
-A Host-owned projection for one paired device that filters notification dismissals, private command receipts and device-scoped operations from shared state. It does not redefine shared Agent facts. See ADR-0032.
+A Host-owned, device-scoped projection of shared Agent facts, notification dismissals, private command receipts and operations. See ADR-0032.
 
 **Tool summary**:
 A bounded, deterministic execution projection keyed by Host, agent kind, Session and tool-call identity. It contains verified phase/status, ordering and references to available arguments, execution output and final result. Raw tool content is removed before common Host state, Registry and Pi loopback publication; native execution/history keep their own complete content. See ADR-0045.
 
 **Tool inventory**:
-The current Session's executing and finished-but-uncommitted tool summaries, with an independent epoch/revision. Chat checkpoints reference an exact inventory/source dependency; devices acquire fixed pages and continuous patches before advancing the complete applied baseline. Committed tools move atomically into historical summary Entries. It is not a full-history tool database. See ADR-0045 §5/§9.
+The current Session's executing and finished-but-uncommitted tool summaries, versioned by an independent epoch/revision. Checkpoints reference its exact source dependency; fixed pages and continuous patches establish the applied baseline. Committed tools move atomically into historical summary Entries. See ADR-0045 §5/§9.
 
 **Tool content read**:
-A device-private, bounded UTF-8 range read of arguments, execution output or final result. The locator identifies a tool and part, while a leased read identity fixes the content epoch and range. Detail text never enters shared chat state, history coverage or applied baselines. Missing ranges and expired versions are explicit; cancellation stops the read, not the tool. See ADR-0045 §4/§6/§7.
+A device-private, bounded UTF-8 range read of arguments, execution output or final result. A leased identity fixes the tool part, content epoch and range. Missing ranges and expired versions have explicit outcomes, and cancellation ends the read. See ADR-0045 §4/§6/§7.
 
 **Client-local state**:
 Device-owned pairing and selection, cache and applied baselines, logical read operations, outbox, local transfer files and scheduling, drafts, aliases, viewport and preferences. These remain local while remote domain facts come from the Host model. See ADR-0032.
 
 **Pi runtime**:
 One already-running Pi process attached to the Host over the loopback endpoint. It owns its Session, agent, loaded resources, and command semantics.
-_Avoid_: Desktop gateway, managed process
 
 **Runtime ID**:
 A connection-level identifier for exactly one runtime connection and the routing key for requests to it. A Host is one such connection.
-_Avoid_: Session ID
 
 **Runtime role**:
-The `agent` | `host` discriminator a runtime declares when it authenticates. The Relay accepts `host` only, so it never holds an agent connection.
-_Avoid_: Runtime kind
+The `agent` | `host` discriminator declared at authentication. Relay connections use the `host` role.
 
 **Session ID**:
-Diagnostic identity owned by an agent backend for a Session; it is not a remote routing key.
+An agent-backend-owned diagnostic identity for a Session.
 
 **Relay**:
-The authenticated forwarding boundary between paired devices and exactly one Host. It reads only the routing header, carries an opaque ciphertext, and owns no agent or Session semantics.
-_Avoid_: Backend runtime, session server
+The authenticated forwarding boundary between paired devices and one Host. It routes opaque ciphertext using the routing header.
 
 **Relay operator console**:
-The server-hosted administrative UI for Relay health, Host registration visibility, Relay-side Host disablement, device credential revocation, and audit events. It uses a short-lived browser session derived from the administrator token and never exposes decrypted Session content or replaces Host-side pairing management. See ADR-0015.
-_Avoid_: Host management server, conversation dashboard
+The server-hosted administrative UI for Relay health, Host registration, Relay-side disablement, device credential revocation and audit events. A short-lived browser session derives from the administrator token. See ADR-0015.
 
 **Device**:
 A paired phone installation identified by a unique, revocable pairing record held by the Host.
 
 **Paired Host**:
 One computer a phone installation holds a pairing record for. A phone may hold several at once; `hostId` is the identity that dedupes them, and re-pairing a computer replaces its record instead of adding another.
-_Avoid_: Account, server
 
 **Current Host**:
-The one paired Host whose state the phone's interactive screens operate on. Switching it changes where commands are addressed; it does not connect or disconnect the other paired Hosts.
-_Avoid_: Active connection
+The paired Host addressed by the phone's interactive screens. Other paired Hosts retain their independent connections.
 
 **Runtime event**:
 An ordered state update emitted for one runtime connection toward its paired devices.
 
 **Runtime notification**:
-A current condition or operation outcome standardized by its Agent backend or Pi RuntimeBridge. The source owns native meaning and verified recovery; the Host owns notification identities, outcome expiration, device-local dismissal, and an independent versioned projection. Notification snapshots and reconciliation do not depend on Session history versions or transport sequence. See ADR-0028.
-_Avoid_: A permanent runtime error string, chat history entry, source recovery inferred by the phone
+A condition or operation outcome standardized by its Agent backend or Pi RuntimeBridge. The source owns native meaning and recovery; the Host owns identity, outcome expiration, device-local dismissal and an independently versioned projection. See ADR-0028.
 
 **Runtime command**:
 An authenticated request addressed to one runtime, such as a chat message, Slash invocation, stop request, interaction response, download, upload, or session activation.
-_Avoid_: Runtime action
 
 ## Transport and pairing
 
@@ -92,216 +78,148 @@ The operator may make QQ verification optional for new activations; the Host-bou
 
 
 **Path**:
-One replaceable transport that carries envelopes between the Host and a device: `lan` or `relay`. The Host always prefers an authenticated LAN path and falls back to Relay; this order is not configurable (ADR-0050). The loopback endpoint is not a Path — it connects the computer's own agent processes to the Host.
-_Avoid_: Connection, channel, loopback
+A replaceable `lan` or `relay` transport between the Host and a device. The Host prefers authenticated LAN and falls back to Relay (ADR-0050). Local agent processes connect through the loopback endpoint.
 
 **Active path**:
-The single Path a device's outbound traffic currently uses. The Host chooses it and announces it with `device.path`; the device follows rather than deciding.
-_Avoid_: Primary connection
+The Path selected by the Host and announced to the device through `device.path`.
 
 **Secure session**:
 The end-to-end encrypted channel between a Host and one device, derived from that device's pairing record. Its lifetime is independent of any Path connection.
-_Avoid_: Encrypted connection, TLS session
 
 **Envelope**:
 The single encrypted message shape carried over every Path; it pairs a plaintext routing header with an opaque ciphertext.
-_Avoid_: Packet, message
 
 **Routing header**:
 The only part of an Envelope the Relay can read: frame kind, opaque room, sender, recipient, and sequence.
-_Avoid_: Message header, metadata
 
 **Pairing window**:
-A short-lived, single-use interval during which the Host accepts one new device. It is opened explicitly on the computer and renders a QR code; there is no standing "listening for pairing" state.
-_Avoid_: Pairing mode
+An explicitly opened, short-lived, single-use interval in which the Host accepts a new device through a displayed QR code.
 
 **Pairing QR**:
-The payload that carries the Host public key, a one-time pairing secret, the Relay URL and code, and the optional LAN endpoints. The Host public key arriving through the screen-to-camera channel is the root of trust; a QR without cryptographic material is rejected rather than reinterpreted.
-_Avoid_: Pairing code, connection string
+The Host public key, one-time pairing secret, Relay URL and code, and optional LAN endpoints. The screen-to-camera delivery of cryptographic material establishes the root of trust.
 
 **Loopback endpoint**:
 The Host's local, in-machine endpoint that speaks the same runtime messages as the Relay path, so a computer-side agent process only swaps URL and credential.
-_Avoid_: Local Relay, IPC channel
 
 **Loopback discovery file**:
-The `~/.orbis/loopback.json` descriptor — URL, token, host id, pid — that an agent process reads to find the local Host. Its token guards against stale files and duplicate Hosts, not against other local processes.
-_Avoid_: Port file, lock file
+The `~/.orbis/loopback.json` descriptor containing URL, token, Host ID and PID. Local agents use it to locate the current Host; the token identifies stale files and duplicate Hosts.
 
 ## Conversation, commands, and activation
 
 **Chat snapshot**:
 A bounded response returned by `session.sync` for current-state reconciliation, older history, or forward catch-up. The source selects an unchanged acknowledgement, live checkpoint, missing Entry suffix, or recovery tail from the client's applied baseline; see ADR-0026. Its replace/append/prepend mode describes range and display behavior; authority and source versions determine cache updates.
-_Avoid_: Full history
 
 **Canonical Session Entry**:
-A native-history node identified by Session ID and Entry ID within one paired Host's cache namespace. Verified source versions may correct cached parent relations and content; caches do not veto authoritative history. See ADR-0025 for the Codex versioned path.
+A native-history node identified by Session ID and Entry ID within one paired Host's cache namespace. Verified source versions govern cached parent relations and content. See ADR-0025 for the Codex versioned path.
 
 **Session Tree Cache**:
-The persistent collection of canonical Session Entries. All three synchronization ranges use one transactional ingestion path; branches are queries along parent relationships, not separate copies of shared ancestors. See ADR-0013.
+The persistent canonical Entry collection. Synchronization ranges share one transactional ingestion path; branches are queries along parent relationships. See ADR-0013.
 
 **Continuous coverage**:
-The ancestor chain the persistent cache has verified as complete. Cached nodes beyond a missing parent are useful partial data but do not advance this fact until the gap is filled and committed.
-_Avoid_: Last received Entry, display leaf
+The ancestor chain verified complete by the persistent cache. Coverage advances when missing parents are filled and committed.
 
 **Applied Session state**:
-The source epoch, sequence and head whose complete current state the mobile client has successfully applied after committing its referenced Entries. It permits conditional synchronization, but does not prove that every historical ancestor is cached. Metadata and buffered future patches do not advance it. See ADR-0026.
-_Avoid_: Received watermark, full history coverage
+The source epoch, sequence and head of the complete current state committed by the mobile client, including its referenced Entries. It supports conditional synchronization and remains distinct from historical coverage. See ADR-0026.
 
 **Session sync transaction**:
-One device-requested goal to read or reconcile a Session range, identified by `commandId` and correlated to the source response by `syncId`, with immutable parameters. It is a distributed transaction across the device, the Host, and the backend: the Host is its coordinator and owns the resources it reserves (active slot, byte reservation, delivery slots), so only the Host may decide its outcome and release them, while the device reports local results but never declares the transaction aborted. It ends in exactly one terminal state — `committed` (the device confirmed it applied the result) or `aborted` (failure or lease expiry). See ADR-0013 and ADR-0037.
-_Avoid_: Sync request (for the whole lifecycle), retry loop, history job
+A device-requested Session read or reconciliation goal with immutable parameters, identified by `commandId` and correlated through `syncId`. The Host coordinates its resources and outcome; device acknowledgement completes `committed`, while failure or lease expiry completes `aborted`. See ADR-0013 and ADR-0037.
 
 **Session sync attempt**:
 One dispatch of a Session sync transaction. Attempts may fail or be abandoned without changing the transaction's identity; only the transaction owner's lease can end the transaction. See ADR-0037.
-_Avoid_: Sync retry, duplicate request
 
 **Session sync lease**:
-The Host-declared upper bound on time without progress for a Session sync transaction. The lease is the sole basis for aborting a transaction and releasing its slot and byte reservation; it is renewed only by observed progress (backend stage advance, bytes written, device acknowledgement), never by elapsed time alone. See ADR-0037 §2/§7.
-_Avoid_: Timeout (for a fixed constant), idle timer
+The Host-owned progress deadline for a Session sync transaction. Observed progress renews the lease; expiry aborts the transaction and releases its reserved resources. See ADR-0037 §2/§7.
 
 **Sent versus applied**:
-`sent` means the Host finished writing the snapshot bytes to the transport; `applied` means the device committed the snapshot to its cache and advanced its applied Session state. Only `applied` (a device acknowledgement) may be treated as commit. See ADR-0026 and ADR-0037 §4.
-_Avoid_: Delivered, delivered successfully
-
-**Session sync transaction**:
-One device-requested goal to read or reconcile a Session range, identified by `commandId` and correlated to the source response by `syncId`, with immutable parameters. It is a distributed transaction across the device, the Host, and the backend: the Host is its coordinator and owns the resources it reserves (active slot, byte reservation, delivery slots), so only the Host may decide its outcome and release them, while the device reports local results but never declares the transaction aborted. It ends in exactly one terminal state — `committed` (the device confirmed it applied the result) or `aborted` (failure or lease expiry). See ADR-0013 and ADR-0037.
-_Avoid_: Sync request (for the whole lifecycle), retry loop, history job
-
-**Session sync attempt**:
-One dispatch of a Session sync transaction. Attempts may fail or be abandoned without changing the transaction's identity; only the transaction owner's lease can end the transaction. See ADR-0037.
-_Avoid_: Sync retry, duplicate request
-
-**Session sync lease**:
-The Host-declared upper bound on time without progress for a Session sync transaction. The lease is the sole basis for aborting a transaction and releasing its slot and byte reservation; it is renewed only by observed progress (backend stage advance, bytes written, device acknowledgement), never by elapsed time alone. See ADR-0037 §2/§7.
-_Avoid_: Timeout (for a fixed constant), idle timer
-
-**Sent versus applied**:
-`sent` means the Host finished writing the snapshot bytes to the transport; `applied` means the device committed the snapshot to its cache and advanced its applied Session state. Only `applied` (a device acknowledgement) may be treated as commit. See ADR-0026 and ADR-0037 §4.
-_Avoid_: Delivered, delivered successfully
+`sent` records completion of the Host's transport write. `applied` records the device's cache commit and applied-baseline advance; its acknowledgement commits the transaction. See ADR-0026 and ADR-0037 §4.
 
 **Session read operation**:
 A mobile-client operation with a defined goal for reading a Session range or reconciling its current state. Its lifecycle spans the work needed for that goal; it is distinct from a network attempt, source version, or visible loading indicator. See ADR-0029.
-_Avoid_: History Job, loading flag, wire request
 
 **Runtime operational control**:
-Control exercised over conversation, queue, Session, context, model, commands, interactions, file transfer, and session activation, without authority to run arbitrary commands or to manage processes the Host did not start.
-_Avoid_: Machine control
+Agent-mediated control over conversation, queue, Session, context, model, commands, interactions, file transfer and Session activation.
 
 **Session activation**:
 The Host starting an agent CLI for one session — either continuing a session that already exists, or creating a new one in a directory the device picked. The Host constructs argv and environment.
-_Avoid_: Process control, remote exec
 
 **Activation level**:
-The deliberately bounded scope of Session activation. L1 continues a session that already exists and takes only a `sessionId`; L2 creates a new session in a device-chosen directory. L3 — accepting a phone-supplied command line — is permanently excluded.
-_Avoid_: Permission tier
+L1 continues a Session by `sessionId`; L2 creates one in a device-selected directory. The Host constructs startup arguments and environment for supported backends.
 
 **Spawn mode**:
 The `auto` | `tui` | `headless` choice for how an activated session starts. `tui` is the default and requires a visible terminal window (Terminal on macOS, Windows Terminal on Windows); inability to open it is an activation error. Only `auto` may choose headless when no desktop session or supported terminal entry exists. The Host reports the mode it actually started.
-_Avoid_: Attach mode
 
 **Directory browse**:
 A read-only listing of computer directories and regular files. The shared mobile browser selects a directory for a new session or a file for a path-addressed download. It has no root restriction and no allowlist.
 
 **Steer delivery**:
-A working-state message delivery mode that places a user message ahead of follow-up work at an agent-loop boundary; it does not promise interruption of work already executing.
-_Avoid_: Immediate interrupt, context append
+A working-state delivery mode that schedules a user message ahead of follow-up work at an agent-loop boundary.
 
 **Follow-up delivery**:
 A working-state message delivery mode that defers a user message until the current agent work can finish and then starts subsequent work.
-_Avoid_: Immediate queue, context append
 
 **Queue operation ID**:
-The stable remote identity for one requested steer or follow-up delivery, used to correlate terminal queue states and retries; it is not the agent's own message-entry ID.
-_Avoid_: Message ID
+The stable remote identity for a steer or follow-up delivery, used to correlate terminal queue states and retries.
 
 **Pending send**:
-A client-local record of a message the phone wrote to the encrypted channel but has not yet seen in the source's transcript. It renders optimistically and is removed as soon as a source row declares the same identity (`messageId`, `clientMessageId` or a Host alias); it is never written to history caches, applied baselines or queue state, and it is never matched by text. See ADR-0049.
-_Avoid_: Optimistic delivery, local echo, outbox message as delivery fact
+A client-local optimistic message record awaiting source confirmation. A matching source identity (`messageId`, `clientMessageId` or Host alias) reconciles and removes the record. See ADR-0049.
 
 **Runtime queue state**:
-The delivery fact reported by the computer side for a remote queue operation; the mobile client displays it but does not infer or execute it. The Host may maintain a shadow projection because Pi does not expose the queue contents through its extension API.
-_Avoid_: Mobile queue state, optimistic delivery, independent execution queue
+The computer-side delivery fact for a remote queue operation, projected by the mobile client. The Host maintains a shadow projection where Pi's extension API omits queue contents.
 
 **Slash command menu**:
 The runtime-owned catalog of remotely invocable built-ins, Skills, Prompt Templates, extension commands, and MCP tools currently available to the mobile client. Each backend publishes only the subset it can honor.
-_Avoid_: Runtime action menu, Android command allowlist
 
 **Slash invocation**:
 A structured request for one command selected from the current Slash command menu, including its selected or entered arguments.
-_Avoid_: Free-form command text
 
 **Permission management**:
-A Host protocol projection of one Session's effective permission summary and backend-supported opaque settings. The Agent backend owns native semantics, validation, and confirmation; clients render the projection and submit typed updates without interpreting native commands or permission values. Single-operation approval remains a separate structured interaction. See ADR-0031.
-_Avoid_: Android permission allowlist, slash-menu-driven permission page, implicit global permission default
+A Host projection of a Session's effective permission summary and backend-supported opaque settings. The backend owns semantics, validation and confirmation; clients render and submit typed updates. Single-operation approval uses a separate structured interaction. See ADR-0031.
 
 **Capability envelope**:
 The models, credentials, trust decisions, tools, extensions, working directory, and operating-system permissions an agent runtime already holds.
-_Avoid_: Feature flags
 
 ## Files and machine boundary
 
 **Path-addressed file download**:
 A read-only transfer of a regular file the Host can open, identified by a computer path supplied by the paired device.
-_Avoid_: Runtime download
 
 **Range request**:
 A device-issued request for one chunk of a download at an explicit byte offset. The next request's offset is the progress report, so a range request carries no separate acknowledgement.
-_Avoid_: ACK, chunk acknowledgement
 
 **Durable prefix**:
 The longest contiguous prefix of a download already written to the device's `.part` file. It is the only authoritative progress fact and the resume point.
-_Avoid_: Received offset, download progress
 
 **Receive window**:
 The bytes a device permits to be requested but not yet durably written. It bounds in-flight download data and supplies disk/backpressure.
-_Avoid_: Sender window, transfer window
 
 **Pull scheduler**:
 The device-side component that owns a download's progress, receive window, retransmission, and reorder buffering.
-_Avoid_: Mobile queue, transfer manager
 
 **Range responder**:
 The near-stateless Host-side component that serves a device's requested byte ranges; it keeps no window, acknowledgement, or retry state.
-_Avoid_: Streaming sender, download pump
 
 **Upload task**:
 A device-to-Host transfer of a file the phone picked, addressed by a directory plus a single file name.
-_Avoid_: File push (removed in ADR-0009: computer-to-device push no longer exists), attachment
 
 **Upload credit**:
 The durable prefix the Host reports for an upload. It is the only authoritative progress fact for an upload and the resume point; the phone is the sender, so it cannot be the authority.
-_Avoid_: Progress ACK, upload acknowledgement
 
 **Attachment path**:
-An absolute computer path carried on a message so the agent can read the file itself. Not a descriptor, and not a content part.
-_Avoid_: File attachment, image attachment, upload descriptor
+An absolute computer path attached to a message for the agent to read.
 
 **Image content reference**:
-The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
-_Avoid_: Inline image, base64 content part
-
-**Image content reference**:
-The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
-_Avoid_: Inline image, base64 content part
-
-**Image content reference**:
-The only representation of an image inside the unified Agent model: mime type, byte length, optional dimensions, and either a computer path or an artifact descriptor — never inline base64 or file bytes. Clients render a placeholder; viewing an image uses the existing download path. See ADR-0034.
-_Avoid_: Inline image, base64 content part
+The unified Agent model's image descriptor: MIME type, byte length, optional dimensions, and a computer path or artifact reference. Clients display a placeholder and fetch the image through the download path. See ADR-0034.
 
 **Direct machine control**:
 Remote authority that bypasses the agent to run arbitrary commands or to manage processes, packages, credentials, trust, files, or arbitrary network destinations.
-_Avoid_: Admin access
 
 ## Extension interaction
 
 **Portable extension interaction**:
 A declarative interaction whose business logic remains in a computer-side extension while SDK-defined state can be rendered locally or on the mobile client.
-_Avoid_: Remote UI
 
 **Structured interaction**:
 An SDK-owned confirm, select, multi-select, or input request that local and remote UI may race to answer exactly once.
-_Avoid_: Dialog
 
 **Local interaction**:
 A native extension UI prompt that does not use the Remote Interaction SDK and therefore cannot be answered by the mobile client.
-_Avoid_: Unsupported interaction

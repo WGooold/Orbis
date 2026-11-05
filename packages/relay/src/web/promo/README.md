@@ -8,7 +8,7 @@ The website uses `../video/claude`, revision `5672fd8`, directly. It runs indepe
 - `assets/orbis-ui.css`, `assets/phone3d.js`: original tokens, icons and current phone mesh. Mesh styles are in `../phone3d.css`.
 - `assets/brand`, `assets/agents`, `assets/icons`: original artwork. Agent notices are in `agents/NOTICES.txt`.
 
-`film-markup.js`, `film-source.css` and `film-timeline.js` hold the transplanted source. Inline presentation is externalized, CSS selectors are scoped, and the pairing surface mask is a local SVG. The CSP is unchanged. Page wrappers and feature controls are in `film.css` and `film.js`; keep web interaction changes there rather than rewriting the original motion.
+`film-markup.js`, `film-source.css` and `film-timeline.js` hold the transplanted source. Inline presentation is externalized, CSS selectors are scoped, and the pairing surface mask is a local SVG. The CSP is unchanged. Page wrappers and feature controls are in `film.css` and `film.js`; keep web interaction changes in these wrappers and controls.
 
 Playback uses the original durations, easing and cameras. Manual mode holds a complete phone and starts each operation at its usable state. Offscreen/hidden playback pauses; reduced motion settles actions immediately. Every demo object stays local. Download publication still uses the real site API.
 

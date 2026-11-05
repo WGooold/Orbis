@@ -24,7 +24,7 @@ go test -race ./...
 go build -trimpath -o orbis-relay-quic ./cmd/orbis-relay-quic
 ```
 
-Android Gradle 的 `buildRelayQuic` 自动从源码生成 `app/build/generated/relayquic/relayquic.aar`，含 arm、arm64、386、amd64。构建机需 Python 3、Go、Android SDK 与 NDK `27.2.12479018`；`ORBIS_GO` 可指定 Go 可执行文件，`ANDROID_NDK_HOME` 可明确指定 NDK。不提交 AAR 或私钥。发布仍使用原有签名流程。iOS 使用 Network.framework，无第三方 QUIC 库。
+Android Gradle 的 `buildRelayQuic` 自动从源码生成 `app/build/generated/relayquic/relayquic.aar`，含 arm、arm64、386、amd64。构建机需 Python 3、Go、Android SDK 与 NDK `27.2.12479018`；`ORBIS_GO` 可指定 Go 可执行文件，`ANDROID_NDK_HOME` 可明确指定 NDK。AAR 在构建时生成，私钥由原有签名流程私下管理。iOS 使用 Network.framework，无第三方 QUIC 库。
 
 本机构建 / 设备测试仍按本机 AGENTS 的内存、构建租约、共享设备入口与清理要求执行。
 
@@ -32,7 +32,7 @@ Android Gradle 的 `buildRelayQuic` 自动从源码生成 `app/build/generated/r
 
 `config.json` 的 `relayTransport` 或优先级更高的 `ORBIS_RELAY_TRANSPORT` 支持 `ws` / `quic` / `auto`，缺省 `ws`。非法枚举明确报错。Host 通过原域名发现 `hostAlpn`，不存在时强制 QUIC 失败，auto 仅认证前回退。运行中使用 `HostService.setRelayTransportMode(mode)`；`relayTransportMode` 与 `relayTransportKind` 分别报告期望和实际值，auto / 当前承载不触发健康连接重建。
 
-`package-host-runtime.mjs` 自动调用 `build-host-quic.mjs`，将本机架构 helper、Go 模块版本与许可证放入 `runtime/packages/host/native/`。构建需要 Go 1.27.3，`ORBIS_GO` 可指定工具链；开发态 `ORBIS_QUIC_HELPER` 可指定 helper，发行运行无需安装 Go。Windows / macOS 构建工作流已固定 Go。额外 CA 仅用于隔离测试或既有企业信任，证书 / 主机名校验不关闭。
+`package-host-runtime.mjs` 自动调用 `build-host-quic.mjs`，将本机架构 helper、Go 模块版本与许可证放入 `runtime/packages/host/native/`。构建需要 Go 1.27.3，`ORBIS_GO` 可指定工具链；开发态 `ORBIS_QUIC_HELPER` 可指定 helper，发行运行无需安装 Go。Windows / macOS 构建工作流已固定 Go。额外 CA 仅用于隔离测试或既有企业信任，证书与主机名持续校验。
 
 Host helper 只接收一次性 IPC token 和远端地址，业务凭据经 ctl 流发送；按协商使用三条或五条独立回环 TCP 连接转发对应 QUIC 流。`bufferedAmount` 包含尚未完成 QUIC writer 的 IPC 帧，回执不代表对端确认。父进程退出、任一 lane 失败、取消均终止 helper 并 join；准备失败保留现任，认证失败不回退，快速改选只允许最后候选接管。
 
@@ -56,7 +56,7 @@ Host helper 只接收一次性 IPC token 和远端地址，业务凭据经 ctl �
   -max-connections 16
 ```
 
-两上游必须是数字 loopback 地址的 `/v1/device` / `/v1/runtime`，客户端不能传入目标。`-runtime-upstream ""` 禁用 Host 接入。证书文件只授予服务用户必要读取权限；服务启动时加载，续期后由部署流程重启以载入新证书。非特权 UDP 端口可用普通服务用户；示例没有修改系统权限。
+两上游固定为数字 loopback 地址的 `/v1/device` / `/v1/runtime`。`-runtime-upstream ""` 禁用 Host 接入。证书文件只授予服务用户必要读取权限；服务启动时加载，续期后由部署流程重启以载入新证书。非特权 UDP 端口可用普通服务用户；示例没有修改系统权限。
 
 4. UDP / TLS 实测成功后，给 **Node Relay** 配置 `ORBIS_QUIC_PORT=24443` 和 `ORBIS_QUIC_HOST_ENABLED=1` 并按现有发布流程更新。`GET https://<原Relay域名>/<原前缀>/v1/transports` 应返回：
 
@@ -84,4 +84,4 @@ Apple 同连接三流和取消已在本机及共享 iOS SE App 内验证，Andro
 
 按 ADR-0065 §10 / NQ-13，默认 `relayHistoryMode=shared`。在隔离候选 Host 中，可配置 `"relayHistoryMode": "background"` 或环境变量 `ORBIS_RELAY_HISTORY_MODE=background`：旧端未协商五流时，首屏 preview、手动 history 分页、live 和目录保留 msg，后台 catchup snapshot 走 bulk。新五流 adapter 已部署并在 Node Relay 显式设置 `ORBIS_RELAY_QUIC_HISTORY_STREAMS=1` 时，发现新增 historyAlpn/historyHostAlpn，原 v2 字段保留；App 通过 HS2 已认证能力及 HS3 接受后，手动 history / 后台 catchup 分别走独立 history / catchup，preview / live 保留 msg，文件 / 工具详情留 bulk。LAN 不协商该扩展。两段 QUIC 均可利用现有独立流；WS 继续兼容相同帧，仍有单字节流队头阻塞。LAN 保持原 msg。
 
-配置只在新建 HostService 时读取，当前不新增设置 UI 或热切换 API。恢复 `shared` 并在授权的重启后回到原分类；不移动已封帧消息、不重放用户操作。用户 Host 尚未重启，生产未启用。NQ-13 历史结果见[聊天历史隔离报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-chat-history-results-20261104.md)。NQ-14 五流按用户要求只做[功能回归](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，不再测速，不将旧性能数字外推到五流。实际通过、既有失败与设备阻塞见[五流结果报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)。
+配置只在新建 HostService 时读取，当前不新增设置 UI 或热切换 API。恢复 `shared` 并在授权的重启后回到原分类，操作结果继续按原身份核对。现场 Host 尚未重启，生产未启用。NQ-13 历史结果见[聊天历史隔离报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-chat-history-results-20261104.md)。NQ-14 五流的验证范围为[功能回归](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-functional-regression.md)，旧性能数字对应原测量布局。实际通过、既有失败与设备阻塞见[五流结果报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-five-stream-results-20261105.md)。
