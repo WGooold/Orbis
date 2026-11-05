@@ -1382,7 +1382,7 @@ internal fun OfflineHistoryScreen(
     }
     Scaffold(
         topBar = {
-            MessageActionHeader { TopAppBar(
+            TopAppBar(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
@@ -1402,7 +1402,7 @@ internal fun OfflineHistoryScreen(
                         AgentLabel(LocalAgentBrand.current, suffix = L10n.tr("只读历史"))
                     }
                 },
-            ) }
+            )
         },
     ) { padding ->
         val chatItems = remember(presentation, turnIdsByMessageId) {
@@ -1993,7 +1993,7 @@ internal fun ChatScreen(
     Scaffold(
         topBar = {
             Column {
-            MessageActionHeader { TopAppBar(
+            TopAppBar(
                 title = {
                     Column {
                         Row(
@@ -2052,7 +2052,7 @@ internal fun ChatScreen(
                         modifier = Modifier.testTag("chat-downloads").downloadFlightTarget(chatFlight),
                     )
                 },
-            ) }
+            )
             }
         },
         bottomBar = {

@@ -294,3 +294,7 @@ NQ-13 试验后修订：最终只对后台 catchup 隔离。手动 history 是�
 验收：新旧端能力与 MAC / nonce / 防重放、五流角色与 FIFO、Host 两侧 IPC、同步 preview/history/catchup + applied/ACK、详情及文件、路径丢失 / 重握手 / WS↔QUIC / LAN 保持和原业务全量；双端核心、构建与同设备原 UI 套件对照。中间失败及既有失败如实保留。此次不新增性能门槛，不使用此前测量承诺五流收益，不部署或安装用户设备。按 NQ-14 留证，未执行的人工 / 真机与发布门禁不计通过。
 
 实施与功能证据见[五流结果报告](../testing/native-quic-five-stream-results-20261105.md)；活动专项 R67，历史证据编号保持原值。核心自动通过与双端设备、既有失败、未执行门禁分别记录。
+
+## 12. 与协议18/19兼容Host集成（2026-11-05）
+
+ADR-0064要求首个有效加密请求绑定Relay业务版本，再发布版本相关ready。QUIC双端因此在同一ctl流依次发送HS3与原有只读host.lan.request，明确携带当前业务版本；其余业务仍等认证后Host ready，不把Relay明文ready当成功。该引导不重放业务命令、不引入新字段或改变旧协议。Node旧18/19与四承载组合、Android引导明文 / 版本和真实Apple↔Go覆盖此顺序，结果见[主分支集成报告](../testing/native-quic-main-integration-20261105.md)。默认WS/shared与既有未验收状态保持。

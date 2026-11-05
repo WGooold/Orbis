@@ -65,6 +65,14 @@ import org.commonmark.node.OrderedList
 import org.commonmark.node.Paragraph
 import org.commonmark.node.ThematicBreak
 
+internal val LocalMessageTextSelectionEnabled = androidx.compose.runtime.staticCompositionLocalOf { true }
+
+@Composable
+private fun MessageTextSelection(content: @Composable () -> Unit) {
+    if (LocalMessageTextSelectionEnabled.current) SelectionContainer(content = content)
+    else content()
+}
+
 @Composable
 internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
     val blocks = remember(markdown) { parseMarkdown(markdown) }
@@ -153,7 +161,7 @@ private fun MarkdownParagraph(
     listener: LinkInteractionListener,
     style: TextStyle = MaterialTheme.typography.bodyMedium,
 ) {
-    SelectionContainer {
+    MessageTextSelection {
         MarkdownInline(node, listener, Modifier.fillMaxWidth(), style)
     }
     MarkdownImages(node, listener)
@@ -230,7 +238,7 @@ private fun MarkdownCode(code: String, info: String = "") {
             }
             // Keep scrolling outside selection so selecting text doesn't swallow horizontal drags.
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp)) {
-                SelectionContainer {
+                MessageTextSelection {
                     StreamingMarkdownText(AnnotatedString(code), Modifier,
                         MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), TextAlign.Start)
                 }
@@ -252,7 +260,7 @@ private fun MarkdownTable(table: TableBlock, listener: LinkInteractionListener) 
         // into unreadable cells; long cell content wraps without truncation.
         val cellWidth = (maxWidth / columns).coerceIn(120.dp, 260.dp)
         Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-            SelectionContainer {
+            MessageTextSelection {
                 Column {
                     rows.forEachIndexed { rowIndex, cells ->
                         Row(Modifier.height(IntrinsicSize.Min)) {

@@ -227,3 +227,23 @@ Android全量拉取目录的277张可读图片联系表已查看，但包含设�
 双端入口`OrbisPressedGlyph` / `rememberGlyphProgress`由单一可取消任务驱动，`GlyphFeedbackState`区分物理按压/释放与无触摸激活；所有共用图标统一轻压，原专属配额/复制/发送语义保持。MOT-08/13/15、R39/R47/R49沿用原编号，旧旋转行为由用户授权替代。新增单元与设备用例及未运行门禁见 `.artifacts/ui-regression/20261103-button-feedback/summary.md`；本次预览仅供设计体验，不计设备验收。
 
 2026-11-03 / r43验证：Swift355/355、Android685/685单元测试，iOS应用及UI测试构建、Android Debug/AndroidTest均通过。网页设计预览在320/736px明暗与减少动画检查通过，已看浅色窄屏及深色截图，但不计原生设备验收。双端共享入口仍被`provider-well-shadow-standard-full`与`Codex permission model preservation`的设备锁阻塞；L3/L4、C01–C18、R39/R47/R49及原生A1–A4未运行，不能比较同设备基点失败集合，保持验证中。证据 `.artifacts/ui-regression/20261103-button-feedback/summary.md`。
+
+## 2026-11-05 / r48 消息菜单与显式文字选择
+
+S08 / S10 / M19、SC11–13 / SC41、MOT-05 / MOT-19 已接入两端：用户正文长按只打开消息旁纵向菜单，页顶栏保持；“选择文字”关闭菜单后进入独立只读原文面板。整条复制共用 M05 的 2.5 秒反馈，Rewind 保持真实能力和原确认。助手选择、附件和消息发送 / 恢复语义保持。专项映射 R36 / R53 / R66，完整设备与人工门禁仍未验收。
+
+证据根 `.artifacts/ui-regression/20261105-message-actions/`。基线和候选取自任务开始时的隔离工作区快照，保留当时其他任务的未提交修改；候选随后接入共用复制反馈修订，源码与包哈希分别记录，不能把旧包结果外推为最新工作区验收。L0 为 83 个唯一 ID、双入口一致、相对链接和 1,483 条本地化检查通过。Android 基线 / 候选各 720 项 JVM（719 通过、1 条既有跳过、0 失败），Debug / AndroidTest 构建通过；iOS 基线 374 项、最终候选 378 项核心测试及应用 / UI 测试包构建通过。
+
+iOS SE 首轮两项均失败，原始 xcresult、录屏和原生选区截图保留：测试按元素长按时自动滚动被裁切行，另一个断言错误地要求正常顶栏不在辅助功能树中；改为可见正文坐标和顶栏几何保持。后续运行中，可见坐标辅助函数仍取到了容器的错误框，菜单未出现；随后整个运行被 SIGTERM 中断，xcresult 未封口。最终测试改为以实际正文静态文本定位，不删除或放宽位置断言。首轮录屏可见单一纵向菜单、独立原文面板和仅在面板中的原生选区，但这些局部画面不代表自动用例通过。该 SE 随后因系统 PosterBoard 崩溃被共享池隔离，本任务保留隔离、不重启或清空设备。
+
+安卓真机使用独立包名 `com.orbising.orbis.messageactionstest`，成功安装后测试未取得前台，主动中断；没有完成用例，不计通过。独立包和测试进程已移除，六项原系统设置恢复，私有 ADB / 设备锁核验释放；日常 App 未被覆盖。iOS 中断留下的设备 / 构建锁与 Xcode helper 均完成定向核验清理，原失败和恢复证据分别保留。完整 L3 对照、L4、C01–C18、R66 全矩阵、A1–A4 / iPad 和真实 Host 尚未完成，最终排队 / 运行状态以证据根 `summary.md` 和 `manual-checklist.json` 为准。
+
+后续池内 iPhone 17 的最终消息专项 **2 / 2 通过**（`candidate-ios-targeted5.xcresult`）：菜单互斥、顶栏几何、整条复制 / 重计时、外部点击不透传、关闭 / 重开、显式原文选择、无键盘、返回原阅读位置和 Rewind。两张菜单 / 原生选区截图已审阅。测试子进程直到设备关闭才退出，原运行器因此停止了后续全量；设备 Shutdown、进程 / 打开文件检查及 DerivedData 释放分别记录，后续全量改为在共享入口完成设备关闭后核验构建租约，不放宽清理要求。
+
+Android 首次受影响整类 **11 / 14 通过**（`candidate-android-targeted-normal/result.json`）：消息菜单与身份 / 能力失效用例通过；显式选区用例等待父页面 `TextToolbar` 回调超时，已改为检查独立 Dialog 中实际系统“复制”节点；另两项失败为既有图标激活 / 快速按压的像素断言，须用同设备基线核对，不能先归为旧失败。原失败和实际菜单截图保留；修订后的测试结果单独存放，未完成全量对照前仍不记验收。
+
+最终安卓修订复测与 iOS 全量对照分别排队 600 秒后超时，设备名额由其他任务占用，未取得新用例结果。`android-session5` / `ios-session6` 和 `ios-full6-controller` 已完成清理；`final-resource-audit.json` 确认本任务没有残留进程、设备或构建租约，两台借用 iOS 均为 Shutdown。安卓真机私有端口已由新 owner 正常接续，未清理他人资源。完整门禁继续保留未完成状态。
+
+**iPad 真机补充（2026-11-05）**：使用独立包 `com.orbising.orbis.messageactionstest`，未覆盖日常 App。iPad Air / iPadOS 26.6.1 的首轮 2 / 2 通过只覆盖旧断言；审图发现 SwiftUI `Text` 仅提供整段拷贝 / 分享，不能当作部分选区验证。原文面板改为不可编辑、可选中的原生 `UITextView`，复用字号 / 材质和 20pt 内边距。新增从原生菜单复制再粘贴到隔离输入框、断言非空真子串的用例；控件标识被容器覆盖导致第二轮 7 / 8、第三轮 2 / 4，原失败均保留。移除容器标识后，最终 `ipad-message-4.xcresult` **4 / 4 通过**，覆盖范围复制、无键盘、关闭 / 重开、阅读位置 / 顶栏、复制反馈 / Rewind、深色 / 大字 / 减少动画，以及外部拖动只关闭、滚动取消长按。
+
+第二轮中的电脑子菜单、设置 / 电脑菜单、历史预览、乐观发送 / 拒绝恢复、全文 / 工具参数、键盘上方 Slash 共 6 项关联流程通过；后续修改限定于消息文字选择面板和测试定位，不重复无关用例。原生选区真子串断言不以截图替代。横屏 `app.screenshot()` 的裁切图不计完整视觉证据；最终改用 `XCUIScreen.main`，`ipad-message-4-attachments/` 的 5 张完整菜单 / 明暗选区 / 大字 / 减少动画截图已审阅。iPad 用完即清理独立 App / runner，核对远端路径对应进程为空，保持开机、无系统设置更改，设备与构建租约已释放；见各 `ipad-message-*-session/cleanup.json`、`task-cleanup-verification.json` 和 controller cleanup。安卓复测与最终其他构建状态以证据根 summary 为准；完整 C / R66 / 双端矩阵仍未验收。

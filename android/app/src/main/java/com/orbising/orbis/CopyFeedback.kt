@@ -85,3 +85,19 @@ internal fun CopyTextButton(label: String, identity: Any? = null, text: () -> St
         modifier = Modifier.semantics { contentDescription = if (feedback.copied) L10n.tr("已复制") else label },
     )
 }
+
+
+/** A full-width message-menu row with the same copy lifetime as every other copy control. */
+@Composable
+internal fun CopyMenuItem(label: String, identity: Any? = null, text: () -> String) {
+    val clipboard = LocalClipboardManager.current
+    val feedback = rememberCopyFeedback(identity, enabled = true)
+    NeumorphMenuItem(
+        text = { androidx.compose.material3.Text(if (feedback.copied) L10n.tr("已复制") else label) },
+        onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
+        leadingIcon = {
+            OrbisActionIcon(if (feedback.copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                contentDescription = null)
+        },
+    )
+}

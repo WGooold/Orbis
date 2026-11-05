@@ -660,6 +660,7 @@ final class OrbisOverlay: ObservableObject {
         var anchor: CGRect
         var items: [OrbisMenuItem]
         var horizontal = false
+        var preferAbove = false
         var owner: String? = nil
     }
     struct DialogRequest: Identifiable {
@@ -673,9 +674,9 @@ final class OrbisOverlay: ObservableObject {
     var isPresenting: Bool { menu != nil || dialog != nil }
 
     /// `anchor` is in global coordinates.
-    func showMenu(_ items: [OrbisMenuItem], from anchor: CGRect, horizontal: Bool = false, owner: String? = nil) {
+    func showMenu(_ items: [OrbisMenuItem], from anchor: CGRect, horizontal: Bool = false, preferAbove: Bool = false, owner: String? = nil) {
         guard dialog == nil, items.contains(where: { !$0.isDivider }) else { return }
-        menu = MenuRequest(anchor: anchor, items: items, horizontal: horizontal, owner: owner)
+        menu = MenuRequest(anchor: anchor, items: items, horizontal: horizontal, preferAbove: preferAbove, owner: owner)
     }
     func showDialog(_ title: String, message: String? = nil, actions: [OrbisDialogAction]) {
         menu = nil
@@ -819,6 +820,7 @@ private struct OrbisOverlayLayer: View {
                     if let menu = overlay.menu {
                         Color.clear.contentShape(Rectangle())
                             .onTapGesture { overlay.dismissMenu() }
+                            .gesture(DragGesture(minimumDistance: 10).onChanged { _ in overlay.dismissMenu() })
                             .accessibilityHidden(true)
                         let anchor = menu.anchor.offsetBy(dx: -origin.x, dy: -origin.y)
                         OrbisMenuPanel(request: menu, anchor: anchor, bounds: bounds,
@@ -840,7 +842,6 @@ private struct OrbisOverlayLayer: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
         }
-        .ignoresSafeArea(.keyboard)
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.menu?.id)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: overlay.dialog?.id)
         .allowsHitTesting(overlay.isPresenting)
@@ -993,12 +994,9 @@ private struct OrbisMenuPanel: View {
     }
     private func y(for height: CGFloat) -> CGFloat {
         let low = bounds.minY + 8, high = max(low, bounds.maxY - 8 - height)
-        // The native selection menu keeps its own row immediately above the text.
-        // Place message actions one row further out so both sets of operations remain usable.
-        let selectionClearance: CGFloat = request.horizontal ? 64 : 0
-        let above = anchor.minY - 8 - selectionClearance - height
-        if request.horizontal && above >= low { return above }
-        let below = anchor.maxY + 8 + selectionClearance
+        let above = anchor.minY - 8 - height
+        if request.preferAbove && above >= low { return above }
+        let below = anchor.maxY + 8
         if below <= high { return below }
         if above >= low { return above }
         return min(max(low, anchor.midY - height / 2), high)
@@ -1139,14 +1137,10 @@ struct OrbisActionButton: View {
 }
 
 struct OrbisHeader<Leading: View, Title: View, Trailing: View>: View {
-    @Environment(\.orbisMessageActions) private var actions
     @ViewBuilder var leading: Leading
     @ViewBuilder var title: Title
     @ViewBuilder var trailing: Trailing
     var body: some View {
-        if let actions { OrbisMessageActionHeader(actions: actions) { normal } } else { normal }
-    }
-    private var normal: some View {
         HStack(spacing: 12) {
             leading
             title.frame(maxWidth: .infinity, alignment: .leading)

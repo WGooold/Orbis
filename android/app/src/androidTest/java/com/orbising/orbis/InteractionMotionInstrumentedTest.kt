@@ -70,34 +70,108 @@ class InteractionMotionInstrumentedTest {
     }
 
     @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-    @Test fun nativeTextLongPressReplacesThePageHeaderWithoutMovingTheBubble() {
+    @Test fun nativeTextLongPressOpensOnlyMessageMenuWithoutMovingHeaderOrBubble() {
         var rewinds = 0
         compose.setContent { OrbisTheme {
-            val actions = remember { MessageActionState() }
-            CompositionLocalProvider(LocalMessageActionState provides actions) {
             Column(Modifier.fillMaxSize().padding(20.dp)) {
-                MessageActionHeader { androidx.compose.material3.TopAppBar(title = { Text("原状态栏") }) }
+                androidx.compose.material3.TopAppBar(title = { Text("原状态栏") })
                 Spacer(Modifier.height(186.dp))
                 UserMessageCard("r", ChatMessage("user", "user", listOf(RemoteContent("text", "长按这段文字查看操作")), 1),
                     emptyMap(), {}, {}, onRewind = { rewinds++ }, rewindEnabled = true)
-            } }
+            }
         } }
         val text = compose.onNodeWithText("长按这段文字查看操作")
         val before = text.fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithContentDescription("复制消息").assertDoesNotExist()
+        val header = compose.onNodeWithText("原状态栏").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithText("复制消息").assertDoesNotExist()
         text.performTouchInput { longClick() }
-        val copy = compose.onNodeWithContentDescription("复制消息")
+        val copy = compose.onNodeWithText("复制消息")
         copy.assertIsDisplayed()
-        compose.onNodeWithTag("message-action-header").assertIsDisplayed()
-        compose.onNodeWithText("原状态栏").assertDoesNotExist()
+        compose.onNodeWithText("选择文字").assertIsDisplayed()
+        compose.onNodeWithTag("message-action-header").assertDoesNotExist()
+        compose.onNodeWithTag("message-text-selection").assertDoesNotExist()
+        assertEquals(header, compose.onNodeWithText("原状态栏").fetchSemanticsNode().boundsInRoot)
         assertEquals(before, text.fetchSemanticsNode().boundsInRoot)
         assertTrue(copy.fetchSemanticsNode().boundsInRoot.bottom < before.top)
-        capture("motion-message-toolbar")
+        capture("motion-message-menu")
         copy.performClick()
-        compose.onNodeWithContentDescription("已复制").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Rewind").performClick()
+        compose.onNodeWithText("已复制").assertIsDisplayed()
+        compose.onNodeWithText("Rewind").performClick()
         compose.runOnIdle { assertEquals(1, rewinds) }
-        compose.onNodeWithContentDescription("Rewind").assertDoesNotExist()
+        compose.onNodeWithText("Rewind").assertDoesNotExist()
+    }
+
+    @Test fun messageTextSelectionRequiresAnExplicitActionAndClosesWithoutChangingTheMessage() {
+        var nativeMenus = 0
+        compose.setContent { OrbisTheme {
+            val original = androidx.compose.ui.platform.LocalTextToolbar.current
+            val observed = remember(original) {
+                object : androidx.compose.ui.platform.TextToolbar {
+                    override val status get() = original.status
+                    override fun showMenu(rect: Rect, onCopyRequested: (() -> Unit)?, onPasteRequested: (() -> Unit)?,
+                        onCutRequested: (() -> Unit)?, onSelectAllRequested: (() -> Unit)?) {
+                        nativeMenus++
+                        original.showMenu(rect, onCopyRequested, onPasteRequested, onCutRequested, onSelectAllRequested)
+                    }
+                    override fun hide() = original.hide()
+                }
+            }
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalTextToolbar provides observed) {
+                Column(Modifier.fillMaxSize().padding(20.dp)) {
+                    Spacer(Modifier.height(160.dp))
+                    UserMessageCard("r", ChatMessage("u", "user", listOf(RemoteContent("text", "alpha beta gamma")), 1),
+                        emptyMap(), {}, {})
+                }
+            }
+        } }
+        val message = compose.onNodeWithText("alpha beta gamma")
+        val before = message.fetchSemanticsNode().boundsInRoot
+        message.performTouchInput { longClick() }
+        compose.onNodeWithText("选择文字").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("Holding the bubble must not create a native selection", 0, nativeMenus) }
+        compose.onNodeWithText("选择文字").performClick()
+        compose.onNodeWithTag("message-text-selection").assertIsDisplayed()
+        compose.onNodeWithText("Rewind").assertDoesNotExist()
+        compose.onNodeWithTag("message-selection-text").performTouchInput { longClick(centerLeft + Offset(18f, 0f)) }
+        // Dialog owns a separate Android window and its own native TextToolbar.
+        // Inspect the actual system copy action instead of the parent window's observer.
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val nativeCopyLabel = instrumentation.targetContext.getString(android.R.string.copy)
+        capture("motion-message-text-selection")
+        compose.waitUntil(3_000) {
+            instrumentation.uiAutomation.rootInActiveWindow
+                ?.findAccessibilityNodeInfosByText(nativeCopyLabel)
+                ?.any { it.isVisibleToUser && it.text?.toString() == nativeCopyLabel } == true
+        }
+        // The close control exits the selection surface even while native handles are active.
+        compose.onNodeWithText("关闭文字选择").performClick()
+        compose.onNodeWithTag("message-text-selection").assertDoesNotExist()
+        assertEquals(before, message.fetchSemanticsNode().boundsInRoot)
+        message.performTouchInput { longClick() }
+        compose.onNodeWithText("复制消息").assertIsDisplayed()
+        compose.onNodeWithText("已复制").assertDoesNotExist()
+    }
+
+    @Test fun messageMenuDismissesWhenItsIdentityOrRewindCapabilityChanges() {
+        var messageId by mutableStateOf("first")
+        var canRewind by mutableStateOf(true)
+        var rewinds = 0
+        compose.setContent { OrbisTheme {
+            Column(Modifier.fillMaxSize().padding(top = 180.dp)) {
+                UserMessageCard("r", ChatMessage(messageId, "user", listOf(RemoteContent("text", "same text")), 1),
+                    emptyMap(), {}, {}, onRewind = { rewinds++ }, rewindEnabled = canRewind)
+            }
+        } }
+        compose.onNodeWithText("same text").performTouchInput { longClick() }
+        compose.onNodeWithText("Rewind").assertIsDisplayed()
+        compose.runOnIdle { canRewind = false }
+        compose.onNodeWithText("Rewind").assertDoesNotExist()
+        compose.onNodeWithText("same text").performTouchInput { longClick() }
+        compose.onNodeWithText("选择文字").performClick()
+        compose.onNodeWithTag("message-text-selection").assertIsDisplayed()
+        compose.runOnIdle { messageId = "second" }
+        compose.onNodeWithTag("message-text-selection").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, rewinds) }
     }
 
     @Test fun reminderEntersFromUpperRightAndRetainsItsContentDuringReverseExit() {

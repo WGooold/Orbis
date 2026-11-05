@@ -6,6 +6,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [原生QUIC主分支集成](testing/native-quic-main-integration-20261105.md)：协议18/19版本引导修正、四承载组合、双端构建与功能回归；完整设备验收状态另列。
+
 - [ADR-0062](adr/0062-claude-background-agents-and-session-activity.md)：Claude 主回合与后台子任务库存独立，双端活动展示、任务区和关闭能力；r44 / S26 / R61，已接入，设备与真实原生联动待验证。
 - [ADR-0065](adr/0065-native-quic-relay-transport.md)：Host↔Relay↔手机两段原生 QUIC、独立 WS / QUIC 切换与同机 Relay 适配器；[完整公网测试报告](testing/native-quic-public-performance-20261104.md)保留全部五轮结果，未证明吞吐提速，真实手机与发布门禁分别验收。
 - [QUIC 分层测试方案](testing/native-quic-layered-diagnostics.md)与[诊断结果](testing/native-quic-layered-results-20261104.md)：原始 TLS/QUIC 五轮、双段负载交错对照、传输 / writer / 队列证据；发现测试 socket 接收丢包及 CPU quota 条件，不把信号记为单因果结论或已修复。

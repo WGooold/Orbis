@@ -58,7 +58,6 @@ struct ContentView: View {
                     case .downloads: DownloadsView(onBack: back)
                     }
                 }
-                .modifier(OrbisMessageActionScope())
                 .foregroundStyle(OrbisPalette(scheme).text)
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
