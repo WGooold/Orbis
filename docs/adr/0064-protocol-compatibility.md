@@ -161,14 +161,14 @@ Host 0.1.15 的双向业务适配已在隔离工作树 `codex/host-protocol18-19
 - LAN 保留 socket 原始帧版本，并在成功 MAC 确认后采用它发送首次 ready。会话内禁止换业务版本；新握手清除原选择，未确定格式的路径不参与活动路径选择。非法首请求沿入站路径返回带原 ID 的 versionless 错误，不虚报 ready。
 - 所有数据出口汇入 HostDeviceSession 的封帧边界，包含直接发送的历史同步 / 工具内容。对 18 只删除 execution 状态的新增 `tasks`、抑制不支持的后台任务事件；不递归删用户 / 工具数据，不改变消息 / 请求 / 回执身份。抑制发生在分配 AEAD nonce 之前。
 - 上传 / 下载二进制先按已选格式完整解码验证，再转换为对应 18 / 19 帧；保留 magic、kind、长度、偏移和原始内容验证。旧本机 Pi loopback 的 18 注册、事件与命令同样适配，避免升级 Host 断开现有扩展。
-- Relay 外层部署与密文边界保持；本次新增自动测试纳入 Relay 部署和 macOS Host 构建的 CI 门禁。当前分支尚未 push，不能将本地通过写成 Actions 已通过。
+- Relay 外层部署与密文边界保持；本次新增自动测试纳入 Relay 部署和 macOS Host 构建的 CI 门禁。当前分支尚未 push，不能将本地通过写成 Actions 已通过。macOS / Windows 原生构建流程均追加对实际打包 runtime 的七项兼容契约，防止源码通过而包内代码陈旧。
 
 ### 当前验证记录
 
 - TypeScript、ESLint、生产构建通过。全量 Node 166 文件、1762 项通过，5 项原有 Windows / DSH 平台条件跳过；未删除或放宽既有断言。首轮官网探针等待 ready 超时，已补齐已发布手机端原有的 HS3 后 LAN 刷新；失败原文保留。
 - 兼容相关 110 项通过；另以未修改的已安装 Host 0.1.14 的完整协议18 schema / E2E 模块作为独立解析与加密 oracle，覆盖 Relay / LAN、首次非法请求、双版本并用、外层与业务版本相反、路径切换、重新握手、通知、execution 投影、历史同步、原命令 / sync ID 回执、文件上传下载和完成后的拒绝。该隔离模块验证不等同于实际手机包验收，来源 SHA-256 见证据。
-- macOS arm64 Qt 原生五个测试目标、独立目录启动 / 退出、0.1.15 版本信息与签名验证通过；保留未修改的 0.1.14 回退副本。产物为未公证的本机预览，未替换 `/Applications/OrbisHost.app`、未重启用户 Host。
-- 未改变 App 源码或要求安装0.1.54。共享设备原版0.1.53 APK联动正在排队；真实用户手机原包、旧 iOS 包、双端完整 L1–L4 / C01–C18 / A1–A4、Windows 与 macOS x64、真实模型操作和升级 / 回退配对门禁仍需补齐。前述模拟器专项与 Node 单测不能代替这些未完成项。
+- macOS arm64 Qt 原生五个测试目标、独立目录启动 / 退出、0.1.15 版本信息与签名验证通过；实际包内 runtime 对接未修改协议18 schema / E2E模块的七项互通测试通过。90个 Mach-O 文件未发现丢失的绝对库依赖；三个未使用且依赖本地缺失厂商库的可选 SQL 驱动迁出包并留存证据。保留未修改的 0.1.14 回退副本。产物为未公证的本机预览，未替换 `/Applications/OrbisHost.app`、未重启用户 Host。
+- 未改变 App 源码或要求安装0.1.54。固定共享模拟器 `Orbis_UI_Polish_35` 上，未修改的0.1.53 / versionCode54 Debug APK与其原始instrumentation包完成隔离配对及Host状态接收，1 / 1通过；APK SHA-256为 `4c43ecad1e3630653ebaabdc51f75497f5215c295b9628ec1dd96d1855d1edda`，Android Debug签名核验通过。该包来自第一阶段导入基线，原DEX的 `RelayClientKt.PROTOCOL_VERSION` 已确认是19，不宣称就是用户手机上的同名包。原设备未安装这两个包，测试后移除并核对恢复为原状态；设置、模拟器、私有ADB与租约均核验释放。真实用户手机原包、旧iOS包设备联动、双端完整 L1–L4 / C01–C18 / A1–A4、Windows 与 macOS x64、真实模型操作和升级 / 回退既有配对门禁仍需补齐。另保存原版0.1.52 / versionCode53、DEX协议18的APK和instrumentation包；其设备联动排队300秒后超时，未实际执行，阻塞为另一NQ-14 Android回归任务占用共享单台设备，不能算通过。对应result / cleanup已记录，无资源残留。前述模拟器专项与 Node 单测不能代替这些未完成项。
 
 完整测试、保留的初轮失败、模块来源、构建 / 清理记录与产物见 `.artifacts/ui-regression/20261105-relay-host-compatibility/summary.md`。
 

@@ -4,17 +4,23 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
-import { EnvelopeReassembler, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
+import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
 import { createRelayServer, type RelayServer } from "@orbis/relay";
-import { HostService } from "./host-service.js";
+import { HostService as SourceHostService } from "./host-service.js";
 
 // Optional additional oracle from an unchanged installed release. Native require
 // preserves its own dependency resolution, outside Vitest's current-source aliases.
 const legacyRoot = process.env.ORBIS_LEGACY_RUNTIME;
 const nativeRequire = createRequire(import.meta.url);
+const compatibleRoot = process.env.ORBIS_COMPATIBLE_RUNTIME;
+// Native import supports the runtime's top-level await and keeps packaged dependency
+// resolution outside Vitest's aliases. The path is an explicit local test fixture.
+const nativeImport = nativeRequire("../../../scripts/test-fixtures/import-native.cjs") as (specifier: string) => Promise<{ HostService: typeof SourceHostService }>;
+const HostService = compatibleRoot ? (await nativeImport(pathToFileURL(join(compatibleRoot, "packages/host/dist/host-service.js")).href)).HostService : SourceHostService;
 const legacyProtocol = legacyRoot ? nativeRequire(join(legacyRoot, "node_modules/@orbis/protocol/dist/index.js")) as typeof import("@orbis/protocol") : undefined;
 const legacyE2e = legacyRoot ? nativeRequire(join(legacyRoot, "node_modules/@orbis/e2e/dist/index.js")) as typeof import("@orbis/e2e") : undefined;
 if (legacyProtocol && Number(legacyProtocol.PROTOCOL_VERSION) !== 18) throw new Error("Expected an unchanged protocol18 release fixture");
@@ -25,6 +31,8 @@ class OldPhone {
   readonly errors: unknown[] = [];
   readonly envelopes: EnvelopeV2[] = [];
   readonly pieces = new EnvelopeReassembler();
+  sentPieces = 0;
+  receivedPieces = 0;
   channel: E2eChannel | undefined;
   constructor(readonly socket: WebSocket, readonly version: 18 | 19, readonly outerVersion: 18 | 19, readonly hostId: string, readonly deviceId: string) {
     socket.on("message", raw => {
@@ -32,6 +40,7 @@ class OldPhone {
         const frame = JSON.parse(raw.toString());
         if (frame.type !== "v2.frame") return;
         expect(frame.protocolVersion).toBe(outerVersion);
+        if (frame.envelope.hdr.k === "piece") this.receivedPieces += 1;
         const envelope = this.pieces.accept(frame.envelope);
         if (!envelope) return;
         if (envelope.hdr.k === "hs") { this.envelopes.push(envelope); return; }
@@ -57,7 +66,13 @@ class OldPhone {
       } catch (error) { this.errors.push(error); }
     });
   }
-  frame(envelope: EnvelopeV2): void { this.socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: this.outerVersion, envelope })); }
+  frame(envelope: EnvelopeV2): void {
+    const fragment = this.version === 18 && legacyProtocol ? legacyProtocol.fragmentEnvelope : fragmentEnvelope;
+    for (const piece of fragment(envelope)) {
+      if (piece.hdr.k === "piece") this.sentPieces += 1;
+      this.socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: this.outerVersion, envelope: piece }));
+    }
+  }
   request(message: Record<string, unknown>): void {
     this.frame(this.channel!.seal({ k: "data", room: this.hostId, from: this.deviceId, to: this.hostId, ch: "ctl", n: this.channel!.nextSequence("ctl") }, Buffer.from(JSON.stringify({ protocolVersion: this.version, ...message }))));
   }
@@ -85,7 +100,7 @@ class OldPhone {
 describe("unchanged legacy device behavior against a compatible Host", () => {
   let directory: string;
   let relay: RelayServer;
-  let host: HostService;
+  let host: SourceHostService;
   let hostId: string;
   const phones: OldPhone[] = [];
   const runtimes: WebSocket[] = [];
@@ -137,7 +152,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     const invalid = { type: "session.list", requestId: "bad-fields", extra: true };
     phone.request(invalid);
     expect(await phone.take("protocol.error", "bad-fields")).toMatchObject({ code: "invalid_request" });
-    const bytes = randomBytes(4096);
+    const bytes = randomBytes(96 * 1024);
     phone.request({ type: "file.upload.init", requestId: "upload", runtimeId: hostId, directory: join(directory, "uploads"), fileName: "bytes.bin", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
     const ready = await phone.take("file.upload.ready", "upload");
     const read = await phone.take("file.upload.read");
@@ -155,6 +170,8 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     phone.request({ type: "artifact.read", transferId: event.transferId, requestId: "read-once", offset: 0, length: bytes.length });
     await vi.waitFor(() => expect(phone.binaries).toHaveLength(1));
     expect(Buffer.from(decodeArtifactChunkFrame(phone.binaries[0]!, version).data)).toEqual(bytes);
+    expect(phone.sentPieces).toBeGreaterThan(1);
+    expect(phone.receivedPieces).toBeGreaterThan(1);
     phone.request({ type: "artifact.done", transferId: event.transferId });
     phone.request({ type: "artifact.read", transferId: event.transferId, requestId: "read-after-done", offset: 0, length: bytes.length });
     expect(await phone.take("artifact.read.failed", "read-after-done")).toMatchObject({ reason: "unknown_transfer" });

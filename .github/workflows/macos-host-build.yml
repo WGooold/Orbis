@@ -100,6 +100,8 @@ jobs:
                               '--screenshot', str(smoke / 'preview.png')],
                              env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
           PY
+          ORBIS_COMPATIBLE_RUNTIME="$GITHUB_WORKSPACE/.artifacts/host/OrbisHost.app/Contents/Resources/runtime" \
+            npx vitest run packages/host/src/host-protocol-compatibility.test.ts --maxWorkers=1 --testTimeout=30000
           version=$(sed -nE 's/^project\(OrbisHost VERSION ([0-9.]+).*$/\1/p' packages/windows-host/CMakeLists.txt)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           dmg="OrbisHost-$version-${{ matrix.artifact }}.dmg"
