@@ -380,129 +380,104 @@ private struct MenuCloseLines: Shape {
     }
 }
 
-/// Page-scoped actions replace the stable header slot without changing the transcript layout.
+/// A message owns one menu or one text-selection sheet; the page header never changes.
 struct OrbisMessageActions: ViewModifier {
-    @Environment(\.orbisMessageActions) private var toolbar
     @EnvironmentObject private var overlay: OrbisOverlay
+    @Environment(\.scenePhase) private var scenePhase
     let enabled: Bool
     let id: String
     let text: String
     let rewindEnabled: Bool
     var rewind: (() -> Void)?
     @State private var anchor = OrbisAnchor()
+    @State private var selectingText = false
     private var owner: String { "message-" + id }
 
     func body(content: Content) -> some View {
         if enabled {
-        content.orbisAnchor(anchor)
-            .background(OrbisMenuScrollObserver { dismiss() })
-            .accessibilityIdentifier("user-message-" + id)
-            // Native selection can cancel a passive window observer as it dismisses the keyboard.
-            // Keep the row's simultaneous recognizer for that first hold; the observer also
-            // handles another hold when native text selection already owns the hit target.
-            .simultaneousGesture(LongPressGesture().onEnded { _ in show() })
-            .background(OrbisLongPressObserver(onPress: show))
-            .accessibilityAction(named: L10n.tr("消息操作")) { if enabled { show() } }
-            .onChange(of: rewindEnabled) { _, _ in dismiss() }
-            .onChange(of: text) { _, new in
-                guard toolbar?.selection?.id == id else { return }
-                toolbar?.selection = .init(id: id, text: new, rewindEnabled: rewindEnabled, rewind: rewind)
-            }
-            .onChange(of: id) { old, _ in overlay.dismissMenu(owner: "message-" + old); toolbar?.dismiss(id: old) }
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { new in
-                // Keyboard and safe-area changes move the anchor without invalidating its owner.
-                // Only a real scroll pan dismisses the menu; text selection remains native.
-                anchor.frame = new
-                overlay.moveMenu(owner: owner, to: new)
-            }
-            .onDisappear { dismiss() }
-        } else {
-            // Assistant/tool rows retain their own identifiers, links and controls.
-            content
-        }
+            content.orbisAnchor(anchor)
+                .background(OrbisMenuScrollObserver { overlay.dismissMenu(owner: owner) })
+                .accessibilityIdentifier("user-message-" + id)
+                .onLongPressGesture { show() }
+                .accessibilityAction(named: L10n.tr("消息操作"), show)
+                .onChange(of: rewindEnabled) { _, _ in overlay.dismissMenu(owner: owner) }
+                .onChange(of: rewind != nil) { _, _ in overlay.dismissMenu(owner: owner) }
+                .onChange(of: text) { _, _ in dismiss() }
+                .onChange(of: id) { old, _ in
+                    overlay.dismissMenu(owner: "message-" + old); selectingText = false
+                }
+                .onChange(of: scenePhase) { _, phase in if phase != .active { dismiss() } }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { new in
+                    anchor.frame = new
+                    overlay.moveMenu(owner: owner, to: new)
+                }
+                .sheet(isPresented: $selectingText) {
+                    OrbisMessageTextSelection(text: text).orbisSheet()
+                }
+                .onDisappear { dismiss() }
+        } else { content }
     }
     private func dismiss() {
-        overlay.dismissMenu(owner: owner); toolbar?.dismiss(id: id)
+        overlay.dismissMenu(owner: owner); selectingText = false
     }
     private func show() {
-        guard enabled else { return }
-        if let toolbar {
-            guard toolbar.selection?.id != id else { return }
-            OrbisHaptics.selectionChanged()
-            toolbar.selection = .init(id: id, text: text, rewindEnabled: rewindEnabled, rewind: rewind)
-            return
+        guard enabled, !selectingText, !anchor.frame.isEmpty, overlay.menu?.owner != owner else { return }
+        var items: [OrbisMenuItem] = []
+        if !text.isEmpty {
+            items.append(OrbisMenuItem(title: L10n.tr("复制消息"), symbol: "doc.on.doc", keepsOpen: true,
+                                      identifier: "copy-message-" + id) { UIPasteboard.general.string = text })
+            items.append(OrbisMenuItem(title: L10n.tr("选择文字"), symbol: "text.cursor",
+                                      identifier: "select-message-text-" + id) { selectingText = true })
         }
-        guard !anchor.frame.isEmpty else { return }
-        var items = [OrbisMenuItem(title: L10n.tr("复制消息"), symbol: "doc.on.doc", keepsOpen: true, identifier: "copy-message-" + id) { UIPasteboard.general.string = text }]
-        if let rewind {
-            items.append(OrbisMenuItem(title: "Rewind", symbol: "backward.end", disabled: !rewindEnabled, identifier: "rewind-message-" + id, action: rewind))
+        if rewindEnabled, let rewind {
+            if !items.isEmpty { items.append(.divider) }
+            items.append(OrbisMenuItem(title: "Rewind", symbol: "backward.end",
+                                      identifier: "rewind-message-" + id, action: rewind))
         }
-        overlay.showMenu(items, from: anchor.frame, horizontal: true, owner: owner)
+        guard !items.isEmpty else { return }
+        OrbisHaptics.selectionChanged()
+        overlay.showMenu(items, from: anchor.frame, preferAbove: true, owner: owner)
     }
 }
 
-/// Observes a held touch without winning against native text selection or scroll gestures.
-/// Native selection may already own the second hold, so a SwiftUI LongPressGesture is insufficient.
-private struct OrbisLongPressObserver: UIViewRepresentable {
-    let onPress: () -> Void
-    func makeUIView(context: Context) -> Probe { Probe(onPress: onPress) }
-    func updateUIView(_ view: Probe, context: Context) { view.onPress = onPress }
-    static func dismantleUIView(_ view: Probe, coordinator: ()) { view.detach() }
-    final class Probe: UIView {
-        var onPress: () -> Void
-        private var observer: HoldObserver?
-        init(onPress: @escaping () -> Void) {
-            self.onPress = onPress
-            super.init(frame: .zero)
-            isUserInteractionEnabled = false; isAccessibilityElement = false
-        }
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-        override func didMoveToWindow() {
-            super.didMoveToWindow(); detach()
-            guard let window else { return }
-            let recognizer = HoldObserver(probe: self)
-            window.addGestureRecognizer(recognizer); observer = recognizer
-        }
-        func detach() { observer?.invalidate(); if let observer { observer.view?.removeGestureRecognizer(observer) }; observer = nil }
-        func contains(_ touch: UITouch) -> Bool {
-            guard window != nil, bounds.contains(touch.location(in: self)) else { return false }
-            var parent: UIView? = self
-            while let view = parent {
-                if view.isHidden || view.alpha < 0.01 { return false }
-                if view.clipsToBounds && !view.bounds.contains(touch.location(in: view)) { return false }
-                parent = view.superview
+private struct OrbisMessageTextSelection: View {
+    @Environment(\.dismiss) private var dismiss
+    let text: String
+    var body: some View {
+        VStack(spacing: 0) {
+            OrbisPageHeader(title: L10n.tr("选择文字"), closes: true,
+                            backLabel: L10n.tr("关闭文字选择"), back: { dismiss() }) {
+                OrbisCopyButton(label: L10n.tr("复制消息")) { text }
             }
-            return true
+            OrbisSelectableMessageText(text: text)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("message-selection-text")
         }
     }
-    private final class HoldObserver: UIGestureRecognizer {
-        weak var probe: Probe?
-        private var start = CGPoint.zero
-        private var pending: DispatchWorkItem?
-        init(probe: Probe) {
-            self.probe = probe; super.init(target: nil, action: nil)
-            cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
-        }
-        func invalidate() { pending?.cancel(); pending = nil }
-        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-            guard touches.count == 1, let touch = touches.first, probe?.contains(touch) == true else { state = .failed; return }
-            start = touch.location(in: view)
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, self.state == .possible else { return }
-                self.probe?.onPress(); self.state = .failed; self.pending = nil
-            }
-            pending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-        }
-        override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-            guard let touch = touches.first else { return }
-            let point = touch.location(in: view)
-            if hypot(point.x - start.x, point.y - start.y) > 10 { invalidate(); state = .failed }
-        }
-        override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { invalidate(); state = .failed }
-        override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { invalidate(); state = .failed }
-        override func reset() { invalidate(); super.reset() }
-        override func canPrevent(_ other: UIGestureRecognizer) -> Bool { false }
-        override func canBePrevented(by other: UIGestureRecognizer) -> Bool { false }
+}
+
+/// UITextView keeps native range handles on supported iOS versions, including iPadOS 26.
+/// SwiftUI Text can offer only whole-paragraph Copy/Share on those versions.
+private struct OrbisSelectableMessageText: UIViewRepresentable {
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.backgroundColor = .clear
+        view.font = .monospacedDigitSystemFont(ofSize: OrbisTextSize.body, weight: .regular)
+        view.textContainerInset = UIEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        view.textContainer.lineFragmentPadding = 0
+        view.accessibilityIdentifier = "message-selection-text"
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        // Appearance updates must not reset an active range or its scroll position.
+        if view.text != text { view.text = text }
+        view.textColor = UIColor(OrbisPalette(scheme).text)
     }
 }
 
@@ -837,62 +812,6 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
             }
         }
         func detach() { scroll?.panGestureRecognizer.removeTarget(self, action: #selector(pan)); scroll = nil }
-    }
-}
-
-
-@MainActor
-final class OrbisMessageActionState: ObservableObject {
-    struct Selection {
-        let id: String
-        let text: String
-        let rewindEnabled: Bool
-        let rewind: (() -> Void)?
-    }
-    @Published var selection: Selection?
-    func dismiss(id: String? = nil) { if id == nil || selection?.id == id { selection = nil } }
-}
-private struct OrbisMessageActionKey: EnvironmentKey { static let defaultValue: OrbisMessageActionState? = nil }
-extension EnvironmentValues {
-    var orbisMessageActions: OrbisMessageActionState? {
-        get { self[OrbisMessageActionKey.self] }
-        set { self[OrbisMessageActionKey.self] = newValue }
-    }
-}
-struct OrbisMessageActionScope: ViewModifier {
-    @StateObject private var actions = OrbisMessageActionState()
-    func body(content: Content) -> some View {
-        content.environment(\.orbisMessageActions, actions)
-            .orbisBackPriority("message-actions", active: actions.selection != nil) { actions.dismiss() }
-            .onDisappear { actions.dismiss() }
-    }
-}
-struct OrbisMessageActionHeader<Normal: View>: View {
-    @ObservedObject var actions: OrbisMessageActionState
-    @Environment(\.orbisReduceMotion) private var reduced
-    @ViewBuilder var normal: Normal
-    var body: some View {
-        ZStack {
-            normal.hidden().allowsHitTesting(false).accessibilityHidden(true)
-            if actions.selection == nil { normal.transition(.opacity) }
-            if let selected = actions.selection {
-                HStack(spacing: 12) {
-                    OrbisIconButton(symbol: "xmark", label: L10n.tr("退出消息操作")) { actions.dismiss() }
-                    OrbisMotionText(L10n.tr("消息操作")).font(.orbisBody(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                    OrbisCopyButton(label: L10n.tr("复制消息")) { actions.selection?.text ?? "" }
-                        .id(selected.id)
-                        .accessibilityIdentifier("copy-message-" + selected.id)
-                    if let rewind = selected.rewind {
-                        OrbisIconButton(symbol: "backward.end", label: "Rewind") {
-                            guard actions.selection?.id == selected.id, selected.rewindEnabled else { return }
-                            actions.dismiss(); rewind()
-                        }.disabled(!selected.rewindEnabled).accessibilityIdentifier("rewind-message-" + selected.id)
-                    }
-                }.padding(.horizontal, 16).padding(.vertical, 10)
-                    .accessibilityElement(children: .contain).accessibilityIdentifier("message-action-header")
-                    .transition(.opacity.combined(with: .offset(y: -4)))
-            }
-        }.animation(reduced ? nil : InteractionMotion.state, value: actions.selection?.id)
     }
 }
 

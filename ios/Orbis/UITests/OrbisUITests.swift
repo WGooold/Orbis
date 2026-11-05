@@ -1852,20 +1852,57 @@ final class OrbisUITests: XCTestCase {
         capture("send-queue-withdrawn", app: app)
     }
 
+    /// Touch the visible portion as a person would; element.press may auto-scroll a clipped lazy row.
+    private func visibleMessagePressPoint(_ message: XCUIElement, app: XCUIApplication) -> XCUICoordinate {
+        var visible = CGRect.zero
+        for _ in 0..<5 {
+            let top = app.buttons["历史与分支"].frame.maxY + 8
+            let bottom = app.descendants(matching: .any)["chat-composer"].firstMatch.frame.minY - 12
+            let viewport = CGRect(x: 0, y: top, width: app.frame.width, height: max(0, bottom - top))
+            visible = message.frame.intersection(viewport)
+            if !visible.isNull && visible.height >= 20 { break }
+            if message.frame.minY >= bottom { app.swipeUp() } else { app.swipeDown() }
+        }
+        XCTAssertFalse(visible.isNull)
+        XCTAssertGreaterThanOrEqual(visible.height, 20)
+        return app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: visible.midX, dy: visible.midY))
+    }
+
+    private func captureMessage(_ name: String, app: XCUIApplication) {
+        XCTAssertEqual(app.state, .runningForeground)
+        // App-cropped screenshots can clip a landscape iPad window using portrait bounds.
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = name; screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    private func nativeEditAction(_ labels: [String], app: XCUIApplication) -> XCUIElement {
+        let predicate = NSPredicate(format: "label IN %@", labels)
+        let menuItem = app.menuItems.matching(predicate).firstMatch
+        if menuItem.waitForExistence(timeout: 1) { return menuItem }
+        let button = app.buttons.matching(predicate).firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: 3))
+        return button
+    }
+
     func testUserMessageCopyAndRewind() {
         let app = launch("chat")
-        let message = app.descendants(matching: .any)["user-message-m3"].firstMatch
+        let message = app.staticTexts["聊天输入和滚动也要保持一致。"].firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 8))
-        if !message.isHittable { app.swipeDown() }
+        let pressPoint = visibleMessagePressPoint(message, app: app)
         let before = message.frame
+        let headerBefore = app.buttons["历史与分支"].frame
         XCTAssertFalse(app.buttons["copy-message-m3"].exists)
-        message.press(forDuration: 0.6)
+        pressPoint.press(forDuration: 0.6)
         let copy = app.buttons["copy-message-m3"]
         XCTAssertTrue(copy.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.descendants(matching: .any)["message-action-header"].firstMatch.exists)
-        XCTAssertFalse(app.buttons["历史与分支"].exists)
-        XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1)
-        XCTAssertLessThanOrEqual(copy.frame.maxY, message.frame.minY)
+        XCTAssertFalse(app.descendants(matching: .any)["message-action-header"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["历史与分支"].exists)
+        XCTAssertEqual(app.buttons["历史与分支"].frame, headerBefore)
+        XCTAssertEqual(app.menuItems.count, 0)
+        XCTAssertFalse(app.buttons["关闭文字选择"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["message-selection-text"].firstMatch.exists)
+        XCTAssertLessThanOrEqual(copy.frame.maxY, before.minY)
         copy.tap()
         XCTAssertEqual(copy.label, "已复制")
         let copyFrame = copy.frame
@@ -1878,20 +1915,95 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(copy.frame, copyFrame)
         copy.tap()
         XCTAssertEqual(copy.label, "已复制")
-        app.buttons["退出消息操作"].tap()
+        // The first outside tap dismisses without activating the covered header button.
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: headerBefore.midX, dy: headerBefore.midY)).tap()
         XCTAssertFalse(copy.exists)
         XCTAssertTrue(app.buttons["历史与分支"].exists)
-        message.press(forDuration: 0.6)
+        XCTAssertEqual(app.buttons["历史与分支"].frame, headerBefore)
+        XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1)
+        visibleMessagePressPoint(message, app: app).press(forDuration: 0.6)
         XCTAssertTrue(copy.waitForExistence(timeout: 3))
         XCTAssertEqual(copy.label, "复制消息", "Reopening actions must not restore a stale checkmark")
         let rewind = app.buttons["rewind-message-m3"]
         XCTAssertTrue(rewind.isEnabled)
-        capture("user-message-actions", app: app)
+        captureMessage("user-message-actions", app: app)
         rewind.tap()
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         let restored = NSPredicate(format: "value CONTAINS %@", "聊天输入和滚动也要保持一致。")
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: composer)], timeout: 8), .completed)
     }
+    func testMessageTextSelectionIsExplicitAndReturnsToTheSameBubble() {
+        verifyMessageTextSelection()
+    }
+
+    func testMessageTextSelectionInDarkLargeTextAndReducedMotion() {
+        verifyMessageTextSelection(dark: true)
+        verifyMessageTextSelection(arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        verifyMessageTextSelection(arguments: ["--preview-reduce-motion"])
+    }
+
+    private func verifyMessageTextSelection(dark: Bool = false, arguments: [String] = []) {
+        let app = launch("chat", dark: dark, arguments: arguments)
+        let message = app.staticTexts["聊天输入和滚动也要保持一致。"].firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        let pressPoint = visibleMessagePressPoint(message, app: app)
+        let before = message.frame
+        pressPoint.press(forDuration: 0.6)
+        let select = app.buttons["select-message-text-m3"]
+        XCTAssertTrue(select.waitForExistence(timeout: 3))
+        XCTAssertEqual(app.menuItems.count, 0)
+        select.tap()
+        let body = app.descendants(matching: .any)["message-selection-text"].firstMatch
+        XCTAssertTrue(body.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["rewind-message-m3"].exists)
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        body.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 70, dy: 28)).press(forDuration: 0.7)
+        let nativeCopy = nativeEditAction(["拷贝", "复制", "Copy"], app: app)
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        captureMessage("message-native-text-selection", app: app)
+        nativeCopy.tap()
+        app.buttons["关闭文字选择"].tap()
+        XCTAssertFalse(body.exists)
+        XCTAssertTrue(app.buttons["历史与分支"].exists)
+        XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1)
+        visibleMessagePressPoint(message, app: app).press(forDuration: 0.6)
+        XCTAssertTrue(app.buttons["copy-message-m3"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["copy-message-m3"].label, "复制消息")
+        let header = app.buttons["历史与分支"].frame
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: header.midX, dy: header.midY)).tap()
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        composer.tap(); composer.press(forDuration: 0.7)
+        let paste = nativeEditAction(["粘贴", "貼上", "Paste"], app: app)
+        paste.tap()
+        let copiedRange = composer.value as? String ?? ""
+        XCTAssertFalse(copiedRange.isEmpty)
+        XCTAssertTrue("聊天输入和滚动也要保持一致。".contains(copiedRange))
+        XCTAssertLessThan(copiedRange.count, "聊天输入和滚动也要保持一致。".count,
+                          "Explicit selection must copy a range, not only the whole paragraph")
+        app.terminate()
+    }
+
+    func testMessageMenuDismissesOnOutsideDragWithoutScrollingThroughIt() {
+        let app = launch("chat")
+        let message = app.staticTexts["聊天输入和滚动也要保持一致。"].firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        let point = visibleMessagePressPoint(message, app: app)
+        point.press(forDuration: 0.6)
+        let copy = app.buttons["copy-message-m3"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 3))
+        let before = message.frame
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.7))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -100)))
+        XCTAssertFalse(copy.exists)
+        XCTAssertEqual(message.frame.minY, before.minY, accuracy: 1,
+                       "The dismissing gesture must not scroll the page underneath")
+        let press = visibleMessagePressPoint(message, app: app)
+        press.press(forDuration: 0.05, thenDragTo: press.withOffset(CGVector(dx: 0, dy: -80)))
+        XCTAssertFalse(copy.exists, "A scrolling gesture must cancel the pending long press")
+        XCTAssertTrue(app.buttons["历史与分支"].exists)
+        app.terminate()
+    }
+
     func testToolDetailsLoadPagesAndClose() {
         let app = launch("tool")
         let disclosure = app.buttons["展开read，已完成"]

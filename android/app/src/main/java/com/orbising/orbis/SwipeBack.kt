@@ -85,8 +85,6 @@ internal fun OrbisPageHost(
     val active = LocalPageActive.current
     val parentGate = LocalPageBackGate.current
     val gate = remember(contentKey, parentGate) { PageBackGate(parentGate) }
-    val messageActions = remember(contentKey) { MessageActionState() }
-    LaunchedEffect(active, open) { if (!active || !open) messageActions.dismiss() }
     val dispatcherOwner = checkNotNull(LocalOnBackPressedDispatcherOwner.current)
     val inactiveOwner = remember(dispatcherOwner) {
         object : OnBackPressedDispatcherOwner {
@@ -102,7 +100,7 @@ internal fun OrbisPageHost(
             CompositionLocalProvider(LocalPageActive provides (active && !open),
                 LocalOnBackPressedDispatcherOwner provides if (active && !open) dispatcherOwner else inactiveOwner) { underlay() }
         },
-        content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate, LocalMessageActionState provides messageActions) { content() } },
+        content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate) { content() } },
         dragEnabled = gate.blockers.isEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) == 0)
 }
 

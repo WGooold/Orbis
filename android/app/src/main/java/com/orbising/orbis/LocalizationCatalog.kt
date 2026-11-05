@@ -337,6 +337,7 @@ internal object LocalizationCatalog {
         "关闭会话目录" to "Close session drawer",
         "关闭文件差异" to "Close file diff",
         "关闭文件提示" to "Dismiss file notice",
+        "关闭文字选择" to "Close text selection",
         "关闭这个 Claude Code 会话（保留历史）" to "Close this Claude Code session (keep history)",
         "关闭这个 DeepSeek Harness 会话（保留历史）" to "Close this DeepSeek Harness session (keep history)",
         "关闭选中会话" to "Close selected sessions",
@@ -468,9 +469,9 @@ internal object LocalizationCatalog {
         "取消" to "Cancel",
         "取消回答" to "Cancel answer",
         "取消导出" to "Cancel export",
-        "取消添加电脑" to "Cancel adding computer",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "取消添加电脑" to "Cancel adding computer",
         "取消请求" to "Cancel request",
         "取消配对 {0}" to "Unpair {0}",
         "取消配对「{0}」" to "Unpair “{0}”",
@@ -620,9 +621,9 @@ internal object LocalizationCatalog {
         "工具清单版本或大小无效" to "Invalid tool inventory version or size",
         "工具清单版本或大小无效。" to "Invalid tool inventory version or size.",
         "工具清单等待任务已满。" to "Tool inventory waiting task limit reached.",
-        "工具清单读取未送达。" to "Tool inventory request was not delivered.",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "工具清单读取未送达。" to "Tool inventory request was not delivered.",
         "工具清单读取超时" to "Tool inventory read timed out",
         "工具清单读取超时，请重试。" to "Tool inventory read timed out. Try again.",
         "工具清单超过预算" to "Tool inventory exceeds the budget",
@@ -772,9 +773,9 @@ internal object LocalizationCatalog {
         "手机无法安全渲染此交互，请在电脑端处理。" to "This interaction cannot be displayed safely on the phone. Use the computer.",
         "手机系统“下载”目录，{0}" to "Phone's Downloads folder, {0}",
         "打开" to "Open",
-        "打开下载" to "Open downloads",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "打开下载" to "Open downloads",
         "打开会话目录" to "Open session drawer",
         "打开图片" to "Open image",
         "打开网页" to "Open webpage",
@@ -924,9 +925,9 @@ internal object LocalizationCatalog {
         "未安装" to "Not installed",
         "未完成" to "Incomplete",
         "未完成的导出文件无法删除：{0}" to "Could not delete the incomplete export file: {0}",
-        "未完成的工具导出文件无法删除，请在文件管理器中删除" to "Could not delete the incomplete tool export. Delete it in the file manager.",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "未完成的工具导出文件无法删除，请在文件管理器中删除" to "Could not delete the incomplete tool export. Delete it in the file manager.",
         "未完成，消息未发送" to "Incomplete. Message was not sent.",
         "未就绪" to "Not ready",
         "未建立" to "Not established",
@@ -1076,9 +1077,9 @@ internal object LocalizationCatalog {
         "此轮文件版本已超过电脑端保留期限。" to "The computer's retention period for this turn's file versions has expired.",
         "此轮未保存可比较的文件版本。" to "No comparable file versions were saved for this turn.",
         "此部分内容已无法恢复" to "This content cannot be recovered",
-        "没有{0}会话" to "No {0}sessions",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "没有{0}会话" to "No {0}sessions",
         "没有匹配的会话" to "No matching sessions",
         "没有匹配的命令" to "No matching commands",
         "没有匹配的节点" to "No matching nodes",
@@ -1228,9 +1229,9 @@ internal object LocalizationCatalog {
         "类型变化" to "Type changed",
         "粘贴电脑端二维码的 JSON 内容" to "Paste the QR code's JSON from the computer",
         "粘贴配对二维码内容" to "Paste pairing QR code data",
-        "系统语言为中文时使用简体中文，其他未支持的语言使用英文。" to "Uses your preferred supported language. Falls back to English.",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "系统语言为中文时使用简体中文，其他未支持的语言使用英文。" to "Uses your preferred supported language. Falls back to English.",
         "经典" to "Classic",
         "结果" to "Result",
         "结果被上限截断" to "Results truncated at the limit",
@@ -1380,9 +1381,9 @@ internal object LocalizationCatalog {
         "还有更新的没读" to "Newer records remain unread",
         "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
-        "还没有可显示的会话" to "No sessions to display yet",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "还没有可显示的会话" to "No sessions to display yet",
         "还没有已配对的电脑，无法下载" to "No paired computer. Cannot download.",
         "还没有已配对的电脑，无法继续下载" to "No paired computer. Cannot resume download.",
         "这个会话还没有可显示的分支记录" to "No branch records to display for this session yet",
@@ -1430,6 +1431,7 @@ internal object LocalizationCatalog {
         "选择下载" to "Select downloads",
         "选择会话" to "Select sessions",
         "选择供应商" to "Select provider",
+        "选择文字" to "Select text",
         "选择此 Codex 会话的模型" to "Select the model for this Codex session",
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",

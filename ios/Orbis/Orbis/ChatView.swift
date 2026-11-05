@@ -971,7 +971,7 @@ private struct MessageContentView: View {
                     }
                 default:
                     if let text = content.text, !text.isEmpty {
-                        if message.role == "user" { Text(text).font(.orbisBody()).textSelection(.enabled) }
+                        if message.role == "user" { Text(text).font(.orbisBody()).textSelection(.disabled) }
                         else { MarkdownMessage(text: text, streaming: streaming) }
                     }
                 }
