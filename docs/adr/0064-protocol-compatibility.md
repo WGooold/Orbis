@@ -172,4 +172,6 @@ Host 0.1.15 的双向业务适配已在隔离工作树 `codex/host-protocol18-19
 
 完整测试、保留的初轮失败、模块来源、构建 / 清理记录与产物见 `.artifacts/ui-regression/20261105-relay-host-compatibility/summary.md`。
 
+协议 18 原包设备补验：首次排队超时后，原版 Android 0.1.52 / versionCode 53 在同一固定模拟器上对接实际打包的 Host 0.1.15 runtime，隔离配对、加密通道与 Host 状态接收 1 / 1 通过。原包与 instrumentation SHA-256 保留，未重编译手机包。测试后恢复原本未安装这两个包的状态，六项系统设置恢复；ADB、emulator 与租约清理无错误，证据为 `old18/old-apk-result.json` 和 `old18-device-r3/`。本条更新前段首次队列超时的设备状态，其失败证据继续保留；完整 UI、真实用户既有配对及旧 iOS 门禁仍未验收。
+
 第二阶段 Relay `8601e6508523` 已上线；2026-11-05 现场确认 Host 0.1.14（协议 18）显示已连接，但用户手机 0.1.53 仍收到业务协议拒绝。因此前两阶段的单测、Relay 公网探测与新 Android 0.1.54 的结果，均不作为第三阶段“旧 App 无须升级”的验收证据。本轮已实施 §6 适配并补齐隔离互通，仍按 Verification 与 R64 保留未完成的设备及真实旧包验证。
