@@ -216,13 +216,15 @@ describe("real desktop refresh driver", () => {
 });
 
 describe("phone tree to desktop lifecycle", () => {
+  // Native refresh durably saves each phase; Windows CI needs time for the full journal cycle.
+  const refreshWait = { timeout: 10_000 };
   it("ends only the matching refresh condition after native GUI hydration is confirmed", async () => {
     const h = await harness(); h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     h.server.onNotification?.("windowsSandbox/setupCompleted", { success: false, error: "sandbox failure" });
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-notice", "session");
     const inventory = () => h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
-    await vi.waitFor(() => expect(inventory().map(item => item.code).sort()).toEqual(["codex.refresh", "codex.sandbox"]));
+    await vi.waitFor(() => expect(inventory().map(item => item.code).sort()).toEqual(["codex.refresh", "codex.sandbox"]), refreshWait);
     const waiting = inventory().find(item => item.code === "codex.refresh");
     expect(waiting).toMatchObject({ severity: "info", lifecycle: "condition",
       message: "历史已回退，正在等待桌面历史加载确认" });
@@ -248,7 +250,7 @@ describe("phone tree to desktop lifecycle", () => {
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-queue", "session");
-    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-queue", ok: true })));
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-queue", ok: true })), refreshWait);
     expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive", "resume"]);
     expect(app.open).toHaveBeenCalledExactlyOnceWith("session", "local");
     expect((await h.journal.list())[0]).toMatchObject({ kind: "receipt", result: { status: "complete" } });
@@ -263,7 +265,7 @@ describe("phone tree to desktop lifecycle", () => {
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-recovery", "session");
-    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-recovery", ok: true })));
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-recovery", ok: true })), refreshWait);
     const inventory = h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
     expect(inventory).toContainEqual(expect.objectContaining({ code: "codex.refresh", severity: "warning",
       message: expect.stringContaining("请手动归档") }));
@@ -276,7 +278,7 @@ describe("phone tree to desktop lifecycle", () => {
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-unsupported", "session");
-    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-unsupported", ok: true })));
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "tree-unsupported", ok: true })), refreshWait);
     expect(h.lifecycle).toEqual(["resume", "revert"]);
     expect(app.open).not.toHaveBeenCalled();
     const notifications = h.events.filter(event => event.type === "notification.source").at(-1)?.notifications ?? [];
@@ -289,7 +291,7 @@ describe("phone tree to desktop lifecycle", () => {
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     expect(h.runtime.directoryEntries()).toHaveLength(1);
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "u2" }, "tree-1", "session");
-    await vi.waitFor(() => expect(h.events.some(e => e.type === "command.result" && e.commandId === "tree-1")).toBe(true));
+    await vi.waitFor(() => expect(h.events.some(e => e.type === "command.result" && e.commandId === "tree-1")).toBe(true), refreshWait);
     expect(h.lifecycle).toEqual(["resume", "revert", "archive", "unarchive", "resume"]);
     expect(app.open).toHaveBeenCalledExactlyOnceWith("session", "local");
     expect(h.events.find(e => e.type === "command.result" && e.commandId === "tree-1")).toMatchObject({ ok: true, result: { editorText: "question 2" } });

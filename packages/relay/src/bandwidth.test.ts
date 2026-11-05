@@ -62,7 +62,8 @@ describe("X11 / RELAY-BW-01 device bandwidth", () => {
     await Promise.all([restored.flush(), restored.flush()]);
     const restarted = await RelayBandwidth.create(options);
     expect(restarted.snapshot().devices[0]!.today).toMatchObject({ uploadBytes: 150, downloadBytes: 850, activeSeconds: 1, combined: { meanBps: 8_000, peakBps: 8_000 } });
-    expect((await stat(stateFile)).mode & 0o777).toBe(0o600);
+    // Windows stat synthesizes mode bits; the deployed POSIX filesystem enforces 0600.
+    if (process.platform !== "win32") expect((await stat(stateFile)).mode & 0o777).toBe(0o600);
     const state = await readFile(stateFile, "utf8");
     expect(JSON.parse(state)).toMatchObject({ version: 1, savedAt: now });
     expect(state).not.toMatch(/credential|ciphertext|envelope|email/);
