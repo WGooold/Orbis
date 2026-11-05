@@ -12,6 +12,12 @@ The operator console is a Relay administration surface. It reports Relay health,
 
 This does not introduce the browser management server excluded by ADR-0014. That exclusion concerns a local server in the Windows Host. The console is hosted by the public Relay and manages only information and authority already owned by that Relay.
 
+## 2026-11-05: per-device bandwidth (X11)
+
+The console's bandwidth page groups authenticated Relay message bytes by device ID, with upload/download totals and one-second active-window mean, P95 and peak rates. UTC daily records are retained for 30 days; seven- and thirty-day percentiles merge the sample histograms. P95 uses a bounded histogram with an upper-bound error below 4.5%. Idle seconds and the unfinished current second are excluded from rates. Totals include authentication and control messages. LAN traffic, transport headers and retransmission are outside this measurement; QUIC downlink measures the Node-to-adapter handoff rather than confirmed device reception.
+
+The collector stores IDs and numeric aggregates separately in `ORBIS_BANDWIDTH_STATE_FILE` (default: `ORBIS_STATE_FILE` plus `.bandwidth.json`), saving every minute and on graceful shutdown. Reads use the existing administrator session. Implementation: [bandwidth.ts](../../packages/relay/src/bandwidth.ts) and [admin.js](../../packages/relay/src/web/admin.js). Scenarios RELAY-BW-01/02/03 cover sample accounting, authenticated forwarding and console rendering logic in the corresponding `bandwidth*.test.ts` files. Evidence: [.artifacts/relay-bandwidth/20261105](../../.artifacts/relay-bandwidth/20261105/). Deployment and user acceptance remain pending; browser inspection was blocked by the local browser connection.
+
 Windows downloads remain release artifacts rather than source-tree files. The authorized Relay deployment workflow may select a successful `main` run of the Windows Host build, verify its checksums, and mount the resulting release directory read-only. Source deployment, download publication, candidate health checks, rollback, and the deployed-commit marker stay in the same workflow.
 
 ## 2026-11-03: cinematic public homepage (r39, verification in progress)

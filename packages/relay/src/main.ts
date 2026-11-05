@@ -24,6 +24,7 @@ const relay = await createRelayServer({
   registration,
   trustProxy: process.env.ORBIS_TRUST_PROXY === "1",
   adminStateFile: process.env.ORBIS_ADMIN_STATE_FILE ?? `${stateFile}.admin.json`,
+  bandwidthStateFile: process.env.ORBIS_BANDWIDTH_STATE_FILE ?? `${stateFile}.bandwidth.json`,
   ...(process.env.ORBIS_DOWNLOADS_DIR ? { downloadsDir: process.env.ORBIS_DOWNLOADS_DIR } : {}),
   // nginx 把 /var/www/orbis-downloads 挂在 /downloads/ 下；Android 的版本元数据写在那里，
   // 与 CI 归档的 Windows 下载不是同一个目录。

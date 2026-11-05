@@ -1,7 +1,8 @@
 const base = new URL("../", location.href);
 const app = document.getElementById("app");
 const dialog = document.getElementById("confirm-dialog");
-const views = { overview: ["概览", "Relay 的运行状态，一目了然。", "◈"], hosts: ["Host", "管理已注册与正在连接的电脑。", "⊞"], devices: ["设备", "查看设备的 Relay 凭据与连接状态。", "▯"], service: ["服务", "注册服务、版本与部署配置。", "⚙"], audit: ["操作记录", "最近 200 次管理操作，随服务数据持久保存。", "≡"] };
+const views = { overview: ["概览", "Relay 的运行状态，一目了然。", "◈"], hosts: ["Host", "管理已注册与正在连接的电脑。", "⊞"], devices: ["设备", "查看设备的 Relay 凭据与连接状态。", "▯"], bandwidth: ["带宽", "按每个手机／平板查看 Relay 用量与带宽。", "⇄"], service: ["服务", "注册服务、版本与部署配置。", "⚙"], audit: ["操作记录", "最近 200 次管理操作，随服务数据持久保存。", "≡"] };
+let bandwidthData, bandwidthPeriod = "today", bandwidthDevice = "";
 let csrf = "", data, view = "overview", query = "", filter = "all", refreshing = false, mutation = false, timer, toastTimer, lastRefresh;
 const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 const errors = { unauthorized: "登录已失效，请重新输入管理员令牌。", invalid_origin: "请求来源不匹配，请通过本站地址访问后台。", invalid_csrf: "页面会话已更新，请刷新页面后重试。", admin_unavailable: "服务器尚未配置管理员令牌。", too_many_attempts: "尝试次数过多，请在 15 分钟后重试。", admin_busy: "管理会话数已达上限，请稍后重试。", device_not_found: "该设备已被撤销，请刷新列表。", host_not_found: "未找到该 Host，请刷新列表。", internal_error: "服务端未能保存操作，请稍后重试。" };
@@ -44,7 +45,7 @@ function shell() {
   document.getElementById("refresh").onclick = () => refresh();
   document.getElementById("logout").onclick = async event => { event.currentTarget.disabled = true; try { await api("logout", { method: "POST" }); login(); } catch (error) { if (error.code === "unauthorized") login(); else { toast(error.message); event.currentTarget.disabled = false; } } };
 }
-function switchView(next) { view = next; query = ""; filter = "all"; draw(); }
+function switchView(next) { view = next; query = ""; filter = "all"; draw(); if (view === "bandwidth") void refresh(); }
 function auditRows(events) {
   const labels = { "host.disable": "停用了 Host", "host.enable": "重新启用 Host", "device.revoke": "撤销了设备 Relay 凭据", "registration.email_verification": "调整了 QQ 邮箱验证要求" };
   return events.length ? `<div class="activity-list">${events.map(event => `<div class="activity-item"><span class="activity-dot"></span><div>${escape(labels[event.action] ?? event.action)}<small>${escape(event.target)}</small></div><time>${escape(timestamp(event.at))}</time></div>`).join("")}</div>` : `<div class="empty"><strong>暂时没有管理操作</strong>停用 Host 或撤销设备后，记录会显示在这里。</div>`;
@@ -101,6 +102,35 @@ function drawTable() {
     confirmAction("撤销设备的 Relay 凭据？", `${device.name} 将立即断开 Relay，后续需要重新配对才能使用中继连接。如需完整撤销设备信任，请同时在电脑 Host 操作。`, () => api(`devices/${encodeURIComponent(device.deviceId)}`, { method: "DELETE" }));
   }; });
 }
+// X11 / RELAY-BW-01: reuse console panels, filtering and tables for device-edge telemetry.
+const byteSize = value => {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const index = value > 0 ? Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))) : 0;
+  return `${(value / 1024 ** index).toFixed(index ? 2 : 0)} ${units[index]}`;
+};
+const bitRate = value => value >= 1e6 ? `${(value / 1e6).toFixed(2)} Mbps` : value >= 1e3 ? `${(value / 1e3).toFixed(2)} Kbps` : `${Math.round(value)} bps`;
+const trafficCell = day => day ? `<strong>${byteSize(day.totalBytes)}</strong><small>↑ ${byteSize(day.uploadBytes)} · ↓ ${byteSize(day.downloadBytes)}</small>` : "—";
+const rateCell = (day, key) => day?.activeSeconds ? `<strong>${bitRate(day.combined[key])}</strong><small>↑ ${bitRate(day.upload[key])} · ↓ ${bitRate(day.download[key])}</small>` : "待采样";
+const bandwidthHeaders = "<th>流量</th><th>平均带宽</th><th>P95 带宽</th><th>峰值带宽</th>";
+const bandwidthCells = day => `<td>${trafficCell(day)}</td><td>${rateCell(day, "meanBps")}</td><td>${rateCell(day, "p95Bps")}</td><td>${rateCell(day, "peakBps")}</td>`;
+function bandwidthPage() {
+  if (!bandwidthData) return '<section class="panel"><p class="loading" role="status">正在读取带宽统计…</p></section>';
+  const records = bandwidthData.devices;
+  const measured = records.filter(device => device[bandwidthPeriod]);
+  const upload = measured.reduce((sum, device) => sum + device[bandwidthPeriod].uploadBytes, 0);
+  const download = measured.reduce((sum, device) => sum + device[bandwidthPeriod].downloadBytes, 0);
+  const peak = measured.reduce((max, device) => Math.max(max, device[bandwidthPeriod].combined.peakBps), 0);
+  return `${bandwidthData.storageError ? '<div class="banner" role="alert">遥测文件读取或保存失败，当前统计可能不完整；请检查服务端存储。</div>' : ""}<section class="metrics" aria-label="带宽统计"><article class="metric"><div class="metric-label">上行流量</div><strong>${byteSize(upload)}</strong><small>设备 → Relay</small></article><article class="metric"><div class="metric-label">下行流量</div><strong>${byteSize(download)}</strong><small>Relay → 设备</small></article><article class="metric"><div class="metric-label">有流量的设备</div><strong>${measured.filter(device => device[bandwidthPeriod].totalBytes > 0).length}</strong><small>按 Relay 设备 ID 区分</small></article><article class="metric"><div class="metric-label">最高单设备峰值</div><strong>${bitRate(peak)}</strong><small>上下行合计 · 1 秒窗口</small></article></section><section class="panel"><div class="panel-heading"><div><h2>设备带宽</h2><p>流量与带宽主值为上下行合计，↑ 为上行，↓ 为下行。</p></div></div><div class="filter-bar"><input id="search" type="search" class="field" aria-label="搜索设备带宽" placeholder="搜索设备名称、设备 ID 或 Host" value="${escape(query)}"><select id="bandwidth-period" class="field" aria-label="统计时段"><option value="today">今天（UTC）</option><option value="last7Days">最近 7 天</option><option value="last30Days">最近 30 天</option></select></div><div id="bandwidth-table"></div></section><div id="bandwidth-history"></div><section class="panel settings-notes"><div class="panel-heading"><h2>统计口径</h2></div><p>按 Relay 设备 ID 分别统计；重新配对生成新 ID。保留最近 30 个 UTC 自然日，采集从功能部署后开始。</p><p>速率按已结束的有消息秒计算，包含认证与控制消息；无消息的空闲秒不参与。P95 为近似上界，误差不超过 4.5%；当前未结束的一秒先计入流量。</p><p>仅计设备侧 Relay 消息字节，不含局域网流量、网络协议开销及重传。QUIC 下行为 Relay 向适配器的交接量，不代表手机已收妥的速率。</p><p>${bandwidthData.persistent ? `每分钟保存一次，正常关闭时保存；异常退出可能丢失最近一分钟。上次保存：${escape(timestamp(bandwidthData.lastSavedAt))}。` : "当前仅保存在内存，重启后清空。"}</p></section>`;
+}
+function drawBandwidthTable() {
+  const search = query.toLowerCase();
+  const rows = bandwidthData.devices.filter(device => [device.name, device.deviceId, device.hostId].some(value => value?.toLowerCase().includes(search)));
+  const content = document.getElementById("bandwidth-table");
+  content.innerHTML = rows.length ? `<div class="table-scroll"><table><thead><tr><th>设备 / ID</th><th>Relay 状态</th>${bandwidthHeaders}<th>明细</th></tr></thead><tbody>${rows.map(device => `<tr><td><strong>${escape(device.name)}</strong><small>${escape(device.deviceId)}</small><small>${escape(device.hostId ?? "未绑定 Host")}</small></td><td>${device.revoked ? "已撤销" : badge(device.online)}</td>${bandwidthCells(device[bandwidthPeriod])}<td><button class="button" data-bandwidth-device="${escape(device.deviceId)}" aria-expanded="${bandwidthDevice === device.deviceId}">每日明细</button></td></tr>`).join("")}</tbody></table></div><p class="table-count">显示 ${rows.length} / ${bandwidthData.devices.length} 台设备</p>` : '<div class="empty"><strong>暂无设备记录</strong>设备连接 Relay 并产生流量后，即可查看统计。</div>';
+  content.querySelectorAll("[data-bandwidth-device]").forEach(button => { button.onclick = () => { bandwidthDevice = bandwidthDevice === button.dataset.bandwidthDevice ? "" : button.dataset.bandwidthDevice; drawBandwidthTable(); }; });
+  const selected = bandwidthData.devices.find(device => device.deviceId === bandwidthDevice);
+  document.getElementById("bandwidth-history").innerHTML = selected ? `<section class="panel"><div class="panel-heading"><div><h2>${escape(selected.name)} · 每日明细</h2><p>最近 30 天有流量的日期（UTC） · 首次采集 ${escape(timestamp(selected.firstSeenAt))} · 最近流量 ${escape(timestamp(selected.lastSeenAt))}</p></div></div>${selected.days?.length ? `<div class="table-scroll"><table><thead><tr><th>日期（UTC）</th>${bandwidthHeaders}</tr></thead><tbody>${selected.days.map(day => `<tr><td>${escape(day.date)}</td>${bandwidthCells(day)}</tr>`).join("")}</tbody></table></div>` : '<div class="empty">尚未收到这台设备的流量。</div>'}</section>` : "";
+}
 function confirmAction(title, message, action) {
   document.getElementById("confirm-title").textContent = title;
   document.getElementById("confirm-message").textContent = message;
@@ -120,8 +150,15 @@ function draw() {
   document.getElementById("view-title").textContent = views[view][0];
   document.getElementById("view-description").textContent = views[view][1];
   document.querySelectorAll("[data-view]").forEach(button => { if (button.dataset.view === view) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current"); });
-  document.getElementById("view-content").innerHTML = view === "overview" ? overview() : view === "service" ? service() : view === "audit" ? `<section class="panel"><div class="panel-heading"><h2>管理操作记录</h2></div>${auditRows(data.audit)}</section>` : listPage();
+  document.getElementById("view-content").innerHTML = view === "overview" ? overview() : view === "bandwidth" ? bandwidthPage() : view === "service" ? service() : view === "audit" ? `<section class="panel"><div class="panel-heading"><h2>管理操作记录</h2></div>${auditRows(data.audit)}</section>` : listPage();
   updateRegistrationView();
+  if (view === "bandwidth" && bandwidthData) {
+    document.getElementById("search").oninput = event => { query = event.target.value; drawBandwidthTable(); };
+    const period = document.getElementById("bandwidth-period");
+    period.value = bandwidthPeriod;
+    period.onchange = () => { bandwidthPeriod = period.value; draw(); };
+    drawBandwidthTable();
+  }
   if (view === "overview") document.getElementById("all-audit").onclick = () => switchView("audit");
   if (view === "hosts" || view === "devices") {
     document.getElementById("search").oninput = event => { query = event.target.value; drawTable(); };
@@ -129,14 +166,15 @@ function draw() {
     document.getElementById("filter").onchange = event => { filter = event.target.value; drawTable(); };
     drawTable();
   }
-  document.getElementById("freshness").textContent = `上次更新 ${timestamp(lastRefresh)} · 概览每 30 秒刷新`;
+  document.getElementById("freshness").textContent = `上次更新 ${timestamp(lastRefresh)} · 概览与带宽每 30 秒刷新`;
 }
 async function refresh() {
   if (refreshing) return;
   refreshing = true;
+  const requestedBandwidth = view === "bandwidth";
   const button = document.getElementById("refresh"); if (button) button.disabled = true;
   try {
-    const next = await api("overview"); if (!csrf) return; data = next; lastRefresh = Date.now();
+    const [next, traffic] = await Promise.all([api("overview"), requestedBandwidth ? api("bandwidth") : Promise.resolve(bandwidthData)]); if (!csrf) return; data = next; bandwidthData = traffic; lastRefresh = Date.now();
     document.getElementById("error-banner").hidden = true;
     document.getElementById("connection-state").textContent = "● Relay 正常";
     document.getElementById("connection-state").className = "status-pill";
@@ -144,11 +182,11 @@ async function refresh() {
   } catch (error) {
     if (error.code === "unauthorized") login(error.message);
     else { const banner = document.getElementById("error-banner"); if (banner) { banner.textContent = `${error.message} 当前保留上次成功读取的数据。`; banner.hidden = false; document.getElementById("connection-state").textContent = "连接异常"; document.getElementById("connection-state").className = "status-pill warn"; } }
-  } finally { refreshing = false; if (button) button.disabled = false; }
+  } finally { refreshing = false; if (button) button.disabled = false; if (!requestedBandwidth && view === "bandwidth" && !bandwidthData) void refresh(); }
 }
 async function enter() {
-  data = await api("overview"); lastRefresh = Date.now(); shell(); draw(); clearInterval(timer);
-  timer = setInterval(() => { if (!document.hidden && !mutation && !dialog.open && view === "overview") void refresh(); }, 30000);
+  [data, bandwidthData] = await Promise.all([api("overview"), view === "bandwidth" ? api("bandwidth") : Promise.resolve(undefined)]); lastRefresh = Date.now(); shell(); draw(); clearInterval(timer);
+  timer = setInterval(() => { if (!document.hidden && !mutation && !dialog.open && !document.querySelector(".filter-bar")?.contains(document.activeElement) && (view === "overview" || view === "bandwidth")) void refresh(); }, 30000);
 }
 async function initialize() {
   try { const session = await api("session"); csrf = session.csrf; await enter(); }
