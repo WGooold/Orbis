@@ -99,6 +99,27 @@ UI 状态仍由原主线程拥有者提交；独立 Task 不自动代表后台�
 
 五流实现、核心功能通过、Android 同设备原套件无新增失败及 iOS 设备边界见[本轮结果](../testing/native-quic-five-stream-results-20261105.md)。原 53 个设备用例源码文件保留，既有慢同步失败与未满足真实环境前提如实记录；不将传输功能验证等同于本 ADR 的现场 / UI 全部门禁。
 
+## 2026-11-05：Android 侧边栏滚动（PERF-07，验证中）
+
+用户要求优化侧边栏卡顿且保持全部功能与 UI / UX。范围仅 Android 目录内部计算及 LazyColumn 复用；关联 S19、S18、S15、S27、M03、M06、M22、V21，沿用 ADR-0058 SC03 / SC08 / SC36、MOT-14 与 R48 / R57，不增加 feature，不改现有基线参数或已交付计数。
+
+源码检查发现：目录树的 remember 以整份 hosts 为键，无关连接字段或其他电脑更新也会重新分组 / 排序；目录总数、会话集合、选择交集和视口 keys 在父级重组重复分配；离线标题默认扫描所有 runtime，而构树流程已经排除在线身份；目录、会话、更多和间隔共用未分类的 lazy 复用槽。收起目录仍登记零高项，但其 keys / 索引参与现有视口契约，不能直接删掉来换性能。上述是源码成本，尚不认定为手机现场唯一根因。
+
+实施约束：
+
+- 单实例、有界目录缓存只核对实际输入：配对 Host ID / 名称、sessions、runtimes、sessionGraphs、conversations、ledger 与界面语言；集合按引用核对，依赖变化保守重建。不以条数 / 首条 / 全局 seq 判断等价，不缓存归档可操作性或 runtime 状态。电脑移除时清空，切电脑、改名、历史标题修正、归档叠加和语言变化均失效。
+- 将目录可见行与 keys 在相同依赖下复用，并标注目录 / 会话 / 更多 / 间隔的 contentType；保持逐项稳定 key、顺序、索引、原生拖动 / 惯性、冻结更新和阅读锚点。保持收起内容首次延迟挂载及展开后的身份（ADR-0048），共用 OrbisCollapse / collectionMotion 不改。
+- 离线行使用已知无 runtime 的标题解析入口，保留 Pi 固定标题、缓存 / 历史 / 首条文本回退。既有在线去重、provider、归档、选择、统计和每目录前 5 条 / 显示更多均保持。
+
+验证映射：DrawerCatalogCacheTest 检查无关状态复用、全部真实依赖失效及旧算法输出等价；CachedHistoryTree / SessionDisplayName / SessionHostOwnership / SessionProviderFilter 保留。SessionDrawerScrollInstrumentedTest 用 80 目录 × 12 会话执行实际拖动、无关更新、末尾展开、更多、点击归属及回顶重开，记录 FrameMetrics 原始样本与浅深截图；同设备同配置优化前后对照，调试模拟器样本不作为真机帧率承诺。按影响复用SessionDrawerViewport / SessionDrawerLayout / SessionProviderFilter / SessionArchive / Selection；手动补查快速展开反转、搜索 / Agent / provider / 已归档、滚动中目录晋升、切 Host / 断线 / 归档失败和语言切换。iOS 与共用动效参数无实现改动。
+
+证据 `.artifacts/ui-regression/20261105-android-drawer-scroll/`；实现、自动结果、帧审阅、手动与真机结论分别记录，未完成门禁不记验收。
+
+PERF-07执行状态统一见UI回归§6与本任务`summary.md`、`physical/summary.md`、`visual-fix/`。模拟器两版全量同7失败/7条件；真机目录整组同一视口定位失败，新增滚动通过；多轮帧指标有改善也有退化，不能认定整体性能稳定提升。
+
+旧对照两版同时含r47材质，不能证明与手机原包一致；用户回退原包确认外观恢复后，保留计算优化并恢复原材质。最终默认浅色代表场景截图 / 内影 / 滚动通过；不继续无关样式矩阵，旧帧数据不外推到恢复阴影后的版本。原始失败、中断与资源核验保留，完整用户 / 真实Host及真实性能未验收。防复发按[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)。
+
+
 ### 2026-11-05 PERF-07 补充：Android 目录后台投影与首次缓存水合（验证中）
 
 修复主线程目录构建、过宽失效、标题派生和首次缓存读取。范围 S19，关联 S18 / S15 / S27、M03 / M06 / M22、V17 / V21；沿用 SC03 / SC08 / SC36、MOT-14 与 R48 / R57 / R65，无新增 feature、视觉或动效参数。

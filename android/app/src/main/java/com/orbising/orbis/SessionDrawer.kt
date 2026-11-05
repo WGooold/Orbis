@@ -178,6 +178,16 @@ private fun DrawerAgentFilterMenu(
     }
 }
 
+/** The lazy items and viewport keys must describe exactly the same rows, including closed slots. */
+private data class DrawerDirectoryItems(
+    val hostId: String,
+    val directory: CachedDirectoryGroup,
+    val branchKey: String,
+    val expanded: Boolean,
+    val sessions: List<CachedSessionRow>,
+    val hasMore: Boolean,
+)
+
 /** Host context, raised directory headers, and inset session leaves each have their own level. */
 @Composable
 internal fun SessionDrawer(
@@ -254,6 +264,25 @@ internal fun SessionDrawer(
         }
     }
     var showAllSessions by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, expandedKey) { mutableStateOf(false) }
+    val directoryItems = remember(sections, expandedKey, showAllSessions, searchTerm) {
+        sections.flatMap { section -> section.directories.map { directory ->
+            val branchKey = section.hostId + '\u0000' + directory.cwd
+            val expanded = branchKey == expandedKey
+            DrawerDirectoryItems(section.hostId, directory, branchKey, expanded,
+                if (expanded && (showAllSessions || searchTerm.isNotEmpty())) directory.sessions else directory.sessions.take(5),
+                directory.sessions.size > 5 && searchTerm.isEmpty())
+        } }
+    }
+    val viewportKeys = remember(directoryItems) {
+        buildList {
+            directoryItems.forEach { branch ->
+                add("directory:${branch.branchKey}")
+                branch.sessions.forEach { add("session:${branch.hostId}:${it.sessionId}") }
+                if (branch.hasMore) add("more:${branch.branchKey}")
+                add("gap:${branch.branchKey}")
+            }
+        }
+    }
     val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
@@ -381,13 +410,6 @@ internal fun SessionDrawer(
                     )
                 })
             }
-            val viewportKeys = sections.flatMap { section -> section.directories.flatMap { directory ->
-                val branchKey = section.hostId + '\u0000' + directory.cwd
-                val expanded = branchKey == expandedKey
-                val rows = if (expanded && (showAllSessions || searchTerm.isNotEmpty())) directory.sessions else directory.sessions.take(5)
-                listOf("directory:$branchKey") + rows.map { "session:${section.hostId}:${it.sessionId}" } +
-                    (if (directory.sessions.size > 5 && searchTerm.isEmpty()) listOf("more:$branchKey") else emptyList()) + listOf("gap:$branchKey")
-            } }
             maintainListViewport(listState, viewportKeys, listOf(viewportIdentity, expandedKey, showAllSessions))
             LazyColumn(
                 state = listState,
@@ -395,7 +417,7 @@ internal fun SessionDrawer(
                 contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 16.dp),
             ) {
                 if (sections.isEmpty()) {
-                    item {
+                    item(contentType = "empty") {
                         Column(
                             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -419,74 +441,68 @@ internal fun SessionDrawer(
                         }
                     }
                 }
-                sections.forEach { section ->
-                    val isActiveHost = section.hostId == activeHostId
-                    section.directories.forEach { directory ->
-                        val branchKey = section.hostId + '\u0000' + directory.cwd
-                        val expanded = branchKey == expandedKey
-                        item(key = "directory:$branchKey") {
-                            Box(collectionMotion()) { DrawerDirectoryHeader(
-                                directory = directory,
-                                expanded = expanded,
-                                createEnabled = isActiveHost && canCreate && directory.cwd.isNotBlank(),
-                                onCreate = { onNewSession(section.hostId, directory.cwd) },
-                            ) {
-                                needsDefaultExpansion = false
-                                expandedKey = if (expanded) null else branchKey
-                                focusManager.clearFocus()
-                            } }
-                        }
-                        val visibleSessions = if (expanded && (showAllSessions || searchTerm.isNotEmpty())) {
-                            directory.sessions
-                        } else directory.sessions.take(5)
-                        items(visibleSessions, key = { "session:${section.hostId}:${it.sessionId}" }) { row ->
-                            Box(collectionMotion()) { OrbisCollapse(expanded = expanded) {
+                directoryItems.forEach { branch ->
+                    val (hostId, directory, branchKey, expanded) = branch
+                    val isActiveHost = hostId == activeHostId
+                    item(key = "directory:$branchKey", contentType = "directory") {
+                        Box(collectionMotion()) { DrawerDirectoryHeader(
+                            directory = directory,
+                            expanded = expanded,
+                            createEnabled = isActiveHost && canCreate && directory.cwd.isNotBlank(),
+                            onCreate = { onNewSession(hostId, directory.cwd) },
+                        ) {
+                            needsDefaultExpansion = false
+                            expandedKey = if (expanded) null else branchKey
+                            focusManager.clearFocus()
+                        } }
+                    }
+                    items(branch.sessions, key = { "session:$hostId:${it.sessionId}" }, contentType = { "session" }) { row ->
+                        Box(collectionMotion()) { OrbisCollapse(expanded = expanded) {
+                            DrawerBranch {
+                                DrawerSessionRow(
+                                    row = row,
+                                    runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.presentationStatus,
+                                    runtimeStatusTitle = row.runtimeId?.let(state.runtimes::get)?.presentationTitle,
+                                    otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
+                                    onOpenSession = {
+                                        if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
+                                            blockedSession = hostId to row.sessionId
+                                        } else {
+                                            onOpenSession(hostId, row.sessionId)
+                                        }
+                                    },
+                                    onOpenHistory = { onOpenHistory(hostId, row.sessionId) },
+                                    selecting = selecting,
+                                    selected = row.sessionId in selectedIds,
+                                    archiveUnavailableReason = drawerArchiveUnavailableReason(row, state),
+                                    onToggleSelection = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        selectedSessionIds = if (row.sessionId in selectedIds) selectedIds - row.sessionId else selectedIds + row.sessionId
+                                    },
+                                    onBeginSelection = {
+                                        if (row.sessionId !in selectedIds) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        focusManager.clearFocus()
+                                        selectedSessionIds = selectedIds + row.sessionId
+                                    },
+                                )
+                            }
+                        } }
+                    }
+                    if (branch.hasMore) {
+                        item(key = "more:$branchKey", contentType = "more") {
+                            OrbisCollapse(expanded = expanded) {
                                 DrawerBranch {
-                                    DrawerSessionRow(
-                                        row = row,
-                                        runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.presentationStatus,
-                                        runtimeStatusTitle = row.runtimeId?.let(state.runtimes::get)?.presentationTitle,
-                                        otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
-                                        onOpenSession = {
-                                            if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
-                                                blockedSession = section.hostId to row.sessionId
-                                            } else {
-                                                onOpenSession(section.hostId, row.sessionId)
-                                            }
-                                        },
-                                        onOpenHistory = { onOpenHistory(section.hostId, row.sessionId) },
-                                        selecting = selecting,
-                                        selected = row.sessionId in selectedIds,
-                                        archiveUnavailableReason = drawerArchiveUnavailableReason(row, state),
-                                        onToggleSelection = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                            selectedSessionIds = if (row.sessionId in selectedIds) selectedIds - row.sessionId else selectedIds + row.sessionId
-                                        },
-                                        onBeginSelection = {
-                                            if (row.sessionId !in selectedIds) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                            focusManager.clearFocus()
-                                            selectedSessionIds = selectedIds + row.sessionId
-                                        },
+                                    NeumorphTextButton(
+                                        text = if (showAllSessions) L10n.tr("收起较早会话") else L10n.tr("再显示 {0} 个会话", directory.sessions.size - 5),
+                                        onClick = { showAllSessions = !showAllSessions },
+                                        icon = if (showAllSessions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                        modifier = Modifier.fillMaxWidth(),
                                     )
-                                }
-                            } }
-                        }
-                        if (directory.sessions.size > 5 && searchTerm.isEmpty()) {
-                            item(key = "more:$branchKey") {
-                                OrbisCollapse(expanded = expanded) {
-                                    DrawerBranch {
-                                        NeumorphTextButton(
-                                            text = if (showAllSessions) L10n.tr("收起较早会话") else L10n.tr("再显示 {0} 个会话", directory.sessions.size - 5),
-                                            onClick = { showAllSessions = !showAllSessions },
-                                            icon = if (showAllSessions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                            modifier = Modifier.fillMaxWidth(),
-                                        )
-                                    }
                                 }
                             }
                         }
-                        item(key = "gap:$branchKey") { Spacer(Modifier.height(14.dp)) }
                     }
+                    item(key = "gap:$branchKey", contentType = "gap") { Spacer(Modifier.height(14.dp)) }
                 }
             }
             // 「电脑」贴着抽屉底部：它是当前所在的主机，不是列表的筛选条件。
