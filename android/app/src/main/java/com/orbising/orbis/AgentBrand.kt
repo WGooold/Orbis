@@ -84,15 +84,9 @@ internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, descrip
 /** A recessed identity medallion, never an extra click target. */
 @Composable
 internal fun AgentEmblem(brand: AgentBrand, size: Dp = 40.dp) {
-    NeumorphSurface(
-        modifier = Modifier.size(size),
-        shape = RemoteUi.ControlShape,
-        style = NeumorphStyle.Pressed,
-        shadowScale = 0.45f,
-    ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            AgentIcon(brand, Modifier.size(size * 0.56f))
-        }
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        AgentIconRecess(Modifier.fillMaxSize())
+        AgentIcon(brand, Modifier.size(size * 0.56f))
     }
 }
 

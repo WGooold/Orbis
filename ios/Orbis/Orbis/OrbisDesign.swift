@@ -1193,7 +1193,7 @@ struct AgentEmblem: View {
     var body: some View {
         Group {
             if recessed {
-                mark.frame(width: size, height: size).neuSurface(inset: true, radius: 16, intensity: 0.45)
+                mark.frame(width: size, height: size).background { AgentIconRecess() }
             } else { mark.frame(width: size, height: size) }
         }.accessibilityLabel(agentTitle(kind))
     }
