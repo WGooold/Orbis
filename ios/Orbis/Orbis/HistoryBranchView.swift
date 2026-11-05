@@ -5,7 +5,7 @@ struct HistoryBranchView: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     let onBack: () -> Void
-    /// Same download entry as the chat header; the downloads page returns here (ADR-0053 §5, §7).
+    /// Same download entry as the chat header; the downloads page returns here (ADR-0054, §7).
     let onDownloads: () -> Void
     @State private var query = ""
     @State private var selected: RuntimeOption?

@@ -6,7 +6,7 @@
 
 Status: accepted（架构决定已确认；实现与运行环境迁移尚未完成）
 
-关联：[ADR-0019](0019-host-provider-management.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0027](0027-source-owned-runtime-diagnostics.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0008](0008-drop-backward-compatibility.md)。
+关联：[ADR-0019](0019-host-provider-management.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0028](0028-host-notification-lifecycle.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0031](0031-host-permission-management.md)、[ADR-0064](0064-protocol-compatibility.md)。
 
 审计依据：[状态与架构报告](../architecture/agent-state-architecture.html)、[36 个状态模块清单](../architecture/agent-state-audit.json)。报告记录的是本决定之前的工作树现状，目标图是本决定的设计参考，不代表代码已迁移。
 
@@ -210,11 +210,10 @@ Codex 压缩活动绑定原生 turn 与 item 身份：条目完成、所属回�
 | ADR-0019 | 保留 Host 配置/凭据权威、事务与手机操作边界；扩展原先手机简化字段集合，增加非秘密用量、健康度、认证和路由摘要，统一由模型发布 |
 | ADR-0024 / 0025 | 保留原生历史权威、source 恢复、epoch、canonical 身份和缓存事务；增加 Host 当前投影与统一显示页，替代“只有复制契约共同化、当前投影仅留在各 source”的最终架构边界 |
 | ADR-0026 | 将“通用 Host 仅路由、关联及背压”扩展为模型管理与恢复入口；原生核对、选择算法、条件响应和不新增全量历史数据库继续有效 |
-| ADR-0027 | 已被 ADR-0028 取代；本决定沿用其源端诊断与回合绑定的语义要求，但记录由 §8 的有界持久诊断记录承载，不恢复 `live.diagnostics`，也不按日志文字推断重试或失败恢复 |
 | ADR-0028 | 复用唯一 NotificationStore，保留独立通知版本、来源恢复、设备关闭、期限/预算和短暂 outcome 重建边界；增加 Agent/Host 模型的逻辑归属 |
 | ADR-0029 / 0030 | 保留本地读取单写者、多 Host 独立连接与作用域；App 远端数据源改为 Host 模型，必要本地操作不搬到共享状态 |
 | ADR-0031 | 复用 opaque 权限契约、原生确认及会话作用域，将 metadata 中的权限展示接入统一模型；审批仍单独表示 |
-| ADR-0008 | 实施时升级协议硬版本，移除旧业务状态旁路及双重写入；模型模块不可用是明确业务状态，不是旧协议兼容回退 |
+| ADR-0064 | 保留协议 18 起的互通及能力门槛；兼容适配不增加旧状态旁路或双重写入，模型模块不可用仍明确表达 |
 
 后端原生语义仍隔离在 adapter；这不推翻 Host 不解析原生业务语义的原则。原生状态、Host 公共投影和设备本地状态各自有权威，但客户端只从 Host 统一模型取得远端事实。
 

@@ -149,7 +149,7 @@ export class HostDeviceSession {
   /**
    * 封一条出站帧。序号由通道自己按 channel 推进，调用方不需要关心。
    *
-   * [channel] **必填**（ADR-0008）：不再有"对端不支持就降回单流"的分支。
+   * [channel] **必填**（ADR-0011）：不再有"对端不支持就降回单流"的分支。
    */
   seal(kind: "data" | "ping" | "bin", payload: Uint8Array, channel: EnvelopeChannel): EnvelopeV2 {
     const e2e = this.#channel;

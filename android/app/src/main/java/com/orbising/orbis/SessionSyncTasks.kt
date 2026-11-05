@@ -15,7 +15,7 @@ private const val EXHAUST_AFTER_MS = 150_000L
 private const val RETAIN_UNTIL_MS = 300_000L
 private val RETRY_DELAY_MS = listOf(30_000L, 30_000L, 60_000L)
 internal val SESSION_SYNC_TIMEOUT_MESSAGE get() = L10n.tr("同步暂未完成，请重试")
-/** preview 失败最多挡这么久（调度节拍，1 秒一发）：失败不是判决，必须自己过期（ADR-0036 §8）。 */
+/** preview 失败最多挡这么久（调度节拍，1 秒一发）：失败不是判决，必须自己过期（ADR-0037 §5）。 */
 internal const val SYNC_FAILURE_COOLDOWN_TICKS = 10
 /** 协调者连续回 pending 的上限：超过就不再延长耗尽窗口，避免它永久 pending 时我们无限等待。 */
 internal const val MAX_PENDING_NOTICES = 10

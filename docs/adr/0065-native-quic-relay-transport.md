@@ -16,7 +16,7 @@ Status: accepted（用户授权先写 ADR 再实施；代码、设备门禁、�
 
 基点：`df02972350e00ee4330b311831626b71c8035678`，独立工作树 `orbis-native-quic` / `feat/native-quic`。主工作树 ADR-0062 / r44、ADR-0063 / R62 / r45 多语言及 R63 / r46 回复卡片增长不纳入本分支。为避免合并编号冲突，本专项于重启续跑时由 ADR-0063 / R62 改为 ADR-0064 / R64，随后改为 ADR-0065 / R65，本轮活动回归号改为 R67；历史提交与证据保留原号，不改写原始结果。
 
-关联：[ADR-0050](0050-fixed-lan-relay-routing.md)、[ADR-0060](0060-mobile-relay-history-performance.md)、[ADR-0007](0007-channel-multiplexed-delivery.md)、[ADR-0011](0011-nonce-slot-and-high-watermark.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)。显示约束：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S18 / S23、V05、V09–V12、V16–V18、V22；验证：[UI 回归](../testing/ui-regression.md) R67。
+关联：[ADR-0050](0050-fixed-lan-relay-routing.md)、[ADR-0060](0060-mobile-relay-history-performance.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0011](0011-nonce-slot-and-high-watermark.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)。显示约束：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) S18 / S23、V05、V09–V12、V16–V18、V22；验证：[UI 回归](../testing/ui-regression.md) R67。
 
 ## Context
 
@@ -92,7 +92,7 @@ QUIC 保持 10 秒传输 keepalive、30 秒 idle timeout；设置延迟继续测
 
 以下描述早期 v1 候选代码，仅保留作实施 / 测试记录；不再作为最终 QUIC 出口调度决策。WS 汇聚边界仍需应用 mux，QUIC 三流出口改用原生调度。
 
-- 仍按 ADR-0007 / 0010 的 `ctl > msg > bulk` 严格优先级；逐通道 FIFO，只重排尚未写入 QUIC 的帧。握手 / 配对与非加密协议控制帧归 `ctl`；密文与 piece 仅读取已有 `hdr.ch`，不解密、不按正文猜优先级。持续高优先级负载可能暂停 bulk；首版不引入权重或老化提升。
+- 仍按 ADR-0010 的 `ctl > msg > bulk` 严格优先级；逐通道 FIFO，只重排尚未写入 QUIC 的帧。握手 / 配对与非加密协议控制帧归 `ctl`；密文与 piece 仅读取已有 `hdr.ch`，不解密、不按正文猜优先级。持续高优先级负载可能暂停 bulk；首版不引入权重或老化提升。
 - Node → Go 的 loopback WS 水位不能代表公网 QUIC 水位，因此 Go 的 WS 读取与 QUIC 写入分离，在最后一个写入者前重新做三队列调度。单连接仅一个 QUIC writer，在每个现有 piece / JSON 帧写完后重新选择最高优先级；写入阻塞提供背压，不追加无限 FIFO 或定时轮询。
 - Go 待写队列沿用现有每类内存护栏：ctl 4 MiB、msg 32 MiB、bulk 64 MiB，并限制总帧数。它们是上限，不是预分配或目标在途量。越界显式关闭该路径，交给既有未知结果 / 重连处理，不静默丢已封帧或重放用户操作。循环读取不能在 bulk 队列满时无限等待而永远读不到后面的 ctl。
 - 手机出站沿用现有业务分类：iOS 非 bulk 优先且一次一个 send；Android 普通命令为 ctl，`sendUploadChunk` 已经使用 bulk（更正此前“全部 ctl”的判断）。当前 QUIC 候选仍全局串行写入，三流实现须去掉这个跨流阻塞点；接收侧原优先消费与解码预算保持。

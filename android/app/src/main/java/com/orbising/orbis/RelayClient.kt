@@ -260,7 +260,7 @@ class RelayClient internal constructor(
          * 一条业务载荷。[channel] 是信封头上的逻辑 channel（`ctl` / `msg` / `bulk`）。
          *
          * 类型是 `String?` 只是因为 `RoutingHeaderV2` 与握手帧共用一份定义（`hs`/`pair`
-         * 不带 `ch`）；加密帧缺 `ch` 在 `E2eChannel.open` 就被拒了（ADR-0008），所以走到
+         * 不带 `ch`）；加密帧缺 `ch` 在 `E2eChannel.open` 就被拒了（ADR-0011），所以走到
          * 这里时它必定有值。
          *
          * 必须把它一起交出来：`hdr.ch` 只在**解密的那一刻**可见，出了这里就只剩业务 JSON。
@@ -667,7 +667,7 @@ class RelayClient internal constructor(
                 trace("upload.encode_failed ${error.message ?: error::class.simpleName}")
                 return false
             }
-        // 上传分片固定走 `bulk`（ADR-0008 之后没有"对端不懂 channel"这回事）。
+        // 上传分片固定走基础 `bulk` 通道（ADR-0012）。
         val channel = "bulk"
         if (useLan) return direct!!.sendBinary(frame, channel)
         return synchronized(state.lock) {
@@ -1135,7 +1135,7 @@ class RelayClient internal constructor(
             put("commandId", commandId)
             put("command", command)
         }
-        // 命令只能走 E2E（ADR-0008）：中继不再代传命令，明文那条路已经删掉。
+        // 命令只能走 E2E（ADR-0009）：中继不再代传命令，明文那条路已经删掉。
         // 半配对的连接（没有 e2e）连不上任何东西，这里如实失败，不假装已发送。
         val state = e2e
         val sent = if (state != null) {

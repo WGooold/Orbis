@@ -266,7 +266,7 @@ final class FileTransfers: ObservableObject {
         pairing = host; self.connected = connected
     }
     /// Downloads belong to the Host, never to a session: the task records no session identity.
-    /// Returns whether a download task was queued (download feedback depends on it, ADR-0053 §7).
+    /// Returns whether a download task was queued (download feedback depends on it, ADR-0058 M16).
     @discardableResult
     func download(path: String? = nil, artifact: RemoteArtifact? = nil) -> Bool {
         guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = L10n.tr("连接电脑后可下载文件。"); return false }

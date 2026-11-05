@@ -1,6 +1,6 @@
 # UI 基线 r15 实施 ticket 草稿
 
-这些条目追踪 [ADR-0053](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md) 与 [ADR-0051 r15](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) 的实施与验收。仓库规定 GitHub Issues 是 canonical tracker；本文件只保存本地状态和创建远程 Issue 前的草稿，不包含凭据、设备身份或未脱敏日志。
+这些条目追踪 [ADR-0046](../adr/0046-mobile-ui-stability-and-material.md) 与 [ADR-0051 r15](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) 的实施与验收。仓库规定 GitHub Issues 是 canonical tracker；本文件只保存本地状态和创建远程 Issue 前的草稿，不包含凭据、设备身份或未脱敏日志。
 
 ## 实施状态（2026-10-31，已合入 `main`，ADR-0051 r23）
 
@@ -35,7 +35,7 @@ M15 r21 证据见 `.artifacts/ui-regression/20261031-0315-m15-list-pull/`；r22 
 ### 必读
 
 1. [ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 冻结基线。先读 §1，再读本 ticket 涉及的 ID，以及标“r15 待实施”的行。
-2. [ADR-0053](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md)：本批需求的决策原文。ticket 与 ADR 冲突时以 ADR 为准，并在 ticket 中记录。
+2. [ADR-0046](../adr/0046-mobile-ui-stability-and-material.md)：本批需求的决策原文。ticket 与 ADR 冲突时以 ADR 为准，并在 ticket 中记录。
 3. [UI 回归方案](../testing/ui-regression.md)：完成前必须执行的门禁（§1）、命令（§3.1）、核心冒烟（§4.2）、r15 专项（§4.6）和新用例（§5.1）。
 4. 仓库根目录的 `AGENTS.md` / `CLAUDE.md`：本机开发指南，git 忽略，只存在于维护者那台 Mac 上。在该机器上工作时必须遵守其中的共享模拟器池（合计最多 10 台、独占锁、不新建设备）、固定构建目录与构建租约、产物保留规则。在其他机器上工作时，不受该机器设备池约束，但仍要满足回归方案的层级与证据要求。
 
@@ -59,7 +59,7 @@ M15 r21 证据见 `.artifacts/ui-regression/20261031-0315-m15-list-pull/`；r22 
 
 ### 不确定时
 
-- 规则在实现中做不到或与现有行为冲突时，不要自行降级或绕过。先在 ticket 中记录原因与证据，再找维护者确认，确认后修订 ADR-0053 / ADR-0051。
+- 规则在实现中做不到或与现有行为冲突时，不要自行降级或绕过。先在 ticket 中记录原因与证据，再找维护者确认，确认后修订 ADR-0046 / ADR-0051。
 - 性能优化不能删动画、重置阅读位置或改变消息身份（ADR-0051 §1）。
 - 需要真实模型调用（会消耗维护者账号额度）或连接维护者自己的 Host 时，先征得同意。默认用回放夹具和隔离 Host。
 
@@ -381,7 +381,7 @@ Android r16 已添加 Material3 下拉标识和刷新请求，但列表内容没
 在聊天页或“历史与分支”页点击会创建下载任务的入口后，一个文件图标从点击位置飞向同页顶栏的下载按钮，按钮轻弹，角标按实际任务数更新。入口包括：
 - 文件产物卡：iOS `ChatView.swift:693`，Android `ArtifactCard`；
 - Markdown 文件链接：iOS `MarkdownMessage` 的 `openURL` → `transfers.download(path:)`，Android `MarkdownText` 的 `downloadFile`；
-- 历史页里的同类入口：iOS 历史预览复用 `ChatMessageRow`（`HistoryBranchView.swift:105`），Android `HistoryTreePage` 的 `downloadArtifact` / `downloadFile`（`HistoryTreePage.kt:91`）。初始参数见 ADR-0053 §7：28 → 16pt/dp，沿上弯贝塞尔路径飞行 520ms，末 80ms 淡出，按钮 380 / 18 弹簧 1 → 1.12 → 1，同时最多 3 个；减少动画时只 160ms 高亮按钮。
+- 历史页里的同类入口：iOS 历史预览复用 `ChatMessageRow`（`HistoryBranchView.swift:105`），Android `HistoryTreePage` 的 `downloadArtifact` / `downloadFile`（`HistoryTreePage.kt:91`）。初始参数见 ADR-0046 §7：28 → 16pt/dp，沿上弯贝塞尔路径飞行 520ms，末 80ms 淡出，按钮 380 / 18 弹簧 1 → 1.12 → 1，同时最多 3 个；减少动画时只 160ms 高亮按钮。
 
 **Actual behavior**
 

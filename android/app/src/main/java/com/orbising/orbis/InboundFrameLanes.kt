@@ -4,7 +4,7 @@ import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 入站帧的三条优先级通道（ADR-0007 的接收侧 + ADR-0040 的有界化）。
+ * 入站帧按协议通道优先消费，预算与溢出恢复遵循 ADR-0040。
  *
  * **为什么拆优先级。** `hdr.ch` 只把**序号**分开了，投递顺序一点没变：所有帧仍然按到达顺序挤在
  * 同一条队列里，而消费侧要落盘，比网络慢得多。按 channel 拆开之后，消费循环每次回到顶部都先清
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `ctl`（命令结果、交互、状态）：不可静默丢。超预算时丢最旧并记数，消费侧据此补一次源端同步
  *   （ADR-0040 §5 修订：**不断开连接**）。
  * - `msg`（会话同步、消息增量、会话目录）：可丢。超预算时丢最旧，消费侧据此对可见会话补一次
- *   源端同步——丢帧是背压，不是失败（ADR-0036）。
+ *   源端同步——丢帧是背压，不是失败（ADR-0037 §5）。
  * - `bulk`（artifact 分片）：可丢。分片按偏移重传（ADR-0005），丢一片的代价是一次 RTO。
  *
  * 预算是**本机内存**约束，不改线上协议、不改 Host 准入。计数器在生产者与消费者之间共享，竞争
@@ -80,8 +80,8 @@ internal class InboundFrameLanes(
      * 入队一条载荷。[channel] 是信封头上的逻辑 channel。
      *
      * 类型是 `String?` 只是因为 `RoutingHeaderV2` 与握手帧共用一份定义（`hs`/`pair` 不带 `ch`）；
-     * 加密帧缺 `ch` 在 `E2eChannel.open` 就被拒了（ADR-0008），所以实际取值只有 `ctl` / `msg` /
-     * `bulk`。没有 `ch` 的帧按 `ctl` 处理（与 ADR-0007 的协商规则一致）。
+     * 加密帧缺 `ch` 在 `E2eChannel.open` 就被拒了（ADR-0011），所以实际取值只有 `ctl` / `msg` /
+     * `bulk` 及已协商扩展；不带 `ch` 的握手 / 配对等控制帧按 `ctl` 处理。
      */
     fun offer(payload: String, channel: String?): Boolean {
         if (channel == BULK_CHANNEL) return offerBulkFrame(InteractiveFrame(payload, channel))

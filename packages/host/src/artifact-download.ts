@@ -6,7 +6,7 @@
  * `file.download` / `artifact.download` 由 Host 就地读盘，按设备的范围请求应答。
  *
  * **只有一种传输模式：接收方驱动的范围下载（ADR-0005）。** 旧的 `stream`（16 帧滑窗 + 累计
- * ack）已删（ADR-0008）：它需要发送方持有窗口与重传定时器，而进度真相在接收方的磁盘上。
+ * ack）已删（ADR-0005）：它需要发送方持有窗口与重传定时器，而进度真相在接收方的磁盘上。
  */
 import { createHash, randomUUID } from "node:crypto";
 import { open, readFile, rename, stat, writeFile } from "node:fs/promises";

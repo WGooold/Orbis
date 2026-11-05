@@ -21,7 +21,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** ADR-0053 §7 / M16: a queued download flies from the tap to the page's download button. */
+/** ADR-0058 M16: a queued download flies from the tap to the page's download button. */
 class DownloadFlightInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 

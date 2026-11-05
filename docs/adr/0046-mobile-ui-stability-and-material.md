@@ -73,6 +73,7 @@ Android 使用 LazyList 的像素几何、稳定 key、拖动状态和嵌套滚�
 ### 4. 动画只改变呈现，不重建内容身份
 
 - 折叠先测量完整内容，再把裁切高度从 0 插值到自然高度，等价于 Grid 的 0fr → 1fr；保留草稿和展开状态。
+  正文首次展开前不执行 builder、不挂载或测量；首次展开后保留内容身份。首帧预算与延迟构建见 [ADR-0048](0048-online-chat-entry-budget.md)。
   Android 目录保留 LazyColumn，折叠最近的有界预览行，不把整个目录转换成非虚拟化 Column。
 - 自定义拖拽回位使用质量 1、刚度 1200、阻尼 80；勾选反馈使用 380 / 18。
   原生系统抽屉、键盘和模态手势由平台控制。
@@ -81,8 +82,27 @@ Android 使用 LazyList 的像素几何、稳定 key、拖动状态和嵌套滚�
 - 只给新增流式字形做 6pt/dp 模糊渐显，单字 120ms，字间错开 30ms。
   大批量到达时将等待压到 450ms 以内，避免全文排队几分钟；Android 每次最多保留末尾 128 个活动字素。
   历史文字、既有字形不参与动画。2026-11-04 / r46：实时助手卡片的自然高度允许按 [ADR-0058 SC47](0058-shared-interaction-motion.md#2026-11-04--r46回复卡片增长与出现sc47--mot-26--m24) / M24 做 180ms 增高与 220ms 首次入场；其余布局尺寸直接更新，正文不缩放。
+- 每条流式消息共用一个揭示游标，覆盖全部段落、列表和代码块；新增批次接在未揭示尾部之后，积压压缩时仍按字素顺序推进。改写或截短不重播既有正文，结束时按压缩节奏揭示剩余内容。工具从首次出现到完成保持同一 `toolCallId` 和紧凑卡片形态；缺父结果与 live→canonical 交接遵循 [Android 连续性决策](0057-android-tool-transcript-continuity.md)。
 - iOS 18 使用 TextRenderer；iOS 17 直接显示文字。Android 保留原生 Text 的测量、选择和链接语义，
   仅在绘制阶段处理新字素，并复用有限组模糊画笔。两端尊重系统减少 / 关闭动画设置。
+
+### 5. 设置与配对入口（S22 / S23）
+
+首页右上角只保留下载与设置齿轮；连接胶囊只报告状态，保留失败重试，不承担导航。设置依次显示 Agent 供应商、当前连接、只读配对信息、外观和语言。延迟使用 Host 公告的当前实际路径 RTT，无样本时保持固定槽位并显示不可用，不影响选路。长英文事实行可自然换行。
+
+切换电脑位于首页电脑行与侧边栏底部电脑菜单；添加电脑、取消当前配对只在侧边栏底部电脑菜单提供，首次配对引导除外。目录筛选和 provider 排障保留进入设置的路径。整页导航遵循 [ADR-0054](0054-shared-full-page-navigation.md)，不恢复旧连接优先级配置。
+
+实现与回归：[ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)、[StatusViews.swift](../../ios/Orbis/Orbis/StatusViews.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)、[SettingsEntryInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SettingsEntryInstrumentedTest.kt)。
+
+### 6. 首页与目录视口稳定（V21）
+
+新增、关闭、排序、标题 / 状态刷新和完整快照替换不挤走视口。原先在顶部时保持顶部；已下滑时保持首张完整可见卡片的屏幕位置，若它被移走则保持原像素偏移，不跟着排序跳转。拖动与惯性期间不重新定位，手势后结算。实现与回归见 [HomePresentation.kt](../../android/app/src/main/java/com/orbising/orbis/HomePresentation.kt)、[HomeViewportAnchorTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomeViewportAnchorTest.kt) 与 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
+
+### 7. 本机外观选择（S25）
+
+双端设置提供经典 / 雾蓝，默认经典；选择立即生效并本机持久化，未知值回退经典。显示名“雾蓝”对应既有存储值 `insetFocus`（iOS `orbis.visualStyle`、Android `visualStyle`），无需迁移。外观与系统明暗独立，不跨设备同步，不重建导航、会话、消息或输入状态。
+
+雾蓝沿用四层、单材质外框、字号与聚焦规则，采用灰蓝底板、柔影与蓝色强调；供应商身份色、语义状态色和 Host 事实保持。色值与阴影以 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift) 和 [Neumorph.kt](../../android/app/src/main/java/com/orbising/orbis/Neumorph.kt) 为准，切换语义回归见设置设备测试。设备与人工验收状态仍独立记录。
 
 ## Verification
 

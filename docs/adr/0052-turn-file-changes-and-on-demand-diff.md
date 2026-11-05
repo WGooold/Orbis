@@ -4,7 +4,7 @@
 
 Status: accepted（2026-10-30 用户授权实施；Host / 协议 / 双端初版已实现，实际范围与验证见 §9；真实各后端端到端及真机验收未完成）
 
-关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0047](0047-deferred-chat-disclosure-content.md)、[ADR-0048](0048-online-chat-entry-budget.md)。
+关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0048](0048-online-chat-entry-budget.md)。
 
 ## Context
 
@@ -94,7 +94,7 @@ Host 逻辑存储包含 `TurnRecord`（身份、起止边界、范围和完整�
 - 已结束轮次仍可能收到来源更正，用同一逻辑轮次的新 revision 发布，不增加重复卡片。当前查看器固定旧版本；若仍可读则保持不动并提示有更新，用户刷新时整体换版本。不能将新清单和旧详情混用。
 - 回退、分叉和压缩后的卡片归属遵循来源确认的历史分支、显示窗口和锚点。旧轮记录可以按保留策略留存，但不能挂到新分支的同名文件或新一轮回复下；锚点尚未确认时保留待关联状态，不让 App 猜最近一条助手消息。
 - 元数据域的 epoch/revision、清单完整性及本地已应用水位独立管理。缺页只说明文件清单尚未完整，**不阻塞聊天正文的 applied baseline**；文件详情从不成为聊天历史 coverage 的依赖。这与 ADR-0045 为实时工具库存定义的依赖不同，是独立的轮末审阅附件。
-- 遵守 [ADR-0008](0008-drop-backward-compatibility.md)：实施时同步更新协议版本、Host、Pi/Claude bridge 和双端 App；原生能力差异通过明确状态表达，不创建一套静默兼容旧 Orbis 客户端的详情旁路。
+- 遵守 [ADR-0064](0064-protocol-compatibility.md)：保留已部署端的基础互通，详情能力按声明启用；原生能力差异通过明确状态表达，不创建绕过版本、身份或读取归属校验的旁路。
 
 ### §5 详情只由用户查看触发
 

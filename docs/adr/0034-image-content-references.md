@@ -4,7 +4,7 @@
 
 Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本类超长载荷由 [ADR-0038](0038-wire-payload-truncation.md) 处理，两者是同一原则的两条分支；§5（Codex 工具结果先 `stripInlineMedia` 再序列化）已实现；§6 的可选 path ref 尚未实现）
 
-关联：[ADR-0008](0008-drop-backward-compatibility.md)（附件路径语义、artifact 下载）、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)
+关联：[ADR-0012](0012-receiver-driven-upload.md)（附件路径语义）、[ADR-0005](0005-receiver-driven-range-download.md)（下载）、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0035](0035-incremental-session-reconcile.md)
 
 ## Context
 
@@ -22,7 +22,7 @@ Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本�
 | Codex：用户消息带图 | `userMessage.content[]` 的 image item | 只取 text（[`extractContentText`](../../packages/host/src/codex-runtime.ts)），**图片被丢弃且不说明** | 无任何痕迹 |
 | Codex：工具结果含图（如截图类 MCP 工具） | 任意 JSON | [`resultText`](../../packages/host/src/codex-runtime.ts) 把整个结果 `JSON.stringify` 成 **text**，base64 会变成正文的一部分 | 一整屏 base64 文本 |
 | DSH / DSH web | content block `{ type: "image" }`（文件另走 `{ type: "file" }`） | 归一为占位文本 `[图片：请在 DeepSeek Harness 中查看]` / `[文件：<name>]`（[`dshContent`](../../packages/host/src/dsh-history.ts)），**不带数据** | 占位文本 |
-| 手机 → Agent | 上传落盘 + 附件路径 | `[附件] <绝对路径>` 文本（ADR-0008 的 Attachment path 语义），不是 content part | — |
+| 手机 → Agent | 上传落盘 + 附件路径 | `[附件] <绝对路径>` 文本（ADR-0012 的附件路径语义），不是 content part | — |
 
 补充两条边界：
 
@@ -37,14 +37,14 @@ Status: accepted（2026-10-22：Pi 侧 §1–§4 已实现并有测试；文本�
    `{ type: "image", mimeType, byteLength, width?, height?, ref? }`，
    其中 `ref` 只能是两种之一：
    - 计算机绝对路径（Attachment path 语义：Agent 自己可以 `read` 的那个文件）；
-   - artifact 描述符（ADR-0008 的下载路径，`RemoteArtifactSchema`，由生产者经 `custom_message.details.remoteArtifact` 声明）。
+   - artifact 描述符（ADR-0005 的下载路径，`RemoteArtifactSchema`，由生产者经 `custom_message.details.remoteArtifact` 声明）。
    字段里**不允许出现 `data` / `file_data` / `base64` 之类的内联载荷**。
 2. **裁剪由生产者负责，且必须确定性。** 各 backend 的 canonical 投影负责把原生图片块降成上面的形状；同一 Entry ID 在任何路径、任何时间都得到同一份投影（ADR-0025 的缓存身份要求），因此占位内容只能来自原生事实（mimeType、字节数、尺寸、路径），不能带时间戳、随机 ID 或运行期计数。
 3. **PI 的投影必须自己兜底，不假设上游已裁剪。** [`sessionEntryData`](../../packages/pi-extension/src/pi-adapter.ts) 对任意字符串字段设一条内联预算（初值 8KB）：超过预算的字符串一律降级。图片块转引用；无法给出引用的（例如 base64 来自他人扩展）留 `[image omitted: <mime>, <n> bytes]`。
 4. **同规则覆盖事件路径。** `tool_execution_end.result` / `tool_execution_update.partialResult` 走同一裁剪，不能因为"只是一次事件"就整份上线。工具结果里能证明本地路径的（Pi `read` 的 `arguments.path`）可以带 path ref；证明不了就只留占位。
 5. **Codex 的 `resultText` 不能无脑 stringify 大二进制。** 工具结果里的图片/文件块先降成引用或占位，再作为 text 内容；不得让 base64 进入 canonical Entry 的正文。
 6. **DSH 的占位保持现状**，补上可选的 path ref（DSH 的 `file` 块带 `attachment.name`，能定位就带路径）。手机侧继续按文本/artifact 渲染。
-7. **图片可见性不在本 ADR 内交付。** 手机仍显示占位；将来要显示图片另开 ADR，走 artifact 下载（ADR-0008），不复用内联 base64。
+7. **图片可见性不在本 ADR 内交付。** 手机仍显示占位；将来要显示图片另开 ADR，走 artifact 下载（ADR-0005），不复用内联 base64。
 
 ## Consequences and verification
 

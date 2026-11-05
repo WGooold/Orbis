@@ -16,7 +16,7 @@ npx vitest run --maxWorkers=1 --retry=1 --testTimeout=30000
 npm run build
 ```
 
-Implementation belongs in `packages/*/src`. Do not edit or commit generated `dist`, dependencies, build products or local state. Workspace imports use package names; read ADR-0004 before changing module resolution.
+Implementation belongs in `packages/*/src`. Do not edit or commit generated `dist`, dependencies, build products or local state. Workspace imports use package names, and the Pi manifest points to the built `dist/index.js`. Rebuild and activate a fresh Pi process to load extension changes; `/reload` cannot clear Node's ESM cache.
 
 Windows GUI: see `packages/windows-host/README.md`. Android: see `android/README.md`; use the build wrapper to preserve the shared build lock and device provenance. Do not clear another developer's device data.
 

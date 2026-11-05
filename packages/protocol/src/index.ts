@@ -155,7 +155,7 @@ export type RuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
  * credential），而两者的差别对手机是可见的：Relay 若把网关当成一条进程播出去，手机上就会
  * 凭空多出一个 cwd 是用户目录的「进程」，与它并列的真正的 Pi 进程反而看起来不在线。
  *
- * **必填**（ADR-0008）：不再有"缺省 `agent`"的旧客户端。
+ * **必填**（ADR-0009）：角色必须显式声明，Relay 只接受 Host。
  */
 export const RuntimeRoleSchema = z.enum(["agent", "host"]);
 export type RuntimeRole = z.infer<typeof RuntimeRoleSchema>;
@@ -338,8 +338,8 @@ export type EnvelopeKind = z.infer<typeof EnvelopeKindSchema>;
  * - `msg`：会话同步、消息增量、会话目录。体量大但仍然是交互流量。
  * - `bulk`：artifact 分片（上传与下载）。可限速，丢一帧由上层重传自愈。
  *
- * **`ch` 必填**（ADR-0008 取消了向后兼容）：不再有"不携带 `ch` = 单流"的旧对端，
- * 也不再需要握手里的 `channels` 协商。
+ * **`ch` 必填**（ADR-0011）：加密数据帧不能以省略 channel 表示单流，
+ * 基础三通道不使用旧 `channels` 字段；扩展通道须独立认证协商。
  */
 export const EnvelopeChannelSchema = z.enum(["ctl", "msg", "bulk", "history", "catchup"]);
 export type EnvelopeChannel = z.infer<typeof EnvelopeChannelSchema>;
@@ -363,7 +363,7 @@ export const RoutingHeaderV2Schema = z.strictObject({
    * 见 `EnvelopeChannelSchema`。
    *
    * **加密帧（`data`/`ping`/`bin`）必填**；握手帧（`hs`/`pair`）不带——它们不参与加密流。
-   * 不存在"缺省 = 单流"的旧对端（ADR-0008），因此接收侧拿到没有 `ch` 的加密帧即协议错误。
+   * 不存在"缺省 = 单流"的旧对端（ADR-0011），因此接收侧拿到没有 `ch` 的加密帧即协议错误。
    */
   ch: EnvelopeChannelSchema.optional(),
   /**
@@ -421,7 +421,7 @@ export function canonEnvelopeAad(hdr: RoutingHeaderV2): Uint8Array {
  * ——AES-GCM 在 nonce 重用下机密性与认证同时失效。槽位把不同 channel 的 nonce 空间
  * **彻底分开**：同一个 `n` 在三条道上得到三个不同的 nonce，`n` 撞车也不再撞 nonce。
  *
- * `0` 保留不用：ADR-0008 之后不存在"缺省 = 单流"的帧，见到 0 只能是实现 bug。
+ * `0` 保留不用：加密帧不允许"缺省 = 单流"（ADR-0011），见到 0 只能是实现 bug。
  */
 const CHANNEL_SLOT: Record<EnvelopeChannel, number> = { ctl: 1, msg: 2, bulk: 3, history: 4, catchup: 5 };
 
@@ -805,7 +805,7 @@ export const RuntimeSlashCommandSchema = z.strictObject({
 });
 export type RuntimeSlashCommand = z.infer<typeof RuntimeSlashCommandSchema>;
 
-// `messageAttachments` 能力位已删（ADR-0008）：附件现在是无条件支持的，不再需要声明。
+// `messageAttachments` 能力位已删（ADR-0012）：附件现在是无条件支持的，不再需要声明。
 export const RuntimeCapabilitiesSchema = z.strictObject({
   commands: z.array(RuntimeSlashCommandSchema),
 });
@@ -818,7 +818,7 @@ export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
  * 手机请求型下载的传输模式。
  *
  * 下载只有一个模式：**接收方驱动的范围下载**（ADR-0005）：发起方的 `offset` 就是进度，
- * 所以没有、也不需要 ACK。`stream` + `artifact.ack` 那条旧路径已删除（ADR-0008）。
+ * 所以没有、也不需要 ACK。`stream` + `artifact.ack` 那条旧路径已删除（ADR-0005）。
  */
 
 export const RuntimeEventSchema = z.discriminatedUnion("type", [
@@ -1097,7 +1097,7 @@ export const RuntimeClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runtime.authenticate"),
     protocolVersion: z.literal(PROTOCOL_VERSION),
     credential: z.string().min(1),
-    /** 见 `RuntimeRoleSchema`：必填（ADR-0008）。 */
+    /** 见 `RuntimeRoleSchema`：必填（ADR-0009）。 */
     role: RuntimeRoleSchema,
     runtime: RuntimeMetadataSchema,
   }),
@@ -1152,7 +1152,7 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * E2E `data` 载荷里允许出现的消息（spec §5.2 / §8）。
  *
  * 与 `DeviceClientMessage` 分开：后者是 Relay 看得见的**明文**设备消息，而现在那里
- * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0008）。
+ * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
@@ -1401,7 +1401,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
 export type RelayToDeviceMessage = z.infer<typeof RelayToDeviceMessageSchema>;
 export const RelayToRuntimeMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
-    // `features` 已删（ADR-0008）：它唯一的作用是宣告中继不会 strip `hdr.ch`，
+    // 本机 runtime.ready 不携带旧 `features`：它只曾宣告中继不 strip `hdr.ch`，
     // 而仓库里从来没有代码读它。
     type: z.literal("runtime.ready"),
     protocolVersion: z.literal(PROTOCOL_VERSION),

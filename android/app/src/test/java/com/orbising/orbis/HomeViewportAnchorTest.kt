@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** ADR-0053 §3 / V21: session changes never push the home viewport away. */
+/** ADR-0046 §6 / V21: session changes never push the home viewport away. */
 class HomeViewportAnchorTest {
     private val cards = listOf("a", "b", "c", "d", "e", "f")
 

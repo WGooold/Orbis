@@ -53,7 +53,7 @@ Status: accepted（用户已授权；先盘点、定规则及 ticket，再实施
 
 所有装饰覆盖层不新增业务对象、不接受触摸、不暴露重复辅助功能元素、不改变测量尺寸。会话 / Host / 分支 / 路由代次变化取消旧任务；退场期间用展示快照保留画面，但不得继续操作已失效对象。动画完成不是网络成功条件；减少 / 关闭动画直接落定，仍执行一次同样的业务动作，不等待固定延时。
 
-2026-11-02 / r33 分类补充：M15 的 iOS 首页刷新属于原生滚动回弹，不归入 SwipeDismiss 或 EdgeBack，也不复用业务页自定义弹簧。`HomePullRefresh` 只观察 pan / offset、绘制系统活动指示器，不改变 ScrollView 的 inset / offset / delegate；释放后列表由同一个系统回弹连续复位，避免系统刷新控件先停靠再收起。顶部、方向、多选、阈值与一次提交契约由 [ADR-0053 §6](0053-settings-entry-page-motion-and-ui-regression-gate.md) 负责；验收附于 MOT-10 / C03，未完成帧审阅不能声称流畅度通过。
+2026-11-02 / r33 分类补充：M15 的 iOS 首页刷新属于原生滚动回弹，不归入 SwipeDismiss 或 EdgeBack，也不复用业务页自定义弹簧。`HomePullRefresh` 只观察 pan / offset、绘制系统活动指示器，不改变 ScrollView 的 inset / offset / delegate；释放后列表由同一个系统回弹连续复位，避免系统刷新控件先停靠再收起。顶部、方向、多选、阈值与一次提交契约由 [ADR-0058](0058-shared-interaction-motion.md) 负责；验收附于 MOT-10 / C03，未完成帧审阅不能声称流畅度通过。
 
 ### 3. 关闭和发送的身份交接
 
@@ -305,3 +305,7 @@ S26 / [ADR-0062](0062-claude-background-agents-and-session-activity.md) 归入�
 iPadOS 26.6.1 后续验证：原文面板改为只读 `UITextView` 后，最终消息专项 4 / 4 通过，实际局部复制 / 粘贴、无键盘、关闭后原位置、A2–A4 和外部拖动取消均有断言；6 项共享菜单 / 历史 / 发送恢复等关联流程在前一轮通过。原容器标识覆盖原生控件标识造成的两轮定位失败均保留，最终移除容器标识后复验。5 张最终完整横屏截图已审阅；不是全 App 或双端完整验收。
 
 2026-11-05 MOT-14 / SC03 / SC08 / SC36：Android 目录后台投影与IO首载沿用现有展开、冻结视口、默认前五条与更多行为；补 `DrawerCatalogBackgroundInstrumentedTest` 的异步首载 / 显式收起保持、连续状态 / 正文更新后几何和点击、切Host / 搜索隔离。对应 S19 / V21、PERF-07、R48 / R57 / R65。没有新增动效或触觉参数；最终验证与用户门禁见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`。
+
+首页下拉刷新（M15 / UI-05）只在列表顶部、向下手势达到阈值后触发一次；多选、左滑关闭与抽屉横拖不触发。列表和指示器随原生拉伸 / 共用回位状态恢复，不等待网络完成，不插入同步状态行，保留上一版完整快照与视口。iOS 观察原生 pan 和 offset，不接管 delegate、recognizer 或 contentInset；Android 沿用 Material3 手势。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
+
+下载反馈（M16 / UI-06）只在本地实际创建或排队任务后，从点击位置向同页下载按钮飞入；它不表示下载完成。覆盖聊天、历史及其下载入口；浮层不参与命中或布局，不移动阅读锚点。连续点击有并发上限，离页 / 切会话取消，减少动画时使用按钮淡变反馈。返回来源由 [ADR-0054](0054-shared-full-page-navigation.md) 管理。实现见 [DownloadFlight.kt](../../android/app/src/main/java/com/orbising/orbis/DownloadFlight.kt) 与 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)，回归见 [DownloadFlightInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFlightInstrumentedTest.kt) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。

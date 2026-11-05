@@ -6,7 +6,7 @@
 
 2026-11-02 M15 iOS r33：观察原生顶部拖动，在释放时触发一次刷新；指示器不再设置刷新停靠高度，列表只执行一次原生回弹。隔离 `765b0a3` 上 338 核心测试与构建通过，SE 首页手势 4 / 4、iPhone 17 / SE 下拉 3 / 3（含 A1–A4、短拉 / 多选）通过；iPad 同设备前后下拉均实际刷新一次，回弹源帧已审阅。SE 全量 82 项为 75 通过 / 7 失败，6 项原实现同设备复现，上传失败恢复一项在原实现及当前单独复跑通过，首轮失败保留；176 张附件已查看。完整人工 C01–C18、真实 Host、真机体感未验收，不记完整门禁通过。共享主工作树后续 r34 外观修改不在此隔离结论内。详见 `.artifacts/ui-regression/20261102-ios-refresh-rebound/summary.md`。
 
-日期：2026-11-05。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-05/r48`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0053 §8](../adr/0053-settings-entry-page-motion-and-ui-regression-gate.md#8-ui-回归门禁立即生效)。
+日期：2026-11-05。适用基线：[ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md) `2026-11-05/r48`；整页导航范围见 [ADR-0054](../adr/0054-shared-full-page-navigation.md)；门禁决策见 [ADR-0051](../adr/0051-ui-style-motion-and-visual-stability-freeze.md)。
 
 本方案规定 UI 改动完成前必须执行的自动与手动回归、新用例的编写要求和证据格式。设备、构建目录、锁与产物保留一律遵守根目录 `AGENTS.md` / `CLAUDE.md`（共享池、合计最多 12 台、独占锁、固定构建目录）。本文中的模拟器只指从共享池借用的设备，不授权新建设备。
 
@@ -510,7 +510,7 @@ r35 增补（同属 §3.3 的自动映射；完整结果见 [r35 验证记录](i
 | --- | --- | --- | --- |
 | R43 | iOS 连接隔离 Host：首份同步已 applied 后延迟 30 秒重放同 commandId / syncId 请求，再发送冲突 rejected 和迟到 socket 失败；另在未确认首份响应重派 queued / processing 时送达首份 applied；回放旧 preview 晚于完整新 patch、工具依赖尚未齐的旧 preview 和非法 checkpoint。上翻阅读并按 A1–A4 检查状态 / 错误 / 重试 | 已提交任务不再生成快照且终态不翻转；合法迟到 ACK 结束等待并释放预留，不发送第二份响应。从未发送响应 / 已 abort 的 ACK 不复活事务。已完整提交的新 source 保持消息与阅读位置、旧包仍 rejected；不完整新状态有具体恢复提示；Host 同码回声不覆盖已有具体原因，不相关错误仍可见。保存 commandId / syncId、source epoch / seq、ACK 与派发计数，不保存会话正文 | V05–V06、V16–V18 |
 
-### 4.10 雾蓝外观专项（ADR-0059）
+### 4.10 雾蓝外观专项（ADR-0046）
 
 | 编号 | 步骤 | 预期 | ID |
 | --- | --- | --- | --- |

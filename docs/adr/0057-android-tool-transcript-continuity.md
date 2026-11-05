@@ -4,7 +4,7 @@
 
 Status: implemented（Android 修复与专项验证完成；完整 UI 回归门禁及真机验收未完成，不能记为全量验收通过）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[ADR-0053 §2](0053-settings-entry-page-motion-and-ui-regression-gate.md#2-运行中工具呈现连续跟随时不闪屏v20ui-02)；[UI 回归方案](../testing/ui-regression.md) 的 UI-02、R03 / R04、A1–A4。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) 的 V20、V09、V01–V04、V18；[流式呈现与阅读规则](0046-mobile-ui-stability-and-material.md)；[UI 回归方案](../testing/ui-regression.md) 的 UI-02、R03 / R04、A1–A4。
 
 ## Context
 
@@ -78,4 +78,4 @@ Android 的 Pi 会话会短暂只剩一条工具消息，顶部仍有“加载�
 
 缺父窗口不再发布孤立结果，也不在历史回补时产生 canonical / live 双份内容。源端事实仍可前进，用户已读内容和分页边界保持连续；完整状态到齐后一次完成交接。
 
-若源端迟迟不提供可接续父链或完整 checkpoint，客户端会继续显示保留内容及核对状态；该恢复依赖仍存在。已知全量失败和未执行门禁继续登记在 [UI-02 ticket](../agents/ui-r15-tickets.md)，不得把本次提交描述为完整双端验收。
+若源端迟迟不提供可接续父链或完整 checkpoint，客户端会继续显示保留内容及核对状态；该恢复依赖仍存在。已知全量失败和未执行门禁继续登记在 [UI 回归证据](../../.artifacts/ui-regression/20261101-pi-tool-continuity/summary.md)，不得把本次提交描述为完整双端验收。

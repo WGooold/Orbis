@@ -19,7 +19,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** ADR-0053 §4 / S22: download and settings are the only header entries; the capsule only reports. */
+/** ADR-0046 §5 / S22: download and settings are the only header entries; the capsule only reports. */
 class SettingsEntryInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 

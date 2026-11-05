@@ -20,7 +20,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** ADR-0053 §1 / M04: a streamed message reveals strictly in order, across paragraphs. */
+/** ADR-0046 §4 / M04: a streamed message reveals strictly in order, across paragraphs. */
 class StreamingRevealInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 

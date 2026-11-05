@@ -4,7 +4,7 @@
 
 Status: accepted（2026-10-23 实现 §1–§7，全部在设备侧；线上协议、Host 与 Relay 均不改）
 
-关联：[ADR-0005](0005-receiver-driven-range-download.md)、[ADR-0007](0007-channel-multiplexed-delivery.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0035](0035-incremental-session-reconcile.md) §15、[ADR-0036](0036-sync-backpressure-is-not-failure.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
+关联：[ADR-0005](0005-receiver-driven-range-download.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0035](0035-incremental-session-reconcile.md) §15、[ADR-0037](0037-session-sync-transaction-contract.md)
 
 ## Context
 
@@ -22,13 +22,13 @@ Status: accepted（2026-10-23 实现 §1–§7，全部在设备侧；线上协�
 
 ### §1 分类只看协议字段 `hdr.ch`，不看载荷形态
 
-职责沿用 [ADR-0007](0007-channel-multiplexed-delivery.md) 的定义：
+职责沿用 [ADR-0010](0010-write-layer-slicing.md) 的定义：
 
 - `ctl`：状态、命令结果、交互请求、`agent.state` 的 execution 快照。延迟敏感，**不可丢**。
 - `msg`：`session.*` / `message.*` / `turn.*` / `tool.*` 事件、会话目录、非 execution 的 `agent.state` 页、诊断页。体量大，**可丢、可由同步修复**。
 - `bulk`：artifact 分片，按偏移幂等，**可丢、由 pull 重传修复**。
 
-没有 `ch` 的老对端按 `ctl`（与 ADR-0007 的协商规则一致）。
+握手 / 配对等非加密控制帧按 `ctl`；加密数据帧必须携带经过认证的 `ch`，缺失即协议错误。
 
 ### §2 每条面各自的「未取走」预算（帧数 + 载荷量），取走即归还
 
@@ -42,12 +42,12 @@ Status: accepted（2026-10-23 实现 §1–§7，全部在设备侧；线上协�
 每来一个原生事件就发一对，实测约 40 帧/秒，512 帧只够约 12 秒。一次大快照投影（`agent.state.snapshot`
 700–900KB）就可能让消费侧停十几秒，把「消费慢」直接顶成「控制面溢出」。
 
-预算只约束**本机内存**，与 Host/Relay 的准入、字节预算无关，也不改线上协议（ADR-0007 §「接收侧」只规定了优先级，没有规定上界）。
+预算只约束**本机内存**，与 Host/Relay 的准入、字节预算无关，也不改线上协议；出站调度与本机入站预算分别约束。
 
 ### §3 `msg` 溢出丢最旧，保留最新；丢弃不是失败
 
 - 溢出时从队首丢到能放下新帧为止，新帧总是入队：被丢的是最陈旧的状态，最新状态优先。
-- 丢帧只累计本地计数并打日志，**不得写 `error`、不得写 `sessionSyncFailures`**。这与 ADR-0036 §1 同向：这是背压，不是故障。
+- 丢帧只累计本地计数并打日志，**不得写 `error`、不得写 `sessionSyncFailures`**。这与 ADR-0037 §5 同向：这是背压，不是故障。
 
 ### §4 丢弃必须触发一次可见会话的源端重同步
 
@@ -55,9 +55,9 @@ Status: accepted（2026-10-23 实现 §1–§7，全部在设备侧；线上协�
 
 1. 把当前选中的 runtime 重新挂进 `sessionSyncRequests`；
 2. 触发一次 `scheduleSessionGraphLoad`，走既有的 catchup/preview 路径（`knownState` 落后时 Host 会回增量或快照，ADR-0026/0037）；
-3. 限频 **3 秒**：丢帧风暴不能变成重同步风暴（ADR-0036 Context 约束 1）。
+3. 限频 **3 秒**：丢帧风暴不能变成重同步风暴。
 
-必须主动补一次的原因与 ADR-0036 Context 约束 2 相同：会话安静下来后没有新事件来要同步，不补就永久停在旧快照。
+必须主动补一次：会话安静下来后没有新事件来要同步，不补就永久停在旧快照。
 
 ### §5 `ctl` 溢出不静默丢
 

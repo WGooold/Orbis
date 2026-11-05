@@ -600,7 +600,7 @@ struct HomeView: View {
             }
             // One fixed row: which computer this page shows, how it is connected and, once the
             // list is published, whether it is still syncing. Retry joins the row without moving the cards.
-            // The capsule only reports state; settings open from the gear (ADR-0053 §4).
+            // The capsule only reports state; settings open from the gear (ADR-0046 §5).
             HStack(spacing: 10) {
                 hostSwitcher
                 Spacer(minLength: 8)
@@ -979,7 +979,7 @@ struct ConnectionPill: View {
 }
 
 /// Shared by the home row and the drawer footer: pick another paired computer. Only the drawer's
-/// computer menu adds or unpairs computers (ADR-0053 §4), so it passes those actions.
+/// computer menu adds or unpairs computers (ADR-0046 §5), so it passes those actions.
 @MainActor
 func hostSwitchMenuItems(_ store: OrbisStore, onAddHost: (() -> Void)? = nil, onUnpair: ((HostPairing) -> Void)? = nil) -> [OrbisMenuItem] {
     var items: [OrbisMenuItem] = store.pairings.map { host in

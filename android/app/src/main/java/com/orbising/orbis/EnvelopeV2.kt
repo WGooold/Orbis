@@ -87,7 +87,7 @@ data class RoutingHeaderV2(
      * 逻辑 channel：`ctl` / `msg` / `bulk`（spec 票 07）。
      *
      * **加密帧必填**；握手/配对帧（`hs` / `pair`）不带——它们不参与加密流，本来就没有 channel。
-     * 不存在"缺省 = 单流"的旧对端（ADR-0008），因此加密帧缺它就是协议错误。
+     * 不存在"缺省 = 单流"的旧对端（ADR-0011），因此加密帧缺它就是协议错误。
      *
      * **进 AAD**：canonAad 是六字段（k/room/from/to/ch/n）。
      */

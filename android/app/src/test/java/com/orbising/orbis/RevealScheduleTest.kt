@@ -6,7 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** ADR-0053 §1 / M04: one cursor per message, characters start strictly in order. */
+/** ADR-0046 §4 / M04: one cursor per message, characters start strictly in order. */
 class RevealScheduleTest {
     @Test fun aNewBatchQueuesBehindTheUnrevealedTail() {
         val schedule = RevealSchedule()

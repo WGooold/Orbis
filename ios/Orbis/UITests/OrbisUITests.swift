@@ -1142,7 +1142,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
     }
-    // ADR-0053 §3 / V21: a session closing above the viewport does not move the cards being read.
+    // ADR-0046 §6 / V21: a session closing above the viewport does not move the cards being read.
     func testHomeViewportStaysWhenSessionsChangeAboveIt() {
         let app = launch("home", arguments: ["--preview-home-long-list", "--preview-home-remove-later"])
         let list = app.scrollViews["home-session-list"]
@@ -1162,7 +1162,7 @@ final class OrbisUITests: XCTestCase {
         capture("home-viewport-after-removal", app: app)
     }
 
-    // ADR-0053 §7 / M16: a queued download flies from the tap toward the chat's download button.
+    // ADR-0058 M16: a queued download flies from the tap toward the chat's download button.
     func testDownloadFlightStartsAtTapAndEndsAtButton() {
         let app = launch("chat", arguments: ["--preview-chat-artifact", "--preview-slow-flight", "--preview-flight-probe"])
         let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
@@ -1218,7 +1218,7 @@ final class OrbisUITests: XCTestCase {
         capture("history-download-flight-midway", app: app)
     }
 
-    // ADR-0053 §4 / S22: the header keeps only downloads and settings, the capsule only reports state,
+    // ADR-0046 §5 / S22: the header keeps only downloads and settings, the capsule only reports state,
     // and computers are added or unpaired only from the drawer's computer menu.
     func testSettingsPageOrderAndSingleHostMenu() {
         let app = launch("home", arguments: ["--preview-hosts=2"])
@@ -1488,7 +1488,7 @@ final class OrbisUITests: XCTestCase {
         capture("nested-history-return-chat", app: app)
     }
 
-    // ADR-0053 §5 / M14: settings and the home downloads page slide back to home like the chat.
+    // ADR-0054 / M14: settings and the home downloads page slide back to home like the chat.
     func testSettingsAndDownloadsSwipeBack() {
         let app = launch("home")
         let directory = app.buttons["打开会话目录"]
@@ -1567,7 +1567,7 @@ final class OrbisUITests: XCTestCase {
         capture("motion-menu-parent", app: app)
     }
 
-    // ADR-0053 §5: the chat's downloads page returns to that same chat, draft and all.
+    // ADR-0054: the chat's downloads page returns to that same chat, draft and all.
     func testChatDownloadsReturnToSameChat() {
         let app = launch("chat")
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
@@ -1585,7 +1585,7 @@ final class OrbisUITests: XCTestCase {
         capture("chat-downloads-returned", app: app)
     }
 
-    // ADR-0053 §5 / §7: the history page has the chat's download button and its page returns there.
+    // ADR-0054 / ADR-0058 M16: the history page has the chat's download button and its page returns there.
     func testHistoryDownloadsReturnToHistory() {
         let app = launch("history")
         let button = app.buttons["history-downloads"]
@@ -2307,7 +2307,7 @@ final class OrbisUITests: XCTestCase {
         for dark in [false, true] {
             let app = launch("status", dark: dark)
             XCTAssertTrue(app.staticTexts["当前连接"].waitForExistence(timeout: 8))
-            // Providers now come first (ADR-0053 §4); the connection and pairing facts follow below them.
+            // Providers now come first (ADR-0046 §5); the connection and pairing facts follow below them.
             let page = app.descendants(matching: .any)["settings-page"].firstMatch
             for label in ["已连接", "连接方式", "连接延迟", "42 ms", "端到端加密", "电脑", "配对状态"] {
                 let fact = app.staticTexts[label].firstMatch

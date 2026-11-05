@@ -27,7 +27,7 @@ export function defaultPiSessionsRoot(): string {
  * 本机主机名。会话条目靠它区分不同电脑（手机侧栏按主机分组）。
  *
  * `os.hostname()` 可能抛，而 schema 里 `hostname` 是必填的非空串——所以兜底一个
- * 明确的占位值，而不是漏字段（ADR-0008 之后不存在“省略它”的旧对端）。
+ * 明确的占位值，而不是漏字段，避免把未知状态伪造为默认事实（ADR-0032）。
  */
 export function localHostname(): string {
   try {

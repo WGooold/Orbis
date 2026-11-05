@@ -10,13 +10,13 @@
 
 Status: accepted（Pi、Codex、DSH 与 APP 已接入源端状态复制；大 checkpoint 分块及完整设备故障矩阵仍待验收）
 
-2026-10-22：[ADR-0036](0036-sync-backpressure-is-not-failure.md) 定义本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，客户端必须重试，不能记成会话同步失败。checkpoint/patch、epoch/seq、缓存事务不变。
+2026-10-22：[ADR-0037](0037-session-sync-transaction-contract.md) 定义本文准入拒绝的失败语义：`session_sync_busy` 一族是背压，客户端必须重试，不能记成会话同步失败。checkpoint/patch、epoch/seq、缓存事务不变。
 
 2026-10-22：[ADR-0035](0035-incremental-session-reconcile.md) 修正本文引入的实现代价：`reconcile` 的全量比较/深拷贝、每次 `session.sync` 的强制核对、以及 live 状态的逐 token 重算。恢复契约（原生历史权威、checkpoint/patch、epoch/seq、缓存事务）不变。
 
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 将最终架构扩展为 Host 保存完整逻辑 Agent 模型的有界当前投影，并由适配层统一历史显示数据。本文的原生历史权威、源端可恢复状态、checkpoint/patch 和缓存事务继续有效；Host 不新增全量持久聊天数据库。该模型迁移尚待实现。
 
-关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0008](0008-drop-backward-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。
+关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0064](0064-protocol-compatibility.md)。实施跟踪：[Issue #2](https://github.com/WGooold/Orbis/issues/2)、[Issue #3](https://github.com/WGooold/Orbis/issues/3)。
 
 ## 要解决的问题
 
@@ -235,7 +235,7 @@ running 时允许 sync 不意味着 running 时允许 revert；后者仍按原�
 
 实施顺序：先确定源端可恢复状态和 canonical 稳定性，再接入 checkpoint/patch 与 APP 单一 reducer，最后启用 running sync 和自动恢复。不能先删 guard，再把已经发生的损坏逐个补回来。
 
-遵循 ADR-0008 同步升级相关组件与硬协议门槛，不维持一套新旧事件共同决定聊天状态的隐式兼容路径。一个 Session 建立 source checkpoint 后，聊天状态仅随版本化 checkpoint/patch 更新；旧 message/turn/tool 事件和 metadata 不得绕过版本检查。
+协议演进遵循 ADR-0064 的已部署端兼容要求。一个 Session 建立 source checkpoint 后，聊天状态仅随版本化 checkpoint/patch 更新；旧 message/turn/tool 事件和 metadata 不得绕过版本检查，兼容适配也不能建立第二个聊天状态写入者。
 
 ## 实施进度与启用范围
 

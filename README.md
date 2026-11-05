@@ -230,7 +230,7 @@ Windows Host 安装器把随包附带的 Pi 扩展登记到当前用户的 `~/.p
 npm run build        # tsc -b，刷新各包 dist
 ```
 
-然后让 Host 重新拉起一个 Pi 进程（手机端对会话执行 activate，或重启 Host）。早期的 source-first 热重载方案（manifest 指向 `src/index.ts`、依赖走 `@orbis/*/source`、靠 Pi 的 `/reload` 热更新）已移除——`/reload` 不再是扩展代码的更新手段。设计动机存档见 `docs/adr/0004-pi-extension-source-first-development.md`。
+然后让 Host 重新拉起一个 Pi 进程（手机端对会话执行 activate，或重启 Host）。早期的 source-first 热重载方案（manifest 指向 `src/index.ts`、依赖走 `@orbis/*/source`、靠 Pi 的 `/reload` 热更新）已移除——`/reload` 不再是扩展代码的更新手段。
 
 扩展只会在 `session_start` 时连上本机 Host，并在 `session_shutdown` 时断开。连接后 Pi 发布轻量 Session catalog 和每个 Runtime 的当前 Session view；用户打开在线 Runtime 时，Android 才发送带 `sessionId`、graph version、entry digest、leaf、branch fingerprint 和 `syncId` 的 graph 同步请求。侧边栏中的缓存历史入口只读取已有本地缓存。可安全验证时响应只包含缺失 entry，否则发送完整 graph replace。Android 根据 graph 和 runtime leaf 自己计算 Pi-equivalent display projection；扩展不会直接读取 session JSONL 文件。
 
@@ -341,7 +341,7 @@ Android 10 及以上保存到系统“下载”目录，较低版本保存到 Or
 
 驱动权在发送方、信用在接收方：手机按 Host 回报的**已落盘前缀**推进，它同时是断线后的续传基准；Host 自己算一遍 sha256、校验通过后才改名落地。续传的身份是内容而不是 `uploadId`——`sha256(runtimeId, directory, fileName, size, sha256)` 决定 `.part` 文件名，所以手机重试、Host 重启都会命中同一个 `.part`。
 
-> 分片在 E2E 信封里是 base64，线上体积约为原文件的 4/3（100 MB 走 133 MB）。这是刻意接受的代价：给设备方向加二进制通道会把数据面和控制面绑死。详见 `docs/adr/0006-phone-file-upload.md`。
+> 分片在 E2E 信封里是 base64，线上体积约为原文件的 4/3（100 MB 走 133 MB）。传输继续使用同一 E2E 路径，接收方按持久前缀请求分片；详见 `docs/adr/0012-receiver-driven-upload.md`。
 
 **主动推送（电脑 → 手机）已删除。** 它曾让 Pi 进程把构建产物直接推给某台已配对设备（`runtime.push.*` / `artifact.push.*`，字节由中继托管）。删掉它的原因有两个：那条链路从未接通（Host 的 loopback 端点在收到 `runtime.push.*` 时直接忽略，缺的是 Host 转发那一段），而且它要求中继持有并发送用户的文件、还要收设备发来的**明文**进度回执——与「中继只路由、不解内容」的边界相冲突（见 `docs/adr/0009-remove-computer-to-phone-push.md`）。
 

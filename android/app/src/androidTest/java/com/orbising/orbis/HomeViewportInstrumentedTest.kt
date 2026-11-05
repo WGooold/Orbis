@@ -13,7 +13,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** ADR-0053 §3 / V21 and §6 / M15: the home list is never pushed away, and it refreshes by pulling. */
+/** ADR-0046 V21 / ADR-0058 M15: the home list is never pushed away, and it refreshes by pulling. */
 class HomeViewportInstrumentedTest {
     @get:Rule val compose = createComposeRule()
     private val pairing = HostPairing("host", "Test Host", "test-public", "test-root",

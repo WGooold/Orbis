@@ -4,11 +4,11 @@
 
 Status: accepted（先记录决策，再测量和实施；两端实现及隔离模拟器回归完成，真机待复测）
 
-关联：[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0039](0039-content-change-signals.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)、[ADR-0047](0047-deferred-chat-disclosure-content.md)
+关联：[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0039](0039-content-change-signals.md)、[ADR-0046](0046-mobile-ui-stability-and-material.md)
 
 ## Context
 
-用户在 ADR-0047 实施后仍报告：点击已在线会话，包括退出后再次进入，需要等约 1–2 秒。
+闭合详情延迟构建后，用户仍报告：点击已在线会话，包括退出后再次进入，需要等约 1–2 秒。
 闭合详情延迟构建的回归不能替代进入页面的端到端测量。本轮分别检查点击回调、页面首帧和首批正文，
 不把远端同步完成时间混入首帧指标。
 
@@ -23,6 +23,8 @@ Status: accepted（先记录决策，再测量和实施；两端实现及隔离�
   不能把上述代码现象直接解释成用户报告的全部延迟。
 
 ## Decision
+
+首次展开前，折叠正文不执行 builder、不挂载、不测量；标题、状态和点击目标正常显示。首次即展开的内容立即构建。首次展开时才挂载并测量，再执行自然高度裁切动画；以后收起保留内容身份和内部状态。iOS 的上游 disclosure 同样保存延迟 builder，避免在内层隐藏已经构建的正文。实现见两端 `OrbisCollapse`（[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[UiPolish.kt](../../android/app/src/main/java/com/orbising/orbis/UiPolish.kt)）。这只减少确定的首屏工作，不能代替真机端到端测量。
 
 1. 为隔离的在线、已缓存会话建立可重复的点击→选择返回→页面绘制/正文可见测量，覆盖首次进入和重入。
    使用单调时钟，记录耗时、消息数量和阶段，不记录正文、草稿或凭据。模拟器结果不冒充真机结果。

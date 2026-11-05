@@ -6,7 +6,7 @@
 
 状态：accepted
 
-关联：[ADR-0007](0007-channel-multiplexed-delivery.md)、[ADR-0010](0010-write-layer-slicing.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0036](0036-sync-backpressure-is-not-failure.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
+关联：[ADR-0010](0010-write-layer-slicing.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
 
 ## Context
 
@@ -20,8 +20,8 @@
 
 - ADR-0024 解决版本化 checkpoint、epoch/seq 和丢事件后的恢复契约，但没有限制 Host 普通 `msg` 队列。
 - ADR-0035 §15 规定 100ms 流式合并和“只有实际发布才推进 seq”，但其 `RecoverableSessionSource` 路径不包含 CodexRuntime 自己维护的 live 状态。
-- ADR-0007 和 ADR-0010 规定 `ctl` 优先、`bulk` 水位、写入切片和不丢已封装帧；普通 `msg` / `ctl` 保持不丢，因此没有普通非 bulk 队列容量上限。
-- ADR-0036 和 ADR-0037 只规定同步事务在背压时如何重试和结束，不能阻止普通 patch 先把队列填满。
+- ADR-0010 规定 `ctl` 优先、`bulk` 水位、写入切片和不丢已封装帧；普通 `msg` / `ctl` 保持不丢，因此没有普通非 bulk 队列容量上限。
+- ADR-0037 只规定同步事务在背压时如何重试和结束，不能阻止普通 patch 先把队列填满。
 
 ## Decision
 
@@ -45,7 +45,7 @@ Codex 的 live 更新在 `CodexRuntime.#touchSource` 内合并，默认窗口为
 
 调用方在 `DeviceLink.#sendSealed` 封装 E2E 信封、消耗 nonce 和发送序号之前，先向对应 mux 查询该 channel 是否有空间。没有空间时返回拒绝并记录原因，不调用 `seal()`。`sendSessionSnapshot` 继续保留自身的同步并发和 12 MiB wire 预算，并使用同一条普通 `msg` 准入检查。
 
-`OutboundChannelMux.enqueue()` 不负责丢弃已经封好的帧。写入失败的帧仍按 ADR-0007/0010 在队首重试；只有路径会话已经失效、确认新 E2E 会话时才清理旧队列。
+`OutboundChannelMux.enqueue()` 不负责丢弃已经封好的帧。写入失败的帧仍按 ADR-0010 在队首重试；只有路径会话已经失效、确认新 E2E 会话时才清理旧队列。
 
 ### 4. 普通队列溢出触发路径恢复
 

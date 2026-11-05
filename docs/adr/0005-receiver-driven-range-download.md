@@ -2,7 +2,7 @@
 
 **Status:** accepted
 
-取代 [ADR-0002](./0002-open-command-and-file-download.md) 中「16 帧滑动窗口 + 累计 `receivedOffset` ACK」所描述的**手机请求型下载**传输机制。ADR-0002 的权限边界（设备凭据 = Pi 命令调用权 + runtime 账户文件读取权）与 Pi 主动推送（`artifact.push.*`）**不变**。
+已配对设备可按电脑路径请求 Host / runtime 账户可读取的普通文件，不维护路径、类型或大小 capability allowlist。配对凭据因此包含文件读取权；配对认证、设备撤销、TLS 与操作系统账户隔离仍是权限边界。Host 就地读盘，Relay 只转发端到端密文，不持久化文件。手机完成 SHA-256 校验后才发布文件。
 
 ## Context
 
@@ -22,12 +22,12 @@
 
 手机请求型下载改为**接收方驱动的范围请求（pull-range）+ 流水线**：
 
-- **协商**：下载命令带可选 `mode`（缺省 `stream`）。Host 在 `artifact.started` 回 `mode:"pull"` 才表示按范围应答；缺失即回退到旧的收流 + ACK。设备只在看到 `mode:"pull"` 时进入 pull 状态机。
+- **单一数据面**：下载使用范围请求，不保留旧 stream + ACK 路径；协议演进遵循 [ADR-0064](0064-protocol-compatibility.md)。
 - **协议**：设备发 `artifact.read { transferId, requestId, offset, length }`（长度 ≤ 1 chunk），Host 只按范围读盘回一个既有格式的分片帧；读不了回 `artifact.read.failed`。设备完成并校验 sha256 后发 `artifact.done`，Host 据此释放上下文。取消复用既有 `artifact.cancel` 命令。**pull 路径上没有 `artifact.ack`，Host 也不发 `artifact.finished`**——完成判定在接收方。
 - **发送方无状态**：Host 侧每条传输只保留 `{deviceId, artifact, path, cancelled}`，没有窗口、没有 ack、没有重试计数；同一 `read` 幂等重读重发。
 - **接收方调度**（`PullScheduler`）：进度唯一权威是 `durableOffset`（`.part` 连续前缀）；`highestIssued - durableOffset ≤ window` 恒成立；超时**只重请求丢失的那一个 chunk**；窗口用 AIMD 调整并由实测 BDP 定增长上限；有交互流量在途时把窗口压到 1 chunk（交互让路）。
 - **回程路径固定**：一次 `read` 的响应在收到该请求的那条路径上发完，跨路径不拆开一次响应。
-- **推送不动**：`artifact.push.*` 与 Relay 的持久化推送保持原样。**（该推送已在 [ADR-0009](./0009-remove-computer-to-phone-push.md) 中整条删除。）**
+- Relay 不托管文件或主动推送，安全边界见 [ADR-0009](./0009-remove-computer-to-phone-push.md)。
 
 ## Consequences
 
@@ -43,8 +43,8 @@
 
 - 协议消息变多、更碎（每 chunk 一个 `read`，约 150 字节 / 1 MiB，可忽略），且控制逻辑从发送方搬到接收方。
 - 调度器（窗口/RTO/乱序/重传）成为接收方必须正确实现的组件；它现在是纯逻辑 + 注入时钟的深模块，由单测覆盖。
-- 引入了回退矩阵（旧设备×新 Host、新设备×旧 Host），必须两组都保真。
-- 中继侧的 `transferRoutes` / 原始二进制分片路径对本机制不参与（分片是 E2E `v2.frame`），但仍是旧明文 runtime 路径的一部分，未清理。**（该路径已在 [ADR-0009](./0009-remove-computer-to-phone-push.md) 中随主动推送整条删除——中继现在只搬 JSON 帧，这条「未清理项」已不存在。）**
+- 接收方调度器与持久化须保持一致，协议 18 起的旧端互通按 ADR-0064 验证。
+- Relay 只路由 E2E 信封，不参与范围选择、落盘或完成判定。
 
 ## Verification
 

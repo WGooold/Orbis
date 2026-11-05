@@ -885,7 +885,7 @@ export class DshWebRuntime implements AgentBackend {
         for (const record of records) this.#assistantFrame(session, { type: "chunk", attemptId: attempt.attemptId, time: record.time, chunk: record.chunk });
       }
       this.#reconcileSource(session);
-      // ADR-0043：有界 follow tail 里没有本轮的 `turn/start`，只说明「本轮起点不在这一页」，
+      // ADR-0020：有界 follow tail 里没有本轮的 `turn/start`，只说明「本轮起点不在这一页」，
       // 不说明 live 清单不完整：live 正文来自 assistantStream 的完整前缀，后续事件按 seq
       // 顺序应用，缺口由 #checkSource 重新核对。以前这里据此把 complete 降成 false，
       // checkpoint 于是不再是基线——Host 丢掉 canonical、手机既不能投影也不能应用 patch，

@@ -563,7 +563,7 @@ func interactionDraftKey(host: HostPairing?, sessionId: String?, request: Intera
     return components.map { "\($0.utf8.count):\($0)" }.joined()
 }
 
-/// One reveal timeline for a streamed message (ADR-0051 M04, ADR-0053 §1). Characters start
+/// One reveal timeline for a streamed message (ADR-0051 M04, ADR-0046 §4). Characters start
 /// fading in strictly in rendered order: a new batch queues behind the tail that has not started
 /// yet, so the end of one batch and the start of the next never animate at once. When the queue
 /// would trail the stream by more than `maxDelay`, the spacing compresses (several adjacent

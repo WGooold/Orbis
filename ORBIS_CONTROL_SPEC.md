@@ -1,6 +1,6 @@
 # Orbis 规格（多 agent 远程控制）
 
-> 状态：核心远程控制协议与客户端边界说明。Pi/Codex 的通用契约仍在本文；DeepSeek Harness（DSH）的 ACP 生命周期、持久化和能力边界以 [ADR-0018](docs/adr/0018-deepseek-harness-acp-backend.md) 与 [接入说明](docs/deepseek-harness.md) 为准。
+> 状态：核心远程控制协议与客户端边界说明。Pi/Codex 的通用契约仍在本文；DeepSeek Harness（DSH）的 Web 生命周期、持久化和能力边界以 [ADR-0020](docs/adr/0020-deepseek-harness-shared-web-backend.md) 与 [接入说明](docs/deepseek-harness.md) 为准。
 
 ## 1. Problem Statement
 
@@ -171,7 +171,7 @@ Relay 只负责认证、连接管理和消息转发。它读不到 Session 内�
 
 Host 也以 runtime 身份接入 Relay，那只是为了让 Relay 能把发往 Host 的帧路由到它（`hdr.to = hostId`）。Host 是路由端点（网关），不是手机要看见的进程。因此：
 
-- `runtime.authenticate` 必须声明 `role`，并且**只有 `host` 被接受**：其它角色在认证处就被回绝（`runtime_role_not_allowed`）。中继上那条「运行时直连」入口会把连接事件以**明文**广播给设备，等于让中继看见会话内容——这与「中继零知识」的设计前提直接冲突，所以 Pi 扩展在找不到本机 Host 时也不再连中继（见 [ADR-0008](docs/adr/0008-drop-backward-compatibility.md)）；
+- `runtime.authenticate` 必须声明 `role`，并且**只有 `host` 被接受**：其它角色在认证处就被回绝（`runtime_role_not_allowed`）。中继上那条「运行时直连」入口会把连接事件以**明文**广播给设备，等于让中继看见会话内容——这与「中继零知识」的设计前提直接冲突，所以 Pi 扩展在找不到本机 Host 时也不再连中继（见 [ADR-0009](docs/adr/0009-remove-computer-to-phone-push.md)）；
 - Relay **不再转发运行时的明文事件**：`runtime.event` 一律回绝（`runtime_event_not_allowed`）。会话内容只能经 Host 的端到端通道到达设备；
 - 因为 Relay 手里只有网关，它下发的 `device.ready.runtimes` 种子**恒为空**；手机看到的进程目录由 Host 在每次握手完成时自己给（§8.1）。由此，主机上「在跑几个 agent 进程」与 Relay 上有几条 runtime 连接是两件事，手机的进程列表不会因为 Host 接入而多出一条本机目录的假进程。
 
@@ -731,7 +731,7 @@ Queue ID 不能与 Session entry ID 混用。具体 queue 语义仍遵循 Pi 的
 
 **续传基准是内容身份，不是 `uploadId`。** `sha256(runtimeId, directory, fileName, size, sha256)` 决定 `.part` 的文件名，因此手机重试、Host 重启都会拿到新的 `uploadId`，却仍然命中同一份 `.part`。持久前缀只增不减。
 
-**附件就是路径。** `user_message.attachments` 是绝对路径数组（可选），`RuntimeBridge` 在发送前把 `附件：<path>` 拼进正文；agent 拿到的是一条路径，用自己的工具去读。**不做**描述符、图片嗅探、content parts——「这个文件是不是图片、要不要把字节喂给模型」是模型侧的事，不是传输侧的事。附件是**无条件支持**的：能力位已随 [ADR-0008](docs/adr/0008-drop-backward-compatibility.md) 删除。
+**附件就是路径。** `user_message.attachments` 是绝对路径数组（可选），`RuntimeBridge` 在发送前把 `附件：<path>` 拼进正文；agent 拿到的是一条路径，用自己的工具去读。**不做**描述符、图片嗅探、content parts——「这个文件是不是图片、要不要把字节喂给模型」是模型侧的事，不是传输侧的事。附件是**无条件支持**的：能力位已随 [ADR-0064](docs/adr/0064-protocol-compatibility.md) 删除。
 
 **落地目录**默认是会话 `cwd` 下的 `.orbis-uploads/`，它需要进用户仓库的忽略列表（本仓库已在 `.gitignore` 中忽略）。
 
@@ -958,7 +958,7 @@ Runtime 暂时离线时，Session metadata 和本地 history 仍可读，页面�
 - 远程 shell、文件编辑、包管理、Provider/OAuth/API key 写入和项目 trust 写入；
 - 把同一个 Session 的所有 branch 默认合并成一条聊天流；
 - 通过 runtime ID 复制多份 Session 聊天正文；
-- 作为 content part 的图片与多媒体消息（附件一律以路径形式交给 agent，见 `docs/adr/0006-phone-file-upload.md`）；
+- 作为 content part 的图片与多媒体消息（附件一律以路径形式交给 agent，见 `docs/adr/0012-receiver-driven-upload.md`）；
 - 未接入 Remote Interaction SDK 的任意本地 TUI 组件自动镜像；
 - APP 代替 Pi 执行 agent、tool、queue、compaction 或 Session 写入语义。
 

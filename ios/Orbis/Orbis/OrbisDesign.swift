@@ -246,7 +246,7 @@ struct OrbisLayerFill: View {
 }
 
 /// Animates a clipping frame between 0 and the content's natural height (the grid
-/// `0fr → 1fr` technique). Mount only on first expansion (ADR-0047), then keep content
+/// `0fr → 1fr` technique). Mount only on first expansion (ADR-0048), then keep content
 /// identity and natural layout across subsequent toggles.
 struct OrbisCollapse<Content: View>: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
@@ -1283,7 +1283,7 @@ struct OrbisNotice: View {
     }
 }
 
-// MARK: - Download flight (ADR-0051 M16, ADR-0053 §7)
+// MARK: - Download flight (ADR-0051 M16, ADR-0058 M16)
 
 /// Once a download is actually queued, a file icon flies from the tap along an upward arc to the
 /// page's download button, which then pops. Flights never take touches, change layout or move the
@@ -1447,7 +1447,7 @@ private struct DownloadFlightLayer: View {
 }
 
 extension View {
-    /// Hosts the page's download flights above it (ADR-0053 §7).
+    /// Hosts the page's download flights above it (ADR-0058 M16).
     func downloadFlightHost(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightHost(flight: flight)) }
     /// The page's download button: where flights land and what pops when they arrive.
     func downloadFlightTarget(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightTarget(flight: flight)) }

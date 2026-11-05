@@ -171,7 +171,7 @@ internal fun HistoryTreePage(
                         )
                     }
                 },
-                // 与聊天页同款的下载入口：历史里的文件下载有落点，下载页返回这里（ADR-0053 §5、§7）。
+                // 与聊天页同款的下载入口：历史里的文件下载有落点，下载页返回这里（ADR-0054 / ADR-0058 M16）。
                 actions = {
                     onOpenDownloads?.let { open ->
                         DownloadStatusButton(activeCount = activeDownloadCount, enabled = state.hostId != null, onClick = open,

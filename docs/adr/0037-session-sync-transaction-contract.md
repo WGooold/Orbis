@@ -6,7 +6,7 @@
 
 Status: accepted（2026-10-22 实现 §1–§8：事务标识与去重、协调者回 `pending`、按阶段租约与到期 abort、投递进展回调、设备 `applied` 回执与 ack 租约、设备侧尝试层与会话层拆分、失败分类与目标级封锁。Host 侧改动需重启 Host 才生效）
 
-关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、ADR-0035（待重建）、[ADR-0036](0036-sync-backpressure-is-not-failure.md)
+关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0035](0035-incremental-session-reconcile.md)。
 
 ## Context
 
@@ -61,7 +61,7 @@ Status: accepted（2026-10-22 实现 §1–§8：事务标识与去重、协调�
 
 - 只有 Host 能判定一次事务作废并释放资源。设备可以报告本地结果，但不得宣告事务失败，更不得据此写会话级状态。
 - Host 的租约随响应下发：`pending` 与 `snapshot` 都携带 `leaseMs`。设备本地兜底超时必须 ≥ `leaseMs` + 传输余量，并且不得使用硬编码常量（设备 150s、Host 300s 是两个互不知情的数字）。
-- 租约续期只能基于进展事实：后端回报阶段进展、字节写出、设备确认。没有进展就不续期。这是区分"慢"与"死"的唯一可靠判据，也是固定 20 秒超时被否决的原因（ADR-0036 §7）。
+- 租约续期只能基于进展事实：后端回报阶段进展、字节写出、设备确认。没有进展就不续期。固定 20 秒统一截止会反复中止慢后端、丢弃迟到结果并放大计算，因此采用分阶段租约。
 - 按阶段取值：`processing` 没有中间进展通道，租约 120s；`sending` 每写出一片都算进展，租约 60s。
 - 租约到期：abort，回 `session_sync_lease_expired`，同时释放名额与预留。
 
@@ -91,12 +91,14 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 
 ### §5 失败是尝试状态，不是会话状态
 
+准入拒绝 `session_sync_busy`、`session_sync_busy_or_unavailable`、`session_sync_path_unavailable` 是背压，按协议 code 分类，不按错误文案判断。preview 使用有界重试、退避和时钟驱动的恢复，不能依赖下一条入站事件才重试，也不能随每条流式事件重发。历史分页由用户发起，失败保持可见并提供显式重试；参数冲突、持久化失败及 reducer 失败不能被当成普通拥塞吞掉。
+
 事务结果分两层存储，职责不得混用：
 
 - 尝试层（短生命周期，驱动重试节奏）：最近一次失败码、下一次允许重试的时间、连续失败计数，以及"确定性失败挡住的 target"集合。
 - 会话层（仅用于显示）：最近一次失败原因文本。
 
-禁止会话层字段参与"是否发送请求"的判定。`sessionSyncFailures` 当前的闸门职责必须迁出（ADR-0036 §8 的 10 秒冷却是过渡措施）。
+禁止会话层字段参与"是否发送请求"的判定。`sessionSyncFailures` 只用于显示，不承担长期闸门职责；本地失败冷却属于尝试调度，不能替代协调者的终态与确认契约。
 
 确定性失败（单条 Entry 超 `SESSION_SYNC_MAX_BYTES`、参数非法、版本不兼容、命令不支持）允许长期不重试，但必须由失败类别显式表达，且只影响对应目标（例如"这个 target 无法同步"），不得连带停止该会话的新内容同步。
 
@@ -125,10 +127,10 @@ ack 丢失必须是安全方向：设备已 applied 而 Host abort → 设备重
 
 | 只做 | 结果 |
 |---|---|
-| 只加截止时间（不做 §3） | 到期才回包，等待期间设备仍在猜；慢后端被误杀（已验证过，见 ADR-0036 §7） |
+| 只加截止时间（不做 §3） | 到期才回包，等待期间设备仍在猜；固定短截止还可能反复中止慢后端 |
 | 只做 §3（回 `pending`） | 设备不再盲重试，但资源仍可能被长期占用（§2/§7 缺失） |
 | 只做 §2（租约）不做 §4 | "已送达"仍无确认，丢包只能靠重试发现 |
-| 只做 §5（拆状态） | 设备不再永久停更（ADR-0036 已达成），但每次失败后仍是盲重试 |
+| 只做 §5（拆状态） | 设备不再永久停更，但每次失败后仍是盲重试 |
 | 做 §2/§3/§4 但保留会话级闸门 | 事务能结束，但一次确定性失败仍会停掉整个会话的更新 |
 
 ### 顺序与成本

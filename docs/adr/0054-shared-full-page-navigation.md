@@ -4,7 +4,7 @@
 
 Status: accepted（用户确认页面盘点及范围后授权实施；完整设备与手动门禁按验证记录，不把实施等同于验收通过）
 
-关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r24`，M07–M08、M14、V17–V18；[ADR-0053 §5](0053-settings-entry-page-motion-and-ui-regression-gate.md#5-设置下载与历史页的转场m14ui-04)。
+关联：[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md) `2026-10-31/r24`，M07–M08、M14、V17–V18。
 
 ## Context
 

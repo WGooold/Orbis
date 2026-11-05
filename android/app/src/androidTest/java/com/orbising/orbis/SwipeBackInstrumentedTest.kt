@@ -177,7 +177,7 @@ class SwipeBackInstrumentedTest {
     }
 }
 
-/** ADR-0053 §5 / M14: the same layer carries settings and downloads; a page over a page keeps it alive. */
+/** ADR-0054 / M14: the same layer carries settings and downloads; a page over a page keeps it alive. */
 class SwipeBackPagesInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 

@@ -88,7 +88,7 @@ _Avoid_: Runtime action
 
 **Host registration**:
 A QQ mailbox ownership verification that issues a Relay credential bound to exactly one Host ID. It enables the Windows Host to connect and request pairing codes for its own devices; it is separate from Session activation and from phone pairing. SMTP credentials and Relay administrator tokens remain server-side. See ADR-0014.
-The operator may make QQ verification optional for new activations; the Host-bound credential and routing restrictions remain. See ADR-0016.
+The operator may make QQ verification optional for new activations; the Host-bound credential and routing restrictions remain. See ADR-0014.
 
 
 **Path**:
@@ -266,7 +266,7 @@ _Avoid_: Streaming sender, download pump
 
 **Upload task**:
 A device-to-Host transfer of a file the phone picked, addressed by a directory plus a single file name.
-_Avoid_: File push (removed in ADR-0008: computer-to-device push no longer exists), attachment
+_Avoid_: File push (removed in ADR-0009: computer-to-device push no longer exists), attachment
 
 **Upload credit**:
 The durable prefix the Host reports for an upload. It is the only authoritative progress fact for an upload and the resume point; the phone is the sender, so it cannot be the authority.

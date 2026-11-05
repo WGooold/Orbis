@@ -3286,7 +3286,7 @@ class RelayReducerTest {
         assertTrue(state.sessionBrowse!!.isLoading)
     }
 
-    // ADR-0036 §3/§8：背压不记失败、有界重试；失败闸门必须自己过期。
+    // ADR-0037 §5：背压不记失败、有界重试；失败闸门必须自己过期。
     @Test
     fun `preview busy failures retry with a bound while real failures stay terminal`() {
         val base = RemoteState(
@@ -3326,7 +3326,7 @@ class RelayReducerTest {
         assertTrue("runtime-a" in failed.sessionSyncFailures)
     }
 
-    // ADR-0036 §8：失败闸门在冷却后过期并重新挂上需求。
+    // ADR-0037 §5：失败闸门在冷却后过期并重新挂上需求。
     @Test
     fun `preview failure expires after the cooldown and re-arms demand`() {
         var state = RemoteState(

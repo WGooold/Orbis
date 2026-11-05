@@ -6,7 +6,7 @@
 
 实施跟踪：[ticket 依赖与验收记录](../architecture/tool-content-implementation.md)，GitHub #16–#24。接受决策不代表生产运行路径已完成切换。
 
-关联：[ADR-0005](0005-receiver-driven-range-download.md)、[ADR-0008](0008-drop-backward-compatibility.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0038](0038-wire-payload-truncation.md)、[ADR-0044](0044-bounded-codex-live-publish.md)
+关联：[ADR-0005](0005-receiver-driven-range-download.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0038](0038-wire-payload-truncation.md)、[ADR-0044](0044-bounded-codex-live-publish.md)
 
 ## Context
 
@@ -163,7 +163,7 @@ Codex 历史详情读取首批采用 full turns 整页 RPC，按最近 turn 向�
 | 详情响应等待发送字节 | 每设备 256 KiB，采用保守的密文及分片封装估算；封帧前准入 |
 | 当前摘要/输出通知 | 复用来源合并窗口；字段不变不增加库存 revision，输出字节追加不推进聊天 source seq |
 
-内容读取与聊天同步分别记账；网络发送仍服从现有总队列和路径背压，详情不得占用全部控制面或让聊天恢复持续饥饿。大量内容导出优先复用范围下载的数据传输机制；不能把兆字节结果塞回 `command.result` 或 `ctl`。已封装帧的处理继续遵守 ADR-0007、ADR-0010、ADR-0044。
+内容读取与聊天同步分别记账；网络发送仍服从现有总队列和路径背压，详情不得占用全部控制面或让聊天恢复持续饥饿。大量内容导出优先复用范围下载的数据传输机制；不能把兆字节结果塞回 `command.result` 或 `ctl`。已封装帧的处理继续遵守 ADR-0010、ADR-0044。
 
 4 KiB 摘要上限并不意味着 256 项可以直接一起发。必须同时满足累计预算和完整 envelope 预算，嵌套 JSON 转义、displayEntries、工具引用及包装开销均计入。身份本身超预算时明确拒绝并报告不可表示原因，不能省略该项后宣称完整。
 

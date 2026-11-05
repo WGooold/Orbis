@@ -2,4 +2,6 @@
 
 **Status:** accepted
 
-已配对设备不再把自由输入的 `/...` 作为 Pi 命令文本发送，也不再使用独立的 Runtime Action 菜单；每个 Pi runtime 动态发布一个合并了可远程执行的内置命令、Skill、Prompt Template 和扩展命令的菜单，Android 只能从该菜单选择并提交结构化 Slash invocation。这个决定细化了 ADR-0002 的“开放 Pi 命令”通道：命令覆盖范围仍由 Pi runtime 决定，但发现、参数候选项和执行语义只有一个电脑端来源，避免 Android 白名单、文本特判与结构化 action 三套机制漂移。代价是依赖 InteractiveMode 私有 TUI 组件、且未暴露等价 Extension API 的内置命令不能假装远程执行，必须等 Pi 提供公共 dispatcher 或 command context 后再加入菜单。
+每个 Pi runtime 动态发布一个合并了可远程执行的内置命令、Skill、Prompt Template 和扩展命令的菜单，设备提交结构化 Slash invocation。命令覆盖范围、发现、参数候选项和执行语义只有一个电脑端来源，避免客户端白名单、文本特判与结构化 action 三套机制漂移。依赖 InteractiveMode 私有 TUI 组件、且未暴露等价 Extension API 的内置命令不能假装远程执行，必须等 Pi 提供公共 dispatcher 或 command context 后再加入菜单。
+
+设备配对授予 runtime 发布的命令调用权，不提供通用 Shell、任意进程或包管理入口。供应商选择与权限配置分别遵循 [ADR-0019](0019-host-provider-management.md) 和 [ADR-0031](0031-host-permission-management.md) 的专用契约。

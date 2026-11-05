@@ -195,7 +195,7 @@ class BulkTokenBucket {
 /**
  * 信封上该按哪个 channel 调度。
  *
- * **加密帧必须携带 `ch`**（ADR-0008 取消了"缺省 = 单流"）。缺失就是发送侧的 bug：
+ * **加密帧必须携带 `ch`**（ADR-0011 取消了"缺省 = 单流"）。缺失就是发送侧的 bug：
  * 这里直接抛，而不是默默当成 `ctl`——默默降级正是当初难查的那类问题。
  */
 function muxChannelOf(envelope: EnvelopeV2): EnvelopeChannel {
@@ -466,7 +466,7 @@ export class DeviceLink {
    * 用当前生效路径发一条业务载荷。没有可用路径时返回 `false`——
    * 调用方据此决定是记账重发还是回报，而不是静默丢掉。
    *
-   * [channel] **必填**（ADR-0008）：不再有"对端不支持就降回单流"这回事。
+   * [channel] **必填**（ADR-0011）：不再有"对端不支持就降回单流"这回事。
    */
   send(payload: Uint8Array, channel: EnvelopeChannel, source?: OutboundQueueSource): boolean {
     return this.#sendSealed("data", payload, this.#selector.active, channel, source);

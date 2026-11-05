@@ -21,7 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * UI-02 capture harness (ADR-0053 §2): pairs with the isolated Host rig, opens a real agent session
+ * UI-02 capture harness (ADR-0057): pairs with the isolated Host rig, opens a real agent session
  * in the rig's workspace, renders the production chat and logs every frame — list rows (key,
  * offset, height), follow position and the tool / message facts behind them — while a real tool
  * runs. The log is lined up with a screen recording to find what each flicker frame changed.

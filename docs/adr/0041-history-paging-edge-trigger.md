@@ -4,18 +4,18 @@
 
 Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页共用）
 
-关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md) §4、[ADR-0036](0036-sync-backpressure-is-not-failure.md) §2、[ADR-0040](0040-bounded-inbound-delivery.md)
+关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md) §4、[ADR-0037](0037-session-sync-transaction-contract.md) §5、[ADR-0040](0040-bounded-inbound-delivery.md)
 
 ## Context
 
-历史分页现在是「视口在顶部就加载下一頁」的电平触发（[HistoryPaging.kt](../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)）：
+历史分页现在是「视口在顶部就加载下一頁」的电平触发（[HistoryPaging.kt](../../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)）：
 
 - `historyPagingRequests` 用 `snapshotFlow { firstVisibleIndex() to anchorPending() }`，过滤 `index <= 1 && !pending`。
 - 它被放在 `LaunchedEffect(runtimeId, sessionId, historyState?.hasOlder, historyRead?.operationId, historyRead?.phase, initialPositioned)` 里。`historyRead.operationId`/`phase` 每完成一页就变 → effect 重启 → `snapshotFlow` **重新发出当前值**（首帧）；只要视口仍在 `index <= 1`，就再请求一页。
 
 于是「停在顶部」不再是一次用户动作，而是一个循环：一页 30 条 entry 落库、投影、产生一次 `session.snapshot`，紧接着请求下一页。现场日志里连续出现 `range=history` 的 `[DEBUG-history] start`（18:54:19.620 / 20.013 / 20.330，中间还夹着同一会话的 catchup），与这条路径一致。
 
-这与 ADR-0036 §2 的判定冲突：历史分页是**用户动作**，失败要立刻可见、可重试；自动续页把用户停在顶部变成了无人监督的连续下载，并且每一页都会推高接收侧队列与 SQLite 写入（ADR-0040 的预算因此更容易被撞到）。
+这与 ADR-0037 §5 的判定冲突：历史分页是**用户动作**，失败要立刻可见、可重试；自动续页把用户停在顶部变成了无人监督的连续下载，并且每一页都会推高接收侧队列与 SQLite 写入（ADR-0040 的预算因此更容易被撞到）。
 
 原实现想解决的是另一个问题：「一页 prepend 之后锚点释放，但首行没有移动，分页就停住」。该情形只在**页面短到撑不满视口**时出现；把它推广成「只要在顶部就继续」是这次循环的来源。
 
@@ -27,7 +27,7 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 
 ### §2 一页完成后不自动续页
 
-即使视口仍停在顶部，也必须等下一次「进入顶部区域」的边沿。用户想继续加载就再向上滑一次；这与 ADR-0036 §2 的「用户动作」语义一致。
+即使视口仍停在顶部，也必须等下一次「进入顶部区域」的边沿。用户想继续加载就再向上滑一次；这与 ADR-0037 §5 的「用户动作」语义一致。
 
 ### §3 阻断条件放在流内部，不作为 `LaunchedEffect` 的 key
 
@@ -35,7 +35,7 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 
 ### §4 失败仍然可见、可重试
 
-读取失败不自动重试，保持现有的「失败卡片 + 重试按钮」（ADR-0036 §2）。边沿触发不改变失败语义。
+读取失败不自动重试，保持现有的「失败卡片 + 重试按钮」（ADR-0037 §5）。边沿触发不改变失败语义。
 
 ### §5 顶部提供显式加载入口
 

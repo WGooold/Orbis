@@ -4,7 +4,7 @@
 
 Status: accepted（接入方向已确认；Host/插件已对齐其他后端的主要能力并在 v2.1.312 真实 TUI 验证，v2.1.287 最低版本、Windows 终端启动和手机实机界面尚未验收）
 
-关联：[ADR-0001](<0001-pi-runtime-control-boundary.md>)、[ADR-0003](<0003-runtime-owned-slash-command-menu.md>)、[ADR-0021](<0021-codex-terminal-host-attachment.md>)、[ADR-0025](<0025-native-history-authority-and-versioned-caches.md>)、[ADR-0026](<0026-host-selected-session-sync.md>)、[ADR-0031](<0031-host-permission-management.md>)、[ADR-0032](<0032-host-owned-agent-state-model.md>)。
+关联：[ADR-0003](<0003-runtime-owned-slash-command-menu.md>)、[ADR-0021](<0021-codex-terminal-host-attachment.md>)、[ADR-0025](<0025-native-history-authority-and-versioned-caches.md>)、[ADR-0026](<0026-host-selected-session-sync.md>)、[ADR-0031](<0031-host-permission-management.md>)、[ADR-0032](<0032-host-owned-agent-state-model.md>)。
 
 ## Context
 
@@ -109,7 +109,7 @@ Host 退出只断开 bridge，不结束用户 TUI。按 2026-10-29 用户明确�
 
 按 ADR-0032 完成 Claude 所需的来源 → Registry → 版本化同步 → App 镜像纵向链路；显式身份、统一 displayEntries、执行、交互、权限及能力必须从模型读取，不能只转发 Mods payload。其余领域明确 unknown/unavailable。
 
-原生 Session 仍是持久历史权威，Host 只保存有界当前投影与页缓存。正式协议变更按 ADR-0032 硬版本切换，Host/App 配套更新。Relay 保持密文转发，不承担 Claude 会话语义。
+原生 Session 仍是持久历史权威，Host 只保存有界当前投影与页缓存。正式协议变更按 [ADR-0064](0064-protocol-compatibility.md) 保持已部署端兼容，新增能力须明确声明。Relay 保持密文转发，不承担 Claude 会话语义。
 
 ### 7. 实施记录（2026-10-29）
 

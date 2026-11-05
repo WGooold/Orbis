@@ -472,7 +472,7 @@ struct SessionDrawerView: View {
 
     private var hostSelector: some View {
         HStack(spacing: 10) {
-            // The only place to add or unpair a computer (ADR-0053 §4).
+            // The only place to add or unpair a computer (ADR-0046 §5).
             OrbisMenuButton(accessibilityLabel: L10n.tr("电脑，当前 {0}", store.selectedHost?.hostName ?? L10n.tr("未选择")),
                             items: { hostSwitchMenuItems(store, onAddHost: onAddHost, onUnpair: onUnpair) }) {
                 HStack(spacing: 10) {

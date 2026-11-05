@@ -778,7 +778,7 @@ internal fun RuntimeListScreen(
                                 onClick = onOpenDownloads,
                                 modifier = Modifier.graphicsLayer { translationX = 24.dp.toPx() * progress },
                             )
-                            // 右上角只有下载与设置两个入口；添加 / 取消配对只在侧边栏底部的电脑菜单（ADR-0053 §4）。
+                            // 右上角只有下载与设置两个入口；添加 / 取消配对只在侧边栏底部的电脑菜单（ADR-0046 §5）。
                             NeumorphIconButton(
                                 onClick = onOpenStatus,
                                 icon = Icons.Rounded.Settings,
@@ -816,7 +816,7 @@ internal fun RuntimeListScreen(
                 ) {
                     // The switcher takes the free width (its content stays at the start), so the chip sits flush right.
                     HomeHostSwitcher(hosts, activeHostId, onSelectHost, Modifier.weight(1f))
-                    // 胶囊只表达状态，不再是入口；读屏把它读成一段状态（ADR-0053 §4）。
+                    // 胶囊只表达状态，不再是入口；读屏把它读成一段状态（ADR-0046 §5）。
                     Box(Modifier.testTag("home-connection-status").semantics(mergeDescendants = true) { }) {
                         ConnectionStatus(state.connection, state.e2eReady, state.path, backgroundSync)
                     }
@@ -1651,7 +1651,7 @@ internal fun ChatScreen(
     // 历史与分支整页：顶栏入口和输入 /tree 进的是同一页。动作（跳分支）走 /tree 命令，
     // 节点 ID 只在页面内部流转，不会再被拼进输入框。
     var historyOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    // 历史页顶栏的下载入口：下载页滑入后返回历史页（ADR-0053 §5）。
+    // 历史页顶栏的下载入口：下载页滑入后返回历史页（ADR-0054）。
     var historyDownloadsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
     LaunchedEffect(historyOpen) { if (!historyOpen) historyDownloadsOpen = false }
     // M16：聊天页与历史页各自的下载飞入层，文件飞向本页右上角的下载按钮。
@@ -1688,7 +1688,7 @@ internal fun ChatScreen(
     val runtimeUploads = state.uploads.values.filter { it.runtimeId == runtimeId }
     val attachedUploads = runtimeUploads.filter { it.taskId in attachedTaskIds }
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
-    // 附件现在是无条件支持的（ADR-0008 删掉了 `messageAttachments` 能力位）。
+    // 基础协议支持附件路径，不使用 `messageAttachments` 能力位（ADR-0012）。
     val canAttachFiles = runtime != null && state.hostId != null
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
@@ -1984,7 +1984,7 @@ internal fun ChatScreen(
         open = historyOpen,
         underlay = {
     // 对话上方的下载页与主页面下载页是同一个页面（浏览文件 + 下载列表），语义都是「和 Host 交互」。
-    // 它从右侧滑入，右滑露出并回到这个对话；对话保持原实例，阅读位置、草稿与展开状态不变（ADR-0053 §5）。
+    // 它从右侧滑入，右滑露出并回到这个对话；对话保持原实例，阅读位置、草稿与展开状态不变（ADR-0054）。
     OrbisPageHost(
         onBack = { downloadManagerOpen = false },
         open = downloadManagerOpen,
@@ -3104,7 +3104,7 @@ private fun ConnectionStatus(
 
 }
 
-/** 设置页（原连接状态页，ADR-0053 §4）：供应商在最上方，其后是当前连接与只读的配对信息。 */
+/** 设置页（原连接状态页，ADR-0046 §5）：供应商在最上方，其后是当前连接与只读的配对信息。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun StatusScreen(

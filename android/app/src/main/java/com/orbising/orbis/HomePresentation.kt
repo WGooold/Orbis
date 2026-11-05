@@ -93,7 +93,7 @@ internal fun RemoteState.failHomeRead(requestId: String, message: String): Remot
 }
 
 /**
- * Where the home list should sit after its cards change (ADR-0053 §3, V21); null keeps the
+ * Where the home list should sit after its cards change (ADR-0046 §6, V21); null keeps the
  * list's default, which holds the first visible card's screen position by key.
  *
  * - At the top the newest card stays visible instead of landing above the viewport.

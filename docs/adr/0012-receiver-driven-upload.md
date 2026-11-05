@@ -2,12 +2,20 @@
 
 **Status:** accepted（2026-09-18，协议 5→6）
 
-取代 [0006](./0006-phone-file-upload.md) 中「手机按信用推分片 + done 收尾」的**手机上传**数据面。
-0006 的身份设计（partKey 内容身份、`.part` 续传、sha256 收尾校验、sha256 落盘目录）**不变**。
+手机上传由 Host 按持久前缀请求字节，上传完成后消息才携带附件路径；不再使用手机按信用推分片和 `done` 收尾。
+
+## 文件身份与附件边界
+
+- `partKey = sha256(runtimeId, directory, fileName, size, sha256)` 标识可续传内容；每次受理可以生成新 `uploadId`，但重试或 Host 重启仍命中同一 `.part`，续传以实际持久前缀为准。
+- 手机通常指定会话 cwd 下的 `.orbis-uploads/`；Host 检查绝对目录及可创建性，保留同名文件并选择可用目标名。Host 排空写链、自行计算 SHA-256 并改名落地后，才返回 `file.upload.finished { path }`。
+- `user_message.attachments` 仅携带已完成的绝对路径。RuntimeBridge 将路径并入正文，Agent 用自己的工具读文件；传输层不嗅探图片、不生成模型 content parts，不开放通用文件编辑或进程控制。
+- 分片经既有 JSON / E2E 信封传输，base64 增加线路体积；不恢复 Relay 托管文件或独立明文上传路由。下载由 [ADR-0005](0005-receiver-driven-range-download.md) 规定。
+
+实现与回归：[artifact-upload.ts](../../packages/host/src/artifact-upload.ts)、[artifact-upload.test.ts](../../packages/host/src/artifact-upload.test.ts)、[runtime-bridge](../../packages/runtime-bridge/src/)。
 
 ## Context
 
-0006 的上传是发送方推：手机按信用窗口推 1 MiB 分片，Host 报 `progress`（信用），手机 RTO 超时
+旧上传是发送方推：手机按信用窗口推 1 MiB 分片，Host 报 `progress`（信用），手机 RTO 超时
 回滚重发，最后喊 `done` 由 Host 校验落地。真机（Windows 电脑 + 安卓手机）暴露了
 这一形状的结构性问题，2026-09-17～18 连续修了四个补丁仍只见拆东墙：
 
@@ -44,7 +52,7 @@ init 幂等，Host 命中同一份 `.part` 原地续传）。
 
 ## Consequences
 
-- 协议 5→6（ADR-0008 硬门槛）：Host 与 APP 必须同步升级，不做协商。
+- 初次引入时协议由 5 升至 6；当前兼容与能力演进按 [ADR-0064](0064-protocol-compatibility.md)，不恢复旧 push 数据面。
 - 传输节奏由 Host 掌握：agent 忙时 Host 自己少拉即可，手机侧不再需要 interactive 压窗。
 - 手机侧「退出窗口」不再影响上传：任务与 chip 关联记在 ViewModel 按会话恢复；
   进程被杀后由持久层标 paused，重新 advertise 原地续传。

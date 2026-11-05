@@ -41,7 +41,7 @@ internal object OrbisMotion {
     fun pop() = spring<Float>(stiffness = 380f, dampingRatio = 18f / (2f * sqrt(380f)))
 }
 
-/** Mount on first expansion; retain content identity for later clipping animations (ADR-0047). */
+/** Mount on first expansion; retain content identity for later clipping animations (ADR-0048). */
 @Composable
 internal fun OrbisCollapse(expanded: Boolean, content: @Composable () -> Unit) {
     var hasExpanded by remember { mutableStateOf(expanded) }

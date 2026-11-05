@@ -38,7 +38,7 @@ internal val LocalRevealCursor = staticCompositionLocalOf<RevealCursor?> { null 
 internal val LocalRevealPath = compositionLocalOf { emptyList<Int>() }
 
 /**
- * One reveal timeline for a streamed message (ADR-0051 M04, ADR-0053 §1). Characters start
+ * One reveal timeline for a streamed message (ADR-0051 M04, ADR-0046 §4). Characters start
  * fading in strictly in rendered order: a new batch queues behind the tail that has not started
  * yet, so the end of one batch and the start of the next never animate at once. When the queue
  * would trail the stream by more than [MAX_DELAY_MS], the spacing compresses (several adjacent

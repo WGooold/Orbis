@@ -6,7 +6,7 @@
 
 Status: accepted（第一阶段 Android 已合并，第二阶段 Relay 18 / 19 外层兼容已部署；第三阶段 Relay＋Host 保留旧 App 的决策已确认，Host 18 / 19 双向业务适配已实现，设备 / 跨平台与真实旧包门禁未验收）
 
-关联：[ADR-0008](0008-drop-backward-compatibility.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0062](0062-claude-background-agents-and-session-activity.md)。本文替代 ADR-0008 的“所有版本必须相等、禁止能力协商”策略；认证、E2E、核心字段验证、身份与真实回执约束继续生效。
+关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0062](0062-claude-background-agents-and-session-activity.md)。协议演进不再要求所有组件版本完全相等或禁止能力协商；认证、E2E、核心字段验证、身份与真实回执约束继续生效。Relay 仅接受 Host、仅转发密文的安全边界见 [ADR-0009](0009-remove-computer-to-phone-push.md)。
 
 ## Context
 

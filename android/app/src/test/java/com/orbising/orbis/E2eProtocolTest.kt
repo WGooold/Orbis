@@ -265,7 +265,7 @@ class E2eProtocolTest {
         assertEquals(2L, phone.nextSequence("ctl"))
         assertEquals(1L, phone.nextSequence("bulk"))
 
-        // 加密帧缺 channel 是协议错误（ADR-0008 取消了"缺省 = 单流"）。发送侧已无法省略
+        // 加密帧缺 channel 是协议错误（ADR-0011 取消了"缺省 = 单流"）。发送侧已无法省略
         // 该参数，所以这里从未携带 `ch` 的入站帧入手。
         var threw = false
         try {

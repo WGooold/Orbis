@@ -538,9 +538,9 @@ data class RemoteState(
     val sessionBranchGenerations: Map<String, Int> = emptyMap(),
     /** Stops automatic reloads after failure, even if unrelated live events update the display. */
     val sessionSyncFailures: Map<String, String> = emptyMap(),
-    /** 每个运行时连续被背压拒绝的次数（ADR-0036 §3）。 */
+    /** 每个运行时连续被背压拒绝的次数（ADR-0037 §5）。 */
     val sessionSyncBusyStreaks: Map<String, Int> = emptyMap(),
-    /** 失败冷却（调度节拍）：到 SYNC_FAILURE_COOLDOWN_TICKS 就放行（ADR-0036 §8）。 */
+    /** 失败冷却（调度节拍）：到 SYNC_FAILURE_COOLDOWN_TICKS 就放行（ADR-0037 §5）。 */
     val sessionSyncFailureCooldowns: Map<String, Int> = emptyMap(),
     /**
      * 尝试层的"这个目标不必再试"集合（`runtimeId\u0000targetLeafId`）。
@@ -945,7 +945,7 @@ internal fun RemoteState.seedCachedSessionView(runtimeId: String, graph: Session
     val source = if (branchChanged) RuntimeConversation(revision = conversation.revision) else conversation
     val sameBranch = previousView != null &&
         (previousLeaf == leaf || graph.isDescendant(leaf, previousLeaf))
-    // An entry that arrived before its parent cannot be placed yet; keep the shown rows (ADR-0053 §2).
+    // An entry that arrived before its parent cannot be placed yet; keep the shown rows (ADR-0057).
     if (!branchChanged && !sameBranch && conversation.messages.isNotEmpty() &&
         graph.isWaitingForParent(previousLeaf, leaf)) return this
     val baseMessages = source.messages.filterNot { it.messageId in source.streamingMessageIds }
@@ -1570,7 +1570,7 @@ private fun RuntimeConversation.applyCompleteSourceState(
     val canonical = if (waitingForParent) {
         // The source watermark still advances, but it is not the displayed branch. Keep both
         // canonical and live rows until the calling entry can replace them atomically. Further
-        // status/tool updates must keep checking the same displayed anchor (ADR-0053 §2).
+        // status/tool updates must keep checking the same displayed anchor (ADR-0057).
         SessionProjectionResult(messages, turnTimings = turnTimings.values.toList())
     } else if (sourceEpoch == source.epoch && sameBranch && headAvailable) {
         mergeTemporaryOlderMessages(projection, graph, messages.filterNot { it.messageId in streamingMessageIds })
@@ -2996,7 +2996,7 @@ class RelayReducer(
                         )
                     } else if (waitingForParent) {
                         // The new entry arrived before its parent: keep the current rows until the
-                        // chain reconnects rather than flashing a lone entry (ADR-0053 §2).
+                        // chain reconnects rather than flashing a lone entry (ADR-0057).
                         SessionProjectionResult(baseMessages, turnTimings = projectionConversation.turnTimings.values.toList())
                     } else {
                         val deltaProjection = graphForProjection.projectLeafDeltaProjection(

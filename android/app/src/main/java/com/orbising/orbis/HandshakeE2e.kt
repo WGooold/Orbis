@@ -129,7 +129,7 @@ class E2eChannel(keys: SessionKeys, role: String) {
      * 这是多路复用的全部要害：`bulk` 丢一帧只影响 `bulk`，`ctl` / `msg` 的序列照常推进。
      *
      * 只有这一条路径：`channel` 是 `seal` 的必填参数（没有缺省值），而 `open` 对缺 `ch` 的
-     * 加密帧直接抛错，所以不存在与之并列的「单流计数」（ADR-0008）。
+     * 加密帧直接抛错，所以不存在与之并列的「单流计数」（ADR-0011）。
      */
     private val sendSequences = mutableMapOf<String, Long>()
     private val receiveSequences = mutableMapOf<String, Long>()

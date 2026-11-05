@@ -37,7 +37,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Download feedback (ADR-0051 M16, ADR-0053 §7). Once a download is actually queued, a file icon
+ * Download feedback (ADR-0051 M16, ADR-0058 M16). Once a download is actually queued, a file icon
  * flies from the tap along an upward arc to the page's download button, which then gives a small
  * pop. Flights are drawn on their own layer: they never take touches, change layout or move the
  * reader, and they end with the page. The animation is not evidence that anything downloaded.

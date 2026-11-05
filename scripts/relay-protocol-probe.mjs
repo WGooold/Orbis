@@ -13,7 +13,7 @@
 // 两个曾经的坑，都会让这个脚本**自己撒谎**（把「报文不合规」说成「部署落后」）：
 //   1. 版本号写死在脚本里（`const PROTOCOL_VERSION = 3`），协议升到 4 之后它还在按旧版探测；
 //      现在 import 权威常量（`packages/protocol`）。
-//   2. `runtime.authenticate` 缺 `role`（ADR-0008 起必填：中继只接受网关）、加密帧缺 `ch`
+//   2. `runtime.authenticate` 缺 `role`（ADR-0009 起必填：中继只接受网关）、加密帧缺 `ch`
 //      （同为必填）。少了它们，**当前版本**的部署也会回 invalid_message。
 //
 //   node scripts/relay-protocol-probe.mjs
@@ -67,7 +67,7 @@ const metadata = { runtimeId, name: "probe", cwd: ".", status: "idle" };
 
 console.log(`relay=${config.relayUrl}`);
 
-// 先按本仓库当前协议认证。`role: "host"` 不能省（ADR-0008）。
+// 先按本仓库当前协议认证。`role: "host"` 不能省（ADR-0009）。
 const current = await authenticate(`authenticate v${PROTOCOL_VERSION}`, {
   type: "runtime.authenticate",
   protocolVersion: PROTOCOL_VERSION,

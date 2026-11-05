@@ -25,7 +25,7 @@ class SessionGraphTest {
 
     @Test
     fun `an entry that arrives before its parent waits instead of replacing the shown path`() {
-        // Observed with a real Pi tool run (ADR-0053 §2): the tool result arrived before the
+        // Observed with a real Pi tool run (ADR-0057): the tool result arrived before the
         // assistant entry that called it, and the chat briefly showed the result alone.
         val shown = listOf(
             entry("user", null),

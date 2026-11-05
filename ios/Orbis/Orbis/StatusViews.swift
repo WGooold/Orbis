@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The settings page (formerly the connection status page, ADR-0053 §4): providers first, then the
+/// The settings page (formerly the connection status page, ADR-0046 §5): providers first, then the
 /// current connection and read-only pairing facts. Computers are switched, added and unpaired from
 /// the home row and the drawer's computer menu, not here.
 struct ConnectionStatusView: View {

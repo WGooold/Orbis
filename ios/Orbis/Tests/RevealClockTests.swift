@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import OrbisCore
 
-/// ADR-0053 §1 / M04: one cursor per message, characters start strictly in order.
+/// ADR-0046 §4 / M04: one cursor per message, characters start strictly in order.
 struct RevealClockTests {
     private func startTime(_ clock: RevealClock, _ offset: Int) -> TimeInterval? {
         clock.segments.last(where: { $0.start <= offset && offset < $0.end })?.startTime(offset)

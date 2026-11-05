@@ -274,7 +274,7 @@ describe("逻辑多路复用（票 07）", () => {
     expect(device.channel.nextSequence("ctl")).toBe(2);
     expect(device.channel.nextSequence("bulk")).toBe(1);
 
-    // 不携带 `ch` 的加密帧现在是协议错误（ADR-0008：不存在"缺省 = 单流"）。
+    // 不携带 `ch` 的加密帧现在是协议错误（ADR-0011：不存在"缺省 = 单流"）。
     expect(() =>
       device.channel.seal(
         { k: "data", room: ROOM, from: DEVICE_ID, to: HOST_ID, n: device.channel.nextSequence("ctl") },

@@ -109,7 +109,7 @@ describe("DeepSeek Web runtime adapter", () => {
   });
 
   it("keeps a ready baseline when the running turn started before the bounded follow tail", async () => {
-    // ADR-0043：有界 tail 里没有本轮 `turn/start` 只说明起点不在这一页。把它当成「清单不完整」
+    // ADR-0020：有界 tail 里没有本轮 `turn/start` 只说明起点不在这一页。把它当成「清单不完整」
     // 会让 checkpoint 不再是基线：Host 丢掉 canonical、手机不能投影也不能应用 patch，
     // 运行期间的历史整段消失。live 正文来自 assistantStream 的完整前缀，缺口另有 #checkSource。
     const f = discoveryFixture();

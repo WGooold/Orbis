@@ -397,7 +397,7 @@ describe("receiver-driven range download", () => {
     sha256: "0".repeat(64),
   };
 
-  it("downloads 只有 range 一种模式（ADR-0008）", () => {
+  it("downloads 只有 range 一种模式（ADR-0005）", () => {
     const command = { type: "file.download" as const, path: "/tmp/big.apk" };
     expect(RuntimeCommandSchema.safeParse(command).success).toBe(true);
     // 旧的 `mode` 字段已删：带上它就是未知键，strict 拒绝。
@@ -516,14 +516,14 @@ describe("phone file upload", () => {
     // 因为一条消息可以没有附件）。
     const plain = RuntimeCommandSchema.parse({ type: "user_message", text: "hi", messageId: "q1", delivery: "steer" });
     expect(plain).toEqual({ type: "user_message", text: "hi", messageId: "q1", delivery: "steer" });
-    // 能力位已删（ADR-0008）：附件无条件支持，未知键被 strict 拒绝。
+    // 能力位已删（ADR-0012）：附件无条件支持，未知键被 strict 拒绝。
     expect(RuntimeCapabilitiesSchema.safeParse({ commands: [] }).success).toBe(true);
     expect(RuntimeCapabilitiesSchema.safeParse({ commands: [], messageAttachments: true }).success).toBe(false);
   });
 
-  // ADR-0008 的全部机制就是这一条：版本不匹配当场拒绝。它同时也是 "只有最新的两端能互连" 的锁——
-  // 如果哪天为了兼容又允许旧版本号，这条会红。
-  it("rejects any protocol version other than the current one", () => {
+  // 本机 runtime schema 使用当前精确版本；Relay / App 18、19 兼容由专用适配器验证（ADR-0064）。
+  // 这里不以本机严格 schema 的断言替代已部署旧端互通验证。
+  it("local runtime schema rejects any protocol version other than the current one", () => {
     const runtime = { runtimeId: "r1", name: "R", cwd: "/w", status: "idle" as const };
     const authenticate = (protocolVersion: number) => RuntimeClientMessageSchema.safeParse({
       type: "runtime.authenticate", protocolVersion, credential: "c", role: "agent", runtime,
@@ -533,7 +533,7 @@ describe("phone file upload", () => {
     expect(authenticate(PROTOCOL_VERSION + 1)).toBe(false);
   });
 
-  // 中继看得见的明文面上**没有命令通道**：命令只能存在于 E2E 密文里（ADR-0008）。
+  // 中继看得见的明文面上**没有命令通道**：命令只能存在于 E2E 密文里（ADR-0009）。
   // 这是安全边界（中继不应当能看懂手机上发的命令），不是性能选项——推送删掉后
   // 那条"只允许推送进度"的收窄也随之消失，明文 `runtime.command` 整条不再存在。
   it("设备明文面没有命令通道", () => {

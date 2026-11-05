@@ -139,7 +139,7 @@ describe("RelayRuntimeTransport", () => {
     expect(error).toHaveBeenCalledWith("same failure", true);
   });
 
-  it("always publishes metadata events（ADR-0008 之后不再有能力位协商）", async () => {
+  it("always publishes metadata events", async () => {
     const relay = await listen();
     const connected = vi.fn();
     transport = new RelayRuntimeTransport({ relayUrl: relay.url, credential: "runtime-secret", reconnect: false });

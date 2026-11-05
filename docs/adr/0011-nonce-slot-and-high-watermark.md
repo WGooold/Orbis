@@ -11,7 +11,7 @@
 1. **nonce 的唯一来源**：`nonce = 0x00000000 ‖ uint64BE(n)`。
 2. **通道完整性的判据**：接收侧强制 `hdr.n === last + 1`。
 
-多路复用（ADR-0007）把序号按 channel 各自从 1 开始，这两个职责同时坏掉：
+多路复用（ADR-0010）把序号按 channel 各自从 1 开始，这两个职责同时坏掉：
 
 - **职责 1 失守（issue 01）**：ctl 与 bulk 的第 1 帧都是 `n=1` → 同一个
   `(key, nonce)` 加密不同明文。AES-GCM 在 nonce 重用下机密性与认证同时失效，
@@ -65,9 +65,7 @@ n <= last → 静默丢弃（返回 undefined/null + onStale 计数），不是�
   构造不出 `n > last` 的帧；中继的重放全部落在水位线以下。
 - **负面（可观测性）**：丢帧完全静默。补偿：`onStale` 计数 + 片层 `onRejected`
   计数；端到端兜底不变（交互 `expiresAt`、bulk sha256、会话 `session.sync`）。
-- **负面（协议破坏）**：AAD 与 nonce 布局都变了。按 ADR-0008 不做协商：
-  `PROTOCOL_VERSION` 4 → 5，旧客户端被硬门槛拒绝。测试向量（`DATA_CT_*`）
-  全部重算。
+- **协议边界**：AAD 与 nonce 布局不可随实现版本隐式变化。初次引入时协议由 4 升至 5 并重算测试向量；从 18 起的演进按 [ADR-0064](0064-protocol-compatibility.md) 保持基础互通，扩展通道须认证协商。
 
 ## 实现位置
 

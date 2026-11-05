@@ -50,7 +50,7 @@ Entry、版本、timing、cursor、coverage 和 epoch 激活在一笔 SQLite 事
 
 最小方案复用 source epoch，所以 revert、原生修正或 adapter 重启切换 epoch 后，旧缓存范围失效，祖先需要重新加载。旧分支永久留存不属于本次保证；如要跨代次留存，应另行明确归档职责，不能让旧图裁决当前事实。
 
-SQLite 升级到版本 7，新增缓存 epoch 和行 seq，保留 v5/v6 迁移记录。协议升级到版本 10：历史页新增 source 所有权，缓存契约改变。按 ADR-0008 拒绝新旧混跑并提示更新；Host、APP、Relay、Pi extension 需协调升级。本地代码和测试不代表部署完成。
+初次实施时 SQLite 升至版本 7，新增缓存 epoch 和行 seq，保留 v5/v6 迁移记录；协议 10 引入历史页 source 所有权。当前协议演进遵循 ADR-0064，不再要求各端同时升级。本地代码和测试不代表部署完成。
 
 ## Verification
 

@@ -4,7 +4,7 @@
 
 Status: accepted（代码实施与本机验证完成；发布验收待执行）
 
-关联：[ADR-0008](0008-drop-backward-compatibility.md)、[ADR-0015](0015-relay-website-and-operator-console.md)、[ADR-0017](0017-public-orbis-release-and-deployment.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0032](0032-host-owned-agent-state-model.md)。
+关联：[ADR-0064](0064-protocol-compatibility.md)、[ADR-0015](0015-relay-website-and-operator-console.md)、[部署指南](../deployment.md)、[ADR-0030](0030-multi-host-mobile-connections.md)、[ADR-0032](0032-host-owned-agent-state-model.md)。
 
 ## Context
 
@@ -50,13 +50,9 @@ Relay 只转发不透明密文，Agent backend 与本机 loopback 的职责不�
 
 ### 4. 统一协议版本与发布
 
-遵守 ADR-0008，协议由基线版本 15 统一升至 16。Android、iOS、Relay、Host、本机 runtime / bridge、夹具和探测入口同步使用共享版本；后续集成若另有协议升版，以合并后的共享版本统一构建。
+本路由清理初次实施于协议 16。当前发布按 [ADR-0064](0064-protocol-compatibility.md) 保持协议 18 起的基础互通，不能以删除旧路由为由要求已部署移动端同步升级。Relay 与 LAN 分别验证认证、共同格式和功能能力。
 
-旧端在认证或握手阶段收到可操作的升级提示。Relay 与 LAN 均执行精确版本校验，不支持混合版本互通。
-
-先备齐同版 Host、移动端和本机 runtime 产物，安排切换窗口，再按部署流程先更新 Relay、随后更新各端。发布说明明确混合版本期间连接不可用。
-
-保留身份与配对材料，升级后重新握手；无需重建 Session、清历史缓存或重新配对。回滚使用协议一致的一组产物。线上网络设施调整另行记录。
+保留身份与配对材料，升级后按连接生命周期重新握手；不因更换路由清历史缓存或重新配对。部署与回滚遵循 [部署指南](../deployment.md)，线上网络设施调整另行记录。
 
 ## Consequences
 

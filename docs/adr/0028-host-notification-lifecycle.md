@@ -6,7 +6,7 @@ Status: accepted（协议 12 的实现已接入；验证与运行环境生效情
 
 2026-10-13：[ADR-0032](0032-host-owned-agent-state-model.md) 决定将现有 NotificationStore 纳入统一 Agent/Host 模型，复用本文唯一通知权威、独立版本、来源恢复与设备关闭规则，不建立平行通知库存；模型整合尚待实现。
 
-关联：[ADR-0008](0008-drop-backward-compatibility.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0027](0027-source-owned-runtime-diagnostics.md)。
+关联：[ADR-0064](0064-protocol-compatibility.md)、[ADR-0023](0023-codex-revert-and-client-refresh.md)、[ADR-0024](0024-recoverable-session-state-sync.md)、[ADR-0026](0026-host-selected-session-sync.md)。
 
 ## 问题与现状
 
@@ -18,7 +18,7 @@ APP 聊天页顶部的错误文字可能一直存在，例如 Codex 已恢复输
 - Pi 的元数据、能力和目录读取，DSH 的恢复与目录读取，缺少按操作归属的解除事件。DSH 创建分支成功也使用错误通道。
 - 只补一次解除事件不能解决断线期间漏收解除、Host 重建、APP 重开和迟到通知复活。
 
-ADR-0027 的专项方案为 Codex 保留了原生 `willRetry`、`turnId`，并通过 `live.diagnostics.error` 复制单条诊断。本 ADR 保留原生恢复语义，以独立通知集合替代单槽位；`live.diagnostics` 和 APP 的远端 `runtimeError` 已移除。
+早期单槽位方案通过 `live.diagnostics.error` 复制 Codex 诊断。本 ADR 保留原生恢复语义，以独立通知集合替代单槽位；`live.diagnostics` 和 APP 的远端 `runtimeError` 已移除。
 
 对本机 Codex 桌面版 `26.1002.7124.0` 的只读核对提供了专项依据：客户端区分自动重试的 `stream-error` 与最终失败的 `system-error` / `latestTurnError`，合并连续重连尝试；`model/rerouted` 投影为会话条目。这是该版本的行为证据，不是所有通知都可以按同一个倒计时清除的依据。
 
@@ -172,24 +172,24 @@ APP 对同一 Host 代次、同一归属只接受较新的完整集合，首次�
 
 表内每个远端来源在适配时必须补齐创建、更新、正常结束、失败结束、迟到过滤和重新同步六个入口。没有恢复依据的来源应记录限制，不能仅因为存在一个 clear handler 就标记为完成。
 
-## 8. 与 ADR-0027 的关系和协议升级
+## 8. 单一通知入口与协议演进
 
-统一通知集合已替代 ADR-0027 的 `live.diagnostics.error` 单槽位传输与 APP `hasSourceDiagnostics` / `runtimeError` 展示权威。保留 ADR-0027 的原生 `willRetry`、turn 归属、恢复依据和迟到过滤要求，改由 Codex 标准化来源接口表达。
+统一通知集合替代 `live.diagnostics.error` 单槽位传输与 APP `hasSourceDiagnostics` / `runtimeError` 展示权威。原生 `willRetry`、turn 归属、恢复依据和迟到过滤由 Codex 标准化来源接口表达。
 
 适配切换必须一次性移除通知的双重展示入口：不能同时让 `session.patch.live.diagnostics`、无关联 `runtime.error` 和 `notification.snapshot` 写同一顶部状态。`runtime.error` 若保留，只服务带命令关联的原任务失败；Host 在通知入口之前先完成 `session.sync` 的定向关联，不能把一个设备的同步失败广播成全会话故障。
 
-本次由协议 11 升级到协议 12，新增通知契约并移除诊断字段，按 ADR-0008 拒绝新旧组件混跑，保留明确更新提示。
+通知契约初次引入于协议 12，同时移除旧诊断字段；当前协议演进遵循 ADR-0064 的兼容与能力要求。
 
-Protocol、Host、Pi RuntimeBridge / extension、APP 同步修改；Relay 只随硬版本门槛协调更新，不获得通知语义。Host 重启、push、Release、上传和部署仍按 AGENTS.md 分别获得本次授权。ADR、代码、测试和本地产物准备不会自动替代这些授权。
+通知归属由 Host、来源适配与 App 共同实现；Relay 不获得通知语义。代码、部署与真实链路验收分别记录。
 
 ## 9. 实施顺序与完成标准
 
 1. 先落地本 ADR 和通知覆盖表，再依用户“开始适配”指令实施。
 2. 定义 strict 模型、标准化来源接口、Host 有界 store 和快照同步。先用测试桩验证通用生命周期，不在 Host 核心添加原生语义分支。
-3. 接入 Codex：迁移 ADR-0027 专项恢复规则，并补齐 sandbox、config、refresh operation、interaction 和 rerouted；原生核对与通知发布使用同一协调代次。
+3. 接入 Codex：接入同回合重试与恢复规则，并补齐 sandbox、config、refresh operation、interaction 和 rerouted；原生核对与通知发布使用同一协调代次。
 4. 接入 Pi / DSH：来源当前集合和重播、读取恢复、DSH 订阅恢复、info outcome，以及仍启用的旧入口。
 5. APP 改用通知集合；移除远端单槽位权威；将本地任务提示映射到同一展示分类，保留请求、历史和任务本身的状态。
-6. 更新 ADR-0027 的替代状态和 `CONTEXT.md` 的已落地术语，运行 Protocol / Host / 来源适配 / APP 验证，再进行真实链路验收。
+6. 更新 `CONTEXT.md` 的已落地术语，运行 Protocol / Host / 来源适配 / APP 验证，再进行真实链路验收。
 
 完整适配的报告应逐行更新覆盖表，区分“设计覆盖”“代码完成”“单测通过”“真实链路已验证”“运行环境已生效”。首版有界内存投影不能被描述为跨 Host 崩溃永久保存所有通知。
 

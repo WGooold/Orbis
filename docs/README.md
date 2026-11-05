@@ -14,11 +14,11 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [五流功能回归](testing/native-quic-five-stream-results-20261105.md)：history > catchup > bulk、旧端兼容、四种承载组合与双端原功能对照；本轮不再测速，既有失败和未完成门禁分别记录。
 
 - [Claude Code 供应商与官方订阅配额](agents/claude-providers-and-subscription-quota.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
-- `docs/adr/`: accepted architecture decisions. ADRs preserve historical reasoning; a superseded ADR is marked in its header.
+- `docs/adr/`: current architecture decisions and constraints with lasting value. Replaced or duplicate material is removed after useful constraints and references are merged into the current decision. Retired numbers are not reused; Git retains deleted history.
 - [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 风格、动效与画面稳定性的统一冻结入口，基线 `2026-11-03/r44`，登记 81 项（已交付 67 项；移动端 71 项及品牌 / Host / Relay 10 项；设备与手动门禁按各轮记录）feature；相关设计与修改前必读，演进时同步维护 ADR 和本机 `AGENTS.md` / `CLAUDE.md`。
 - [ADR-0050](adr/0050-fixed-lan-relay-routing.md): LAN / Relay only with fixed LAN-first routing; configurable priorities are removed. Merged into main and locally verified; release validation pending.
 - [ADR-0052](adr/0052-turn-file-changes-and-on-demand-diff.md)：Host 保存轮次前后版本、先同步文件元数据，双端按需查看差异并带动画切换文件。
-- [ADR-0053](adr/0053-settings-entry-page-motion-and-ui-regression-gate.md)：r15 决策——打字机顺序揭示、运行中工具呈现连续、首页视口稳定、设置页与唯一配对入口、设置 / 下载页转场、下拉刷新、下载飞入；自动用例大部分已实施，Android Pi / Codex 与 V21 定向验证已有结果，iOS 全量、真实输出与手动回归仍待完成；实施拆分见 [UI r15 ticket](agents/ui-r15-tickets.md)。
+- [ADR-0046](adr/0046-mobile-ui-stability-and-material.md)：阅读锚点、材质、流式呈现、列表稳定及设置 / 外观；整页导航见 ADR-0054，刷新与下载反馈见 ADR-0058，验收状态单独记录。
 - [ADR-0054](adr/0054-shared-full-page-navigation.md)：所有下一级整页默认共用滑入、交互式右滑、取消回弹与逐层返回；覆盖添加电脑和离线历史，明确根页、模态及抽屉边界，保留来源页面状态。
 - [ADR-0057](adr/0057-chat-latest-question-reminder.md)：主动上翻阅读时覆盖提醒最近提问，点击定位原消息，保持阅读锚点与通知优先。
 - [ADR-0061](adr/0061-codex-selection-and-native-settings-reconciliation.md)：Codex 下一轮模型 / effort 与原生完整设置快照分开对账，保留首次输入前选型，并避免权限更新重置选择。

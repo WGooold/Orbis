@@ -279,7 +279,7 @@ export class E2eChannel {
    * 序号按 channel 各自计数。
    *
    * 这是多路复用的全部要害：`bulk` 丢一帧只影响 `bulk`，`ctl` / `msg` 的序列照常推进。
-   * 每个加密帧都必须携带 `ch`（ADR-0008 取消了"缺省 = 单流"）。
+   * 每个加密帧都必须携带 `ch`（ADR-0011 取消了"缺省 = 单流"）。
    */
   readonly #sendSequences = new Map<string, number>();
   readonly #receiveSequences = new Map<string, number>();
@@ -354,7 +354,7 @@ export class E2eChannel {
   }
 }
 
-/** 加密帧必须携带 `ch`（ADR-0008 取消了"缺省 = 单流"）。 */
+/** 加密帧必须携带 `ch`（ADR-0011 取消了"缺省 = 单流"）。 */
 function requireChannel(hdr: RoutingHeaderV2): EnvelopeChannel {
   const channel = hdr.ch;
   if (channel === undefined) {

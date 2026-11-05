@@ -217,7 +217,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
         type: "runtime.authenticate",
         protocolVersion: PROTOCOL_VERSION,
         credential,
-        // 必填（ADR-0008）：Pi 扩展是 agent，网关（Host）自己声明 host。
+        // 必填（ADR-0009）：Pi 扩展是 agent，网关（Host）自己声明 host。
         role: "agent",
         runtime: this.#metadata,
       }));

@@ -187,7 +187,7 @@ internal fun SessionGraph.catchUpFrontier(targetLeafId: String?): String? {
  * True when [newLeafId] arrived before one of its parents: its loaded chain stops at a missing
  * parent before touching the displayed path of [oldLeafId]. Projecting it now would replace the
  * conversation with the lone new entry until the parent lands a few frames later — a visible
- * flash while following a running tool (ADR-0053 §2, V20). Callers keep the current rows instead.
+ * flash while following a running tool (ADR-0057, V20). Callers keep the current rows instead.
  * A real branch switch reaches a shared ancestor and is not affected.
  */
 internal fun SessionGraph.isWaitingForParent(oldLeafId: String?, newLeafId: String?): Boolean {
