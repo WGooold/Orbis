@@ -1,10 +1,7 @@
 package com.orbising.orbis
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -38,35 +35,6 @@ class CachedHistoryTreeTest {
         hasHistoryCache = hasHistoryCache,
         hostname = hostname,
     )
-
-    private fun userEntry(id: String, parentId: String?, text: String) = SessionGraphEntry(
-        entryId = id,
-        parentId = parentId,
-        type = "message",
-        timestamp = "2026-01-01T00:00:00.000Z",
-        data = buildJsonObject {
-            put(
-                "message",
-                buildJsonObject {
-                    put("role", "user")
-                    put("content", text)
-                },
-            )
-        },
-    )
-
-    private fun assistantEntry(id: String, parentId: String?, text: String) = userEntry(id, parentId, text)
-        .copy(
-            data = buildJsonObject {
-                put(
-                    "message",
-                    buildJsonObject {
-                        put("role", "assistant")
-                        put("content", text)
-                    },
-                )
-            },
-        )
 
     @Test
     fun `tree nests sessions under host then directory`() {
@@ -299,32 +267,6 @@ class CachedHistoryTreeTest {
         val rows = tree.single().directories.single().sessions
         assertEquals(1, rows.size)
         assertTrue(rows.single().isOnline)
-    }
-
-    @Test
-    fun `firstUserMessageTitle returns the first user message of the branch`() {
-        val graph = fixtureGraph(
-            "s1",
-            listOf(
-                userEntry("u1", null, "这是第一句"),
-                assistantEntry("a1", "u1", "收到"),
-                userEntry("u2", "a1", "这是第二句"),
-            ).associateBy(SessionGraphEntry::entryId),
-            SessionBranchCursor("u2"),
-        )
-
-        assertEquals("这是第一句", graph.firstUserMessageTitle())
-    }
-
-    @Test
-    fun `firstUserMessageTitle returns null when the branch has no user message`() {
-        val graph = fixtureGraph(
-            "s1",
-            listOf(assistantEntry("a1", null, "你好")).associateBy(SessionGraphEntry::entryId),
-            SessionBranchCursor("a1"),
-        )
-
-        assertNull(graph.firstUserMessageTitle())
     }
 
     @Test

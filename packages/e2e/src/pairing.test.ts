@@ -56,8 +56,14 @@ describe("扫码配对握手", () => {
     const { hostKeyPair, deviceKeyPair, window } = setup();
     const session = deviceSession(hostKeyPair.publicRaw, window.psk, deviceKeyPair);
 
-    acceptPairRequest({ window, hostPrivateKey: hostKeyPair.privateKey, request: session.request, now: 1_000 });
+    const originalPsk = window.psk;
+    const memory = originalPsk.subarray();
+    expect(memory.some(byte => byte !== 0)).toBe(true);
+    const result = acceptPairRequest({ window, hostPrivateKey: hostKeyPair.privateKey, request: session.request, now: 1_000 });
 
+    expect(result.ok).toBe(true);
+    expect(window.psk).toBe(originalPsk);
+    expect(memory.equals(Buffer.alloc(32))).toBe(true);
     expect(window.used).toBe(true);
     expect(window.psk.every((byte) => byte === 0)).toBe(true);
   });

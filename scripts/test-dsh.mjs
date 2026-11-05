@@ -1,7 +1,7 @@
 // Opt-in integration check against the installed CLI. All model traffic stays on loopback.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,73 +11,74 @@ import { DshRuntime } from "../packages/host/dist/dsh-runtime.js";
 import { RuntimeEventSchema } from "../packages/protocol/dist/index.js";
 
 const root = await mkdtemp(join(tmpdir(), "orbis-dsh-smoke-"));
-const workspace = join(root, "workspace");
-await mkdir(workspace);
-await writeFile(join(workspace, "fixture.txt"), "DSH_TOOL_FILE 中文");
-const patch = join(root, "smoke.patch.yml");
-await writeFile(patch, "- id: session-log-deepseek\n  config:\n    enabled: false\n- id: plugin-package-inventory-deepseek\n  disabled: true\n- id: llm-deepseek\n  config:\n    apiKeyEnv: ORBIS_DSH_TEST_KEY\n- id: llm-retry\n  disabled: true\n");
-let requests = 0;
-let serverFailure;
-const server = createServer((req, res) => { void serve(req, res).catch(error => { serverFailure = error; res.destroy(); }); });
-async function serve(req, res) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  if (!req.url.includes("messages")) { res.writeHead(404).end(); return; }
-  requests++;
-  const body = JSON.parse(Buffer.concat(chunks).toString());
-  assert(body.messages.some(message => JSON.stringify(message).includes("DSH_SMOKE")));
-  if (requests === 5) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); return; }
-  const tool = requests === 1 ? { name: "read", input: { file_path: join(workspace, "fixture.txt") } }
-    : requests === 3 ? { name: "write", input: { file_path: join(root, "approved.txt"), content: "DSH_APPROVED", sandbox_permissions: "danger-full-access", justification: "Allow writing this isolated smoke-test fixture?" } } : undefined;
-  if (tool) assert(body.tools.some(item => item.name === tool.name));
-  if (requests === 2) assert(JSON.stringify(body.messages).includes("DSH_TOOL_FILE"), "Real read tool result was not returned to the model");
-  const frames = [
-    { type: "message_start", message: { id: `mock-${requests}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 0 } } },
-    { type: "content_block_start", index: 0, content_block: tool ? { type: "tool_use", id: `call-${requests}`, name: tool.name, input: {} } : { type: "text", text: "" } },
-    { type: "content_block_delta", index: 0, delta: tool ? { type: "input_json_delta", partial_json: JSON.stringify(tool.input) } : { type: "text_delta", text: "DSH_SMOKE_OK 中文" } },
-    { type: "content_block_stop", index: 0 },
-    { type: "message_delta", delta: { stop_reason: tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } },
-    { type: "message_stop" },
-  ];
-  res.writeHead(200, { "Content-Type": "text/event-stream" });
-  for (const frame of frames) res.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
-  res.end();
-}
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const address = server.address();
-const env = { ...process.env, DSH_HOME: join(root, "home"), DSH_PERMISSION_MODE: "workspace-write", DSH_TELEMETRY_DISABLED: "1", DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`, ORBIS_DSH_TEST_KEY: "sk-orbis-local-test-placeholder" };
-const cli = await resolveDshCommand();
 let runtime;
-const events = [];
-async function start() {
-  const history = await openDshHistory(cli.prefixArgs[0], join(env.DSH_HOME, "sessions"));
-  try {
-    const client = await DshAcpClient.create({ cli, cwd: workspace, env, patches: [patch] });
-    const backend = new DshRuntime(client, history);
-    backend.setEventSink((event, runtimeId) => { RuntimeEventSchema.parse(event); events.push({ event, runtimeId }); });
-    return backend;
-  } catch (error) { await history.close(); throw error; }
-}
-async function command(runtimeId, commandId, command) {
-  assert.equal(runtime.dispatchCommand(runtimeId, commandId, command), "handled");
-  const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline) {
-    if (serverFailure) throw serverFailure;
-    const result = events.find(item => item.event.type === "command.result" && item.event.commandId === commandId && item.event.status !== "pending");
-    if (result) { assert.equal(result.event.ok, true, result.event.error); return result.event; }
-    await delay(50);
-  }
-  throw new Error(`Timed out: ${commandId}`);
-}
-async function waitFor(predicate) {
-  const deadline = Date.now() + 30_000;
-  while (!predicate()) {
-    if (serverFailure) throw serverFailure;
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for DSH event");
-    await delay(50);
-  }
-}
+let server;
 try {
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  await writeFile(join(workspace, "fixture.txt"), "DSH_TOOL_FILE 中文");
+  const patch = join(root, "smoke.patch.yml");
+  await writeFile(patch, "- id: session-log-deepseek\n  config:\n    enabled: false\n- id: plugin-package-inventory-deepseek\n  disabled: true\n- id: llm-deepseek\n  config:\n    apiKeyEnv: ORBIS_DSH_TEST_KEY\n- id: llm-retry\n  disabled: true\n");
+  let requests = 0;
+  let serverFailure;
+  server = createServer((req, res) => { void serve(req, res).catch(error => { serverFailure = error; res.destroy(); }); });
+  async function serve(req, res) {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    if (!req.url.includes("messages")) { res.writeHead(404).end(); return; }
+    requests++;
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    assert(body.messages.some(message => JSON.stringify(message).includes("DSH_SMOKE")));
+    if (requests === 5) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); return; }
+    const tool = requests === 1 ? { name: "read", input: { file_path: join(workspace, "fixture.txt") } }
+      : requests === 3 ? { name: "write", input: { file_path: join(root, "approved.txt"), content: "DSH_APPROVED", sandbox_permissions: "danger-full-access", justification: "Allow writing this isolated smoke-test fixture?" } } : undefined;
+    if (tool) assert(body.tools.some(item => item.name === tool.name));
+    if (requests === 2) assert(JSON.stringify(body.messages).includes("DSH_TOOL_FILE"), "Real read tool result was not returned to the model");
+    const frames = [
+      { type: "message_start", message: { id: `mock-${requests}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 8, output_tokens: 0 } } },
+      { type: "content_block_start", index: 0, content_block: tool ? { type: "tool_use", id: `call-${requests}`, name: tool.name, input: {} } : { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: tool ? { type: "input_json_delta", partial_json: JSON.stringify(tool.input) } : { type: "text_delta", text: "DSH_SMOKE_OK 中文" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } },
+      { type: "message_stop" },
+    ];
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const frame of frames) res.write(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+    res.end();
+  }
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const env = { ...process.env, DSH_HOME: join(root, "home"), DSH_PERMISSION_MODE: "workspace-write", DSH_TELEMETRY_DISABLED: "1", DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`, ORBIS_DSH_TEST_KEY: "sk-orbis-local-test-placeholder" };
+  const cli = await resolveDshCommand();
+  const events = [];
+  async function start() {
+    const history = await openDshHistory(cli.prefixArgs[0], join(env.DSH_HOME, "sessions"));
+    try {
+      const client = await DshAcpClient.create({ cli, cwd: workspace, env, patches: [patch] });
+      const backend = new DshRuntime(client, history);
+      backend.setEventSink((event, runtimeId) => { RuntimeEventSchema.parse(event); events.push({ event, runtimeId }); });
+      return backend;
+    } catch (error) { await history.close(); throw error; }
+  }
+  async function command(runtimeId, commandId, command) {
+    assert.equal(runtime.dispatchCommand(runtimeId, commandId, command), "handled");
+    const deadline = Date.now() + 45_000;
+    while (Date.now() < deadline) {
+      if (serverFailure) throw serverFailure;
+      const result = events.find(item => item.event.type === "command.result" && item.event.commandId === commandId && item.event.status !== "pending");
+      if (result) { assert.equal(result.event.ok, true, result.event.error); return result.event; }
+      await delay(50);
+    }
+    throw new Error(`Timed out: ${commandId}`);
+  }
+  async function waitFor(predicate) {
+    const deadline = Date.now() + 30_000;
+    while (!predicate()) {
+      if (serverFailure) throw serverFailure;
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for DSH event");
+      await delay(50);
+    }
+  }
   runtime = await start();
   console.log("ACP initialized");
   const first = await runtime.activate({ type: "new", cwd: workspace });
@@ -131,8 +132,11 @@ try {
   assert.deepEqual(resumed.entries.slice(0, snapshot.entries.length), snapshot.entries);
   assert.equal(requests, 5);
   console.log("PASS: real DSH launch, configuration, multi-session, prompt, tools, approval, stop, history, close, restart, resume; canonical entries unchanged");
-  console.log("Isolated diagnostics:", root);
 } finally {
   try { await runtime?.stop(); }
-  finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  finally {
+    try {
+      if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
 }

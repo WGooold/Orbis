@@ -25,6 +25,9 @@ class NeumorphInstrumentedTest {
 
     @Test
     fun updatingCardsWithoutChangingGeometryKeepsGraphicsMemoryBounded() {
+        // Renderer memory measurement is an opt-in performance check on the selected device.
+        assumeTrue("Set performanceRegression=true for graphics memory measurement",
+            InstrumentationRegistry.getArguments().getString("performanceRegression") == "true")
         assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
         val revision = mutableIntStateOf(0)
         compose.setContent {

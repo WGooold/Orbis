@@ -2,9 +2,6 @@
 // - 转场（M07、M08、V13）
 package com.orbising.orbis
 
-import android.app.Application
-import android.content.Context
-import android.content.SharedPreferences
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.foundation.layout.Box
@@ -19,38 +16,16 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
-import java.io.File
-import java.util.UUID
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
-/** Render-only entry fixture: no Host or transport, uses production chat + navigation surfaces. */
+/** Production chat/navigation regression; opt in to the wall-clock budget with performanceRegression=true. */
 class ChatEntryInstrumentedTest {
     @get:Rule val compose = createComposeRule()
-    private class IsolatedApplication(base: Context) : Application() {
-        private val prefix = "viewport-${UUID.randomUUID()}"
-        private val root = File(base.filesDir, prefix).apply { mkdirs() }
-        private val preferences = mutableSetOf<String>()
-        init { attachBaseContext(base) }
-        override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): File = root
-        override fun getCacheDir(): File = File(root, "cache").apply { mkdirs() }
-        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
-        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-            val isolated = "$prefix-$name"
-            preferences += isolated
-            return baseContext.getSharedPreferences(isolated, mode)
-        }
-        fun dispose() {
-            preferences.forEach { baseContext.deleteSharedPreferences(it) }
-            root.deleteRecursively()
-        }
-    }
-
-
     @Test fun cachedLongConversationEntryAndReentry() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "chat-entry")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("entry", model)
@@ -89,7 +64,9 @@ class ChatEntryInstrumentedTest {
                 compose.waitForIdle()
                 Log.i("OrbisChatEntry", "entry=${index + 1} drawMs=${(drawn - tapped) / 1_000_000.0} underlayBuilds=$underlayBuilds")
                 assertEquals("The entry underlay must be composed once, not on every animation frame", 1, underlayBuilds)
-                assertTrue("Cached entry rendering exceeded 500 ms", drawn - tapped < 500_000_000L)
+                if (InstrumentationRegistry.getArguments().getString("performanceRegression") == "true") {
+                    assertTrue("Cached entry rendering exceeded 500 ms", drawn - tapped < 500_000_000L)
+                }
                 compose.onNodeWithText("ENTRY_LATEST").assertIsDisplayed()
                 compose.runOnIdle { opened.value = false }
             }

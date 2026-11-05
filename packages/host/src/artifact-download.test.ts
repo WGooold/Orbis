@@ -1,4 +1,5 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +15,7 @@ const setup = async (): Promise<{
   frames: Uint8Array[];
   stateDir: string;
 }> => {
-  const stateDir = await mkdtemp(join(tmpdir(), "orbis-download-"));
+  const stateDir = await testDirectory(join(tmpdir(), "orbis-download-"));
   const events: RuntimeEvent[] = [];
   const frames: Uint8Array[] = [];
   const service = new HostDownloadService({

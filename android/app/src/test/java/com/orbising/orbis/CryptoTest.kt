@@ -3,7 +3,6 @@ package com.orbising.orbis
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -145,7 +144,11 @@ class CryptoTest {
         assertTrue(Crypto.constantTimeEqual(byteArrayOf(1, 2), byteArrayOf(1, 2)))
         assertFalse(Crypto.constantTimeEqual(byteArrayOf(1, 2), byteArrayOf(1, 3)))
         assertFalse(Crypto.constantTimeEqual(byteArrayOf(1), byteArrayOf(1, 1)))
-        assertNotEquals(Crypto.randomBytes(32), Crypto.randomBytes(32))
+        val first = Crypto.randomBytes(32)
+        val second = Crypto.randomBytes(32)
+        assertEquals(32, first.size)
+        assertEquals(32, second.size)
+        assertFalse("Independent random byte contents must differ", first.contentEquals(second))
     }
 
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }

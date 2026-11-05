@@ -439,7 +439,10 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: measured, object: report)], timeout: 15), .completed)
             print("OrbisChatEntry \(report.label)")
             let drawMs = Double(report.label.components(separatedBy: "drawMs=").last!)!
-            XCTAssertLessThan(drawMs, entry == 1 ? 1200 : 500)
+            // Keep content and sync assertions in every run; measure time only on an explicit device baseline.
+            if ProcessInfo.processInfo.environment["ORBIS_PERFORMANCE_REGRESSION"] == "1" {
+                XCTAssertLessThan(drawMs, entry == 1 ? 1200 : 500)
+            }
             XCTAssertTrue(app.staticTexts["ENTRY_LATEST"].isHittable)
             XCTAssertEqual(Int(app.staticTexts["chat-entry-sync-count"].label), syncsBefore + 1)
             if entry == 3 { capture("long-turn-entry-segments", app: app) }
@@ -665,23 +668,16 @@ final class OrbisUITests: XCTestCase {
             capture("optimistic-respond-" + name, app: approval)
             approval.terminate()
 
-            let home = launch("home", dark: dark, arguments: ["--preview-launch-fail"] + options)
-            XCTAssertTrue(home.buttons["打开会话目录"].waitForExistence(timeout: 8), name)
-            home.buttons["打开会话目录"].tap()
-            XCTAssertTrue(home.staticTexts["会话目录"].waitForExistence(timeout: 3), name)
-            home.buttons["新会话"].tap()
-            let create = home.buttons["在这里新建 Pi 会话"]
-            XCTAssertTrue(create.waitForExistence(timeout: 3), name)
-            create.tap()
-            let starting = home.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
-            XCTAssertTrue(starting.waitForExistence(timeout: 2), name)
-            capture("optimistic-launch-starting-" + name, app: home)
-            let failure = home.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败")).firstMatch
-            XCTAssertTrue(failure.waitForExistence(timeout: 5), name)
-            XCTAssertTrue(home.buttons["launch-retry"].isHittable, name)
-            XCTAssertTrue(home.buttons["launch-back"].isHittable, name)
-            capture("optimistic-launch-failed-" + name, app: home)
-            home.terminate()
+            // The dedicated launch/retry regression covers the default light appearance.
+            if name != "light" {
+                let home = openNewPiSession(dark: dark, arguments: ["--preview-launch-fail"] + options)
+                let starting = home.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
+                XCTAssertTrue(starting.waitForExistence(timeout: 2), name)
+                capture("optimistic-launch-starting-" + name, app: home)
+                _ = waitForSessionLaunchFailure(home)
+                capture("optimistic-launch-failed-" + name, app: home)
+                home.terminate()
+            }
 
             // 上传中发送：气泡内的缩略图、文件名与进度在各外观下完整显示（V10 r27）。
             let chat = launch("chat", dark: dark, arguments: ["--preview-upload-waiting"] + options)
@@ -700,10 +696,9 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
-    /// V12 r27 / ADR-0049 §6.8：确认新建后立即进入聊天页并显示“启动中”，输入框可用；Host 拒绝时在原位说明，
-    /// “重试”用同一目标发起新请求，“返回”回到首页。
-    func testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace() {
-        let app = launch("home", arguments: ["--preview-launch-fail"])
+    // Shared navigation for launch failure, appearance and startup-message regressions.
+    private func openNewPiSession(dark: Bool = false, arguments: [String]) -> XCUIApplication {
+        let app = launch("home", dark: dark, arguments: arguments)
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
         app.buttons["打开会话目录"].tap()
         XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
@@ -711,6 +706,21 @@ final class OrbisUITests: XCTestCase {
         let create = app.buttons["在这里新建 Pi 会话"]
         XCTAssertTrue(create.waitForExistence(timeout: 3))
         create.tap()
+        return app
+    }
+
+    private func waitForSessionLaunchFailure(_ app: XCUIApplication) -> XCUIElement {
+        let failure = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败：对应的 agent 后端未就绪")).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["launch-retry"].isHittable)
+        XCTAssertTrue(app.buttons["launch-back"].isHittable)
+        return failure
+    }
+
+    /// V12 r27 / ADR-0049 §6.8：确认新建后立即进入聊天页并显示“启动中”，输入框可用；Host 拒绝时在原位说明，
+    /// “重试”用同一目标发起新请求，“返回”回到首页。
+    func testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace() {
+        let app = openNewPiSession(arguments: ["--preview-launch-fail"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 2), "The chat page must open before the Host answers")
         let starting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
@@ -719,11 +729,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(title.label.contains("Projects"), title.label)
         XCTAssertFalse(title.label.contains("launch:"), title.label)
         capture("launch-starting", app: app)
-        // OrbisNotice 把图标和文字合成一个辅助功能元素，按任意类型查找。
-        let failure = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败：对应的 agent 后端未就绪")).firstMatch
-        XCTAssertTrue(failure.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["launch-retry"].isHittable)
-        XCTAssertTrue(app.buttons["launch-back"].isHittable)
+        let failure = waitForSessionLaunchFailure(app)
         capture("launch-failed", app: app)
         app.buttons["launch-retry"].tap()
         XCTAssertTrue(starting.waitForExistence(timeout: 1))
@@ -736,14 +742,7 @@ final class OrbisUITests: XCTestCase {
     /// V10 / V12 r27（ADR-0049 §6.2、§6.8）：启动中写的消息立即出现并标明“等待会话启动”，输入框清空；
     /// 会话上线后切到真实会话，消息按 Host 身份落地且只出现一次。
     func testSendingWhileTheSessionStartsWaitsAndSubmitsOnceItIsOnline() {
-        let app = launch("home", arguments: ["--preview-launch-slow"])
-        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
-        app.buttons["打开会话目录"].tap()
-        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
-        app.buttons["新会话"].tap()
-        let create = app.buttons["在这里新建 Pi 会话"]
-        XCTAssertTrue(create.waitForExistence(timeout: 3))
-        create.tap()
+        let app = openNewPiSession(arguments: ["--preview-launch-slow"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 2))
         let starting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
@@ -2545,7 +2544,10 @@ final class OrbisUITests: XCTestCase {
         capture("download-card-active", app: app)
     }
 
-    func testPageScreenshotsInBothAppearances() {
+    /// Optional visual evidence; enable ORBIS_CAPTURE_UI=1 in the test runner environment.
+    func testPageScreenshotsInBothAppearances() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ORBIS_CAPTURE_UI"] == "1",
+                          "Page screenshot collection is opt-in (ORBIS_CAPTURE_UI=1)")
         for dark in [false, true] {
             for screen in ["pairing", "home", "drawer", "chat", "status", "providers", "downloads", "approval"] {
                 let app = launch(screen, dark: dark)

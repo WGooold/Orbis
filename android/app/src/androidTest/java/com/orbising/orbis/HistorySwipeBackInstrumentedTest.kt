@@ -2,9 +2,6 @@
 // - r24 整页导航（M07、M08、M14、V17、V18）
 package com.orbising.orbis
 
-import android.app.Application
-import android.content.Context
-import android.content.SharedPreferences
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -13,7 +10,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
-import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -21,26 +17,6 @@ import org.junit.Test
 /** M14: exercise the real history/chat/download hierarchy, including cancellation and source state. */
 class HistorySwipeBackInstrumentedTest {
     @get:Rule val compose = createComposeRule()
-
-    private class IsolatedApplication(base: Context) : Application() {
-        private val prefix = "history-swipe-${UUID.randomUUID()}"
-        private val root = File(base.filesDir, prefix).apply { mkdirs() }
-        private val preferences = mutableSetOf<String>()
-        init { attachBaseContext(base) }
-        override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): File = root
-        override fun getCacheDir(): File = File(root, "cache").apply { mkdirs() }
-        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
-        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-            val isolated = "$prefix-$name"
-            preferences += isolated
-            return baseContext.getSharedPreferences(isolated, mode)
-        }
-        fun dispose() {
-            preferences.forEach { baseContext.deleteSharedPreferences(it) }
-            root.deleteRecursively()
-        }
-    }
 
     private fun capture(name: String) {
         val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
@@ -51,7 +27,7 @@ class HistorySwipeBackInstrumentedTest {
     }
 
     @Test fun historyReboundsThenReturnsToTheSameChatAndDownloadsReturnOneLevel() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "history-swipe")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("history-swipe", model)

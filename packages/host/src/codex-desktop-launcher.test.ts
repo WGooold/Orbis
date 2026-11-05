@@ -1,3 +1,4 @@
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 /**
  * 端点文件是包装器与 Host 之间唯一的接口，所以它的校验就是接入面的校验：
  * 只认「活着的桥接进程」发布的「回环 ws」端点。写坏或写偏一个字节，Host 要么
@@ -5,7 +6,7 @@
  */
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -23,7 +24,7 @@ vi.mock("./codex-shim-install.js", () => ({ ensureCodexDesktopEntry: activation.
 import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
 
 async function descriptor(value: unknown): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "orbis-desktop-endpoint-"));
+  const dir = await testDirectory(join(tmpdir(), "orbis-desktop-endpoint-"));
   const path = join(dir, "codex-desktop-endpoint.json");
   await writeFile(path, typeof value === "string" ? value : JSON.stringify(value));
   return path;
@@ -51,7 +52,7 @@ describe("Codex desktop endpoint descriptor", () => {
 // 会话结束，如果它们住在 runtime 里，Host 升级就替换不掉那两个文件。
 describe("staged Codex wrapper runtime", () => {
   async function source() {
-    const dir = await mkdtemp(join(tmpdir(), "orbis-wrapper-source-"));
+    const dir = await testDirectory(join(tmpdir(), "orbis-wrapper-source-"));
     await mkdir(join(dir, "bin"), { recursive: true });
     await mkdir(join(dir, "node"), { recursive: true });
     await writeFile(join(dir, "bin", "codex-launcher.exe"), "launcher-bytes");
@@ -62,7 +63,7 @@ describe("staged Codex wrapper runtime", () => {
 
   it("stages only the two files the desktop app locks, and only copies what changed", async () => {
     const wrapper = await source();
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-staged-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-staged-"));
     const staged = stageCodexWrapper(wrapper, root, undefined, "win32");
 
     // 固定布局：launcher 靠“相对自身”找 node 与脚本，换位置不能换形状。
@@ -97,7 +98,7 @@ describe("staged Codex wrapper runtime", () => {
   it("is idempotent when handed an already staged wrapper", async () => {
     const wrapper = await source();
   for (const platform of ["win32", "darwin"] as const) {
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-idempotent-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-idempotent-"));
     const staged = stageCodexWrapper(wrapper, root, undefined, platform);
     const again = stageCodexWrapper(staged, root, undefined, platform);
     expect(again).toEqual(staged);
@@ -110,7 +111,7 @@ describe("staged Codex wrapper runtime", () => {
 
   it("keeps the custom Host endpoint available when Shell activation does not inherit Host environment", async () => {
     const wrapper = await source();
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-shell-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-shell-"));
     const endpointPath = join(root, "状态目录's", "codex-desktop-endpoint.json");
     await writeFile(wrapper.script, "export function main() { console.log(process.env.ORBIS_CODEX_DESKTOP_ENDPOINT); }");
     await writeFile(join(root, "package.json"), '{"type":"module"}');
@@ -128,7 +129,7 @@ describe("staged Codex wrapper runtime", () => {
 
   it("waits for the user wrapper entry before activating the registered application", async () => {
     const wrapper = await source();
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-activate-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-activate-"));
     const endpointPath = join(root, "state", "codex-desktop-endpoint.json");
     let enabled!: () => void;
     activation.ensureEntry.mockReset().mockImplementation(() => new Promise<void>(resolve => { enabled = resolve; }));
@@ -155,11 +156,11 @@ describe("staged Codex wrapper runtime on macOS", () => {
   const run = promisify(execFile);
 
   it("generates an executable launcher that hands the desktop argv to the wrapper", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "orbis wrapper's source-"));
+    const dir = await testDirectory(join(tmpdir(), "orbis wrapper's source-"));
     const script = join(dir, "wrapper.js");
     await writeFile(join(dir, "package.json"), '{"type":"module"}');
     await writeFile(script, "export function main(argv) { console.log(JSON.stringify(argv)); }");
-    const root = await mkdtemp(join(tmpdir(), "orbis wrapper's root-"));
+    const root = await testDirectory(join(tmpdir(), "orbis wrapper's root-"));
     const staged = stageCodexWrapper({ launcher: "", node: process.execPath, script }, root, undefined, "darwin");
 
     expect(staged.launcher).toBe(join(root, "bin", "codex-launcher"));
@@ -179,17 +180,17 @@ describe("staged Codex wrapper runtime on macOS", () => {
   });
 
   it.runIf(process.platform !== "win32")("falls back to an explicit real CLI when node or the script is gone", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "orbis-wrapper-fallback-"));
+    const dir = await testDirectory(join(tmpdir(), "orbis-wrapper-fallback-"));
     const real = join(dir, "codex");
     await writeFile(real, "#!/bin/sh\necho real \"$@\"\n", { mode: 0o755 });
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-fallback-root-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-fallback-root-"));
     const staged = stageCodexWrapper({ launcher: "", node: join(dir, "missing-node"), script: join(dir, "missing.js") }, root, undefined, "darwin");
     await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
     await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: "" } })).rejects.toMatchObject({ code: 127 });
   });
 
   it("resolves the wrapper without a shipped launcher binary", async () => {
-    const root = await mkdtemp(join(tmpdir(), "orbis-wrapper-resolve-"));
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-resolve-"));
     const script = join(root, "wrapper.js");
     await writeFile(script, "");
     const resolved = resolveCodexWrapper({ ORBIS_CODEX_WRAPPER_ROOT: root, ORBIS_CODEX_WRAPPER_SCRIPT: script }, "darwin");

@@ -21,6 +21,41 @@ const fixture = {
 };
 const check = (name, condition) => { assert.ok(condition, name); checks.push(name); console.log(`PASS ${name}`); };
 const settle = async page => page.waitForTimeout(1250);
+// Required assets and semantic identities must exist; an empty DOM is never a passing render.
+async function requiredImages(page, name) {
+  const loaded = () => {
+    const logo = globalThis.document.querySelector(".site-header .brand img");
+    const picks = [...globalThis.document.querySelectorAll(".agent-pick")];
+    const icons = picks.map(pick => pick.querySelector("img"));
+    const prefix = new URL("assets/", globalThis.location.href).pathname;
+    return logo !== null && picks.length > 0 && icons.every(Boolean)
+      && [logo, ...icons].every(image => image.complete && image.naturalWidth > 0
+        && new URL(image.currentSrc).pathname.startsWith(prefix));
+  };
+  await page.waitForFunction(loaded);
+  check(name, await page.evaluate(loaded));
+}
+
+async function navigationIdentity(page) {
+  return page.evaluate(() => {
+    const picks = [...globalThis.document.querySelectorAll(".agent-pick")];
+    const names = picks.map(pick => pick.title.trim());
+    const required = ["Claude Code", "Codex", "Pi", "Codex Desktop", "DeepSeek", "OpenClaw"];
+    const selected = picks.filter(pick => pick.getAttribute("aria-pressed") === "true");
+    const tabs = [...globalThis.document.querySelectorAll("[role=tab]")];
+    const scenes = tabs.map(tab => tab.dataset.scene);
+    const selectedTabs = tabs.filter(tab => tab.getAttribute("aria-selected") === "true");
+    return required.every(name => names.includes(name)) && names.every(Boolean)
+      && new Set(names).size === names.length && selected.length === 1
+      && selected[0].title === globalThis.document.querySelector("#agent-name").textContent
+      && picks.every(pick => pick.getAttribute("aria-label")?.startsWith(pick.title + "，"))
+      && ["chat", "diff", "download", "sessions", "create", "quota", "pair"].every(scene => scenes.includes(scene))
+      && new Set(scenes).size === scenes.length && new Set(tabs.map(tab => tab.id)).size === tabs.length
+      && tabs.every(tab => tab.id && globalThis.document.getElementById(tab.getAttribute("aria-controls"))?.getAttribute("role") === "tabpanel")
+      && selectedTabs.length === 1 && globalThis.document.getElementById(selectedTabs[0].getAttribute("aria-controls"))?.getAttribute("aria-labelledby") === selectedTabs[0].id;
+  });
+}
+
 async function prepare(context, api = fixture) {
   await context.route("**/v1/site", route => route.fulfill({ status: api ? 200 : 503, json: api || { error: "unavailable" } }));
   await context.route("**/v1/registration/status", route => route.fulfill({ json: { enabled: true, qqEmailVerificationRequired: false } }));
@@ -74,9 +109,8 @@ async function foreground(page, name, underneath) {
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
   const page = await prepare(context);
-  check("prefix-safe assets and complete initial render", await page.evaluate(() => [...globalThis.document.images].every(image => image.complete && image.naturalWidth > 0)));
-  check("11 Agent choices and 7 feature chapters", await page.locator(".agent-pick").count() === 11 && await page.locator("[role=tab]").count() === 7);
-  check("old marketing sections removed", await page.locator("#feature-tour, #use-cases, #faq, #value-private").count() === 0);
+  await requiredImages(page, "required brand and Agent images load through the Relay prefix");
+  check("required Agent and chapter identities are unique and correctly linked", await navigationIdentity(page));
   await screenshot(page,"desktop-hero");
   await page.locator(".agent-pick").nth(1).click();
   check("Agent click selects Codex", await page.locator("#agent-name").textContent() === "Codex");
@@ -102,16 +136,46 @@ try {
   check("automatic rotation advances", true);
   await page.locator("#experience").scrollIntoViewIfNeeded();
   await page.waitForFunction(() => globalThis.document.querySelector("#agents").dataset.playing === "false");
-  check("offscreen carousel stops its clock", true);
+  const orbitFrames = await page.evaluate(() => new Promise(resolve => {
+    const frames = [], started = globalThis.performance.now();
+    const sample = now => {
+      frames.push({ at: now, time: globalThis.document.querySelector("#agents").dataset.time,
+        angle: Number(globalThis.gsap.getProperty("#s3-ring", "rotationY")) });
+      if (now - started < 350) globalThis.requestAnimationFrame(sample); else resolve(frames);
+    };
+    globalThis.requestAnimationFrame(sample);
+  }));
+  await writeFile(`${output}/offscreen-orbit-frames.json`, JSON.stringify(orbitFrames));
+  check("offscreen carousel freezes playback time and actual rotation", orbitFrames.length >= 5
+    && orbitFrames.at(-1).at - orbitFrames[0].at >= 250
+    && orbitFrames.every(frame => frame.time !== undefined && frame.time === orbitFrames[0].time
+      && Number.isFinite(frame.angle) && Math.abs(frame.angle - orbitFrames[0].angle) < 0.0001));
 
   await scene(page,"chat");
-  check("feature section has only names and controls", await page.locator(".demo-caption,.demo-side-note,#chapter-progress").count()===0);
+  await page.evaluate(() => {
+    globalThis.inkFrames = []; globalThis.recordInk = true;
+    const sample = now => {
+      const text = globalThis.document.querySelector("#s4-p2"), spans = [...text.querySelectorAll("span")];
+      globalThis.inkFrames.push({ at: now, text: text.textContent, count: spans.length,
+        complete: spans.length > 0 && spans.every(span => Number(globalThis.getComputedStyle(span).opacity) >= 0.999),
+        permission: Number(globalThis.getComputedStyle(globalThis.document.querySelector("#s4-ask")).opacity) });
+      if (globalThis.recordInk) globalThis.requestAnimationFrame(sample);
+    };
+    globalThis.requestAnimationFrame(sample);
+  });
   await page.locator('#s4-send').click();
   await page.waitForTimeout(240);
   check("send flight moves before handing off the bubble", await opacity(page,"#s4-sf")>0 && await opacity(page,"#s4-qb")<1);
   await screenshot(page,"send-flight-mid","#film-viewport");
   await finished(page);
-  check("ordered ink stream completes before permission", await page.locator("#s4-p2 span").evaluateAll(els=>els.every(el=>globalThis.getComputedStyle(el).opacity==="1")) && await opacity(page,"#s4-ask")===1);
+  const inkFrames = await page.evaluate(() => { globalThis.recordInk = false; return globalThis.inkFrames; });
+  await writeFile(`${output}/ink-permission-frames.json`, JSON.stringify(inkFrames));
+  const permissionFrames = inkFrames.filter(frame => frame.permission > 0.001);
+  check("nonempty ink completes before permission becomes visible", inkFrames.length > 2
+    && inkFrames.every(frame => frame.count > 0 && frame.text.trim().length > 0)
+    && inkFrames.some(frame => !frame.complete) && permissionFrames.length > 0
+    && permissionFrames.every(frame => frame.complete)
+    && inkFrames.at(-1).complete && await opacity(page,"#s4-ask") === 1);
   await page.locator('#s4-allow').click();await finished(page);
   check("permission receipt and recent question are visible", (await page.locator('#s4-askst').textContent()).includes("已允许") && await opacity(page,"#s4-remind")===1);
   await page.locator('#s4-remind').click();await finished(page);
@@ -198,14 +262,21 @@ try {
   check("selection cancellation restores toolbar",await page.locator('#s4-c2').getAttribute('aria-pressed')==='false' && await opacity(page,'#s4-closeall')===0);
   const swipe=await page.locator('#s4-c1').boundingBox();
   await page.evaluate(()=>{
-    globalThis.swipeVibrations=[];globalThis.swipeFrames=[];globalThis.recordShake=true;
+    globalThis.swipeVibrations=[];globalThis.swipeFrames=[];globalThis.swipeSamples=[];globalThis.swipeMoves=[];globalThis.recordShake=true;
+    globalThis.document.addEventListener("pointermove", event => { if(event.buttons)globalThis.swipeMoves.push(globalThis.performance.now()); });
     Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:duration=>{globalThis.swipeVibrations.push(duration);return false;}});
-    const sample=()=>{globalThis.swipeFrames.push(Number(globalThis.gsap.getProperty('#s4-shake','x')));if(globalThis.recordShake)globalThis.requestAnimationFrame(sample);};
+    const sample=now=>{const x=Number(globalThis.gsap.getProperty('#s4-shake','x'));globalThis.swipeFrames.push(x);globalThis.swipeSamples.push({at:now,x});if(globalThis.recordShake)globalThis.requestAnimationFrame(sample);};
     globalThis.requestAnimationFrame(sample);
   });
   const startX=swipe.x+swipe.width*.8,startY=swipe.y+swipe.height*.5;
   await page.mouse.move(startX,startY);await page.mouse.down();await page.mouse.move(startX-65,startY,{steps:8});await page.waitForTimeout(80);
-  check("swipe below threshold stays still and silent",await page.evaluate(()=>globalThis.swipeFrames.every(x=>x===0)&&globalThis.swipeVibrations.length===0));
+  check("sampled below-threshold drag stays still, silent and preserves the session", await page.evaluate(() => {
+    const frames = globalThis.swipeSamples, moves = globalThis.swipeMoves;
+    return moves.length > 0 && frames.length >= 3 && frames[0].at <= moves[0] + 50
+      && frames.at(-1).at >= moves.at(-1) && frames.at(-1).at - frames[0].at >= 60
+      && frames.every(frame => frame.x === 0) && globalThis.swipeVibrations.length === 0
+      && globalThis.document.querySelector("#s4-c1").getAttribute("aria-hidden") === "false";
+  }));
   await page.mouse.move(startX-190,startY,{steps:6});
   await screenshot(page,"swipe-threshold-mid",'#film-viewport');
   await finished(page);
@@ -289,7 +360,7 @@ try {
     }
     await narrow.locator("#download").scrollIntoViewIfNeeded();
     check(`downloads fit at ${width}px`, await narrow.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth));
-    check(`assets complete at ${width}px`, await narrow.evaluate(() => [...globalThis.document.images].every(image=>image.complete && image.naturalWidth>0)));
+    await requiredImages(narrow, `required brand and Agent images load at ${width}px`);
     await small.close();
   }
   const fallback = await browser.newContext({ viewport:{width:390,height:844} });

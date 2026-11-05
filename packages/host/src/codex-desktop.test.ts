@@ -1,4 +1,5 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { testDirectorySync } from "../../../scripts/test-fixtures/temp-directory.js";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
@@ -64,7 +65,7 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   });
   const server = { mode, endpoint, request, stop, notify: vi.fn() } as unknown as CodexAppServer;
   const opened: string[] = [];
-  const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
+  const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
   return { loaded, native, subagents, archived, status, calls, stop, request, server, runtime, notify, opened,
     pause: () => { pauseResume = true; },
@@ -92,7 +93,7 @@ describe("Codex desktop attachment", () => {
 
     // 解析 CLI 只是为了真实拉起进程；注入了 spawn 的测试用文档化的 ORBIS_CODEX_ENTRY 指向一个
     // 临时入口，这样没装 codex 的 CI 不会因为“找不到 codex”而失败（本地装着则永远发现不了）。
-    const entry = join(mkdtempSync(join(tmpdir(), "orbis-proxy-cli-")), "codex.js");
+    const entry = join(testDirectorySync(join(tmpdir(), "orbis-proxy-cli-")), "codex.js");
     writeFileSync(entry, "");
     vi.stubEnv("ORBIS_CODEX_ENTRY", entry);
     try {
@@ -267,7 +268,7 @@ describe("Codex desktop attachment", () => {
     });
     const terminal = new CodexRuntime({
       server: { mode: "owned", request: terminalRequest, notify: vi.fn() } as unknown as CodexAppServer,
-      onEvent: () => {}, rolloutRoot: mkdtempSync(join(tmpdir(), "orbis-terminal-test-")),
+      onEvent: () => {}, rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-terminal-test-")),
     });
     h.runtime.onDesktopThread = id => terminal.seedDesktopThreads([id]);
     h.runtime.markStarted();

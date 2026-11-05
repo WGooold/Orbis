@@ -1,4 +1,5 @@
-import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { testDirectorySync } from "../../../scripts/test-fixtures/temp-directory.js";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
@@ -11,7 +12,7 @@ const frame = (events: Array<{ seq: number; type: string; data: unknown }>): Buf
 
 describe("incremental DSH log read", () => {
   it("decodes appended frames without touching earlier bytes", () => {
-    const root = mkdtempSync(join(tmpdir(), "dsh-inc-"));
+    const root = testDirectorySync(join(tmpdir(), "dsh-inc-"));
     mkdirSync(join(root, "proj", "session-x"), { recursive: true });
     const file = join(root, "proj", "session-x", "session.v4.jsonl.zstd");
     writeFileSync(file, Buffer.concat([frame([{ seq: 0, type: "a", data: 1 }]), frame([{ seq: 1, type: "b", data: 2 }])]));

@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderManager, type ProviderHooks } from "./provider-manager.js";
 import { applyProviderFields, newProviderConfig, providerFields } from "./provider-form.js";
 import { parseProviderRequest, providerResult } from "./provider-messages.js";
-import { installPackage } from "./agent-installation.js";
 import { PROTOCOL_VERSION } from "@orbis/protocol";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
@@ -285,10 +284,5 @@ describe("bounded remote provider and installation inputs", () => {
     for (const bad of [{ ...request, config: {} }, { ...request, command: "npm" }, { ...request, enabled: false }, { ...request, kind: "shell" }, { ...request, protocolVersion: -1 }]) expect(parseProviderRequest(bad)).toBeUndefined();
     expect(providerResult(parseProviderRequest(request)!, [])).toMatchObject({ type: "provider.result", requestId: "r", providers: [] });
   });
-  it("pins executable packages and rejects npm option injection", () => {
-    expect(installPackage("codex", "latest")).toBe("@openai/codex@latest");
-    expect(installPackage("dsh", "0.1.7-rc.1")).toBe("@deepseek-ai/dsh@0.1.7-rc.1");
-    for (const version of ["--global", "file:evil", "https://example.com", "latest && calc", ""]) expect(() => installPackage("pi", version)).toThrow();
-    expect(() => installPackage("arbitrary", "latest")).toThrow();
-  });
+
 });

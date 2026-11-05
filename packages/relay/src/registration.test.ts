@@ -1,5 +1,6 @@
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,7 +19,7 @@ describe("QQ mailbox activation", () => {
   });
 
   it("issues one host-bound credential after verification, persists hashes, and survives restart without SMTP", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-registration-")), "accounts.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-registration-")), "accounts.json");
     let mail: VerificationMail | undefined;
     const auth = await RegistrationAuthority.create({ stateFile, sendMail: async m => { mail = m; } });
     const challenge = await auth.requestCode({ email: "123456@qq.com", hostId: "host-computer-1" }, "local");
@@ -82,7 +83,7 @@ describe("QQ mailbox activation", () => {
   });
 
   it("permits a direct, Host-bound activation only while verification is optional", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-direct-registration-")), "accounts.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-direct-registration-")), "accounts.json");
     const authority = await RegistrationAuthority.create({ stateFile });
     const body = { hostId: "direct-computer" };
     await expect(authority.activate(body, "source", () => true)).rejects.toMatchObject({ code: "email_verification_required" });
@@ -98,7 +99,7 @@ describe("QQ mailbox activation", () => {
   });
 
   it("reads version 1 verified Hosts and preserves their credentials when writing version 2", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-registration-migration-")), "accounts.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-registration-migration-")), "accounts.json");
     const credential = "orbis_host_existing_credential";
     const hostId = "verified-computer";
     const verifiedAt = 1_700_000_000_000;

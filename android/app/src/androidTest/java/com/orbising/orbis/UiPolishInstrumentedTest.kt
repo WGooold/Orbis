@@ -85,10 +85,7 @@ class UiPolishInstrumentedTest {
         compose.onNodeWithText("正在检查界面，新增文字与数字 67890").assertIsDisplayed()
         compose.onNodeWithContentDescription("复制代码").performClick()
         compose.onNodeWithContentDescription("已复制").assertIsDisplayed()
-        compose.waitUntil(4_000) {
-            compose.onAllNodesWithContentDescription("已复制").fetchSemanticsNodes().isEmpty()
-        }
-        compose.onNodeWithContentDescription("复制代码").assertIsDisplayed()
+        // Markdown copy wiring only; deadlines and reset are covered by CopyFeedbackInstrumentedTest.
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val out = File(context.getExternalFilesDir(null), "ui-polish-${if (dark) "dark" else "light"}.png")
         out.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }

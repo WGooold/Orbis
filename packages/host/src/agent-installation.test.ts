@@ -49,6 +49,8 @@ describe("Agent download and installation lifecycle", () => {
   });
 
   it("only accepts fixed npm packages and version specifications", () => {
+    expect(installPackage("codex", "latest")).toBe("@openai/codex@latest");
+    expect(installPackage("dsh", "0.1.7-rc.1")).toBe("@deepseek-ai/dsh@0.1.7-rc.1");
     for (const version of ["--global", "file:evil", "https://evil.test", "latest && calc", "1.2.3\n", "1.2.3-01", ""]) expect(() => installPackage("pi", version)).toThrow();
     expect(() => installPackage("other", "latest")).toThrow();
   });

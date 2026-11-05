@@ -1,5 +1,6 @@
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { once } from "node:events";
-import { mkdtemp } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -202,7 +203,7 @@ describe("relay online runtime discovery", () => {
   });
 
   it("persists only the hashed device credential across Relay restarts", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "orbis-relay-"));
+    const directory = await testDirectory(join(tmpdir(), "orbis-relay-"));
     const stateFile = join(directory, "state.json");
     relay = await createRelayServer({ port: 0, adminToken: "owner-secret", stateFile });
     const httpUrl = relay.url.replace("ws://", "http://");

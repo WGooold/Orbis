@@ -2138,20 +2138,10 @@ internal class HostConnection(
                 // ⓪ 先结清上一轮丢弃的帧：会话面要补同步，控制面要断开重连（ADR-0040 §4/§5）。
                 val overflow = lanes.drainOverflow()
                 if (overflow.any) handleInboundOverflow(overflow, currentGeneration)
-                // ① 控制面优先：命令结果、交互、状态永远排在最前面。
-                var frame: Any? = lanes.takeControl()
+                val frame = lanes.takeNext()
                 if (frame == null) {
-                    // ② 会话面：会话同步与消息增量。可丢，但排在分片之前。
-                    frame = lanes.takeSession()
-                }
-                if (frame == null) {
-                    // ③ 前面的面都空了，才处理一片分片。
-                    frame = lanes.takeBulk()
-                    if (frame == null) {
-                        // ④ 三面都空：挂起等生产者叫醒。
-                        if (!lanes.awaitWork()) break
-                        continue
-                    }
+                    if (!lanes.awaitWork()) break
+                    continue
                 }
                 if (frame is InboundFrameLanes.BinaryFrame) {
                     runCatching { processArtifactChunk(frame.payload) }.onFailure { error ->

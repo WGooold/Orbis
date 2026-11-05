@@ -2,9 +2,7 @@
 // - r15 设置与入口（S18、S22、S23、S25）
 package com.orbising.orbis
 
-import android.app.Application
 import android.content.Context
-import android.content.SharedPreferences
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.unit.dp
@@ -15,7 +13,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
-import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -24,26 +21,6 @@ import org.junit.Test
 /** ADR-0046 §5 / S22: download and settings are the only header entries; the capsule only reports. */
 class SettingsEntryInstrumentedTest {
     @get:Rule val compose = createComposeRule()
-
-    private class IsolatedApplication(base: Context) : Application() {
-        private val prefix = "settings-${UUID.randomUUID()}"
-        private val root = File(base.filesDir, prefix).apply { mkdirs() }
-        private val preferences = mutableSetOf<String>()
-        init { attachBaseContext(base) }
-        override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): File = root
-        override fun getCacheDir(): File = File(root, "cache").apply { mkdirs() }
-        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
-        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-            val isolated = "$prefix-$name"
-            preferences += isolated
-            return baseContext.getSharedPreferences(isolated, mode)
-        }
-        fun dispose() {
-            preferences.forEach { baseContext.deleteSharedPreferences(it) }
-            root.deleteRecursively()
-        }
-    }
 
     private fun pairing(id: String, name: String) = HostPairing(id, name, "test-public", "test-root",
         relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
@@ -87,7 +64,7 @@ class SettingsEntryInstrumentedTest {
     @Test fun darkInsetFocusAppearanceSwitchKeepsSelection() = appearanceSwitch(dark = true)
 
     @Test fun languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("language", model)
@@ -123,7 +100,7 @@ class SettingsEntryInstrumentedTest {
     }
 
     @Test fun englishSettingsFitNarrowLargeTypeAndKeepLanguageTargets() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("language-layout", model)
@@ -158,7 +135,7 @@ class SettingsEntryInstrumentedTest {
     }
 
     @Test fun englishPermissionsKeepOpaqueSettingAndOptionIdentities() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         var applied: Pair<String, String>? = null
         val permissions = RuntimePermissionManagement(
             summary = "工作区可写 · 按需询问", details = "网络：允许联网。\nVendor-only detail", tone = "restricted",
@@ -204,7 +181,7 @@ class SettingsEntryInstrumentedTest {
     }
 
     private fun appearanceSwitch(dark: Boolean) {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("appearance", model)
@@ -230,7 +207,7 @@ class SettingsEntryInstrumentedTest {
     }
 
     private fun settingsOrder(dark: Boolean) {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("settings", model)

@@ -1,4 +1,5 @@
-import { appendFileSync, mkdtempSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { testDirectorySync } from "../../../scripts/test-fixtures/temp-directory.js";
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +8,7 @@ import { dshLogStatKey } from "./dsh-history.js";
 describe("DSH log change detection", () => {
   // DSH 只给整份读；"没变就不重读"必须靠文件事实，否则每次 sync 都要付一次全量解析。
   it("changes only when the log file actually grows or is replaced", async () => {
-    const root = mkdtempSync(join(tmpdir(), "dsh-log-"));
+    const root = testDirectorySync(join(tmpdir(), "dsh-log-"));
     mkdirSync(join(root, "proj", "session-abc"), { recursive: true });
     const file = join(root, "proj", "session-abc", "session.v4.jsonl.zstd");
     writeFileSync(file, "frame-one");

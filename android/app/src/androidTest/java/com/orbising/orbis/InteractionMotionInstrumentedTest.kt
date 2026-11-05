@@ -62,7 +62,6 @@ class InteractionMotionInstrumentedTest {
         capture("motion-selection-middle")
         assertTrue("The touch side must reveal first: ${delta(0.1f)}", delta(0.1f) > 0.005f)
         assertTrue("The opposite side must still be unselected", delta(0.9f) < 0.005f)
-        capture("motion-selection-middle")
         compose.mainClock.advanceTimeBy(400)
         assertEquals(bounds, card.fetchSemanticsNode().boundsInRoot)
         card.performClick()

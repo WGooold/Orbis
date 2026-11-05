@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,7 +23,7 @@ import {
 } from "./index.js";
 
 async function tempDir(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "orbis-e2e-"));
+  return testDirectory(join(tmpdir(), "orbis-e2e-"));
 }
 
 describe("Orbis state directory compatibility", () => {

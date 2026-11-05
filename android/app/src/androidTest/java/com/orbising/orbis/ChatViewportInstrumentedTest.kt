@@ -3,9 +3,6 @@
 // - 聊天视口 / 内容（S11、S20、M03、V01、V04、V09、V14）
 package com.orbising.orbis
 
-import android.app.Application
-import android.content.Context
-import android.content.SharedPreferences
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -23,8 +20,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
-import java.io.File
-import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
@@ -47,26 +42,6 @@ class ChatViewportInstrumentedTest {
     private fun tool(id: String) = ChatMessage(id, "assistant", listOf(RemoteContent("tool_call", toolCallId = id,
         toolName = "bash", arguments = buildJsonObject { put("command", "echo test") })), 1)
 
-    private class IsolatedApplication(base: Context) : Application() {
-        private val prefix = "viewport-${UUID.randomUUID()}"
-        private val root = File(base.filesDir, prefix).apply { mkdirs() }
-        private val preferences = mutableSetOf<String>()
-        init { attachBaseContext(base) }
-        override fun getApplicationContext(): Context = this
-        override fun getFilesDir(): File = root
-        override fun getCacheDir(): File = File(root, "cache").apply { mkdirs() }
-        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
-        override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
-            val isolated = "$prefix-$name"
-            preferences += isolated
-            return baseContext.getSharedPreferences(isolated, mode)
-        }
-        fun dispose() {
-            preferences.forEach { baseContext.deleteSharedPreferences(it) }
-            root.deleteRecursively()
-        }
-    }
-
     private fun initial(): RemoteState {
         val user = text("user", "user", "question")
         val assistant = text("assistant", "assistant", (1..70).joinToString("\n\n") { "reading line $it" })
@@ -79,7 +54,7 @@ class ChatViewportInstrumentedTest {
     }
 
     private fun withChat(exercise: (androidx.compose.runtime.MutableState<RemoteState>, LazyListState) -> Unit) {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "viewport")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("viewport", model)
@@ -330,7 +305,7 @@ class ChatViewportInstrumentedTest {
     }
 
     @Test fun turnChangeSummaryFollowsTheWholeTurnWhenAnchoredInsideIt() {
-        val app = IsolatedApplication(ApplicationProvider.getApplicationContext())
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "viewport")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("changes", model)

@@ -1,4 +1,5 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,7 +11,7 @@ import {
 
 describe("Pi extension runtime logging", () => {
   it("writes reload diagnostics as one JSONL record", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "orbis-runtime-log-"));
+    const directory = await testDirectory(join(tmpdir(), "orbis-runtime-log-"));
     const logPath = join(directory, "logs", "runtime.log");
 
     await logPiExtensionRuntimeEvent("extension_reloaded", {
@@ -52,7 +53,7 @@ describe("Pi extension runtime logging", () => {
   });
 
   it("honors the configured level and stays silent when disabled", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "orbis-runtime-log-"));
+    const directory = await testDirectory(join(tmpdir(), "orbis-runtime-log-"));
     const logPath = join(directory, "runtime.log");
 
     await logPiExtensionRuntimeEvent("bridge.command.received", { commandId: "debug-only" }, {

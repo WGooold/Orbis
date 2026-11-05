@@ -61,32 +61,27 @@ class InboundFrameLanesTest {
         bulkLimits = InboundFrameLanes.LaneLimits(bulkFrames, bulkPayload),
     )
 
+    /** Exercise the production consumer's selection, rather than choose queue order in the test. */
     @Test
-    fun `控制面先于积压的分片被取走`() = runBlocking {
+    fun `consumer prioritizes control and session lanes ahead of backlogged bulk`() {
         val lanes = InboundFrameLanes()
-        // 先堆一片分片积压：落盘比网络慢，这正是真实情形。
-        repeat(64) { lanes.offerBulk(byteArrayOf(it.toByte())) }
-        // 然后才来一条控制帧。
-        lanes.offer("""{"type":"command.result"}""", "ctl")
-
-        // 控制帧必须先出来，哪怕它排在 64 片分片后面才到。
-        assertEquals("""{"type":"command.result"}""", lanes.takeControl()?.payload)
-        // 分片还在原地等着，一片都没被提前消费。
-        assertTrue(lanes.takeBulk() != null)
-    }
-
-    @Test
-    fun `控制面与会话面都先于分片，且控制面排在会话面前`() = runBlocking {
-        val lanes = InboundFrameLanes()
-        repeat(8) { lanes.offerBulk(byteArrayOf(it.toByte())) }
-        lanes.offer("""{"type":"session.patch"}""", "msg")
-        lanes.offer("first", "ctl")
-
-        assertEquals("first", lanes.takeControl()?.payload)
-        assertEquals("""{"type":"session.patch"}""", lanes.takeSession()?.payload)
-        assertTrue(lanes.takeBulk() != null)
-        assertNull(lanes.takeControl())
-        assertNull(lanes.takeSession())
+        try {
+            repeat(64) { lanes.offerBulk(byteArrayOf(it.toByte())) }
+            lanes.offer("catchup", "catchup")
+            lanes.offer("history", "history")
+            lanes.offer("live", "msg")
+            lanes.offer("first", "ctl")
+            lanes.offer("second", "ctl")
+            val actual = List(5) { (lanes.takeNext() as InboundFrameLanes.InteractiveFrame).payload }
+            assertEquals(listOf("first", "second", "live", "history", "catchup"), actual)
+            repeat(64) { index ->
+                val frame = lanes.takeNext() as InboundFrameLanes.BinaryFrame
+                assertEquals(listOf(index.toByte()), frame.payload.toList())
+            }
+            assertNull(lanes.takeNext())
+        } finally {
+            lanes.close()
+        }
     }
 
     @Test

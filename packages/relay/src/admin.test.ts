@@ -1,8 +1,9 @@
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRelayServer, type RelayServer } from "./index.js";
 import { RegistrationAuthority } from "./registration.js";
 import { once } from "node:events";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -80,7 +81,7 @@ describe("Relay web console", () => {
   });
 
   it("persists the QQ verification switch and limits direct registration to its optional state", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-policy-")), "relay.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-policy-")), "relay.json");
     const registration = await RegistrationAuthority.create({ stateFile: `${stateFile}.registration.json` });
     const options = { stateFile, registration, adminToken: "admin-secret" };
     relay = await createRelayServer(options);
@@ -115,7 +116,7 @@ describe("Relay web console", () => {
   });
 
   it("defaults old administrator state to required QQ verification", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-old-admin-")), "admin.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-old-admin-")), "admin.json");
     await writeFile(stateFile, JSON.stringify({ version: 1, disabledHosts: [], events: [] }));
     const admin = await RelayAdmin.create({ stateFile, token: "admin-secret" });
     expect(admin.qqEmailVerificationRequired).toBe(true);
@@ -125,7 +126,7 @@ describe("Relay web console", () => {
   });
 
   it("disables Host routing immediately, persists it across restart, and restores access on enable", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "orbis-admin-"));
+    const directory = await testDirectory(join(tmpdir(), "orbis-admin-"));
     const stateFile = join(directory, "relay.json");
     let code = "";
     const registration = await RegistrationAuthority.create({ sendMail: async mail => { code = mail.code; } });
@@ -158,7 +159,7 @@ describe("Relay web console", () => {
   });
 
   it("revokes a device using the protected browser route and prevents reconnection", async () => {
-    const stateFile = join(await mkdtemp(join(tmpdir(), "orbis-revoke-")), "state.json");
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-revoke-")), "state.json");
     relay = await createRelayServer({ stateFile, adminToken: "admin-secret", deviceCredentials: [{ deviceId: "phone-1", credential: "phone-secret", name: "My Phone" }] });
     const base = relay.url.replace("ws:", "http:"); const headers = await login(base);
     const device = await authenticate("/v1/device", { type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: "phone-secret" });
@@ -186,10 +187,10 @@ describe("Relay web console", () => {
   });
 
   it("serves only allowlisted web assets and verified download names", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "orbis-downloads-"));
+    const directory = await testDirectory(join(tmpdir(), "orbis-downloads-"));
     // Android 的 APK 和版本元数据由另一个目录服务（nginx 的 /var/www/orbis-downloads），
     // /v1/site 必须读那一份，而不是凑巧放在 Windows 下载目录里的同名文件。
-    const androidDirectory = await mkdtemp(join(tmpdir(), "orbis-android-downloads-"));
+    const androidDirectory = await testDirectory(join(tmpdir(), "orbis-android-downloads-"));
     const name = "OrbisHost-0.1.14-windows-x64-setup.exe";
     const macName = "OrbisHost-0.1.14-macos-arm64.dmg";
     const intelName = "OrbisHost-0.1.14-macos-x64.dmg";

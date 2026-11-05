@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -21,7 +22,7 @@ async function writeClaudeFixture(bin: string, loggedIn: boolean) {
 }
 
 async function setup() {
-  const root = await mkdtemp(join(tmpdir(), "orbis-claude-launch-"));
+  const root = await testDirectory(join(tmpdir(), "orbis-claude-launch-"));
   const bin = join(root, "bin");
   await mkdir(bin, { recursive: true });
   await writeClaudeFixture(bin, true);

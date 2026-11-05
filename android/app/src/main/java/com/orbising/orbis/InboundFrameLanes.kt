@@ -124,6 +124,9 @@ internal class InboundFrameLanes(
         wakeup.close()
     }
 
+    /** Shared by the production consumer and its regression: ctl > msg/history/catchup > bulk. */
+    fun takeNext(): BulkFrame? = takeControl() ?: takeSession() ?: takeBulk()
+
     /** 取一条控制帧。`null` = 控制面暂时空了。 */
     fun takeControl(): InteractiveFrame? = takeText(control, controlCount)
 

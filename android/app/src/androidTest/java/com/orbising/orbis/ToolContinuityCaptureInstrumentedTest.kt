@@ -28,13 +28,15 @@ import org.junit.runner.RunWith
  * offset, height), follow position and the tool / message facts behind them — while a real tool
  * runs. The log is lined up with a screen recording to find what each flicker frame changed.
  *
- * Skipped unless run with `pairingPayloadBase64`, `cwd` and optionally `agentKind`, `prompt`,
- * `seconds`. Pairing and session data live in an isolated app directory and are removed after.
+ * Diagnostic capture only: opt in with `captureTools=true`, `pairingPayloadBase64`, `cwd`;
+ * optional `agentKind`, `prompt`, `seconds`. Add `assertStable=true` to verify tool completion
+ * and transcript stability. Pairing and session data are isolated and removed after capture.
  */
 @RunWith(AndroidJUnit4::class)
 class ToolContinuityCaptureInstrumentedTest {
     @Test fun captureRunningToolsFromTheIsolatedHost() {
         val arguments = InstrumentationRegistry.getArguments()
+        assumeTrue("Diagnostic capture requires captureTools=true", arguments.getString("captureTools") == "true")
         val raw = arguments.getString("pairingPayloadBase64")?.let {
             String(android.util.Base64.decode(it, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP))
         }
