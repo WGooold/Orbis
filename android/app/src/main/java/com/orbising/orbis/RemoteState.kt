@@ -1172,8 +1172,7 @@ internal data class CachedDirectoryGroup(
     val cwd: String,
     val sessions: List<CachedSessionRow>,
 ) {
-    val modifiedAt: Long
-        get() = sessions.maxOfOrNull(CachedSessionRow::modifiedAt) ?: 0L
+    val modifiedAt: Long = sessions.maxOfOrNull(CachedSessionRow::modifiedAt) ?: 0L
 }
 
 /** The paired Host owns the entire authenticated directory and its device-scoped cache. */
@@ -1190,14 +1189,16 @@ internal data class SessionHost(val hostId: String, val name: String)
  * but missing, stale or conflicting labels cannot create another Host or change ownership.
  */
 internal val RemoteState.sessionHost: SessionHost?
-    get() {
+    get() = sessionHost(AppLocalization.language)
+
+internal fun RemoteState.sessionHost(language: AppLanguage): SessionHost? {
         val id = hostId?.takeIf(String::isNotBlank) ?: return null
         val label = hostName?.takeIf(String::isNotBlank)
             ?: (sessions.values.map { it.hostname } + runtimes.values.map { it.hostname })
                 .mapNotNull { it?.takeIf(String::isNotBlank) }.distinct().singleOrNull()
-            ?: L10n.tr("已配对电脑")
+            ?: L10n.format("已配对电脑", language = language)
         return SessionHost(id, label)
-    }
+}
 
 internal val RemoteState.canOperateSessions: Boolean
     get() = !hostId.isNullOrBlank() && connection == RelayConnection.ONLINE && e2eReady
@@ -1217,11 +1218,21 @@ internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
  */
 internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
     val host = state.sessionHost ?: return emptyList()
+    return groupCachedHistoryRows(host.hostId, host.name, cachedHistoryRows(state, host, state::sessionDisplayName))
+}
+
+/** Resolve row facts separately: status/body changes need not regroup or sort the catalog. */
+internal fun cachedHistoryRows(
+    state: RemoteState,
+    host: SessionHost?,
+    title: (String?, RuntimeSummary?) -> String,
+): List<CachedSessionRow> {
+    if (host == null) return emptyList()
     // ADR-0049 §6.4：未结算的归档叠加在目录上，卡片立即出现在目标列表。
     val catalog = state.sessionsWithLedger()
     val runtimesBySession = state.runtimes.values
         .filter { it.sessionId != null }
-        .sortedBy(state::runtimeDisplayName)
+        .sortedBy { title(it.sessionId, it) }
         .groupBy { it.sessionId.orEmpty() }
     val rows = linkedMapOf<String, CachedSessionRow>()
     for ((sessionId, runtimes) in runtimesBySession) {
@@ -1237,7 +1248,7 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
             cwd = runtime.cwd.ifBlank { session?.cwd.orEmpty() },
             hostname = host.name,
             catalogEntry = session,
-            title = state.runtimeDisplayName(runtime),
+            title = title(sessionId, runtime),
             messageCount = state.conversations[runtime.runtimeId]?.messages?.size ?: 0,
             modifiedAt = session?.modifiedAt ?: 0L,
         )
@@ -1251,12 +1262,17 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
             cwd = session.cwd,
             hostname = host.name,
             catalogEntry = session,
-            title = state.sessionDisplayName(session.sessionId),
+            // Online identities were handled above; avoid scanning every runtime for each offline row.
+            title = title(session.sessionId, null),
             messageCount = session.messageCount,
             modifiedAt = session.modifiedAt,
         )
     }
-    val directories = rows.values
+    return rows.values.toList()
+}
+
+internal fun groupCachedHistoryRows(hostId: String, hostName: String, rows: List<CachedSessionRow>): List<CachedHostGroup> {
+    val directories = rows
         .groupBy { it.cwd }
         .values
         .map { directoryRows ->
@@ -1272,7 +1288,7 @@ internal fun cachedHistoryTree(state: RemoteState): List<CachedHostGroup> {
             compareByDescending<CachedDirectoryGroup> { it.modifiedAt }
                 .thenBy { it.cwd },
         )
-    return listOf(CachedHostGroup(host.hostId, host.name, directories))
+    return listOf(CachedHostGroup(hostId, hostName, directories))
 }
 
 /**

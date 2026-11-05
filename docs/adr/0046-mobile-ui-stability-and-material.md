@@ -110,3 +110,5 @@ UI 状态更新不改变消息 key、会话身份或协议事实；历史位置�
 2026-11-03 / r42（验证中）：设置供应商凹槽统一为圆角矩形，普通标识与配额币均直接复用 `AgentIconRecess` 的默认16pt/dp圆角、既有材质与内影方向；取消配额币专用圆形/半边长圆角。普通32pt/dp标识配48pt/dp底座、44pt/dp硬币配56pt/dp底座，原居中、行布局、角标和64×56pt/dp命中区保持；硬币常驻底影与翻面几何/时序不变。范围S02 / S03 / S04 / S19，关联S22 / S25、SC27 / MOT-22、R58 / R59。新形状仍需双端L1–L4、C01–C18及A1–A4验证；旧r40圆形截图不替代本轮结果。证据 `.artifacts/ui-regression/20261103-provider-well-rounded/`。
 
 2026-11-03 r42 圆角矩形验证：iOS 352/352、Android 682/682 单测及双端构建通过，源码检查确认普通图标和配额币共用默认16pt/dp圆角/内影。全机单台队列仍被旧磁盘故障的Android进程及残留锁阻塞，本轮L3/L4、C01–C18、R58/R59和A1–A4未运行，保留验证中；旧圆形截图不算新形状验收。源码边界、产物哈希及阻塞见 `.artifacts/ui-regression/20261103-provider-well-rounded/summary.md`。
+
+2026-11-05 Android 目录后台专项：S19 / V21、ADR-0060 PERF-07。仅调整后台投影、行事实复用、标题缓存和IO启动水合；原 DrawerPanel / NeumorphSurface / 形状 / 阴影 / 布局参数不改。SC03 / SC08 / SC36、MOT-14 的受影响设备专项及结果见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`；用户体感仍待验证。

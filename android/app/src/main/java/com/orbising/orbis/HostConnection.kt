@@ -74,10 +74,13 @@ internal const val UPLOAD_READ_IDLE_MS = 10_000L
  * independent copies racing across Host connections would lose each other's writes.
  */
 internal class HostStores(application: Application) {
+    // Set once by the hub before installing connections. Lazy initialization runs in their IO
+    // startup worker, including migration, so the UI cannot wait on a disk-owning store lock.
+    var legacyHostId: String? = null
     val sessionGraph = SessionGraphStore(application)
     val draft = DraftStore(application)
-    val downloads = ArtifactDownloadStore(application)
-    val uploads = ArtifactUploadStore(application)
+    val downloads by lazy { ArtifactDownloadStore(application).also { store -> legacyHostId?.let(store::adoptHostId) } }
+    val uploads by lazy { ArtifactUploadStore(application).also { store -> legacyHostId?.let(store::adoptHostId) } }
     val lastSession = LastSessionStore(application)
     val notifier = InteractionNotifier(application)
 }
@@ -128,8 +131,8 @@ internal class HostConnection(
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
     private val sessionGraphStore = stores.sessionGraph
     private val draftStore = stores.draft
-    private val artifactDownloadStore = stores.downloads
-    private val artifactUploadStore = stores.uploads
+    private val artifactDownloadStore get() = stores.downloads
+    private val artifactUploadStore get() = stores.uploads
     private val lastSessionStore = stores.lastSession
     private val pullDownloads = PullDownloads(
         read = { transferId, requestId, offset, length ->
@@ -146,11 +149,9 @@ internal class HostConnection(
     private val messageJson = Json { ignoreUnknownKeys = true }
     private val mutableState = MutableStateFlow(
         RemoteState(
-            downloads = artifactDownloadStore.load()
-                .filter { it.hostId == initial.hostId || it.hostId == null && it.transferRuntimeId == initial.hostId }
-                .associateBy(ArtifactDownload::taskId),
-            uploads = artifactUploadStore.load().filter { it.hostId == initial.hostId }
-                .associateBy(UploadTask::taskId),
+            deviceId = initial.deviceId,
+            hostId = initial.hostId,
+            hostName = initial.hostName,
         ),
     )
     val state: StateFlow<RemoteState> = mutableState.asStateFlow()
@@ -245,20 +246,31 @@ internal class HostConnection(
     private val historyJobs = mutableMapOf<String, Job>()
     /** Serializes all text events from one WebSocket connection in arrival order. */
     private var relayEventJob: Job? = null
+    private var startupJob: Job? = null
+    @Volatile private var cacheReady = false
 
     init {
-        val restored = mutableState.value.copy(
-            deviceId = device.deviceId,
-            hostId = pairing.hostId,
-            hostName = pairing.hostName,
-            sessions = sessionCatalogStore.load(device, pairing.hostId)
-                .associateBy(SessionCatalogEntry::sessionId),
-        )
-        mutableState.value = restored.cachePiSessionNames()
-        if (mutableState.value !== restored) scheduleSessionCatalogSave()
-        // V17：上次进程退出时仍在等待的消息回到输入框（ADR-0049 §6.2）。
-        draftStore.restoreWaiting()
-        connect(device)
+        startupJob = scope.launch {
+            // Hydrate before connecting so a late disk result cannot overwrite a live catalog.
+            // Cancellation/shutdown must also prevent a slow read from opening a new socket.
+            val restored = loadHostCache {
+                val cached = RemoteState(hostId = pairing.hostId,
+                    sessions = sessionCatalogStore.load(device, pairing.hostId).associateBy(SessionCatalogEntry::sessionId),
+                    downloads = artifactDownloadStore.load()
+                        .filter { it.hostId == pairing.hostId || it.hostId == null && it.transferRuntimeId == pairing.hostId }
+                        .associateBy(ArtifactDownload::taskId),
+                    uploads = artifactUploadStore.load().filter { it.hostId == pairing.hostId }.associateBy(UploadTask::taskId))
+                // V17: restore waiting copies before the connection's automatic resume runs.
+                draftStore.restoreWaiting()
+                cached
+            }
+            if (!shouldConnect) return@launch
+            updateState { current -> current.copy(sessions = restored.sessions + current.sessions,
+                downloads = restored.downloads + current.downloads, uploads = restored.uploads + current.uploads) }
+            cacheReady = true
+            scheduleSessionCatalogSave()
+            connect(device)
+        }
         // 掉线重连 / APP 重启后回到上次打开的会话（spec 第 16 行、§14 B7）。
         // 放在状态流上而不是消息处理里：恢复要在「Runtime 目录已就绪」之后才可能成功，
         // 而目录可能来自中继的第一份 device.ready（此时还没有 Pi runtime）之后才补齐。
@@ -288,6 +300,7 @@ internal class HostConnection(
         scope.launch {
             while (true) {
                 delay(PULL_TICK_MS)
+                if (!cacheReady) continue
                 // sync 也可能收尾完整的续传文件：SHA-256 校验和发布不能占用 UI 线程。
                 withContext(Dispatchers.IO) {
                     runCatching { tickPullSchedulers() }
@@ -754,6 +767,7 @@ internal class HostConnection(
         closeToolDetail()
         closeChangeViewer()
         shouldConnect = false
+        startupJob?.cancel()
         updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
             next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
         } }

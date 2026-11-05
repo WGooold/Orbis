@@ -98,3 +98,11 @@ UI 状态仍由原主线程拥有者提交；独立 Task 不自动代表后台�
 2026-11-05 NQ-14：依 ADR-0065 §11 将 history / catchup / bulk 分开，原消息 / SQLite applied / 来源依赖与阅读锚点保持，新增通道共用原历史预算。用户要求本轮仅做[功能回归](../testing/native-quic-five-stream-functional-regression.md)，不再测速；不以拆流声明本 ADR 的真机停更或完整 R57 门禁已经解决。
 
 五流实现、核心功能通过、Android 同设备原套件无新增失败及 iOS 设备边界见[本轮结果](../testing/native-quic-five-stream-results-20261105.md)。原 53 个设备用例源码文件保留，既有慢同步失败与未满足真实环境前提如实记录；不将传输功能验证等同于本 ADR 的现场 / UI 全部门禁。
+
+### 2026-11-05 PERF-07 补充：Android 目录后台投影与首次缓存水合（验证中）
+
+修复主线程目录构建、过宽失效、标题派生和首次缓存读取。范围 S19，关联 S18 / S15 / S27、M03 / M06 / M22、V17 / V21；沿用 SC03 / SC08 / SC36、MOT-14 与 R48 / R57 / R65，无新增 feature、视觉或动效参数。
+
+[根部测试约束](../../AGENTS.md#测试)；[DrawerCatalogWorkerTest.kt](../../android/app/src/test/java/com/orbising/orbis/DrawerCatalogWorkerTest.kt)；[DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)。
+
+目录分组、排序、筛选与统计由 `DrawerCatalogWorker` 在 `Dispatchers.Default` 串行处理，按行事实复用目录与标题派生；发布前核对 Host、筛选和捕获的语言，释放失效历史引用。`HostConnection` 先在 IO 中完成目录、下载、上传、迁移及等待草稿水合，再连接；关闭时取消启动任务。保留既有材质、动效和阅读位置。实现见 [DrawerCatalogWorker.kt](../../android/app/src/main/java/com/orbising/orbis/DrawerCatalogWorker.kt)、[DrawerCatalogCache.kt](../../android/app/src/main/java/com/orbising/orbis/DrawerCatalogCache.kt)、[HostCacheStartup.kt](../../android/app/src/main/java/com/orbising/orbis/HostCacheStartup.kt)；证据 `.artifacts/ui-regression/20261105-drawer-background/summary.md`，真机体感待用户验证。

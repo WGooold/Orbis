@@ -80,7 +80,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-private enum class DrawerAgentFilter(
+internal enum class DrawerAgentFilter(
     val key: String,
     private val labelKey: String,
     private val kind: String?,
@@ -97,7 +97,7 @@ private enum class DrawerAgentFilter(
     val hasProviderFilter: Boolean get() = this == Codex || this == CodexDesktop
 }
 
-private fun drawerAgentFilter(key: String): DrawerAgentFilter =
+internal fun drawerAgentFilter(key: String): DrawerAgentFilter =
     DrawerAgentFilter.values().firstOrNull { it.key == key } ?: DrawerAgentFilter.All
 
 @Composable
@@ -179,13 +179,6 @@ private fun DrawerAgentFilterMenu(
     }
 }
 
-/** One Host's slice of the merged sidebar tree. */
-private data class DrawerHostSection(
-    val hostId: String,
-    val hostName: String,
-    val directories: List<CachedDirectoryGroup>,
-)
-
 /** Host context, raised directory headers, and inset session leaves each have their own level. */
 @Composable
 internal fun SessionDrawer(
@@ -203,69 +196,41 @@ internal fun SessionDrawer(
 ) {
     val activeHostId = state.hostId
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
-    val tree = remember(hosts, activeHostId) {
-        cachedHistoryTree(hosts.filter { it.hostId == activeHostId }.map { it.state })
-    }
+    val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val currentProvider = state.currentProviders[agentFilter.key]
-    val currentProviders = remember(hosts, agentFilterKey) { hosts.associate { it.hostId to it.state.currentProviders[agentFilter.key] } }
+    val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
     var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
-    val providerOptions = remember(tree, currentProvider, agentFilterKey, AppLocalization.language) { codexProviderOptions(tree, currentProvider, agentFilter.key) }
-    val providerKey = requestedProviderKey.takeIf { key -> providerOptions.any { it.key == key } } ?: CURRENT_CODEX_PROVIDER
-    val providerLabel = providerOptions.first { it.key == providerKey }.label
     var showArchived by rememberSaveable { mutableStateOf(false) }
     var blockedSession by remember { mutableStateOf<Pair<String, String>?>(null) }
-    val filteredTree = remember(tree, agentFilterKey, showArchived, providerKey, currentProviders, activeHostId) {
-        tree.mapNotNull { host ->
-            // Current-provider ownership is checked against this backend on the selected computer.
-            // Other computers keep their rows; their defaults are independent.
-            val hostProvider = if (host.hostId == activeHostId) currentProviders[host.hostId] else null
-            host.copy(
-                directories = host.directories.mapNotNull { directory ->
-                    directory.copy(sessions = directory.sessions.filter {
-                        agentFilter.matches(it) && it.isArchived == showArchived &&
-                            (!agentFilter.hasProviderFilter || host.hostId != activeHostId ||
-                                matchesCodexProvider(it, providerKey, hostProvider))
-                    })
-                        .takeIf { it.sessions.isNotEmpty() }
-                },
-            ).takeIf { it.directories.isNotEmpty() }
-        }
-    }
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
+    val request = DrawerCatalogRequest(activeHostState, AppLocalization.language, DrawerCatalogFilter(
+        agentFilterKey, showArchived, requestedProviderKey, currentProvider, hostProvider, searchTerm))
+    val projection = rememberDrawerCatalog(request)
+    val providerOptions = projection?.options ?: codexProviderOptions(emptyList(), currentProvider, agentFilter.key)
+    val providerKey = projection?.providerKey ?: requestedProviderKey
+    val providerLabel = providerOptions.firstOrNull { it.key == providerKey }?.label.orEmpty()
     // Reset only when browsing a different catalog, not when restoring this page from history.
     val listState = rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
         LazyListState()
     }
-    val incomingSections = remember(filteredTree, searchTerm) {
-        filteredTree.map { host ->
-            DrawerHostSection(
-                hostId = host.hostId,
-                hostName = host.hostname,
-                directories = host.directories.mapNotNull { directory ->
-                    if (searchTerm.isEmpty() || directory.cwd.contains(searchTerm, ignoreCase = true)) {
-                        directory
-                    } else {
-                        directory.sessions.filter { it.title.contains(searchTerm, ignoreCase = true) }
-                            .takeIf { it.isNotEmpty() }?.let { directory.copy(sessions = it) }
-                    }
-                },
-            )
-        }.filter { it.directories.isNotEmpty() }
+    val viewportIdentity = remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived) {
+        listOf(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived)
     }
-    val viewportIdentity = listOf(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived)
-    val sections = rememberViewportItems(incomingSections, listState, viewportIdentity)
-    val directoryCount = sections.sumOf { it.directories.size }
-    val sessionCount = sections.sumOf { section -> section.directories.sumOf { it.sessions.size } }
+    val emptyContent = remember { DrawerCatalogContent(emptyList()) }
+    val content = rememberDrawerViewport(projection?.content ?: emptyContent, listState, viewportIdentity)
+    val sections = content.sections
+    val directoryCount = content.directoryCount
+    val visibleSessions = content.sessions
+    val sessionCount = visibleSessions.size
     var selectedSessionIds by remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, isOpen) {
         mutableStateOf(emptySet<String>())
     }
-    val visibleSessions = sections.flatMap { it.directories }.flatMap { it.sessions }
-    val visibleIds = visibleSessions.map { it.sessionId }.toSet()
-    val selectedIds = selectedSessionIds.intersect(visibleIds)
-    val selectedSessions = visibleSessions.filter { it.sessionId in selectedIds }
+    val visibleIds = content.ids
+    val selectedIds = remember(selectedSessionIds, visibleIds) { selectedSessionIds.intersect(visibleIds) }
+    val selectedSessions = remember(visibleSessions, selectedIds) { visibleSessions.filter { it.sessionId in selectedIds } }
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(visibleIds) { selectedSessionIds = selectedSessionIds.intersect(visibleIds) }
     BackHandler(enabled = LocalPageActive.current && isOpen && selecting) { selectedSessionIds = emptySet() }
@@ -276,6 +241,18 @@ internal fun SessionDrawer(
                 section.directories.firstOrNull()?.let { section.hostId + '\u0000' + it.cwd }
             },
         )
+    }
+    var needsDefaultExpansion by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider) {
+        mutableStateOf(true)
+    }
+    val firstDirectoryKey = sections.firstOrNull()?.let { section ->
+        section.directories.firstOrNull()?.let { section.hostId + '\u0000' + it.cwd }
+    }
+    LaunchedEffect(firstDirectoryKey, needsDefaultExpansion) {
+        if (needsDefaultExpansion && firstDirectoryKey != null) {
+            if (expandedKey == null) expandedKey = firstDirectoryKey
+            needsDefaultExpansion = false
+        }
     }
     var showAllSessions by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, expandedKey) { mutableStateOf(false) }
     val canCreate = state.canCreateSessionOn(activeHostId)
@@ -455,6 +432,7 @@ internal fun SessionDrawer(
                                 createEnabled = isActiveHost && canCreate && directory.cwd.isNotBlank(),
                                 onCreate = { onNewSession(section.hostId, directory.cwd) },
                             ) {
+                                needsDefaultExpansion = false
                                 expandedKey = if (expanded) null else branchKey
                                 focusManager.clearFocus()
                             } }

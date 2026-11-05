@@ -326,7 +326,18 @@ internal fun SessionGraph.firstUserMessageTitle(): String? {
     if (cursor.leafId == null || entries.isEmpty()) return null
     val path = buildSessionPath(entries, cursor.leafId)
     if (path.isEmpty()) return null
-    return firstUserMessageTitle(projectSessionEntries(path, display, displayWindowStart))
+    val visible = applyDisplayWindow(path, displayWindowStart)
+    // Match displayMessages' head-before-body order without allocating/projecting the whole
+    // transcript merely to read one label. Display corrections and the window remain authoritative.
+    for (head in listOf(true, false)) {
+        for (entry in visible) {
+            val row = display[entry.entryId] ?: continue
+            if ((row.anchor == DISPLAY_ANCHOR_HEAD) != head) continue
+            val message = row.message?.takeIf { it.role == "user" } ?: continue
+            firstUserMessageTitle(listOf(message))?.let { return it }
+        }
+    }
+    return null
 }
 
 internal fun SessionGraph.projectLeafDeltaProjection(

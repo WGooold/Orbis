@@ -10,6 +10,15 @@ internal fun RemoteState.runtimeDisplayName(runtime: RuntimeSummary): String =
 internal fun RemoteState.sessionDisplayName(
     sessionId: String?,
     runtime: RuntimeSummary? = runtimes.values.firstOrNull { sessionId != null && it.sessionId == sessionId },
+): String = resolveSessionDisplayName(sessionId, runtime, SessionGraph::firstUserMessageTitle, ::firstUserMessageTitle,
+    L10n.tr("Session 已离线"))
+
+private fun RemoteState.resolveSessionDisplayName(
+    sessionId: String?,
+    runtime: RuntimeSummary?,
+    graphTitle: (SessionGraph) -> String?,
+    liveTitle: (List<ChatMessage>) -> String?,
+    unavailable: String,
 ): String {
     val session = sessions[sessionId]
     if ((runtime?.agentKind ?: session?.agentKind) == "pi") {
@@ -17,12 +26,53 @@ internal fun RemoteState.sessionDisplayName(
     }
     return runtime?.sessionName?.trim()?.takeIf(String::isNotEmpty)
         ?: session?.name?.trim()?.takeIf(String::isNotEmpty)
-        ?: sessionGraphs[sessionId]?.firstUserMessageTitle()
+        ?: sessionGraphs[sessionId]?.let(graphTitle)
         ?: session?.firstMessage?.let(::sessionMessagePreview)
-        ?: runtime?.let { firstUserMessageTitle(conversations[it.runtimeId]?.messages.orEmpty()) }
+        ?: runtime?.let { liveTitle(conversations[it.runtimeId]?.messages.orEmpty()) }
         ?: sessionId?.trim()?.takeIf(String::isNotEmpty)
         ?: runtime?.runtimeId
-        ?: L10n.tr("Session 已离线")
+        ?: unavailable
+}
+
+/** One background drawer worker owns these bounded, content-dependent title results. */
+internal class SessionTitleCache(
+    private val projectGraph: (SessionGraph) -> String? = SessionGraph::firstUserMessageTitle,
+) {
+    private class GraphTitle(val graph: SessionGraph, val title: String?)
+    private class LiveTitle(val messages: List<ChatMessage>, val title: String?)
+    private val graphs = mutableMapOf<String, GraphTitle>()
+    private val live = mutableMapOf<String, LiveTitle>()
+
+    fun resolve(state: RemoteState, sessionId: String?, runtime: RuntimeSummary?, language: AppLanguage = AppLocalization.language): String {
+        var usedGraph = false
+        var usedLive = false
+        val result = state.resolveSessionDisplayName(sessionId, runtime, { graph ->
+            usedGraph = true
+            val old = graphs[graph.sessionId]
+            if (old != null && old.graph.entries === graph.entries && old.graph.display === graph.display &&
+                old.graph.cursor.leafId == graph.cursor.leafId && old.graph.displayWindowStart == graph.displayWindowStart) {
+                old.title.also { graphs[graph.sessionId] = GraphTitle(graph, it) }
+            } else {
+                projectGraph(graph).also { graphs[graph.sessionId] = GraphTitle(graph, it) }
+            }
+        }, { messages ->
+            usedLive = true
+            val key = requireNotNull(runtime).runtimeId
+            val old = live[key]
+            if (old != null && old.messages === messages) old.title
+            else firstUserMessageTitle(messages).also { live[key] = LiveTitle(messages, it) }
+        }, L10n.format("Session 已离线", language = language))
+        if (!usedGraph) sessionId?.let(graphs::remove)
+        if (!usedLive) runtime?.runtimeId?.let(live::remove)
+        return result
+    }
+
+    fun retain(state: RemoteState?) {
+        graphs.keys.retainAll(state?.sessionGraphs?.keys.orEmpty())
+        live.keys.retainAll(state?.runtimes?.keys.orEmpty())
+    }
+
+    fun clear() { graphs.clear(); live.clear() }
 }
 
 /** Capture only newly available Pi names. Existing labels never follow later history or renames. */

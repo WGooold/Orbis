@@ -87,15 +87,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     init {
         migrateLegacyPairing()
         val stored = pairings.hosts()
+        // Preserve single-Host migration before any connection's IO hydration reads the stores.
+        stores.legacyHostId = stored.singleOrNull()?.hostId
         stored.forEach { install(it, makeActive = false) }
         setActiveHost(pairings.activeHostId() ?: stored.firstOrNull()?.hostId)
-        // Records written before multi-Host carry no owner. With one Host they can only belong to
-        // it; with several there is no safe guess, so they stay hidden instead of being duplicated
-        // into every Host's download scheduler.
-        if (stored.size == 1) {
-            stores.downloads.adoptHostId(stored[0].hostId)
-            stores.uploads.adoptHostId(stored[0].hostId)
-        }
     }
 
     // ── Host lifecycle ──────────────────────────────────────────────────────
@@ -177,12 +172,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         stores.lastSession.clear(id)
         pairing?.let { removed ->
             val credential = removed.credential()
-            val downloadIds = stores.downloads.load().filter { it.hostId == id }.map(ArtifactDownload::taskId).toSet()
-            val uploadIds = stores.uploads.load().filter { it.hostId == id }.map(UploadTask::taskId).toSet()
-            if (downloadIds.isNotEmpty()) stores.downloads.delete(downloadIds)
-            if (uploadIds.isNotEmpty()) stores.uploads.delete(uploadIds)
-            stores.draft.clear(credential)
             viewModelScope.launch(Dispatchers.IO) {
+                val downloadIds = stores.downloads.load().filter { it.hostId == id }.map(ArtifactDownload::taskId).toSet()
+                val uploadIds = stores.uploads.load().filter { it.hostId == id }.map(UploadTask::taskId).toSet()
+                if (downloadIds.isNotEmpty()) stores.downloads.delete(downloadIds)
+                if (uploadIds.isNotEmpty()) stores.uploads.delete(uploadIds)
+                stores.draft.clear(credential)
                 runCatching { SessionCatalogStore(getApplication(), id).clear() }
                 runCatching { stores.sessionGraph.clearDevice(credential) }
                 runCatching { RelayClient().revoke(credential) }
