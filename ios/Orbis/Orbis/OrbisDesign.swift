@@ -563,11 +563,10 @@ struct NeuToggleStyle: ToggleStyle {
     }
 }
 
-/// Copy action whose check mark pops in and hides itself after 2.5 seconds.
+/// Copy action whose glyph animates into success and restores after 2.5 seconds.
 struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
-    @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     let label: String
     var size: CGFloat = 28
@@ -578,14 +577,9 @@ struct OrbisCopyButton: View {
         let p = OrbisPalette(scheme)
         let copied = feedback.copied
         OrbisMotionButton { feedback.perform { UIPasteboard.general.string = text() } } label: {
-            ZStack {
-                OrbisActionSymbol(systemName: "doc.on.doc").foregroundStyle(p.secondary)
-                    .opacity(copied ? 0 : 1).scaleEffect(copied ? 0.6 : 1)
-                OrbisActionSymbol(systemName: "checkmark").fontWeight(.bold).foregroundStyle(p.success)
-                    .opacity(copied ? 1 : 0).scaleEffect(copied ? 1 : 0.5)
-            }.font(.system(size: size * 0.5, weight: .medium))
+            OrbisCopyGlyph(copied: copied, size: size * 0.5,
+                normalColor: p.secondary, successColor: p.success)
                 .frame(width: size, height: size)
-                .animation(reduced ? nil : .orbisPop, value: copied)
         }
         .buttonStyle(NeuIconButtonStyle(selected: false, size: size))
         .accessibilityLabel(copied ? L10n.tr("已复制") : label)
@@ -1021,7 +1015,12 @@ private struct OrbisMenuRow: View {
         } label: {
             HStack(spacing: 12) {
                 if let symbol = item.symbol {
-                    OrbisMotionGlyph(symbol: copied ? "checkmark" : symbol, size: 20, activation: activation)
+                    if item.keepsOpen {
+                        OrbisCopyGlyph(copied: copied, size: 20, symbol: symbol, activation: activation,
+                            normalColor: p.text, successColor: p.text)
+                    } else {
+                        OrbisMotionGlyph(symbol: symbol, size: 20, activation: activation)
+                    }
                 }
                 Text(copied ? L10n.tr("已复制") : item.title).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)

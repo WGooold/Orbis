@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.Density
@@ -24,6 +25,43 @@ import java.io.File
 
 class CopyFeedbackInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    // Pause the frame clock to catch a hard swap on either leg without relying on the copy timer.
+    @Test fun glyphAnimatesIntoSuccessAndBackWithoutMovingItsSlot() {
+        var copied by mutableStateOf(false)
+        compose.setContent { OrbisTheme {
+            Box(Modifier.background(MaterialTheme.colorScheme.background).padding(8.dp).testTag("copy-glyph")) {
+                CopyFeedbackIcon(copied)
+            }
+        } }
+        val glyph = compose.onNodeWithTag("copy-glyph")
+        val bounds = glyph.fetchSemanticsNode().boundsInRoot
+        fun pixels() = glyph.captureToImage().asAndroidBitmap().let { bitmap ->
+            IntArray(bitmap.width * bitmap.height).also {
+                bitmap.getPixels(it, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            }
+        }
+        val original = pixels()
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { copied = true }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(64)
+        val entering = pixels()
+        compose.mainClock.advanceTimeBy(400)
+        val success = pixels()
+        assertFalse("Success must animate from copy", entering.contentEquals(original))
+        assertFalse("Success must not swap immediately", entering.contentEquals(success))
+        compose.runOnIdle { copied = false }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(64)
+        val restoring = pixels()
+        assertFalse("Restore must animate from success", restoring.contentEquals(success))
+        assertFalse("Restore must not swap immediately", restoring.contentEquals(original))
+        compose.mainClock.advanceTimeBy(400)
+        assertArrayEquals(original, pixels())
+        assertEquals(bounds, glyph.fetchSemanticsNode().boundsInRoot)
+        compose.mainClock.autoAdvance = true
+    }
 
     @Test fun latestCopyOwnsTheFullDeadlineAndKeepsTheTarget() {
         var text by mutableStateOf("第一段内容")

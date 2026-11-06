@@ -54,6 +54,7 @@ import kotlin.math.max
 /** ADR-0058. Durations and geometry are semantic shared contracts, never per-screen constants. */
 internal object InteractionMotion {
     const val CopyFeedback = 2_500L
+    const val CopyTransition = 220
     const val ReplyGrowth = 180
     const val ReplyArrival = 220
     val ReplyEase = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -152,12 +153,15 @@ internal fun OrbisMotionIcon(
     backMorph: Boolean? = null,
     pressed: Boolean = LocalGlyphPressed.current,
     enabled: Boolean = LocalGlyphEnabled.current,
+    copyFeedback: Boolean? = null,
 ) {
     val name = icon.name.substringAfterLast('.')
     val progress = rememberGlyphProgress(pressed, activation, enabled)
     val glyph = modifier.glyphPressure(progress)
     val semantics = if (description != null) Modifier.semantics { contentDescription = description } else Modifier
-    if (backMorph != null) {
+    if (copyFeedback != null) {
+        CopyFeedbackIcon(copyFeedback, tint, size, glyph.then(semantics))
+    } else if (backMorph != null) {
         val p by animateFloatAsState(if (backMorph) 1f else 0f,
             tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "back-close")
         Canvas(glyph.size(size).then(semantics)) {

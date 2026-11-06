@@ -8,6 +8,8 @@
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
 
+复制反馈（M05 / SC23 / MOT-08）在复制图标与成功勾号之间双向淡入淡出并缩放，图标按钮、文字按钮及消息菜单复用固定图标槽；减少动画设置下直接切换，成功反馈生命周期沿用现有计时。实现见 [CopyFeedback.kt](../../android/app/src/main/java/com/orbising/orbis/CopyFeedback.kt) 与 [InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)，双向中间帧与尺寸回归见 [CopyFeedbackInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/CopyFeedbackInstrumentedTest.kt)。本次构建及自动验证证据保存在 `.artifacts/ui-regression/copy-glyph-transition/`；视觉效果待用户验证。
+
 下载反馈（M16 / UI-06）表示本地任务受理，复用共用视觉与生命周期，保持命中、布局和阅读稳定。返回来源见 [ADR-0054](0054-shared-full-page-navigation.md)；实现见 [DownloadFlight.kt](../../android/app/src/main/java/com/orbising/orbis/DownloadFlight.kt) 与 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)，回归见 [DownloadFlightInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFlightInstrumentedTest.kt) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
 
 | 场景 | 作用 |

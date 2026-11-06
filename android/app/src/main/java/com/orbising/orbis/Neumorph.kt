@@ -744,6 +744,7 @@ fun NeumorphIconButton(
     compact: Boolean = false,
     menuMorph: Boolean? = null,
     backMorph: Boolean? = null,
+    copyFeedback: Boolean? = null,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
@@ -776,7 +777,7 @@ fun NeumorphIconButton(
                     },
                     size = if (compact) 18.dp else RemoteUi.IconSize,
                     activation = activation, menuMorph = menuMorph, backMorph = backMorph, pressed = pressed && active,
-                    enabled = active,
+                    enabled = active, copyFeedback = copyFeedback,
                 )
             }
         }
@@ -903,6 +904,7 @@ fun NeumorphTextButton(
     filled: Boolean = false,
     icon: ImageVector? = null,
     maxLines: Int = 1,
+    copyFeedback: Boolean? = null,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
@@ -926,7 +928,8 @@ fun NeumorphTextButton(
         ) {
             icon?.let {
                 OrbisMotionIcon(it, description = null, tint = contentColor, size = 18.dp, activation = activation,
-                    modifier = Modifier.orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize))
+                    modifier = Modifier.orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize),
+                    copyFeedback = copyFeedback)
                 Spacer(Modifier.width(5.dp))
             }
             Text(text, color = contentColor, style = MaterialTheme.typography.labelLarge,

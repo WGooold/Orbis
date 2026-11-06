@@ -127,6 +127,7 @@ struct OrbisActionPulse: ViewModifier {
 enum InteractionMotion {
     static let glyphPress = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphPressDuration)
     static let glyphRelease = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphReleaseDuration)
+    static let copyTransition = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.22)
     static let selection = Animation.easeOut(duration: 0.26)
     static let state = Animation.easeOut(duration: 0.16)
     static let panel = Animation.easeOut(duration: 0.22)
@@ -301,6 +302,32 @@ struct OrbisSelectionFill: View {
                 .overlay { shape.strokeBorder(color.opacity(selected ? 0.65 : 0), lineWidth: 1) }
                 .animation(reduceMotion ? nil : selected ? InteractionMotion.selection : InteractionMotion.state, value: selected)
         }.allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+/// Copy controls share a fixed slot and the same transition into success and back to copy.
+struct OrbisCopyGlyph: View {
+    @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisGlyphActivation) private var inheritedActivation
+    let copied: Bool
+    let size: CGFloat
+    var symbol = "doc.on.doc"
+    var activation: Int? = nil
+    var normalColor: Color? = nil
+    var successColor: Color? = nil
+
+    var body: some View {
+        ZStack {
+            Image(systemName: symbol).foregroundStyle(normalColor ?? .primary)
+                .opacity(copied ? 0 : 1).scaleEffect(copied ? 0.6 : 1)
+            Image(systemName: "checkmark").fontWeight(.bold).foregroundStyle(successColor ?? .primary)
+                .opacity(copied ? 1 : 0).scaleEffect(copied ? 1 : 0.5)
+        }
+        .font(.system(size: size, weight: .medium))
+        .frame(width: size, height: size)
+        .animation(reduced ? nil : InteractionMotion.copyTransition, value: copied)
+        .modifier(OrbisPressedGlyph(activation: activation ?? inheritedActivation))
+        .accessibilityHidden(true)
     }
 }
 

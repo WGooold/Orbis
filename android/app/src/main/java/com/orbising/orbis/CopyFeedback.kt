@@ -1,10 +1,18 @@
 package com.orbising.orbis
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -53,6 +61,35 @@ private fun rememberCopyFeedback(identity: Any?, enabled: Boolean): CopyFeedback
     return feedback
 }
 
+/** One fixed slot crossfades and scales in both directions, including the timed reset. */
+@Composable
+internal fun CopyFeedbackIcon(
+    copied: Boolean,
+    tint: Color = LocalContentColor.current,
+    size: Dp = 24.dp,
+    modifier: Modifier = Modifier,
+) {
+    val progress by animateFloatAsState(
+        if (copied) 1f else 0f,
+        tween(InteractionMotion.duration(InteractionMotion.CopyTransition), easing = InteractionMotion.GlyphEase),
+        label = "copy-feedback",
+    )
+    Box(modifier.size(size)) {
+        Icon(Icons.Rounded.ContentCopy, contentDescription = null, tint = tint,
+            modifier = Modifier.size(size).graphicsLayer {
+                alpha = 1f - progress
+                scaleX = 1f - 0.4f * progress
+                scaleY = scaleX
+            })
+        Icon(Icons.Rounded.Check, contentDescription = null, tint = tint,
+            modifier = Modifier.size(size).graphicsLayer {
+                alpha = progress
+                scaleX = 0.5f + 0.5f * progress
+                scaleY = scaleX
+            })
+    }
+}
+
 /** Copies [text] and shows a check for 2.5 s; copying again restarts the timer. */
 @Composable
 internal fun CopyIconButton(
@@ -66,10 +103,11 @@ internal fun CopyIconButton(
     val feedback = rememberCopyFeedback(identity, enabled)
     NeumorphIconButton(
         onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
-        icon = if (feedback.copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+        icon = Icons.Rounded.ContentCopy,
         contentDescription = if (feedback.copied) L10n.tr("已复制") else label,
         size = size,
         enabled = enabled,
+        copyFeedback = feedback.copied,
     )
 }
 
@@ -81,7 +119,8 @@ internal fun CopyTextButton(label: String, identity: Any? = null, text: () -> St
     NeumorphTextButton(
         text = label,
         onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
-        icon = if (feedback.copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+        icon = Icons.Rounded.ContentCopy,
+        copyFeedback = feedback.copied,
         modifier = Modifier.semantics { contentDescription = if (feedback.copied) L10n.tr("已复制") else label },
     )
 }
@@ -96,8 +135,8 @@ internal fun CopyMenuItem(label: String, identity: Any? = null, text: () -> Stri
         text = { androidx.compose.material3.Text(if (feedback.copied) L10n.tr("已复制") else label) },
         onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
         leadingIcon = {
-            OrbisActionIcon(if (feedback.copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-                contentDescription = null)
+            CopyFeedbackIcon(feedback.copied,
+                modifier = Modifier.actionGlyphMotion(LocalGlyphActivation.current))
         },
     )
 }
