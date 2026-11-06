@@ -70,3 +70,11 @@ APP 从第一个版本起就把"已配对电脑"当成单数：`CredentialStore`
 - 主页顶部固定一行显示当前电脑与连接方式；配对了多台电脑时，这一行的电脑名就是切换入口（与抽屉页脚的电脑切换器是同一组选项：各台电脑及其连接状态、添加电脑）。
 - 连接层不变：每台已配对 Host 仍各自保持连接、通知与拉取调度；切换只改变界面展示与交互地址，不重连其他 Host。
 - 第 3 节的 `(hostId, sessionId)` 行身份与按 Host 分文件的目录缓存保持不变；侧栏不再出现按 Host 分段的标题。
+
+## 修订（2026-11-06）：Android 启动入口归属（MH-01）
+
+桌面兼容 alias、通知及显式入口复用同一个 `MainActivity` 与 `RemoteViewModel`，保持每台 Host 一个连接中枢。`MainActivity` 使用 `singleTask`；两个启动入口各保留一个 Activity 时，后台中枢会持续重连并替换前台中枢的 Relay / LAN 连接。
+
+场景 MH-01 以两种入口顺序反复启动，核验 Activity 与连接中枢身份保持一致，见 [SingleActivityInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SingleActivityInstrumentedTest.kt)。现场连接与重复 Activity 证据、构建及自动对照保存在 `.artifacts/android-sync-reconnect-20261106/`。现场重启后已恢复单实例；修复包安装与持续使用待用户验证。
+
+共享 API 35 对照：原版两项均触发重复 Activity 断言，修复版两项通过；详见 `entry-comparison-corrected/`。真机重启恢复后的 50 秒观察未出现连接替换、Relay 失败或 LAN 断连，见 `restart/connection/`；该观察使用原安装版本，防复发修复包尚未安装到真机。
