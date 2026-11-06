@@ -96,6 +96,7 @@ export class DshWebClient implements DshWebConnection {
   #clientId: string | undefined;
   #eventsStream: string | undefined;
   #reconnectTimer: NodeJS.Timeout | undefined;
+  #recoveryTimer: NodeJS.Timeout | undefined;
   #reconnectAttempt = 0;
   #initialResolve: (() => void) | undefined;
   #initialReject: ((error: Error) => void) | undefined;
@@ -215,6 +216,13 @@ export class DshWebClient implements DshWebConnection {
       // Rotating the event socket must not cancel an accepted RPC or cause its mutation to be retried.
       if (this.#closed) return;
       if (!this.#connectedOnce) { this.#fail(new Error("DSH Web disconnected before its handshake completed")); return; }
+      // Bound the whole outage, not each socket attempt. A dead service must
+      // retire this bridge so Host recovery can reread its current descriptor.
+      // Successful carrier rotations still reuse the same runtime and follows.
+      if (!this.#recoveryTimer) {
+        this.#recoveryTimer = setTimeout(() => this.#fail(new Error("DSH Web reconnection timed out; reconnect using the current Web service")), this.#timeoutMs);
+        this.#recoveryTimer.unref();
+      }
       const cap = Math.min(10_000, 500 * 2 ** Math.min(this.#reconnectAttempt++, 5));
       const delay = this.#reconnectDelayMs ?? Math.round(cap * (0.5 + Math.random() * 0.5));
       this.#reconnectTimer = setTimeout(() => this.#openSocket(), delay);
@@ -240,6 +248,8 @@ export class DshWebClient implements DshWebConnection {
         this.#ready = true;
         this.#reconnectAttempt = 0;
         clearTimeout(this.#handshakeTimer);
+        clearTimeout(this.#recoveryTimer);
+        this.#recoveryTimer = undefined;
         const reconnecting = this.#connectedOnce;
         this.#connectedOnce = true;
         this.#initialResolve?.();
@@ -403,6 +413,8 @@ export class DshWebClient implements DshWebConnection {
       this.#ready = false;
       clearTimeout(this.#handshakeTimer);
       clearTimeout(this.#reconnectTimer);
+      clearTimeout(this.#recoveryTimer);
+      this.#recoveryTimer = undefined;
       this.#cancelEvents();
       for (const request of this.#requests) request.abort();
       this.#subscriptions.clear();

@@ -30,6 +30,7 @@ async function fixture(options: { redirect?: string; missingCookie?: boolean; de
   const opens: Open[] = [];
   const cancels: string[] = [];
   const sockets: WebSocket[] = [];
+  let sendReady = true;
   let rpcHandler: ((rpc: Rpc, response: ServerResponse) => void) | undefined;
   const respond = (response: ServerResponse, rpc: Rpc, value: unknown) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -63,7 +64,7 @@ async function fixture(options: { redirect?: string; missingCookie?: boolean; de
       const frame = JSON.parse(bytes.toString()) as Open;
       if (frame.type === "cancel") { cancels.push(frame.streamId); return; }
       opens.push(frame);
-      if (frame.endpoint === "$events") socket.send(JSON.stringify({ type: "item", streamId: frame.streamId, value: { type: "ready", clientId: `client-${generation}`, host: { home: "C:/isolated-dsh" } } }));
+      if (frame.endpoint === "$events" && sendReady) socket.send(JSON.stringify({ type: "item", streamId: frame.streamId, value: { type: "ready", clientId: `client-${generation}`, host: { home: "C:/isolated-dsh" } } }));
     });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -76,6 +77,12 @@ async function fixture(options: { redirect?: string; missingCookie?: boolean; de
   });
   return {
     url, rpcs, opens, cancels, sockets, respond,
+    setReady(enabled: boolean) { sendReady = enabled; },
+    async close() {
+      for (const socket of wss.clients) socket.terminate();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    },
     setRpcHandler(handler: typeof rpcHandler) { rpcHandler = handler; },
     send(endpoint: string, value: unknown) {
       const stream = [...opens].reverse().find(item => item.endpoint === endpoint);
@@ -89,8 +96,8 @@ async function fixture(options: { redirect?: string; missingCookie?: boolean; de
         if (stream) socket.send(JSON.stringify({ type: "item", streamId: stream.streamId, value }));
       }
     },
-    async connect() {
-      const client = await DshWebClient.connect({ url: `${url}?token=local-launch-secret`, protocol, timeoutMs: 1_000, reconnectDelayMs: 10 });
+    async connect(timeoutMs = 1_000) {
+      const client = await DshWebClient.connect({ url: `${url}?token=local-launch-secret`, protocol, timeoutMs, reconnectDelayMs: 10 });
       cleanup.push(() => client.stop());
       return client;
     },
@@ -221,6 +228,55 @@ describe("DSH Web transport", () => {
     await closed;
     const result = client.request("skills/list", { request: { sessionId: "session" } });
     await expect(result).resolves.toEqual({ accepted: true });
+    expect(backend.rpcs).toHaveLength(1);
+  });
+
+  // DSH-RECONNECT-01: a dead endpoint must retire the bridge so Host recovery can
+  // reread its service descriptor instead of keeping every App activation waiting.
+  it("retires a persistently refused carrier without sending the waiting mutation", async () => {
+    const backend = await fixture();
+    const client = await backend.connect(250);
+    client.onExit = vi.fn();
+    client.onDiagnostic = vi.fn();
+    await backend.close();
+    const result = client.request("session/create", { request: { workspaceId: "workspace" } });
+    const settled = result.then(value => ({ value }), error => ({ error: String(error) }));
+    await vi.waitFor(() => expect(client.onExit).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("reconnection timed out")), { timeout: 1_200 });
+    expect(await settled).toHaveProperty("error");
+    expect(backend.rpcs).toEqual([]);
+    expect(client.onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ event: "socket.error", code: "ECONNREFUSED" }));
+    await expect(client.request("session/list", {})).rejects.toThrow("disconnected");
+  });
+
+  // DSH-RECONNECT-02: an open socket without a native ready frame is still an
+  // outage; repeatedly replacing that socket must not renew the recovery budget.
+  it("retires a reconnected socket whose native event handshake stays unavailable", async () => {
+    const backend = await fixture();
+    const client = await backend.connect(250);
+    client.onExit = vi.fn();
+    client.onReconnect = vi.fn();
+    backend.setReady(false);
+    backend.sockets[0]!.terminate();
+    await vi.waitFor(() => expect(backend.sockets.length).toBeGreaterThan(1));
+    await vi.waitFor(() => expect(client.onExit).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("reconnection timed out")), { timeout: 1_200 });
+    expect(client.onReconnect).not.toHaveBeenCalled();
+    expect(backend.rpcs).toEqual([]);
+  });
+
+  // DSH-RECONNECT-03: ordinary carrier rotation must still recover, and a later
+  // outage gets its own bounded recovery period after a verified ready frame.
+  it("clears a recovered outage deadline and bounds a later independent outage", async () => {
+    const backend = await fixture();
+    const client = await backend.connect(250);
+    client.onExit = vi.fn();
+    client.onReconnect = vi.fn();
+    backend.sockets[0]!.terminate();
+    await vi.waitFor(() => expect(client.onReconnect).toHaveBeenCalledOnce());
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(client.onExit).not.toHaveBeenCalled();
+    await expect(client.request("session/list", {})).resolves.toEqual({ accepted: true });
+    await backend.close();
+    await vi.waitFor(() => expect(client.onExit).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("reconnection timed out")), { timeout: 1_200 });
     expect(backend.rpcs).toHaveLength(1);
   });
 
