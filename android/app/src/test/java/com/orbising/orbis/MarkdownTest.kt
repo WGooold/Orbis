@@ -22,8 +22,27 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertSame
 
 class MarkdownTest {
+    @Test
+    fun `prepared markdown cache reuses spans and does not retain an oversized document`() = runBlocking {
+        val cache = MarkdownDocumentCache(maxCharacters = 64)
+        val source = "**formatted** and [linked](https://example.com)"
+        val prepared = cache.resolve(source)
+        assertSame(prepared, cache.resolve(source))
+        val paragraph = prepared.blocks.single() as Paragraph
+        val rendered = prepared.inline.getValue(paragraph)
+        assertEquals("formatted and linked", rendered.text)
+        assertTrue(rendered.spanStyles.any { it.item.fontWeight == FontWeight.Bold })
+        assertEquals("https://example.com", rendered.getStringAnnotations(0, rendered.length).single().item)
+        val large = "**" + "x".repeat(80) + "**"
+        val parsedLarge = cache.resolve(large)
+        assertTrue(parsedLarge.blocks.isNotEmpty())
+        assertEquals(null, cache.peek(large))
+    }
+
     @Test
     fun `table keeps its cells alignment and formatting instead of rendering pipes as a paragraph`() {
         val source = """

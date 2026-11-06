@@ -43,6 +43,8 @@ Status: accepted
 
 动画复用内容身份与共用组件，折叠按需构建并保留内部状态，流式揭示按新增字素顺序推进。复制反馈由同一生命周期管理，平台原生手势与减少动画设置决定降级；参数和覆盖见 ADR-0058。
 
+2026-11-06 MARKDOWN-LIVE-01（M04 / V09）：Android 后台 Markdown 解析以最后实际显示的文档作为等待期间的基线，缓存命中也更新该基线；读取结果按请求版本推进，较旧结果不覆盖已显示的新正文，中间结果仍可继续上屏。修复缓存命中后下一次缓存未命中导致正文回退、渐显重播的窗口，保持既有渐显参数与原生文本布局。实现及回归见 [MarkdownText.kt](../../android/app/src/main/java/com/orbising/orbis/MarkdownText.kt)、[MarkdownPresentationInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/MarkdownPresentationInstrumentedTest.kt)、[StreamingRevealInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/StreamingRevealInstrumentedTest.kt)，合成复现及验证状态见 [verification.json](../../.artifacts/codex-typewriter-flicker-20261106/verification.json)。Android 真机待用户验证。
+
 参考：[ADR-0048](0048-online-chat-entry-budget.md)；[ADR-0058 SC47](0058-shared-interaction-motion.md)；[Android 连续性决策](0057-android-tool-transcript-continuity.md)。
 
 ### 5. 设置与配对入口（S22 / S23）

@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
@@ -58,6 +59,7 @@ class MarkdownInstrumentedTest {
                 }
             }
         }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Agent").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Agent").assertIsDisplayed()
         compose.onNodeWithText("Artifact").performScrollTo().assertIsDisplayed()
         val report = compose.onNodeWithText("report").performScrollTo()

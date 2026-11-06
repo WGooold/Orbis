@@ -27,6 +27,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +51,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.collect
+import java.util.concurrent.atomic.AtomicLong
 import org.commonmark.ext.gfm.tables.TableBlock
 import org.commonmark.ext.gfm.tables.TableCell
 import org.commonmark.ext.task.list.items.TaskListItemMarker
@@ -73,9 +79,44 @@ private fun MessageTextSelection(content: @Composable () -> Unit) {
     else content()
 }
 
+private data class MarkdownParseRequest(val text: String, val revision: Long)
+private data class DisplayedMarkdown(val document: PreparedMarkdown, val revision: Long)
+
+/** Keep the displayed document while its replacement is prepared off the UI thread. */
+@Composable
+internal fun rememberMarkdownDocument(
+    markdown: String,
+    cached: PreparedMarkdown?,
+    prepare: suspend (String) -> PreparedMarkdown,
+): PreparedMarkdown? {
+    val revisions = remember { AtomicLong() }
+    val request = remember(markdown) { MarkdownParseRequest(markdown, revisions.getAndIncrement()) }
+    var displayed by remember { mutableStateOf<DisplayedMarkdown?>(null) }
+    val prepared = cached ?: displayed?.document
+    // A cache hit can be displayed before the collector finishes its previous parse. Retain
+    // that committed body too, so the next cache miss cannot roll the visible text backwards.
+    SideEffect {
+        if (cached != null && (displayed?.document !== cached || displayed?.revision != request.revision))
+            displayed = DisplayedMarkdown(cached, request.revision)
+    }
+    val current by rememberUpdatedState(request)
+    val currentPrepare by rememberUpdatedState(prepare)
+    LaunchedEffect(Unit) {
+        snapshotFlow { current }.conflate().collect { input ->
+            val resolved = currentPrepare(input.text)
+            // Intermediate results can advance a slower stream, but cannot replace a newer
+            // version already painted via the cache. Rewrites remain ordered by request too.
+            if (input.revision >= (displayed?.revision ?: -1L))
+                displayed = DisplayedMarkdown(resolved, input.revision)
+        }
+    }
+    return prepared
+}
+
 @Composable
 internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
-    val blocks = remember(markdown) { parseMarkdown(markdown) }
+    val prepared = rememberMarkdownDocument(markdown, markdownDocuments.peek(markdown), markdownDocuments::resolve)
+    val blocks = prepared?.blocks.orEmpty()
     val uriHandler = LocalUriHandler.current
     val currentDownload = rememberUpdatedState(downloadFile)
     val currentUriHandler = rememberUpdatedState(uriHandler)
@@ -92,10 +133,12 @@ internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
     }
     // One reveal timeline for the whole body, so streamed blocks appear strictly in order (M04).
     val cursor = rememberRevealCursor(LocalStreamingText.current && android.animation.ValueAnimator.areAnimatorsEnabled())
-    CompositionLocalProvider(LocalRevealCursor provides cursor, LocalRevealPath provides emptyList()) {
+    CompositionLocalProvider(LocalPreparedMarkdown provides prepared, LocalRevealCursor provides cursor, LocalRevealPath provides emptyList()) {
         MarkdownBlocks(blocks, listener)
     }
 }
+
+private val LocalPreparedMarkdown = androidx.compose.runtime.staticCompositionLocalOf<PreparedMarkdown?> { null }
 
 @Composable
 private fun MarkdownBlocks(
@@ -151,7 +194,10 @@ private fun MarkdownInline(
     textAlign: TextAlign = TextAlign.Start,
 ) {
     val linkColor = MaterialTheme.colorScheme.primary
-    val text = remember(node, listener, linkColor) { renderMarkdownInline(node, listener, linkColor) }
+    val document = LocalPreparedMarkdown.current
+    val text = remember(node, document, listener, linkColor) {
+        document?.inline?.get(node)?.let { bindMarkdownInline(it, listener, linkColor) } ?: AnnotatedString("")
+    }
     StreamingMarkdownText(text, modifier = modifier, style = style, textAlign = textAlign)
 }
 
@@ -169,12 +215,13 @@ private fun MarkdownParagraph(
 
 @Composable
 private fun MarkdownImages(node: Node, listener: LinkInteractionListener) {
-    val images = remember(node) {
+    val prepared = LocalPreparedMarkdown.current
+    val images = remember(node, prepared) {
         markdownDescendants(markdownChildren(node)).filterIsInstance<Image>()
             .filter { markdownHttpLinkUrl(it.destination) != null }.toList()
     }
     images.forEach { image ->
-        val description = remember(image) { renderMarkdownInline(image).text }
+        val description = remember(image, prepared) { prepared?.inline?.get(image)?.text.orEmpty() }
         var failed by remember(image.destination) { mutableStateOf(false) }
         // AsyncImage can participate in table-cell intrinsic sizing; SubcomposeAsyncImage cannot.
         NeumorphSurface(
