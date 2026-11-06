@@ -1,0 +1,21 @@
+{
+  "steps": [
+    [
+      {"type":"thinking","text":"plan"},
+      {"type":"text","text":"inspect"},
+      {"type":"tool_call","toolCallId":"read-1","toolName":"read"},
+      {"type":"tool_call","toolCallId":"bash-1","toolName":"bash"}
+    ],
+    [
+      {"type":"thinking","text":"review"},
+      {"type":"text","text":"adjust"},
+      {"type":"tool_call","toolCallId":"edit-1","toolName":"edit"}
+    ],
+    [{"type":"text","text":"done"}]
+  ],
+  "expectedCards": [
+    ["thinking:plan","text:inspect","tool:read-1","tool:bash-1"],
+    ["thinking:review","text:adjust","tool:edit-1"],
+    ["text:done"]
+  ]
+}

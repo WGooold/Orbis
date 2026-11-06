@@ -6,6 +6,9 @@ internal enum class ContentPresentation(val startsCollapsed: Boolean) {
     TOOL(true),
 }
 
+internal const val CHAT_CARD_PROSE_LIMIT = 4
+internal const val CHAT_TOOL_PAGE_SIZE = 8
+
 internal fun contentPresentation(role: String, contentType: String): ContentPresentation = when {
     role == "tool" -> ContentPresentation.TOOL
     contentType == "thinking" -> ContentPresentation.THINKING
@@ -23,48 +26,33 @@ internal fun compactActivitySummary(value: String, maxCharacters: Int = 120): St
 }
 
 /**
- * S7 消息形态的列表模型：会话按「轮次」呈现——
- * 用户消息独立成行（平铺气泡，右下收角）；助手消息按真实 turn 分卡片。
- * 没有 turn 计时锚点的旧历史才回退到连续非用户消息合并。
+ * S31: cards follow visible reasoning/text/tool steps on every backend. Native turns
+ * remain timing/execution facts and never decide the visual grouping.
  */
 internal sealed interface ChatListItem {
-    /** LazyColumn 的稳定 key：取该行首条消息的 messageId。 */
+    /** Stable local card identity; tool-only cards use the native tool identity. */
     val key: String
 
     data class UserMessage(val message: ChatMessage) : ChatListItem {
         override val key: String get() = message.messageId
     }
 
-    data class AssistantTurn(val messages: List<ChatMessage>, val copyMessages: List<ChatMessage> = messages) : ChatListItem {
-        override val key: String get() = messages.first().messageId
-    }
+    data class AssistantTurn(
+        val messages: List<ChatMessage>,
+        val copyMessages: List<ChatMessage> = messages,
+        override val key: String = messages.first().messageId,
+        /** Only the last fragment owns source timing and file-change anchors. */
+        val completedMessageIds: Set<String> = messages.mapTo(linkedSetOf()) { it.messageId },
+    ) : ChatListItem
 }
 
-/** Keep lazy-list work bounded even when a single turn contains hundreds of tool/text messages. */
-internal fun chatViewportItems(items: List<ChatListItem>, previous: List<ChatListItem> = emptyList()): List<ChatListItem> {
-    val previousTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>().associateBy { it.key }
-    return items.flatMap { item ->
-        if (item !is ChatListItem.AssistantTurn || item.messages.size <= 4) listOf(item)
-        else buildList {
-            var start = 0
-            while (start < item.messages.size) {
-                // Keep existing row starts when paging prepends messages to this same turn.
-                val end = (start + 1 until minOf(start + 4, item.messages.size))
-                    .firstOrNull { item.messages[it].messageId in previousTurns } ?: minOf(start + 4, item.messages.size)
-                val cached = previousTurns[item.messages[start].messageId]
-                add(if (cached?.copyMessages === item.messages && cached.messages.size == end - start) cached
-                    else ChatListItem.AssistantTurn(item.messages.subList(start, end).toList(), copyMessages = item.messages))
-                start = end
-            }
-        }
-    }
-}
+/** Tool groups page locally; storage message batching must not create extra card frames. */
+@Suppress("UNUSED_PARAMETER")
+internal fun chatViewportItems(items: List<ChatListItem>, previous: List<ChatListItem> = emptyList()): List<ChatListItem> = items
 
 /**
- * 一张助手卡片要显示的计时。
- *
- * 有 turn 计时锚点时，助手卡片按每个真实 turn 分开；没有 turn 计时的旧历史仍按连续的非用户
- * 消息合并。后者可能让一张旧卡片包含多条计时，所以这里保留累计时长的兼容逻辑。
+ * Timings describe the native work ending in this card, independently of visual boundaries.
+ * If several native turns end here, the interval spans all of them and remains live until all finish.
  */
 internal fun groupTurnTiming(timings: List<TurnTiming>): TurnTiming? {
     val first = timings.minByOrNull(TurnTiming::startedAt) ?: return null
@@ -74,10 +62,11 @@ internal fun groupTurnTiming(timings: List<TurnTiming>): TurnTiming? {
 }
 
 /**
- * 按用户消息和真实 turn 的完成锚点组织渲染行。turn timing 的 messageId 指向该 turn 最终
- * 产生的消息，因此在这个消息后结束当前助手卡片；同一 turn 内的正文、思考和工具消息仍在
- * 同一张卡片中。没有锚点的旧历史回退到连续非用户消息合并。
+ * A step contains reasoning, text, then tools. New reasoning/text after tools starts
+ * the next card, including when both steps were packed into one native message.
+ * Source message IDs/content stay intact outside this local projection.
  */
+@Suppress("UNUSED_PARAMETER")
 internal fun buildChatListItems(
     messages: List<ChatMessage>,
     turnIdsByMessageId: Map<String, String> = emptyMap(),
@@ -91,19 +80,39 @@ internal fun buildChatListItems(
 ): List<ChatListItem> {
     val items = mutableListOf<ChatListItem>()
     var assistantMessages = mutableListOf<ChatMessage>()
-    var turnBoundaryPending = false
+    var hasTools = false
+    var hasText = false
+    var proseCount = 0
+    var cardKey: String? = null
+    val completed = linkedSetOf<String>()
     val reusableUsers = previous.filterIsInstance<ChatListItem.UserMessage>().associateBy { it.message.messageId }
     val reusableTurns = previous.filterIsInstance<ChatListItem.AssistantTurn>().groupBy { it.key }
 
     fun flushAssistantMessages() {
         if (assistantMessages.isNotEmpty()) {
-            val reused = reusableTurns[assistantMessages.first().messageId]?.firstOrNull { turn ->
+            val key = requireNotNull(cardKey)
+            val reused = reusableTurns[key]?.firstOrNull { turn ->
+                turn.completedMessageIds == completed &&
                 turn.messages.size == assistantMessages.size &&
-                    turn.messages.indices.all { turn.messages[it] === assistantMessages[it] }
+                    turn.messages.indices.all { turn.messages[it] === assistantMessages[it] || turn.messages[it] == assistantMessages[it] }
             }
-            items += reused ?: ChatListItem.AssistantTurn(assistantMessages.toList())
+            items += reused ?: ChatListItem.AssistantTurn(assistantMessages.toList(), key = key, completedMessageIds = completed.toSet())
             assistantMessages = mutableListOf()
         }
+        completed.clear(); cardKey = null; hasTools = false; hasText = false; proseCount = 0
+    }
+
+    fun partKey(message: ChatMessage, start: Int): String {
+        val tool = message.content.getOrNull(start)?.toolCallId
+        return if (tool != null) "tool-card:$tool" else if (start == 0) message.messageId else "${message.messageId}:card:$start"
+    }
+
+    fun append(message: ChatMessage, start: Int, end: Int) {
+        if (start == end && message.content.isNotEmpty()) return
+        if (cardKey == null) cardKey = partKey(message, start)
+        assistantMessages += if (start == 0 && end == message.content.size) message
+            else message.copy(content = message.content.subList(start, end).toList())
+        if (end == message.content.size) completed += message.messageId
     }
 
     for (message in messages) {
@@ -111,18 +120,52 @@ internal fun buildChatListItems(
             flushAssistantMessages()
             val cached = reusableUsers[message.messageId]
             items += if (cached != null && cached.message === message) cached else ChatListItem.UserMessage(message)
-            turnBoundaryPending = false
             continue
         }
-        // A turn timing points at the assistant message that closes or represents the turn. A
-        // following tool result can still belong to that turn, so keep tool rows with it; the
-        // next assistant row starts the next card.
-        if (turnBoundaryPending && message.role != "tool") flushAssistantMessages()
-        assistantMessages += message
-        if (turnIdsByMessageId[message.messageId] != null) turnBoundaryPending = true
+        if (message.role !in setOf("assistant", "tool") || message.isError == true) {
+            flushAssistantMessages()
+            append(message, 0, message.content.size)
+            flushAssistantMessages()
+            continue
+        }
+        var start = 0
+        message.content.forEachIndexed { index, block ->
+            val tool = message.role == "tool" || block.type in setOf("tool_call", "toolCall")
+            if (!tool && block.artifact == null && block.text.isNullOrBlank()) return@forEachIndexed
+            val knownStart = partKey(message, index) in reusableTurns && (assistantMessages.isNotEmpty() || start < index)
+            if (knownStart || !tool && (hasTools || block.type == "thinking" && hasText || proseCount >= CHAT_CARD_PROSE_LIMIT)) {
+                if (start < index) append(message, start, index)
+                flushAssistantMessages()
+                start = index
+            }
+            if (tool) hasTools = true
+            else proseCount++
+            if (block.type == "text" && !tool && !block.text.isNullOrBlank()) hasText = true
+        }
+        append(message, start, message.content.size)
     }
     flushAssistantMessages()
     return items
+}
+
+internal data class ChatCardTool(val message: ChatMessage, val block: RemoteContent, val index: Int) {
+    val key: String get() = block.toolCallId ?: "${message.messageId}:tool:$index"
+}
+
+internal data class AssistantCardContent(val prose: List<ChatMessage>, val tools: List<ChatCardTool>)
+
+/** Group tools across native message boundaries; the card grouper guarantees they are a tail. */
+internal fun assistantCardContent(messages: List<ChatMessage>): AssistantCardContent {
+    val tools = mutableListOf<ChatCardTool>()
+    val prose = messages.mapNotNull { message ->
+        val content = message.content.filterIndexed { index, block ->
+            val tool = block.type in setOf("tool_call", "toolCall")
+            if (tool) tools += ChatCardTool(message, block, index)
+            !tool
+        }
+        if (content.isEmpty()) null else if (content.size == message.content.size) message else message.copy(content = content)
+    }
+    return AssistantCardContent(prose, tools)
 }
 
 /**

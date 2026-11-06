@@ -207,10 +207,13 @@ struct MarkdownBlock: Identifiable, Equatable {
 
 struct ChatRow: Identifiable {
     var messages: [ChatMessage]
-    /// A long turn is virtualized in small rows; its copy action still owns the complete turn.
+    /// Optional explicit copy scope; ordinary visual cards copy their own content.
     var copyMessages: [ChatMessage]? = nil
-    var id: String { messages[0].messageId }
+    var cardId: String? = nil
+    var completedMessageIds: Set<String>? = nil
+    var id: String { cardId ?? messages[0].messageId }
     var isUser: Bool { messages[0].role == "user" }
+    var completedIds: Set<String> { completedMessageIds ?? Set(messages.map(\.messageId)) }
 }
 
 /// A pointer into the existing transcript, never a new message or an inferred turn identity.
@@ -231,20 +234,10 @@ struct ChatQuestion: Equatable {
     }
 }
 
-func chatViewportRows(_ rows: [ChatRow], previous: [ChatRow] = []) -> [ChatRow] {
-    let starts = Set(previous.filter { !$0.isUser }.map(\.id))
-    return rows.flatMap { row in
-        guard !row.isUser, row.messages.count > 4 else { return [row] }
-        var result: [ChatRow] = [], start = 0
-        while start < row.messages.count {
-            let limit = min(start + 4, row.messages.count)
-            let end = ((start + 1)..<limit).first { starts.contains(row.messages[$0].messageId) } ?? limit
-            result.append(ChatRow(messages: Array(row.messages[start..<end]), copyMessages: row.messages))
-            start = end
-        }
-        return result
-    }
-}
+// Message packing is a transport detail. Prose has a shared block budget; tools page locally.
+let chatCardProseLimit = 4
+let chatToolPageSize = 8
+func chatViewportRows(_ rows: [ChatRow], previous: [ChatRow] = []) -> [ChatRow] { rows }
 
 struct ChatPresentation {
     let messages: [ChatMessage]
@@ -335,6 +328,7 @@ struct ChatTranscript {
     /// Only the tool results and timings that belong to each row, so an unchanged row compares equal.
     let toolResultsByRow: [String: [String: ChatMessage]]
     let timingsByRow: [String: [SessionTurnTiming]]
+    let changeAnchorsByRow: [String: Set<String>]
 
     static let empty = ChatTranscript(messages: [], turnTimings: [:])
 
@@ -347,33 +341,103 @@ struct ChatTranscript {
         let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
         let turnIds = Dictionary(timings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last })
         let timingsByMessage = Dictionary(grouping: timings.filter { $0.messageId != nil }, by: { $0.messageId! })
-        rows = chatViewportRows(chatRows(presentation.messages, turnIdsByMessageId: turnIds), previous: previousRows)
+        rows = chatRows(presentation.messages, turnIdsByMessageId: turnIds, previous: previousRows)
         firstMessageId = presentation.messages.first?.messageId
         questions = presentation.messages.compactMap(ChatQuestion.init)
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
+        var rowAnchors: [String: Set<String>] = [:]
         for row in rows {
             let calls = row.messages.flatMap { message in
                 message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolCallId].compactMap { $0 }
             }
             let owned = Dictionary(calls.compactMap { id in presentation.toolResults[id].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
             if !owned.isEmpty { results[row.id] = owned }
-            let rowTiming = row.messages.flatMap { timingsByMessage[$0.messageId] ?? [] }
+            let rowTiming = row.messages.filter { row.completedIds.contains($0.messageId) }.flatMap { timingsByMessage[$0.messageId] ?? [] }
             if !rowTiming.isEmpty { rowTimings[row.id] = rowTiming }
+            if !row.isUser { rowAnchors[row.id] = row.completedIds }
         }
         toolResultsByRow = results; timingsByRow = rowTimings
+        changeAnchorsByRow = rowAnchors
     }
 }
 
-func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = [:]) -> [ChatRow] {
-    var rows: [ChatRow] = [], boundaryPending = false
-    for message in messages {
-        if message.role == "user" { rows.append(ChatRow(messages: [message])); boundaryPending = false; continue }
-        if boundaryPending && message.role != "tool" { rows.append(ChatRow(messages: [message])); boundaryPending = false }
-        else if let last = rows.indices.last, !rows[last].isUser { rows[last].messages.append(message) }
-        else { rows.append(ChatRow(messages: [message])) }
-        if turnIdsByMessageId[message.messageId] != nil { boundaryPending = true }
+/// S31: use visible reasoning/text/tool steps, independently of native turn and message packing.
+func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = [:], previous: [ChatRow] = []) -> [ChatRow] {
+    var rows: [ChatRow] = [], pending: [ChatMessage] = [], completed = Set<String>()
+    var cardId: String?, hasTools = false, hasText = false, proseCount = 0
+    let starts = Set(previous.filter { !$0.isUser }.map(\.id))
+    func flush() {
+        if !pending.isEmpty {
+            var row = ChatRow(messages: pending)
+            row.cardId = cardId; row.completedMessageIds = completed
+            rows.append(row)
+        }
+        pending = []; completed = []; cardId = nil; hasTools = false; hasText = false; proseCount = 0
     }
+    func partId(_ message: ChatMessage, _ index: Int) -> String {
+        if message.content.indices.contains(index), let tool = message.content[index].toolCallId { return "tool-card:\(tool)" }
+        return index == 0 ? message.messageId : "\(message.messageId):card:\(index)"
+    }
+    func append(_ message: ChatMessage, _ start: Int, _ end: Int) {
+        if start == end && !message.content.isEmpty { return }
+        if cardId == nil { cardId = partId(message, start) }
+        if start == 0 && end == message.content.count { pending.append(message) }
+        else {
+            var fragment = ChatMessage(messageId: message.messageId, role: message.role, content: Array(message.content[start..<end]),
+                                       timestamp: message.timestamp, isError: message.isError)
+            fragment.toolSummary = message.toolSummary; fragment.toolCallId = message.toolCallId
+            fragment.toolName = message.toolName; fragment.clientMessageId = message.clientMessageId
+            pending.append(fragment)
+        }
+        if end == message.content.count { completed.insert(message.messageId) }
+    }
+    for message in messages {
+        if message.role == "user" { flush(); rows.append(ChatRow(messages: [message])); continue }
+        if !["assistant", "tool"].contains(message.role) || message.isError == true {
+            flush(); append(message, 0, message.content.count); flush(); continue
+        }
+        var start = 0
+        for (index, block) in message.content.enumerated() {
+            let tool = message.role == "tool" || ["tool_call", "toolCall"].contains(block.type)
+            if !tool && block.artifact == nil && (block.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) { continue }
+            let knownStart = starts.contains(partId(message, index)) && (!pending.isEmpty || start < index)
+            if knownStart || !tool && (hasTools || block.type == "thinking" && hasText || proseCount >= chatCardProseLimit) {
+                if start < index { append(message, start, index) }
+                flush(); start = index
+            }
+            if tool { hasTools = true } else { proseCount += 1 }
+            if block.type == "text" && !tool && block.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false { hasText = true }
+        }
+        append(message, start, message.content.count)
+    }
+    flush()
     return rows
+}
+
+struct ChatCardTool: Identifiable {
+    let message: ChatMessage
+    let block: ChatContent
+    let index: Int
+    var id: String { block.toolCallId ?? "\(message.messageId):tool:\(index)" }
+    var displayMessage: ChatMessage {
+        ChatMessage(messageId: id, role: "assistant", content: [block], timestamp: message.timestamp, isError: message.isError)
+    }
+}
+
+func assistantCardContent(_ messages: [ChatMessage]) -> (prose: [ChatMessage], tools: [ChatCardTool]) {
+    var prose: [ChatMessage] = [], tools: [ChatCardTool] = []
+    for message in messages {
+        let content = message.content.enumerated().compactMap { index, block -> ChatContent? in
+            if ["tool_call", "toolCall"].contains(block.type) { tools.append(ChatCardTool(message: message, block: block, index: index)); return nil }
+            return block
+        }
+        if content.isEmpty { continue }
+        if content.count == message.content.count { prose.append(message) }
+        else {
+            prose.append(ChatMessage(messageId: message.messageId, role: message.role, content: content, timestamp: message.timestamp, isError: message.isError))
+        }
+    }
+    return (prose, tools)
 }
 
 /// 宿主在运行中的回合里不会下发只含工具调用的 live 消息，而是放进工具清单（与 Android materializeToolPayload 一致）。

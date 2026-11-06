@@ -70,7 +70,7 @@ struct PresentationTests {
         #expect(result.map(\.messageId) == ["history", "old", "prompt", "tool-live:first", "tool-live:second", "answer"])
         #expect(result[3].content.first?.summary?.tool?.toolCallId == "first")
         let rows = chatRows(result)
-        #expect(rows.count == 4 && rows[3].messages.map(\.messageId) == ["tool-live:first", "tool-live:second", "answer"])
+        #expect(rows.count == 5 && rows[3].messages.map(\.messageId) == ["tool-live:first", "tool-live:second"] && rows[4].id == "answer")
         #expect(materializeLiveTools(messages, tools: [], liveOrders: ["answer": 3]) == messages)
     }
 
@@ -203,13 +203,13 @@ struct PresentationTests {
         #expect(fresh.value(for: second, request: request).other["public"] == "电脑 B")
     }
 
-    @Test func assistantCardsRespectTurnBoundariesAndKeepFollowingToolResultsTogether() {
+    @Test func assistantCardsUseToolStepsIndependentlyOfNativeTurnBoundaries() {
         func message(_ id: String, _ role: String) -> ChatMessage {
             ChatMessage(messageId: id, role: role, content: [ChatContent(type: "text", text: id, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
         }
         let messages = [message("user", "user"), message("first", "assistant"), message("tool", "tool"), message("next", "assistant"), message("last", "assistant")]
-        #expect(chatRows(messages).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool", "next", "last"]])
-        #expect(chatRows(messages, turnIdsByMessageId: ["first": "turn-a", "next": "turn-b"]).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool"], ["next"], ["last"]])
+        #expect(chatRows(messages).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool"], ["next", "last"]])
+        #expect(chatRows(messages, turnIdsByMessageId: ["first": "turn-a", "next": "turn-b"]).map { $0.messages.map(\.messageId) } == [["user"], ["first", "tool"], ["next", "last"]])
     }
 
     @Test @MainActor func independentInteractionCachesMergeWithoutRemovingOtherRuntimesDrafts() throws {
@@ -283,15 +283,15 @@ struct PresentationTests {
         let result = ChatMessage(messageId: "result", role: "tool", content: [ChatContent(type: "text", text: "done", toolName: nil, artifact: nil)], timestamp: 1, isError: nil, toolCallId: "tool", toolName: "read")
         let timing = SessionTurnTiming(turnId: "turn", startedAt: 1, durationMs: 2, turnIndex: nil, messageId: "a2")
         let transcript = ChatTranscript(messages: [text("u1", "user"), call, result, text("a2", "assistant"), text("u2", "user")], turnTimings: ["turn": timing])
-        #expect(transcript.rows.map(\.id) == ["u1", "call", "u2"])
+        #expect(transcript.rows.map(\.id) == ["u1", "tool-card:tool", "a2", "u2"])
         #expect(transcript.firstMessageId == "u1")
-        #expect(transcript.toolResultsByRow["call"]?["tool"] == result)
+        #expect(transcript.toolResultsByRow["tool-card:tool"]?["tool"] == result)
         #expect(transcript.toolResultsByRow["u2"] == nil)
-        #expect(transcript.timingsByRow["call"] == [timing])
+        #expect(transcript.timingsByRow["a2"] == [timing])
         #expect(ChatTranscript.empty.rows.isEmpty)
     }
 
-    @Test func longTurnsKeepFullCopyTimingAndStableRowsWhenHistoryIsPrepended() {
+    @Test func boundedProseCardsKeepOwnCopyTimingAndStableRowsWhenHistoryIsPrepended() {
         func text(_ index: Int) -> ChatMessage {
             ChatMessage(messageId: "m\(index)", role: "assistant", content: [ChatContent(type: "text", text: "message \(index)", toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
         }
@@ -300,7 +300,7 @@ struct PresentationTests {
         let first = ChatTranscript(messages: messages, turnTimings: ["turn": timing])
         #expect(first.rows.map { $0.messages.count } == [4, 4, 4, 1])
         #expect(first.rows.flatMap(\.messages) == messages)
-        #expect(first.rows.allSatisfy { $0.copyMessages == messages })
+        #expect(first.rows.allSatisfy { $0.copyMessages == nil })
         #expect(first.timingsByRow == ["m12": [timing]])
         let prefixed = ChatTranscript(messages: [text(-2), text(-1)] + messages,
                                       turnTimings: ["turn": timing], previousRows: first.rows)

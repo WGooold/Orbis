@@ -6,7 +6,7 @@
 
 当前修订：消息旁菜单与显式选字；iOS 侧栏沿用 r47、Android 恢复原材质；回复卡片、语言、后台任务与统一轻压均维持现有实现。参数、生命周期和边界以实现及测试断言为准。
 
-登记 84 项（S 27、M 24、V 22、X 11）；历史登记已交付 67 项，不代表本次重验或后续修订已验收。未完成的用户 / 设备验证继续待验证；实际状态只认本次证据。
+登记 85 项（S 28、M 24、V 22、X 11）；历史登记已交付 67 项，不代表本次重验或后续修订已验收。未完成的用户 / 设备验证继续待验证；实际状态只认本次证据。
 
 | ID | 作用 |
 | --- | --- |
@@ -37,6 +37,7 @@
 | S25 | 可切换的雾蓝外观（r34，验证中） |
 | S26 | 主会话后台子任务（r44 已实施 / 验证中） |
 | S27 | 全 App 中英文与跟随手机语言（r45，验证中） |
+| S31 | 各后端共用内容步骤分卡与折叠工具组（SC50；已实现，定向自动验证通过，待用户验证） |
 | M01 | 自定义拖拽回位 |
 | M02 | 勾选小反馈 |
 | M03 | 自然高度折叠 |
@@ -102,3 +103,7 @@
 代码与证据：[Android 单元测试](../../android/app/src/test/java/com/orbising/orbis/) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/)；[iOS 核心测试](../../ios/Orbis/Tests/) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Host / 协议测试](../../packages/)；[原始证据](../../.artifacts/ui-regression/)。
 
 2026-11-05 PERF-07：Android 目录后台投影、行事实复用、标题缓存与 IO 水合保持 S19 / V21 及原视觉、动效、阅读行为；沿用 SC03 / SC08 / SC36、MOT-14，见 [ADR-0060](0060-mobile-relay-history-performance.md)。自动证据与用户验收分别记录，真机体感待用户验证。
+
+2026-11-06 S31 / SC50：聊天卡片统一按可见的思考、正文、工具步骤组织；工具之后的新正文或思考开始下一张卡，原生轮次只用于执行与计时。正文预算按内容块计算，多工具默认合为折叠组并分页展开，消息打包和后端类型不决定外框数量。源消息拆为本地显示片段时仅末片段持有计时与文件变更锚点；已显示边界在历史前插时保持。未改变协议、历史存储或发送语义。实现：[Android 分组](../../android/app/src/main/java/com/orbising/orbis/MessagePresentation.kt)、[iOS 分组](../../ios/Orbis/Orbis/Presentation.swift)、两端聊天视图。共用输入：[夹具](../../ios/Orbis/Tests/Fixtures/chat-card-layout.json)；回归：[Android](../../android/app/src/test/java/com/orbising/orbis/UnifiedChatCardTest.kt)、[iOS](../../ios/Orbis/Tests/UnifiedChatCardTests.swift)。执行、构建与清理证据：[本次证据](../../.artifacts/unified-chat-cards-20261106/)。安装、真实后端视觉回归及用户验收待完成。
+
+S31 自动验证：提交范围在独立副本中复验，Android 定向单元测试 22 项、Swift 展示与统一卡片测试 29 项通过；iOS 通用模拟器目标完整编译通过，1485 项中英文目录及静态差异检查通过。Android 复用原生源码哈希一致的既有 QUIC 依赖包。原断言、首次失败及依赖准备日志保留在任务证据中，测试说明与预期按新展示语义调整。未运行设备视觉测试、未安装或部署；手动验证使用包含 S31 的新 App，在 Pi、DSH、Claude、Codex 会话查看连续调用、展开工具组、刷新及重连，状态为待用户验证。

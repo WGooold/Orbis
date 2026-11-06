@@ -264,12 +264,9 @@ struct ChatView: View {
         }
     }
 
-    /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
-    /// row, whichever of the turn's messages the Host anchored it to.
+    /// Only the final visual fragment owns source file changes.
     private func turnEndChangeAnchors(_ row: ChatRow) -> Set<String> {
-        let turn = row.copyMessages ?? row.messages
-        guard !row.isUser, row.messages.last?.messageId == turn.last?.messageId else { return [] }
-        return store.changeAnchors(for: Set(turn.map(\.messageId)))
+        store.changeAnchors(for: store.chatTranscript.changeAnchorsByRow[row.id] ?? [])
     }
 
     private var conversation: some View {
@@ -768,8 +765,16 @@ struct ChatMessageRow: View, Equatable {
                                 .padding(.vertical, -10)
                         }
                     }
-                    ForEach(row.messages) { message in
-                        MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
+                    if row.isUser {
+                        ForEach(row.messages) { message in
+                            MessageContentView(message: message, toolResults: toolResults, streaming: false)
+                        }
+                    } else {
+                        let content = assistantCardContent(row.messages)
+                        ForEach(content.prose) { message in
+                            MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
+                        }
+                        if !content.tools.isEmpty { ChatToolGroup(calls: content.tools, results: toolResults) }
                     }
                     if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
@@ -922,6 +927,39 @@ private struct PendingSendStatus: View {
                     .accessibilityIdentifier("pending-discard-" + rowId)
             }
         }.accessibilityElement(children: .contain).accessibilityIdentifier("pending-status-" + rowId)
+    }
+}
+
+/// A batch remains one compact group even if a backend uses one message per call.
+private struct ChatToolGroup: View {
+    let calls: [ChatCardTool]
+    let results: [String: ChatMessage]
+    @State private var visible = chatToolPageSize
+    private func summary(_ call: ChatCardTool) -> ToolSummary? { call.block.toolCallId.flatMap { results[$0]?.toolSummary } ?? call.block.summary }
+    private var phase: String {
+        let running = calls.contains { call in
+            if let value = summary(call) { return !["finished", "cancelled"].contains(value.phase) }
+            return call.block.toolCallId.flatMap { results[$0] } == nil
+        }
+        if running { return L10n.tr("执行中") }
+        if calls.contains(where: { summary($0)?.isError == true || $0.block.toolCallId.flatMap { results[$0]?.isError } == true }) { return L10n.tr("执行失败") }
+        return L10n.tr("已完成")
+    }
+    var body: some View {
+        if calls.count == 1 {
+            MessageContentView(message: calls[0].displayMessage, toolResults: results)
+        } else {
+            CompactDisclosure(title: L10n.tr("{0} 次工具调用", calls.count), detail: phase, symbol: "wrench.and.screwdriver") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(calls.prefix(visible))) { call in
+                        MessageContentView(message: call.displayMessage, toolResults: results)
+                    }
+                    if visible < calls.count {
+                        OrbisActionButton(title: L10n.tr("显示更多工具（剩余 {0} 项）", calls.count - visible)) { visible += chatToolPageSize }
+                    }
+                }
+            }.accessibilityIdentifier("chat-tool-group")
+        }
     }
 }
 

@@ -1444,9 +1444,10 @@ internal fun OfflineHistoryScreen(
                     )
 
                     is ChatListItem.AssistantTurn -> AssistantTurnCard(
+                        cardId = item.key,
                         runtimeId = offlineRuntimeId,
                         messages = item.messages,
-                        turnTiming = groupTurnTiming(item.messages.mapNotNull { messageTurnTimings[it.messageId] }),
+                        turnTiming = groupTurnTiming(item.completedMessageIds.mapNotNull { messageTurnTimings[it] }),
                         nowMs = System.currentTimeMillis(),
                         toolActivities = emptyMap(),
                         toolResults = presentation.toolResults,
@@ -2390,11 +2391,12 @@ internal fun ChatScreen(
                         )
 
                         is ChatListItem.AssistantTurn -> AssistantTurnCard(
+                            cardId = item.key,
                             runtimeId = runtimeId,
                             messages = item.messages,
                             copyMessages = item.copyMessages,
-                            turnTiming = groupTurnTiming(item.messages.mapNotNull { messageTurnTimings[it.messageId] }),
-                            nowMs = timerNow,
+                            turnTiming = groupTurnTiming(item.completedMessageIds.mapNotNull { messageTurnTimings[it] }),
+                            nowMs = if (item.completedMessageIds.mapNotNull { messageTurnTimings[it] }.any { it.durationMs == null }) timerNow else 0L,
                             streamingMessageIds = if (state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing)
                                 conversation.streamingMessageIds - conversation.finishedMessageIds else emptySet(),
                             replyArrivals = replyArrivals,
@@ -2404,9 +2406,8 @@ internal fun ChatScreen(
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
-                                // A long turn is virtualized into small rows; its review card follows the
-                                // turn's last row whichever of the turn's messages carries the anchor.
-                                val ids = if (item.messages.last() === item.copyMessages.last()) item.copyMessages.map { it.messageId }.toSet() else emptySet()
+                                // A source split across visual steps owns its review only at its last fragment.
+                                val ids = item.completedMessageIds
                                 val turns = ids.mapNotNull(turnIdsByMessageId::get).toSet()
                                 val changes = state.turnChanges[runtimeId]
                                 changes?.summaries?.values?.filter { summary ->
@@ -3810,7 +3811,7 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
     }
 }
 
-/** One softly raised panel per assistant turn; text and nested Markdown stay on a quiet reading surface. */
+/** One shared panel per visible reasoning/text/tool step, independent of native turns. */
 @Composable
 internal fun AssistantTurnCard(
     runtimeId: String,
@@ -3825,12 +3826,14 @@ internal fun AssistantTurnCard(
     streamingMessageIds: Set<String> = emptySet(),
     replyArrivals: ReplyCardArrivals? = null,
     copyMessages: List<ChatMessage> = messages,
+    cardId: String = messages.first().messageId,
     fileChanges: @Composable () -> Unit = {},
 ) {
     val motionParts = remember(messages) { messages.flatMap { message -> message.content.mapIndexed { index, block ->
         ReplyCardPart("${message.messageId}:$index:${block.type}", block.text.orEmpty())
     } } }
-    GrowingReplyCard(messages.first().messageId, motionParts, messages.any { it.messageId in streamingMessageIds }, replyArrivals) {
+    val content = remember(messages) { assistantCardContent(messages) }
+    GrowingReplyCard(cardId, motionParts, messages.any { it.messageId in streamingMessageIds }, replyArrivals) {
         Column(Modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AgentLabel(LocalAgentBrand.current)
@@ -3844,7 +3847,7 @@ internal fun AssistantTurnCard(
                     }
                 }
             }
-            messages.forEach { message ->
+            content.prose.forEach { message ->
                 key(runtimeId, message.messageId) {
                     CompositionLocalProvider(LocalStreamingText provides (message.messageId in streamingMessageIds)) {
                     AssistantTurnMessage(
@@ -3859,8 +3862,51 @@ internal fun AssistantTurnCard(
                     }
                 }
             }
+            if (content.tools.isNotEmpty()) ChatToolGroup(runtimeId, content.tools, toolActivities, toolResults,
+                downloads, downloadArtifact, downloadFile)
             turnTiming?.let { TurnDurationLabel(it, nowMs) }
             fileChanges()
+        }
+    }
+}
+
+/** S31: one bounded disclosure for a parallel tool batch, across all native message shapes. */
+@Composable
+private fun ChatToolGroup(
+    runtimeId: String,
+    calls: List<ChatCardTool>,
+    activities: Map<String, ToolActivity>,
+    results: Map<String, ChatMessage>,
+    downloads: Map<String, ArtifactDownload>,
+    downloadArtifact: (RemoteArtifact) -> Unit,
+    downloadFile: (String) -> Unit,
+) {
+    val id = calls.first().key
+    var expanded by rememberSaveable(id) { mutableStateOf(false) }
+    var visible by rememberSaveable(id) { mutableIntStateOf(CHAT_TOOL_PAGE_SIZE) }
+    val summaries = calls.map { call -> results[call.block.toolCallId]?.toolSummary
+        ?: activities[call.block.toolCallId]?.summary ?: call.block.summary }
+    val running = calls.indices.any { index -> summaries[index]?.let { it.phase !in setOf("finished", "cancelled") }
+        ?: (activities[calls[index].block.toolCallId]?.state?.let { it != "finished" } ?: (results[calls[index].block.toolCallId] == null)) }
+    val failed = summaries.any { it?.isError == true } || calls.any { results[it.block.toolCallId]?.isError == true }
+    val status = if (running) L10n.tr("执行中") else if (failed) L10n.tr("执行失败") else L10n.tr("已完成")
+    @Composable fun callView(call: ChatCardTool) {
+        androidx.compose.runtime.key(call.key) {
+            MessageBlocks(runtimeId, call.message.copy(content = listOf(call.block)), activities, results,
+                downloads, downloadArtifact, downloadFile)
+        }
+    }
+    if (calls.size == 1) { callView(calls.first()); return }
+    Column(Modifier.fillMaxWidth()) {
+        NeumorphTextButton(text = L10n.tr("{0} 次工具调用", calls.size) + " · " + status,
+            icon = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().testTag("chat-tool-group"))
+        OrbisCollapse(expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                calls.take(visible).forEach { callView(it) }
+                if (visible < calls.size) NeumorphTextButton(L10n.tr("显示更多工具（剩余 {0} 项）", calls.size - visible),
+                    onClick = { visible += CHAT_TOOL_PAGE_SIZE }, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }
@@ -4000,8 +4046,7 @@ private fun CollapsedThinking(text: String) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     CompactDisclosure(
         icon = Icons.Rounded.Psychology,
-        title = L10n.tr("思考"),
-        status = L10n.tr("{0} 行", text.lineSequence().count()),
+        title = L10n.tr("思考过程"),
         summary = text,
         collapsedSummary = "",
         expanded = expanded,
