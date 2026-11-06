@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 func connectionLatencyText(_ rttMs: Double?, connected: Bool) -> String {
     guard connected, let rttMs, rttMs.isFinite, rttMs >= 0 else { return L10n.tr("暂不可用") }
@@ -209,6 +210,9 @@ struct ChatRow: Identifiable {
     var messages: [ChatMessage]
     /// Optional explicit copy scope; ordinary visual cards copy their own content.
     var copyMessages: [ChatMessage]? = nil
+    var copyText: String? = nil
+    /// Compared by the UI without walking a whole long turn. Reused by the transcript worker.
+    var contentRevision = UUID()
     var cardId: String? = nil
     var completedMessageIds: Set<String>? = nil
     var id: String { cardId ?? messages[0].messageId }
@@ -329,6 +333,7 @@ struct ChatTranscript {
     let toolResultsByRow: [String: [String: ChatMessage]]
     let timingsByRow: [String: [SessionTurnTiming]]
     let changeAnchorsByRow: [String: Set<String>]
+    let contentRevision: UUID
 
     static let empty = ChatTranscript(messages: [], turnTimings: [:])
 
@@ -336,16 +341,25 @@ struct ChatTranscript {
         questions.last { !messageIds.contains($0.messageId) }
     }
 
-    init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = []) {
+    init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = [],
+         displayIds: [String: String] = [:], aliases: [String: String] = [:], contentRevision: UUID = UUID()) {
         let presentation = chatPresentation(messages)
         let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
         let turnIds = Dictionary(timings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last })
         let timingsByMessage = Dictionary(grouping: timings.filter { $0.messageId != nil }, by: { $0.messageId! })
-        rows = chatRows(presentation.messages, turnIdsByMessageId: turnIds, previous: previousRows)
+        let previousByID = Dictionary(previousRows.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        rows = chatRows(presentation.messages, turnIdsByMessageId: turnIds, previous: previousRows).map { row in
+            guard let old = previousByID[row.id], old.messages == row.messages,
+                  old.copyMessages == row.copyMessages, old.copyText == row.copyText,
+                  old.completedIds == row.completedIds else { return row }
+            return old
+        }
         firstMessageId = presentation.messages.first?.messageId
         questions = presentation.messages.compactMap(ChatQuestion.init)
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
-        var rowAnchors: [String: Set<String>] = [:]
+        var anchorsByMessage: [String: Set<String>] = [:], rowAnchors: [String: Set<String>] = [:]
+        for (entry, message) in displayIds { anchorsByMessage[message, default: []].insert(entry) }
+        for (message, entry) in aliases { anchorsByMessage[message, default: []].insert(entry) }
         for row in rows {
             let calls = row.messages.flatMap { message in
                 message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolCallId].compactMap { $0 }
@@ -354,10 +368,16 @@ struct ChatTranscript {
             if !owned.isEmpty { results[row.id] = owned }
             let rowTiming = row.messages.filter { row.completedIds.contains($0.messageId) }.flatMap { timingsByMessage[$0.messageId] ?? [] }
             if !rowTiming.isEmpty { rowTimings[row.id] = rowTiming }
-            if !row.isUser { rowAnchors[row.id] = row.completedIds }
+            let turn = row.copyMessages ?? row.messages
+            if !row.isUser, row.messages.last?.messageId == turn.last?.messageId {
+                var anchors = row.completedIds
+                for message in turn where row.completedIds.contains(message.messageId) { anchors.formUnion(anchorsByMessage[message.messageId] ?? []) }
+                rowAnchors[row.id] = anchors
+            }
         }
         toolResultsByRow = results; timingsByRow = rowTimings
         changeAnchorsByRow = rowAnchors
+        self.contentRevision = contentRevision
     }
 }
 
@@ -370,6 +390,7 @@ func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = 
         if !pending.isEmpty {
             var row = ChatRow(messages: pending)
             row.cardId = cardId; row.completedMessageIds = completed
+            row.copyText = pending.map(\.text).joined(separator: "\n\n")
             rows.append(row)
         }
         pending = []; completed = []; cardId = nil; hasTools = false; hasText = false; proseCount = 0
@@ -496,6 +517,7 @@ struct MarkdownTextSection: Identifiable, Equatable {
     let kind: Kind
     let text: String
     var rows: [[String]] = []
+    var inlineRows: [[AttributedString]] = []
 }
 
 func markdownTextSections(_ text: String) -> [MarkdownTextSection] {
@@ -685,5 +707,374 @@ struct RevealClock: Equatable {
         if offset >= known { return 0 }
         guard let segment = segments.last(where: { $0.start <= offset }) else { return 1 }
         return min(max((now - segment.startTime(offset)) / Self.duration, 0), 1)
+    }
+}
+
+/// One rendered Markdown row and where its text starts within the whole message.
+struct MarkdownRow: Identifiable {
+    enum Kind {
+        case spacer, divider
+        case text(AttributedString)
+        case heading(Int, AttributedString)
+        case quote(AttributedString)
+        case task(Bool, AttributedString)
+        case bullet(Int, AttributedString)
+        case image(String, URL)
+        case table(MarkdownTextSection)
+        case code(String, String)
+    }
+    let id: String
+    let kind: Kind
+    let base: Int
+    let length: Int
+}
+
+private func preparedMarkdownImage(_ value: String) -> (String, URL)? {
+    guard let close = value.range(of: "]("), value.hasSuffix(")") else { return nil }
+    let alt = String(value[value.index(value.startIndex, offsetBy: 2)..<close.lowerBound])
+    let target = String(value[close.upperBound..<value.index(before: value.endIndex)]).trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+    guard let url = URL(string: target), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+    return (alt, url)
+}
+
+
+/// Parsed once on a worker. Rendering reads immutable spans, including table cells.
+final class PreparedMarkdownDocument: @unchecked Sendable {
+    let rows: [MarkdownRow]
+    let length: Int
+    init(_ text: String) {
+        func inline(_ text: String) -> AttributedString {
+            (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        }
+        var rows: [MarkdownRow] = []
+        var offset = 0
+        func add(_ id: String, _ kind: MarkdownRow.Kind, _ length: Int) {
+            rows.append(MarkdownRow(id: id, kind: kind, base: offset, length: length))
+            offset += length
+        }
+        func count(_ value: AttributedString) -> Int { String(value.characters).utf16.count }
+        for block in markdownBlocks(text) {
+            if case .code(let language) = block.kind {
+                add("code-\(block.id)", .code(language, block.text), block.text.utf16.count)
+                continue
+            }
+            for section in markdownTextSections(block.text) {
+                let id = "text-\(block.id)-\(section.id)"
+                if section.kind == .table {
+                    var table = section
+                    table.inlineRows = section.rows.map { $0.map(inline) }
+                    add(id, .table(table), 0); continue
+                }
+                let line = section.text.trimmingCharacters(in: .whitespaces)
+                let indent = section.text.prefix(while: { $0 == " " || $0 == "\t" }).count
+                let hashes = line.prefix(while: { $0 == "#" }).count
+                if line.isEmpty { add(id, .spacer, 0) }
+                else if ["---", "***", "___"].contains(line) { add(id, .divider, 0) }
+                else if line.hasPrefix("!["), let image = preparedMarkdownImage(line) { add(id, .image(image.0, image.1), 0) }
+                else if line.hasPrefix("> ") {
+                    let value = inline(String(line.dropFirst(2))); add(id, .quote(value), count(value))
+                } else if (1...6).contains(hashes), line.dropFirst(hashes).hasPrefix(" ") {
+                    let value = inline(String(line.dropFirst(hashes + 1))); add(id, .heading(hashes, value), count(value))
+                } else if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
+                    let value = inline(String(line.dropFirst(6))); add(id, .task(!line.hasPrefix("- [ ] "), value), count(value))
+                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                    let value = inline(String(line.dropFirst(2))); add(id, .bullet(indent, value), count(value) + 1)
+                } else {
+                    let value = inline(line); add(id, .text(value), count(value))
+                }
+            }
+        }
+        self.rows = rows
+        self.length = offset
+    }
+}
+
+/// NSCache admission/lookup never holds a lock while parsing; its cost is bounded by source size.
+final class MarkdownDocumentCache: @unchecked Sendable {
+    private let store = NSCache<NSString, PreparedMarkdownDocument>()
+    init() { store.countLimit = 256; store.totalCostLimit = 4 * 1024 * 1024 }
+    func cached(_ text: String) -> PreparedMarkdownDocument? { store.object(forKey: text as NSString) }
+    func insert(_ value: PreparedMarkdownDocument, text: String) { store.setObject(value, forKey: text as NSString, cost: text.utf16.count) }
+}
+
+actor MarkdownParsingWorker {
+    private let cache: MarkdownDocumentCache
+    private let parse: @Sendable (String) -> PreparedMarkdownDocument
+    init(cache: MarkdownDocumentCache, parse: @escaping @Sendable (String) -> PreparedMarkdownDocument = { PreparedMarkdownDocument($0) }) {
+        self.cache = cache; self.parse = parse
+    }
+    func resolve(_ text: String) -> PreparedMarkdownDocument {
+        if let found = cache.cached(text) { return found }
+        let value = parse(text)
+        cache.insert(value, text: text)
+        return value
+    }
+}
+
+enum MarkdownDocuments {
+    static let cache = MarkdownDocumentCache()
+    static let worker = MarkdownParsingWorker(cache: cache)
+    static func cached(_ text: String) -> PreparedMarkdownDocument? { cache.cached(text) }
+    static func resolve(_ text: String) async -> PreparedMarkdownDocument { await worker.resolve(text) }
+}
+
+struct PreparedMarkdownState {
+    let text: String
+    let document: PreparedMarkdownDocument
+}
+
+/// A stream has one parsing job and one latest input. Continuous updates cannot restart a
+/// debounce forever or queue every intermediate document behind a slow parser.
+@MainActor
+final class MarkdownPreparation: ObservableObject {
+    @Published private(set) var prepared: PreparedMarkdownState?
+    private var pending: String?
+    private var streaming = false
+    private var task: Task<Void, Never>?
+    private let resolve: @Sendable (String) async -> PreparedMarkdownDocument
+    private let interval: UInt64
+
+    init(text: String, interval: UInt64 = 60_000_000,
+         resolve: @escaping @Sendable (String) async -> PreparedMarkdownDocument = { await MarkdownDocuments.resolve($0) }) {
+        self.resolve = resolve; self.interval = interval
+        prepared = MarkdownDocuments.cached(text).map { PreparedMarkdownState(text: text, document: $0) }
+    }
+
+    func update(_ text: String, streaming: Bool) {
+        self.streaming = streaming
+        pending = text
+        guard task == nil else { return }
+        guard prepared?.text != text else { pending = nil; return }
+        task = Task { [weak self] in
+            while let self, let input = self.pending {
+                self.pending = nil
+                let document = await self.resolve(input)
+                guard !Task.isCancelled else { return }
+                self.prepared = PreparedMarkdownState(text: input, document: document)
+                if self.pending == input { self.pending = nil }
+                if self.streaming {
+                    do { try await Task.sleep(nanoseconds: self.interval) } catch { return }
+                }
+            }
+            self?.task = nil
+        }
+    }
+
+    func cancel() { task?.cancel(); task = nil; pending = nil }
+    func waitForPending() async { await task?.value }
+}
+
+/// The UI submits immutable snapshots; one owner coalesces snapshots without dropping events.
+actor ChatTranscriptWorker {
+    private var identity: String?
+    private var previousRows: [ChatRow] = []
+    private var changeEntries: [String] = []
+    private var changeTurns: [String] = []
+    private var publishedMessages: [ChatMessage] = []
+    private var messageToken = UUID()
+    private var previousInput: ChatPublicationInput?
+    private var previousTranscript: ChatTranscript?
+    func resolve(identity: String, messages: [ChatMessage], timings: [String: SessionTurnTiming]) -> ChatTranscript {
+        previousInput = nil; previousTranscript = nil
+        let next = ChatTranscript(messages: messages, turnTimings: timings, previousRows: self.identity == identity ? previousRows : [])
+        self.identity = identity; previousRows = next.rows
+        return next
+    }
+
+    func publish(identity: String, input: ChatPublicationInput) -> ChatPublication {
+        let messages = PendingSendOutbox.merge(materializeLiveTools(input.messages, tools: input.tools, liveOrders: input.orders), pending: input.pending)
+        let changed = self.identity != identity || publishedMessages != messages
+        if changed {
+            publishedMessages = messages; messageToken = UUID()
+        }
+        let transcript: ChatTranscript
+        if !changed, let old = previousInput, let cached = previousTranscript,
+           old.timings == input.timings, old.displayIds == input.displayIds, old.aliases == input.aliases {
+            transcript = cached
+        } else {
+            transcript = ChatTranscript(messages: publishedMessages, turnTimings: input.timings,
+                previousRows: self.identity == identity ? previousRows : [], displayIds: input.displayIds, aliases: input.aliases)
+        }
+        previousInput = input; previousTranscript = transcript
+        let messageIds = Set(publishedMessages.map(\.messageId))
+        var anchors = messageIds
+        for (entry, message) in input.displayIds where messageIds.contains(message) { anchors.insert(entry) }
+        for (message, entry) in input.aliases where messageIds.contains(message) { anchors.insert(entry) }
+        self.identity = identity; previousRows = transcript.rows
+        let entries = anchors.sorted(), turns = input.timings.keys.sorted()
+        if changeEntries != entries { changeEntries = entries }
+        if changeTurns != turns { changeTurns = turns }
+        return ChatPublication(messages: publishedMessages, messageToken: messageToken, messageIds: messageIds, transcript: transcript,
+            streaming: input.unfinished.intersection(publishedMessages.lazy.filter { $0.role == "assistant" }.map(\.messageId)),
+            changeEntries: changeEntries, changeTurns: changeTurns)
+    }
+}
+
+struct ChatPublicationInput {
+    let messages: [ChatMessage]
+    let timings: [String: SessionTurnTiming]
+    var tools: [ToolSummary] = []
+    var orders: [String: Int64] = [:]
+    var pending: [PendingSend] = []
+    var unfinished: Set<String> = []
+    var displayIds: [String: String] = [:]
+    var aliases: [String: String] = [:]
+    var requiresPendingMatch = false
+}
+
+struct ChatPublication {
+    let messages: [ChatMessage]
+    let messageToken: UUID
+    let messageIds: Set<String>
+    let transcript: ChatTranscript
+    let streaming: Set<String>
+    let changeEntries: [String]
+    let changeTurns: [String]
+}
+
+/// Readiness is captured by the UI owner; title derivation and locale sorting own no UI state.
+actor HomeCardWorker {
+    private let beforeResolve: (@Sendable () -> Void)?
+    private var previous: [HomeRuntimeCard] = []
+    private var previousFacts: [HomeRuntimeCard] = []
+    private var previousTimes: [Int64] = []
+    private let beforeSort: (@Sendable () -> Void)?
+    init(beforeResolve: (@Sendable () -> Void)? = nil, beforeSort: (@Sendable () -> Void)? = nil) {
+        self.beforeResolve = beforeResolve; self.beforeSort = beforeSort
+    }
+    func resolve(runtimes: [RuntimeSummary], sessions: [String: SessionSummary],
+                 messages: [String: [ChatMessage]], pending: [String: [InteractionRequest]]) -> (cards: [HomeRuntimeCard], fallback: Set<String>) {
+        beforeResolve?()
+        var fallback = Set<String>()
+        let cards = runtimes.map { runtime in
+            let session = runtime.sessionId.flatMap { sessions[$0] }
+            if [runtime.sessionName, session?.name, session?.firstMessage].allSatisfy({ $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true }) {
+                fallback.insert(runtime.runtimeId)
+            }
+            return HomeRuntimeCard(runtime: runtime,
+                title: sessionTitle(runtime: runtime, session: session, messages: messages[runtime.runtimeId] ?? []),
+                agentKind: runtime.agentKind ?? session?.agentKind ?? "",
+                hasPendingInteraction: !(pending[runtime.runtimeId] ?? []).isEmpty)
+        }
+        let times = cards.map { $0.runtime.sessionId.flatMap { sessions[$0]?.modifiedAt } ?? 0 }
+        if cards == previousFacts, times == previousTimes { return (previous, fallback) }
+        previousFacts = cards; previousTimes = times
+        beforeSort?()
+        let sorted = cards.sorted { lhs, rhs in
+            let left = lhs.runtime.sessionId.flatMap { sessions[$0]?.modifiedAt } ?? 0
+            let right = rhs.runtime.sessionId.flatMap { sessions[$0]?.modifiedAt } ?? 0
+            if left != right { return left > right }
+            let order = lhs.title.localizedStandardCompare(rhs.title)
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }
+        if previous != sorted { previous = sorted }
+        return (previous, fallback)
+    }
+}
+
+
+/// These publishers are scoped to a surface; message publications remain on OrbisStore.
+@MainActor
+final class ScreenPublication: ObservableObject {
+    private(set) var revision = 0
+    func invalidate() { revision &+= 1; objectWillChange.send() }
+}
+
+/// Immutable catalog facts, shared across filters and unchanged assistant chunks.
+final class SessionDirectoryCatalog {
+    let revision = UUID()
+    let sessions: [SessionSummary]
+    let titles: [String: String]
+    let runtimeBySession: [String: RuntimeSummary]
+    init(sessions: [SessionSummary] = [], titles: [String: String] = [:], runtimeBySession: [String: RuntimeSummary] = [:]) {
+        self.sessions = sessions; self.titles = titles; self.runtimeBySession = runtimeBySession
+    }
+}
+
+actor SessionDirectoryCatalogWorker {
+    private let beforeRows: (@Sendable () -> Void)?
+    private var previous: SessionDirectoryCatalog?
+    private var source: [SessionSummary] = []
+    private var overrides: [String: Bool] = [:]
+    private var runtimeTitles: [String: String] = [:]
+    private var sessionIndex: [String: SessionSummary] = [:]
+    init(beforeRows: (@Sendable () -> Void)? = nil) { self.beforeRows = beforeRows }
+
+    func resolve(sessions: [SessionSummary], runtimes: [RuntimeSummary], messages: [String: [ChatMessage]],
+                 archived: [String: Bool]) -> SessionDirectoryCatalog {
+        let bySession = Dictionary(runtimes.compactMap { runtime in runtime.sessionId.map { ($0, runtime) } },
+                                   uniquingKeysWith: { first, _ in first })
+        let sameSessions = source == sessions
+        if !sameSessions { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }) }
+        let titles = bySession.mapValues { runtime in
+            sessionTitle(runtime: runtime, session: runtime.sessionId.flatMap { sessionIndex[$0] }, messages: messages[runtime.runtimeId] ?? [])
+        }
+        if let previous, sameSessions, overrides == archived, runtimeTitles == titles,
+           previous.runtimeBySession == bySession { return previous }
+        beforeRows?()
+        let visible = sessions.map { session -> SessionSummary in
+            guard let value = archived[session.sessionId] else { return session }
+            var copy = session; copy.archived = value; return copy
+        }
+        let allTitles = Dictionary(visible.map { ($0.sessionId, titles[$0.sessionId] ?? sessionTitle(runtime: nil, session: $0)) },
+                                   uniquingKeysWith: { first, _ in first })
+        source = sessions; overrides = archived; runtimeTitles = titles
+        let result = SessionDirectoryCatalog(sessions: visible, titles: allTitles, runtimeBySession: bySession)
+        previous = result; return result
+    }
+}
+
+struct SessionDirectoryFilter: Hashable {
+    let hostId: String?
+    let catalogRevision: UUID
+    let query: String
+    let kind: String?
+    let archived: Bool
+    let provider: String
+    let currentProvider: String?
+    let language: String
+    func sameView(as other: Self) -> Bool {
+        hostId == other.hostId && query == other.query && kind == other.kind && archived == other.archived &&
+            provider == other.provider && currentProvider == other.currentProvider && language == other.language
+    }
+}
+
+final class SessionDirectoryProjection {
+    let filter: SessionDirectoryFilter
+    let directories: [SessionDirectory]
+    let options: [SessionProviderOption]
+    let provider: String
+    let sessions: [SessionSummary]
+    let keys: [String]
+    let activity: [String: Int64]
+    init(filter: SessionDirectoryFilter, directories: [SessionDirectory], options: [SessionProviderOption], provider: String) {
+        self.filter = filter; self.directories = directories; self.options = options; self.provider = provider
+        sessions = directories.flatMap(\.sessions)
+        keys = directories.flatMap { ["directory:" + $0.path] + $0.sessions.map { "session:" + $0.sessionId } }
+        var activity: [String: Int64] = [:]
+        for directory in directories {
+            activity["directory:" + directory.path] = directory.modifiedAt
+            for session in directory.sessions { activity["session:" + session.sessionId] = session.modifiedAt }
+        }
+        self.activity = activity
+    }
+}
+
+actor SessionDirectoryWorker {
+    private let beforeResolve: (@Sendable () -> Void)?
+    private var previous: SessionDirectoryProjection?
+    init(beforeResolve: (@Sendable () -> Void)? = nil) { self.beforeResolve = beforeResolve }
+    func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter) -> SessionDirectoryProjection {
+        if let previous, previous.filter == filter { return previous }
+        beforeResolve?()
+        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider)
+        let provider = options.contains { $0.key == filter.provider } ? filter.provider : "current"
+        let visible = filter.kind == "codex" || filter.kind == "codexDesktop" ? catalog.sessions.filter {
+            matchesSessionProvider($0, filter: provider, current: filter.currentProvider)
+        } : catalog.sessions
+        let directories = sessionDirectories(visible, query: filter.query, kind: filter.kind, archived: filter.archived,
+                                             title: { catalog.titles[$0.sessionId] ?? $0.sessionId })
+        let result = SessionDirectoryProjection(filter: filter, directories: directories, options: options, provider: provider)
+        previous = result; return result
     }
 }

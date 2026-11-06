@@ -150,7 +150,7 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        HomeView(launchIntro: launchIntroReady ? launchIntro : nil, onLaunchPresented: { requestId in
+        HomeView(store: store, updates: store.homeUpdates, launchIntro: launchIntroReady ? launchIntro : nil, onLaunchPresented: { requestId in
             guard launchIntro?.requestId == requestId, !drawerOpen, !newSessionOpen, navigation.pages.isEmpty else { return }
             launchIntro = nil; launchIntroReady = false
             if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
@@ -159,11 +159,11 @@ struct ContentView: View {
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
                      openRuntime(runtime)
-                 })
+                 }).equatable()
     }
 
     private var drawer: some View {
-        SessionDrawerView(state: $directoryState, onClose: { setDrawer(false) },
+        SessionDrawerView(store: store, updates: store.directoryUpdates, renderedState: directoryState, state: $directoryState, onClose: { setDrawer(false) },
                           onOpenSession: { session in
                               if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
                               else if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
@@ -175,7 +175,7 @@ struct ContentView: View {
                               newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
                           }, onAddHost: { setDrawer(false); push(.pairing) },
                           onProviders: { setDrawer(false); push(.status) },
-                          onUnpair: { confirmUnpair($0) })
+                          onUnpair: { confirmUnpair($0) }).equatable()
     }
 
     private func back() { navigation.back() }
@@ -530,11 +530,14 @@ private struct TransferErrorBanner: View {
     }
 }
 
-struct HomeView: View {
+struct HomeView: View, Equatable {
+    let store: OrbisStore
+    @ObservedObject var updates: ScreenPublication
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.launchIntro == rhs.launchIntro }
+
     var launchIntro: HostConnection.LaunchState? = nil
     var onLaunchPresented: (String) -> Void = { _ in }
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @State private var selectedRuntimeIds: Set<String> = []
@@ -604,7 +607,7 @@ struct HomeView: View {
             HStack(spacing: 10) {
                 hostSwitcher
                 Spacer(minLength: 8)
-                ConnectionPill(sync: backgroundSync)
+                ConnectionPill(connection: store.connection, path: store.activePath, sync: backgroundSync)
                     .accessibilityIdentifier("home-connection-pill")
                 if case .failed(let error) = backgroundSync {
                     OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: OrbisPalette(scheme).error,
@@ -661,7 +664,7 @@ struct HomeView: View {
                             .id("new-session-" + launchIntro.requestId)
                     }
                     if host.connection.homeRuntimesLoading {
-                        firstLoadStatus(host.connection.homeSyncStatus)
+                        firstLoadStatus(host.connection.preparedHomeSync)
                     } else if presentedCards(host).isEmpty && launchIntro == nil {
                         OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("暂无在线会话"))
                             .frame(minHeight: 180).accessibilityIdentifier("home-session-empty")
@@ -699,7 +702,7 @@ struct HomeView: View {
     /// Sync progress after the first snapshot is published; before that the list area reports it.
     private var backgroundSync: HomeSyncStatus {
         guard let connection = currentHost?.connection, !connection.homeRuntimesLoading else { return .idle }
-        return connection.homeSyncStatus
+        return connection.preparedHomeSync
     }
 
     private var retryLabel: String {
@@ -865,8 +868,6 @@ struct HomeView: View {
 
     private func runtimeCard(_ card: HomeRuntimeCard, host: HostSnapshot) -> some View {
         let runtime = card.runtime
-        let kind = card.agentKind
-        let pending = card.hasPendingInteraction
         let selected = selectedRuntimeIds.contains(runtime.runtimeId)
         let translation = swipeTranslations[runtime.runtimeId] ?? 0
         let cardWidth = runtimeCardFrames[runtime.runtimeId]?.width ?? 0
@@ -912,23 +913,8 @@ struct HomeView: View {
                         #endif
                     }
                 } label: {
-                    HStack(spacing: 12) {
-                        AgentEmblem(kind: kind)
-                        VStack(alignment: .leading, spacing: 6) {
-                            OrbisMotionText(card.title).font(.orbisBody(.semibold)).lineLimit(1)
-                            Text(runtime.cwd)
-                                .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-                            HStack(spacing: 10) {
-                                Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
-                                // A pending interaction takes the status slot instead of adding a line to the card.
-                                if pending {
-                                    Label(L10n.tr("待确认"), systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
-                                        .foregroundStyle(OrbisPalette(scheme).error)
-                                } else { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        OrbisSelectionIndicator(selected: selected, selecting: selecting && host.connection.canCloseRuntime(runtime.runtimeId))
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    HomeCardContent(card: card, selected: selected,
+                        selecting: selecting && host.connection.canCloseRuntime(runtime.runtimeId)).equatable()
                 }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, padding: OrbisRadius.cardPadding + 4))
                     .offset(x: translation)
                     .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
@@ -947,22 +933,54 @@ struct HomeView: View {
 
 }
 
+/// Card contents depend only on visible facts; chat/history updates cannot rebuild the label.
+private struct HomeCardContent: View, Equatable {
+    let card: HomeRuntimeCard
+    let selected: Bool
+    let selecting: Bool
+    @Environment(\.colorScheme) private var scheme
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.card == rhs.card && lhs.selected == rhs.selected && lhs.selecting == rhs.selecting
+    }
+    var body: some View {
+        let runtime = card.runtime, kind = card.agentKind, pending = card.hasPendingInteraction
+        HStack(spacing: 12) {
+            AgentEmblem(kind: kind)
+            VStack(alignment: .leading, spacing: 6) {
+                OrbisMotionText(card.title).font(.orbisBody(.semibold)).lineLimit(1)
+                Text(runtime.cwd)
+                    .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                HStack(spacing: 10) {
+                    Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
+                    // A pending interaction takes the status slot instead of adding a line to the card.
+                    if pending {
+                        Label(L10n.tr("待确认"), systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
+                            .foregroundStyle(OrbisPalette(scheme).error)
+                    } else { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            OrbisSelectionIndicator(selected: selected, selecting: selecting)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// One capsule tells the computer's whole lifecycle: connecting, securing, syncing, then the transport path.
 struct ConnectionPill: View {
-    @EnvironmentObject private var store: OrbisStore
+    let connection: ConnectionState
+    let path: String?
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     var sync: HomeSyncStatus = .idle
     var body: some View {
         let p = OrbisPalette(scheme)
-        let secured = store.connection == .secured
+        let secured = connection == .secured
         let failed: Bool = { if case .failed = sync { return true }; return false }()
-        let busy = store.connection == .connecting || store.connection == .online || (secured && sync == .syncing)
-        let tone = store.connection == .error || (secured && failed) ? p.error : secured ? p.success : p.warning
+        let busy = connection == .connecting || connection == .online || (secured && sync == .syncing)
+        let tone = connection == .error || (secured && failed) ? p.error : secured ? p.success : p.warning
         // Secured: sync progress, then the transport path; otherwise the connection phase. Color carries the state.
-        let title = !secured ? connectionTitle(store.connection) : sync == .syncing ? L10n.tr("正在同步") : failed ? L10n.tr("同步失败")
-            : pathTitle(store.activePath ?? "relay")
+        let title = !secured ? connectionTitle(connection) : sync == .syncing ? L10n.tr("正在同步") : failed ? L10n.tr("同步失败")
+            : pathTitle(path ?? "relay")
         HStack(spacing: 7) {
             ZStack {
                 if busy { ProgressView().controlSize(.mini).tint(tone).scaleEffect(0.8) }

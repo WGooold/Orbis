@@ -1,5 +1,8 @@
 package com.orbising.orbis
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 /** A complete homepage card; background reads cannot alter any of its visible fields. */
 data class HomeRuntimeCard(
     val runtime: RuntimeSummary,
@@ -69,13 +72,65 @@ internal val RemoteState.homeSyncStatus: HomeSyncStatus
         else homeRuntimesError?.let(HomeSyncStatus::Failed) ?: HomeSyncStatus.Syncing
 
 /** Called at publication boundaries, after the whole authenticated event has been reduced. */
-internal fun RemoteState.commitHomePresentation(): RemoteState {
+internal fun RemoteState.commitHomePresentation(titles: SessionTitleCache? = null, language: AppLanguage = AppLocalization.language): RemoteState {
     if (homeRuntimesUpdating) return this
-    val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
-    val cards = runtimes.values.sortedWith(compareByDescending<RuntimeSummary> { sessions[it.sessionId]?.modifiedAt ?: 0L }
-        .thenBy(collator) { runtimeDisplayName(it) }.thenBy { it.runtimeId })
-        .map { HomeRuntimeCard(it, runtimeDisplayName(it), hasPendingInteraction(it.runtimeId)) }
+    val cards = orderHomeCards(prepareHomeCards(titles, language))
     return if (homeSnapshot == cards) this else copy(homeSnapshot = cards)
+}
+
+private fun RemoteState.prepareHomeCards(titles: SessionTitleCache?, language: AppLanguage) = runtimes.values.map {
+        HomeRuntimeCard(it, titles?.resolve(this, it.sessionId, it, language) ?: runtimeDisplayName(it), hasPendingInteraction(it.runtimeId))
+    }
+
+private fun RemoteState.orderHomeCards(cards: List<HomeRuntimeCard>): List<HomeRuntimeCard> {
+    val collator = java.text.Collator.getInstance(java.util.Locale.CHINA)
+    return cards.sortedWith(compareByDescending<HomeRuntimeCard> { sessions[it.runtime.sessionId]?.modifiedAt ?: 0L }
+        .thenBy(collator) { it.title }.thenBy { it.runtime.runtimeId })
+}
+
+/** Constant-time admission/ownership checks; immutable state is only traversed by the worker. */
+internal class HomePresentationRequest(val state: RemoteState, val language: AppLanguage) {
+    fun matches(current: RemoteState): Boolean = state.hostId == current.hostId &&
+        state.connection == current.connection && state.e2eReady == current.e2eReady &&
+        state.homeDirectoryReceived == current.homeDirectoryReceived && state.agentModelEpoch == current.agentModelEpoch &&
+        state.runtimes === current.runtimes && state.sessions === current.sessions &&
+        state.agentStateReads === current.agentStateReads && state.agentStateSnapshots === current.agentStateSnapshots &&
+        state.conversations === current.conversations && state.sessionGraphs === current.sessionGraphs
+    override fun equals(other: Any?): Boolean = other is HomePresentationRequest && language == other.language && matches(other.state)
+    override fun hashCode(): Int = state.hostId.hashCode()
+}
+
+internal class HomePresentationWorker(private val beforeFacts: (() -> Unit)? = null,
+                                     private val beforeSort: (() -> Unit)? = null) {
+    private val titles = SessionTitleCache()
+    private var previous: List<HomeRuntimeCard>? = null
+    private var previousFacts: List<HomeRuntimeCard>? = null
+    private var previousTimes: List<Long>? = null
+    private var previousInput: HomePresentationRequest? = null
+    suspend fun resolve(request: HomePresentationRequest): List<HomeRuntimeCard>? = withContext(Dispatchers.Default) {
+        val old = previousInput
+        previousInput = request
+        if (old != null && old.language == request.language && old.state.hostId == request.state.hostId &&
+            old.state.connection == request.state.connection && old.state.e2eReady == request.state.e2eReady &&
+            old.state.homeDirectoryReceived == request.state.homeDirectoryReceived && old.state.agentModelEpoch == request.state.agentModelEpoch &&
+            old.state.runtimes === request.state.runtimes && old.state.sessions === request.state.sessions &&
+            old.state.agentStateReads === request.state.agentStateReads && old.state.agentStateSnapshots === request.state.agentStateSnapshots &&
+            old.state.runtimes.keys.all { id ->
+                old.state.conversations[id]?.interactions.orEmpty() == request.state.conversations[id]?.interactions.orEmpty()
+            } &&
+            !catalogTranscriptChanged(old.state, request.state, titles, counts = false)) return@withContext previous ?: request.state.homeSnapshot
+        titles.retain(request.state)
+        val state = request.state
+        if (state.homeRuntimesUpdating) return@withContext state.homeSnapshot
+        beforeFacts?.invoke()
+        val facts = state.prepareHomeCards(titles, request.language)
+        val times = facts.map { state.sessions[it.runtime.sessionId]?.modifiedAt ?: 0L }
+        if (facts == previousFacts && times == previousTimes) return@withContext previous
+        beforeSort?.invoke()
+        val next = state.orderHomeCards(facts)
+        previousFacts = facts; previousTimes = times
+        if (next == previous) previous else next.also { previous = it }
+    }
 }
 
 internal fun RemoteState.homeCardIsCurrent(card: HomeRuntimeCard): Boolean =

@@ -12,6 +12,29 @@ class DrawerCatalogCacheTest {
     private fun DrawerCatalogCache.get(state: RemoteState?) = resolve(state, AppLanguage.Chinese)
     private fun List<CachedHostGroup>.row() = single().directories.single().sessions.single()
 
+    // A stable stream must skip row preparation itself, not merely reuse the sorted tree.
+    @Test fun `assistant chunks skip row preparation but counts and user title corrections rebuild`() {
+        var builds = 0
+        val cache = DrawerCatalogCache(beforeRows = { builds++ })
+        val user = ChatMessage("u", "user", listOf(RemoteContent("text", "Question")), 1)
+        val answer = ChatMessage("a", "assistant", listOf(RemoteContent("text", "First")), 2)
+        val source = initial.copy(runtimes = mapOf("r" to runtime), conversations = mapOf("r" to RuntimeConversation(messages = listOf(user, answer))))
+        val tree = cache.get(source)
+        repeat(60) { index ->
+            val changed = source.copy(conversations = mapOf("r" to RuntimeConversation(messages = listOf(user,
+                answer.copy(content = listOf(RemoteContent("text", "Chunk $index")))))))
+            assertSame(tree, cache.get(changed))
+        }
+        assertEquals(1, builds)
+        val corrected = source.copy(conversations = mapOf("r" to RuntimeConversation(messages = listOf(
+            user.copy(content = listOf(RemoteContent("text", "Corrected"))), answer))))
+        assertEquals("Corrected", cache.get(corrected).row().title)
+        assertEquals(2, builds)
+        val appended = corrected.copy(conversations = mapOf("r" to corrected.conversations.getValue("r").copy(messages = corrected.conversations.getValue("r").messages + answer.copy(messageId = "a2"))))
+        assertEquals(3, cache.get(appended).row().messageCount)
+        assertEquals(3, builds)
+    }
+
     @Test fun `transport and connection updates reuse the whole catalog`() {
         val cache = DrawerCatalogCache()
         val state = initial.copy(sessions = (0 until 2000).associate { index ->

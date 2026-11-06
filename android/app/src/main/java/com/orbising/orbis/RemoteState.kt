@@ -1676,7 +1676,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
         connection = RelayConnection.RECONNECTING,
         homeDirectoryReceived = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
-        turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
+        turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, queriedEntries = emptySet(), queriedTurns = emptySet(), manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
         changeViewer = null,
         toolDetail = toolDetail?.copy(requestId = null, read = null, follow = false, error = L10n.tr("连接已断开，仅显示已缓存内容")),
         currentProviders = emptyMap(),
@@ -1708,6 +1708,7 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
 
 class RelayReducer(
     private val json: Json = Json { ignoreUnknownKeys = true },
+    private val publishHome: Boolean = true,
 ) {
     /**
      * `committed` is supplied by the connection layer after the batch has been written to and read
@@ -1760,8 +1761,9 @@ class RelayReducer(
         }
         val completed = if (event?.string("type") in setOf("session.snapshot", "session.patch"))
             reduced.confirmSourceRead(input, commandId, response) else reduced
-        return completed.markAuthoritative(input, runtimeId, event?.string("type"), commandId)
-            .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads().commitHomePresentation()
+        val published = completed.markAuthoritative(input, runtimeId, event?.string("type"), commandId)
+            .trackSessionReadDemands(input, changedTargets, setOfNotNull(commandId)).reconcileHistoryReads()
+        return if (publishHome) published.commitHomePresentation() else published
     }
 
     private fun materializeToolPayload(state: RemoteState, envelope: JsonObject): JsonObject {

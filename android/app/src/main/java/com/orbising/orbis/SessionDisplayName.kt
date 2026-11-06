@@ -75,6 +75,34 @@ internal class SessionTitleCache(
     fun clear() { graphs.clear(); live.clear() }
 }
 
+/** Only title corrections (and optionally row counts) can make a transcript affect a catalog. */
+internal fun catalogTranscriptChanged(previous: RemoteState, current: RemoteState,
+                                      titles: SessionTitleCache, counts: Boolean): Boolean {
+    if (previous.conversations === current.conversations && previous.sessionGraphs === current.sessionGraphs) return false
+    if (previous.conversations !== current.conversations) current.runtimes.values.forEach { runtime ->
+        val old = previous.conversations[runtime.runtimeId]
+        val next = current.conversations[runtime.runtimeId]
+        if (old !== next) {
+            if (counts && old?.messages?.size != next?.messages?.size) return true
+            if (titles.resolve(previous, runtime.sessionId, runtime) != titles.resolve(current, runtime.sessionId, runtime)) return true
+        }
+    }
+    if (previous.sessionGraphs !== current.sessionGraphs) {
+        val runtimes = current.runtimes.values.groupBy { it.sessionId }
+        (previous.sessionGraphs.keys + current.sessionGraphs.keys).forEach { id ->
+            if (previous.sessionGraphs[id] !== current.sessionGraphs[id]) {
+                val candidates = runtimes[id].orEmpty()
+                if (candidates.isEmpty()) {
+                    if (titles.resolve(previous, id, null) != titles.resolve(current, id, null)) return true
+                } else candidates.forEach { runtime ->
+                    if (titles.resolve(previous, id, runtime) != titles.resolve(current, id, runtime)) return true
+                }
+            }
+        }
+    }
+    return false
+}
+
 /** Capture only newly available Pi names. Existing labels never follow later history or renames. */
 internal fun RemoteState.cachePiSessionNames(previous: RemoteState? = null): RemoteState {
     val candidates = mutableSetOf<String>()

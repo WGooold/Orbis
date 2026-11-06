@@ -2,6 +2,7 @@
 // - 防止目录、会话与消息投影改变身份、排序、阅读锚点或状态表达。
 import Foundation
 import Testing
+import Combine
 
 struct CatalogAnchorTests {
     @Test func insertedRowsAndAnotherPromotedRowRetainTheAnchor() {
@@ -21,6 +22,35 @@ struct CatalogAnchorTests {
 
 @Suite("Android presentation parity")
 struct PresentationTests {
+    // Faster input must advance visible Markdown and coalesce while the parser is busy.
+    @Test @MainActor func continuousMarkdownPublishesCompletedWorkAndOnlyParsesTheLatestWaitingInput() async {
+        let started = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let worker = MarkdownParsingWorker(cache: MarkdownDocumentCache(), parse: { text in
+            if text == "first streaming document" {
+                started.continuation.yield(())
+                #expect(release.wait(timeout: .now() + 3) == .success)
+            }
+            return PreparedMarkdownDocument(text)
+        })
+        let preparation = MarkdownPreparation(text: "", interval: 0, resolve: { await worker.resolve($0) })
+        var published: [String] = []
+        let observer = preparation.$prepared.sink { if let value = $0 { published.append(value.text) } }
+        preparation.update("first streaming document", streaming: true)
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        preparation.update("intermediate streaming document", streaming: true)
+        preparation.update("latest streaming document", streaming: true)
+        release.signal()
+        await preparation.waitForPending()
+        #expect(published == ["first streaming document", "latest streaming document"])
+        #expect(preparation.prepared?.text == "latest streaming document")
+        preparation.update("", streaming: false)
+        await preparation.waitForPending()
+        #expect(preparation.prepared?.document.length == 0)
+        withExtendedLifetime(observer) {}
+    }
+
     @Test func connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds() {
         #expect(connectionLatencyText(42, connected: false) == "暂不可用")
         for missing: Double? in [nil, -1, Double.infinity, Double.nan] {
@@ -301,11 +331,26 @@ struct PresentationTests {
         #expect(first.rows.map { $0.messages.count } == [4, 4, 4, 1])
         #expect(first.rows.flatMap(\.messages) == messages)
         #expect(first.rows.allSatisfy { $0.copyMessages == nil })
+        #expect(first.rows.allSatisfy { $0.copyText == $0.messages.map(\.text).joined(separator: "\n\n") })
         #expect(first.timingsByRow == ["m12": [timing]])
         let prefixed = ChatTranscript(messages: [text(-2), text(-1)] + messages,
                                       turnTimings: ["turn": timing], previousRows: first.rows)
         #expect(prefixed.rows.map(\.id) == ["m-2"] + first.rows.map(\.id))
         #expect(prefixed.rows.flatMap(\.messages) == [text(-2), text(-1)] + messages)
+    }
+
+    @Test func markdownDocumentsArePreparedOnceAndRetainLinkText() async {
+        let source = "**prepared** [link](https://example.com)"
+        let first = await MarkdownDocuments.resolve(source)
+        let second = await MarkdownDocuments.resolve(source)
+        #expect(first === second)
+        #expect(first.rows.count == 1)
+        guard case .text(let rendered) = first.rows[0].kind else {
+            Issue.record("Expected one prepared Markdown text row")
+            return
+        }
+        #expect(String(rendered.characters) == "prepared link")
+        #expect(rendered.runs.contains { $0.link != nil })
     }
 
     @Test func projectionBatchMatchesSequentialReplacementRemovalAndReinsertion() {

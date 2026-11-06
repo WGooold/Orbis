@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -36,6 +38,7 @@ data class PairingStatus(
 data class HostSnapshot(
     val pairing: HostPairing,
     val state: RemoteState,
+    val hasPendingInteraction: Boolean = state.hasAnyPendingInteraction(),
 ) {
     val hostId: String get() = pairing.hostId
     val name: String
@@ -69,16 +72,29 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val hostStates = MutableStateFlow<Map<String, RemoteState>>(emptyMap())
     private val pairingErrors = MutableStateFlow<String?>(null)
     private val pairingProgress = MutableStateFlow(false)
+    // StateFlow conflation compares immutable snapshots. Streamed history can make those
+    // comparisons expensive, so both aggregation and publication belong to Default.
+    private val publicationScope = CoroutineScope(viewModelScope.coroutineContext + Dispatchers.Default)
 
     /** What the selected Host last published. */
     val state: StateFlow<RemoteState> = combine(hostStates, activeHostId) { states, active ->
         states[active] ?: RemoteState()
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, RemoteState())
+    }.stateIn(publicationScope, SharingStarted.Eagerly, RemoteState())
 
     /** Every paired computer with its live state, in pairing order. */
     val hosts: StateFlow<List<HostSnapshot>> = combine(pairingOrder, hostStates) { order, states ->
         order.mapNotNull { pairing -> states[pairing.hostId]?.let { HostSnapshot(pairing, it) } }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    }.stateIn(publicationScope, SharingStarted.Eagerly, emptyList())
+
+    private val homeUiWorker = HomeUiWorker()
+    /** Only catalog/card/menu facts reach the retained home page; transcripts stay in state. */
+    internal val homeUi: StateFlow<HomeUiSnapshot> = combine(hostStates, pairingOrder, activeHostId) { states, order, selected ->
+            val all = order.mapNotNull { pairing -> states[pairing.hostId]?.let { HostSnapshot(pairing, it) } }
+            (states[selected] ?: RemoteState()) to all
+        }.combine(androidx.compose.runtime.snapshotFlow { AppLocalization.language }) { input, language ->
+            Triple(input.first, input.second, language)
+        }.conflate().map { (selected, all, language) -> homeUiWorker.resolve(selected, all, language) }
+        .stateIn(publicationScope, SharingStarted.Eagerly, HomeUiSnapshot())
 
     /** Add-a-computer failures; the pairing screen shows these instead of the session error. */
     val pairingError: StateFlow<String?> = pairingErrors
@@ -134,8 +150,15 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         synchronized(lock) { connections[pairing.hostId] = connection }
         hostStates.update { it + (pairing.hostId to connection.state.value) }
         pairingOrder.value = pairings.hosts()
-        observationJobs[pairing.hostId] = viewModelScope.launch {
-            connection.state.collect { latest -> hostStates.update { it + (pairing.hostId to latest) } }
+        observationJobs[pairing.hostId] = viewModelScope.launch(Dispatchers.Default) {
+            connection.state.collect { latest ->
+                hostStates.update { current ->
+                    // A cancelled collector may already be publishing on Default. Recheck
+                    // on each CAS attempt so removal/re-pairing cannot resurrect its state.
+                    if (synchronized(lock) { connections[pairing.hostId] === connection })
+                        current + (pairing.hostId to latest) else current
+                }
+            }
         }
         if (makeActive) setActiveHost(pairing.hostId)
     }
@@ -282,10 +305,22 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
 
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
-    fun reconcileModels() {
+    suspend fun reconcileModels() = withContext(Dispatchers.Default) {
+        // The lifecycle caller waits for this pass before its next tick. Model reads can
+        // take the state-writer/encryption locks; keep that work away from IME/layout.
         synchronized(lock) { connections.values.toList() }.forEach { connection ->
             connection.refreshHostModel()
             connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
+        }
+    }
+
+    /** Retain the originating Host while the lifecycle refresh leaves Main. */
+    suspend fun reconcileChat(runtimeId: String) {
+        val connection = active() ?: return
+        withContext(Dispatchers.Default) {
+            connection.syncNotifications(runtimeId)
+            connection.refreshRuntime(runtimeId)
+            connection.refreshWorkingBranch(runtimeId)
         }
     }
 

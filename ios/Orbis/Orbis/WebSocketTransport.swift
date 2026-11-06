@@ -1,5 +1,123 @@
 import Foundation
 
+struct OutboundJSONObject: @unchecked Sendable {
+    let value: [String: Any]
+    /// Count JSON bytes without constructing JSON on the UI actor. Escapes are charged where
+    /// they occur, so ordinary long messages retain the existing payload admission budget.
+    var reservation: Int {
+        let limit = 4 * 1024 * 1024
+        func size(_ value: Any) -> Int {
+            if let text = value as? String {
+                var count = 2
+                for scalar in text.unicodeScalars {
+                    switch scalar.value {
+                    case 8, 9, 10, 12, 13, 34, 47, 92: count += 2
+                    case 0..<32, 0x2028, 0x2029: count += 6
+                    case 0..<0x80: count += 1
+                    case 0..<0x800: count += 2
+                    case 0..<0x10000: count += 3
+                    default: count += 4
+                    }
+                    if count >= limit { return limit }
+                }
+                return count
+            }
+            if let object = value as? [String: Any] {
+                var count = 2
+                for (key, value) in object {
+                    count += size(key) + size(value) + 2
+                    if count >= limit { return limit }
+                }
+                return count
+            }
+            if let array = value as? [Any] {
+                var count = 2
+                for value in array {
+                    count += size(value) + 1
+                    if count >= limit { return limit }
+                }
+                return count
+            }
+            return 64
+        }
+        return size(value) * 2 + 4096
+    }
+}
+
+/// Owns the mutable E2E send sequence and all JSON / AEAD / frame encoding off MainActor.
+actor OutboundFrameEncoder {
+    private var generation: UUID?
+    private var channel: E2EChannel?
+    private let beforeEncode: (@Sendable () -> Void)?
+
+    init(beforeEncode: (@Sendable () -> Void)? = nil) { self.beforeEncode = beforeEncode }
+
+    func encode(object: OutboundJSONObject? = nil, bytes: Data? = nil, kind: String = "data", lane: String,
+                room: String, from: String, to: String, keys: SessionKeys, generation: UUID) throws -> [String] {
+        if self.generation != generation {
+            self.generation = generation
+            channel = E2EChannel(keys: keys)
+        }
+        beforeEncode?()
+        guard let channel else { throw PairingError.handshake(L10n.tr("会话密钥未建立")) }
+        let payload: Data
+        if let object { payload = try E2ECrypto.jsonData(object.value) }
+        else if let bytes { payload = bytes }
+        else { throw PairingError.relay(L10n.tr("发送内容为空")) }
+        let envelope = try channel.seal(kind: kind, room: room, from: from, to: to, channel: lane, payload: payload)
+        return try EnvelopePieces.fragment(envelope).map { piece in
+            let frame = V2Frame(type: "v2.frame", protocolVersion: orbisProtocolVersion, envelope: piece)
+            return String(decoding: try JSONEncoder().encode(frame), as: UTF8.self)
+        }
+    }
+}
+
+/// Preserves invocation order while encoding on a worker. Reset generations invalidate queued
+/// work after reconnect/path replacement, and admission stays bounded by item count.
+@MainActor
+private final class OutboundEncodingQueue {
+    private let encoder = OutboundFrameEncoder()
+    private var tail: Task<Void, Never>?
+    private var tailID: UUID?
+    private var pending = 0
+    private var reservedBytes = 0
+    private let limit = 64
+
+    func submit(object: OutboundJSONObject? = nil, bytes: Data? = nil, kind: String = "data", lane: String,
+                room: String, from: String, to: String, keys: SessionKeys, generation: UUID,
+                availableBytes: Int,
+                isCurrent: @escaping @MainActor () -> Bool,
+                completion: @escaping @MainActor (Result<[String], Error>) -> Void) -> Bool {
+        let reservation = object?.reservation ?? ((bytes?.count ?? 0) * 2 + 4096)
+        guard pending < limit, reservation <= availableBytes - reservedBytes else { return false }
+        pending += 1
+        reservedBytes += reservation
+        let prior = tail
+        let id = UUID()
+        let encoder = self.encoder
+        let task = Task { @MainActor [weak self] in
+            await prior?.value
+            if Task.isCancelled || !isCurrent() {
+                self?.pending -= 1
+            } else {
+                do {
+                    let frames = try await encoder.encode(object: object, bytes: bytes, kind: kind, lane: lane,
+                        room: room, from: from, to: to, keys: keys, generation: generation)
+                    if isCurrent() { completion(.success(frames)) }
+                } catch {
+                    if isCurrent() { completion(.failure(error)) }
+                }
+                self?.pending -= 1
+            }
+            self?.reservedBytes -= reservation
+            if self?.tailID == id { self?.tail = nil; self?.tailID = nil }
+        }
+        tail = task
+        tailID = id
+        return true
+    }
+}
+
 @MainActor
 protocol OrbisTransport: AnyObject {
     /// Valid only during receive; the authenticated wire bytes avoid re-encoding large events.
@@ -19,7 +137,7 @@ extension OrbisTransport {
 }
 
 /// One instance per path/handshake generation. No mutable cipher or reassembly state crosses
-/// actors; the outbound channel retains its own send sequence on MainActor. JSONSerialization's
+/// actors; the outbound encoder retains its own send sequence. JSONSerialization's
 /// immutable containers are transferred once and never mutated by this worker after return.
 actor InboundFrameDecoder {
     enum Decoded: @unchecked Sendable {
@@ -135,6 +253,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     private var deliveryGeneration = UUID()
     private var sendingLanes = Set<RelayLane>()
     private var outboundGeneration = UUID()
+    private let outboundEncoding = OutboundEncodingQueue()
     private var outboundBytes = 0
     private let maxOutboundBytes = 4 * 1024 * 1024
 
@@ -256,18 +375,60 @@ final class RelayTransport: NSObject, OrbisTransport {
 
     private func sendRelay(_ object: [String: Any]) -> Bool {
         guard socket != nil, bootstrapReady, let channel else { return false }
-        do {
-            let payload = try E2ECrypto.jsonData(object)
-            guard outboundBytes + payload.count * 2 + 4096 <= maxOutboundBytes else {
-                throw PairingError.relay(L10n.tr("发送队列已满，请稍后重试。"))
-            }
-            let envelope = try channel.seal(room: hostId, from: fromId, to: hostId, channel: "ctl", payload: payload)
-            try enqueue(envelope)
-            return true
-        } catch {
-            stateHandler?(.error, error.localizedDescription)
-            return false
+        return queueEncrypted(object, keys: channel.keys)
+    }
+
+    private func queueEncrypted(_ object: [String: Any], keys: SessionKeys? = nil) -> Bool {
+        guard let keys = keys ?? channel?.keys, socket != nil else { return false }
+        let generation = outboundGeneration
+        return outboundEncoding.submit(object: OutboundJSONObject(value: object), lane: "ctl", room: hostId,
+            from: fromId, to: hostId, keys: keys, generation: generation,
+            availableBytes: maxOutboundBytes - outboundBytes,
+            isCurrent: { [weak self] in self?.socket != nil && self?.outboundGeneration == generation },
+            completion: { [weak self] result in
+                guard let self, self.outboundGeneration == generation else { return }
+                switch result {
+                case .success(let frames):
+                    self.enqueueEncoded(frames, lane: "ctl")
+                case .failure(let error):
+                    self.failOutbound(error)
+                }
+            })
+    }
+
+    private func queueEncrypted(_ data: Data, kind: String, lane: String) -> Bool {
+        guard let channel, socket != nil, data.count * 2 + 4096 <= maxOutboundBytes else { return false }
+        let generation = outboundGeneration
+        return outboundEncoding.submit(bytes: data, kind: kind, lane: lane, room: hostId,
+            from: fromId, to: hostId, keys: channel.keys, generation: generation,
+            availableBytes: maxOutboundBytes - outboundBytes,
+            isCurrent: { [weak self] in self?.socket != nil && self?.outboundGeneration == generation },
+            completion: { [weak self] result in
+                guard let self, self.outboundGeneration == generation else { return }
+                switch result {
+                case .success(let frames): self.enqueueEncoded(frames, lane: lane)
+                case .failure(let error): self.failOutbound(error)
+                }
+            })
+    }
+
+    private func enqueueEncoded(_ frames: [String], lane: String) {
+        let bytes = frames.reduce(0) { $0 + $1.utf8.count }
+        guard outboundBytes + bytes <= maxOutboundBytes else {
+            failOutbound(PairingError.relay(L10n.tr("发送队列已满，请稍后重试。")))
+            return
         }
+        for frame in frames {
+            outbound.append((frame, lane, nil))
+            outboundBytes += frame.utf8.count
+        }
+        drainQueue()
+    }
+
+    private func failOutbound(_ error: Error) {
+        // Admission is asynchronous now. Reconnect so an accepted operation that could not
+        // be encoded/enqueued is reconciled by its existing owner instead of waiting forever.
+        if let socket { socketClosed(socket, error: error) }
     }
 
     private func retire(_ old: (any RelaySocketConnection)?) -> Task<Void, Never> {
@@ -380,12 +541,8 @@ final class RelayTransport: NSObject, OrbisTransport {
     @discardableResult
     func sendBinary(_ data: Data) -> Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.sendBinary(data) }
-        guard socket != nil, bootstrapReady, let channel else { return false }
-        do {
-            guard outboundBytes + data.count * 2 + 4096 <= maxOutboundBytes else { return false }
-            try enqueue(channel.seal(kind: "bin", room: hostId, from: fromId, to: hostId, channel: "bulk", payload: data))
-            return true
-        } catch { return false }
+        guard socket != nil, bootstrapReady else { return false }
+        return queueEncrypted(data, kind: "bin", lane: "bulk")
     }
 
     private func beginHandshake() throws {
@@ -517,20 +674,19 @@ final class RelayTransport: NSObject, OrbisTransport {
                     try sendPlain(kind: "hs", body: reply)
                     // ADR-0064 binds the business format before Host publishes ready.
                     // Both HS3 and this read-only bootstrap stay FIFO on ctl.
-                    if let channel {
-                        try enqueue(channel.seal(room: hostId, from: fromId, to: hostId, channel: "ctl",
-                            payload: E2ECrypto.jsonData(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])))
-                    }
+                    _ = queueEncrypted(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion], keys: keys)
                 }
             }
         case .authenticated(let header, let payload, let message):
-            guard let channel else { return }
+            guard channel != nil else { return }
             if socket?.kind == .quic, !bootstrapReady, header.k == "data", header.ch == "ctl", message?["type"] as? String == "device.ready" {
                 activateRelay()
             }
             switch header.k {
             case "ping":
-                try enqueue(channel.seal(kind: "ping", room: hostId, from: fromId, to: hostId, channel: "ctl", payload: payload))
+                guard queueEncrypted(payload, kind: "ping", lane: "ctl") else {
+                    throw PairingError.relay(L10n.tr("加密心跳回应未能排队"))
+                }
             case "data":
                 guard let message else { return }
                 if header.ch != "ctl" || !handlePathControl(message) { deliver(payload, channel: header.ch, message: message) }
@@ -769,6 +925,8 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
     private var channel: E2EChannel?
+    private let outboundEncoding = OutboundEncodingQueue()
+    private var outboundGeneration = UUID()
     private var handshake: DeviceHandshake?
     private var decoder = InboundFrameDecoder()
     private var retry: Task<Void, Never>?
@@ -801,6 +959,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     func start() { guard !closed, socket == nil, !urls.isEmpty else { return }; open() }
     func close() {
         closed = true
+        outboundGeneration = UUID()
         retry?.cancel(); retry = nil
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil
@@ -810,17 +969,36 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         session?.invalidateAndCancel(); session = nil
     }
     @discardableResult func send(_ object: [String: Any]) -> Bool {
-        guard let payload = try? E2ECrypto.jsonData(object) else { return false }
-        return send(kind: "data", payload: payload, lane: "ctl")
+        guard let channel else { return false }
+        return queueEncrypted(object: object, kind: "data", lane: "ctl", keys: channel.keys)
     }
-    @discardableResult func sendBinary(_ data: Data) -> Bool { send(kind: "bin", payload: data, lane: "bulk") }
-    private func send(kind: String, payload: Data, lane: String) -> Bool {
-        guard let channel, queuedBytes + payload.count * 2 + 4096 <= maxQueuedBytes else { return false }
-        do { try enqueue(channel.seal(kind: kind, room: hostId, from: deviceId, to: hostId, channel: lane, payload: payload)); return true }
-        catch { if let socket { fail(socket) }; return false }
+    @discardableResult func sendBinary(_ data: Data) -> Bool {
+        guard let channel, data.count * 2 + 4096 <= maxQueuedBytes else { return false }
+        return queueEncrypted(data: data, kind: "bin", lane: "bulk", keys: channel.keys)
+    }
+    private func queueEncrypted(object: [String: Any]? = nil, data: Data? = nil, kind: String, lane: String,
+                                keys: SessionKeys) -> Bool {
+        guard socket != nil else { return false }
+        let generation = outboundGeneration
+        return outboundEncoding.submit(object: object.map(OutboundJSONObject.init(value:)), bytes: data, kind: kind,
+            lane: lane, room: hostId, from: deviceId, to: hostId, keys: keys, generation: generation,
+            availableBytes: maxQueuedBytes - queuedBytes,
+            isCurrent: { [weak self] in self?.socket != nil && self?.outboundGeneration == generation },
+            completion: { [weak self] result in
+                guard let self, self.outboundGeneration == generation else { return }
+                switch result {
+                case .success(let frames): self.enqueueEncoded(frames, lane: lane)
+                case .failure:
+                    if let socket = self.socket { self.fail(socket) }
+                }
+            })
+    }
+    private func queueEncrypted(data: Data, kind: String, lane: String, keys: SessionKeys) -> Bool {
+        queueEncrypted(object: nil, data: data, kind: kind, lane: lane, keys: keys)
     }
     private func open() {
         guard !closed, !urls.isEmpty else { return }
+        outboundGeneration = UUID()
         if session == nil {
             let config = URLSessionConfiguration.default
             config.timeoutIntervalForRequest = 4
@@ -863,6 +1041,16 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         let cost = frames.reduce(0) { $0 + $1.utf8.count }
         guard queuedBytes + cost <= maxQueuedBytes else { throw PairingError.relay(L10n.tr("局域网发送队列已满")) }
         queue.append(contentsOf: frames.map { ($0, envelope.hdr.ch) }); queuedBytes += cost
+        drain()
+    }
+    private func enqueueEncoded(_ frames: [String], lane: String) {
+        let cost = frames.reduce(0) { $0 + $1.utf8.count }
+        guard queuedBytes + cost <= maxQueuedBytes else {
+            if let socket { fail(socket) }
+            return
+        }
+        queue.append(contentsOf: frames.map { ($0, lane) })
+        queuedBytes += cost
         drain()
     }
     private func drain() {
@@ -910,7 +1098,10 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         case .authenticated(let header, let bytes, let message):
             guard let channel else { throw PairingError.handshake(L10n.tr("局域网握手尚未完成")) }
             switch header.k {
-            case "ping": try enqueue(channel.seal(kind: "ping", room: hostId, from: deviceId, to: hostId, channel: "ctl", payload: bytes))
+            case "ping":
+                guard queueEncrypted(data: bytes, kind: "ping", lane: "ctl", keys: channel.keys) else {
+                    throw PairingError.relay(L10n.tr("加密心跳回应未能排队"))
+                }
             case "data": receive?(bytes, header.ch, false, message)
             case "bin": receive?(bytes, header.ch, true, nil)
             default: break
@@ -933,6 +1124,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     private func fail(_ task: URLSessionWebSocketTask) {
         guard socket === task, !closed else { return }
         let wasReady = isReady
+        outboundGeneration = UUID()
         socket = nil; channel = nil; handshake = nil; decoder = InboundFrameDecoder()
         queue = []; queuedBytes = 0; sending = false
         timeout?.cancel(); timeout = nil

@@ -44,6 +44,7 @@ private extension EnvironmentValues {
 private enum ChatFollow {
     static let line: CGFloat = 20
     static let bottomID = "chat-bottom"
+    static let topPadding: CGFloat = 4
 }
 
 struct ChatView: View {
@@ -140,7 +141,13 @@ struct ChatView: View {
                 }
             }
             if store.isViewingCachedSession { cachedComposer } else { composer }
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
+        }
+            #if DEBUG
+            // Headless Device Hub can attach a hardware keyboard. The explicit fixture also
+            // exercises the same viewport squeeze deterministically without changing release UI.
+            .padding(.bottom, ProcessInfo.processInfo.arguments.contains("--preview-keyboard-resize") && composerFocused ? 300 : 0)
+            #endif
+            .background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
             .downloadFlightHost(downloadFlight)
             .messageSendFlightHost(sendFlight)
             .onChange(of: runtime.runtimeId) { _, _ in sendFlight.clear() }
@@ -264,9 +271,10 @@ struct ChatView: View {
         }
     }
 
-    /// Only the final visual fragment owns source file changes.
+    /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
+    /// row, whichever of the turn's messages the Host anchored it to.
     private func turnEndChangeAnchors(_ row: ChatRow) -> Set<String> {
-        store.changeAnchors(for: store.chatTranscript.changeAnchorsByRow[row.id] ?? [])
+        store.chatTranscript.changeAnchorsByRow[row.id] ?? []
     }
 
     private var conversation: some View {
@@ -310,13 +318,7 @@ struct ChatView: View {
                     Color.clear.frame(height: 4).id(ChatFollow.bottomID)
                         .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
                 }.scrollTargetLayout()
-                    .padding(.horizontal, 16).padding(.top, 4)
-                    .environment(\.chatReadingInteraction) {
-                        // The tap's scroll phase can end before the expansion has grown.
-                        // Do not let that idle event re-enable following during the animation.
-                        metrics.userScrolling = false
-                        following = false
-                    }
+                    .padding(.horizontal, 16).padding(.top, ChatFollow.topPadding)
                     .background(OrbisScrollDirectionObserver { earlier in lastScrollTowardEarlier = earlier })
                     .background {
                         if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
@@ -327,7 +329,8 @@ struct ChatView: View {
                 .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
                                              questionJumpRequest: questionJumpRequest,
                                              onDistance: bottomDistanceChanged,
-                                             onInteraction: { userInteractionChanged($0) }))
+                                             onInteraction: { userInteractionChanged($0) },
+                                             onReading: { metrics.userScrolling = false; following = false }))
                 .onPreferenceChange(ChatRowsPreference.self) { frames in
                     metrics.rowFrames = frames
                     metrics.viewportHeight = viewport.size.height
@@ -477,6 +480,7 @@ struct ChatView: View {
                         Label(runtime.cwd, systemImage: "folder").lineLimit(1).truncationMode(.middle)
                         OrbisMotionButton {
                             #if DEBUG
+                            PreviewViewportUpdates.advance?()
                             PreviewViewportUpdates.schedule?()
                             #endif
                             store.refreshWorkingBranch()
@@ -592,6 +596,16 @@ struct ChatView: View {
 
 }
 
+private final class ChatNativeReadingMetrics {
+    var offset: CGFloat = 0
+    var frozen = false
+}
+
+private struct ChatNativeScrollFacts: Equatable {
+    let offset: CGFloat
+    let distance: CGFloat
+}
+
 /// Reports how far the transcript sits from its bottom edge and when the reader's finger
 /// starts or stops moving it. iOS 18 reads the scroll geometry and phase directly.
 private struct ChatScrollObserver: ViewModifier {
@@ -601,6 +615,7 @@ private struct ChatScrollObserver: ViewModifier {
     let questionJumpRequest: ChatQuestionJump?
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
+    let onReading: () -> Void
     @State private var readingRow: String?
     @Environment(\.orbisReduceMotion) private var reduceMotion
 
@@ -609,9 +624,10 @@ private struct ChatScrollObserver: ViewModifier {
             content
                 .modifier(ChatNativeScrollPosition(following: following, jumpRequest: jumpRequest,
                                                    questionJumpRequest: questionJumpRequest,
-                                                   onDistance: onDistance, onInteraction: onInteraction))
+                                                   onDistance: onDistance, onInteraction: onInteraction, onReading: onReading))
         } else {
             ScrollViewReader { proxy in content
+                .environment(\.chatReadingInteraction, onReading)
                 .scrollPosition(id: $readingRow)
                 .defaultScrollAnchor(following ? .bottom : nil)
                 .onChange(of: jumpRequest) { _, _ in
@@ -638,15 +654,26 @@ private struct ChatNativeScrollPosition: ViewModifier {
     let questionJumpRequest: ChatQuestionJump?
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
+    let onReading: () -> Void
     @State private var position = ScrollPosition(idType: String.self)
+    @State private var metrics = ChatNativeReadingMetrics()
     @Environment(\.orbisReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
+            .environment(\.chatReadingInteraction) {
+                // A disclosure can expand before the parent publishes `following = false`.
+                // Commit a point before the disclosure changes height. The target layout's
+                // coordinate starts after the lazy stack's top padding.
+                metrics.frozen = true
+                onReading()
+                position.scrollTo(y: metrics.offset - ChatFollow.topPadding)
+            }
             .scrollPosition($position)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
             .onChange(of: jumpRequest) { _, _ in
+                metrics.frozen = false
                 withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(edge: .bottom) }
             }
             .onChange(of: questionJumpRequest) { _, request in
@@ -654,14 +681,15 @@ private struct ChatNativeScrollPosition: ViewModifier {
                 withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(id: request.rowID, anchor: .top) }
             }
             .onChange(of: following) { _, next in
-                if !next { position.isPositionedByUser = true }
+                if !next && !metrics.frozen { position.isPositionedByUser = true }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY)
-            } action: { _, distance in onDistance(distance) }
+            .onScrollGeometryChange(for: ChatNativeScrollFacts.self) { geometry in
+                ChatNativeScrollFacts(offset: geometry.contentOffset.y,
+                    distance: max(0, geometry.contentSize.height + geometry.contentInsets.bottom - geometry.visibleRect.maxY))
+            } action: { _, facts in metrics.offset = facts.offset; onDistance(facts.distance) }
             .onScrollPhaseChange { _, phase in
                 switch phase {
-                case .tracking, .interacting: onInteraction(true)
+                case .tracking, .interacting: metrics.frozen = false; onInteraction(true)
                 case .idle: onInteraction(false)
                 default: break
                 }
@@ -748,7 +776,7 @@ struct ChatMessageRow: View, Equatable {
     var onRewind: (RuntimeOption) -> Void = { _ in }
     var onPending: (PendingSendAction) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.messages == rhs.row.messages && lhs.row.copyMessages == rhs.row.copyMessages && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads && lhs.canResend == rhs.canResend
+        lhs.row.contentRevision == rhs.row.contentRevision && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads && lhs.canResend == rhs.canResend
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -781,7 +809,7 @@ struct ChatMessageRow: View, Equatable {
                         TurnChangeCards(changes: changes, anchors: changeAnchors, turns: Set(timings.map(\.turnId)))
                     }
                     ForEach(timings, id: \.turnId) { timing in
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                        TimelineView(.animation(minimumInterval: 1, paused: timing.durationMs != nil)) { context in
                             let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
                             Text(String(format: timing.durationMs == nil ? L10n.tr("本轮已运行 %.1f 秒") : L10n.tr("本轮耗时 %.1f 秒"), elapsed / 1000))
                                 .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
@@ -791,7 +819,7 @@ struct ChatMessageRow: View, Equatable {
                     .modifier(ChatMessageSurface(row: row, streaming: !streamingMessageIds.isEmpty, arrivals: replyArrivals))
                     .accessibilityAction(named: L10n.tr("复制")) { UIPasteboard.general.string = copyText }
                     .messageSendFlightTarget(row.messages.first?.clientMessageId ?? row.id)
-                    .modifier(OrbisMessageActions(enabled: row.isUser, id: row.id, text: copyText,
+                    .modifier(OrbisMessageActions(enabled: row.isUser, id: row.id, text: row.isUser ? copyText : "",
                                                   rewindEnabled: rewindEnabled, rewind: messageRewind))
                 if !row.isUser { Spacer(minLength: 8) }
             }
@@ -804,7 +832,7 @@ struct ChatMessageRow: View, Equatable {
         guard pending == nil, let rewindOption else { return nil }
         return { onRewind(rewindOption) }
     }
-    private var copyText: String { (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
+    private var copyText: String { row.copyText ?? (row.copyMessages ?? row.messages).map(\.text).joined(separator: "\n\n") }
 }
 
 private struct ChatMessageSurface: ViewModifier {
@@ -964,13 +992,10 @@ private struct ChatToolGroup: View {
 }
 
 private struct MessageContentView: View {
-    @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
-    @State private var fullOpen = false
-    @State private var fullEntryId = ""
     let message: ChatMessage
     var toolResults: [String: ChatMessage] = [:]
     var streaming = false
@@ -1014,6 +1039,20 @@ private struct MessageContentView: View {
                     }
                 }
             }
+            if message.content.contains(where: { $0.truncated == true }) { TruncatedMessageContent(message: message) }
+            if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
+        }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
+    }
+}
+
+private struct TruncatedMessageContent: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    let message: ChatMessage
+    @State private var fullOpen = false
+    @State private var fullEntryId = ""
+    var body: some View {
+        Group {
             if let truncated = message.content.first(where: { $0.truncated == true }) {
                 Text(truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
                     .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
@@ -1024,9 +1063,7 @@ private struct MessageContentView: View {
                 }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
                 if !store.canSend { Text(L10n.tr("连接电脑并继续此会话后可取回完整内容。")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }
-            if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
-        }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
-            .sheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
+        }.sheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
     }
 }
 
@@ -1195,25 +1232,6 @@ private extension Text {
     }
 }
 
-/// One rendered Markdown row and where its text starts within the whole message.
-private struct MarkdownRow: Identifiable {
-    enum Kind {
-        case spacer, divider
-        case text(AttributedString)
-        case heading(Int, AttributedString)
-        case quote(AttributedString)
-        case task(Bool, AttributedString)
-        case bullet(Int, AttributedString)
-        case image(String, URL)
-        case table(MarkdownTextSection)
-        case code(String, String)
-    }
-    let id: String
-    let kind: Kind
-    let base: Int
-    let length: Int
-}
-
 struct MarkdownMessage: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @EnvironmentObject private var transfers: FileTransfers
@@ -1227,16 +1245,21 @@ struct MarkdownMessage: View {
     let streaming: Bool
     @State private var clock: RevealClock
     @State private var settleTick = 0
+    @StateObject private var preparation: MarkdownPreparation
 
     init(text: String, streaming: Bool = false) {
         self.text = text
         self.streaming = streaming
-        _clock = State(initialValue: RevealClock(known: MarkdownCache.renderedLength(text)))
+        let cached = MarkdownDocuments.cached(text)
+        _preparation = StateObject(wrappedValue: MarkdownPreparation(text: text))
+        _clock = State(initialValue: RevealClock(known: cached?.length ?? 0))
     }
 
     var body: some View {
-        let rows = MarkdownCache.rows(text)
-        let length = MarkdownCache.renderedLength(text)
+        // Preserve the measured row while a streamed replacement is parsed off-main.
+        let prepared = MarkdownDocuments.cached(text) ?? preparation.prepared?.document
+        let rows = prepared?.rows ?? []
+        let length = prepared?.length ?? 0
         #if DEBUG
         let referenceNow = previewRevealTime ?? Date().timeIntervalSinceReferenceDate
         #else
@@ -1257,6 +1280,15 @@ struct MarkdownMessage: View {
                 ForEach(rows) { row in rowView(row, clock: visibleClock, now: now) }
             }
         }.font(.orbisBody()).textSelection(.enabled)
+            .task(id: text) {
+                preparation.update(text, streaming: streaming)
+            }
+            .onDisappear { preparation.cancel() }
+            .onChange(of: preparation.prepared?.document.length) { _, next in
+                guard let next else { return }
+                if revealEnabled { clock.observe(length: next, at: referenceNow) }
+                else { clock = RevealClock(known: next) }
+            }
             .environment(\.openURL, OpenURLAction { url in
                 if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
                 let path = url.isFileURL ? url.path : url.absoluteString.removingPercentEncoding ?? url.absoluteString
@@ -1268,7 +1300,10 @@ struct MarkdownMessage: View {
                 else { clock = RevealClock(known: length) }
             }
             // Starting to stream takes the current text as the baseline; ending lets the queue drain.
-            .onChange(of: revealEnabled) { _, enabled in if enabled { clock = RevealClock(known: length) } }
+            .onChange(of: revealEnabled) { _, enabled in
+                preparation.update(text, streaming: streaming)
+                if enabled { clock = RevealClock(known: length) }
+            }
             .task(id: clock.end) {
                 // Pause the timeline once the last character has settled.
                 let wait = clock.end - Date().timeIntervalSinceReferenceDate
@@ -1309,99 +1344,6 @@ struct MarkdownMessage: View {
         case .text(let value):
             Text(value).reveal(clock, base: row.base, now: now)
         }
-    }
-}
-
-private func markdownImage(_ value: String) -> (String, URL)? {
-    guard let close = value.range(of: "]("), value.hasSuffix(")") else { return nil }
-    let alt = String(value[value.index(value.startIndex, offsetBy: 2)..<close.lowerBound])
-    let target = String(value[close.upperBound..<value.index(before: value.endIndex)]).trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
-    guard let url = URL(string: target), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
-    return (alt, url)
-}
-
-private final class MarkdownCacheEntry<Value> {
-    let value: Value
-    init(_ value: Value) { self.value = value }
-}
-
-/// Markdown 解析结果按原文缓存。每次流式增量都会重绘整页，若每次都重新解析所有可见消息
-/// （尤其是逐行 `AttributedString(markdown:)`），主线程会被占满；缓存后只有正在增长的那条要重新解析。
-private enum MarkdownCache {
-    private static let blockStore = makeStore(MarkdownCacheEntry<[MarkdownBlock]>.self, limit: 300)
-    private static let sectionStore = makeStore(MarkdownCacheEntry<[MarkdownTextSection]>.self, limit: 600)
-    private static let inlineStore = makeStore(MarkdownCacheEntry<AttributedString>.self, limit: 5000)
-    private static let rowStore = makeStore(MarkdownCacheEntry<[MarkdownRow]>.self, limit: 300)
-
-    private static func makeStore<Entry: AnyObject>(_: Entry.Type, limit: Int) -> NSCache<NSString, Entry> {
-        let store = NSCache<NSString, Entry>()
-        store.countLimit = limit
-        return store
-    }
-
-    static func blocks(_ text: String) -> [MarkdownBlock] {
-        if let hit = blockStore.object(forKey: text as NSString) { return hit.value }
-        let value = markdownBlocks(text)
-        blockStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
-        return value
-    }
-
-    static func sections(_ text: String) -> [MarkdownTextSection] {
-        if let hit = sectionStore.object(forKey: text as NSString) { return hit.value }
-        let value = markdownTextSections(text)
-        sectionStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
-        return value
-    }
-
-    static func inline(_ text: String) -> AttributedString {
-        if let hit = inlineStore.object(forKey: text as NSString) { return hit.value }
-        let value = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-        inlineStore.setObject(MarkdownCacheEntry(value), forKey: text as NSString)
-        return value
-    }
-
-    static func renderedLength(_ text: String) -> Int {
-        rows(text).last.map { $0.base + $0.length } ?? 0
-    }
-
-    fileprivate static func rows(_ text: String) -> [MarkdownRow] {
-        if let hit = rowStore.object(forKey: text as NSString) { return hit.value }
-        var rows: [MarkdownRow] = []
-        var offset = 0
-        func add(_ id: String, _ kind: MarkdownRow.Kind, _ length: Int) {
-            rows.append(MarkdownRow(id: id, kind: kind, base: offset, length: length))
-            offset += length
-        }
-        func count(_ value: AttributedString) -> Int { String(value.characters).utf16.count }
-        for block in blocks(text) {
-            if case .code(let language) = block.kind {
-                add("code-\(block.id)", .code(language, block.text), block.text.utf16.count)
-                continue
-            }
-            for section in sections(block.text) {
-                let id = "text-\(block.id)-\(section.id)"
-                if section.kind == .table { add(id, .table(section), 0); continue }
-                let line = section.text.trimmingCharacters(in: .whitespaces)
-                let indent = section.text.prefix(while: { $0 == " " || $0 == "\t" }).count
-                let hashes = line.prefix(while: { $0 == "#" }).count
-                if line.isEmpty { add(id, .spacer, 0) }
-                else if ["---", "***", "___"].contains(line) { add(id, .divider, 0) }
-                else if line.hasPrefix("!["), let image = markdownImage(line) { add(id, .image(image.0, image.1), 0) }
-                else if line.hasPrefix("> ") {
-                    let value = inline(String(line.dropFirst(2))); add(id, .quote(value), count(value))
-                } else if (1...6).contains(hashes), line.dropFirst(hashes).hasPrefix(" ") {
-                    let value = inline(String(line.dropFirst(hashes + 1))); add(id, .heading(hashes, value), count(value))
-                } else if line.hasPrefix("- [ ] ") || line.hasPrefix("- [x] ") || line.hasPrefix("- [X] ") {
-                    let value = inline(String(line.dropFirst(6))); add(id, .task(!line.hasPrefix("- [ ] "), value), count(value))
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                    let value = inline(String(line.dropFirst(2))); add(id, .bullet(indent, value), count(value) + 1)
-                } else {
-                    let value = inline(line); add(id, .text(value), count(value))
-                }
-            }
-        }
-        rowStore.setObject(MarkdownCacheEntry(rows), forKey: text as NSString)
-        return rows
     }
 }
 
@@ -1529,7 +1471,7 @@ private struct MarkdownTableView: View {
                 ForEach(Array(section.rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow(alignment: .top) {
                         ForEach(Array((section.rows.first ?? []).indices), id: \.self) { column in
-                            Text(MarkdownCache.inline(column < row.count ? row[column] : ""))
+                            Text(rowIndex < section.inlineRows.count && column < section.inlineRows[rowIndex].count ? section.inlineRows[rowIndex][column] : AttributedString(""))
                                 .font(.orbisLabel(rowIndex == 0 ? .semibold : .regular))
                                 .frame(width: 150, alignment: alignment(column)).padding(10)
                                 .frame(maxHeight: .infinity, alignment: .top)

@@ -202,6 +202,7 @@ internal fun SessionDrawer(
     onSetArchived: (String, String, Boolean) -> Unit,
     onRequestProviders: () -> Unit = {},
     isOpen: Boolean = true,
+    preparedCatalog: List<CachedHostGroup>? = null,
 ) {
     val activeHostId = state.hostId
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
@@ -216,7 +217,7 @@ internal fun SessionDrawer(
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
     val request = DrawerCatalogRequest(activeHostState, AppLocalization.language, DrawerCatalogFilter(
-        agentFilterKey, showArchived, requestedProviderKey, currentProvider, hostProvider, searchTerm))
+        agentFilterKey, showArchived, requestedProviderKey, currentProvider, hostProvider, searchTerm), preparedCatalog)
     val projection = rememberDrawerCatalog(request)
     val providerOptions = projection?.options ?: codexProviderOptions(emptyList(), currentProvider, agentFilter.key)
     val providerKey = projection?.providerKey ?: requestedProviderKey

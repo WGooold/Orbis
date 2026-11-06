@@ -19,6 +19,26 @@ struct HostSnapshot: Identifiable {
     var connectionState: ConnectionState { connection.connection }
 }
 
+private struct HostMenuFact: Equatable {
+    let id: String
+    let name: String
+    let connection: ConnectionState
+    let pending: Bool
+}
+
+private struct HomeSurfaceKey: Equatable {
+    let owner: ObjectIdentifier
+    let host: String?
+    let revision: Int
+    let menu: Int
+}
+private struct DirectorySurfaceKey: Equatable {
+    let host: String?
+    let revision: Int
+    let catalog: UUID
+    let menu: Int
+}
+
 /// Each pairing retains its own authenticated paths, mirror, history reads and transfers.
 /// Selecting a Host changes only the recipient of interactive operations (ADR-0030).
 @MainActor
@@ -38,6 +58,13 @@ final class OrbisStore: ObservableObject {
     private var started: Set<String> = []
     private let emptyConnection: HostConnection
     private var pairingTransport: OrbisTransport?
+    let homeUpdates = ScreenPublication()
+    let directoryUpdates = ScreenPublication()
+    private var changedHosts: Set<String> = []
+    private var menuFacts: [HostMenuFact] = []
+    private var menuRevision = 0
+    private var homeSurfaceKey: HomeSurfaceKey?
+    private var directorySurfaceKey: DirectorySurfaceKey?
     private var publicationScheduled = false
     private var cleanupTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -67,6 +94,7 @@ final class OrbisStore: ObservableObject {
         for pairing in pairings { install(pairing, connect: autoConnect) }
         let saved = preferences?.string(forKey: "orbis.selectedHostId")
         selectedHostId = saved.flatMap { connections[$0] == nil ? nil : $0 } ?? pairings.first?.hostId
+        refreshScreenPublications()
     }
 
     var hosts: [HostSnapshot] { pairings.compactMap { host in connections[host.hostId].map { HostSnapshot(pairing: host, connection: $0) } } }
@@ -80,18 +108,38 @@ final class OrbisStore: ObservableObject {
             autoConnect: false, preferences: preferences, transferRoot: root, initialPairing: pairing, isolated: true, historyWorker: historyWorker)
         connection.didUpdatePairing = { [weak self] updated in self?.updatePairing(updated) }
         connections[pairing.hostId] = connection
-        observations[pairing.hostId] = connection.objectWillChange.sink { [weak self] _ in self?.publishChanges() }
+        observations[pairing.hostId] = connection.objectWillChange.sink { [weak self] _ in self?.publishChanges(hostId: pairing.hostId) }
         if connect { started.insert(pairing.hostId); connection.connect(hostId: pairing.hostId) }
     }
 
-    private func publishChanges() {
+    private func publishChanges(hostId: String) {
+        changedHosts.insert(hostId)
         guard !publicationScheduled else { return }
         publicationScheduled = true
         Task { [weak self] in
+            // Published notifies before mutation; capture final, whole-event facts after yielding.
             await Task.yield()
             guard let self else { return }
-            self.publicationScheduled = false; self.objectWillChange.send()
+            let changed = self.changedHosts; self.changedHosts = []
+            self.publicationScheduled = false
+            let menuChanged = self.refreshScreenPublications()
+            if menuChanged || self.selectedHostId.map(changed.contains) == true { self.objectWillChange.send() }
         }
+    }
+
+    @discardableResult private func refreshScreenPublications() -> Bool {
+        let menu = hosts.map { host in HostMenuFact(id: host.hostId, name: host.name,
+            connection: host.connectionState, pending: host.connection.interactions.values.contains { !$0.isEmpty }) }
+        let menuChanged = menuFacts != menu
+        if menuChanged { menuFacts = menu; menuRevision &+= 1 }
+        let active = activeConnection
+        active.prepareScreenPublications()
+        let home = HomeSurfaceKey(owner: ObjectIdentifier(active), host: selectedHostId, revision: active.homeViewRevision, menu: menuRevision)
+        if homeSurfaceKey != home { homeSurfaceKey = home; homeUpdates.invalidate() }
+        let directory = DirectorySurfaceKey(host: selectedHostId, revision: active.directoryViewRevision,
+                                             catalog: active.directoryCatalog.revision, menu: menuRevision)
+        if directorySurfaceKey != directory { directorySurfaceKey = directory; directoryUpdates.invalidate() }
+        return menuChanged
     }
 
     private func updatePairing(_ updated: HostPairing) {
@@ -100,6 +148,7 @@ final class OrbisStore: ObservableObject {
         var next = pairings; next[index] = updated
         do { try secure.savePairings(next); pairings = next }
         catch { pairingError = error.localizedDescription }
+        refreshScreenPublications()
     }
 
     func selectHost(_ hostId: String) {
@@ -107,6 +156,7 @@ final class OrbisStore: ObservableObject {
         if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
+        refreshScreenPublications()
     }
     func connect(hostId: String) {
         selectHost(hostId)
@@ -133,6 +183,7 @@ final class OrbisStore: ObservableObject {
         if selectedHostId == hostId { selectedHostId = next.first?.hostId }
         if let selectedHostId { preferences?.set(selectedHostId, forKey: "orbis.selectedHostId") }
         else { preferences?.removeObject(forKey: "orbis.selectedHostId") }
+        refreshScreenPublications()
     }
     func pair(from rawQR: String) {
         guard !isPairing else { return }
@@ -267,6 +318,9 @@ final class OrbisStore: ObservableObject {
     func advanceSessionSyncs(now: Date = Date()) { activeConnection.advanceSessionSyncs(now: now) }
     func waitForPendingEvents() async {
         for connection in Array(connections.values) { await connection.waitForPendingEvents() }
+        await activeConnection.waitForScreenPublications()
+        refreshScreenPublications()
+        while publicationScheduled { await Task.yield() }
         while !cleanupTasks.isEmpty { for task in Array(cleanupTasks.values) { await task.value } }
     }
 }

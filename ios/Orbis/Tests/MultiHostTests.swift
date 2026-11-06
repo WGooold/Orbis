@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Testing
 @testable import OrbisCore
 
@@ -202,6 +203,41 @@ struct MultiHostTests {
         #expect(try await second.historyWorker.listCachedSessions(host: removed).isEmpty)
         #expect(try await second.historyWorker.page(host: surviving, sessionId: "shared-session").messages.map(\.text) == ["Keep this history"])
         #expect(fixture.store.sendMessage("Still connected"))
+    }
+
+    // Real contiguous source patches on a background Host must not repaint the selected UI.
+    // Switching still exposes its newest transcript; menu connection changes remain observable.
+    @Test func backgroundBodyUpdatesStayScopedAndSwitchKeepsLatestFacts() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let second = try #require(fixture.transports["host-2"])
+        try await second.snapshot(text: "Initial history")
+        fixture.store.selectHost("host-1")
+        await fixture.store.waitForPendingEvents()
+        let home = fixture.store.homeUpdates.revision, directory = fixture.store.directoryUpdates.revision
+        var publications = 0
+        let observation = fixture.store.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+        for sequence in 2...5 {
+            let head: [String: Any] = ["leafId": "shared-entry"]
+            let event: [String: Any] = ["type": "session.patch", "sessionId": "shared-session", "baseSeq": sequence - 1, "seq": sequence,
+                "source": ["epoch": "shared-epoch", "seq": sequence, "ready": true], "head": head, "cursor": head,
+                "headCompleteness": "complete", "entries": [], "live": ["complete": true, "messages": [["message": [
+                    "messageId": "live", "role": "assistant", "timestamp": 101,
+                    "content": [["type": "text", "text": "Chunk \(sequence)"]]], "finished": false, "order": 2]]]]
+            await second.emit(["type": "runtime.event", "runtimeId": "shared-runtime", "sequence": sequence, "event": event], channel: "msg")
+        }
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.store.connection(for: "host-2")?.messages.last?.text == "Chunk 5")
+        #expect(publications == 0)
+        #expect(fixture.store.homeUpdates.revision == home)
+        #expect(fixture.store.directoryUpdates.revision == directory)
+        second.state?(.offline, nil)
+        await fixture.store.waitForPendingEvents()
+        #expect(publications > 0)
+        #expect(fixture.store.homeUpdates.revision > home)
+        fixture.store.selectHost("host-2")
+        #expect(fixture.store.messages.last?.text == "Chunk 5")
     }
 
     @Test func learnedLANEndpointsPersistForTheirOwnHost() async throws {

@@ -2147,6 +2147,48 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
     }
 
+    // Exercise the native keyboard resize while source patches keep replacing a long reply.
+    // Input and navigation must remain responsive, with the header fixed and the draft retained.
+    func testKeyboardRemainsResponsiveWhileLongReplyIsPublished() throws {
+        try verifyInputDuringReplyPublication(resizeFixture: false)
+    }
+
+    // The same responsive-input and fixed-header assertions also run with a deterministic
+    // viewport reduction on headless runners that do not display a software keyboard.
+    func testViewportSqueezeRemainsResponsiveWhileLongReplyIsPublished() throws {
+        try verifyInputDuringReplyPublication(resizeFixture: true)
+    }
+
+    private func verifyInputDuringReplyPublication(resizeFixture: Bool) throws {
+        let app = launch("viewport", arguments: ["--preview-keyboard-stream"] + (resizeFixture ? ["--preview-keyboard-resize"] : []))
+        defer { app.terminate() }
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        let height = transcript.frame.height
+        let title = app.buttons["chat-title"]
+        let header = title.frame
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
+        composer.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
+        capture("keyboard-source-publication-open", app: app)
+        let keyboard = app.keyboards.firstMatch.frame
+        if !resizeFixture {
+            try XCTSkipIf(!keyboard.intersects(app.frame) || keyboard.minY >= app.frame.maxY - 1,
+                          "Headless Device Hub exposes an offscreen hardware-keyboard frame; native software-keyboard validation requires a visible keyboard")
+            XCTAssertGreaterThan(keyboard.height, 100, "This regression requires the software keyboard to be visible")
+        }
+        composer.typeText("typing while generating")
+        XCTAssertEqual(composer.value as? String, "typing while generating")
+        XCTAssertLessThan(transcript.frame.height, height - 100)
+        XCTAssertEqual(title.frame, header)
+        if !resizeFixture { XCTAssertLessThanOrEqual(composer.frame.maxY, app.keyboards.firstMatch.frame.minY + 1) }
+        transcript.swipeDown()
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 5))
+        capture("keyboard-during-source-publication", app: app)
+    }
+
     func testNewMessagesAndToolsPreserveTheMovingReadingAnchor() {
         let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-viewport-drag"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))

@@ -28,11 +28,12 @@ internal data class DrawerCatalogFilter(
 )
 
 /** Equality is deliberately constant-time on the UI thread, even with long loaded transcripts. */
-internal class DrawerCatalogRequest(val state: RemoteState?, val language: AppLanguage, val filter: DrawerCatalogFilter) {
+internal class DrawerCatalogRequest(val state: RemoteState?, val language: AppLanguage, val filter: DrawerCatalogFilter,
+                                    val prepared: List<CachedHostGroup>? = null) {
     fun sameView(other: DrawerCatalogRequest): Boolean =
         state?.hostId == other.state?.hostId && language == other.language && filter == other.filter
 
-    override fun equals(other: Any?): Boolean = other is DrawerCatalogRequest && sameView(other) &&
+    override fun equals(other: Any?): Boolean = other is DrawerCatalogRequest && sameView(other) && prepared === other.prepared &&
         state?.hostName == other.state?.hostName && state?.sessions === other.state?.sessions &&
         state?.runtimes === other.state?.runtimes && state?.sessionGraphs === other.state?.sessionGraphs &&
         state?.conversations === other.state?.conversations && state?.ledger === other.state?.ledger
@@ -70,7 +71,7 @@ internal class DrawerCatalogWorker(
     private var previous: DrawerCatalogProjection? = null
 
     suspend fun resolve(request: DrawerCatalogRequest): DrawerCatalogProjection = withContext(dispatcher) {
-        val tree = cache.resolve(request.state, request.language)
+        val tree = request.prepared ?: cache.resolve(request.state, request.language)
         val old = previous
         if (tree === previousTree && old?.identity?.matches(request) == true) return@withContext old
         val filter = request.filter

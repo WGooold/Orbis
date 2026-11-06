@@ -160,6 +160,8 @@ final class TurnFileChanges: ObservableObject {
     private var agent: ToolAgent?
     private var queriedEntries: Set<String> = []
     private var queriedTurns: Set<String> = []
+    private var observedEntries: [String]?
+    private var observedTurns: [String]?
     private var viewerId = UUID().uuidString
     private var requests: [String: Request] = [:]
     private var timeouts: [String: Task<Void, Never>] = [:]
@@ -175,6 +177,8 @@ final class TurnFileChanges: ObservableObject {
 
     func observe(runtimeId: String, agent: ToolAgent, entryIds: [String], turnIds: [String]) {
         if self.runtimeId != runtimeId || self.agent != agent { clear(); self.runtimeId = runtimeId; self.agent = agent }
+        if observedEntries == entryIds && observedTurns == turnIds { return }
+        observedEntries = entryIds; observedTurns = turnIds
         let entries = Set(entryIds.filter(validToolId)).subtracting(queriedEntries)
         let turns = Set(turnIds.filter(validToolId)).subtracting(queriedTurns)
         guard !entries.isEmpty || !turns.isEmpty else { return }
@@ -185,6 +189,9 @@ final class TurnFileChanges: ObservableObject {
             var command = scope(type: "session.changes.list")
             command["entryIds"] = e; command["turnIds"] = t
             if dispatch(command, request: .list(entries: e, turns: t, cursor: nil)) { queriedEntries.formUnion(e); queriedTurns.formUnion(t) }
+        }
+        if !entries.isSubset(of: queriedEntries) || !turns.isSubset(of: queriedTurns) {
+            observedEntries = nil; observedTurns = nil
         }
     }
     func matching(anchors: Set<String>, turns: Set<String>) -> [TurnChangeSummary] {
@@ -264,13 +271,13 @@ final class TurnFileChanges: ObservableObject {
     func closeViewer() { cancelDetail(); opened = nil; selectedFileId = nil; suspended = false }
     func clear() {
         closeViewer(); timeouts.values.forEach { $0.cancel() }; timeouts = [:]; requests = [:]
-        summaries = [:]; manifests = [:]; details = [:]; queriedEntries = []; queriedTurns = []; visited = []; readingPositions = [:]
+        summaries = [:]; manifests = [:]; details = [:]; queriedEntries = []; queriedTurns = []; observedEntries = nil; observedTurns = nil; visited = []; readingPositions = [:]
         runtimeId = nil; agent = nil
     }
     func disconnected() {
         closeViewer()
         for (id, request) in Array(requests) { fail(id, request: request, message: L10n.tr("连接已断开，请重试。")) }
-        queriedEntries = []; queriedTurns = []
+        queriedEntries = []; queriedTurns = []; observedEntries = nil; observedTurns = nil
     }
 
     func consume(_ event: [String: Any], runtimeId: String) {
@@ -379,7 +386,7 @@ final class TurnFileChanges: ObservableObject {
     private func fail(_ id: String, request: Request, message: String) {
         finish(id)
         switch request {
-        case .list: queriedEntries = []; queriedTurns = []
+        case .list: queriedEntries = []; queriedTurns = []; observedEntries = nil; observedTurns = nil
         case .manifest(let summary, _): var state = manifest(summary); state.loading = false; state.error = message; manifests[summary.versionKey] = state
         case .detail(_, let file, _, _, _): let key = detailKey(file); var state = details[key] ?? TurnFileDetail(); state.loading = false; state.error = message; details[key] = state
         }

@@ -6,6 +6,7 @@ import UIKit
 private final class DirectoryViewport: ObservableObject {
     @Published private(set) var scrolling = false
     var directories: [SessionDirectory]?
+    private(set) var projection: SessionDirectoryProjection?
     weak var scrollView: UIScrollView?
     private var keys: [String] = []
     private var identity = ""
@@ -15,16 +16,16 @@ private final class DirectoryViewport: ObservableObject {
     private var target: Target?
     private var scheduled = false
 
-    func remember(_ directories: [SessionDirectory], identity: String) {
-        self.directories = directories
-        let next = directories.flatMap { directory in
-            ["directory:" + directory.path] + directory.sessions.map { "session:" + $0.sessionId }
+    func remember(_ projection: SessionDirectoryProjection?, identity: String) {
+        guard let projection else { return }
+        if self.projection === projection {
+            if self.identity != identity { self.identity = identity; target = nil }
+            return
         }
-        var activity: [String: Int64] = [:]
-        for directory in directories {
-            activity["directory:" + directory.path] = directory.modifiedAt
-            for session in directory.sessions { activity["session:" + session.sessionId] = session.modifiedAt }
-        }
+        self.projection = projection
+        self.directories = projection.directories
+        let next = projection.keys
+        let activity = projection.activity
         let updated = Set(activity.keys.filter { self.activity[$0] != nil && self.activity[$0] != activity[$0] })
         defer { self.identity = identity; keys = next; self.activity = activity }
         guard self.identity == identity, keys != next, !keys.isEmpty,
@@ -123,7 +124,7 @@ private struct DirectoryViewportObserver: UIViewRepresentable {
     }
 }
 
-struct SessionDirectoryState {
+struct SessionDirectoryState: Equatable {
     var query = ""
     var kind: String?
     var archived = false
@@ -136,16 +137,30 @@ struct SessionDirectoryState {
     var showAllSessions = false
 }
 
-struct SessionDrawerView: View {
+struct SessionDrawerView: View, Equatable {
+    let store: OrbisStore
+    @ObservedObject var updates: ScreenPublication
+    let renderedState: SessionDirectoryState
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.renderedState == rhs.renderedState }
+
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var host: HostState
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
     @State private var selectedSessionIds: Set<String> = []
     @StateObject private var viewport = DirectoryViewport()
+    @State private var directoryWorker = SessionDirectoryWorker()
+    @State private var incomingProjection: SessionDirectoryProjection?
+    private var catalog: SessionDirectoryCatalog { store.activeConnection.directoryCatalog }
+    private var request: SessionDirectoryFilter {
+        SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
+            kind: state.kind, archived: state.archived, provider: state.providerKey,
+            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language))
+    }
+    private var projection: SessionDirectoryProjection? {
+        incomingProjection?.filter.sameView(as: request) == true ? incomingProjection : nil
+    }
     let onClose: () -> Void
     let onOpenSession: (SessionSummary) -> Void
     let onNewSession: (String?) -> Void
@@ -155,25 +170,20 @@ struct SessionDrawerView: View {
     @EnvironmentObject private var overlay: OrbisOverlay
 
     private var hasProviderFilter: Bool { state.kind == "codex" || state.kind == "codexDesktop" }
-    private var providerOptions: [SessionProviderOption] {
-        sessionProviderOptions(store.sessions, kind: state.kind ?? "codex", current: store.currentProvider(for: state.kind ?? "codex"))
-    }
-    private var effectiveProviderKey: String { providerOptions.contains { $0.key == state.providerKey } ? state.providerKey : "current" }
+    private var providerOptions: [SessionProviderOption] { projection?.options ?? [] }
+    private var effectiveProviderKey: String { projection?.provider ?? state.providerKey }
     private var providerLabel: String { providerOptions.first { $0.key == effectiveProviderKey }?.label ?? L10n.tr("当前 provider") }
-
-    private var directories: [SessionDirectory] {
-        let catalog = store.visibleSessions
-        let visible = hasProviderFilter ? catalog.filter {
-            matchesSessionProvider($0, filter: effectiveProviderKey, current: store.currentProvider(for: state.kind ?? "codex"))
-        } : catalog
-        return sessionDirectories(visible, query: state.query, kind: state.kind, archived: state.archived, title: store.displayName)
+    private var displayedProjection: SessionDirectoryProjection? {
+        viewport.scrolling && viewport.projection?.filter.sameView(as: request) == true ? viewport.projection : projection
     }
+    private var directories: [SessionDirectory] { displayedProjection?.directories ?? [] }
 
     var body: some View {
-        let incoming = self.directories
-        let directories = viewport.scrolling ? viewport.directories ?? incoming : incoming
-        let _ = viewport.remember(directories, identity: "\(store.selectedHostId ?? "")|\(state.query)|\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.expandedPath ?? "")|\(state.showAllSessions)")
-        let selectedSessions = directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
+        let incoming = self.projection
+        let shown = displayedProjection
+        let directories = shown?.directories ?? []
+        let _ = viewport.scrolling ? () : viewport.remember(incoming, identity: "\(store.selectedHostId ?? "")|\(state.query)|\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.expandedPath ?? "")|\(state.showAllSessions)")
+        let selectedSessions = (shown?.sessions ?? []).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
             HStack(spacing: 12) {
                 OrbisMotionText(selecting ? L10n.tr("已选择 {0} 项", selectedSessions.count) : L10n.tr("会话目录")).font(.orbisTitle()).accessibilityAddTraits(.isHeader)
@@ -265,12 +275,20 @@ struct SessionDrawerView: View {
             .onChange(of: directories.flatMap(\.sessions).map(\.sessionId)) { _, ids in
                 selectedSessionIds.formIntersection(ids)
             }
+            .task(id: request) {
+                let filter = request, source = catalog
+                let next = await directoryWorker.resolve(catalog: source, filter: filter)
+                guard !Task.isCancelled else { return }
+                incomingProjection = next
+                if !viewport.scrolling { resolveExpansion() }
+            }
+            .onChange(of: viewport.scrolling) { _, active in if !active { resolveExpansion() } }
             .onDisappear { selectedSessionIds = [] }
     }
 
     private var searching: Bool { !state.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var selectedSessions: [SessionSummary] {
-        directories.flatMap(\.sessions).filter { selectedSessionIds.contains($0.sessionId) }
+        (displayedProjection?.sessions ?? []).filter { selectedSessionIds.contains($0.sessionId) }
     }
     private var selecting: Bool { !selectedSessionIds.isEmpty }
 
@@ -414,7 +432,7 @@ struct SessionDrawerView: View {
     }
 
     private func sessionRow(_ session: SessionSummary) -> some View {
-        let runtime = store.runtimes.first { $0.sessionId == session.sessionId }
+        let runtime = catalog.runtimeBySession[session.sessionId]
         let selected = selectedSessionIds.contains(session.sessionId)
         return OrbisMotionButton {
             searchFocused = false
@@ -431,7 +449,7 @@ struct SessionDrawerView: View {
                 }.frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 4) {
                     // Reserve both title lines so short and wrapped titles keep the same card height.
-                    Text(store.displayName(session)).font(.orbisBody()).lineLimit(2, reservesSpace: true)
+                    Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisBody()).lineLimit(2, reservesSpace: true)
                     ZStack(alignment: .leading) {
                         HStack(spacing: 8) {
                             if let runtime { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }

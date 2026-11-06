@@ -4,6 +4,40 @@ import Testing
 
 @Suite("Transport priority and bounded delivery")
 struct InboundTransportTests {
+    // Moving encoding must keep legal long text admissible and reserve escaped JSON safely.
+    @Test func outboundBudgetKeepsLongTextAndAccountsForJSONEscapes() throws {
+        for text in [String(repeating: "a", count: 1024 * 1024), "\"\\/\n\t\u{0}\u{1F}\u{2028}\u{2029}中文🙂"] {
+            let object: [String: Any] = ["type": "test", "text": text, "values": [true, NSNull(), 12]]
+            let budget = OutboundJSONObject(value: object).reservation
+            let original = try E2ECrypto.jsonData(object).count * 2 + 4096
+            #expect(budget >= original)
+            #expect(budget < original + 512)
+            #expect(budget < 4 * 1024 * 1024)
+        }
+    }
+
+    // A blocked encoder must leave MainActor responsive and retain per-lane FIFO nonce order.
+    @Test @MainActor func outboundEncodingLeavesMainActorAvailableAndPreservesSequence() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let encoder = OutboundFrameEncoder(beforeEncode: {
+            #expect(!Thread.isMainThread)
+            Task { @MainActor in gate.signal() }
+            #expect(gate.wait(timeout: .now() + 3) == .success)
+        })
+        let keys = SessionKeys(hostToDevice: Data(repeating: 1, count: 32), deviceToHost: Data(repeating: 2, count: 32))
+        let generation = UUID()
+        let receiver = E2EChannel(keys: SessionKeys(hostToDevice: keys.deviceToHost, deviceToHost: keys.hostToDevice))
+        for expected in 1...2 {
+            let encoded = try await encoder.encode(object: OutboundJSONObject(value: ["type": "test", "index": expected]),
+                lane: "ctl", room: "h", from: "d", to: "h", keys: keys, generation: generation)
+            #expect(encoded.count == 1)
+            let frame = try JSONDecoder().decode(V2Frame.self, from: Data(try #require(encoded.first).utf8))
+            #expect(frame.envelope.hdr.n == UInt64(expected))
+            let payload = try #require(try receiver.open(frame.envelope))
+            #expect(try E2ECrypto.jsonObject(payload)["index"] as? Int == expected)
+        }
+    }
+
     @Test @MainActor func decoderDoesNotOccupyMainActorAndRetainsAuthenticatedBytes() async throws {
         let gate = DispatchSemaphore(value: 0)
         let decoder = InboundFrameDecoder(beforeDecode: {

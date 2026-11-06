@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
@@ -126,7 +128,7 @@ internal class HostConnection(
         relayPreferences.edit().putString(hostId, mode.name).apply()
         relay.setRelayTransportMode(mode)
     }
-    private val reducer = RelayReducer()
+    private val reducer = RelayReducer(publishHome = false)
     private val notifier = stores.notifier
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
     private val sessionGraphStore = stores.sessionGraph
@@ -182,7 +184,56 @@ internal class HostConnection(
     private val previewPageSize = 30
     private val notificationSyncJobs = mutableMapOf<String, Job>()
     private val sentChangeRequests = mutableSetOf<String>()
-    private val changeWindows = mutableMapOf<String, Pair<List<String>, List<String>>>()
+    private data class ChangeWindow(val runtimeId: String, val sessionId: String, val epoch: String?,
+                                    val generation: Int, val entries: List<String>, val turns: List<String>)
+    private val changeWindow = MutableStateFlow<ChangeWindow?>(null)
+    private val changeRequestLock = Mutex()
+    private val homePresentationJob = scope.launch(Dispatchers.Default) {
+        val worker = HomePresentationWorker()
+        mutableState.map { HomePresentationRequest(it, AppLocalization.language) }.distinctUntilChanged().conflate().collect { input ->
+            val cards = worker.resolve(input) ?: return@collect
+            if (cards === mutableState.value.homeSnapshot) return@collect
+            updateState { current ->
+                if (input.language != AppLocalization.language || !input.matches(current)) current
+                else current.copy(homeSnapshot = cards)
+            }
+        }
+    }
+    private val changeSummaryJob = scope.launch(Dispatchers.Default) {
+        var attempted: ChangeWindow? = null
+        var demandScope: String? = null
+        val demandEntries = linkedSetOf<String>()
+        val demandTurns = linkedSetOf<String>()
+        combine(changeWindow, mutableState) { window, state -> window to state }.collect { (requested, state) ->
+            if (requested == null) return@collect
+            val scope = "${state.hostId}:${requested.runtimeId}:${requested.sessionId}:${requested.epoch}:${requested.generation}"
+            if (demandScope != scope) {
+                demandScope = scope; demandEntries.clear(); demandTurns.clear(); attempted = null
+            }
+            demandEntries.addAll(requested.entries)
+            demandTurns.addAll(requested.turns)
+            while (demandEntries.size > 4096) demandEntries.remove(demandEntries.first())
+            while (demandTurns.size > 2048) demandTurns.remove(demandTurns.first())
+            val window = requested.copy(entries = demandEntries.toList(), turns = demandTurns.toList())
+            if (state.selectedRuntimeId != window.runtimeId || generation != window.generation ||
+                state.agentModelEpoch != window.epoch || state.runtimes[window.runtimeId]?.sessionId != window.sessionId ||
+                state.connection != RelayConnection.ONLINE || !state.e2eReady) return@collect
+            val runtime = state.runtimes[window.runtimeId] ?: return@collect
+            val old = state.turnChanges[window.runtimeId] ?: TurnChangesState()
+            if (old.error != null && attempted == window) return@collect
+            val agent = ToolAgent(state.hostId ?: return@collect, runtime.agentKind ?: return@collect, window.sessionId)
+            if (old.requestMissing(agent, window.entries, window.turns) !== old) {
+                attempted = window
+                updateState { current ->
+                    if (current.selectedRuntimeId != window.runtimeId || generation != window.generation ||
+                        current.agentModelEpoch != window.epoch || current.runtimes[window.runtimeId]?.sessionId != window.sessionId) current
+                    else current.copy(turnChanges = current.turnChanges + (window.runtimeId to
+                        (current.turnChanges[window.runtimeId] ?: TurnChangesState()).requestMissing(agent, window.entries, window.turns)))
+                }
+            }
+            flushChangeRequests()
+        }
+    }
 
 
     fun syncNotifications(runtimeId: String) {
@@ -768,6 +819,8 @@ internal class HostConnection(
         closeChangeViewer()
         shouldConnect = false
         startupJob?.cancel()
+        changeSummaryJob.cancel()
+        homePresentationJob.cancel()
         updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
             next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
         } }
@@ -1649,17 +1702,7 @@ internal class HostConnection(
         val runtime = state.runtimes[runtimeId] ?: return
         val session = runtime.sessionId ?: return
         if (state.connection != RelayConnection.ONLINE || state.selectedRuntimeId != runtimeId) return
-        val entries = entryIds.distinct().take(256)
-        val turns = turnIds.distinct().take(128)
-        if (entries.isEmpty() && turns.isEmpty()) return
-        val key = "$runtimeId:$session:${state.agentModelEpoch}"
-        val window = entries to turns
-        if (synchronized(changeWindows) { changeWindows[key] } == window && state.turnChanges[runtimeId]?.error == null) return
-        synchronized(changeWindows) { changeWindows[key] = window }
-        val request = ChangeSummaryRequest(UUID.randomUUID().toString(), ToolAgent(state.hostId ?: return, runtime.agentKind ?: return, session), entries, turns)
-        updateState { current -> current.copy(turnChanges = current.turnChanges + (runtimeId to
-            (current.turnChanges[runtimeId] ?: TurnChangesState()).copy(request = request, error = null))) }
-        flushChangeRequests()
+        changeWindow.value = ChangeWindow(runtimeId, session, state.agentModelEpoch, generation, entryIds, turnIds)
     }
 
     fun readChangeManifest(runtimeId: String, summary: TurnChangeSummary) {
@@ -1719,6 +1762,10 @@ internal class HostConnection(
     }
 
     private fun flushChangeRequests() {
+        scope.launch(Dispatchers.Default) { changeRequestLock.withLock { sendChangeRequests() } }
+    }
+
+    private fun sendChangeRequests() {
         val state = mutableState.value
         if (state.connection != RelayConnection.ONLINE) return
         val commands = state.turnChanges.flatMap { (runtime, changes) ->
@@ -2853,11 +2900,11 @@ internal class HostConnection(
             }
             // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
             val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
-            next = reconciled.commitHomePresentation()
+            next = reconciled
             settlementSyncs = syncs
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
             if (current.changeViewer != null && next.changeViewer == null) retiredViewer = current.changeViewer
-            if (current.connection != next.connection) synchronized(changeWindows) { changeWindows.clear() }
+            if (current.connection != next.connection) changeWindow.value = null
             // ADR-0049 §7 L5：结果不明的操作发起一次核对读取（只在加密通道可用时）；读取序号先登记，再发出。
             if (next.ledgerVerifyWanted && next.ledgerConnectionOpen && next.e2eReady) {
                 val requestId = OperationKinds.VERIFY_REQUEST_PREFIX + UUID.randomUUID()

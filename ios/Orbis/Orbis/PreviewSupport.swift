@@ -99,6 +99,7 @@ struct ReplyCardMotionPreview: View {
 @MainActor
 enum PreviewViewportUpdates {
     static var schedule: (() -> Void)?
+    static var advance: (() -> Void)?
     static var changeList: ((String) -> Void)?
 }
 
@@ -125,6 +126,7 @@ func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
     PreviewViewportUpdates.schedule = screen == "viewport" && ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag")
         ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
+    PreviewViewportUpdates.advance = screen == "viewport" ? { [weak transport] in transport?.advanceViewport() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
     let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
@@ -213,8 +215,16 @@ private final class PreviewTransport: OrbisTransport {
     private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1
     private var viewportTail = 0
+    private var viewportSeeded = false
     private var viewportUpdates: Task<Void, Never>?
     private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
+    private var keyboardStream: Bool { ProcessInfo.processInfo.arguments.contains("--preview-keyboard-stream") }
+    private var keyboardLive: [[String: Any]] {
+        guard keyboardStream else { return [] }
+        let text = (1...80).map { "生成中正文 \($0)" } + (0..<viewportTail).map { "生成尾部 \($0 + 1)" }
+        return [["message": message("keyboard-live", role: "assistant", text: text.joined(separator: "\n\n")),
+                 "finished": false, "contentComplete": true]]
+    }
     private var sourceSequence = 1
     private var homeReplayScheduled = false
     private var homeReadFailed = false
@@ -356,14 +366,19 @@ private final class PreviewTransport: OrbisTransport {
                "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
                "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete",
                "entries": entries, "display": ["projectionVersion": 3, "entries": display],
-               "live": ["complete": true, "messages": [], "tools": []]])
+               "live": ["complete": true, "messages": keyboardLive, "tools": []]])
+    }
+    func advanceViewport() {
+        appendViewportContent()
+        if keyboardStream { scheduleViewportBatch() }
     }
     func scheduleViewportBatch() {
         viewportUpdates?.cancel()
         viewportUpdates = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 2_000_000_000)
-                for _ in 0..<6 {
+                let keyboard = ProcessInfo.processInfo.arguments.contains("--preview-keyboard-stream")
+                try await Task.sleep(nanoseconds: keyboard ? 100_000_000 : 2_000_000_000)
+                for _ in 0..<(keyboard ? 120 : 6) {
                     guard let self else { return }
                     self.appendViewportContent()
                     try await Task.sleep(nanoseconds: 100_000_000)
@@ -500,6 +515,7 @@ private final class PreviewTransport: OrbisTransport {
                 var value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
+                if name == "execution", keyboardStream, runtime == "preview-codex" { value["phase"] = "running" }
                 if name == "execution", runtime == "preview-codex", ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") {
                     value["tasks"] = ["availability": "ready", "truncated": false, "items": [
                         ["id": "review", "title": "检查代码", "kind": "Explore", "status": "running"],
@@ -572,8 +588,11 @@ private final class PreviewTransport: OrbisTransport {
                       "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
         } else if object["type"] as? String == "runtime.git.request" {
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
-            if screen == "viewport" {
-                appendViewportContent()
+            // The regular Git poll only reports Git facts. A single initial seed and the
+            // explicit preview control own source updates, independently of test duration.
+            if screen == "viewport", !viewportSeeded {
+                viewportSeeded = true
+                advanceViewport()
             }
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
@@ -589,7 +608,7 @@ private final class PreviewTransport: OrbisTransport {
                 let display: [[String: Any]] = messages.enumerated().map { ["displayId": "node-\($0.offset + 1)", "entryId": "node-\($0.offset + 1)", "kind": "message", "message": $0.element] }
                 event(["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!, "range": "preview", "mode": "replace", "selection": "snapshot", "cursor": ["leafId": "node-\(messages.count)"], "entries": entries,
                        "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
-                       "live": ["complete": true, "messages": [], "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
+                       "live": ["complete": true, "messages": keyboardLive, "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
                 if screen == "queue" { event(["type": "message.queued", "queueId": "preview-queue", "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "accepted"], runtimeId: runtime) }
             } else if type == "session.changes.list" {
                 let rows = screen == "changes" ? [changeSummary] : []

@@ -235,7 +235,8 @@ class MainActivity : ComponentActivity() {
             }) {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
-                val hosts by model.hosts.collectAsStateWithLifecycle()
+                val homeUi by model.homeUi.collectAsStateWithLifecycle()
+                val hosts = homeUi.hosts
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
                 val pairingInProgress by model.pairingInProgress.collectAsStateWithLifecycle()
                 var pendingToolExport by remember { mutableStateOf<ToolDetailView?>(null) }
@@ -249,7 +250,7 @@ class MainActivity : ComponentActivity() {
                     LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
-                    RemoteApp(state, hosts, pairingError, pairingInProgress, model)
+                    RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi)
                     state.changeViewer?.let { viewer ->
                         state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.let { manifest ->
                             key(viewer.runtimeId, viewer.summary.versionKey) { FileChangeViewerSheet(viewer, manifest,
@@ -304,6 +305,7 @@ internal fun RemoteApp(
     pairingError: String?,
     pairingInProgress: Boolean,
     model: RemoteViewModel,
+    homeUi: HomeUiSnapshot? = null,
 ) {
     val actionHaptic = rememberActionHaptic()
     val modelLifecycle = LocalLifecycleOwner.current
@@ -344,14 +346,18 @@ internal fun RemoteApp(
     // Keep the directory page's drawer, filters, expansion and scroll position across navigation.
     val runtimeListStateHolder = rememberSaveableStateHolder()
     // 会话列表既是默认页，也是聊天页右滑返回时露出的底层页面，因此抽成一处复用。
+    val homeState = homeUi?.state ?: state
     val runtimeList: @Composable () -> Unit = {
         runtimeListStateHolder.SaveableStateProvider("runtime-list") {
             RuntimeListScreen(
                 launchIntro = launchIntro,
                 onLaunchPresented = { requestId -> if (launchIntro?.requestId == requestId) launchIntro = null },
                 onDirectoryOpened = { cancelLaunchIntro() },
-                state = state,
+                state = homeState,
                 hosts = hosts,
+                preparedCatalog = homeUi?.catalog,
+                preparedSync = homeUi?.sync,
+                preparedDownloadCount = homeUi?.activeDownloads,
                 onOpenRuntime = { hostId, runtimeId ->
                     cancelLaunchIntro()
                     allDownloadsOpen = false
@@ -655,6 +661,9 @@ internal fun RuntimeListScreen(
     launchIntro: LaunchState? = null,
     onLaunchPresented: (String) -> Unit = {},
     onDirectoryOpened: () -> Unit = {},
+    preparedCatalog: List<CachedHostGroup>? = null,
+    preparedSync: HomeSyncStatus? = null,
+    preparedDownloadCount: Int? = null,
 ) {
     val homeListState = rememberLazyListState()
     LaunchedEffect(launchIntro?.requestId) {
@@ -674,12 +683,10 @@ internal fun RuntimeListScreen(
     val haptic = LocalHapticFeedback.current
     var selectedRuntimeIds by remember(activeHostId) { mutableStateOf(emptySet<String>()) }
     // 主页只列当前电脑的会话：多台电脑不混在一张列表里，切换入口就在下面的电脑行（ADR-0030 修订）。
-    val latestRuntimes = remember(hosts, activeHostId) {
-        hosts.filter { it.hostId == activeHostId }.flatMap { snapshot ->
-            // ADR-0049 §5：已提交关闭的会话先离开首页；电脑拒绝或超时时再回来。
-            snapshot.state.homeCards
-                .map { HostRuntimeRow(snapshot.hostId, snapshot.name, it, snapshot.state) }
-        }
+    val activeHost = hosts.firstOrNull { it.hostId == activeHostId }
+    val latestRuntimes = remember(state.homeSnapshot, state.closingRuntimeIds, activeHostId, activeHost?.name) {
+        // Source-page identity survives navigation; chat payloads are not a card dependency.
+        activeHost?.let { host -> state.homeCards.map { HostRuntimeRow(host.hostId, host.name, it) } }.orEmpty()
     }
     var departing by remember(activeHostId) { mutableStateOf(emptyMap<String, DepartingHomeRow>()) }
     fun submitClose(hostId: String, ids: Set<String>): Set<String> {
@@ -698,8 +705,10 @@ internal fun RuntimeListScreen(
     }
     val latestHomeRows by rememberUpdatedState(latestRuntimes)
     val visibleRuntimes = rememberViewportItems(presentedRuntimes, homeListState, activeHostId)
-    val visibleIds = visibleRuntimes.map { it.runtime.runtimeId }.toSet()
-    val closableIds = visibleRuntimes.filter { it.state.canCloseRuntime(it.runtime.runtimeId) }.map { it.runtime.runtimeId }.toSet()
+    val visibleIds = remember(visibleRuntimes) { visibleRuntimes.map { it.runtime.runtimeId }.toSet() }
+    val closableIds = remember(visibleRuntimes, state.runtimes, state.capabilities) {
+        visibleRuntimes.filter { state.canCloseRuntime(it.runtime.runtimeId) }.map { it.runtime.runtimeId }.toSet()
+    }
     val selectedIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds)
     val selecting = selectedIds.isNotEmpty()
     LaunchedEffect(visibleIds, closableIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds) }
@@ -717,6 +726,7 @@ internal fun RuntimeListScreen(
                 state = state,
                 hosts = hosts,
                 isOpen = drawerState.isOpen,
+                preparedCatalog = preparedCatalog,
                 onSelectHost = onSelectHost,
                 onUnpairHost = onUnpairHost,
                 onAddHost = onAddHost,
@@ -773,7 +783,7 @@ internal fun RuntimeListScreen(
                     actions = {
                         SelectionToolbar(selecting = selecting, normal = { progress ->
                             DownloadStatusButton(
-                                activeCount = state.downloads.count { it.value.status in setOf("queued", "downloading") },
+                                activeCount = preparedDownloadCount ?: state.downloads.count { it.value.status in setOf("queued", "downloading") },
                                 enabled = true,
                                 onClick = onOpenDownloads,
                                 modifier = Modifier.graphicsLayer { translationX = 24.dp.toPx() * progress },
@@ -791,7 +801,7 @@ internal fun RuntimeListScreen(
                                 text = L10n.tr("关闭"),
                                 onClick = {
                                     activeHostId?.let { hostId ->
-                                        val currentIds = visibleRuntimes.filter { it.state.homeCardIsCurrent(it.card) && it.state.canCloseRuntime(it.runtime.runtimeId) }
+                                        val currentIds = visibleRuntimes.filter { state.homeCardIsCurrent(it.card) && state.canCloseRuntime(it.runtime.runtimeId) }
                                             .map { it.runtime.runtimeId }.toSet()
                                         selectedRuntimeIds = selectedIds - submitClose(hostId, selectedIds.intersect(currentIds))
                                     }
@@ -808,7 +818,7 @@ internal fun RuntimeListScreen(
             Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = RemoteUi.PagePadding)) {
                 // 一行固定高度：这一页是哪台电脑、怎么连着，以及首版列表发布后是否仍在同步；
                 // 多台电脑时电脑名就是切换入口。重试只在失败时加入这一行，不移动卡片。
-                val backgroundSync = if (state.homeRuntimesLoading) HomeSyncStatus.Idle else state.homeSyncStatus
+                val backgroundSync = if (state.homeRuntimesLoading) HomeSyncStatus.Idle else preparedSync ?: state.homeSyncStatus
                 Row(
                     Modifier.fillMaxWidth().height(56.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -833,7 +843,7 @@ internal fun RuntimeListScreen(
                 }
                 // V21：会话增删与重排不能把视口挤走。在发布新列表的同一次组合里决定位置，
                 // 让 LazyColumn 这一帧就按它测量，而不是先跟着首卡跳走再拉回来。
-                val homeKeys = visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" }
+                val homeKeys = remember(visibleRuntimes) { visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" } }
                 maintainListViewport(homeListState, homeKeys, activeHostId)
                 // M15：与 iOS 一样下拉刷新，逻辑同失败重试；进度仍由连接胶囊或列表空态表达，指示器松手即收起。
                 Box(
@@ -873,7 +883,7 @@ internal fun RuntimeListScreen(
                 ) {
                     // 首版完整快照发布前列表为空：加载与失败占据空态的位置，而不是压在卡片上方。
                     if (state.homeRuntimesLoading) {
-                        item(key = "status") { HomeFirstLoadStatus(state.homeSyncStatus, state.e2eReady, onRetryHome) }
+                        item(key = "status") { HomeFirstLoadStatus(preparedSync ?: state.homeSyncStatus, state.e2eReady, onRetryHome) }
                     } else if (visibleRuntimes.isEmpty() && launchIntro == null) {
                         item(key = "empty") {
                             Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-empty"),
@@ -891,8 +901,8 @@ internal fun RuntimeListScreen(
                         ) { row ->
                             val runtime = row.runtime
                             val departure = departing[runtime.runtimeId]
-                            val cardCurrent = departure == null && row.state.homeCardIsCurrent(row.card)
-                            val canClose = cardCurrent && row.state.canCloseRuntime(runtime.runtimeId)
+                            val cardCurrent = departure == null && state.homeCardIsCurrent(row.card)
+                            val canClose = cardCurrent && state.canCloseRuntime(runtime.runtimeId)
                             val currentCanClose by rememberUpdatedState(canClose)
                             val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
@@ -1127,7 +1137,6 @@ private data class HostRuntimeRow(
     val hostId: String,
     val hostName: String,
     val card: HomeRuntimeCard,
-    val state: RemoteState,
 ) { val runtime: RuntimeSummary get() = card.runtime }
 
 /**
@@ -1317,18 +1326,13 @@ internal fun OfflineHistoryScreen(
     onBack: () -> Unit,
 ) {
     val graph = sessionId?.let(state.sessionGraphs::get)
-    val projection = remember(graph) {
-        graph?.let(::projectSessionGraph) ?: SessionProjectionResult(emptyList(), L10n.tr("本地没有可用的历史缓存"))
-    }
-    val presentation = remember(projection.messages) { buildConversationPresentation(projection.messages) }
-    val messageTurnTimings = remember(projection) {
-        projection.turnTimings.mapNotNull { timing ->
-            timing.messageId?.let { it to timing }
-        }.toMap()
-    }
-    val turnIdsByMessageId = remember(messageTurnTimings) {
-        messageTurnTimings.mapValues { (_, timing) -> timing.turnId }
-    }
+    val projection = rememberChatPresentation(ChatPresentationRequest(
+        ChatPresentationIdentity(state.hostId, "offline:$sessionId", sessionId, 0),
+        emptyList(), emptyMap(), emptyMap(), emptyMap(), graph))
+    val presentation = projection?.presentation ?: ConversationPresentation(emptyList(), emptyMap())
+    val messageTurnTimings = projection?.timings.orEmpty()
+    val chatItems = projection?.items.orEmpty()
+    val rowResources = rememberChatRowResources(ChatResourcesRequest(projection, state.downloads, emptySet(), emptySet(), false))
     val historyKey = sessionId?.let { "offline:$it" }
     val historyState = historyKey?.let(state.sessionHistory::get)
     val historyRead = historyKey?.let(state::historyReadForWindow)
@@ -1405,9 +1409,6 @@ internal fun OfflineHistoryScreen(
             )
         },
     ) { padding ->
-        val chatItems = remember(presentation, turnIdsByMessageId) {
-            buildChatListItems(presentation.messages, turnIdsByMessageId)
-        }
         val offlineRuntimeId = "offline-$sessionId"
         LazyColumn(
             state = listState,
@@ -1424,7 +1425,11 @@ internal fun OfflineHistoryScreen(
             if (firstRead?.phase == SessionReadPhase.FAILED) item {
                 WarningCard(firstRead.error ?: L10n.tr("本地首屏读取失败"))
                 TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text(L10n.tr("重试读取")) }
-            } else if (firstRead?.phase?.active != true) projection.error?.let { item { WarningCard(L10n.tr("历史记录加载失败：{0}", it)) } }
+            } else if (firstRead?.phase?.active != true) {
+                (projection?.error ?: if (graph == null) L10n.tr("本地没有可用的历史缓存") else null)?.let {
+                    item { WarningCard(L10n.tr("历史记录加载失败：{0}", it)) }
+                }
+            }
             if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
                 WarningCard(historyPagingFeedback ?: historyRead.error ?: L10n.tr("历史记录加载失败"))
                 TextButton(onClick = { loadHistoryPage() }) { Text(L10n.tr("重试历史加载")) }
@@ -1437,7 +1442,7 @@ internal fun OfflineHistoryScreen(
                     is ChatListItem.UserMessage -> UserMessageCard(
                         runtimeId = offlineRuntimeId,
                         message = item.message,
-                        downloads = state.downloads,
+                        downloads = rowResources?.rows?.get(item.key)?.downloads.orEmpty(),
                         downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
                         // 只读历史里的文件同样能下载：点击路径就是「请 Host 把这个文件发过来」（§9.4）。
                         downloadFile = { path -> model.downloadFile(path) },
@@ -1451,7 +1456,7 @@ internal fun OfflineHistoryScreen(
                         nowMs = System.currentTimeMillis(),
                         toolActivities = emptyMap(),
                         toolResults = presentation.toolResults,
-                        downloads = state.downloads,
+                        downloads = rowResources?.rows?.get(item.key)?.downloads.orEmpty(),
                         downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
                         downloadFile = { path -> model.downloadFile(path) },
                     )
@@ -1481,7 +1486,6 @@ internal fun ChatScreen(
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
     // V13：恢复已有会话的启动页先显示本地缓存的历史（与 iOS 沿用缓存会话页一致），会话上线后由真实会话接替。
     val launchCache = launch?.resumed?.let(state.sessionGraphs::get)
-    val launchHistory = remember(launchCache) { launchCache?.let(::projectSessionGraph)?.messages.orEmpty() }
     val rewindCommands = state.capabilities[runtimeId]?.commands.orEmpty()
     val rewindGraph = sessionId?.let(state.sessionGraphs::get)
     val rewindOptions = remember(rewindCommands, rewindGraph?.display) { userMessageRewindOptions(rewindCommands, rewindGraph) }
@@ -1493,47 +1497,34 @@ internal fun ChatScreen(
             delay(1_000)
         }
     }
-    val messageTurnTimings = remember(conversation.revision) {
-        conversation.turnTimings.values.mapNotNull { timing ->
-            timing.messageId?.let { messageId -> messageId to timing }
-        }.toMap()
-    }
-    val turnIdsByMessageId = remember(messageTurnTimings) {
-        messageTurnTimings.mapValues { (_, timing) -> timing.turnId }
-    }
-    // ADR-0039 §5：按消息对象身份复用上一次的列表行。`revision` 每条 patch 都会变，
-    // 用它当 key 等于每次都重建整段会话的呈现；这里改成"只有消息对象真的换了才重建"。
-    val presentationCache = remember { PresentationCache() }
-    // ADR-0049：本地待确认发送只在呈现时叠加，权威记录与缓存都不包含它们。
-    val pendingRows = state.pendingSends.chatRows(pageSessionId)
-    val baseMessages = if (conversation.messages.isEmpty() && launch != null) launchHistory else conversation.messages
-    val visibleMessages = remember(baseMessages, pendingRows) { mergePendingSends(baseMessages, pendingRows) }
-    val presentation = presentationCache.presentation(visibleMessages)
-    val chatItems = presentationCache.items(presentation.messages, turnIdsByMessageId)
-    val latestQuestion = remember(conversation.messages) { latestChatQuestion(conversation.messages) }
-    val truncatedContent = remember(presentation.messages) {
-        presentation.messages.firstNotNullOfOrNull { message ->
-            message.content.firstOrNull { it.truncated }?.let { message.messageId to (it.originalBytes ?: 0L) }
-        }
-    }
-    val chatItemKeys = remember(chatItems) { chatItems.map(ChatListItem::key) }
-    val chatItemIndexById = remember(conversation.revision) { chatListItemIndexByMessageId(chatItems) }
-    val representedToolIds = remember(conversation.revision) {
-        presentation.messages.flatMap { message -> message.content.mapNotNull(RemoteContent::toolCallId) }.toSet()
-    }
-    val orphanTools = remember(conversation.revision, representedToolIds) {
-        orphanToolActivities(conversation.tools.values, representedToolIds)
-    }
+    val projection = rememberChatPresentation(ChatPresentationRequest(
+        ChatPresentationIdentity(state.hostId, runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0),
+        conversation.messages, conversation.turnTimings, conversation.tools, state.pendingSends,
+        launchCache.takeIf { conversation.messages.isEmpty() && launch != null }))
+    val presentation = projection?.presentation ?: ConversationPresentation(emptyList(), emptyMap())
+    val chatItems = projection?.items.orEmpty()
+    val rowResources = rememberChatRowResources(ChatResourcesRequest(projection, state.downloads,
+        conversation.streamingMessageIds, conversation.finishedMessageIds,
+        state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing))
+    val messageTurnTimings = projection?.timings.orEmpty()
+    val turnIdsByMessageId = projection?.turnIds.orEmpty()
+    val latestQuestion = projection?.latestQuestion
+    val truncatedContent = projection?.truncated
+    val chatItemKeys = projection?.keys.orEmpty()
+    val chatItemIndexById = projection?.indexByMessage.orEmpty()
+    val orphanTools = projection?.orphanTools.orEmpty()
     // 下载不属于任何会话：会话页的下载按钮显示的是这台电脑全部在途任务。
-    val activeDownloadCount = state.downloads.values.count { it.status == "queued" || it.status == "downloading" }
+    val activeDownloadCount = rowResources?.activeDownloads ?: 0
     // Enter at the cached tail; laying out the oldest card and then jumping doubles first-frame work.
     val listState = scrollState ?: remember(runtimeId, sessionId) {
         LazyListState(firstVisibleItemIndex = chatItems.size + orphanTools.size,
             firstVisibleItemScrollOffset = if (chatItems.isEmpty()) 0 else Int.MAX_VALUE)
     }
-    LaunchedEffect(runtimeId, sessionId, listState, chatItems, turnIdsByMessageId, state.connection) {
+    // Projection identity is the change signal. Collection keys would compare long
+    // message bodies on Main again, after the worker already computed their view.
+    LaunchedEffect(runtimeId, sessionId, listState, projection, state.connection) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.map { it.key }.toSet() }.collect { visible ->
-            val entries = chatItems.filter { it.key in visible }.flatMap { item -> when (item) {
+            val entries = visible.mapNotNull { projection?.byKey?.get(it) }.flatMap { item -> when (item) {
                 is ChatListItem.UserMessage -> listOf(item.message.messageId)
                 is ChatListItem.AssistantTurn -> item.messages.map { it.messageId }
             } }
@@ -1555,7 +1546,7 @@ internal fun ChatScreen(
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
     val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
-    val projectionAnchor = remember(listState, chatItems, chatHeaderCount, orphanTools.size, displayReadPending, sourceRead?.operationId) {
+    val projectionAnchor = remember(listState, projection, chatHeaderCount, orphanTools.size, displayReadPending, sourceRead?.operationId) {
         listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById || it.key in previousItemKeys }
             ?.let { ChatReadingAnchor(it.key as String, it.index, -it.offset, viewportMotion.generation) }
     }
@@ -1579,10 +1570,7 @@ internal fun ChatScreen(
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
     val replyArrivals = remember(state.hostId, runtimeId, sessionId) { ReplyCardArrivals() }
-    replyArrivals.observe(chatItems.map { item -> item.key to when (item) {
-        is ChatListItem.UserMessage -> listOf(item.message.messageId)
-        is ChatListItem.AssistantTurn -> item.messages.map { it.messageId }
-    } }, initialPositioned && state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing && !displayReadPending,
+    replyArrivals.observe(projection?.arrivalRows.orEmpty(), initialPositioned && state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing && !displayReadPending,
         following, android.os.SystemClock.uptimeMillis())
     var hasBrowsed by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
     var lastScrollTowardEarlier by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
@@ -1747,12 +1735,10 @@ internal fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            model.syncNotifications(runtimeId)
-            refreshConversation()
+            model.reconcileChat(runtimeId)
             while (isActive) {
                 delay(15_000)
-                model.syncNotifications(runtimeId)
-                refreshConversation()
+                model.reconcileChat(runtimeId)
             }
         }
     }
@@ -1784,7 +1770,7 @@ internal fun ChatScreen(
         historyPagingRequests({ listState.firstVisibleItemIndex }) { pagingBlocked }
             .collect { currentLoadHistoryPage() }
     }
-    LaunchedEffect(chatItems, state.historyReads, historyAnchorOperationId) {
+    LaunchedEffect(projection, state.historyReads, historyAnchorOperationId) {
         val operation = historyAnchorOperationId?.let(state.historyReads::get)
         if (!historyAnchorPending || operation?.phase?.active == true) return@LaunchedEffect
         try {
@@ -1887,7 +1873,7 @@ internal fun ChatScreen(
         ) { HostDownloadsScreen(state, model, onBack = { historyDownloadsOpen = false }) }
     }
 
-    LaunchedEffect(runtimeId, sessionId, displayReadPending, chatItems, chatHeaderCount, orphanTools.size,
+    LaunchedEffect(runtimeId, sessionId, displayReadPending, projection, chatHeaderCount, orphanTools.size,
         sourceRead?.operationId, sourceRead?.phase) {
         if (refreshTasksPending && initialPositioned && !refreshAnchorArmed && !following) {
             refreshStartAnchor?.takeIf { it.generation == viewportMotion.generation }?.let { (key, index, offset, generation) ->
@@ -1919,6 +1905,9 @@ internal fun ChatScreen(
             layout.totalItemsCount == chatHeaderCount + chatItems.size + orphanTools.size &&
                 layout.visibleItemsInfo.any { it.key in chatItemIndexById }
         }.totalItemsCount
+        if (!initialPositioned && scrollState == null && following && !userScrolling && !listState.isScrollInProgress) {
+            listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
+        }
         if (refreshAnchorArmed && (refreshAnchorGeneration != viewportMotion.generation || following)) {
             refreshAnchorArmed = false
             refreshAnchorOperationId = null
@@ -2357,7 +2346,7 @@ internal fun ChatScreen(
                             else model.refreshRuntime(runtimeId, explicitRetry = true)
                         }) })
                 }
-                items(chatItems, key = ChatListItem::key) { item ->
+                items(chatItems, key = ChatListItem::key, contentType = { it::class }) { item ->
                     when (item) {
                         is ChatListItem.UserMessage -> UserMessageCard(
                             runtimeId = runtimeId,
@@ -2381,7 +2370,7 @@ internal fun ChatScreen(
                                     PendingSendAction.Cancel -> model.cancelQueuedMessage(item.message.messageId)
                                 }
                             },
-                            downloads = state.downloads,
+                            downloads = rowResources?.rows?.get(item.key)?.downloads.orEmpty(),
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             onRewind = rewindOptions[item.message.messageId]?.let { option ->
@@ -2397,12 +2386,11 @@ internal fun ChatScreen(
                             copyMessages = item.copyMessages,
                             turnTiming = groupTurnTiming(item.completedMessageIds.mapNotNull { messageTurnTimings[it] }),
                             nowMs = if (item.completedMessageIds.mapNotNull { messageTurnTimings[it] }.any { it.durationMs == null }) timerNow else 0L,
-                            streamingMessageIds = if (state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing)
-                                conversation.streamingMessageIds - conversation.finishedMessageIds else emptySet(),
+                            streamingMessageIds = rowResources?.rows?.get(item.key)?.streaming.orEmpty(),
                             replyArrivals = replyArrivals,
-                            toolActivities = conversation.tools,
-                            toolResults = presentation.toolResults,
-                            downloads = state.downloads,
+                            toolActivities = projection?.activitiesByRow?.get(item.key).orEmpty(),
+                            toolResults = projection?.resultsByRow?.get(item.key).orEmpty(),
+                            downloads = rowResources?.rows?.get(item.key)?.downloads.orEmpty(),
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
@@ -3015,7 +3003,7 @@ private fun HomeHostSwitcher(
             Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             // 其他电脑上有待确认：列表只显示当前电脑后，这里提醒去切换（菜单里写明是哪台）。
-            if (hosts.any { it.hostId != activeHostId && it.state.hasAnyPendingInteraction() }) {
+            if (hosts.any { it.hostId != activeHostId && it.hasPendingInteraction }) {
                 Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.error)
                     .semantics { contentDescription = L10n.tr("其他电脑有待确认") })
             }
@@ -3030,7 +3018,7 @@ private fun HomeHostSwitcher(
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             hosts.forEach { host ->
                 DropdownMenuItem(
-                    text = { Text(host.name + if (host.state.hasAnyPendingInteraction()) L10n.tr("，有待确认") else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    text = { Text(host.name + if (host.hasPendingInteraction) L10n.tr("，有待确认") else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     onClick = { expanded = false; if (host.hostId != activeHostId) onSelectHost(host.hostId) },
                     leadingIcon = {
                         if (host.hostId == activeHostId) Icon(Icons.Rounded.Check, contentDescription = L10n.tr("当前电脑"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -3958,10 +3946,7 @@ private fun MessageBlocks(
             if (block.type == "artifact" && block.artifact != null) {
                 ArtifactCard(
                     artifact = block.artifact,
-                    download = downloads.values.firstOrNull {
-                        it.sourceArtifactId == block.artifact.artifactId ||
-                            block.artifact.path != null && it.sourcePath == block.artifact.path
-                    },
+                    download = downloads[artifactDownloadKey(block.artifact)],
                     onDownload = { downloadArtifact(block.artifact) },
                 )
             } else when (contentPresentation(message.role, block.type)) {
@@ -4631,46 +4616,6 @@ internal fun uploadProgressText(upload: UploadTask): String {
         "failed" -> upload.error ?: L10n.tr("发送失败")
         "paused" -> L10n.tr("已暂停，可重新发送（{0}%）", percent)
         else -> L10n.tr("发送中 {0}%", percent)
-    }
-}
-
-/**
- * 会话呈现的按身份缓存（ADR-0039 §5）。
- *
- * 消息是**不可变数据类**：内容变了必然是新对象，因此"列表逐项 `===`"就是可靠的
- * "内容没变"判据。命中时直接返回同一个呈现/列表对象，Compose 才能跳过重组。
- */
-private class PresentationCache {
-    private var lastMessages: List<ChatMessage>? = null
-    private var lastPresentation: ConversationPresentation? = null
-    private var lastItemMessages: List<ChatMessage>? = null
-    private var lastTurnIds: Map<String, String>? = null
-    private var lastItems: List<ChatListItem>? = null
-    private var lastViewportItems: List<ChatListItem>? = null
-
-    private fun sameIdentity(a: List<ChatMessage>?, b: List<ChatMessage>): Boolean {
-        if (a === b) return true
-        if (a == null || a.size != b.size) return false
-        for (index in b.indices) if (a[index] !== b[index]) return false
-        return true
-    }
-
-    fun presentation(messages: List<ChatMessage>): ConversationPresentation {
-        lastPresentation?.let { cached -> if (sameIdentity(lastMessages, messages)) return cached }
-        return buildConversationPresentation(messages).also {
-            lastMessages = messages
-            lastPresentation = it
-        }
-    }
-
-    fun items(messages: List<ChatMessage>, turnIdsByMessageId: Map<String, String>): List<ChatListItem> {
-        val cached = lastItems
-        if (cached != null && sameIdentity(lastItemMessages, messages) && lastTurnIds == turnIdsByMessageId) return lastViewportItems!!
-        return buildChatListItems(messages, turnIdsByMessageId, previous = cached.orEmpty()).also {
-            lastItemMessages = messages
-            lastTurnIds = turnIdsByMessageId
-            lastItems = it
-        }.let { chatViewportItems(it, lastViewportItems.orEmpty()) }.also { lastViewportItems = it }
     }
 }
 

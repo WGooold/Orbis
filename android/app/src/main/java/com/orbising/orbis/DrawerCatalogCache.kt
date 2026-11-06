@@ -1,7 +1,8 @@
 package com.orbising.orbis
 
 /** One drawer's current catalog, independent of transport counters and other paired computers. */
-internal class DrawerCatalogCache(private val titles: SessionTitleCache = SessionTitleCache()) {
+internal class DrawerCatalogCache(private val titles: SessionTitleCache = SessionTitleCache(),
+                                  private val beforeRows: (() -> Unit)? = null) {
     private var source: RemoteState? = null
     private var language: AppLanguage? = null
     private var tree: List<CachedHostGroup> = emptyList()
@@ -22,8 +23,17 @@ internal class DrawerCatalogCache(private val titles: SessionTitleCache = Sessio
             return tree
         }
         if (previous?.hostId != state?.hostId) titles.clear()
+        if (this.language == language && previous != null && state != null &&
+            previous.hostId == state.hostId && previous.hostName == state.hostName &&
+            previous.sessions === state.sessions && previous.runtimes === state.runtimes &&
+            (previous.ledger === state.ledger || OperationKinds.archiveOverrides(previous.ledger) == OperationKinds.archiveOverrides(state.ledger)) &&
+            !catalogTranscriptChanged(previous, state, titles, counts = true)) {
+            source = state
+            return tree
+        }
         titles.retain(state)
         val host = state?.sessionHost(language)
+        beforeRows?.invoke()
         val nextRows = state?.let { current ->
             cachedHistoryRows(current, host) { id, runtime -> titles.resolve(current, id, runtime, language) }
         }.orEmpty()

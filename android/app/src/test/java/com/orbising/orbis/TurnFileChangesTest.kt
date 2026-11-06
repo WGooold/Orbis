@@ -18,6 +18,26 @@ class TurnFileChangesTest {
     private fun page(viewer: FileChangeViewer, text: String = "@@ -1 +1 @@\n-old\n+中😀\n", cursor: String? = null) = FileChangeDetailPage(
         viewer.current!!.requestId!!, "runtime", agent, "set", 1, "file", "content-file", viewer.viewerId, "read", text, cursor, cursor == null)
 
+    @Test fun `visible change requests deduplicate and bound each in-flight page`() {
+        val entries = (0..300).map { "entry-$it" }
+        val turns = (0..150).map { "turn-$it" }
+        val first = TurnChangesState().requestMissing(agent, entries, turns)
+        assertEquals(256, first.request!!.entries.size)
+        assertEquals(128, first.request!!.turns.size)
+        assertTrue(first.requestMissing(agent, listOf("new-entry"), listOf("new-turn")) === first)
+
+        val completed = first.copy(request = null,
+            queriedEntries = first.queriedEntries + first.request!!.entries,
+            queriedTurns = first.queriedTurns + first.request!!.turns)
+        val next = completed.requestMissing(agent, entries + "new-entry", turns + "new-turn")
+        assertEquals(46, next.request!!.entries.size)
+        assertEquals("entry-256", next.request!!.entries.first())
+        assertEquals("new-entry", next.request!!.entries.last())
+        assertEquals(24, next.request!!.turns.size)
+        assertEquals("turn-128", next.request!!.turns.first())
+        assertEquals("new-turn", next.request!!.turns.last())
+    }
+
     @Test fun `native tool scope explains limited coverage and never requests detail during metadata merge`() {
         val native = summary().copy(attribution = "native-tool", scope = "native-file-tools", coverage = "partial", reasons = listOf("native-file-tools-only"))
         val state = TurnChangesState().merge(listOf(native))

@@ -1,6 +1,6 @@
 import Foundation
 
-struct SessionKeys {
+struct SessionKeys: Sendable {
     let hostToDevice: Data
     let deviceToHost: Data
     var historyStreams = false

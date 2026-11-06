@@ -83,7 +83,16 @@ data class ChangeSummaryRequest(val requestId: String, val agent: ToolAgent, val
 data class TurnChangesState(
     val summaries: Map<String, TurnChangeSummary> = emptyMap(), val manifests: Map<String, ChangeManifest> = emptyMap(),
     val request: ChangeSummaryRequest? = null, val error: String? = null,
+    val queriedEntries: Set<String> = emptySet(), val queriedTurns: Set<String> = emptySet(),
 ) {
+    /** Keep an in-flight query (including its cursor); scrolling only queues new demand. */
+    fun requestMissing(agent: ToolAgent, entries: List<String>, turns: List<String>): TurnChangesState {
+        if (request != null) return this
+        val missingEntries = entries.distinct().filterNot(queriedEntries::contains).take(256)
+        val missingTurns = turns.distinct().filterNot(queriedTurns::contains).take(128)
+        if (missingEntries.isEmpty() && missingTurns.isEmpty()) return this
+        return copy(request = ChangeSummaryRequest(changeId(), agent, missingEntries, missingTurns), error = null)
+    }
     fun merge(values: List<TurnChangeSummary>): TurnChangesState {
         var next = this
         values.forEach { summary ->
@@ -212,7 +221,9 @@ internal fun reduceTurnChanges(state: RemoteState, envelope: JsonObject): Remote
                 if (values.size > 128 || values.any { it.agent != agent || it.anchorEntryId !in request.entries && it.reviewTurnId !in request.turns && it.sourceTurnIds.none(request.turns::contains) }) return state
                 val cursor = event["nextCursor"]?.jsonPrimitive?.contentOrNull
                 if (cursor != null && (cursor == request.cursor || values.isEmpty())) return state
-                publish(old.copy(request = cursor?.let { request.copy(requestId = changeId(), cursor = it) }, error = null).merge(values))
+                publish(old.copy(request = cursor?.let { request.copy(requestId = changeId(), cursor = it) }, error = null,
+                    queriedEntries = if (cursor == null) (old.queriedEntries + request.entries).takeLastBounded() else old.queriedEntries,
+                    queriedTurns = if (cursor == null) (old.queriedTurns + request.turns).takeLastBounded() else old.queriedTurns).merge(values))
             }
             "session.changes.page" -> {
                 val page = toolJson.decodeFromJsonElement<ChangeManifestPage>(event)
@@ -239,6 +250,8 @@ internal fun reduceTurnChanges(state: RemoteState, envelope: JsonObject): Remote
         }
     }.getOrElse { state }
 }
+
+private fun Set<String>.takeLastBounded(): Set<String> = if (size <= 4096) this else toList().takeLast(4096).toSet()
 
 internal data class UnifiedDiffLine(val text: String, val kind: String, val oldLine: Int? = null, val newLine: Int? = null, val continuation: Boolean = false)
 private val unifiedHunk = Regex("^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@.*$")

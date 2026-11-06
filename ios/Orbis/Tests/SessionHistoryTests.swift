@@ -4,6 +4,27 @@ import Testing
 
 @Suite("Canonical session history")
 struct SessionHistoryTests {
+    // Canonical/live decoding must not block the UI actor or bring retired aliases back.
+    @Test @MainActor func chatSourceProjectionRunsOffMainAndReconcilesAliasesAtomically() async {
+        let gate = DispatchSemaphore(value: 0)
+        let worker = SessionChatProjectionWorker(beforeResolve: {
+            #expect(!Thread.isMainThread)
+            Task { @MainActor in gate.signal() }
+            #expect(gate.wait(timeout: .now() + 3) == .success)
+        })
+        let event: [String: Any] = ["display": ["entries": [["entryId": "canonical", "message": message("persisted")]]],
+            "live": ["messages": [["message": message("live"), "persistedEntryId": "canonical", "finished": false, "order": 2]]]]
+        let live = ChatMessage(messageId: "live", role: "assistant", content: [], timestamp: 1, isError: nil)
+        let input = SessionChatProjectionInput(event: event, graph: nil, excludedEntries: [], messages: [live],
+            displayIds: [:], aliases: [:], liveIds: ["live"], unfinishedIds: ["live"], orders: ["live": 1])
+        let result = await worker.resolve(input)
+        #expect(result.state.messages.map(\.messageId) == ["persisted"])
+        #expect(result.state.displayIds == ["canonical": "persisted"])
+        #expect(result.state.aliases == ["live": "canonical"])
+        #expect(result.state.liveIds.isEmpty && result.state.unfinishedIds.isEmpty)
+        #expect(input.messages.map(\.messageId) == ["live"])
+    }
+
     private func row(_ id: String, parent: String? = nil) -> [String: Any] {
         ["entryId": id, "parentId": parent as Any? ?? NSNull(), "type": "message", "timestamp": "2026-10-29T00:00:00Z"]
     }

@@ -11,6 +11,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
@@ -70,6 +73,12 @@ class ChatViewportInstrumentedTest {
                 }
             }
             compose.waitForIdle()
+            // Transcript rows are prepared off the UI dispatcher; wait for the lazy list to
+            // receive its first real projection before establishing a scroll anchor.
+            compose.waitUntil(10_000) {
+                scroll.layoutInfo.totalItemsCount >= 3 &&
+                    scroll.layoutInfo.visibleItemsInfo.any { it.key == "assistant" }
+            }
             // A real drag opts out of following before placing the reading anchor.
             compose.onNodeWithTag("chat-transcript").performTouchInput { swipeDown() }
             compose.waitForIdle()
@@ -121,6 +130,7 @@ class ChatViewportInstrumentedTest {
     }
 
     @Test fun streamingGrowthInsideTheLastTallCardDoesNotPullTheReader() = withChat { displayed, scroll ->
+        val oldCardHeight = scroll.layoutInfo.visibleItemsInfo.first { it.key == "assistant" }.size
         compose.runOnIdle {
             val before = displayed.value
             val conversation = before.conversations.getValue("r")
@@ -132,7 +142,11 @@ class ChatViewportInstrumentedTest {
                 revision = conversation.revision + 1)))
         }
         compose.waitForIdle()
-        assertEquals(2, scroll.firstVisibleItemIndex)
+        compose.waitUntil(10_000) {
+            scroll.layoutInfo.visibleItemsInfo.firstOrNull { it.key == "assistant" }?.size?.let { it > oldCardHeight } == true
+        }
+        assertEquals("streaming projection changed the reading row: ${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.key, it.offset) }}",
+            2, scroll.firstVisibleItemIndex)
         assertEquals("layout=${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.offset, it.size) }} viewport=${scroll.layoutInfo.viewportEndOffset} padding=${scroll.layoutInfo.afterContentPadding}", 350, scroll.firstVisibleItemScrollOffset)
         compose.onNodeWithContentDescription("回到最新消息").assertIsDisplayed().performClick()
         compose.waitForIdle()
@@ -144,6 +158,12 @@ class ChatViewportInstrumentedTest {
             }, revision = conversation.revision + 1)))
         }
         compose.waitForIdle()
+        compose.waitUntil(10_000) {
+            val layout = scroll.layoutInfo
+            val last = layout.visibleItemsInfo.lastOrNull() ?: return@waitUntil false
+            chatBottomDistance(last.index, layout.totalItemsCount,
+                last.offset + last.size, layout.viewportEndOffset, layout.afterContentPadding) < 2f
+        }
         val layout = scroll.layoutInfo
         val last = layout.visibleItemsInfo.last()
         org.junit.Assert.assertTrue(chatBottomDistance(last.index, layout.totalItemsCount,
@@ -172,6 +192,18 @@ class ChatViewportInstrumentedTest {
                 }
                 // Check successive rendered frames, so a one-frame jump followed by a
                 // corrective scroll cannot masquerade as a stable final idle position.
+                val expectedCount = 3 + number * 2 // status + the two original rows + new row and orphan tool
+                var projected = false
+                for (frame in 0 until 20) {
+                    compose.mainClock.advanceTimeByFrame()
+                    compose.waitForIdle()
+                    assertEquals("incoming update $number, preparation frame $frame moved a held viewport: ${scroll.layoutInfo.visibleItemsInfo.map { Triple(it.index, it.key, it.offset) }}",
+                        index, scroll.firstVisibleItemIndex)
+                    assertEquals("incoming update $number, preparation frame $frame changed a held offset", offset, scroll.firstVisibleItemScrollOffset)
+                    if (scroll.layoutInfo.totalItemsCount == expectedCount) { projected = true; break }
+                    Thread.sleep(10)
+                }
+                assertTrue("incoming update $number did not publish its prepared transcript", projected)
                 repeat(3) { frame ->
                     compose.mainClock.advanceTimeByFrame()
                     compose.waitForIdle()
@@ -244,6 +276,32 @@ class ChatViewportInstrumentedTest {
         compose.waitForIdle()
         assertTrue(bottomDistance() < 2f)
         jump.assertDoesNotExist()
+    }
+
+    // Real IME insets and continuous assistant replacements must not trap the UI in tail
+    // scrolling; the composer keeps accepting text and the last row stays reachable.
+    @Test fun keyboardAndContinuousReplyPublicationKeepInputResponsive() = withChat { displayed, scroll ->
+        compose.onNodeWithContentDescription("回到最新消息").performClick()
+        val transcript = compose.onNodeWithTag("chat-transcript")
+        val before = transcript.fetchSemanticsNode().boundsInRoot.height
+        val composer = compose.onNode(hasSetTextAction())
+        composer.performClick()
+        compose.waitUntil(5_000) { transcript.fetchSemanticsNode().boundsInRoot.height < before - 100 }
+        repeat(12) { number ->
+            compose.runOnIdle {
+                val state = displayed.value
+                val old = state.conversations.getValue("r")
+                val messages = old.messages.map { message ->
+                    if (message.messageId == "assistant") message.copy(content = listOf(RemoteContent("text",
+                        (1..70 + number).joinToString("\n\n") { "reading line $it" }))) else message
+                }
+                displayed.value = state.copy(conversations = mapOf("r" to old.copy(messages = messages,
+                    streamingMessageIds = setOf("assistant"), revision = old.revision + 1)))
+            }
+            composer.performTextInput("x")
+        }
+        composer.assertTextContains("x".repeat(12))
+        compose.waitUntil(5_000) { !scroll.canScrollForward }
     }
 
     @Test fun incomingRowsDoNotInterruptOrAccelerateTheReadersFling() = withChat { displayed, scroll ->

@@ -35,22 +35,22 @@ final class HostConnection: ObservableObject {
     let notifications = RuntimeNotifications()
     @Published private(set) var pairings: [HostPairing] = []
     @Published private(set) var selectedHostId: String?
-    @Published private(set) var runtimes: [RuntimeSummary] = []
+    @Published private(set) var runtimes: [RuntimeSummary] = [] { didSet { markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     @Published private(set) var sessions: [SessionSummary] = [] {
-        didSet { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }) }
+        didSet { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }); markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 }
     }
     /// sessionId → 目录条目。聊天页每条消息、每次流式更新都会查询，不能线性扫描整个目录。
     private var sessionIndex: [String: SessionSummary] = [:]
-    @Published private(set) var messages: [ChatMessage] = [] { didSet { transcriptCache = nil } }
-    @Published private(set) var selectedRuntimeId: String?
-    @Published private(set) var connection: ConnectionState = .offline
-    @Published private(set) var activePath: String?
+    @Published private(set) var messages: [ChatMessage] = [] { didSet { scheduleTranscript() } }
+    @Published private(set) var selectedRuntimeId: String? { didSet { directoryViewRevision &+= 1 } }
+    @Published private(set) var connection: ConnectionState = .offline { didSet { markHomeMetadataChanged(); directoryViewRevision &+= 1 } }
+    @Published private(set) var activePath: String? { didSet { homeViewRevision &+= 1 } }
     @Published var errorMessage: String?
     @Published private(set) var isPairing = false
     @Published private(set) var isSyncing = false
-    @Published private(set) var activatingSessionId: String?
+    @Published private(set) var activatingSessionId: String? { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var browse: DirectoryBrowse?
-    @Published private(set) var commands: [String: [SlashCommand]] = [:]
+    @Published private(set) var commands: [String: [SlashCommand]] = [:] { didSet { homeViewRevision &+= 1 } }
     @Published private(set) var supportedAgents: [String]?
     @Published private(set) var launchableAgents: [String]?
     @Published private(set) var codexDesktop: CodexDesktopAttach?
@@ -62,7 +62,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var workingBranches: [String: WorkingBranch] = [:]
     @Published private(set) var entryPreview: EntryPreview?
     @Published private(set) var historyRevision = 0
-    @Published private(set) var interactions: [String: [InteractionRequest]] = [:]
+    @Published private(set) var interactions: [String: [InteractionRequest]] = [:] { didSet { homeInputRevision &+= 1 } }
     /// 回答结算后在原位短暂显示的结果（约 2.5 秒，V16）：runtimeId → 结果。
     @Published private(set) var interactionOutcomes: [String: InteractionOutcome] = [:]
     struct InteractionOutcome: Equatable { let id: UUID; let text: String }
@@ -75,7 +75,14 @@ final class HostConnection: ObservableObject {
     private var pendingSendCheck: Task<Void, Never>?
     /// ADR-0049 §7：本连接的操作账本。乐观操作的阶段、断线、期限、作用域和冲突只在账本里处理；
     /// 界面 = 权威状态叠加账本，种类定义见 `OperationKinds`。只在当前进程内存中（L11）。
-    @Published private(set) var ledger = AppLedger()
+    @Published private(set) var ledger = AppLedger() {
+        didSet {
+            if OperationKinds.hiddenRuntimeIds(oldValue) != OperationKinds.hiddenRuntimeIds(ledger) { markHomeMetadataChanged() }
+            if OperationKinds.archiveOverrides(oldValue) != OperationKinds.archiveOverrides(ledger) {
+                directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1
+            }
+        }
+    }
     /// 账本属于哪台电脑：换电脑时全部失效（L7）。
     private var ledgerHostId: String?
     /// 当前加密连接是否已计入账本的连接代次。
@@ -116,8 +123,63 @@ final class HostConnection: ObservableObject {
     var closingRuntimeIds: Set<String> { OperationKinds.hiddenRuntimeIds(ledger) }
     /// 首页只发布完整快照：冷启动准备一次，后续重连/刷新在后台组装下一版。
     /// 此快照只在当前配对的内存中保留，不把磁盘目录缓存当成本次在线会话。
-    @Published private(set) var homePresentation: HomePresentation = .preparing
-    private var homeDirectoryReceived = false
+    @Published private(set) var homePresentation: HomePresentation = .preparing { didSet { homeViewRevision &+= 1 } }
+    private var homeDirectoryReceived = false { didSet { markHomeMetadataChanged() } }
+    private var homeInputRevision = 0
+    private var homeMetadataRevision = 0
+    private var preparedSyncRevision = -1
+    private var cachedHomeSync: HomeSyncStatus = .syncing
+    private var preparedSyncLanguage: AppLanguage?
+    var preparedHomeSync: HomeSyncStatus { prepareHomeSync(); return cachedHomeSync }
+    private(set) var homeViewRevision = 0
+    private(set) var directoryViewRevision = 0
+    private var directoryInputRevision = 0
+    private var directoryMetadataRevision = 0
+    private var scheduledDirectoryRevision = -1
+    private let directoryWorker = SessionDirectoryCatalogWorker()
+    private var directoryTask: Task<Void, Never>?
+    private var directoryTaskID = UUID()
+    @Published private(set) var directoryCatalog = SessionDirectoryCatalog()
+
+    private func markHomeMetadataChanged() {
+        homeInputRevision &+= 1; homeMetadataRevision &+= 1; homeViewRevision &+= 1
+    }
+    /// Called after willChange has completed, with whole event/model facts available.
+    private func prepareHomeSync() {
+        if preparedSyncRevision != homeMetadataRevision || preparedSyncLanguage != AppLocalization.shared.language {
+            preparedSyncRevision = homeMetadataRevision; preparedSyncLanguage = AppLocalization.shared.language
+            cachedHomeSync = homeSyncStatus
+        }
+    }
+    func prepareScreenPublications() {
+        prepareHomeSync()
+        guard scheduledDirectoryRevision != directoryInputRevision else { return }
+        guard directoryTask == nil else { return }
+        let taskID = UUID(); directoryTaskID = taskID
+        directoryTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let revision = self.directoryInputRevision, metadata = self.directoryMetadataRevision
+                let catalog = await self.directoryWorker.resolve(sessions: self.sessions, runtimes: self.runtimes,
+                    messages: self.conversations, archived: OperationKinds.archiveOverrides(self.ledger))
+                guard !Task.isCancelled else { break }
+                // Transcript chunks may arrive continuously. A serial, older result may advance
+                // the same catalog; newer metadata/archives must fence it out.
+                guard metadata == self.directoryMetadataRevision else { continue }
+                self.scheduledDirectoryRevision = revision
+                if self.directoryCatalog !== catalog { self.directoryCatalog = catalog; self.directoryViewRevision &+= 1 }
+                if revision == self.directoryInputRevision { break }
+            }
+            if self.directoryTaskID == taskID { self.directoryTask = nil }
+        }
+    }
+    func waitForScreenPublications() async { prepareScreenPublications(); await directoryTask?.value }
+
+    private var scheduledHomeRevision = -1
+    private var homeFallbackRuntimes: Set<String> = []
+    private let homeWorker = HomeCardWorker()
+    private var homeTask: Task<Void, Never>?
+    private var homeTaskID = UUID()
     private static let homeDomains = ["identity", "execution", "interactions"]
     var homeRuntimesLoading: Bool { if case .preparing = homePresentation { return true }; return false }
     /// 独立于已展示列表的同步进度，只用于首页的小状态行。
@@ -146,20 +208,27 @@ final class HostConnection: ObservableObject {
 
     /// 在完整消息应用后提交，不能在各 @Published 字段的 willChange 中拼出半张卡片。
     private func commitHomePresentation() {
-        guard homeDirectoryReceived, connection == .secured, runtimes.allSatisfy(homeFactsComplete) else { return }
-        let cards = runtimes.map { runtime in
-            HomeRuntimeCard(runtime: runtime, title: displayName(runtime),
-                agentKind: runtime.agentKind ?? sessionIndex[runtime.sessionId ?? ""]?.agentKind ?? "",
-                hasPendingInteraction: !(interactions[runtime.runtimeId] ?? []).isEmpty)
-        }.sorted { lhs, rhs in
-            let left = lhs.runtime.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
-            let right = rhs.runtime.sessionId.flatMap { sessionIndex[$0]?.modifiedAt } ?? 0
-            if left != right { return left > right }
-            let order = lhs.title.localizedStandardCompare(rhs.title)
-            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        guard scheduledHomeRevision != homeInputRevision else { return }
+        scheduledHomeRevision = homeInputRevision
+        guard homeTask == nil else { return }
+        let taskID = UUID(); homeTaskID = taskID
+        homeTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                self.prepareHomeSync()
+                guard self.preparedHomeSync == .idle else { break }
+                let revision = self.homeInputRevision, host = self.selectedHostId
+                let next = await self.homeWorker.resolve(runtimes: self.runtimes, sessions: self.sessionIndex,
+                    messages: self.conversations, pending: self.interactions)
+                guard !Task.isCancelled, host == self.selectedHostId, self.connection == .secured else { break }
+                guard revision == self.homeInputRevision else { continue }
+                self.homeFallbackRuntimes = next.fallback
+                let presentation = HomePresentation.ready(next.cards)
+                if self.homePresentation != presentation { self.homePresentation = presentation }
+                break
+            }
+            if self.homeTaskID == taskID { self.homeTask = nil }
         }
-        let next = HomePresentation.ready(cards)
-        if homePresentation != next { homePresentation = next }
     }
 
     func homeCardIsCurrent(_ card: HomeRuntimeCard) -> Bool {
@@ -194,7 +263,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var historyLoading: Set<String> = []
     @Published private(set) var historyErrors: [String: String] = [:]
     @Published private(set) var historyPageRevision = 0
-    @Published private(set) var currentProviders: [String: String] = [:]
+    @Published private(set) var currentProviders: [String: String] = [:] { didSet { directoryViewRevision &+= 1 } }
     /// 仅供「原始事件」页查看；每收到一帧都会追加，不发布变更，免得每帧都让整棵视图树重绘。
     private(set) var connectionEvents: [String] = []
 
@@ -208,18 +277,70 @@ final class HostConnection: ObservableObject {
     @Published private(set) var cachedSessionIds: Set<String> = []
     @Published private(set) var selectedOfflineSession: SessionSummary?
     @Published private(set) var cachedHistoryOptions: [RuntimeOption] = []
-    @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:] { didSet { transcriptCache = nil } }
-    private var transcriptCache: ChatTranscript?
-    private var lastTranscriptRows: [ChatRow] = []
-    /// Rows of the selected conversation, rebuilt only after its messages or timings change.
-    var chatTranscript: ChatTranscript {
-        if let transcriptCache { return transcriptCache }
-        let built = ChatTranscript(messages: messages, turnTimings: turnTimings, previousRows: lastTranscriptRows)
-        transcriptCache = built
-        lastTranscriptRows = built.rows
-        return built
+    @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:] { didSet { scheduleTranscript() } }
+    @Published private(set) var chatTranscript = ChatTranscript.empty
+    private let transcriptWorker = ChatTranscriptWorker()
+    private var transcriptTask: Task<Void, Never>?
+    private var transcriptTaskID = UUID()
+    private var transcriptRevision = 0
+    private var transcriptIdentity: String?
+    private var renderedTranscriptIdentity: String?
+    private var transcriptInput: ChatPublicationInput?
+    private var committingTranscript = false
+    private var visibleMessageIds: Set<String> = []
+    private var cachedPublications: [String: ChatPublication] = [:]
+    private var renderedMessageToken: UUID?
+
+    private var currentTranscriptIdentity: String {
+        "\(selectedHostId ?? "")|\(selectedRuntimeId ?? "")|\(selectedRuntime?.sessionId ?? "")|\(selectedRuntimeId.flatMap { branchGenerations[$0] } ?? 0)"
     }
-    private var timingsBySession: [String: [String: SessionTurnTiming]] = [:]
+
+    private func scheduleTranscript(_ input: ChatPublicationInput? = nil) {
+        guard !committingTranscript else { return }
+        transcriptInput = input ?? ChatPublicationInput(messages: messages, timings: turnTimings)
+        transcriptRevision += 1
+        let identity = currentTranscriptIdentity
+        transcriptIdentity = identity
+        if renderedTranscriptIdentity != identity || messages.isEmpty { chatTranscript = .empty }
+        guard transcriptTask == nil else { return }
+        let taskID = UUID(); transcriptTaskID = taskID
+        transcriptTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let revision = self.transcriptRevision
+                let owner = self.transcriptIdentity ?? ""
+                guard let input = self.transcriptInput else { break }
+                let next = await self.transcriptWorker.publish(identity: owner, input: input)
+                guard !Task.isCancelled else { break }
+                let pendingIds = self.pendingSends.chatRows(sessionId: self.selectedRuntime?.sessionId).map(\.messageId)
+                if owner == self.transcriptIdentity && (!input.requiresPendingMatch || input.pending.map(\.messageId) == pendingIds) {
+                    self.committingTranscript = true
+                    if self.renderedMessageToken != next.messageToken { self.messages = next.messages }
+                    self.renderedMessageToken = next.messageToken
+                    if self.streamingMessageIds != next.streaming { self.streamingMessageIds = next.streaming }
+                    if self.chatTranscript.contentRevision != next.transcript.contentRevision { self.chatTranscript = next.transcript }
+                    self.visibleMessageIds = next.messageIds
+                    self.cachedPublications[owner] = next
+                    while self.cachedPublications.count > 4, let old = self.cachedPublications.keys.first(where: { $0 != owner }) {
+                        self.cachedPublications[old] = nil
+                    }
+                    self.committingTranscript = false
+                    self.renderedTranscriptIdentity = owner
+                    if self.connection == .secured, let runtime = self.selectedRuntime, let session = runtime.sessionId,
+                       let host = self.selectedHost, let kind = self.agentKind(runtime) {
+                        self.turnFileChanges.observe(runtimeId: runtime.runtimeId,
+                            agent: ToolAgent(hostId: host.hostId, agentKind: kind, sessionId: session),
+                            entryIds: next.changeEntries, turnIds: next.changeTurns)
+                    }
+                }
+                // A rejected snapshot cannot become valid by rebuilding the same input.
+                // Drain only when a new request arrived while the worker was suspended.
+                if revision == self.transcriptRevision { break }
+            }
+            if self.transcriptTaskID == taskID { self.transcriptTask = nil }
+        }
+    }
+    private var timingsBySession: [String: [String: SessionTurnTiming]] = [:] { didSet { projectionInputRevision &+= 1 } }
     private var cachedIndexLoaded = false
     private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int, payload: Data?)] = []
     private var pendingEventBytes = 0
@@ -233,7 +354,7 @@ final class HostConnection: ObservableObject {
     private var branchGenerations: [String: Int] = [:]
     private var historyWriteLeases: [String: SessionHistoryWriteLease] = [:]
     private var cleanupTask: Task<Void, Never>?
-    private var graphs: [String: CachedSessionGraph] = [:]
+    private var graphs: [String: CachedSessionGraph] = [:] { didSet { projectionInputRevision &+= 1 } }
     private var excludedDisplayEntries: [String: Set<String>] = [:]
     private var appliedBaselines: [String: SessionAppliedBaseline] = [:]
     private var retiredEpochs: [String: Set<String>] = [:]
@@ -258,7 +379,15 @@ final class HostConnection: ObservableObject {
     private var connectionGeneration = UUID()
     private var historyGeneration = UUID()
     private var historyConnected = false
-    private var conversations: [String: [ChatMessage]] = [:]
+    private var projectionInputRevision = 0
+    private let sessionProjectionWorker = SessionChatProjectionWorker()
+    private var conversations: [String: [ChatMessage]] = [:] {
+        didSet {
+            projectionInputRevision &+= 1
+            directoryInputRevision &+= 1
+            if !homeFallbackRuntimes.isEmpty { homeInputRevision &+= 1 }
+        }
+    }
     private var liveMessageIds: [String: Set<String>] = [:]
     private var unfinishedLiveMessageIds: [String: Set<String>] = [:]
     @Published private(set) var streamingMessageIds: Set<String> = []
@@ -266,10 +395,10 @@ final class HostConnection: ObservableObject {
     private var liveOrders: [String: [String: Int64]] = [:]
     private var liveToolReferences: [String: ToolReference] = [:]
     private var liveTools: [String: [ToolSummary]] = [:]
-    private var displayMessageIds: [String: [String: String]] = [:]
+    private var displayMessageIds: [String: [String: String]] = [:] { didSet { projectionInputRevision &+= 1 } }
     // 运行时临时 id → 持久化 entry id（turn.finished.persistedMessages / live.persistedEntryId）。
     // Codex 用 App 的 clientId、Pi 用流式 id 上屏，落盘后 entry 才是权威行；靠这张映射退掉临时行，绝不按文本猜。
-    private var messageAliases: [String: [String: String]] = [:]
+    private var messageAliases: [String: [String: String]] = [:] { didSet { projectionInputRevision &+= 1 } }
     private var runtimeEventSequences: [String: Int64] = [:]
     private var pendingSyncs: [String: SessionSyncTransaction] = [:]
     private var oldestEntries: [String: String] = [:]
@@ -309,7 +438,10 @@ final class HostConnection: ObservableObject {
         transfers.send = { [weak self] in self?.transport.send($0) ?? false }
         hostState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.send = { [weak self] in self?.transport.send($0) ?? false }
-        agentStateObservation = agentState.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        agentStateObservation = agentState.objectWillChange.sink { [weak self] _ in
+            self?.markHomeMetadataChanged()
+            self?.objectWillChange.send()
+        }
         notifications.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.didProject = { [weak self] runtimeId, sessionId, domains in
             guard let self, let index = self.runtimes.firstIndex(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }),
@@ -329,6 +461,7 @@ final class HostConnection: ObservableObject {
         }
         hostState.didProject = { [weak self] domains in
             guard let self else { return }
+            if domains["providers"] != nil { self.directoryViewRevision &+= 1; self.objectWillChange.send() }
             if let backends = domains["backends"], backends.availability == "ready" {
                 // A missing list means unknown (no restriction), the same as Android; never "nothing can start".
                 self.supportedAgents = backends.value["agents"].isArray ? backends.value["agents"].array.compactMap(\.string) : nil
@@ -607,7 +740,7 @@ final class HostConnection: ObservableObject {
             guard let host = selectedHost else { return }
             let id = UUID().uuidString, generation = connectionGeneration
             entryPreview = EntryPreview(requestId: id, runtimeId: runtime.runtimeId, sessionId: sessionId, entryId: entryId)
-            runBackground { [weak self] in
+            runAsyncTransaction { [weak self] in
                 guard let self else { return }
                 let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, leafId: entryId, limit: 1)
                 guard generation == self.connectionGeneration, self.entryPreview?.requestId == id else { return }
@@ -772,7 +905,7 @@ final class HostConnection: ObservableObject {
         guard let host = selectedHost, let operation = sessionReads.begin(kind: .history, owner: owner,
             targetLeafId: sessionLeaves[runtime.runtimeId], beforeEntryId: boundary).operationId else { return false }
         historyLoading.insert(runtime.runtimeId); historyErrors[runtime.runtimeId] = nil
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self else { return }
             do {
                 let page = try await self.historyWorker.page(host: host, sessionId: sessionId,
@@ -844,8 +977,16 @@ final class HostConnection: ObservableObject {
         switch effect {
         case .apply(let page):
             if kind == .history || kind == .firstPage {
-                installCachedPage(page, runtimeId: runtime.runtimeId, sessionId: session, replacing: kind == .firstPage)
-                if selectedOfflineSession != nil { updateCachedOptions(page.graph) }
+                let generation = historyGeneration, branch = branchGenerations[runtime.runtimeId] ?? 0
+                let sourceRevision = sessionRevisions[session] ?? 0
+                runAsyncTransaction { [weak self] in
+                    guard let self, generation == self.historyGeneration,
+                          branch == self.branchGenerations[runtime.runtimeId] ?? 0,
+                          kind != .firstPage || sourceRevision == self.sessionRevisions[session] ?? 0,
+                          await self.installCachedPage(page, runtimeId: runtime.runtimeId, sessionId: session,
+                        replacing: kind == .firstPage) else { return }
+                    if self.selectedOfflineSession?.sessionId == session { self.updateCachedOptions(page.graph) }
+                }
             }
         case .requestHistory(let before, _):
             if canSend { requestOlderHistory(runtime, sessionId: session, boundary: before, operation: operation) }
@@ -894,7 +1035,7 @@ final class HostConnection: ObservableObject {
               let owner = readOwner(runtime) else { return }
         let acceptance = sessionReads.begin(kind: .catchup, owner: owner, targetLeafId: target)
         guard let operation = acceptance.operationId, !acceptance.merged else { return }
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self else { return }
             do {
                 let page = try await self.historyWorker.page(host: host, sessionId: session, leafId: target, limit: 1)
@@ -919,7 +1060,7 @@ final class HostConnection: ObservableObject {
         let generation = connectionGeneration
         guard let runtime = selectedRuntime, let owner = readOwner(runtime),
               let operation = sessionReads.begin(kind: .firstPage, owner: owner, targetLeafId: nil).operationId else { return false }
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self else { return }
             do {
                 let page = try await self.historyWorker.page(host: host, sessionId: session.sessionId, limit: 30)
@@ -946,7 +1087,7 @@ final class HostConnection: ObservableObject {
         guard let runtime = selectedRuntime, let owner = readOwner(runtime),
               let operation = sessionReads.begin(kind: .firstPage, owner: owner, targetLeafId: leafId).operationId else { return }
         let generation = connectionGeneration
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self, let page = try? await self.historyWorker.page(host: host, sessionId: session.sessionId, leafId: leafId, limit: 30),
                   generation == self.connectionGeneration, self.selectedOfflineSession?.sessionId == session.sessionId,
                   let current = self.readOwner(runtime) else { return }
@@ -979,7 +1120,7 @@ final class HostConnection: ObservableObject {
         let generation = connectionGeneration
         guard let owner = readOwner(runtime), let operation = sessionReads.begin(kind: .firstPage, owner: owner, targetLeafId: nil).operationId else { return }
         cacheLoading[runtime.runtimeId] = operation
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self else { return }
             defer { if self.cacheLoading[runtime.runtimeId] == operation { self.cacheLoading[runtime.runtimeId] = nil } }
             guard let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, limit: 30),
@@ -991,41 +1132,53 @@ final class HostConnection: ObservableObject {
         }
     }
 
-    private func installCachedPage(_ page: SessionHistoryPage, runtimeId: String, sessionId: String, replacing: Bool) {
-        if !replacing, var graph = graphs[sessionId], graph.epoch == page.graph.epoch {
-            let retained = Set(graph.path(to: graph.leafId).suffix(256).map(\.entryId)).union(page.entries.map(\.entryId))
-            for entry in page.entries { graph.entries[entry.entryId] = entry }
-            for (id, row) in page.display { graph.display[id] = row }
-            graph.entries = graph.entries.filter { retained.contains($0.key) }
-            graph.display = graph.display.filter { $0.value.entryId.map(retained.contains) ?? true }
-            graph.entryVersions = graph.entryVersions.filter { retained.contains($0.key) }
-            graph.displayVersions = graph.displayVersions.filter { retained.contains($0.key) }
-            graphs[sessionId] = graph
-        } else { graphs[sessionId] = page.graph }
-        if replacing { conversations[runtimeId] = page.messages } else { prependHistory(page.messages, runtimeId: runtimeId) }
-        for entry in page.entries { displayMessageIds[runtimeId, default: [:]][entry.entryId] = page.display[entry.entryId]?.message?.messageId }
-        oldestEntries[runtimeId] = page.entries.first?.entryId ?? oldestEntries[runtimeId]
-        if replacing || sessionLeaves[runtimeId] == nil { sessionLeaves[runtimeId] = page.graph.leafId }
-        hasOlderHistory[runtimeId] = page.hasOlder
-        for timing in page.turnTimings { timingsBySession[sessionId, default: [:]][timing.turnId] = timing }
-        historyPageRevision += 1; publishMessages()
+    private func installCachedPage(_ page: SessionHistoryPage, runtimeId: String, sessionId: String, replacing: Bool) async -> Bool {
+        let generation = historyGeneration, branch = branchGenerations[runtimeId] ?? 0
+        let sourceRevision = sessionRevisions[sessionId] ?? 0
+        while !Task.isCancelled {
+            if !replacing, let graph = graphs[sessionId], graph.epoch != page.graph.epoch { return false }
+            let revision = projectionInputRevision
+            let next = await sessionProjectionWorker.install(page: page, previousGraph: graphs[sessionId],
+                messages: conversations[runtimeId] ?? [], displayIds: displayMessageIds[runtimeId] ?? [:],
+                timings: timingsBySession[sessionId] ?? [:], replacing: replacing)
+            guard generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0,
+                  runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }) ||
+                    selectedOfflineSession?.sessionId == sessionId && selectedRuntimeId == runtimeId else { return false }
+            if replacing, sourceRevision != sessionRevisions[sessionId] ?? 0 { return false }
+            // A live source commit may arrive during a local read. Rebase the page on its
+            // newer input, retaining newer messages rather than overwriting their array.
+            if revision != projectionInputRevision { continue }
+            graphs[sessionId] = next.graph; conversations[runtimeId] = next.messages
+            displayMessageIds[runtimeId] = next.displayIds; timingsBySession[sessionId] = next.timings
+            oldestEntries[runtimeId] = page.entries.first?.entryId ?? oldestEntries[runtimeId]
+            if replacing || sessionLeaves[runtimeId] == nil { sessionLeaves[runtimeId] = page.graph.leafId }
+            hasOlderHistory[runtimeId] = page.hasOlder
+            historyPageRevision += 1; publishMessages()
+            return true
+        }
+        return false
     }
 
     private func loadCachedIndex(_ host: HostPairing) {
         let generation = connectionGeneration
-        runBackground { [weak self] in
+        runAsyncTransaction { [weak self] in
             guard let self, let rows = try? await self.historyWorker.listCachedSessions(host: host), generation == self.connectionGeneration else { return }
             self.cachedSessionIds = Set(rows.map(\.sessionId)); self.cachedIndexLoaded = true
         }
     }
 
-    private func runBackground(_ work: @escaping @MainActor () async -> Void) {
+    /// Owns asynchronous UI transactions. CPU and storage work is explicitly delegated to actors.
+    /// Keeps UI state mutation on MainActor; CPU projections and SQLite operations must use workers/actors.
+    private func runAsyncTransaction(_ work: @escaping @MainActor () async -> Void) {
         let id = UUID()
         backgroundTasks[id] = Task { [weak self] in await work(); self?.backgroundTasks[id] = nil }
     }
 
     private func cancelPendingWork() {
         eventTask?.cancel(); eventTask = nil; pendingEvents = []; pendingEventBytes = 0
+        transcriptTask?.cancel(); transcriptTask = nil; transcriptInput = nil; transcriptTaskID = UUID()
+        directoryTask?.cancel(); directoryTask = nil; directoryTaskID = UUID(); scheduledDirectoryRevision = -1
+        homeTask?.cancel(); homeTask = nil; scheduledHomeRevision = -1; homeTaskID = UUID()
         backgroundTasks.values.forEach { $0.cancel() }; backgroundTasks = [:]; cacheLoading = [:]
         for operation in sessionReads.operations.values where operation.phase.active { sessionReads.finish(operation.id, phase: .superseded) }
     }
@@ -1042,9 +1195,11 @@ final class HostConnection: ObservableObject {
     }
 
     func waitForPendingEvents() async {
-        while eventTask != nil || !backgroundTasks.isEmpty {
+        while eventTask != nil || !backgroundTasks.isEmpty || transcriptTask != nil || homeTask != nil {
             if let task = eventTask { await task.value }
             for task in Array(backgroundTasks.values) { await task.value }
+            if let task = transcriptTask { await task.value }
+            if let task = homeTask { await task.value }
         }
         await cleanupTask?.value
         await transfers.waitForPendingIO()
@@ -2309,7 +2464,7 @@ final class HostConnection: ObservableObject {
                     if let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) { syncSession(runtime, force: true) }
                     return
                 }
-                applyProjection(event, runtimeId: runtimeId)
+                guard await applyProjection(event, runtimeId: runtimeId) else { return }
                 if let leaf = (event["head"] as? [String: Any])?["leafId"] as? String { sessionLeaves[runtimeId] = leaf }
                 sourcePositions[runtimeId] = (epoch, seq)
                 markAuthoritative(runtimeId)
@@ -2544,7 +2699,7 @@ final class HostConnection: ObservableObject {
             liveMessageIds[runtimeId] = []; unfinishedLiveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
             if prefix.isEmpty { displayMessageIds[runtimeId] = [:] }
         }
-        applyProjection(event, runtimeId: runtimeId)
+        guard await applyProjection(event, runtimeId: runtimeId) else { return }
         if let cursor = event["cursor"] as? [String: Any] { sessionLeaves[runtimeId] = cursor["leafId"] as? String }
         if prefix.isEmpty { oldestEntries[runtimeId] = (event["entries"] as? [[String: Any]])?.first?["entryId"] as? String }
         if prefix.isEmpty { hasOlderHistory[runtimeId] = event["hasOlder"] as? Bool ?? false }
@@ -2682,73 +2837,38 @@ final class HostConnection: ObservableObject {
         return parent == head["leafId"] as? String
     }
 
-    private func applyProjection(_ event: [String: Any], runtimeId: String) {
-        let live = event["live"] as? [String: Any]
-        if let raw = live?["toolInventory"] as? [String: Any], let reference: ToolReference = jsonDecode(raw),
-           reference.agent.hostId == selectedHostId,
-           reference.agent.sessionId == runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId {
-            toolInventories.require(reference, runtime: runtimeId)
-            if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
-        } else if live != nil { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
-        // 每一版 live.messages 都是源端完整的 live 清单（Host 也整份替换）：Pi/DSH 在提交 entry 的同一版里
-        // 去掉对应的流式行，这里只等 complete 的话，整轮运行期间流式行会和落盘行并排出现。
-        if let rows = live?["messages"] as? [[String: Any]] {
-            let previousLive = liveMessageIds[runtimeId] ?? []
-            let canonical = Set((displayMessageIds[runtimeId] ?? [:]).values)
-            let next = Set(rows.compactMap { ($0["message"] as? [String: Any])?["messageId"] as? String })
-            conversations[runtimeId]?.removeAll { previousLive.contains($0.messageId) && !canonical.contains($0.messageId) && !next.contains($0.messageId) }
-            liveMessageIds[runtimeId] = []; unfinishedLiveMessageIds[runtimeId] = []; liveOrders[runtimeId] = [:]
+    private func applyProjection(_ event: [String: Any], runtimeId: String) async -> Bool {
+        let generation = historyGeneration
+        let branch = branchGenerations[runtimeId] ?? 0
+        guard let session = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId else { return false }
+        // Local history hydration can finish while a source projection is being prepared. Rebase
+        // on that newer immutable input; never publish an array captured before the cache page.
+        while !Task.isCancelled {
+            let revision = projectionInputRevision
+            let input = SessionChatProjectionInput(event: event, graph: graphs[session],
+                excludedEntries: excludedDisplayEntries[session] ?? [], messages: conversations[runtimeId] ?? [],
+                displayIds: displayMessageIds[runtimeId] ?? [:], aliases: messageAliases[runtimeId] ?? [:],
+                liveIds: liveMessageIds[runtimeId] ?? [], unfinishedIds: unfinishedLiveMessageIds[runtimeId] ?? [],
+                orders: liveOrders[runtimeId] ?? [:])
+            let prepared = await sessionProjectionWorker.resolve(input)
+            guard generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0,
+                  runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == session }) else { return false }
+            if revision != projectionInputRevision { continue }
+            let next = prepared.state
+            conversations[runtimeId] = next.messages
+            displayMessageIds[runtimeId] = next.displayIds
+            messageAliases[runtimeId] = next.aliases
+            liveMessageIds[runtimeId] = next.liveIds
+            unfinishedLiveMessageIds[runtimeId] = next.unfinishedIds
+            liveOrders[runtimeId] = next.orders
+            if let reference = prepared.toolReference, reference.agent.hostId == selectedHostId,
+               reference.agent.sessionId == session {
+                toolInventories.require(reference, runtime: runtimeId)
+                if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
+            } else if prepared.hasLive { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
+            return true
         }
-        if let display = event["display"] as? [String: Any], let entries = display["entries"] as? [[String: Any]] {
-            var batch = ChatMessageBatch(conversations[runtimeId] ?? [])
-            let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId
-            for row in entries {
-                let entryId = row["entryId"] as? String
-                if let entryId, row["anchor"] as? String != "head", sessionId.flatMap({ excludedDisplayEntries[$0] })?.contains(entryId) == true { continue }
-                let committed = sessionId.flatMap { session in (entryId ?? row["displayId"] as? String).flatMap { graphs[session]?.display[$0] } }
-                let message: ChatMessage?
-                if let committed { message = committed.message }
-                else if let object = row["message"] as? [String: Any] { message = jsonDecode(object) }
-                else { message = nil }
-                if let entryId {
-                    if let old = displayMessageIds[runtimeId]?[entryId], old != message?.messageId { batch.remove(old) }
-                    displayMessageIds[runtimeId, default: [:]][entryId] = message?.messageId
-                }
-                if let message { batch.upsert(message) }
-            }
-            conversations[runtimeId] = batch.messages
-            if let boundary = display["windowStart"] as? String, let boundaryMessage = displayMessageIds[runtimeId]?[boundary],
-               let index = conversations[runtimeId]?.firstIndex(where: { $0.messageId == boundaryMessage }), index > 0 {
-                conversations[runtimeId]?.removeFirst(index)
-            }
-            let headIds = Set(entries.filter { $0["anchor"] as? String == "head" }.compactMap { ($0["message"] as? [String: Any])?["messageId"] as? String })
-            if !headIds.isEmpty, let messages = conversations[runtimeId] {
-                conversations[runtimeId] = messages.filter { headIds.contains($0.messageId) } + messages.filter { !headIds.contains($0.messageId) }
-            }
-        }
-        if let live, let entries = live["messages"] as? [[String: Any]] {
-            var batch = ChatMessageBatch(conversations[runtimeId] ?? [])
-            for row in entries {
-                if let object = row["message"] as? [String: Any], let message: ChatMessage = jsonDecode(object) {
-                    if let entryId = row["persistedEntryId"] as? String { addAlias(message.messageId, entryId: entryId, runtimeId: runtimeId) }
-                    if isRetiredAlias(message.messageId, runtimeId: runtimeId) {
-                        batch.remove(message.messageId)
-                        continue
-                    }
-                    liveMessageIds[runtimeId, default: []].insert(message.messageId)
-                    if row["finished"] as? Bool == false { unfinishedLiveMessageIds[runtimeId, default: []].insert(message.messageId) }
-                    if let order = integer(row["order"]) { liveOrders[runtimeId, default: [:]][message.messageId] = order }
-                    batch.upsert(message)
-                }
-            }
-            conversations[runtimeId] = batch.messages
-        }
-        if let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId,
-           let graph = graphs[sessionId], let boundary = graph.windowStart {
-            let excluded = Set(graph.path(to: boundary).dropLast().compactMap { displayMessageIds[runtimeId]?[$0.entryId] })
-            conversations[runtimeId]?.removeAll { excluded.contains($0.messageId) }
-        }
-        retireAliases(runtimeId)
+        return false
     }
 
     private func addAlias(_ liveId: String, entryId: String, runtimeId: String) {
@@ -2816,18 +2936,39 @@ final class HostConnection: ObservableObject {
         if let reference = liveToolReferences[runtimeId], toolInventories.covers(reference, runtime: runtimeId) {
             liveTools[runtimeId] = toolInventories.visible[runtimeId] ?? []
         }
+        let identity = currentTranscriptIdentity
+        let pending = pendingSends.chatRows(sessionId: selectedRuntime?.sessionId)
+        committingTranscript = true
+        if renderedTranscriptIdentity != identity {
+            let cached = cachedPublications[identity]
+            // A canonical array is already immutable. Switching to a conversation without
+            // local overlays/tools can publish that array in O(1), including newer background
+            // messages; prepared row/layout data follows from the worker.
+            messages = (liveTools[runtimeId]?.isEmpty ?? true) && pending.isEmpty
+                ? (conversations[runtimeId] ?? []) : (cached?.messages ?? [])
+            chatTranscript = cached?.transcript ?? .empty
+            streamingMessageIds = cached?.streaming ?? []
+            visibleMessageIds = cached?.messageIds ?? []
+            renderedTranscriptIdentity = identity
+            renderedMessageToken = nil
+        }
+        let added = pending.filter { !visibleMessageIds.contains($0.messageId) }
+        if !added.isEmpty {
+            // ADR-0049: accepted local input appears immediately. Only these new local rows
+            // are inserted here; full tool/history derivation remains on the serial worker.
+            messages = PendingSendOutbox.merge(messages, pending: added)
+            visibleMessageIds.formUnion(added.map(\.messageId))
+            renderedMessageToken = nil
+        }
+        committingTranscript = false
         // Publishing an identical transcript would re-render the whole chat for nothing; the
         // comparison is O(1) when the array storage is unchanged.
-        let next = PendingSendOutbox.merge(materializeLiveTools(conversations[runtimeId] ?? [], tools: liveTools[runtimeId] ?? [], liveOrders: liveOrders[runtimeId] ?? [:]),
-                                           pending: pendingSends.chatRows(sessionId: selectedRuntime?.sessionId))
-        let streaming = (unfinishedLiveMessageIds[runtimeId] ?? []).intersection(next.filter { $0.role == "assistant" }.map(\.messageId))
-        if streaming != streamingMessageIds { streamingMessageIds = streaming }
-        if next != messages { messages = next }
-        if connection == .secured, let runtime = selectedRuntime, let session = runtime.sessionId,
-           let host = selectedHost, let kind = agentKind(runtime) {
-            turnFileChanges.observe(runtimeId: runtimeId, agent: ToolAgent(hostId: host.hostId, agentKind: kind, sessionId: session),
-                entryIds: Array(changeAnchors(for: Set(next.map(\.messageId)))), turnIds: Array(turnTimings.keys))
-        }
+        scheduleTranscript(ChatPublicationInput(messages: conversations[runtimeId] ?? [], timings: turnTimings,
+            tools: liveTools[runtimeId] ?? [], orders: liveOrders[runtimeId] ?? [:],
+            pending: pending,
+            unfinished: unfinishedLiveMessageIds[runtimeId] ?? [], displayIds: displayMessageIds[runtimeId] ?? [:],
+            aliases: messageAliases[runtimeId] ?? [:], requiresPendingMatch: true))
+        commitHomePresentation()
         updateSyncing()
         dispatchSyncDemands()
     }
