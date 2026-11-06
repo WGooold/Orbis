@@ -347,6 +347,7 @@ export class CodexRuntime implements AgentBackend {
   #server: CodexAppServer;
   /** 活跃 thread 表。codex 的 thread/resume 返回完整 turns，激活即拿到历史。 */
   readonly #threads = new Map<string, ThreadState>();
+  readonly #capabilitiesSignatures = new WeakMap<ThreadState, string>();
   readonly #sourcePublishTimers = new Map<ThreadState, ReturnType<typeof setTimeout>>();
   /** 审批窗口（键 = 独立生成的手机 requestId）。超时按接口对应的拒绝格式回复。 */
   readonly #approvals = new Map<string, PendingApproval & { threadId: string }>();
@@ -1020,8 +1021,12 @@ export class CodexRuntime implements AgentBackend {
    * 的 `runtime.online` 时会因 session 变化清掉「没有提前到达」的那份。挂在裸 `codex`
    * 上会永远对不上号（手机菜单空）。没有活跃 thread 时不发——那时也没有在线进程卡。
    */
-  #publishCapabilities(thread: ThreadState): void {
-    this.#emit(thread.id, { type: "runtime.capabilities", capabilities: this.capabilities(thread) });
+  #publishCapabilities(thread: ThreadState, force = false): void {
+    const capabilities = this.capabilities(thread);
+    const signature = createHash("sha256").update(JSON.stringify(capabilities)).digest("base64url");
+    if (!force && this.#capabilitiesSignatures.get(thread) === signature) return;
+    this.#capabilitiesSignatures.set(thread, signature);
+    this.#emit(thread.id, { type: "runtime.capabilities", capabilities });
   }
 
   async #refreshIntegrationCatalog(thread: ThreadState): Promise<void> {
@@ -4263,8 +4268,8 @@ export class CodexRuntime implements AgentBackend {
     // 模型名/上下文占用条正是从 `runtime.metadata` 读的（Pi 由 RuntimeBridge 发，codex
     // 必须自己发，否则那两处永远是空的）。
     this.#emit(thread.id, { type: "runtime.metadata", metadata: this.threadMetadata(thread) });
-    // 每次 online/状态刷新都补发能力：APP 在 runtime.online（session 变化）时会清掉
-    // 之前那份 capabilities，靠这里重新声明，保证命令菜单一直在（防手滑）。
+    // Only actual menu changes publish here. New threads have a fresh baseline;
+    // a reconnect explicitly forces replay through announce().
     this.#publishCapabilities(thread);
     this.onMetadataChange?.();
     thread.notifications.announce();
@@ -4281,7 +4286,7 @@ export class CodexRuntime implements AgentBackend {
   announce(threadId: string): void {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
-    this.#publishCapabilities(thread);
+    this.#publishCapabilities(thread, true);
     this.#emit(thread.id, { type: "runtime.metadata", metadata: this.threadMetadata(thread) });
     this.#publishInteractions(thread.id);
     this.#publishDelivery(thread);

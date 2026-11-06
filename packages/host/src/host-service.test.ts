@@ -1731,6 +1731,106 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
   });
 
+  // FT-G02-WIRE: a confirmed known-version read must not solicit a producer-wide
+  // replay; a command on the same ordered loopback connection is the barrier.
+  it("FT-G02 reads known versions without resync and still publishes real menu changes", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-model-menu-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-confirmed", sessionId: "confirmed", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const command = { name: "mcp:server:search", source: "mcp" as const };
+    runtime.publish(1, { type: "runtime.capabilities", capabilities: { commands: [command] } });
+    await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    runtime.publish(2, { type: "interaction.snapshot", requests: [] });
+    await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "interaction.snapshot");
+    const requested = ["capabilities", "resources", "interactions"];
+    const read = (requestId: string, known?: object[]) => device!.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION,
+      scope: "agent", runtimeId: "pi-confirmed", domains: requested, subscribe: true, requestId, ...(known ? { known } : {}) }));
+    read("confirmed-first");
+    const first = await readMatching(device, message => message.requestId === "confirmed-first");
+    const domains = first.domains as Array<{ domain: string; modelEpoch: string; revision: number }>;
+    expect(domains.map(domain => domain.domain).sort()).toEqual([...requested].sort());
+    read("confirmed-again", domains.map(({ domain, modelEpoch, revision }) => ({ domain, modelEpoch, revision })));
+    const second = await readMatching(device, message => message.requestId === "confirmed-again");
+    expect(second).toMatchObject({ domains: [], missing: [], truncated: false, unchanged: expect.arrayContaining(requested) });
+    device.sendData(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-confirmed", commandId: "read-barrier",
+      command: { type: "slash.execute", name: command.name, args: "exact" } }));
+    expect(await runtime.next()).toMatchObject({ type: "runtime.command", commandId: "read-barrier" });
+
+    runtime.publish(3, { type: "runtime.capabilities", capabilities: { commands: [command, { name: "new-skill", source: "skill" }] } });
+    const changed = await readMatching(device, message => message.type === "agent.state.snapshot" && message.update === true);
+    const capabilities = (changed.domains as Array<{ domain: string; revision: number; value: object }>).find(domain => domain.domain === "capabilities")!;
+    expect(capabilities.revision).toBeGreaterThan(domains.find(domain => domain.domain === "capabilities")!.revision);
+    expect(capabilities.value).toHaveProperty("new-skill");
+  });
+
+  // FT-G01-WIRE: verify the real encrypted Host exit, model response, reconnect
+  // seed, and exact dispatch target; a helper-only projection test cannot cover wiring.
+  it("FT-G01 projects menus over encrypted Host exits and preserves exact dispatch", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-menu-wire-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    const metadata: RuntimeMetadata = { runtimeId: "pi-menu", sessionId: "menu-session", name: "Pi", cwd: stateDir, status: "idle",
+      permissions: { sandbox: "read-only", approvalPolicy: "on-request" },
+      permissionManagement: { summary: "Restricted", details: "权限风险必须保留", tone: "restricted", settings: [
+        { id: "mode", label: "Mode", disabledReason: "禁止修改", options: [{ value: "safe", label: "Safe", description: "可省略选项说明" }] },
+      ] } };
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token, metadata });
+    await runtime.next();
+    const online = await readMatching(device, message => message.type === "runtime.online");
+    const checkMetadata = (value: unknown): void => {
+      const management = (value as RuntimeMetadata).permissionManagement!;
+      expect(management.details).toBe("权限风险必须保留");
+      expect(management.settings[0]).toMatchObject({ disabledReason: "禁止修改", options: [{ value: "safe", label: "Safe" }] });
+      expect(management.settings[0]!.options[0]).not.toHaveProperty("description");
+    };
+    checkMetadata(online.runtime);
+    const command = { name: "mcp:server-one:search", source: "mcp" as const, description: "很长的 MCP 说明", argument: {
+      kind: "select" as const, required: true, hint: "提示", options: [{ value: "native:exact-id", label: "准确目标", description: "选项说明" }],
+    } };
+    const expected = { ...command, argument: { kind: "select", required: true, options: [{ value: "native:exact-id", label: "准确目标" }] } } as Record<string, unknown>;
+    delete expected.description;
+    runtime.publish(1, { type: "runtime.capabilities", capabilities: { commands: [command] } });
+    const menu = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    expect(menu.event).toEqual({ type: "runtime.capabilities", capabilities: { commands: [expected] } });
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "menu-read",
+      scope: "agent", runtimeId: "pi-menu", domains: ["identity", "capabilities", "resources", "permissions"] }));
+    const model = await readMatching(device, message => message.requestId === "menu-read");
+    const domains = new Map((model.domains as Array<{ domain: string; value: unknown }>).map(domain => [domain.domain, domain.value]));
+    expect(domains.get("resources")).toEqual({ [command.name]: expected });
+    expect(domains.get("capabilities")).toEqual({ [command.name]: { ...expected, argumentKind: "select", argumentRequired: true, optionCount: 1 } });
+    checkMetadata(domains.get("identity"));
+    expect((domains.get("permissions") as { management: object }).management).toEqual((online.runtime as RuntimeMetadata).permissionManagement);
+    expect(host.localRuntimes[0]!.permissionManagement!.settings[0]!.options[0]).toHaveProperty("description");
+    expect(command.description).toBe("很长的 MCP 说明");
+
+    // The App submits the exact name and option; Host routes it without substituting a display label.
+    device.sendData(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-menu", commandId: "exact-call",
+      command: { type: "slash.execute", name: command.name, args: "native:exact-id" } }));
+    let dispatched: Record<string, unknown>;
+    do { dispatched = await runtime.next(); } while (dispatched.type === "runtime.resync");
+    expect(dispatched).toMatchObject({ type: "runtime.command", commandId: "exact-call", command: { type: "slash.execute", name: command.name, args: "native:exact-id" } });
+
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const ready = await readMatching(device, message => message.type === "device.ready");
+    checkMetadata((ready.runtimes as unknown[])[0]);
+    const replay = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    expect(replay.event).toEqual(menu.event);
+  });
+
   it("手机重开（同一条中继路上重新握手）也要重新拿到 runtime 目录", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);

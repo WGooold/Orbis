@@ -79,6 +79,7 @@ import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
 import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { normalizeDeviceRequest } from "./device-protocol.js";
+import { encodeDeviceMessage } from "./device-message-projection.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
@@ -675,7 +676,7 @@ export class HostService {
       send: (deviceId, runtimeId, event) => {
         const message = this.#runtimeEventMessage(runtimeId, event);
         assertToolWireBudget(message);
-        const payload = Buffer.from(JSON.stringify(message), "utf8"), link = this.#links.get(deviceId);
+        const payload = encodeDeviceMessage(message), link = this.#links.get(deviceId);
         if (!link) return false;
         return event.type === "session.tool.content.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
@@ -724,7 +725,7 @@ export class HostService {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         return !scope || !this.#conversationState.hasBaseline(scope);
       },
-      encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify(this.#runtimeEventMessage(runtimeId, event)), "utf8"),
+      encodeEvent: (runtimeId, event) => encodeDeviceMessage(this.#runtimeEventMessage(runtimeId, event)),
       acceptSnapshot: (runtimeId, event) => {
         return this.#acceptConversation(runtimeId, event);
       },
@@ -843,7 +844,7 @@ export class HostService {
       directory: join(stateDir, "turn-file-changes"), scope: changeScope,
       send: (deviceId, runtimeId, event) => {
         const link = this.#links.get(deviceId); if (!link) return false;
-        const message = this.#runtimeEventMessage(runtimeId, event), payload = Buffer.from(JSON.stringify(message), "utf8");
+        const message = this.#runtimeEventMessage(runtimeId, event), payload = encodeDeviceMessage(message);
         return event.type === "session.change.detail.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
           : link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
@@ -1156,9 +1157,10 @@ export class HostService {
       }, "ctl");
       return;
     }
-    if (scope.kind === "agent" && request.runtimeId !== undefined) {
+    if (scope.kind === "agent" && request.runtimeId !== undefined && this.#agentFacts.needsReconcile(request.runtimeId, request.domains)) {
       const runtimeId = request.runtimeId;
-      // Recovery asks the source outside Registry's commit path; publications arrive through the same writer.
+      // Recover unconfirmed requested facts only. Ordinary reads use the committed
+      // model; backend watchers continue native reconciliation independently.
       this.#loopback?.sendResync(runtimeId, "model_reconcile");
       for (const backend of this.#backends) if (backend instanceof CodexRuntime && backend.ownsRuntime(runtimeId)) {
         // announce takes a native thread ID; desktop session IDs carry a public namespace.
@@ -2420,7 +2422,7 @@ export class HostService {
     try {
       // `send` 走当前生效路径；没有可用路径时返回 false，此时消息就是发不出去，
       // 也不该假装发出去了——上层会靠重连后的 `device.ready` 重新对齐。
-      const payload = Buffer.from(JSON.stringify(message), "utf8");
+      const payload = encodeDeviceMessage(message);
       link.send(payload, channel, outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
@@ -2432,7 +2434,7 @@ export class HostService {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
     try {
-      const payload = Buffer.from(JSON.stringify(message), "utf8");
+      const payload = encodeDeviceMessage(message);
       link.sendOn(kind, payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
@@ -2558,7 +2560,7 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    const payload = Buffer.from(JSON.stringify(message), "utf8");
+    const payload = encodeDeviceMessage(message);
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
   }
 

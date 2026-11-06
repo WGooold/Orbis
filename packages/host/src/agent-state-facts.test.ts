@@ -38,6 +38,44 @@ const read = <T>(registry: AgentStateRegistry, domain: StateDomain, sessionId = 
   registry.read<T>(scope(sessionId, agentKind), domain);
 
 describe("AgentStateFacts 运行 / 模型 / 上下文", () => {
+  // FT-G02-FACTS: missing optional metadata must not turn polling into full replay;
+  // unconfirmed requested inventories still recover after source replacement.
+  it("FT-G02 reconciles only requested inventories missing a source confirmation", () => {
+    const { facts } = setup();
+    facts.observe("codex:r1", metadata());
+    expect(facts.needsReconcile("codex:r1", ["identity", "execution", "model", "context", "permissions"])).toBe(false);
+    expect(facts.needsReconcile("codex:r1", ["history", "live", "records", "unknown-domain"])).toBe(false);
+    expect(facts.needsReconcile("codex:r1", ["interactions"])).toBe(true);
+    facts.observe("codex:r1", { type: "interaction.snapshot", requests: [] });
+    expect(facts.needsReconcile("codex:r1", ["identity", "execution", "interactions"])).toBe(false);
+    expect(facts.needsReconcile("codex:r1", ["capabilities"])).toBe(true);
+    expect(facts.needsReconcile("codex:r1", ["resources"])).toBe(true);
+    facts.observe("codex:r1", { type: "runtime.capabilities", capabilities: { commands: [] } });
+    expect(facts.needsReconcile("codex:r1", ["capabilities", "resources"])).toBe(false);
+    expect(facts.needsReconcile("codex:r1")).toBe(true); // delivery has not reported
+    facts.observe("codex:r1", { type: "delivery.snapshot", items: [], complete: true });
+    expect(facts.needsReconcile("codex:r1")).toBe(false);
+    facts.runtimeOffline("codex:r1", "source-lost");
+    expect(facts.needsReconcile("codex:r1", ["identity"])).toBe(true);
+    expect(facts.needsReconcile("codex:r1", ["interactions"])).toBe(true);
+    facts.observe("codex:r2", metadata({}, "codex:r2"));
+    expect(facts.needsReconcile("codex:r1", ["interactions"])).toBe(false); // displaced instance cannot recover new facts
+    expect(facts.needsReconcile("codex:r2", ["interactions"])).toBe(true);
+    expect(facts.needsReconcile("codex:r2", ["identity", "execution"])).toBe(false);
+  });
+
+  it("FT-G02 does not replay Claude menus to repair an unsupported native queue", () => {
+    const { facts, registry } = setup();
+    facts.observe("claude:r1", metadata({}, "claude:r1"));
+    facts.observe("claude:r1", { type: "interaction.snapshot", requests: [] });
+    facts.observe("claude:r1", { type: "runtime.capabilities", capabilities: { commands: [] } });
+    expect(facts.needsReconcile("claude:r1")).toBe(false);
+    expect(read(registry, "delivery", "s1", "claude")?.availability).toBe("unknown");
+    expect(facts.needsReconcile("claude:r1", ["delivery"])).toBe(false);
+    facts.runtimeOffline("claude:r1", "disconnected");
+    expect(facts.needsReconcile("claude:r1", ["identity", "interactions"])).toBe(true);
+  });
+
   it("Claude 主状态与库存分别投影，来源替换保留任务但撤回确定性", () => {
     const { registry, facts } = setup();
     const tasks: NonNullable<AgentExecutionState["tasks"]> = { availability: "ready", truncated: false,

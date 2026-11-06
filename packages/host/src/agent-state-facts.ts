@@ -199,6 +199,22 @@ export class AgentStateFacts {
     return session === undefined ? undefined : this.#scope(session);
   }
 
+  /** FT-G02: reads reuse confirmed facts; recovery is for source inventories that
+   * have not reported since attach/offline. Unsupported optional metadata (model,
+   * context, permissions) is not repaired by replaying an unchanged whole menu. */
+  needsReconcile(runtimeId: string, domains?: readonly string[]): boolean {
+    const session = this.#sessionFor(runtimeId);
+    if (!session) return false;
+    const wants = (domain: string): boolean => domains === undefined || domains.includes(domain);
+    if (SESSION_KEYS.some(wants) && this.#registry.read(this.#scope(session), "identity")?.availability !== "ready") return true;
+    return COLLECTION_KEYS.some(domain => {
+      // Claude has no Host-visible native delivery queue; announce cannot confirm
+      // it. Its explicit chat-sync path supplies an empty delivery inventory.
+      if (domain === "delivery" && session.agentKind === "claude") return false;
+      return wants(domain) && !session.fresh.has(domain === "resources" ? "capabilities" : domain);
+    });
+  }
+
   /** Lets the Host invalidate conversation recovery before publishing a new runtime binding. */
   displacedRuntime(runtimeId: string, metadata: RuntimeMetadata): { runtimeId: string; scope: StateScope } | undefined {
     const kind = this.#kindOf(runtimeId);

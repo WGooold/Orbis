@@ -1888,6 +1888,28 @@ describe("CodexRuntime", () => {
     expect(h.runtime.handleCommand({ type: "file.download", path: "C:/x", offset: 0 })).toBe(false);
   });
 
+  // FT-G02-CODEX: status-only changes cannot retransmit the tree; real option
+  // changes still publish and an explicit reconnect announce always replays.
+  it("FT-G02 publishes changed menus and forces reconnect replay without status duplicates", async () => {
+    const h = makeHarness({ modelList: { data: [
+      { id: "one", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
+      { id: "two", supportedReasoningEfforts: [{ reasoningEffort: "high" }] },
+    ] } });
+    h.runtime.markStarted();
+    await activate(h);
+    const menus = () => h.events.filter(event => event.type === "runtime.capabilities");
+    const count = menus().length;
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "idle" } });
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "idle" } });
+    expect(menus()).toHaveLength(count);
+    h.runtime.handleCommand({ type: "slash.execute", name: "model", args: "two" }, "model-change", "th-1");
+    expect(menus()).toHaveLength(count + 1);
+    expect(menus().at(-1)!.capabilities.commands.find(command => command.name === "thinking")?.argument?.options?.map(option => option.value)).toEqual(["high"]);
+    h.runtime.announce("th-1");
+    expect(menus()).toHaveLength(count + 2);
+    await h.runtime.stop();
+  });
+
   it("capabilities：activate 时按 thread 粒度广播 runtime.capabilities（命令词表来自后端，APP 不认 agentKind）", async () => {
     const h = makeHarness();
     h.runtime.markStarted();
