@@ -181,6 +181,7 @@ internal class HostConnection(
     private val stateWriterLock = Any()
     private val modelInterestLock = Any()
     private var modelInterests = ModelInterests()
+    @Volatile private var preferCompactState = true
     private val sessionLoads = SessionLoadQueue()
     private val historyPageSize = 30
     private val previewPageSize = 30
@@ -457,7 +458,8 @@ internal class HostConnection(
         if (!force && existingReads.values.any { it.matchesInterest(domains, now) }) return
         val subscribedDomains = domains.distinct()
         val requestId = UUID.randomUUID().toString()
-        val read = AgentStateRead(key, modelScope, subscribedDomains.toSet(), runtimeId, sessionId, agentKind, sentAt = now)
+        val stateFormat = if (modelScope == "agent" && preferCompactState) "compact-v1" else null
+        val read = AgentStateRead(key, modelScope, subscribedDomains.toSet(), runtimeId, sessionId, agentKind, sentAt = now, stateFormat = stateFormat)
         updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,
             agentStateReads = it.agentStateReads - existingReads.keys + (requestId to read)) }
         val snapshot = current.agentStateSnapshots[key]
@@ -467,12 +469,13 @@ internal class HostConnection(
             put("requestId", requestId)
             put("scope", modelScope)
             put("subscribe", true)
+            stateFormat?.let { put("stateFormat", it) }
             runtimeId?.let { put("runtimeId", it) }
             sessionId?.let { put("sessionId", it) }
             agentKind?.let { put("agentKind", it) }
             put("domains", buildJsonArray { subscribedDomains.forEach { add(it) } })
             put("known", buildJsonArray {
-                snapshot?.domains?.values?.filter { it.domain in subscribedDomains && (!force || it.domain !in domains) }?.forEach { domain ->
+                snapshot?.takeIf { it.stateFormat == stateFormat }?.domains?.values?.filter { it.domain in subscribedDomains && (!force || it.domain !in domains) }?.forEach { domain ->
                     add(buildJsonObject { put("domain", domain.domain); put("modelEpoch", domain.modelEpoch); put("revision", domain.revision) })
                 }
             })
@@ -2212,6 +2215,12 @@ internal class HostConnection(
                 val payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 val incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
+                if (interactiveChannel != null && incomingMessage != null && incomingRead?.needsLegacyRetry(incomingMessage) == true) {
+                    preferCompactState = false
+                    incomingRead.runtimeId?.let { refreshAgentModel(it, force = true) }
+                    continue
+                }
                 val sessionEvent = runCatching {
                     incomingMessage?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.event" }
                         ?.get("event")?.jsonObject
@@ -2357,6 +2366,7 @@ internal class HostConnection(
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
                     if (deviceReadyArrived && currentGeneration == generation) {
+                        preferCompactState = true
                         val application = application
                         val packageInfo = application.packageManager.getPackageInfo(application.packageName, 0)
                         val appVersion = packageInfo.versionName

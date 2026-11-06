@@ -15,6 +15,21 @@ import org.junit.Test
  * 同一身份的重复读取整份替换——而不是把「没读到」悄悄渲染成「没有」。
  */
 class AgentModelStateTest {
+    // FT-G04: compact identity is interpreted only under its selected format and
+    // cannot inherit a higher revision from the released identity representation.
+    @Test fun `compact static identity hydrates status and isolates representation revisions`() {
+        val runtime = RuntimeSummary("r", "Agent", "/repo", "running", sessionId = "s")
+        val read = AgentStateRead("agent|pi|s", "agent", setOf("identity"), "r", "s", "pi", stateFormat = "compact-v1")
+        val state = RemoteState(hostId = "host", runtimes = mapOf("r" to runtime), agentStateReads = mapOf("compact" to read))
+        val result = reduce(state, """{"type":"agent.state.snapshot","protocolVersion":19,"requestId":"compact","scope":"agent",
+            "runtimeId":"r","sessionId":"s","agentKind":"pi","modelEpoch":"epoch","stateFormat":"compact-v1",
+            "domains":[{"domain":"identity","modelEpoch":"epoch","revision":1,"checkedAt":1,"availability":"ready","completeness":"complete",
+            "value":{"runtimeId":"r","sessionId":"s","name":"Static","cwd":"/repo","hostId":"host"}}],"missing":[],"truncated":false}""")
+        assertEquals("Static", result.runtimes["r"]?.name)
+        assertEquals("running", result.runtimes["r"]?.status)
+        assertEquals("compact-v1", result.agentStateSnapshots["agent|pi|s"]?.stateFormat)
+    }
+
     private val delegate = RelayReducer()
     private fun reduce(state: RemoteState, payload: String) = delegate.reduce(state, payload, channel = "ctl")
 

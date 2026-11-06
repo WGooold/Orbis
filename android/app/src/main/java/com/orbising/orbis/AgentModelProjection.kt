@@ -16,6 +16,7 @@ internal fun RemoteState.applyAgentDomainProjection(
     sessionId: String?,
     domains: Map<String, AgentStateDomainView>,
     json: Json,
+    staticIdentity: Boolean = false,
     parseInteraction: (Json, JsonObject, PendingInteraction?) -> PendingInteraction?,
 ): RemoteState {
     val id = runtimeId ?: return this
@@ -43,7 +44,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                 "identity" -> if (value != null) {
                     val identity = value as? JsonObject ?: error(L10n.tr("identity 不是对象"))
                     require(identity.text("hostId") == null || identity.text("hostId") == hostId)
-                    val incoming = json.decodeFromJsonElement<RuntimeSummary>(identity)
+                    val hydrated = if (staticIdentity && "status" !in identity) JsonObject(identity + ("status" to kotlinx.serialization.json.JsonPrimitive(runtime.status))) else identity
+                    val incoming = json.decodeFromJsonElement<RuntimeSummary>(hydrated)
                     require(incoming.runtimeId == id && incoming.sessionId == sessionId)
                     runtime = runtime.copy(name = incoming.name, cwd = incoming.cwd, hostname = incoming.hostname,
                         sessionName = incoming.sessionName, agentKind = incoming.agentKind)

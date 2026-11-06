@@ -29,9 +29,11 @@ struct AgentStateTests {
         var request: [String: Any] { sent.last ?? [:] }
         func receive(_ domains: [[String: Any]], epoch: String = "epoch", unchanged: [String] = [], request: [String: Any]? = nil) {
             let read = request ?? self.request
-            state.consume(["type": "agent.state.snapshot", "scope": "agent", "requestId": read["requestId"]!,
+            var payload: [String: Any] = ["type": "agent.state.snapshot", "scope": "agent", "requestId": read["requestId"]!,
                 "runtimeId": "runtime", "sessionId": "session", "agentKind": "pi", "modelEpoch": epoch,
-                "domains": domains, "missing": [], "truncated": false, "unchanged": unchanged])
+                "domains": domains, "missing": [], "truncated": false, "unchanged": unchanged]
+            payload["stateFormat"] = read["stateFormat"]
+            state.consume(payload)
         }
     }
     private func domain(_ name: String, _ value: Any, revision: Int = 1, complete: Bool = true, availability: String = "ready") -> [String: Any] {
@@ -65,6 +67,23 @@ struct AgentStateTests {
         #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
         h.state.setInterest(runtime: h.runtime, owner: "chat", domains: AgentState.chatDomains)
         #expect((h.request["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "model" } == true)
+    }
+
+    // FT-G04: an old strict Host rejects the format by the original request ID;
+    // retry only this read without the extension and never reuse format versions.
+    @Test func compactIdentityAndStrictOldHostFallbackKeepIndependentVersions() {
+        let h = Harness()
+        h.receive([domain("identity", ["runtimeId": "runtime", "sessionId": "session", "name": "Static", "cwd": "/repo", "hostId": "host"])])
+        #expect(h.runtime.name == "Static")
+        #expect(h.runtime.status == "idle")
+        let old = h.request
+        h.state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": old["requestId"]!])
+        #expect(h.request["stateFormat"] == nil)
+        #expect((h.request["known"] as? [[String: Any]])?.isEmpty == true)
+        h.receive([domain("identity", ["runtimeId": "runtime", "sessionId": "session", "name": "Legacy", "cwd": "/repo", "status": "idle"])])
+        #expect(h.runtime.name == "Legacy")
+        h.receive([domain("identity", ["runtimeId": "runtime", "sessionId": "session", "name": "Stale", "cwd": "/repo"])], request: old)
+        #expect(h.runtime.name == "Legacy")
     }
 
     @Test func taskInventoryIsProjectedIndependentlyAndUnknownKeepsTheLastTasks() {

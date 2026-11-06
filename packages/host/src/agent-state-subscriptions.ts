@@ -50,7 +50,7 @@ export class AgentStateSubscriptions {
         if (entry.changed.size === 0) continue;
         const domains = [...entry.changed]; entry.changed.clear();
         for (const part of buildAgentStateSnapshotParts({ registry: this.registry, scope: entry.scope,
-          requestId: entry.request.requestId, identity: entry.request, domains, update: true })) this.send(entry.deviceId, part);
+          requestId: entry.request.requestId, identity: entry.request, domains, update: true, stateFormat: entry.request.stateFormat })) this.send(entry.deviceId, part);
       }
     });
   }

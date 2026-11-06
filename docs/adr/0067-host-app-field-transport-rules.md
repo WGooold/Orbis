@@ -437,6 +437,7 @@ Status: proposed
 | `H:agent.state.snapshot` | 默认 | `FT-03/FT-12/FT-16` | 点名读取 / 订阅，内容变化发布，已知版本返回 unchanged。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
 | | `scope`、`update` | `FT-03/FT-12/FT-16` |  |
 | | `modelEpoch`、`truncated`、`unchanged` | `FT-12` |  |
 | | `domains` | `FT-03/FT-12/FT-16` |  展开：`S:AgentStateDomainSnapshot`。 |
@@ -765,6 +766,7 @@ Status: proposed
 | `U:agent.state.request` | 默认 | `FT-12/FT-16` | 只请求实际兴趣与已应用版本，不连带触发整后端外发。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
 | | `scope`、`domains`、`subscribe` | `FT-12/FT-16` |  |
 | | `known` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 展开：`U:agent.state.request.known[]`。 |
 | `U:agent.state.request.known[]` | 默认 | `FT-01/FT-10` | 精确目标与请求身份提交一次，重试核对原结果。 |
@@ -1293,11 +1295,13 @@ Status: proposed
 | `S:AgentStateRequest` | 默认 | `FT-05/FT-12/FT-16` | 实际兴趣和已应用版本驱动读取。 源码：`AgentStateRequestSchema`。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
 | | `scope`、`domains`、`subscribe` | `FT-05/FT-12/FT-16` |  |
 | | `known` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 展开：`U:agent.state.request.known[]`。 |
 | `S:AgentStateSnapshot` | 默认 | `FT-03/FT-12/FT-16` | 分领域发布，已知版本不重发 value。 源码：`AgentStateSnapshotSchema`。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
 | | `scope`、`update` | `FT-03/FT-12/FT-16` |  |
 | | `modelEpoch`、`truncated`、`unchanged` | `FT-12` |  |
 | | `domains` | `FT-03/FT-12/FT-16` |  展开：`S:AgentStateDomainSnapshot`。 |
@@ -1473,5 +1477,9 @@ Status: proposed
 G02 的恢复依据来源确认，而非可选字段是否有值：已确认来源未提供的模型、上下文、权限及原生不支持的队列继续保持 unknown；重播不能补足的事实由其原生更新 / 读取路径取得。首次库存未确认和来源断开后保留兼容恢复；普通模型读取复用已提交事实，后端的原生核对任务继续运行。
 
 G03 的首页完成条件是 identity / execution / interactions；关闭动作另需 capabilities 中准确的 quit 目标。兼容目录沿用该领域，G05 将大选项移为按需范围。普通聊天增加 delivery / model / context / permissions；resources、artifacts、records 及管理领域由实际读取视图持有兴趣。替换订阅使用当前兴趣集合，已释放领域的旧请求、迟到结果和缓存版本不重新建立兴趣；重新打开时复用已应用版本。Host 首页只订阅 identity / backends / catalog / providers。
+
+G04 以只读请求的 `stateFormat: compact-v1` 明确选择新表示，响应与订阅更新带同名确认。旧 strict Host 按原 requestId 拒绝扩展后，App 仅重读该作用域，移除扩展并清空跨表示 known；未确认新表示的响应同样触发降级。身份、版本和回执继续使用原业务格式 18 / 19。
+
+compact-v1 的 identity 只装载 `hostId/agentKind/runtimeId/sessionId/name/cwd/hostname/sessionName/sessionGraphSync`；status、历史位置、模型、思考、上下文、权限由各自领域拥有。App 将身份与已确认执行状态合并展示。Host 按新表示内容独立推进领域 revision，缓存键含 stateFormat；原生来源换代、质量变化、Host epoch 变化与作用域隔离沿用 FT-01/12。完整原生 / 兼容 metadata 仍由原权威保存。
 
 实现与验证指针：G01 的[出口投影](../../packages/host/src/device-message-projection.ts)、[菜单字段回归](../../packages/host/src/device-message-projection.test.ts)；G02 的[来源确认](../../packages/host/src/agent-state-facts.ts)、[确认 / 恢复回归](../../packages/host/src/agent-state-facts.test.ts)、[Codex 发布](../../packages/host/src/codex-runtime.ts)及[后端回归](../../packages/host/src/codex-runtime.test.ts)。两组的实际加密出口与恢复由 [Host 联动回归](../../packages/host/src/host-service.test.ts)的 `FT-G01/FT-G02` 场景覆盖；[G01 证据](../../.artifacts/field-transport-implementation-20261106/g01-results.json)、[G02 证据](../../.artifacts/field-transport-implementation-20261106/g02-results.json)分别记录实施、自动验证、部署和用户验收状态。

@@ -18,6 +18,7 @@ struct AgentSnapshot {
     var pending: Set<String> = []
     var truncated = false
     var error: String?
+    var stateFormat: String?
 }
 
 /// Mirrors the same committed per-domain model as Android. Chat ranges remain owned by session.sync.
@@ -37,6 +38,7 @@ final class AgentState: ObservableObject {
     private var retiredEpochs: Set<String> = []
     private var reads: [String: Read] = [:]
     private var interests: [String: ModelInterests] = [:]
+    private var preferCompact = true
     private var timeouts: [String: Task<Void, Never>] = [:]
     private struct Read {
         let id: String
@@ -44,6 +46,8 @@ final class AgentState: ObservableObject {
         let sessionId: String
         let agentKind: String?
         let domains: Set<String>
+        let stateFormat: String?
+        let runtime: RuntimeSummary
     }
 
     func setConnection(_ pairing: HostPairing?, connected: Bool) {
@@ -53,6 +57,7 @@ final class AgentState: ObservableObject {
         if key != hostKey { snapshots = [:]; retiredEpochs = []; interests = [:] }
         for id in snapshots.keys { snapshots[id]?.pending = [] }
         hostKey = key; self.connected = connected; epoch = nil
+        preferCompact = true
     }
 
     /// Only an authenticated device.ready may establish a replacement Host model generation.
@@ -91,15 +96,17 @@ final class AgentState: ObservableObject {
         snapshot.pending = wanted; snapshot.error = nil
         snapshots[runtime.runtimeId] = snapshot
         let id = UUID().uuidString
-        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted)
+        let format = preferCompact ? "compact-v1" : nil
+        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted, stateFormat: format, runtime: runtime)
         reads[id] = read
-        let known: [[String: Any]] = force ? [] : snapshot.domains.values.filter { wanted.contains($0.domain) }.map {
+        let known: [[String: Any]] = force || snapshot.stateFormat != format ? [] : snapshot.domains.values.filter { wanted.contains($0.domain) }.map {
             ["domain": $0.domain, "modelEpoch": $0.modelEpoch, "revision": $0.revision]
         }
         var payload: [String: Any] = ["type": "agent.state.request", "protocolVersion": orbisProtocolVersion,
             "requestId": id, "scope": "agent", "runtimeId": runtime.runtimeId, "sessionId": session,
             "subscribe": true, "domains": Self.domainNames.filter(wanted.contains), "known": known]
         if let kind = runtime.agentKind { payload["agentKind"] = kind }
+        if let format { payload["stateFormat"] = format }
         guard send?(payload) == true else { reject(read, L10n.tr("状态读取未发送，请重新连接")); reads[id] = nil; return }
         timeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
@@ -117,6 +124,13 @@ final class AgentState: ObservableObject {
     @discardableResult
     func consume(_ message: [String: Any]) -> Bool {
         guard connected, let type = message["type"] as? String else { return false }
+        if let id = message["requestId"] as? String, let read = reads[id], read.stateFormat != nil,
+           type == "protocol.error" && ["invalid_request", "unsupported_request"].contains(message["code"] as? String ?? "") ||
+           type == "agent.state.snapshot" && message["stateFormat"] == nil {
+            preferCompact = false
+            subscribe(runtime: read.runtime, force: true)
+            return true
+        }
         if type == "protocol.error", let id = message["requestId"] as? String, let read = reads[id] {
             reject(read, message["message"] as? String ?? L10n.tr("电脑端无法完成读取")); reads[id] = nil; return true
         }
@@ -124,6 +138,7 @@ final class AgentState: ObservableObject {
         guard let id = message["requestId"] as? String, let read = reads[id],
               message["runtimeId"] as? String == read.runtimeId, message["sessionId"] as? String == read.sessionId,
               read.agentKind == nil || message["agentKind"] as? String == read.agentKind else { return true }
+        guard message["stateFormat"] as? String == read.stateFormat else { reject(read); return true }
         if let error = message["error"] as? String { reject(read, error); return true }
         guard let newEpoch = message["modelEpoch"] as? String, !newEpoch.isEmpty else { reject(read); return true }
         if retiredEpochs.contains(newEpoch) || epoch.map({ $0 != newEpoch }) == true { return true }
@@ -132,7 +147,7 @@ final class AgentState: ObservableObject {
               let truncated = message["truncated"] as? Bool,
               message["unchanged"] == nil || message["unchanged"] is [String] else { reject(read); return true }
         var snapshot = snapshots[read.runtimeId] ?? AgentSnapshot(runtimeId: read.runtimeId, sessionId: read.sessionId)
-        if snapshot.modelEpoch != newEpoch { snapshot.domains = [:]; snapshot.missing = [:] }
+        if snapshot.modelEpoch != newEpoch || snapshot.stateFormat != read.stateFormat { snapshot.domains = [:]; snapshot.missing = [:] }
         var incoming: [String: HostDomain] = [:]
         for raw in rawDomains {
             guard let data = try? JSONSerialization.data(withJSONObject: raw),
@@ -157,6 +172,7 @@ final class AgentState: ObservableObject {
         for name in unchanged { accepted[name] = snapshot.domains[name] }
         guard didProject?(read.runtimeId, read.sessionId, accepted) != false else { reject(read); return true }
         snapshot.modelEpoch = newEpoch; snapshot.error = nil; snapshot.truncated = truncated
+        snapshot.stateFormat = read.stateFormat
         snapshot.missing.merge(missing) { _, incoming in incoming }
         snapshot.pending.subtract(incoming.keys); snapshot.pending.subtract(missing.keys); snapshot.pending.subtract(unchanged)
         // Establish the connection epoch only after a complete envelope and atomic projection validate.

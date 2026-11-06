@@ -486,6 +486,8 @@ export type AgentStateDomainSnapshot = z.infer<typeof AgentStateDomainSnapshotSc
 export const AgentStateRequestSchema = z.strictObject({
   type: z.literal("agent.state.request"),
   requestId: z.string().min(1).max(128),
+  /** Explicit read-only representation selection. Old strict Hosts reject it by requestId. */
+  stateFormat: z.literal("compact-v1").optional(),
   scope: z.enum(["host", "agent", "device"]).optional(),
   runtimeId: z.string().min(1).max(1_024).optional(),
   agentKind: AgentKindSchema.optional(),
@@ -506,6 +508,7 @@ export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>;
 export const AgentStateSnapshotSchema = z.strictObject({
   type: z.literal("agent.state.snapshot"),
   requestId: z.string().min(1).max(128),
+  stateFormat: z.literal("compact-v1").optional(),
   scope: z.enum(["host", "agent", "device"]),
   runtimeId: z.string().min(1).max(1_024).optional(),
   agentKind: AgentKindSchema.optional(),

@@ -4,10 +4,24 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /** FT-G03: prevent sticky broad subscriptions after a view closes, including a
  * close within the ordinary refresh throttle; independent owners remain active. */
 class ModelInterestsTest {
+    // FT-G04: only an explicit unsupported read format or unconfirmed response
+    // retries in the released shape; business failures remain real failures.
+    @Test fun `compact selection can fall back once without masking real errors`() {
+        val read = AgentStateRead("key", "agent", setOf("identity"), stateFormat = "compact-v1")
+        fun message(text: String) = Json.parseToJsonElement(text).jsonObject
+        assertTrue(read.needsLegacyRetry(message("""{"type":"protocol.error","code":"invalid_request"}""")))
+        assertTrue(read.needsLegacyRetry(message("""{"type":"agent.state.snapshot"}""")))
+        assertFalse(read.needsLegacyRetry(message("""{"type":"agent.state.snapshot","stateFormat":"compact-v1"}""")))
+        assertFalse(read.needsLegacyRetry(message("""{"type":"protocol.error","code":"model_subscription_limit"}""")))
+        assertFalse(read.copy(stateFormat = null).needsLegacyRetry(message("""{"type":"protocol.error","code":"invalid_request"}""")))
+    }
+
     private fun domains(value: ModelInterests, runtime: String = "r") =
         value.domains(runtime, HOME_AGENT_MODEL_DOMAINS, AGENT_MODEL_DOMAINS)
 

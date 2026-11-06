@@ -1731,6 +1731,39 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
   });
 
+  // FT-G04-WIRE: representation is explicitly selected per read and old clients
+  // keep the full identity. Token updates cannot invalidate compact identity.
+  it("FT-G04 versions static identity independently over the encrypted link", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-compact-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    const metadata: RuntimeMetadata = { runtimeId: "pi-static", sessionId: "static", name: "Pi", cwd: stateDir, status: "idle",
+      model: { provider: "p", id: "m" }, contextUsage: { tokens: 1, contextWindow: 100, percent: 1 } };
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token, metadata });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const read = (requestId: string, extra: object = {}) => device!.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION,
+      scope: "agent", runtimeId: "pi-static", domains: ["identity"], requestId, ...extra }));
+    read("compact-first", { stateFormat: "compact-v1", subscribe: true });
+    const first = await readMatching(device, message => message.requestId === "compact-first");
+    expect(first.stateFormat).toBe("compact-v1");
+    const identity = (first.domains as Array<{ modelEpoch: string; revision: number; value: object }>)[0]!;
+    expect(identity.value).toMatchObject({ runtimeId: "pi-static", name: "Pi", cwd: stateDir });
+    expect(identity.value).not.toHaveProperty("status");
+    expect(identity.value).not.toHaveProperty("contextUsage");
+    runtime.publish(1, { type: "runtime.metadata", metadata: { ...metadata, status: "running", contextUsage: { tokens: 2, contextWindow: 100, percent: 2 } } });
+    await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.metadata");
+    read("compact-known", { stateFormat: "compact-v1", known: [{ domain: "identity", modelEpoch: identity.modelEpoch, revision: identity.revision }] });
+    expect(await readMatching(device, message => message.requestId === "compact-known")).toMatchObject({ stateFormat: "compact-v1", domains: [], unchanged: ["identity"] });
+    read("legacy-read");
+    const legacy = await readMatching(device, message => message.requestId === "legacy-read");
+    expect(legacy).not.toHaveProperty("stateFormat");
+    expect((legacy.domains as Array<{ value: object }>)[0]!.value).toMatchObject({ status: "running", contextUsage: { tokens: 2 } });
+  });
+
   // FT-G02-WIRE: a confirmed known-version read must not solicit a producer-wide
   // replay; a command on the same ordered loopback connection is the barrier.
   it("FT-G02 reads known versions without resync and still publishes real menu changes", async () => {

@@ -41,6 +41,7 @@ data class AgentStateRead(
     val sentAt: Long = System.currentTimeMillis(),
     /** A refresh can answer in several domain batches; old domains do not complete a new read. */
     val pendingDomains: Set<String> = domains,
+    val stateFormat: String? = null,
 )
 
 internal val AGENT_MODEL_DOMAINS = listOf(
@@ -69,6 +70,7 @@ data class AgentStateSnapshotView(
     val missing: Map<String, String> = emptyMap(),
     val truncated: Boolean = false,
     val error: String? = null,
+    val stateFormat: String? = null,
 )
 
 /** 快照身份：作用域 + 会话/运行时身份。Host 按这个身份回答，客户端也按它存放。 */
@@ -97,6 +99,7 @@ internal fun RemoteState.withAgentStateSnapshot(
     val scope = message.string("scope") ?: "host"
     if (read != null && (read.scope != scope || read.sessionId != message.string("sessionId") ||
             read.runtimeId != message.string("runtimeId") || read.agentKind != null && read.agentKind != message.string("agentKind"))) return this
+    if (read != null && read.stateFormat != message.string("stateFormat")) return this
     // 应答到达即销账：无论是成功、失败还是坏消息，都不该继续挂在「已发出」里。
     val cleared = copy(agentStateRequests = agentStateRequests - requestId,
         agentStateReads = if (read?.subscribe == true) agentStateReads else agentStateReads - requestId)
@@ -137,7 +140,7 @@ internal fun RemoteState.withAgentStateSnapshot(
         val domain = row.string("domain") ?: continue
         missing[domain] = row.string("reason") ?: "unknown"
     }
-    val previous = agentStateSnapshots[key]?.takeIf { it.modelEpoch == epoch }
+    val previous = agentStateSnapshots[key]?.takeIf { it.modelEpoch == epoch && it.stateFormat == message.string("stateFormat") }
     val merged = previous?.domains.orEmpty().toMutableMap()
     val changed = linkedMapOf<String, AgentStateDomainView>()
     for ((domain, incoming) in domains) {
@@ -164,7 +167,8 @@ internal fun RemoteState.withAgentStateSnapshot(
         if (name in domains || read != null && name !in read.domains) continue
         merged[name]?.let { confirmed[name] = it }
     }
-    val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json, parseInteraction)
+    val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json,
+        staticIdentity = message.string("stateFormat") == "compact-v1", parseInteraction = parseInteraction)
         else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
     if (projected.error != null && L10n.hasPrefix(projected.error, "Host 模型领域格式无效：") && projected.error != base.error) {
         return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
@@ -176,6 +180,7 @@ internal fun RemoteState.withAgentStateSnapshot(
         scope = scope,
         requestId = requestId,
         modelEpoch = epoch,
+        stateFormat = message.string("stateFormat"),
         domains = merged,
         missing = mergedMissing,
         truncated = message["truncated"]?.jsonPrimitive?.booleanOrNull == true,

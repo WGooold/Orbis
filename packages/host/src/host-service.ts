@@ -80,6 +80,7 @@ import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { normalizeDeviceRequest } from "./device-protocol.js";
 import { encodeDeviceMessage } from "./device-message-projection.js";
+import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
@@ -618,6 +619,8 @@ export class HostService {
   /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
   readonly #agentStateRegistry: AgentStateRegistry;
   readonly #agentStateSubscriptions: AgentStateSubscriptions;
+  readonly #compactState: CompactStateModel;
+  readonly #compactStateSubscriptions: AgentStateSubscriptions;
   readonly #conversationState: AgentConversationState;
   readonly #notifications = new NotificationStore(runtimeId => {
     // 通知投影变化时同步模型里的引用摘要（ADR-0032 模块 18/19）；它只是引用，不复制权威。
@@ -866,6 +869,8 @@ export class HostService {
       runtimeId => this.#runtimesSnapshot().find(runtime => runtime.runtimeId === runtimeId));
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message));
+    this.#compactState = new CompactStateModel(agentStateRegistry);
+    this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message));
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
@@ -1170,15 +1175,20 @@ export class HostService {
       if (this.#dshRuntime?.ownsRuntime(runtimeId)) this.#dshRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
-    if (!this.#agentStateSubscriptions.register(deviceId, scope, request)) {
+    const compact = request.stateFormat === "compact-v1";
+    const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
+    const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
+    if (request.subscribe !== undefined) (compact ? this.#agentStateSubscriptions : this.#compactStateSubscriptions).register(deviceId, scope, { ...request, subscribe: false });
+    if (!subscriptions.register(deviceId, scope, request)) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
       return;
     }
     for (const part of buildAgentStateSnapshotParts({
-      registry: this.#agentStateRegistry,
+      registry,
       requestId: request.requestId,
       scope,
       identity,
+      stateFormat: request.stateFormat,
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(request.known === undefined ? {} : { known: request.known }),
     })) this.#sendToDevice(deviceId, part);
@@ -1533,6 +1543,7 @@ export class HostService {
     await this.#desktopLedgerWrite;
     this.#sessionSync.close();
     this.#agentStateSubscriptions.close();
+    this.#compactStateSubscriptions.close(); this.#compactState.close();
     this.#pairing.close();
     await this.#lan?.stop();
     this.#lan = undefined;
@@ -1635,6 +1646,7 @@ export class HostService {
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
+    this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#persist();
     this.refreshHostFacts();
     return true;
@@ -2326,6 +2338,7 @@ export class HostService {
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
+    this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
