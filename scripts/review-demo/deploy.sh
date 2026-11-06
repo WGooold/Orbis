@@ -35,28 +35,57 @@ if [ "$healthy" != true ]; then
     if [ -n "$previous" ]; then start_host "$previous"; fi
     exit 1
 fi
-install -m 644 "$release_dir/scripts/review-demo/nginx.conf" /etc/nginx/snippets/orbis-review-demo.conf
-# The existing site has both direct HTTPS and Hong Kong proxy-protocol listeners.
-site=$(readlink -f /etc/nginx/sites-enabled/orbis)
+site=$(readlink -f /etc/nginx/sites-enabled/orbis 2>/dev/null || true)
 proxy_site=/etc/nginx/conf.d/orbis-hk149.conf
+snippet=/etc/nginx/snippets/orbis-review-demo.conf
+snippet_include=$snippet
+proxy_include=/etc/nginx/snippets/orbis-proxy.conf
+nginx_test() { nginx -t; }
+nginx_reload() { systemctl reload nginx; }
+# 1Panel owns the shared HTTP(S) listeners on the migrated Relay server.
+if [[ -f /opt/1panel/www/conf.d/orbis.conf ]]; then
+    site=/opt/1panel/www/conf.d/orbis.conf
+    proxy_site=""
+    snippet=/opt/1panel/apps/openresty/openresty/conf/ssl/orbis/review-locations.conf
+    snippet_include=/usr/local/openresty/nginx/conf/ssl/orbis/review-locations.conf
+    proxy_include=/usr/local/openresty/nginx/conf/ssl/orbis/proxy.conf
+    nginx_container=$(docker ps --filter name=1Panel-openresty --format '{{.Names}}')
+    [[ -n "$nginx_container" && "$nginx_container" != *$'\n'* ]]
+    nginx_test() { docker exec "$nginx_container" /usr/local/openresty/nginx/sbin/nginx -t; }
+    nginx_reload() { docker exec "$nginx_container" /usr/local/openresty/nginx/sbin/nginx -s reload; }
+fi
+test -f "$site"
+snippet_existed=false
+if [[ -f "$snippet" ]]; then
+    cp -p "$snippet" "$task_dir/nginx-snippet-before-review.conf"
+    snippet_existed=true
+fi
+sed "s|/etc/nginx/snippets/orbis-proxy.conf|$proxy_include|g" "$release_dir/scripts/review-demo/nginx.conf" > "$snippet"
+chmod 644 "$snippet"
 cp -p "$site" "$task_dir/nginx-before-review.conf"
-cp -p "$proxy_site" "$task_dir/nginx-hk-before-review.conf"
-python3 - "$site" "$proxy_site" <<'PY'
+sites=("$site")
+if [[ -n "$proxy_site" && -f "$proxy_site" ]]; then
+    cp -p "$proxy_site" "$task_dir/nginx-hk-before-review.conf"
+    sites+=("$proxy_site")
+fi
+python3 - "$snippet_include" "${sites[@]}" <<'PY'
 from pathlib import Path
 import sys
-for name in sys.argv[1:]:
+include = 'include ' + sys.argv[1] + ';'
+for name in sys.argv[2:]:
     p=Path(name); text=p.read_text()
-    if 'include /etc/nginx/snippets/orbis-review-demo.conf;' not in text:
+    if include not in text:
         anchor='    location = /relay { return 308 /relay/; }'
         if anchor not in text: raise SystemExit('HTTPS location anchor missing: '+name)
-        text=text.replace(anchor, '    include /etc/nginx/snippets/orbis-review-demo.conf;\n'+anchor)
+        text=text.replace(anchor, '    '+include+'\n'+anchor)
         p.write_text(text)
 PY
-if ! nginx -t; then
+if ! nginx_test; then
+    if [[ "$snippet_existed" == true ]]; then cp -p "$task_dir/nginx-snippet-before-review.conf" "$snippet"; else rm -f "$snippet"; fi
     cp -p "$task_dir/nginx-before-review.conf" "$site"
-    cp -p "$task_dir/nginx-hk-before-review.conf" "$proxy_site"
+    if [[ "${#sites[@]}" -gt 1 ]]; then cp -p "$task_dir/nginx-hk-before-review.conf" "$proxy_site"; fi
     exit 1
 fi
-systemctl reload nginx
+nginx_reload
 printf '%s\n' "$image" > "$task_dir/deployed-image"
 echo 'Dedicated review Host deployed; production Relay was not restarted.'

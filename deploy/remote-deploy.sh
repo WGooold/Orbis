@@ -220,7 +220,8 @@ mapfile -t old_releases < <(
 if [[ "${#old_releases[@]}" -gt 0 ]]; then
   rm -rf -- "${old_releases[@]}"
 fi
-docker image prune -f >/dev/null
+# Shared servers also build unrelated applications; only prune our labeled images.
+docker image prune -f --filter 'label=org.opencontainers.image.title=Orbis Relay' >/dev/null
 
 trap - ERR
 echo "Relay release $release is healthy at $public_health_url"

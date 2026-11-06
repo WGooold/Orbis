@@ -8,6 +8,8 @@ ARG NPM_REGISTRY=https://registry.npmjs.org
 RUN npm ci --ignore-scripts --no-audit --no-fund --registry=$NPM_REGISTRY && npm run build
 
 FROM node:22-bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/WGooold/Orbis" \
+    org.opencontainers.image.title="Orbis Relay"
 ARG ORBIS_RELEASE_COMMIT
 ENV ORBIS_RELEASE_COMMIT=$ORBIS_RELEASE_COMMIT
 ENV NODE_ENV=production \
