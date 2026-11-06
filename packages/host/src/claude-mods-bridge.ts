@@ -225,7 +225,7 @@ export class ClaudeModsBridge {
     });
   }
 
-  hello(input: unknown): { ok: true; runtimeId: string; generation: string; capabilities: readonly string[] } | { ok: false; error: string } {
+  hello(input: unknown): { ok: true; runtimeId: string; generation: string; capabilities: readonly string[]; resumed?: true } | { ok: false; error: string } {
     const parsed = parseHello(input);
     const reject = (error: string) => {
       this.#options.onRejected?.(error, parsed ?? (isRecord(input) ? input as Partial<ClaudeModsHello> : {}));
@@ -247,32 +247,41 @@ export class ClaudeModsBridge {
       }
     }
     const previous = this.#sessions.get(runtimeId);
+    const configDir = claudeConfigDir(parsed.configDir);
+    const retained = previous?.instanceId === parsed.instanceId && previous.history.configDir === configDir
+      && previous.runtime.cwd === parsed.cwd ? previous : undefined;
     if (previous !== undefined) {
       this.#abandonCommands(runtimeId, previous);
-      previous.history.close();
-      this.#options.onRuntimeOffline?.(runtimeId, "replaced_by_new_bridge");
+      if (retained === undefined) {
+        previous.history.close();
+        this.#options.onRuntimeOffline?.(runtimeId, "replaced_by_new_bridge");
+      }
     }
     const generation = randomUUID();
+    // Source ownership follows the native writer, while HTTP requests keep generation fencing.
+    // The same history can outlive several handshakes; a different writer gets a fresh source.
+    let history: ClaudeSessionHistory | undefined;
     const publish = (event: Extract<RuntimeEvent, { type: "session.patch" | "session.tools.produced" }>): void => {
-      if (this.#sessions.get(runtimeId)?.generation === generation) this.#options.onEvent?.(runtimeId, event);
+      if (history !== undefined && this.#sessions.get(runtimeId)?.history === history) this.#options.onEvent?.(runtimeId, event);
     };
     const onFacts = (facts: ClaudeTranscriptFacts): void => {
       const session = this.#sessions.get(runtimeId);
-      if (session?.generation !== generation) return;
+      if (history === undefined || session?.history !== history) return;
       session.facts = facts;
       this.#publishMetadata(runtimeId, session);
     };
-    const configDir = claudeConfigDir(parsed.configDir);
-    const history = this.#options.createHistory?.(parsed.sessionId, configDir, publish, onFacts) ??
+    history = retained?.history ?? this.#options.createHistory?.(parsed.sessionId, configDir, publish, onFacts) ??
       new ClaudeSessionHistory(parsed.sessionId, configDir, publish, {
         onFacts, ...(this.#options.hostId === undefined ? {} : { hostId: this.#options.hostId }),
         ...(this.#toolStore === undefined ? {} : { toolStore: this.#toolStore }),
       });
     const session: Session = {
-      runtime: { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: "idle", sessionId: parsed.sessionId, hostname: localHostname() },
+      runtime: { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: retained?.runtime.status ?? "idle", sessionId: parsed.sessionId, hostname: localHostname() },
       instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
-      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(), runningTools: new Map(),
-      lastSeenAt: Date.now(), history, state: {}, facts: {}, compaction: "idle", published: { metadata: "", capabilities: "" },
+      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(retained?.completedTurns),
+      runningTools: new Map(retained?.runningTools), ...(retained?.activeTurn === undefined ? {} : { activeTurn: retained.activeTurn }),
+      lastSeenAt: Date.now(), history, state: retained?.state ?? {}, facts: retained?.facts ?? {}, compaction: retained?.compaction ?? "idle",
+      published: { metadata: "", capabilities: "" },
       tasks: { availability: "unknown", items: previous?.tasks.items ?? [], truncated: false }, tasksCheckedAt: 0,
     };
     this.#sessions.set(runtimeId, session);
@@ -289,7 +298,7 @@ export class ClaudeModsBridge {
     this.#options.onRuntimeOnline?.(session.runtime);
     void history.refresh().catch(() => undefined);
     if (parsed.launchId !== undefined) this.#launches.get(parsed.launchId)?.resolve(session.runtime);
-    return { ok: true, runtimeId, generation, capabilities: [...capabilities] };
+    return { ok: true, runtimeId, generation, capabilities: [...capabilities], ...(retained === undefined ? {} : { resumed: true }) };
   }
 
   pollRequest(input: unknown): ClaudeModsPoll {

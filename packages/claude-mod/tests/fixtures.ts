@@ -11,6 +11,7 @@ export function setup(on: On) {
     sessionId: "same-native-session",
     reachable: true,
     generation: "first-generation",
+    resumed: false,
     rejection: "",
     pollError: "",
     commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } }[],
@@ -68,7 +69,7 @@ export function setup(on: On) {
     const reply = (status: number, value: unknown) => ({ value: { status, ok: status < 300, headers: {}, text: JSON.stringify(value) } });
     if (event.url.endsWith("/hello")) return world.rejection
       ? reply(409, { ok: false, error: world.rejection })
-      : reply(200, { ok: true, runtimeId: `claude:${body.sessionId}`, generation: world.generation });
+      : reply(200, { ok: true, runtimeId: `claude:${body.sessionId}`, generation: world.generation, ...(world.resumed ? { resumed: true } : {}) });
     if (event.url.endsWith("/poll")) return world.pollError
       ? reply(world.pollError === "unauthorized" ? 401 : 409, { ok: false, error: world.pollError })
       : reply(200, { ok: true, commands: world.commands });

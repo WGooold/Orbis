@@ -1565,6 +1565,7 @@ export class CodexRuntime implements AgentBackend {
     try {
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
+      if (this.#nativeReadLagsStream(thread, turns)) return;
       this.#replayTurns(thread, { path: snapshot?.path, turns });
       // Legacy rollouts can have no native items. Never use the synthesized resume view
       // as fallback; full native items always take precedence over on-disk history.
@@ -2580,6 +2581,15 @@ export class CodexRuntime implements AgentBackend {
     });
   }
 
+  /** A running turn's persisted view can temporarily omit its observed agent message. */
+  #nativeReadLagsStream(thread: ThreadState, turns: unknown[]): boolean {
+    const activeTurn = turns.map(object).find(turn => turn.id === thread.turnId);
+    const streamingId = thread.streamingMessageId;
+    return thread.sourceReady && streamingId !== undefined && thread.liveMessages.has(streamingId)
+      && (activeTurn?.status === "inProgress" || activeTurn?.status === "in_progress")
+      && Array.isArray(activeTurn.items) && !activeTurn.items.some(item => object(item).id === streamingId);
+  }
+
   /** One native read per thread repairs notifications missing before the Host transport. */
   #checkNativeSource(thread: ThreadState): Promise<void> {
     if (thread.nativeCheckPromise !== undefined) return thread.nativeCheckPromise;
@@ -2598,6 +2608,16 @@ export class CodexRuntime implements AgentBackend {
           throw error;
         }
         if (!this.#isCurrentReconcile(thread, generation)) return;
+        if (this.#nativeReadLagsStream(thread, turns)) {
+          // turns/list can lag the notification stream while this same turn is running.
+          // Its missing agent item is not a deletion: replay would erase the visible prefix
+          // and retire the id, dropping subsequent deltas. Defer this incomplete read and
+          // consume buffered notifications against the verified source. A terminal/new turn
+          // or an explicit revert still replaces it through the normal authoritative replay.
+          await this.#drainReconcileNotifications(thread);
+          if (this.#isCurrentReconcile(thread, generation)) thread.lastNativeCheckAt = Date.now();
+          return;
+        }
         const retainedWithoutItems = turns.some(value => {
           const turn = object(value);
           return Array.isArray(turn.items) && turn.items.length === 0
@@ -3537,6 +3557,9 @@ export class CodexRuntime implements AgentBackend {
           this.#settleCompactionProgress(thread, record.turnId);
         }
         if (!thread.liveMessages.has(record.itemId)) {
+          // A first delta can arrive without item/started. Track its native identity too,
+          // so ordered completion and a later revert treat it like any other observed item.
+          this.#noteItem(thread, { id: record.itemId });
           thread.streamingMessageId = record.itemId;
           this.#setLiveMessage(thread, {
             message: assistantMessage(record.itemId), finished: false, contentComplete: false,

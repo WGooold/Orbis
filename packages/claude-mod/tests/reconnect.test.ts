@@ -45,6 +45,44 @@ test("preserves the generation across a temporary HTTP failure on the same Host"
   expect(world.statuses.at(-1)).toBeUndefined();
 });
 
+// CLAUDE-LIVE-01: a retained native source must receive the rest of the current step
+// under the renewed generation, without replaying its already-acknowledged prefix.
+test("rebinds a streaming step only when the Host acknowledges its retained source", async ($, on) => {
+  const { clock, world } = setup(on);
+  mock.session(on);
+  on("turn.step", async function* (_$, event) {
+    yield { kind: "text", index: 0, text: "p".repeat(800) };
+    world.pollError = "stale_generation";
+    await clock.advance(750);
+    world.pollError = "";
+    world.generation = "renewed-generation";
+    world.resumed = true;
+    await clock.advance(750);
+    yield { kind: "text", index: 0, text: " suffix" };
+    return { turnId: event.turnId, index: event.index, answer: "done", toolUses: [], stopReason: "end_turn", usage: null };
+  });
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "task", turnId: "main" });
+  const stream = $.turn.step({ turnId: "main", index: 0, model: "test", messageCount: 1 });
+  for await (const chunk of stream) expect(chunk.kind).toBe("text");
+  await stream.result;
+  const deliveries = world.requests.filter(request => (request.body.event as { type?: string })?.type === "turn.step.chunks");
+  expect(deliveries.map(request => request.body)).toEqual([
+    { runtimeId: "claude:same-native-session", generation: "first-generation", event: {
+      type: "turn.step.chunks", turnId: "main", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: "p".repeat(800) }],
+    } },
+    { runtimeId: "claude:same-native-session", generation: "renewed-generation", event: {
+      type: "turn.step.chunks", turnId: "main", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: " suffix" }],
+    } },
+  ]);
+  await $.session.append({ door: "response", uuid: "native-row", origin: { kind: "model", model: "test" },
+    message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "done" }] } });
+  await $.turn.complete({ turnId: "main", answer: "done", durationMs: 1, reason: "answer", isAborted: false });
+  expect(world.requests.some(request => request.body.generation === "renewed-generation"
+    && (request.body.event as { type?: string })?.type === "turn.step.finished")).toBe(true);
+});
+
 test("scopes a refused hello's backoff to that Host endpoint and token", async ($, on) => {
   const { clock, world, hellos } = setup(on);
   world.rejection = "missing_capability:test";

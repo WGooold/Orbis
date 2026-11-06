@@ -3,7 +3,7 @@ import type { Hook, Register } from "claude-code";
 type Api = Parameters<Hook<"session.start">>[0];
 type Connection = { runtimeId: string; generation: string; sessionId: string; descriptor: Descriptor };
 type Descriptor = { url: string; token: string };
-type HelloReply = { ok: true; runtimeId: string; generation: string } | { ok: false; error: string };
+type HelloReply = { ok: true; runtimeId: string; generation: string; resumed?: boolean } | { ok: false; error: string };
 type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[]; pendingInteractions?: number } | { ok: false; error: string };
 type BridgeEvent = Record<string, unknown>;
 type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "slash"; name: string; args: string } | { type: "stop" };
@@ -297,6 +297,10 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
   const next = { runtimeId: response.body.runtimeId, generation: response.body.generation, sessionId, descriptor };
   if (connection?.generation !== next.generation) commands.clear();
   connection = next;
+  // Only an explicit Host acknowledgement can transfer an in-flight native step. A different
+  // Session or a fresh Host must not receive old-generation chunks or command results.
+  if (response.body.resumed === true && activeStep?.target?.sessionId === sessionId
+    && activeStep.target.runtimeId === next.runtimeId) activeStep.target = next;
   void reportState($, true);
   return next;
 }

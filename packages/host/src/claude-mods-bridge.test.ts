@@ -218,6 +218,64 @@ describe("ClaudeModsBridge", () => {
     await expect(bridge.sync(current.runtimeId, request)).resolves.toMatchObject({ type: "session.snapshot", sessionId: "session-1", syncId: "sync-1", entries: [] });
   });
 
+  // CLAUDE-LIVE-01: renewing the same native writer retains its source and step identity;
+  // old-generation events and command results remain fenced out.
+  it("keeps the running source and publishes new chunks across a same-instance handshake", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-live-renew-"));
+    const path = join(root, "session.jsonl");
+    await writeFile(path, "");
+    const events: RuntimeEvent[] = [];
+    const offline = vi.fn();
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event), onRuntimeOffline: offline,
+      createHistory: (id, config, publish) => new ClaudeSessionHistory(id, config, publish, { locate: async () => path, settleTimeoutMs: 0 }) });
+    try {
+      const first = online(bridge);
+      const emit = (target: typeof first, event: unknown) => bridge.receiveEvent(target.runtimeId, target.generation, event);
+      const sync = () => bridge.sync(first.runtimeId, { type: "session.sync", sessionId: "session-1", syncId: "live", range: "preview" });
+      emit(first, { type: "turn.start", turnId: "t", startedAt: 1 });
+      emit(first, { type: "turn.step.chunks", turnId: "t", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: "prefix" }] });
+      emit(first, { type: "turn.step.row", turnId: "t", stepIndex: 0, uuid: "a" });
+      const before = await sync();
+      const second = online(bridge);
+      expect(second).toMatchObject({ resumed: true });
+      expect(second.generation).not.toBe(first.generation);
+      expect(offline).not.toHaveBeenCalled();
+      expect(bridge.statusOf(first.runtimeId)).toBe("running");
+      expect(emit(first, { type: "turn.step.chunks", turnId: "t", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: " stale" }] })).toBe("stale");
+      expect(emit(second, { type: "turn.step.chunks", turnId: "t", stepIndex: 0, chunks: [{ blockIndex: 0, contentType: "text", delta: " suffix" }] })).toBe("accepted");
+      expect(await sync()).toMatchObject({ source: { epoch: before?.source?.epoch }, live: { messages: [expect.objectContaining({
+        message: expect.objectContaining({ content: [{ type: "text", text: "prefix suffix" }] }),
+      })] } });
+      expect(events.filter(event => event.type === "session.patch").at(-1)?.live.messages[0]?.message.content)
+        .toEqual([{ type: "text", text: "prefix suffix" }]);
+      await appendFile(path, JSON.stringify({ type: "assistant", uuid: "a", parentUuid: null, sessionId: "session-1", timestamp: new Date(1).toISOString(),
+        message: { role: "assistant", content: [{ type: "text", text: "prefix suffix" }] } }) + "\n");
+      // The reservation survived renewal; a concurrent read cannot expose a canonical twin.
+      expect((await sync())?.entries).toEqual([]);
+      emit(second, { type: "turn.step.finished", turnId: "t", stepIndex: 0, uuids: ["a"] });
+      await vi.waitFor(async () => expect((await sync())?.live?.messages).toEqual([]));
+      expect((await sync())?.entries.map(entry => entry.entryId)).toEqual(["a"]);
+      emit(second, { type: "turn.complete", turnId: "t" });
+      emit(second, { type: "turn.start", turnId: "next", startedAt: 2 });
+      await vi.waitFor(async () => expect((await sync())?.live?.messages).toEqual([]));
+      expect((await sync())?.live?.turn?.turnId).toBe("next");
+    } finally { bridge.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([{ instanceId: "other-native-instance" }, { configDir: "/different-config" }, { cwd: "C:\\other" }])(
+    "does not carry a running source into a different native owner %j", async overrides => {
+      const bridge = bridgeWith();
+      try {
+        const first = online(bridge);
+        bridge.receiveEvent(first.runtimeId, first.generation, { type: "turn.start", turnId: "t" });
+        bridge.receiveEvent(first.runtimeId, first.generation, { type: "turn.step.chunks", turnId: "t", stepIndex: 0,
+          chunks: [{ blockIndex: 0, contentType: "text", delta: "old" }] });
+        const next = online(bridge, hello(overrides));
+        expect(next).not.toHaveProperty("resumed");
+        expect((await bridge.sync(next.runtimeId, { type: "session.sync", sessionId: "session-1", syncId: "new", range: "preview" }))?.live?.messages).toEqual([]);
+      } finally { bridge.close(); }
+    });
+
   it("retires queued commands with an unknown-delivery failure when the bridge disconnects or reconnects", () => {
     const events: RuntimeEvent[] = [];
     const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });

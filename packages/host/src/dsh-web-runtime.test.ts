@@ -18,7 +18,7 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
-function discoveryFixture() {
+function discoveryFixture(decoder?: ConstructorParameters<typeof DshWebRuntime>[1]) {
   let items: Record<string, unknown>[] = [];
   const subscriptions: { method: string; args: Record<string, unknown>; frame: (value: unknown) => void; fail?: ((error: Error) => void) | undefined; closed: boolean }[] = [];
   const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => {
@@ -37,7 +37,7 @@ function discoveryFixture() {
     },
     respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
   };
-  const runtime = new DshWebRuntime(client); runtimes.push(runtime);
+  const runtime = new DshWebRuntime(client, decoder); runtimes.push(runtime);
   const events: { event: RuntimeEvent; runtimeId: string }[] = [];
   runtime.setEventSink((event, runtimeId) => { RuntimeEventSchema.parse(event); events.push({ event: structuredClone(event), runtimeId }); });
   const offline = vi.fn(); runtime.onOffline = offline;
@@ -893,6 +893,199 @@ describe("DeepSeek Web runtime adapter", () => {
         record(2, "turn/end", { turn: 1 })], assistantStream: { revision: 3 } });
       await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "same" && event.selection === "unchanged")).toBe(true));
     } finally { clock.mockRestore(); }
+  });
+
+  // DSH-LIVE-01: a running turn's missing native accumulator is unknown, not deletion.
+  // Keep its verified prefix and indices until a complete replay or terminal history arrives.
+  it.each(["prefix", "completed", "next-turn"])("retains text through a missing-prefix check and accepts %s recovery", async recovery => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number, type: string, data: unknown) => ({ event: { seq, time: 1000 + seq, type, data } });
+    const records = [record(0, "turn/start", { turn: 1 })];
+    const active = { revision: 2, activeAttempt: { attemptId: "attempt", stream: [{ time: 1001, chunk: { type: "text-delta", text: "prefix" } }] } };
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records, assistantStream: active });
+    const baseline = f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event;
+    if (baseline.type !== "session.patch") throw new Error("missing baseline");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      f.runtime.dispatchCommand("dsh:browser", "check", { type: "session.sync", sessionId: "dsh:browser", syncId: "check", range: "preview",
+        knownState: { epoch: baseline.source.epoch, seq: baseline.seq, head: baseline.head } });
+      const fresh = f.follows()[0]!;
+      const before = f.events.length;
+      fresh.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records, assistantStream: { revision: 4 } });
+      const latest = f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event;
+      expect(latest).toMatchObject({ live: { messages: [expect.objectContaining({
+        message: expect.objectContaining({ content: [{ type: "text", text: "prefix" }] }),
+      })] } });
+      expect(f.events.slice(before).some(({ event }) => event.type === "session.snapshot" && event.syncId === "check")).toBe(false);
+      // New contiguous chunks still append to the retained native identity.
+      fresh.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index: 1, chunk: { type: "text-delta", text: " suffix" } } });
+      expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event).toMatchObject({
+        live: { messages: [expect.objectContaining({ message: expect.objectContaining({ content: [{ type: "text", text: "prefix suffix" }] }) })] },
+      });
+      const finalRecords = recovery === "prefix" ? records : [...records,
+        record(1, "assistant/message", { message: { id: "native", content: [{ type: "text", text: "prefix suffix" }] } }),
+        record(2, "turn/end", { turn: 1 }), ...(recovery === "next-turn" ? [record(3, "turn/start", { turn: 2 })] : [])];
+      const assistantStream = recovery === "prefix" ? { revision: 5, activeAttempt: { attemptId: "attempt",
+        stream: [{ time: 1001, chunk: { type: "text-delta", text: "prefix suffix" } }] } } : { revision: 5 };
+      fresh.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: finalRecords.length - 1, records: finalRecords, assistantStream });
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "check")).toBe(true));
+      const checkpoint = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "check")!.event;
+      expect(checkpoint).toMatchObject({ source: { ready: true }, live: { complete: true } });
+      if (checkpoint.type !== "session.snapshot") throw new Error("missing recovery");
+      expect(checkpoint.live?.messages.length).toBe(recovery === "prefix" ? 1 : 0);
+      if (recovery !== "prefix") expect(checkpoint.entries.some(entry => entry.entryId === "dsh:browser:web:1")).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("retries an unresolved stream-prefix check after its recovery deadline", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const records = [{ event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } }];
+    const opening = { type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records,
+      assistantStream: { revision: 2, activeAttempt: { attemptId: "attempt", stream: [{ time: 1001, chunk: { type: "text-delta", text: "prefix" } }] } } };
+    f.follows()[0]!.frame(opening);
+    vi.useFakeTimers({ now: Date.now() + 16_000 });
+    try {
+      const sync = (id: string) => f.runtime.dispatchCommand("dsh:browser", id, { type: "session.sync", sessionId: "dsh:browser", syncId: id, range: "preview" });
+      sync("missing");
+      const first = f.follows()[0]!;
+      first.frame({ ...opening, assistantStream: { revision: 4 } });
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(f.events.some(({ event }) => event.type === "command.result" && event.commandId === "missing" && !event.ok)).toBe(true);
+      sync("retry");
+      const retry = f.follows()[0]!;
+      expect(retry).not.toBe(first);
+      retry.frame(opening);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "retry")).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  // DSH-HISTORY-01: a healthy subscription is not a pending recovery snapshot. Native
+  // event/chunk gaps must actually reopen follow, then accept later history and streaming.
+  it.each(["durable", "assistant"])("reopens follow after a %s sequence gap and resumes new replies", async gap => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number, type: string, data: unknown) => ({ event: { seq, time: 1000 + seq, type, data } });
+    const original = f.follows()[0]!;
+    original.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records: [record(0, "turn/start", { turn: 1 })],
+      assistantStream: { revision: 2, activeAttempt: { attemptId: "attempt", stream: [{ time: 1001, chunk: { type: "text-delta", text: "prefix" } }] } } });
+    if (gap === "durable") original.frame({ type: "event", ...record(2, "custom", {}) });
+    else original.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index: 2,
+      chunk: { type: "text-delta", text: "late" } } });
+    const fresh = f.follows()[0]!;
+    expect(fresh).not.toBe(original);
+    const before = f.events.length;
+    original.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index: 1,
+      chunk: { type: "text-delta", text: " stale" } } });
+    expect(f.events).toHaveLength(before);
+    fresh.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 2, records: [record(0, "turn/start", { turn: 1 }),
+      record(1, "custom", {}), record(2, "custom", {})], assistantStream: { revision: 4, activeAttempt: { attemptId: "attempt",
+        stream: [{ time: 1001, chunk: { type: "text-delta", text: "prefix" } },
+          { time: 1002, chunk: { type: "text-delta", text: " recovered" } }] } } });
+    fresh.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index: 2,
+      chunk: { type: "text-delta", text: " next" } } });
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event).toMatchObject({
+      source: { ready: true }, live: { complete: true, messages: [expect.objectContaining({
+        message: expect.objectContaining({ content: [{ type: "text", text: "prefix recovered next" }] }),
+      })] },
+    });
+    fresh.frame({ type: "event", ...record(3, "assistant/message", { message: { id: "native", content: [{ type: "text", text: "prefix recovered next" }] } }) });
+    fresh.frame({ type: "event", ...record(4, "turn/end", { turn: 1 }) });
+    f.runtime.dispatchCommand("dsh:browser", "resumed", { type: "session.sync", sessionId: "dsh:browser", syncId: "resumed", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "resumed")).toBe(true));
+    const snapshot = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "resumed")!.event;
+    expect(snapshot).toMatchObject({ source: { ready: true }, cursor: { leafId: "dsh:browser:web:4" } });
+    if (snapshot.type !== "session.snapshot") throw new Error("missing recovered preview");
+    expect(snapshot.entries.some(entry => entry.entryId === "dsh:browser:web:3")).toBe(true);
+    expect(f.request.mock.calls.some(([method]) => method === "session/prompt")).toBe(false);
+  });
+
+  it("retries source recovery when a replacement follow never supplies its opening snapshot", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const snapshot = { type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [], assistantStream: { revision: 0 } };
+    f.follows()[0]!.frame(snapshot);
+    vi.useFakeTimers({ now: Date.now() + 16_000 });
+    try {
+      const sync = (id: string) => f.runtime.dispatchCommand("dsh:browser", id, { type: "session.sync", sessionId: "dsh:browser", syncId: id, range: "preview" });
+      sync("timeout");
+      const pending = f.follows()[0]!;
+      await vi.advanceTimersByTimeAsync(15_001);
+      expect(f.events.some(({ event }) => event.type === "command.result" && event.commandId === "timeout" && !event.ok)).toBe(true);
+      sync("retry");
+      const retry = f.follows()[0]!;
+      expect(retry).not.toBe(pending);
+      retry.frame(snapshot);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "retry")).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  // DSH-HISTORY-02: a bounded reconnect tail can open a hole in a previously complete
+  // native cache. Catchup must load that hole instead of trusting the old complete flag.
+  it("fills an internal history gap after a bounded follow replaces a previously complete view", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number) => ({ event: { seq, time: 1000 + seq, type: "assistant/message",
+      data: { message: { id: `native-${seq}`, content: [{ type: "text", text: `reply ${seq}` }] } } } });
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records: [record(0)], assistantStream: { revision: 0 } });
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/page" ? Promise.resolve({ records: [record(0)] }) : base(method, args));
+    f.runtime.dispatchCommand("dsh:browser", "initial", { type: "session.sync", sessionId: "dsh:browser", syncId: "initial", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "initial")).toBe(true));
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 4, records: [record(3), record(4)], assistantStream: { revision: 0 } });
+    f.request.mockImplementation((method, args) => method === "session/page" ? Promise.resolve({ records: [record(1), record(2)] }) : base(method, args));
+    f.runtime.dispatchCommand("dsh:browser", "gap", { type: "session.sync", sessionId: "dsh:browser", syncId: "gap", range: "catchup", knownLeafId: "dsh:browser:web:0" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "gap")).toBe(true));
+    const recovered = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "gap")!.event;
+    expect(recovered).toMatchObject({ mode: "append", rangeStatus: "complete", complete: true });
+    if (recovered.type !== "session.snapshot") throw new Error("missing catchup");
+    expect(recovered.entries.map(entry => entry.entryId)).toEqual([1, 2, 3, 4].map(seq => `dsh:browser:web:${seq}`));
+    expect(f.request).toHaveBeenCalledWith("session/page", { request: { address: { kind: "session", sessionId: "browser" }, throughSeq: 4, beforeSeq: 3, maxMessages: 2000 } });
+  });
+
+  it.each([1, 0])("advances catchup page boundaries and stops a non-progressing native page (page size %s)", async pageSize => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const record = (seq: number) => ({ event: { seq, time: 1000 + seq, type: "custom", data: {} } });
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records: [record(0)], assistantStream: { revision: 0 } });
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 4, records: [record(3), record(4)], assistantStream: { revision: 0 } });
+    const boundaries: number[] = [];
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => {
+      if (method !== "session/page") return base(method, args);
+      const boundary = (args as { request: { beforeSeq: number } }).request.beforeSeq;
+      boundaries.push(boundary);
+      return Promise.resolve({ records: pageSize ? [record(boundary - 1)] : [] });
+    });
+    f.runtime.dispatchCommand("dsh:browser", "paged", { type: "session.sync", sessionId: "dsh:browser", syncId: "paged", range: "catchup", knownLeafId: "dsh:browser:web:0" });
+    if (pageSize) {
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "paged")).toBe(true));
+      expect(boundaries).toEqual([3, 2]);
+      expect(f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "paged")?.event)
+        .toMatchObject({ rangeStatus: "complete", complete: true, entries: [1, 2, 3, 4].map(seq => expect.objectContaining({ entryId: `dsh:browser:web:${seq}` })) });
+    } else {
+      await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "command.result" && event.commandId === "paged" && !event.ok)).toBe(true));
+      expect(boundaries).toEqual([3]);
+      expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "paged")).toBe(false);
+    }
+  });
+
+  // DSH-HISTORY-03: prefix compaction changes decoded record counts, while live frame
+  // indices continue from the native cursor. Replay must not create a false sequence gap.
+  it("continues from the native chunk cursor after a compacted assistant-prefix replay", async () => {
+    const f = discoveryFixture(() => [{ time: 1001, chunk: { type: "text-delta", text: "merged prefix" } }]);
+    f.list([f.live("browser", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0,
+      records: [{ event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } }],
+      assistantStream: { revision: 8, activeAttempt: { attemptId: "attempt", nextIndex: 7, stream: [{ compacted: true }] } } });
+    follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "attempt", index: 7,
+      chunk: { type: "text-delta", text: " next" } } });
+    expect(f.follows()[0]).toBe(follow);
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)!.event).toMatchObject({
+      live: { complete: true, messages: [expect.objectContaining({ message: expect.objectContaining({
+        content: [{ type: "text", text: "merged prefix next" }],
+      }) })] },
+    });
   });
 
   it("returns a verified bounded native tail without claiming its missing ancestors are cached", async () => {

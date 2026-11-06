@@ -178,6 +178,12 @@ macOS 启动器等待 `open` 的退出结果（15 秒上限），再等待脚本
 
 按 [ADR-0062](0062-claude-background-agents-and-session-activity.md) 实施独立任务库存、汇总活动与能力门禁。主回合 idle 不代表后台没有任务；仅过滤普通会话列表不足以修复。`agent.list()` 为库存来源，主回合结束不清任务，未知库存不冒充空闲；非交互子执行不发布普通会话。S26 / R61 的设备与真实隔离 TUI 门禁待完成。
 
+### 19. 同一原生实例重新握手时保留流式来源（2026-11-06）
+
+CLAUDE-LIVE-01：同一 instance、Session、配置目录和工作目录重新握手时，Host 保留实时来源、活动步骤、UUID 预留及完成身份；HTTP generation 重新分配，旧命令结果按原规则终结为未知。来源回调按历史拥有者核对，新连接通过可选 `resumed` 回执转接当前步骤，旧代次与其他原生实例继续隔离。内置插件版本为 0.1.7；该转接依赖 Host 明确确认保留了内存来源，完整 Host 进程重建仍按原生历史恢复。
+
+实现与回归见 [claude-mods-bridge.ts](../../packages/host/src/claude-mods-bridge.ts)、[claude-mods-bridge.test.ts](../../packages/host/src/claude-mods-bridge.test.ts)、[register.ts](../../packages/claude-mod/src/register.ts)、[reconnect.test.ts](../../packages/claude-mod/tests/reconnect.test.ts)。自动结果与合成复现证据见 [verification.json](../../.artifacts/backend-stream-fix-20261106/verification.json)。尚未部署；更新 Host 及内置插件后，Android 真机待用户验证。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

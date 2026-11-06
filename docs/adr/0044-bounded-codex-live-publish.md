@@ -29,6 +29,8 @@
 
 Codex live 更新按 100ms 窗口合并，实际发布时推进 sourceSeq；同步读取前 flush 待发布状态。
 
+CODEX-LIVE-01（2026-11-06）：已验证来源仍在输出、原生历史确认同一轮运行中但暂缺当前消息时，周期核对与重新激活保留实时正文并消费缓冲通知，待完整历史再重建。消息完成、新轮次与显式回退沿用权威替换；首个 delta 补建消息时同步登记原生条目身份。
+
 ### 2. 每条路径采用有界出站队列
 
 每条路径按封装后的字节核算有界队列，普通消息与 bulk 各自保留预算。当前 msg 为 32 MiB、ctl 为 4 MiB，bulk 使用原独立上限。
@@ -55,3 +57,5 @@ Codex live 更新按 100ms 窗口合并，实际发布时推进 sourceSeq；同�
 ## Verification
 
 [测试规则](../../AGENTS.md#测试)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；[orbis](../../android/app/src/androidTest/java/com/orbising/orbis)；[原始证据](../../.artifacts/)。
+
+CODEX-LIVE-01 实现与回归见 [codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)，合成复现、自动检查和资源释放证据见 [verification.json](../../.artifacts/codex-stream-continuity-20261106/verification.json)。代码修复与自动验证完成；未部署，Android 真机待用户验证。

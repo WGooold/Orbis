@@ -28,7 +28,7 @@ type Obj = Record<string, unknown>;
  * 实测 96 帧/秒，手机端每条都要落盘 + 全量重投影。100ms 与 Pi 扩展取同一值。
  */
 export const STREAM_COALESCE_MS = 100;
-/** catchup 首次整段加载的消息数上限（与 `session/page` 自身的 2000 上限一致）。 */
+/** 原生历史每页的消息数上限（与 `session/page` 自身的 2000 上限一致）。 */
 const HISTORY_PAGE_MESSAGES = 2_000;
 type WorkspaceView = { workspaceId: string; path: string; title?: string; sessionIds?: string[] };
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -70,8 +70,8 @@ type WebSession = {
    */
   metadataSignature?: string;
   /**
-   * 已把这段会话的历史整段读进 `session.entries`（一次未截断的 `session/page`）。置位后 catchup
-   * 不再重复拉同一页：后续条目由 live 事件按序应用，更旧的部分走 `history` 分页。
+   * 当前原生 head 到根的父链已完整缓存。重连尾页合并和历史分页按实际覆盖更新；连续实时
+   * append 保持完整性，catchup 只补当前缺口。
    */
   historyComplete?: boolean;
   lastSeq: number; turnId?: string; turnStartedAt?: number; fileChangeAnchor?: string;
@@ -86,6 +86,8 @@ type WebSession = {
   persistedMappings: Map<string, string>;
   retiredAttempts: Set<string>;
   streamIndexes: Map<string, number>;
+  /** A subscription exists, but its opening snapshot has not arrived yet. */
+  followSnapshotPending?: boolean;
   unsubscribe: () => void; following: boolean; streamMessages: Map<string, ChatMessage>; tools: Map<string, string>;
 };
 
@@ -452,12 +454,14 @@ export class DshWebRuntime implements AgentBackend {
 
   #followSession(session: WebSession): void {
     session.following = true;
+    session.followSnapshotPending = true;
     const generation = ++session.followGeneration;
     if (session.sourceCheck) session.sourceCheck.generation = generation;
     const fail = (error: unknown) => {
       if (this.#sessions.get(publicId(session.id)) !== session || session.closing || generation !== session.followGeneration) return;
       ++session.followGeneration;
       session.unsubscribe(); session.following = false;
+      delete session.followSnapshotPending;
       session.source.setAvailability(false, false);
       session.sourceCheckedAt = 0;
       if (session.sourceCheck) { clearTimeout(session.sourceCheck.timer); session.sourceCheck.reject(new Error(textOf(error))); delete session.sourceCheck; }
@@ -495,12 +499,10 @@ export class DshWebRuntime implements AgentBackend {
         if (command.range === "preview") await this.#checkSource(session);
         await this.#loadDelivery(session);
         this.#emit(session, structuredClone(session.activity));
-        // catchup 要把「手机已知的 leaf → head」整段补齐。只读尾部 `maxEntries` 条时这段根本不在
-        // `session.entries` 里：`select` 找不到共同前缀，只能返回 limit_reached 的尾页，手机于是
-        // 以约 2 次/秒的节奏重发（现场 20 秒里 30+ 次）。首次 catchup 读整段历史，之后由 live
-        // 事件与 `history` 分页维持，不再每次重复拉同一页。
+        // Catchup fills the native parent gap toward the phone's known branch. Re-reading the
+        // latest tail cannot repair a hole between an old cached prefix and a reconnect tail.
         if (command.range === "catchup") {
-          if (session.historyComplete !== true) await this.#refreshPage(session, HISTORY_PAGE_MESSAGES);
+          if (session.historyComplete !== true) await this.#refreshCatchup(session, command.knownLeafId);
         } else {
           await this.#refreshPage(session, command.maxEntries,
             command.range === "history" ? webEntrySeqOrUndefined(command.beforeEntryId) : undefined);
@@ -818,6 +820,22 @@ export class DshWebRuntime implements AgentBackend {
           return !Number.isSafeInteger(event.seq) || Number(event.seq) < 0 || !Number.isFinite(event.time) || typeof event.type !== "string";
         })) return;
       const header = object(frame.header); const events = arrayObjects(frame.records).map(record => { const event = object(record.event); return { seq: Number(event.seq), time: Number(event.time), type: String(event.type), data: event.data }; });
+      const attempt = object(object(frame.assistantStream).activeAttempt);
+      const boundary = events.filter(event => event.type === "turn/start" || event.type === "turn/end").at(-1);
+      const sameRunningTurn = session.running && (boundary === undefined
+        || boundary.type === "turn/start" && dshWebEntryId(session.id, boundary.seq) === session.turnId);
+      const canonicalIds = new Set(events.map(event => dshWebEntryId(session.id, event.seq)));
+      const unresolvedStream = [...session.streamMessages].some(([id, message]) => message.content.length > 0
+        && !canonicalIds.has(session.persistedMappings.get(id) ?? "")
+        && !events.some(event => event.type === "assistant/message" && object(object(event.data).message).id === id));
+      if (sameRunningTurn && typeof attempt.attemptId !== "string" && unresolvedStream) {
+        // A native accumulator drops activeAttempt after a stream gap. Its absence cannot
+        // delete an observed response. Keep the verified source and chunk indices, and leave
+        // the current check pending until a complete prefix or terminal history replaces it.
+        session.sourceCheckedAt = 0;
+        delete session.followSnapshotPending;
+        return;
+      }
       this.#titleProjection(session.id, frame.projections, true);
       this.#permissionProjection(session, frame.projections);
       this.#deliveryProjection(session, frame.projections);
@@ -839,6 +857,7 @@ export class DshWebRuntime implements AgentBackend {
         session.preparer.invalidate();
       }
       session.lastSeq = Math.max(session.lastSeq, Number(frame.cursor ?? -1)); session.createdAt = Number(header.createdAt ?? session.createdAt); session.cwd = typeof header.cwd === "string" ? header.cwd : session.cwd;
+      session.historyComplete = this.#historyCovered(session);
       this.#syncSnapshotTurnState(session, events);
       // This bounded native window cannot confirm activity omitted before its first event.
       if (Number(frame.cursor) >= session.activitySeq) {
@@ -875,7 +894,6 @@ export class DshWebRuntime implements AgentBackend {
         if (typeof args === "string") { try { args = JSON.parse(args); } catch { /* Preserve native text. */ } }
         session.source.observe(this.#toolProducer(session).event({ type: "tool.started", toolCallId, toolName: session.tools.get(toolCallId)!, arguments: args }));
       }
-      const attempt = object(object(frame.assistantStream).activeAttempt);
       if (typeof attempt.attemptId === "string") {
         session.retiredAttempts.delete(attempt.attemptId);
         this.#assistantFrame(session, { type: "start", attemptId: attempt.attemptId,
@@ -883,6 +901,11 @@ export class DshWebRuntime implements AgentBackend {
         const stream = Array.isArray(attempt.stream) ? attempt.stream : [];
         const records = this.#decoder ? this.#decoder(stream) : arrayObjects(stream);
         for (const record of records) this.#assistantFrame(session, { type: "chunk", attemptId: attempt.attemptId, time: record.time, chunk: record.chunk });
+        // Native indices count original frames; compacted prefixes can decode to fewer records.
+        // Older snapshots without a cursor retain the replay-derived index.
+        if (Number.isSafeInteger(attempt.nextIndex) && Number(attempt.nextIndex) >= 0) {
+          session.streamIndexes.set(attempt.attemptId, Number(attempt.nextIndex));
+        }
       }
       this.#reconcileSource(session);
       // ADR-0020：有界 follow tail 里没有本轮的 `turn/start`，只说明「本轮起点不在这一页」，
@@ -891,6 +914,7 @@ export class DshWebRuntime implements AgentBackend {
       // checkpoint 于是不再是基线——Host 丢掉 canonical、手机既不能投影也不能应用 patch，
       // 运行期间的历史就整段消失（现场：长轮次一开头，聊天页只剩本轮 live 卡片）。
       session.source.setAvailability(true, true);
+      delete session.followSnapshotPending;
       session.sourceCheckedAt = Date.now();
       if (session.sourceCheck && session.sourceCheck.generation <= session.followGeneration) {
         clearTimeout(session.sourceCheck.timer);
@@ -928,9 +952,43 @@ export class DshWebRuntime implements AgentBackend {
     for (const entry of pageEntries) if (!entries.has(entry.entryId)) entries.set(entry.entryId, entry);
     session.entries = [...entries.values()].sort((left, right) => webEntrySeq(left.entryId) - webEntrySeq(right.entryId));
     session.lastSeq = Math.max(session.lastSeq, ...events.map(event => event.seq));
-    // 未截断的一页 = 这段会话的历史已经整段在手里；之后 catchup 不必重复拉同一页。
-    if (beforeSeq === undefined && events.length < maxMessages) session.historyComplete = true;
+    session.historyComplete = this.#historyCovered(session);
     this.#reconcileSource(session);
+  }
+
+  #historyCovered(session: WebSession): boolean {
+    let parent: string | null = null;
+    for (const entry of session.entries) {
+      if (entry.parentId !== parent) return false;
+      parent = entry.entryId;
+    }
+    return session.lastSeq < 0 ? parent === null : parent === dshWebEntryId(session.id, session.lastSeq);
+  }
+
+  async #refreshCatchup(session: WebSession, knownLeafId?: string | null): Promise<void> {
+    for (;;) {
+      const entries = new Map(session.entries.map(entry => [entry.entryId, entry]));
+      let entry = session.entries.at(-1);
+      let known = false;
+      let beforeSeq: number | undefined;
+      while (entry) {
+        if (entry.entryId === knownLeafId) known = true;
+        if (entry.parentId === null) return;
+        const parent = entries.get(entry.parentId);
+        if (!parent) {
+          // A bounded native window is enough when it already contains the phone's leaf.
+          // Internal holes still need repair before the shared selector can prove the path.
+          if (entry === session.entries[0] && known) return;
+          beforeSeq = webEntrySeq(entry.entryId);
+          break;
+        }
+        entry = parent;
+      }
+      const count = session.entries.length;
+      await this.#refreshPage(session, HISTORY_PAGE_MESSAGES, beforeSeq);
+      if (session.historyComplete || session.entries.length === 0) return;
+      if (session.entries.length <= count) throw new Error("DeepSeek 历史分页未前进，请重试同步会话");
+    }
   }
   #syncSnapshotTurnState(session: WebSession, events: readonly DshWebLogEvent[]): void {
     let start: DshWebLogEvent | undefined;
@@ -1065,6 +1123,8 @@ export class DshWebRuntime implements AgentBackend {
         const live = session.source.snapshot().live;
         session.source.replaceLive({ ...live, complete: false, messages: live.messages.map(item => item.message.messageId === attempt ? { ...item, contentComplete: false } : item) });
         session.sourceCheckedAt = 0;
+        void this.#checkSource(session).catch(error => this.#report(textOf(error), publicId(session.id)));
+        return;
       }
       session.streamIndexes.set(attempt, typeof frame.index === "number" ? frame.index + 1 : expected + 1);
       let message = session.streamMessages.get(attempt);
@@ -1137,25 +1197,28 @@ export class DshWebRuntime implements AgentBackend {
 
   #checkSource(session: WebSession): Promise<void> {
     if (session.sourceCheck) return session.sourceCheck.promise;
-    // A sequence-gap callback already opened a fresh follow. Let its baseline settle even though
-    // the previous successful baseline was checked less than 15 seconds ago.
-    if (session.following && session.sourceCheckedAt === 0) return Promise.resolve();
     if (session.sourceCheckedAt > 0 && Date.now() - session.sourceCheckedAt < 15_000) return Promise.resolve();
+    // An open subscription is not proof that recovery is underway. Only its pending opening
+    // snapshot can be shared; a gap in an established stream requires a fresh native follow.
+    const awaitingSnapshot = session.following && session.followSnapshotPending === true;
     let resolve!: () => void;
     let reject!: (error: Error) => void;
-    const generation = session.followGeneration + 1;
+    const generation = session.followGeneration + (awaitingSnapshot ? 0 : 1);
     const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
     const timer = setTimeout(() => {
       if (session.sourceCheck?.promise !== promise) return;
       delete session.sourceCheck;
+      delete session.followSnapshotPending;
       session.source.setAvailability(false, false);
       reject(new Error("DeepSeek 当前会话状态恢复超时"));
     }, 15_000);
     timer.unref();
     session.sourceCheck = { promise, resolve, reject, timer, generation };
     // Reopening the native follow atomically captures current history and assistant prefix.
-    session.unsubscribe();
-    this.#followSession(session);
+    if (!awaitingSnapshot) {
+      session.unsubscribe();
+      this.#followSession(session);
+    }
     return promise;
   }
 
@@ -1163,6 +1226,7 @@ export class DshWebRuntime implements AgentBackend {
     this.#discovery.titles.reconnect();
     for (const session of this.#sessions.values()) {
       session.unsubscribe(); session.following = false;
+      delete session.followSnapshotPending;
       ++session.followGeneration;
       session.source.setAvailability(false, false);
       session.sourceCheckedAt = 0;

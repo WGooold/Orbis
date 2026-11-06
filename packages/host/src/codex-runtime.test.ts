@@ -769,6 +769,74 @@ describe("Codex recoverable source checkpoints", () => {
     await vi.waitFor(() => expect(syncHistory(h)?.live?.messages.find(message => message.message.messageId === "late")?.contentComplete).toBe(false));
   });
 
+  // CODEX-LIVE-01: a running native turn can omit the agent item until its text is persisted. Polling that
+  // view must neither erase the visible prefix nor retire the id and discard later deltas.
+  it.each([false, true].flatMap(started => ["notification", "native", "revert"].map(completion => ({ started, completion }))))(
+    "keeps streaming when a same-turn native check omits the active agent item (started=$started, completion=$completion)", async ({ started, completion }) => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1_800_000_000 } });
+    if (started) h.notify("item/started", { threadId: "th-1", turnId: "t", item: agent("a", "") });
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: "observed" });
+    const baseline = syncHistory(h)!;
+    const before = h.events.length;
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+    // A delta that arrives during the read must append to the retained prefix as well.
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: " buffered" });
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", startedAt: 1_800_000_000, items: [] }] });
+    await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
+      source: { epoch: baseline.source!.epoch, ready: true },
+      live: { complete: true, turn: { turnId: "t" }, messages: [expect.objectContaining({
+        message: expect.objectContaining({ messageId: "a", content: [{ type: "text", text: "observed buffered" }] }),
+      })] },
+    }));
+    expect(h.events.slice(before).filter(event => event.type === "session.patch").every(event =>
+      event.source.ready && event.live.messages.some(item => item.message.messageId === "a"),
+    )).toBe(true);
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: " suffix" });
+    expect(syncHistory(h)?.live?.messages[0]?.message.content).toEqual([{ type: "text", text: "observed buffered suffix" }]);
+    if (completion === "notification") {
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: agent("a", "observed buffered suffix") });
+    } else {
+      if (completion === "revert") h.notify("thread/reverted", { threadId: "th-1" });
+      else h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+      h.resolveNext({ data: completion === "revert" ? [] : [{
+        id: "t", status: "completed", items: [agent("a", "observed buffered suffix")],
+      }] });
+      await vi.waitFor(() => expect(syncHistory(h)).toMatchObject({
+        source: { ready: true }, live: { turn: null, messages: [] },
+      }));
+    }
+    const final = syncHistory(h)!;
+    expect(final.entries.map(entry => entry.entryId)).toEqual(completion === "revert" ? [] : ["a"]);
+    expect(final.live?.messages).toEqual([]);
+    // Both a committed item and an explicitly removed turn reject delayed streaming bytes.
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: " stale" });
+    expect(syncHistory(h)?.live?.messages).toEqual([]);
+  });
+
+  // Opening the same running session hydrates through a separate read path.
+  it("retains the streaming prefix when resuming the same running turn from lagging native history", async () => {
+    const h = makeHarness();
+    await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1_800_000_000 } });
+    h.notify("item/started", { threadId: "th-1", turnId: "t", item: agent("a", "") });
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: "prefix" });
+    const baseline = syncHistory(h)!;
+    const resuming = h.runtime.activate({ type: "resume", sessionId: "th-1" });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [{ id: "t", status: "inProgress", items: [] }] } });
+    await resuming;
+    h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "a", delta: " suffix" });
+    expect(syncHistory(h)).toMatchObject({
+      source: { epoch: baseline.source!.epoch, ready: true },
+      live: { messages: [expect.objectContaining({
+        message: expect.objectContaining({ messageId: "a", content: [{ type: "text", text: "prefix suffix" }] }),
+      })] },
+    });
+  });
+
   it("merges overdue previews and reconnect reads while history pages remain cache reads", async () => {
     const h = makeHarness();
     await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
