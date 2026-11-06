@@ -176,6 +176,8 @@ struct ChatView: View {
                 if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
             }
             .task(id: runtime.runtimeId) {
+                agent.setInterest(runtime: runtime, owner: "chat", domains: AgentState.chatDomains)
+                defer { agent.setInterest(runtime: runtime, owner: "chat", domains: []) }
                 store.refreshWorkingBranch()
                 while !Task.isCancelled {
                     do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }

@@ -179,6 +179,8 @@ internal class HostConnection(
     private val relayStateLock = Mutex()
     /** Pure state publication only; neither decrypting queries nor SQLite writes hold it. */
     private val stateWriterLock = Any()
+    private val modelInterestLock = Any()
+    private var modelInterests = ModelInterests()
     private val sessionLoads = SessionLoadQueue()
     private val historyPageSize = 30
     private val previewPageSize = 30
@@ -402,17 +404,26 @@ internal class HostConnection(
         )
     }
 
-    /** Reads and subscribes to committed Host domains; each connection owns its applied versions. */
-    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) {
-        requestModel("host", domains, force = force)
-        requestCatalogPage()
+    fun setAgentModelInterest(runtimeId: String, owner: String, domains: List<String>) {
+        val changed = synchronized(modelInterestLock) {
+            val next = modelInterests.replacing(runtimeId, owner, domains.toSet())
+            (next != modelInterests).also { modelInterests = next }
+        }
+        if (changed) refreshAgentModel(runtimeId)
+    }
+
+    /** Reads replace the scope's interest; cached versions remain available for reopening. */
+    fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) {
+        requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force)
+        if ("catalog" in domains) requestCatalogPage()
     }
 
     fun refreshAgentModel(runtimeId: String, force: Boolean = false) {
         val current = mutableState.value
         val runtime = current.runtimes[runtimeId] ?: return
         val sessionId = runtime.sessionId ?: return
-        requestModel("agent", AGENT_MODEL_DOMAINS, runtimeId, sessionId,
+        val domains = synchronized(modelInterestLock) { modelInterests.domains(runtimeId, HOME_AGENT_MODEL_DOMAINS, AGENT_MODEL_DOMAINS) }
+        requestModel("agent", domains, runtimeId, sessionId,
             runtime.agentKind ?: current.sessions[sessionId]?.agentKind, force)
     }
 
@@ -443,8 +454,8 @@ internal class HostConnection(
         val existingReads = current.agentStateReads.filterValues {
             it.scope == modelScope && it.runtimeId == runtimeId && it.sessionId == sessionId
         }
-        if (!force && existingReads.values.any { it.domains.containsAll(domains) && now - it.sentAt < 14_000 }) return
-        val subscribedDomains = (domains + existingReads.values.flatMap { it.domains }).distinct()
+        if (!force && existingReads.values.any { it.matchesInterest(domains, now) }) return
+        val subscribedDomains = domains.distinct()
         val requestId = UUID.randomUUID().toString()
         val read = AgentStateRead(key, modelScope, subscribedDomains.toSet(), runtimeId, sessionId, agentKind, sentAt = now)
         updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,

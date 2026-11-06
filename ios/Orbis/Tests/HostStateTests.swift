@@ -17,6 +17,8 @@ struct HostStateTests {
         let state = HostState(), sent = Sent()
         state.send = { if sent.accepts { sent.values.append($0) }; return sent.accepts }
         state.setConnection(pairing(), connected: true)
+        // Parser / projection fixtures explicitly subscribe to the domains under test.
+        state.setInterest("parser-fixture", domains: Set(HostState.domainNames))
         return (state, sent)
     }
     private func domain(_ name: String, revision: Int = 1, value: [String: Any] = [:], availability: String = "ready", epoch: String = "model-a") -> [String: Any] {
@@ -35,6 +37,26 @@ struct HostStateTests {
     }
     private func installProviders(_ state: HostState, _ sent: Sent, kind: String = "codex", additive: Bool = false) {
         state.consume(snapshot(sent, domains: [domain("providers", value: providers(kind: kind, additive: additive))]))
+    }
+
+    // FT-G03: ordinary home refreshes retain a bounded baseline; closing an
+    // inspector replaces the subscription and excludes cached diagnostic versions.
+    @Test func homeInterestDoesNotRetainClosedManagementViews() {
+        let state = HostState(), sent = Sent()
+        state.send = { sent.values.append($0); return true }
+        state.setConnection(pairing(), connected: true)
+        #expect(Set(sent.last["domains"] as? [String] ?? []) == HostState.homeDomains)
+        state.setInterest("diagnostics", domains: ["diagnostics", "connections"])
+        let previous = sent.last
+        #expect(Set(previous["domains"] as? [String] ?? []) == HostState.homeDomains.union(["diagnostics", "connections"]))
+        state.consume(snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])]))
+        state.setInterest("diagnostics", domains: [])
+        #expect(Set(sent.last["domains"] as? [String] ?? []) == HostState.homeDomains)
+        #expect((sent.last["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "diagnostics" } == false)
+        var stale = snapshot(sent, domains: [domain("diagnostics", revision: 2, value: ["records": 999])])
+        stale["requestId"] = previous["requestId"]
+        state.consume(stale)
+        #expect(state.domains["diagnostics"]?.value["records"].integer == 12)
     }
 
     @Test func subscriptionQuotaIsScopedToHostProviderAndRequest() throws {

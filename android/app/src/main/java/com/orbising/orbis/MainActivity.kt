@@ -1733,6 +1733,11 @@ internal fun ChatScreen(
         if (runtime?.status != "running") showDeliveryChoices = false
     }
     val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(model, state.hostId, runtimeId) {
+        val originHost = state.hostId
+        model.setAgentModelInterest(originHost, runtimeId, "chat", CHAT_AGENT_MODEL_DOMAINS)
+        onDispose { model.setAgentModelInterest(originHost, runtimeId, "chat", emptyList()) }
+    }
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             model.reconcileChat(runtimeId)

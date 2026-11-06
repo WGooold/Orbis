@@ -128,6 +128,8 @@ struct HostDiagnosticPage: Decodable {
 @MainActor
 final class HostState: ObservableObject {
     nonisolated static let domainNames = ["identity", "backends", "catalog", "providers", "workspaces", "files", "operations", "diagnostics", "connections", "management"]
+    nonisolated static let homeDomains: Set<String> = ["identity", "backends", "catalog", "providers"]
+    private var interests = ModelInterests()
     @Published private(set) var domains: [String: HostDomain] = [:]
     @Published private(set) var missing: [String: String] = [:]
     @Published private(set) var pendingDomains: Set<String> = []
@@ -181,7 +183,7 @@ final class HostState: ObservableObject {
         // Keep the last facts visible while offline on the same computer, but never actionable.
         if changedHost {
             domains = [:]; missing = [:]; truncated = false
-            retiredEpochs = []
+            retiredEpochs = []; interests = ModelInterests()
             catalogRange = nil
             diagnosticPage = nil; providerNotice = nil; providerError = nil; diagnosticsError = nil
         }
@@ -204,14 +206,20 @@ final class HostState: ObservableObject {
         return true
     }
 
-    func refresh(_ requested: [String] = HostState.domainNames) {
+    func setInterest(_ owner: String, domains: Set<String>) {
+        let previous = interests
+        interests.set(owner, domains: domains.intersection(Self.domainNames))
+        if interests != previous { refresh() }
+    }
+
+    func refresh(_ requested: [String] = Array(HostState.homeDomains)) {
         guard connected else { modelError = L10n.tr("请先连接已配对的电脑"); return }
         let wanted = Set(requested).intersection(Self.domainNames)
-        subscribedDomains.formUnion(wanted)
+        subscribedDomains = Self.homeDomains.union(interests.domains).union(wanted)
         let id = UUID().uuidString
         subscriptionId = id; pendingDomains = subscribedDomains; modelError = nil
-        // Replacing the subscription must retain every domain already requested by this connection.
-        let known = domains.values.filter { !wanted.contains($0.domain) && $0.modelEpoch == epoch }.map {
+        // Retain only current view interests, carrying applied versions for the retained domains.
+        let known = domains.values.filter { subscribedDomains.contains($0.domain) && $0.modelEpoch == epoch }.map {
             ["domain": $0.domain, "modelEpoch": $0.modelEpoch, "revision": $0.revision] as [String: Any]
         }
         modelTimeout?.cancel()

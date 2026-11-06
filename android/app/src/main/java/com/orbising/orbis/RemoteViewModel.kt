@@ -302,7 +302,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun refreshDiagnostics(cursor: String? = null) = active()?.refreshDiagnostics(cursor)
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
-    fun refreshHostModel(domains: List<String> = HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
+    fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
+
+    fun setAgentModelInterest(hostId: String?, runtimeId: String, owner: String, domains: List<String>) {
+        if (hostId != null) connectionFor(hostId)?.setAgentModelInterest(runtimeId, owner, domains)
+    }
 
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     suspend fun reconcileModels() = withContext(Dispatchers.Default) {

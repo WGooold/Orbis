@@ -1472,4 +1472,6 @@ Status: proposed
 
 G02 的恢复依据来源确认，而非可选字段是否有值：已确认来源未提供的模型、上下文、权限及原生不支持的队列继续保持 unknown；重播不能补足的事实由其原生更新 / 读取路径取得。首次库存未确认和来源断开后保留兼容恢复；普通模型读取复用已提交事实，后端的原生核对任务继续运行。
 
+G03 的首页完成条件是 identity / execution / interactions；关闭动作另需 capabilities 中准确的 quit 目标。兼容目录沿用该领域，G05 将大选项移为按需范围。普通聊天增加 delivery / model / context / permissions；resources、artifacts、records 及管理领域由实际读取视图持有兴趣。替换订阅使用当前兴趣集合，已释放领域的旧请求、迟到结果和缓存版本不重新建立兴趣；重新打开时复用已应用版本。Host 首页只订阅 identity / backends / catalog / providers。
+
 实现与验证指针：G01 的[出口投影](../../packages/host/src/device-message-projection.ts)、[菜单字段回归](../../packages/host/src/device-message-projection.test.ts)；G02 的[来源确认](../../packages/host/src/agent-state-facts.ts)、[确认 / 恢复回归](../../packages/host/src/agent-state-facts.test.ts)、[Codex 发布](../../packages/host/src/codex-runtime.ts)及[后端回归](../../packages/host/src/codex-runtime.test.ts)。两组的实际加密出口与恢复由 [Host 联动回归](../../packages/host/src/host-service.test.ts)的 `FT-G01/FT-G02` 场景覆盖；[G01 证据](../../.artifacts/field-transport-implementation-20261106/g01-results.json)、[G02 证据](../../.artifacts/field-transport-implementation-20261106/g02-results.json)分别记录实施、自动验证、部署和用户验收状态。

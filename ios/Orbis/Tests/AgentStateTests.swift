@@ -18,7 +18,9 @@ struct AgentStateTests {
                     commands: self.projection?.commands ?? [], interactions: self.projection?.interactions ?? [], queuedMessages: self.projection?.queuedMessages ?? []) else { return false }
                 self.runtime = projected.runtime; self.projection = projected; return true
             }
-            connect(); state.subscribe(runtime: runtime)
+            connect()
+            // Parser / projection fixtures explicitly own all domains they exercise.
+            state.setInterest(runtime: runtime, owner: "parser-fixture", domains: Set(AgentState.domainNames))
         }
         func connect(_ ready: Bool = true, host: String = "host") {
             state.setConnection(HostPairing(hostId: host, hostName: host, hostPub: "pub", pskRoot: "root",
@@ -40,6 +42,29 @@ struct AgentStateTests {
     private func question(_ id: String = "question") -> [String: Any] {
         ["requestId": id, "extensionId": "extension", "kind": "select", "title": "Choose", "expiresAt": 9999999999999,
          "options": [["value": "yes", "label": "Yes"]]]
+    }
+
+    // FT-G03: verify the actual request lifecycle, not just the domain set helper.
+    @Test func viewInterestsShrinkImmediatelyAndOldReadsCannotRestoreThem() {
+        let h = Harness()
+        h.state.setInterest(runtime: h.runtime, owner: "parser-fixture", domains: [])
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        #expect(!AgentState.homeDomains.contains("records"))
+        h.state.setInterest(runtime: h.runtime, owner: "chat", domains: AgentState.chatDomains)
+        let chatRead = h.request
+        #expect(Set(chatRead["domains"] as? [String] ?? []) == AgentState.homeDomains.union(AgentState.chatDomains))
+        h.receive([domain("model", ["provider": "p", "id": "cached"])])
+        h.state.setInterest(runtime: h.runtime, owner: "inspector", domains: ["records"])
+        h.state.setInterest(runtime: h.runtime, owner: "chat", domains: [])
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(["records"]))
+        #expect(!h.state.owns("model", runtimeId: "runtime"))
+        #expect((h.request["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "model" } == false)
+        h.receive([domain("model", ["provider": "p", "id": "stale"], revision: 2)], request: chatRead)
+        #expect(h.runtime.model?.id == "cached")
+        h.state.setInterest(runtime: h.runtime, owner: "inspector", domains: [])
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        h.state.setInterest(runtime: h.runtime, owner: "chat", domains: AgentState.chatDomains)
+        #expect((h.request["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "model" } == true)
     }
 
     @Test func taskInventoryIsProjectedIndependentlyAndUnknownKeepsTheLastTasks() {

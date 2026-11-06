@@ -2,6 +2,13 @@ import Foundation
 import Combine
 import CoreFoundation
 
+/// FT-G03: independent view owners retain and release their own domain interest.
+struct ModelInterests: Equatable {
+    private var values: [String: Set<String>] = [:]
+    mutating func set(_ owner: String, domains: Set<String>) { values[owner] = domains.isEmpty ? nil : domains }
+    var domains: Set<String> { values.values.reduce(into: []) { $0.formUnion($1) } }
+}
+
 struct AgentSnapshot {
     let runtimeId: String
     let sessionId: String
@@ -18,6 +25,9 @@ struct AgentSnapshot {
 final class AgentState: ObservableObject {
     nonisolated static let domainNames = ["identity", "availability", "execution", "delivery", "interactions", "permissions",
         "model", "context", "capabilities", "resources", "providerBinding", "workspaceRef", "artifacts", "records"]
+    // The home Close action still needs the exact quit target from the catalog.
+    nonisolated static let homeDomains: Set<String> = ["identity", "execution", "interactions", "capabilities"]
+    nonisolated static let chatDomains: Set<String> = ["delivery", "model", "context", "permissions"]
     @Published private(set) var snapshots: [String: AgentSnapshot] = [:]
     var send: (([String: Any]) -> Bool)?
     var didProject: ((String, String, [String: HostDomain]) -> Bool)?
@@ -26,19 +36,21 @@ final class AgentState: ObservableObject {
     private var epoch: String?
     private var retiredEpochs: Set<String> = []
     private var reads: [String: Read] = [:]
+    private var interests: [String: ModelInterests] = [:]
     private var timeouts: [String: Task<Void, Never>] = [:]
     private struct Read {
         let id: String
         let runtimeId: String
         let sessionId: String
         let agentKind: String?
+        let domains: Set<String>
     }
 
     func setConnection(_ pairing: HostPairing?, connected: Bool) {
         let key = pairing.map(FileTransfers.pairingKey)
         guard hostKey != key || self.connected != connected else { return }
         timeouts.values.forEach { $0.cancel() }; timeouts = [:]; reads = [:]
-        if key != hostKey { snapshots = [:]; retiredEpochs = [] }
+        if key != hostKey { snapshots = [:]; retiredEpochs = []; interests = [:] }
         for id in snapshots.keys { snapshots[id]?.pending = [] }
         hostKey = key; self.connected = connected; epoch = nil
     }
@@ -58,26 +70,35 @@ final class AgentState: ObservableObject {
         return true
     }
 
+    func setInterest(runtime: RuntimeSummary, owner: String, domains: Set<String>) {
+        var next = interests[runtime.runtimeId] ?? ModelInterests()
+        next.set(owner, domains: domains.intersection(Self.domainNames))
+        guard next != (interests[runtime.runtimeId] ?? ModelInterests()) else { return }
+        interests[runtime.runtimeId] = next
+        subscribe(runtime: runtime)
+    }
+
     func subscribe(runtime: RuntimeSummary, force: Bool = false) {
         guard connected, let session = runtime.sessionId, !session.isEmpty else { return }
+        let wanted = Self.homeDomains.union(interests[runtime.runtimeId]?.domains ?? [])
         // A request without agentKind is already bound by runtime/session. Learning the kind
         // from identity must not replace that live subscription and restart its pending reads.
         if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
-            ($0.agentKind == nil || $0.agentKind == runtime.agentKind) }) { return }
+            ($0.agentKind == nil || $0.agentKind == runtime.agentKind) && $0.domains == wanted }) { return }
         removeRead(runtime.runtimeId)
         var snapshot = snapshots[runtime.runtimeId].flatMap { $0.sessionId == session ? $0 : nil }
             ?? AgentSnapshot(runtimeId: runtime.runtimeId, sessionId: session)
-        snapshot.pending = Set(Self.domainNames); snapshot.error = nil
+        snapshot.pending = wanted; snapshot.error = nil
         snapshots[runtime.runtimeId] = snapshot
         let id = UUID().uuidString
-        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind)
+        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted)
         reads[id] = read
-        let known: [[String: Any]] = force ? [] : snapshot.domains.values.map {
+        let known: [[String: Any]] = force ? [] : snapshot.domains.values.filter { wanted.contains($0.domain) }.map {
             ["domain": $0.domain, "modelEpoch": $0.modelEpoch, "revision": $0.revision]
         }
         var payload: [String: Any] = ["type": "agent.state.request", "protocolVersion": orbisProtocolVersion,
             "requestId": id, "scope": "agent", "runtimeId": runtime.runtimeId, "sessionId": session,
-            "subscribe": true, "domains": Self.domainNames, "known": known]
+            "subscribe": true, "domains": Self.domainNames.filter(wanted.contains), "known": known]
         if let kind = runtime.agentKind { payload["agentKind"] = kind }
         guard send?(payload) == true else { reject(read, L10n.tr("状态读取未发送，请重新连接")); reads[id] = nil; return }
         timeouts[id] = Task { [weak self] in
@@ -88,8 +109,10 @@ final class AgentState: ObservableObject {
         }
     }
 
-    func remove(runtimeId: String) { removeRead(runtimeId); snapshots[runtimeId] = nil }
-    func owns(_ domain: String, runtimeId: String) -> Bool { snapshots[runtimeId]?.domains[domain] != nil }
+    func remove(runtimeId: String) { removeRead(runtimeId); snapshots[runtimeId] = nil; interests[runtimeId] = nil }
+    func owns(_ domain: String, runtimeId: String) -> Bool {
+        snapshots[runtimeId]?.domains[domain] != nil && reads.values.contains { $0.runtimeId == runtimeId && $0.domains.contains(domain) }
+    }
 
     @discardableResult
     func consume(_ message: [String: Any]) -> Bool {
@@ -114,17 +137,17 @@ final class AgentState: ObservableObject {
         for raw in rawDomains {
             guard let data = try? JSONSerialization.data(withJSONObject: raw),
                   let domain = try? JSONDecoder().decode(HostDomain.self, from: data), domain.valid,
-                  domain.modelEpoch == newEpoch, Self.domainNames.contains(domain.domain), incoming[domain.domain] == nil else { reject(read); return true }
+                  domain.modelEpoch == newEpoch, read.domains.contains(domain.domain), incoming[domain.domain] == nil else { reject(read); return true }
             incoming[domain.domain] = domain
         }
         var missing: [String: String] = [:]
         for raw in rawMissing {
-            guard let name = raw["domain"] as? String, Self.domainNames.contains(name), incoming[name] == nil, missing[name] == nil,
+            guard let name = raw["domain"] as? String, read.domains.contains(name), incoming[name] == nil, missing[name] == nil,
                   let reason = raw["reason"] as? String, ["unknown_domain", "no_state"].contains(reason) else { reject(read); return true }
             missing[name] = reason
         }
         let unchanged = message["unchanged"] as? [String] ?? []
-        guard Set(unchanged).count == unchanged.count, unchanged.allSatisfy({ Self.domainNames.contains($0) && incoming[$0] == nil && missing[$0] == nil && snapshot.domains[$0] != nil }) else { reject(read); return true }
+        guard Set(unchanged).count == unchanged.count, unchanged.allSatisfy({ read.domains.contains($0) && incoming[$0] == nil && missing[$0] == nil && snapshot.domains[$0] != nil }) else { reject(read); return true }
         var accepted: [String: HostDomain] = [:]
         for (name, domain) in incoming {
             if let old = snapshot.domains[name], domain.revision < old.revision || domain.revision == old.revision &&
