@@ -6,6 +6,10 @@ import { AgentKindSchema, RuntimeEventSchema, type RuntimeCommand, type RuntimeE
 import { DshRuntime } from "./dsh-runtime.js";
 import { dshEntries, type DshHistory, type DshLog } from "./dsh-history.js";
 import type { DshConnection, JsonObject } from "./dsh-client.js";
+import { AgentConversationState } from "./agent-conversation-state.js";
+import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
+import { AgentToolInventory } from "./agent-tool-inventory.js";
+import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 
 const roots: string[] = [];
 const runtimes: DshRuntime[] = [];
@@ -45,6 +49,34 @@ async function fixture() {
 }
 
 describe("DeepSeek Harness backend", () => {
+  it("syncs the published tool inventory without changing live under the same source version", async () => {
+    // DSH-SYNC-06：ACP 同步也必须使用已发布投影，内部 raw live 不能作为同版本线路状态。
+    const f = await fixture(), registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const inventory = new AgentToolInventory(registry), ingestion = new ToolInventoryIngestion(inventory);
+    const agent = { hostId: "local", agentKind: "dsh" as const, sessionId: "dsh:one" };
+    const scope: StateScope = { kind: "agent", key: agent }, rejected: string[] = [];
+    const accept = (event: RuntimeEvent) => {
+      if (event.type === "session.tools.produced") expect(ingestion.accept("dsh:one", agent, event)).toBe(true);
+      else if (event.type === "session.patch" || event.type === "session.snapshot") {
+        model.accept(scope, event, ready => ready && event.source && event.live?.toolInventory
+          ? ingestion.prepare("dsh:one", agent, event.source, event.live.toolInventory) : undefined,
+        reason => rejected.push(reason));
+      }
+    };
+    f.events.forEach(({ event }) => accept(event));
+    f.runtime.setEventSink((event, runtimeId) => { f.events.push({ event, runtimeId }); accept(event); });
+    try {
+      await f.command({ type: "session.sync", sessionId: "dsh:one", syncId: "initial", range: "preview" }, "initial");
+      f.client.onNotification?.("session/update", { sessionId: "one", update: { sessionUpdate: "tool_call", toolCallId: "live-call", title: "read", rawInput: {} } });
+      await vi.waitFor(() => expect(inventory.reference(agent)?.totalCount).toBe(1));
+      await f.command({ type: "session.sync", sessionId: "dsh:one", syncId: "with-tools", range: "preview" });
+      expect(rejected).toEqual([]);
+      expect(f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "with-tools")?.event).toMatchObject({
+        live: { tools: [], toolInventory: { totalCount: 1 } },
+      });
+    } finally { inventory.dispose(); }
+  });
+
   it("replays an explicitly unsupported activity and the ACP adapter's empty owned queue", async () => {
     const { runtime, events } = await fixture();
     runtime.announce();

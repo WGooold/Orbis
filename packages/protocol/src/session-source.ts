@@ -77,7 +77,7 @@ export class RecoverableSessionSource {
   #turn: SessionLiveTurn | null = null;
   #depth = 0;
   #dirty = false;
-  /** 最近一次真正发布出去的状态；`snapshot()` 在变化未发出时原样返回它（见 snapshot 注释）。 */
+  /** 最近一次真正发布出去的状态；`published()` 返回这一版用于同步响应。 */
   #published: { seq: number; ready: boolean; complete: boolean; head: string | null; live: SessionLiveState } | undefined;
   #committed: RemoteSessionEntry[] = [];
   #boundaryParentId: string | null = null;
@@ -437,7 +437,9 @@ export class RecoverableSessionSource {
    */
   snapshot(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     if (this.#messages.size > (this.#toolInventory ? 4352 : 256) || this.#tools.size > (this.#toolInventory ? 4096 : 256)) throw new Error("session_live_inventory_too_large");
-    return this.#currentSnapshot();
+    // Internal live reads must not publish a fixed inventory against an uncommitted seq.
+    // Keep the current summaries inline; only the publication path creates inventory pages.
+    return this.#currentSnapshot(this.#seq, false);
   }
 
   /**
@@ -452,7 +454,7 @@ export class RecoverableSessionSource {
    */
   published(): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     if (this.#published !== undefined && this.#published.seq === this.#seq) return this.#publishedSnapshot(this.#published);
-    return this.snapshot();
+    return this.#currentSnapshot();
   }
 
   replayToolInventory(): void {
@@ -463,26 +465,27 @@ export class RecoverableSessionSource {
     this.#orders.delete(`message:${id}`);
     for (let index = 1; index < item.message.content.length; index++) this.#orders.delete(`message:${id}:part:${index}`);
   }
-  #currentSnapshot(sequence = this.#seq): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
+  #currentSnapshot(sequence = this.#seq, publishInventory = true): { version: SessionSourceEpoch; checkpoint: SessionCheckpoint; live: SessionLiveState } {
     const complete = this.#ready && this.#complete;
     const version = { epoch: this.#epoch, seq: sequence, ready: this.#ready };
-    const toolInventory = this.#toolInventory?.prepare(this.#runtimeId(), version,
-      [...this.#tools.values()].flatMap(tool => tool.summary ? [tool.summary] : []));
+    const useInventory = publishInventory && this.#toolInventory !== undefined;
+    const toolInventory = useInventory ? this.#toolInventory?.prepare(this.#runtimeId(), version,
+      [...this.#tools.values()].flatMap(tool => tool.summary ? [tool.summary] : [])) : undefined;
     const messages = [...this.#messages.values()].flatMap(item => {
-      if (!this.#toolInventory) return [item];
+      if (!useInventory) return [item];
       if (item.message.role === "tool") return [];
       if (!item.message.content.some(part => part.type === "tool_call")) return item.message.content.length ? [item] : [];
       return item.message.content.flatMap((part, index) => part.type === "tool_call" ? [] : [{ ...item,
         order: this.#liveOrder(index === 0 ? `message:${item.message.messageId}` : `message:${item.message.messageId}:part:${index}`),
         message: { ...item.message, messageId: index === 0 ? item.message.messageId : `${item.message.messageId}:part:${index}`, content: [part] } }]);
     });
-    if (messages.length > 256) throw new Error("session_live_message_inventory_too_large");
+    if (messages.length > (!publishInventory && this.#toolInventory ? 4352 : 256)) throw new Error("session_live_message_inventory_too_large");
     return {
       version,
       checkpoint: { checkpointId: `${this.#epoch}:${sequence}`, head: { leafId: this.#ready ? this.#head : null },
         headCompleteness: this.#ready ? "complete" : "unknown", inventoryComplete: complete },
       live: { complete, turn: structuredClone(this.#turn), messages: structuredClone(messages),
-        tools: this.#toolInventory ? [] : structuredClone([...this.#tools.values()]),
+        tools: useInventory ? [] : structuredClone([...this.#tools.values()]),
         ...(toolInventory === undefined ? {} : { toolInventory }) },
     };
   }

@@ -188,7 +188,7 @@ export class ClaudeSessionHistory {
     const entries = this.#projected();
     return this.#preparer.select({
       entries, sessionId: this.#sessionId, leafId: entries.at(-1)?.entryId ?? null,
-      request, source: this.source.snapshot(),
+      request, source: this.source.published(),
     });
   }
 

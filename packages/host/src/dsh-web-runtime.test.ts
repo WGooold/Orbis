@@ -10,6 +10,8 @@ import { DshWebRuntime } from "./dsh-web-runtime.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { ToolContentStore } from "@orbis/runtime-bridge";
+import { AgentToolInventory } from "./agent-tool-inventory.js";
+import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 
 const roots: string[] = [];
 const runtimes: DshWebRuntime[] = [];
@@ -18,7 +20,7 @@ function deferred<T>() {
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
-function discoveryFixture(decoder?: ConstructorParameters<typeof DshWebRuntime>[1]) {
+function discoveryFixture(decoder?: ConstructorParameters<typeof DshWebRuntime>[1], options?: ConstructorParameters<typeof DshWebRuntime>[2]) {
   let items: Record<string, unknown>[] = [];
   const subscriptions: { method: string; args: Record<string, unknown>; frame: (value: unknown) => void; fail?: ((error: Error) => void) | undefined; closed: boolean }[] = [];
   const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => {
@@ -37,7 +39,7 @@ function discoveryFixture(decoder?: ConstructorParameters<typeof DshWebRuntime>[
     },
     respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
   };
-  const runtime = new DshWebRuntime(client, decoder); runtimes.push(runtime);
+  const runtime = new DshWebRuntime(client, decoder, options); runtimes.push(runtime);
   const events: { event: RuntimeEvent; runtimeId: string }[] = [];
   runtime.setEventSink((event, runtimeId) => { RuntimeEventSchema.parse(event); events.push({ event: structuredClone(event), runtimeId }); });
   const offline = vi.fn(); runtime.onOffline = offline;
@@ -84,6 +86,70 @@ describe("DeepSeek Web runtime adapter", () => {
       expect(next.fromOffset).toBe(page.throughOffset); expect(native).toHaveBeenCalledTimes(1); expect(f.events).toHaveLength(count);
     } finally { await f.runtime.stop(); await store.dispose(); }
   });
+  it("keeps conversation updates and catchup valid when transient tools return to the committed inventory", async () => {
+    // DSH-SYNC-01：两个工具批次在合并窗口内从空清单到非空再回空；读 live 会发布中间引用，
+    // Host 必须接受内容相同但版本前进的最终清单，否则后续 patch 与 catchup 一起断链。
+    const f = discoveryFixture(undefined, { coalesceMs: 20 });
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const inventory = new AgentToolInventory(registry), ingestion = new ToolInventoryIngestion(inventory);
+    const agent = { hostId: "local", agentKind: "dsh" as const, sessionId: "dsh:inventory" };
+    const scope: StateScope = { kind: "agent", key: agent };
+    const rejected: string[] = [];
+    f.runtime.setEventSink((event, runtimeId) => {
+      RuntimeEventSchema.parse(event);
+      f.events.push({ event: structuredClone(event), runtimeId });
+      if (event.type === "session.tools.produced") {
+        expect(ingestion.accept(runtimeId, agent, event)).toBe(true);
+      } else if (event.type === "session.patch" || event.type === "session.snapshot") {
+        try {
+          model.accept(scope, event, ready => ready && event.source && event.live?.toolInventory
+            ? ingestion.prepare(runtimeId, agent, event.source, event.live.toolInventory) : undefined,
+          reason => rejected.push(reason));
+        } catch (error) { rejected.push(error instanceof Error ? error.message : String(error)); }
+      }
+    });
+    try {
+      f.list([f.live("inventory", true)]); await f.runtime.start();
+      const follow = f.follows()[0]!;
+      const records: unknown[] = [];
+      const native = (type: string, data: unknown) => {
+        const event = { seq: records.length, time: 1000 + records.length, type, data };
+        records.push({ event }); follow.frame({ type: "event", event });
+      };
+      follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [] });
+      f.request.mockImplementation(async method => method === "session/page" ? { records } : {});
+      native("turn/start", { turn: 1 });
+      const sync = async (syncId: string, range: "preview" | "catchup") => {
+        f.runtime.dispatchCommand(agent.sessionId, syncId, { type: "session.sync", sessionId: agent.sessionId, syncId, range });
+        await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === syncId)).toBe(true));
+      };
+      await sync("initial", "preview");
+      expect(model.hasBaseline(scope)).toBe(true);
+      for (let batch = 0; batch < 2; batch++) {
+        const attemptId = `attempt-${batch}`, callId = `call-${batch}`;
+        follow.frame({ type: "assistant-stream", frame: { type: "start", attemptId, time: 1100 + batch } });
+        follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId, index: 0,
+          chunk: { type: "tool-call-delta", id: callId, name: "read", argumentsDelta: "{}" } } });
+        native("tool/call", { turn: 1, step: batch + 1, callId, name: "read", arguments: "{}" });
+        follow.frame({ type: "assistant-stream", frame: { type: "start", attemptId: `during-${batch}`, time: 1150 + batch } });
+        follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: `during-${batch}`, index: 0,
+          chunk: { type: "text-delta", text: "working" } } });
+        native("tool/result", { turn: 1, step: batch + 1, message: { id: `result-${batch}`, role: "tool",
+          source: { kind: "tool", callId }, toolCallId: callId, content: [{ type: "text", text: "ok" }] } });
+        // A subsequent text chunk reads current live before the coalesced conversation is published.
+        follow.frame({ type: "assistant-stream", frame: { type: "start", attemptId: `text-${batch}`, time: 1200 + batch } });
+        follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: `text-${batch}`, index: 0,
+          chunk: { type: "text-delta", text: "continued" } } });
+        await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.patch" &&
+          event.head.leafId === `${agent.sessionId}:web:${records.length - 1}`)).toBe(true));
+        await sync(`catchup-${batch}`, "catchup");
+      }
+      expect(rejected).toEqual([]);
+      expect(model.hasBaseline(scope)).toBe(true);
+      expect(registry.read(scope, "history")?.value).toMatchObject({ head: { leafId: `${agent.sessionId}:web:4` } });
+    } finally { inventory.dispose(); }
+  });
+
   it("accepts preview and paged history through the Host conversation model", async () => {
     const f = discoveryFixture();
     const model = new AgentConversationState(new AgentStateRegistry());

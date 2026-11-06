@@ -31,6 +31,8 @@ type Task = {
   acknowledged: boolean;
   /** ACKs for a prior delivery remain valid while an unacknowledged retry is preparing. */
   responseStarted: boolean;
+  /** Rebuild Host state before serving a device's history/catchup range. */
+  baseline: boolean;
 };
 type Options = {
   link: (deviceId: string) => (Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> &
@@ -38,6 +40,7 @@ type Options = {
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
   encodeEvent: (runtimeId: string, event: RuntimeEvent) => Buffer;
   acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean;
+  needsBaseline?: (runtimeId: string, command: SessionSyncRequest) => boolean;
   sendEvent: (deviceId: string, runtimeId: string, event: RuntimeEvent) => void;
   error: (deviceId: string, commandId: string, code: string, message?: string) => void;
   log?: (line: string) => void;
@@ -125,7 +128,7 @@ export class SessionSyncTasks {
     const createdAt = this.#now();
     this.#tasks.set(key, { deviceId, runtimeId, commandId, command: { ...command }, fingerprint,
       createdAt, lastDispatch: 0, lastProgressAt: createdAt, attempts: 0, stage: "queued", backendId: "", reserved: 0,
-      acknowledged: false, responseStarted: false });
+      acknowledged: false, responseStarted: false, baseline: false });
     this.#schedule();
   }
 
@@ -139,8 +142,34 @@ export class SessionSyncTasks {
     }
     if (event.type === "session.snapshot") {
       if (task.stage !== "processing") return true;
+      if (task.baseline && event.range !== "preview") {
+        this.#fail(task, "session_sync_model_rejected");
+        return true;
+      }
       if (this.#options.acceptSnapshot?.(runtimeId, event) === false) {
         this.#fail(task, "session_sync_model_rejected");
+        return true;
+      }
+      if (!this.#current(task) || task.stage !== "processing" || task.backendId !== id) return true;
+      if (task.baseline) {
+        // The private preview rebuilds Host state only; keep the device's range and sync id.
+        if (this.#options.needsBaseline?.(runtimeId, task.command)) {
+          this.#fail(task, "session_sync_model_rejected");
+          return true;
+        }
+        this.#backend.delete(task.backendId);
+        task.backendId = BACKEND_PREFIX + randomUUID();
+        task.baseline = false;
+        task.lastProgressAt = this.#now();
+        this.#backend.set(task.backendId, task);
+        this.#log(task, "baseline", "accepted");
+        this.#notifyPending(task);
+        const backendId = task.backendId;
+        queueMicrotask(() => {
+          if (!this.#current(task) || task.stage !== "processing" || task.backendId !== backendId || this.#backend.get(backendId) !== task) return;
+          if (this.#options.needsBaseline?.(runtimeId, task.command)) this.#fail(task, "session_sync_model_rejected");
+          else this.#dispatch(task, { ...task.command, syncId: backendId });
+        });
         return true;
       }
       const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId });
@@ -175,7 +204,7 @@ export class SessionSyncTasks {
       // A success ACK is independent of snapshot delivery. It does not release the reservation.
       if (event.ok || event.status === "pending") {
         task.lastProgressAt = this.#now();
-        this.#options.sendEvent(task.deviceId, runtimeId, { ...event, commandId: task.commandId });
+        if (!task.baseline) this.#options.sendEvent(task.deviceId, runtimeId, { ...event, commandId: task.commandId });
       } else if (task.stage === "processing") this.#fail(task, "session_sync_backend_failed", event.error);
     } else if (event.type === "runtime.error" && task.stage === "processing") {
       this.#fail(task, "session_sync_backend_failed", event.message);
@@ -206,6 +235,7 @@ export class SessionSyncTasks {
       this.#fail(task, "session_sync_device_rejected");
       return;
     }
+    this.#backend.delete(task.backendId);
     task.acknowledged = true;
     task.stage = "delivered";
     task.reserved = 0;
@@ -213,6 +243,8 @@ export class SessionSyncTasks {
     this.#schedule();
   }
   #fail(task: Task, code: string, message?: string): void {
+    if (!this.#current(task) || task.stage === "failed" || task.acknowledged) return;
+    this.#backend.delete(task.backendId);
     task.stage = "failed";
     task.reserved = 0;
     this.#options.error(task.deviceId, task.commandId, code, message);
@@ -278,12 +310,23 @@ export class SessionSyncTasks {
       task.attempts += 1;
       this.#backend.set(task.backendId, task);
       this.#log(task, "dispatch", `reservedBytes=${active.reduce((sum, other) => sum + other.reserved, 0) + RESERVED_BYTES}`);
-      try {
-        const result = this.#options.dispatch(task.runtimeId, task.backendId, { ...task.command, syncId: task.backendId });
-        if (result !== "handled") this.#fail(task, result === "offline" ? "runtime_offline" : "unsupported_command");
-      } catch {
-        this.#fail(task, "session_sync_backend_failed");
-      }
+      task.baseline = (task.command.range === "history" || task.command.range === "catchup") &&
+        this.#options.needsBaseline?.(task.runtimeId, task.command) === true;
+      const command: SessionSyncRequest = task.baseline
+        ? { type: "session.sync", sessionId: task.command.sessionId, syncId: task.backendId, range: "preview" }
+        : { ...task.command, syncId: task.backendId };
+      this.#dispatch(task, command);
+    }
+  }
+
+  #dispatch(task: Task, command: SessionSyncRequest): void {
+    const backendId = task.backendId;
+    const pending = (): boolean => this.#current(task) && task.stage === "processing" && task.backendId === backendId;
+    try {
+      const result = this.#options.dispatch(task.runtimeId, backendId, command);
+      if (result !== "handled" && pending()) this.#fail(task, result === "offline" ? "runtime_offline" : "unsupported_command");
+    } catch {
+      if (pending()) this.#fail(task, "session_sync_backend_failed");
     }
   }
 
@@ -295,6 +338,13 @@ export class SessionSyncTasks {
     const link = this.#options.link(deviceId);
     this.#options.log?.(`[session.sync] stage=rejected device=${deviceId} runtime=${runtimeId} command=${commandId} sync=${command.syncId} range=${command.range} code=${code} reason=${reason} path=${link?.active ?? "none"} records=${stats.records} pending=${stats.pending} active=${stats.active} reservedBytes=${stats.reservedBytes} syncQueueBytes=${link?.sessionSyncQueuedBytes ?? 0}`);
     this.#options.error(deviceId, commandId, code);
+  }
+  runtimeOffline(runtimeId: string): void {
+    for (const task of this.#tasks.values()) {
+      if (task.runtimeId !== runtimeId) continue;
+      this.#backend.delete(task.backendId);
+      if (this.#pending(task)) this.#fail(task, "runtime_offline");
+    }
   }
   clearDevice(deviceId: string): void {
     for (const task of this.#tasks.values()) if (task.deviceId === deviceId) this.#remove(task);

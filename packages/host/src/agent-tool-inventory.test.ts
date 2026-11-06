@@ -70,6 +70,62 @@ describe("bounded Host tool inventory (ADR-0045)", () => {
     expect(inventory.commit(remove).ok).toBe(true); expect(inventory.reference(agent)?.totalCount).toBe(0);
   });
 
+  it("accepts a newer fixed reference with unchanged contents and notifies receivers", () => {
+    // DSH-SYNC-02：合并窗口可省略 A→B→A 的 B；固定版本前进仍需通知设备，不能发空 patch。
+    const { inventory } = setup(), first = baseline(inventory, [tool(0)]);
+    const receiver = new ToolInventoryReceiver(agent, "runtime");
+    receiver.begin(inventory.openSnapshot("device", agent, "runtime"));
+    expect(receiver.acceptPage(inventory.read("device", receiver.nextRequest("first")!))).toBe("applied");
+    const reference = { ...first.reference, source: source(2), version: { ...first.reference.version, revision: first.reference.version.revision + 2 } };
+    const plan = inventory.prepare({ agent, runtimeId: "runtime", source: source(3), reference, update: { kind: "baseline", tools: [tool(0)] } });
+    expect(plan.publication).toEqual({ type: "session.tools.changed", runtimeId: "runtime", agent, source: source(2), version: reference.version });
+    expect(inventory.commit(plan).ok).toBe(true);
+    expect(inventory.reference(agent)).toEqual(reference);
+    if (plan.publication?.type !== "session.tools.changed") throw new Error("expected inventory notice");
+    expect(receiver.acceptChanged(plan.publication)).toBe("recovery_required");
+    receiver.begin(inventory.openSnapshot("device", agent, "runtime"));
+    expect(receiver.acceptPage(inventory.read("device", receiver.nextRequest("updated")!))).toBe("applied");
+    expect(receiver.covers(reference)).toBe(true);
+    const replay = inventory.prepare({ agent, runtimeId: "runtime", source: source(4), reference, update: { kind: "baseline", tools: [tool(0)] } });
+    expect(replay.publication).toBeNull(); expect(inventory.commit(replay).ok).toBe(true);
+  });
+
+  it("publishes the fixed inventory source even when conversation heartbeats have advanced", () => {
+    // DSH-SYNC-03：工具引用版本依赖自己的 source；聊天 seq 已更大也不能改写该固定依赖。
+    const { inventory } = setup(), first = baseline(inventory, [tool(0)]);
+    const receiver = new ToolInventoryReceiver(agent, "runtime");
+    receiver.begin(inventory.openSnapshot("device", agent, "runtime"));
+    expect(receiver.acceptPage(inventory.read("device", receiver.nextRequest("first")!))).toBe("applied");
+    const heartbeat = inventory.prepare({ agent, runtimeId: "runtime", source: source(5), update: { kind: "baseline", tools: [tool(0)] } });
+    expect(inventory.commit(heartbeat).ok).toBe(true);
+    const reference = { ...first.reference, source: source(4), version: { ...first.reference.version, revision: first.reference.version.revision + 1 },
+      totalCount: 0, summaryBytes: 0 };
+    const plan = inventory.prepare({ agent, runtimeId: "runtime", source: source(6), reference, update: { kind: "baseline", tools: [] } });
+    expect(inventory.commit(plan).ok).toBe(true);
+    if (plan.publication?.type !== "session.tools.patch") throw new Error("expected inventory patch");
+    expect(plan.publication.source).toEqual(reference.source);
+    expect(receiver.acceptPatch(plan.publication)).toBe("applied");
+    expect(receiver.covers(reference)).toBe(true);
+  });
+
+  it("rejects fixed reference regressions, conflicting identities and unadvanced dependencies", () => {
+    // DSH-SYNC-04：放行同内容新版本仍须保留版本、epoch、source 与内容的严格一致性。
+    const { inventory } = setup(), first = baseline(inventory, [tool(0)]);
+    const newer = { ...first.reference, source: source(2), version: { ...first.reference.version, revision: first.reference.version.revision + 1 } };
+    const prepare = (reference: typeof first.reference, tools = [tool(0)]) => inventory.prepare({ agent, runtimeId: "runtime", source: source(3), reference,
+      update: { kind: "baseline", tools } });
+    expect(() => prepare({ ...newer, version: { ...newer.version, revision: 0 } })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, version: first.reference.version })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, version: { ...newer.version, epoch: "other" } })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, source: source(1) })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, source: source(4) })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, source: source(2, "other") })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, totalCount: 2 })).toThrow("invalid_inventory");
+    expect(() => prepare({ ...newer, summaryBytes: 0 })).toThrow("invalid_inventory");
+    expect(() => prepare(first.reference, [tool(0, { phase: "finished" })])).toThrow("invalid_inventory");
+    expect(inventory.reference(agent)).toEqual(first.reference);
+  });
+
   it("emits a baseline notice for an atomic mutation exceeding delta item limits", () => {
     const { inventory } = setup(); baseline(inventory, []);
     const plan = inventory.prepare({ agent, runtimeId: "runtime", source: source(2), update: { kind: "patch", upserts: Array.from({ length: 200 }, (_, i) => tool(i)), removes: [] } });

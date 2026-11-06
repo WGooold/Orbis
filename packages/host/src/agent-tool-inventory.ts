@@ -126,18 +126,24 @@ export class AgentToolInventory {
       version: { epoch: !previous || replaced ? randomUUID() : previous.reference.version.epoch,
         revision: !previous || replaced ? 1 : previous.reference.version.revision + 1 },
     })) : previous!.reference;
+    let referenceChanged = changed;
     if (input.reference) {
       const supplied = ToolInventoryReferenceSchema.parse(input.reference);
+      const sameReference = previous !== undefined && JSON.stringify(supplied) === JSON.stringify(previous.reference);
       if (agentKeyId(supplied.agent) !== key || supplied.source.epoch !== source.epoch || supplied.source.seq > source.seq ||
         supplied.totalCount !== records.size || supplied.summaryBytes !== summaryBytes ||
-        !changed && JSON.stringify(supplied) !== JSON.stringify(previous!.reference) ||
-        changed && previous && !replaced && (supplied.version.epoch !== previous.reference.version.epoch || supplied.version.revision <= previous.reference.version.revision)) return fail("invalid_inventory");
+        previous && !replaced && (supplied.version.epoch !== previous.reference.version.epoch ||
+          (!sameReference && (supplied.version.revision <= previous.reference.version.revision ||
+            supplied.source.seq <= previous.reference.source.seq)) || changed && sameReference)) return fail("invalid_inventory");
+      // A coalesced conversation can skip an intermediate inventory and return to the same
+      // contents. Its producer-owned fixed version still advances and must reach receivers.
+      referenceChanged = !sameReference;
       reference = freeze(supplied);
     }
     let publication: ToolInventoryPatch | ToolInventoryChanged | null = null;
-    if (changed) {
-      const metadata = { runtimeId: input.runtimeId, agent, source, version: reference.version };
-      const delta = previous && !replaced ? ToolInventoryPatchSchema.safeParse({
+    if (referenceChanged) {
+      const metadata = { runtimeId: input.runtimeId, agent, source: reference.source, version: reference.version };
+      const delta = changed && previous && !replaced ? ToolInventoryPatchSchema.safeParse({
         type: "session.tools.patch", ...metadata, baseRevision: previous.reference.version.revision,
         upserts: [...records].filter(([id, summary]) => JSON.stringify(summary) !== JSON.stringify(previous.records.get(id))).map(([, summary]) => summary),
         removes: [...previous.records.keys()].filter(id => !records.has(id)),

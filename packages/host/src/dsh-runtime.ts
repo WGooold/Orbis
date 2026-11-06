@@ -280,7 +280,7 @@ export class DshAcpRuntime implements AgentBackend {
         session.source.replayToolInventory();
         this.#emit(session, session.preparer.select({
           entries: session.entries, sessionId: publicId(session.id),
-          leafId: session.entries.at(-1)?.entryId ?? null, request: command, source: session.source.snapshot(),
+          leafId: session.entries.at(-1)?.entryId ?? null, request: command, source: session.source.published(),
         }));
         this.#emit(session, { type: "runtime.capabilities", capabilities: this.#capabilities(session) });
         this.#emit(session, { type: "interaction.snapshot", requests: [...this.#approvals.values()].filter(item => item.session === session).map(item => item.interaction) });

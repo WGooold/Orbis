@@ -7,9 +7,9 @@ const managers: SessionSyncTasks[] = [];
 afterEach(() => { for (const manager of managers.splice(0)) manager.close(); });
 const request = (syncId = "sync", range: SessionSyncRequest["range"] = "preview"): SessionSyncRequest =>
   ({ type: "session.sync", sessionId: "session", syncId, range, targetLeafId: "leaf", maxEntries: 100 });
-const snapshot = (syncId: string): RuntimeEvent => ({ type: "session.snapshot", sessionId: "session", syncId,
+const snapshot = (syncId: string): Extract<RuntimeEvent, { type: "session.snapshot" }> => ({ type: "session.snapshot", sessionId: "session", syncId,
   mode: "replace", range: "preview", cursor: { leafId: "leaf" }, targetLeafId: "leaf", entries: [], complete: true });
-function harness(synchronous = false) {
+function harness(synchronous = false, options: Partial<ConstructorParameters<typeof SessionSyncTasks>[0]> = {}) {
   let now = 0;
   let available = true;
   let accept = true;
@@ -28,10 +28,10 @@ function harness(synchronous = false) {
       } }),
     dispatch: (runtimeId, id, command) => {
       dispatches.push({ runtimeId, id, command });
-      if (synchronous) manager.handleEvent(runtimeId, snapshot(command.syncId));
+      if (synchronous) manager.handleEvent(runtimeId, { ...snapshot(command.syncId), range: command.range } as RuntimeEvent);
       return "handled";
     },
-    encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify({ runtimeId, event })), error, sendEvent, log,
+    encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify({ runtimeId, event })), error, sendEvent, log, ...options,
   });
   managers.push(manager);
   return { manager, sends, dispatches, error, sendEvent, log,
@@ -39,6 +39,107 @@ function harness(synchronous = false) {
 }
 
 describe("SessionSyncTasks", () => {
+  it.each(["history", "catchup"] as const)("rebuilds Host state privately before %s without changing the device request", async range => {
+    // DSH-SYNC-09：Host重启后先取完整preview；只把原range交给原设备，迟到的内部回应不再生效。
+    let needsBaseline = true;
+    const acceptSnapshot = vi.fn((_runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => {
+      if (event.range === "preview") needsBaseline = false;
+      return true;
+    });
+    const h = harness(false, { needsBaseline: () => needsBaseline, acceptSnapshot });
+    const command = { ...request("original", range), knownLeafId: "known", beforeEntryId: "before" };
+    h.manager.request("a", "runtime", "cmd", command); h.manager.tick();
+    const first = h.dispatches[0]!;
+    expect(first.command).toEqual({ type: "session.sync", sessionId: "session", syncId: first.id, range: "preview" });
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: first.id, ok: true });
+    expect(h.sendEvent).not.toHaveBeenCalled();
+    const reserved = h.manager.stats("a").reservedBytes;
+    h.manager.handleEvent("runtime", snapshot(first.id));
+    expect(h.sends).toHaveLength(0);
+    expect(h.manager.stats("a")).toMatchObject({ active: 1, reservedBytes: reserved });
+    await Promise.resolve();
+    const second = h.dispatches[1]!;
+    expect(second.id).not.toBe(first.id);
+    expect(second.command).toEqual({ ...command, syncId: second.id });
+    h.manager.handleEvent("runtime", snapshot(first.id));
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: first.id, ok: false });
+    expect(acceptSnapshot).toHaveBeenCalledTimes(1);
+    h.manager.handleEvent("runtime", { ...snapshot(second.id), range } as RuntimeEvent);
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.range).toBe(range);
+    expect(JSON.parse(h.sends[0]!.payload.toString())).toMatchObject({ event: { syncId: "original", range } });
+    expect(h.error).not.toHaveBeenCalled();
+  });
+
+  it("forwards the original range success after its snapshot while keeping private preview success internal", async () => {
+    // DSH-SYNC-13：后端通常先发快照再发成功回执；保留原请求回执与内部preview的隔离。
+    let needsBaseline = true;
+    const h = harness(false, { needsBaseline: () => needsBaseline, acceptSnapshot: () => { needsBaseline = false; return true; } });
+    h.manager.request("a", "runtime", "cmd", request("sync", "catchup")); h.manager.tick();
+    const first = h.dispatches[0]!;
+    h.manager.handleEvent("runtime", snapshot(first.id));
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: first.id, ok: true });
+    expect(h.sendEvent.mock.calls.filter(([, , event]) => event.type === "command.result")).toHaveLength(0);
+    await Promise.resolve();
+    const second = h.dispatches[1]!;
+    h.manager.handleEvent("runtime", { ...snapshot(second.id), range: "catchup" });
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: second.id, ok: true });
+    expect(h.sendEvent).toHaveBeenLastCalledWith("a", "runtime", { type: "command.result", commandId: "cmd", ok: true });
+    expect(h.sends).toHaveLength(1);
+    h.sends[0]!.done(true);
+    h.manager.acknowledge("a", "sync", "applied");
+    const accepted = h.sendEvent.mock.calls.length;
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: second.id, ok: true });
+    expect(h.sendEvent).toHaveBeenCalledTimes(accepted);
+    expect(h.error).not.toHaveBeenCalled();
+  });
+
+  it("registers both recovery stages before synchronous responses", async () => {
+    // DSH-SYNC-10：内存后端可在dispatch返回前同时完成preview与range。
+    let needsBaseline = true;
+    const h = harness(true, { needsBaseline: () => needsBaseline, acceptSnapshot: () => { needsBaseline = false; return true; } });
+    h.manager.request("a", "runtime", "cmd", request("sync", "catchup")); h.manager.tick();
+    await Promise.resolve();
+    expect(h.dispatches.map(item => item.command.range)).toEqual(["preview", "catchup"]);
+    expect(h.sends).toHaveLength(1);
+    expect(h.error).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "not-ready", "offline", "expired"] as const)("releases recovery resources when the baseline is %s", failure => {
+    // DSH-SYNC-11：未建好基线、断线和租约过期均有界终止；迟到preview不能复活模型。
+    const acceptSnapshot = vi.fn(() => failure !== "rejected");
+    const h = harness(false, { needsBaseline: () => true, acceptSnapshot });
+    h.manager.request("a", "runtime", "cmd", request("sync", "catchup")); h.manager.tick();
+    const first = h.dispatches[0]!;
+    if (failure === "offline") h.manager.runtimeOffline("runtime");
+    else if (failure === "expired") { h.time(120_000); h.manager.tick(); }
+    else h.manager.handleEvent("runtime", snapshot(first.id));
+    expect(h.error).toHaveBeenCalledTimes(1);
+    expect(h.error).toHaveBeenCalledWith("a", "cmd", failure === "offline" ? "runtime_offline" :
+      failure === "expired" ? "session_sync_lease_expired" : "session_sync_model_rejected", undefined);
+    const accepted = acceptSnapshot.mock.calls.length;
+    h.manager.handleEvent("runtime", snapshot(first.id));
+    expect(acceptSnapshot).toHaveBeenCalledTimes(accepted);
+    expect(h.dispatches).toHaveLength(1);
+    expect(h.sends).toHaveLength(0);
+    expect(h.manager.stats("a")).toMatchObject({ active: 0, pending: 0, reservedBytes: 0 });
+  });
+
+  it.each(["offline", "clear", "close"] as const)("cancels the continuation between recovery stages on %s", async cancellation => {
+    // DSH-SYNC-12：内部preview完成后的调度间隙也遵守会话生命周期。
+    let needsBaseline = true;
+    const h = harness(false, { needsBaseline: () => needsBaseline, acceptSnapshot: () => { needsBaseline = false; return true; } });
+    h.manager.request("a", "runtime", "cmd", request("sync", "catchup")); h.manager.tick();
+    h.manager.handleEvent("runtime", snapshot(h.dispatches[0]!.id));
+    if (cancellation === "offline") h.manager.runtimeOffline("runtime");
+    else if (cancellation === "clear") h.manager.clearDevice("a");
+    else h.manager.close();
+    await Promise.resolve();
+    expect(h.dispatches).toHaveLength(1);
+    expect(h.sends).toHaveLength(0);
+    expect(h.manager.stats("a").reservedBytes).toBe(0);
+  });
+
   it.each(["preview", "history", "catchup"] as const)("passes the registered %s range to delivery without trusting response routing", (range) => {
     const h = harness();
     h.manager.request("a", "runtime", "cmd", request("sync", range));

@@ -1030,6 +1030,42 @@ describe("host end-to-end over relay", () => {
     expect(status).toMatchObject({ type: "runtime.event", event: { type: "runtime.status", status: "running" } });
   });
 
+  it("privately rebuilds a lost Host baseline before returning the requested catchup", async () => {
+    // DSH-SYNC-09：模擬Host已快取手機會話、但目前Host没有conversation baseline的重启恢复路径。
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-baseline-recovery-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await device.receiveMessage(); await device.receiveMessage();
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-baseline-recovery", name: "recovery", cwd: "/work", status: "idle", sessionId: "session" } });
+    await runtime.next(); await device.receiveMessage();
+    device.sendCommand("pi-baseline-recovery", "catchup-original", { type: "session.sync", sessionId: "session", syncId: "catchup-original",
+      range: "catchup", knownLeafId: "phone-leaf", targetLeafId: "target-leaf", beforeEntryId: "before-entry", maxEntries: 17 });
+    const baseline = await runtime.next().catch(error => { throw new Error("private Host baseline preview", { cause: error }); });
+    expect(baseline.command).toMatchObject({ type: "session.sync", sessionId: "session", range: "preview" });
+    expect(baseline.command).not.toHaveProperty("knownState");
+    expect(baseline.command).not.toHaveProperty("beforeEntryId");
+    runtime.publish(2, { type: "session.snapshot", sessionId: "session", syncId: (baseline.command as { syncId: string }).syncId,
+      range: "preview", mode: "replace", cursor: { leafId: "target-leaf" }, entries: [], complete: true,
+      source: { epoch: "new-host-source", seq: 0, ready: true },
+      checkpoint: { checkpointId: "new-host-source:0", head: { leafId: "target-leaf" }, headCompleteness: "complete", inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+    const recovered = await runtime.next();
+    const command = recovered.command as Record<string, unknown>;
+    expect(command).toMatchObject({ type: "session.sync", sessionId: "session", range: "catchup", syncId: expect.any(String),
+      knownLeafId: "phone-leaf", targetLeafId: "target-leaf", beforeEntryId: "before-entry", maxEntries: 17 });
+    expect(command.syncId).not.toBe("catchup-original");
+    runtime.publish(3, { type: "session.snapshot", sessionId: "session", syncId: command.syncId as string, range: "catchup",
+      mode: "prepend", cursor: { leafId: "target-leaf" }, entries: [], complete: true,
+      source: { epoch: "new-host-source", seq: 0, ready: true } });
+    let delivered: Record<string, unknown>;
+    do { delivered = await device.receiveMessage(); } while ((delivered.event as { type?: string } | undefined)?.type === "session.sync.pending");
+    expect(delivered).toMatchObject({ event: { type: "session.snapshot", syncId: "catchup-original", range: "catchup" } });
+  });
+
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);

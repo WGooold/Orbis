@@ -395,6 +395,7 @@ export class HostService {
   }
 
   #markRuntimeOffline(runtimeId: string, reason: string): void {
+    this.#sessionSync.runtimeOffline(runtimeId);
     this.#commandOwners.offline(runtimeId, reason);
     this.#toolInventory.closeRuntime(runtimeId);
     this.#toolIngestion.release(runtimeId);
@@ -718,6 +719,10 @@ export class HostService {
           if (backend.isReady() && backend.ownsRuntime(runtimeId)) return backend.dispatchCommand(runtimeId, commandId, forwarded);
         }
         return "offline";
+      },
+      needsBaseline: runtimeId => {
+        const scope = this.#agentFacts.scopeOf(runtimeId);
+        return !scope || !this.#conversationState.hasBaseline(scope);
       },
       encodeEvent: (runtimeId, event) => Buffer.from(JSON.stringify(this.#runtimeEventMessage(runtimeId, event)), "utf8"),
       acceptSnapshot: (runtimeId, event) => {

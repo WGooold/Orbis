@@ -8,6 +8,8 @@ import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { ClaudeTranscriptProjection, ClaudeTranscriptReader, findClaudeTranscript } from "./claude-transcript.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
+import { AgentToolInventory } from "./agent-tool-inventory.js";
+import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 
 const at = "2026-10-28T10:00:00.000Z";
 const user = (uuid: string, parentUuid: string | null, content: unknown, extra: Record<string, unknown> = {}) =>
@@ -47,6 +49,31 @@ describe("ClaudeTranscriptProjection", () => {
       expect(model.accept(scope, direct)).toBe(true);
       expect(direct.cursor).toEqual(reopened?.cursor);
     } finally { history.close(); }
+  });
+
+  it("syncs the published inventory while a live Claude tool remains active", async () => {
+    // DSH-SYNC-07：共享源的 raw live 读取改动后，Claude 同步仍须保留已发布的工具引用与版本。
+    const root = await tempConfig(), path = join(root, "tools.jsonl");
+    await writeFile(path, line(user("u1", null, "read file")));
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const inventory = new AgentToolInventory(registry), ingestion = new ToolInventoryIngestion(inventory);
+    const agent = { hostId: "local", agentKind: "claude" as const, sessionId: "tools" };
+    const scope: StateScope = { kind: "agent", key: agent }, rejected: string[] = [];
+    const accept = (event: RuntimeEvent) => {
+      if (event.type === "session.tools.produced") expect(ingestion.accept("claude:tools", agent, event)).toBe(true);
+      else if (event.type === "session.patch" || event.type === "session.snapshot") model.accept(scope, event,
+        ready => ready && event.source && event.live?.toolInventory ? ingestion.prepare("claude:tools", agent, event.source, event.live.toolInventory) : undefined,
+        reason => rejected.push(reason));
+    };
+    const history = new ClaudeSessionHistory("tools", root, accept, { locate: async () => path });
+    try {
+      accept(await history.sync({ type: "session.sync", sessionId: "tools", syncId: "initial", range: "preview" }));
+      history.observe({ type: "tool.started", toolCallId: "call", toolName: "Read", arguments: {} });
+      const snapshot = await history.sync({ type: "session.sync", sessionId: "tools", syncId: "with-tools", range: "preview" });
+      accept(snapshot);
+      expect(rejected).toEqual([]);
+      expect(snapshot.live).toMatchObject({ tools: [], toolInventory: { totalCount: 1 } });
+    } finally { history.close(); inventory.dispose(); }
   });
 
   it("shows slash commands, their output and shell runs without Claude's markup", () => {

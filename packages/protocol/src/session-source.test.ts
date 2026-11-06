@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RecoverableSessionSource, type ChatMessage, type RemoteSessionEntry, type SessionPatch } from "./index.js";
+import { RecoverableSessionSource, createToolSummary, type ChatMessage, type RemoteSessionEntry, type SessionPatch, type ToolInventoryProduced } from "./index.js";
 import { SESSION_SYNC_MAX_BYTES, SESSION_SYNC_PAGE_BYTES, selectSessionSyncSnapshot } from "./session-sync.js";
 import { SESSION_SYNC_WRAPPER_BYTES } from "./session-sync.js";
 
@@ -127,6 +127,53 @@ describe("recoverable source", () => {
       expect(Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES)
         .toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
     }
+  });
+
+  it("reads current live without publishing tool versions for an uncommitted conversation", () => {
+    // DSH-SYNC-05：流式代码在同一事务内多次读取 live，不能提前发布绑定旧 seq 的工具版本。
+    const pages: ToolInventoryProduced[] = [], patches: SessionPatch[] = [];
+    const agent = { hostId: "host", agentKind: "dsh" as const, sessionId: "session" };
+    const summary = (id: string) => createToolSummary({ tool: { agent, toolCallId: id }, toolName: "read", phase: "started", order: 0, contents: [] });
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch), { publishTools: page => pages.push(page) });
+    source.transaction(() => { source.observe({ type: "tool.activity", summary: summary("stable") }); source.setAvailability(true, true); });
+    const initial = source.published();
+    pages.length = 0;
+    source.transaction(() => {
+      source.observe({ type: "tool.activity", summary: summary("transient") });
+      const current = source.snapshot();
+      expect(current.live.tools.map(tool => tool.toolCallId)).toEqual(["stable", "transient"]);
+      expect(current.live.toolInventory).toBeUndefined();
+      source.reconcile([{ entryId: "result", parentId: null, type: "message", timestamp: new Date(1).toISOString(),
+        data: { message: { role: "toolResult", toolCallId: "transient", content: "done" } } }], "result");
+      expect(source.snapshot().live.tools.map(tool => tool.toolCallId)).toEqual(["stable"]);
+      expect(pages).toEqual([]);
+      expect(source.published().live.toolInventory).toEqual(initial.live.toolInventory);
+    });
+    expect(source.published().live.toolInventory).toEqual(initial.live.toolInventory);
+    expect(patches.at(-1)?.baseSeq).toBe(initial.version.seq);
+    expect(patches.at(-1)?.seq).toBe(initial.version.seq + 1);
+    source.observe({ type: "tool.activity", summary: summary("next") });
+    const published = source.published();
+    expect(pages.at(-1)?.reference).toEqual(published.live.toolInventory);
+    expect(published.live.toolInventory?.source).toEqual({ epoch: published.version.epoch, seq: published.version.seq });
+    expect(published.live.toolInventory?.version.revision).toBe(initial.live.toolInventory!.version.revision + 1);
+  });
+
+  it("reads more than 256 tool-only messages while keeping the wire live bounded", () => {
+    // DSH-SYNC-08：原始状态读取沿用内部容量；外置工具后的线路消息仍受256条上限约束。
+    const source = new RecoverableSessionSource("session", () => {}, { publishTools: () => {} });
+    const agent = { hostId: "host", agentKind: "dsh" as const, sessionId: "session" };
+    source.transaction(() => {
+      for (let i = 0; i < 257; i++) {
+        const summary = createToolSummary({ tool: { agent, toolCallId: `call-${i}` }, toolName: "read", phase: "started", order: i, contents: [] });
+        source.upsertMessage({ finished: false, contentComplete: true, message: { messageId: `message-${i}`, role: "assistant", timestamp: i,
+          content: [{ type: "tool_call", toolCallId: `call-${i}`, toolName: "read", summary }] } });
+      }
+      source.setAvailability(true, true);
+    });
+    expect(source.snapshot().live.messages).toHaveLength(257);
+    expect(source.snapshot().live.tools).toHaveLength(257);
+    expect(source.published().live).toMatchObject({ messages: [], tools: [], toolInventory: { totalCount: 257 } });
   });
 
   it("retains confirmed turn timing through recovery until the next turn starts", () => {
