@@ -358,7 +358,8 @@ final class RelaySocket: NSObject, RelaySocketConnection, URLSessionDataDelegate
         options.direction = .bidirectional
         options.idleTimeout = 30_000
         options.initialMaxData = 12 * 1024 * 1024
-        options.initialMaxStreamDataBidirectionalLocal = 4 * 1024 * 1024
+        // Network.framework exposes initial credit; later window growth is system-managed.
+        options.initialMaxStreamDataBidirectionalLocal = 2 * 1024 * 1024
         options.initialMaxStreamsBidirectional = 0
         options.initialMaxStreamsUnidirectional = 0
         sec_protocol_options_set_tls_server_name(options.securityProtocolOptions, host)

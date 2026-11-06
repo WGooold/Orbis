@@ -5,6 +5,61 @@ import { OutboundChannelMux, type OutboundQueueDiagnostic } from "./outbound-mux
 /** 造一个长度恰好是 `bytes` 的「帧」——测试里用它的长度当字节数，避免声明与事实不符。 */
 const frame = (bytes: number, tag = ""): string => tag.padEnd(bytes, "x").slice(0, bytes);
 
+describe("NQ-15 bulk pacing", () => {
+  // Delaying sealed bulk must preserve every frame and its FIFO, while control
+  // and chat continue immediately and the limiter does not busy-poll at 1 ms.
+  it("waits for credit without blocking ctl/msg or dropping sealed bulk", () => {
+    vi.useFakeTimers();
+    let readyAt = Date.now() + 500;
+    const written: string[] = [];
+    const credit = vi.fn(() => Math.max(0, readyAt - Date.now()));
+    const mux = new OutboundChannelMux<string>({ write: text => written.push(text), bulkSendDelayMs: credit });
+    try {
+      mux.enqueue("bulk", "one", 3);
+      mux.enqueue("bulk", "two", 3);
+      mux.enqueue("ctl", "control", 7);
+      mux.enqueue("msg", "chat", 4);
+      expect(written).toEqual(["control", "chat"]);
+      expect(mux.bulkQueuedBytes).toBe(6);
+      const calls = credit.mock.calls.length;
+      vi.advanceTimersByTime(499);
+      expect(credit).toHaveBeenCalledTimes(calls);
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual(["control", "chat", "one", "two"]);
+      expect(mux.queuedBytes).toBe(0);
+      readyAt = Date.now() + 500;
+      mux.enqueue("bulk", "cancelled", 9);
+      mux.stop();
+      vi.advanceTimersByTime(1000);
+      expect(written).toHaveLength(4);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { mux.stop(); vi.useRealTimers(); }
+  });
+
+  // A long rate-limit sleep must be shortened if a later chat frame is waiting
+  // only for socket backlog, otherwise a nominal bulk cap delays interaction.
+  it("advances a backlog wakeup ahead of a pending bulk timer", () => {
+    vi.useFakeTimers();
+    let backlog = 0;
+    const written: string[] = [];
+    const readyAt = Date.now() + 500;
+    const mux = new OutboundChannelMux<string>({
+      write: text => written.push(text), backlog: () => backlog,
+      bulkSendDelayMs: () => Math.max(0, readyAt - Date.now()),
+    });
+    try {
+      mux.enqueue("bulk", "download", 8);
+      backlog = 1_000_000;
+      mux.enqueue("msg", "chat", 4);
+      backlog = 0;
+      vi.advanceTimersByTime(1);
+      expect(written).toEqual(["chat"]);
+      vi.advanceTimersByTime(499);
+      expect(written).toEqual(["chat", "download"]);
+    } finally { mux.stop(); vi.useRealTimers(); }
+  });
+});
+
 it("retires only a reset session while preserving peer FIFO and queue accounting", () => {
   let backlog = 10_000_000;
   const written: string[] = [];

@@ -8,6 +8,7 @@ import {
   RelayDeviceClientMessageSchema,
   PROTOCOL_VERSION,
   OutboundChannelMux,
+  DEFAULT_BULK_LOW_WATER_BYTES,
   type MuxChannel,
   type RelayToDeviceMessage,
   type RelayToRuntimeMessage,
@@ -21,6 +22,7 @@ import { RelayAdmin } from "./admin.js";
 import { HttpError, jsonResponse, readJson, requestSource } from "./http-utils.js";
 import { createWebHandler } from "./web.js";
 import { RelayBandwidth } from "./bandwidth.js";
+import { BulkSendBudget, DEFAULT_BULK_BYTES_PER_SECOND } from "./bulk-send-budget.js";
 
 export interface RelayDeviceCredential {
   deviceId: string;
@@ -54,6 +56,8 @@ export interface RelayServerOptions {
   quicHostEnabled?: boolean;
   /** Advertise v3 only after the five-stream adapter is deployed. */
   quicHistoryStreamsEnabled?: boolean;
+  /** Aggregate device-bound bulk JSON bytes/second; defaults to 2 MB/s, 0 disables pacing. */
+  bulkBytesPerSecond?: number;
 }
 
 export interface RelayServer {
@@ -93,6 +97,12 @@ const deviceMuxes = new WeakMap<WebSocket, OutboundChannelMux<string>>();
 // version is used when forwarding, without changing any envelope or ciphertext.
 const relayWireVersions = new WeakMap<WebSocket, RelayWireProtocolVersion>();
 const deviceBandwidth = new WeakMap<WebSocket, { telemetry: RelayBandwidth; deviceId: string }>();
+const deviceBulkBudgets = new WeakMap<WebSocket, BulkSendBudget>();
+const stopMux = (socket: WebSocket): void => {
+  deviceMuxes.get(socket)?.stop();
+  deviceMuxes.delete(socket);
+  deviceBulkBudgets.get(socket)?.cancel(socket);
+};
 const MUX_WARN_INTERVAL_MS = 10_000;
 let lastMuxWarnAt = 0;
 
@@ -131,6 +141,9 @@ const muxFor = (socket: WebSocket): OutboundChannelMux<string> => {
       });
     },
     backlog: () => socket.bufferedAmount,
+    bulkSendDelayMs: bytes => deviceBulkBudgets.get(socket)?.delayMs(socket, bytes,
+      () => socket.readyState === WebSocket.OPEN && socket.bufferedAmount <= DEFAULT_BULK_LOW_WATER_BYTES,
+      () => deviceMuxes.get(socket)?.notifyDrained()) ?? 0,
     // 这个类**绝不**丢弃已封好的帧：中继看不到 `transferId`，丢了没法让任何一方自愈，而丢一个
     // v2 帧在接收侧是**永久**空洞（发送序号推进了、对端永远收不到，整条会话报废）。队列超上限
     // 时只报警，照发——等于没有这条上限；内存由设备侧的 pull 窗口兜住。
@@ -166,7 +179,7 @@ const send = (socket: WebSocket, message: RelayOutboundMessage): void => {
   const text = JSON.stringify("protocolVersion" in message
     ? { ...message, protocolVersion: relayWireVersions.get(socket) ?? PROTOCOL_VERSION }
     : message);
-  muxFor(socket).enqueue(muxChannelOfMessage(message), text, text.length);
+  muxFor(socket).enqueue(muxChannelOfMessage(message), text, Buffer.byteLength(text));
 };
 
 const reject = (socket: WebSocket, code: string, message: string): void => {
@@ -209,6 +222,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
   if (options.quicPort !== undefined && (!Number.isInteger(options.quicPort) || options.quicPort < 1 || options.quicPort > 65535)) {
     throw new Error("quicPort must be an integer between 1 and 65535");
   }
+  const bulkBudget = new BulkSendBudget(options.bulkBytesPerSecond ?? DEFAULT_BULK_BYTES_PER_SECOND);
   const serveWeb = await createWebHandler(options.downloadsDir, options.androidDownloadsDir);
   const runtimeWss = new WebSocketServer({ noServer: true });
   const deviceWss = new WebSocketServer({ noServer: true });
@@ -216,8 +230,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
   const authenticatedSockets = new WeakSet<WebSocket>();
   const monitorSocket = (socket: WebSocket): void => {
     socket.once("close", () => {
-      deviceMuxes.get(socket)?.stop();
-      deviceMuxes.delete(socket);
+      stopMux(socket);
+      deviceBulkBudgets.delete(socket);
     });
     responsiveSockets.add(socket);
     socket.on("pong", () => responsiveSockets.add(socket));
@@ -626,8 +640,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         relayWireVersions.set(socket, message.protocolVersion);
         const previous = runtimes.get(runtimeId);
         if (previous) {
-          deviceMuxes.get(previous.socket)?.stop();
-          deviceMuxes.delete(previous.socket);
+          stopMux(previous.socket);
           previous.socket.close(4001, "replaced");
         }
         runtimes.set(runtimeId, { socket, name: message.runtime.name.slice(0, 128), connectedAt: Date.now() });
@@ -672,8 +685,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         if (message.envelope.hdr.k === "hs") {
           // The authenticated Host has started a new key exchange. Already
           // written WS bytes remain FIFO; pending ciphertext belongs to the old key.
-          deviceMuxes.get(target.socket)?.stop();
-          deviceMuxes.delete(target.socket);
+          stopMux(target.socket);
         }
         send(target.socket, message);
         return;
@@ -757,12 +769,13 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         for (const previous of devices) {
           if (previous.deviceId !== credential.deviceId) continue;
           devices.delete(previous);
-          deviceMuxes.get(previous.socket)?.stop();
+          stopMux(previous.socket);
           previous.socket.close(4001, "replaced");
         }
         connection = { socket, deviceId: credential.deviceId, ...(credential.hostId === undefined ? {} : { hostId: credential.hostId }) };
         devices.add(connection);
         deviceBandwidth.set(socket, { telemetry: bandwidth, deviceId: credential.deviceId });
+        deviceBulkBudgets.set(socket, bulkBudget);
         bandwidth.record(credential.deviceId, "upload", receivedBytes);
         relayWireVersions.set(socket, message.protocolVersion);
         markAuthenticated(socket);
@@ -817,7 +830,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     });
 
     socket.on("close", () => {
-      deviceMuxes.get(socket)?.stop();
+      stopMux(socket);
       deviceBandwidth.delete(socket);
       if (!connection) return;
       devices.delete(connection);
@@ -856,8 +869,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     async close(): Promise<void> {
       clearInterval(heartbeatTimer);
       clearInterval(bandwidthTimer);
-      for (const runtime of runtimes.values()) runtime.socket.close(1001, "relay shutdown");
-      for (const device of devices) device.socket.close(1001, "relay shutdown");
+      for (const runtime of runtimes.values()) { stopMux(runtime.socket); runtime.socket.close(1001, "relay shutdown"); }
+      for (const device of devices) { stopMux(device.socket); device.socket.close(1001, "relay shutdown"); }
       await Promise.all([
         persistence,
         admin.close(),

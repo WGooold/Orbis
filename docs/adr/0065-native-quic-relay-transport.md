@@ -176,3 +176,9 @@ NQ-14 的范围为功能回归，旧性能数字仍对应原测量布局。实�
 QUIC 引导沿 ADR-0064 在首个有效加密请求绑定业务版本，再发布相应 Host ready。两端在 ctl 依次发送 HS3 与原有只读 host.lan.request，业务开放以认证后的 Host 状态为准。
 
 Node 旧 18/19、四承载组合及 Android / Apple↔Go 的结果见[主分支集成报告](../../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)。默认 WS/shared，既有待验收范围保持。
+
+## 13. 共享下行配额（NQ-15，2026-11-06）
+
+30 Mbps 出口采用 Relay 设备下行共享 bulk 配额，默认按编码后 UTF-8 帧限制为 2,000,000 字节/秒、突发 64 KiB；文件有效吞吐约 1.5 MB/s。所有 Host / 设备在一个 Relay 进程内共用配额，等待按帧轮转，socket 积压让出位置；交互通道继续按原优先级发送。已封密文留在原 FIFO 等待，旧端单个大帧完整计账，握手与连接生命周期释放等待位置。配置 `ORBIS_RELAY_BULK_BYTES_PER_SECOND=0` 可恢复不限速。Go 每流最大接收窗口调整为 2 MiB，连接总上限 12 MiB；Apple 调整初始额度，后续窗口仍由系统管理。
+
+实现：[共享配额](../../packages/relay/src/bulk-send-budget.ts)、[Relay 接入](../../packages/relay/src/index.ts)、[出站 mux](../../packages/protocol/src/outbound-mux.ts)、[Go 窗口](../../native/relayquic/multistream.go)、[Apple 配置](../../ios/Orbis/Orbis/RelaySocket.swift)。专项验证复用 [mux 测试](../../packages/protocol/src/outbound-mux.test.ts)、[配额测试](../../packages/relay/src/bulk-send-budget.test.ts)、[真实 Relay 双 Host 测试](../../packages/relay/src/bulk-pacing.test.ts)及既有三流 / 五流回归。本机 Node 60/60、Go race 5/5、TypeScript 构建 / 测试类型检查、lint 与 Apple 语法检查通过；首次 HS2 等待失败、原断言与唤醒修复保留在[验证摘要](../../.artifacts/quic-bandwidth-20261106/verification.json)及同目录日志。生产未部署，真实下载期间的交互与吞吐待用户验证。多进程 Relay、其他服务及非 bulk 流量另有出口占用。

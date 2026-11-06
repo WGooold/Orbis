@@ -251,7 +251,7 @@ func send(e endpoint, req request, proto, side string) result {
 	return r
 }
 func qc(path string) (*quic.Config, error) {
-	c := &quic.Config{HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: 15 * time.Second, KeepAlivePeriod: 5 * time.Second, MaxIncomingStreams: 1, MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: 256 * 1024, MaxStreamReceiveWindow: 4 * 1024 * 1024, InitialConnectionReceiveWindow: 1024 * 1024, MaxConnectionReceiveWindow: 12 * 1024 * 1024}
+	c := &quic.Config{HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: 15 * time.Second, KeepAlivePeriod: 5 * time.Second, MaxIncomingStreams: 1, MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: 256 * 1024, MaxStreamReceiveWindow: 2 * 1024 * 1024, InitialConnectionReceiveWindow: 1024 * 1024, MaxConnectionReceiveWindow: 12 * 1024 * 1024}
 	return c, diagnostics.Configure(c, path)
 }
 func serveSession(e endpoint, proto, token string) {

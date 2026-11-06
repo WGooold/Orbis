@@ -41,7 +41,7 @@ func ConfigMulti() *quic.Config {
 	c := Config()
 	c.MaxIncomingStreams = 3
 	c.InitialStreamReceiveWindow = 256 * 1024
-	c.MaxStreamReceiveWindow = 4 * 1024 * 1024
+	c.MaxStreamReceiveWindow = 2 * 1024 * 1024
 	c.InitialConnectionReceiveWindow = 1024 * 1024
 	c.MaxConnectionReceiveWindow = 12 * 1024 * 1024
 	return c

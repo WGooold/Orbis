@@ -70,7 +70,11 @@ Host helper 只接收一次性 IPC token 和远端地址，业务凭据经 ctl �
 
 ## 调度与限制
 
-Go 每流有独立 FIFO writer，原三流 SetPriority 保持 ctl `(0,false)`、msg `(3,true)`、bulk `(7,true)`。五流使用 ctl `(0,false)`、msg `(2,true)`、history `(3,true)`、catchup `(5,true)`、bulk `(7,true)`。Go → WS 仍使用现有应用汇聚 mux；WS 段和业务准入不变。所有流共享连接流控与拥塞窗口，同一 lane 内仍有队头等待，重传可能先于新 ctl。
+Go 每流有独立 FIFO writer，原三流 SetPriority 保持 ctl `(0,false)`、msg `(3,true)`、bulk `(7,true)`。五流使用 ctl `(0,false)`、msg `(2,true)`、history `(3,true)`、catchup `(5,true)`、bulk `(7,true)`。Go → WS 仍使用现有应用汇聚 mux，业务准入沿用原预算；Relay 发送配额见下文。所有流共享连接流控与拥塞窗口，同一 lane 内仍有队头等待，重传可能先于新 ctl。
+
+NQ-15：Relay 设备下行的所有 bulk 共用每进程 2,000,000 字节/秒配额，按 UTF-8 JSON 帧计量，普通分片突发额度 64 KiB，对应文件有效速度约 1.5 MB/s。等待中的设备按帧轮转，socket 积压的设备让出位置；ctl / msg / history / catchup 沿用原调度。额度不足时密文保留在原 FIFO，重握手、替换和关闭时同步释放等待位置；单个旧式大帧完整计账并偿还超额。WS / QUIC 共用此出口，LAN 保持原路径。`ORBIS_RELAY_BULK_BYTES_PER_SECOND` 可覆盖配额，`0` 为不限速。
+
+Go v2 / v3 每流接收窗口初始 256 KiB、最大 2 MiB，连接初始 1 MiB、最大 12 MiB；原始诊断夹具同步使用 2 MiB。Apple 本地发起双向流的初始接收额度为 2 MiB，后续增长由系统管理。流控窗口与发送速率分别配置。实现、验证和发布状态见 [ADR-0065 §13](adr/0065-native-quic-relay-transport.md#13-共享下行配额nq-152026-11-06)。
 
 控制 / 会话类 / bulk 队列护栏为 4 / 32 / 64 MiB、最多 16384 帧；history / catchup 与 msg 共用原 32 MiB 会话总预算，不扩大历史累计量。所有连接双向共享 128 MiB 待写预算，默认连接上限 16。取消归还预算；容量越界明确使路径失败，不静默丢密文或重放操作。在写帧、QUIC 窗口、Node 和运行时另占内存，因此总 RSS 仍须做压力验收。
 

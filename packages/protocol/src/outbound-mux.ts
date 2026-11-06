@@ -86,6 +86,8 @@ export type OutboundMuxOptions<T> = {
   backlog?: () => number;
   /** Independent native streams only. Shared sockets must keep using backlog. */
   channelBacklog?: (channel: MuxChannel) => number;
+  /** Reserve bulk send credit: zero permits this frame, positive milliseconds defer it without dropping. */
+  bulkSendDelayMs?: (bytes: number) => number;
   /** `bulk` 只在 backlog 不超过它时交付。缺省 [DEFAULT_BULK_LOW_WATER_BYTES]。 */
   bulkLowWaterBytes?: number;
   /**
@@ -217,10 +219,12 @@ export class OutboundChannelMux<T> {
   readonly #drainPollIntervalMs: number;
   /** 上一次 `#pump` 是**因为 socket 积压**停下的（而不是因为队列空或写被拒）。它决定下次用哪个节拍。 */
   #gatedByBacklog = false;
+  #bulkWaitMs: number | undefined;
   #queuedBytes = 0;
   #channelBytes: Record<MuxChannel, number> = { ctl: 0, msg: 0, bulk: 0, history: 0, catchup: 0 };
   #bulkBytes = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #timerDueAt = 0;
   #overflowReported = false;
   #stopped = false;
   #diagnosticAt: number;
@@ -342,6 +346,7 @@ export class OutboundChannelMux<T> {
     this.#channelBytes = { ctl: 0, msg: 0, bulk: 0, history: 0, catchup: 0 };
     this.#bulkBytes = 0;
     this.#gatedByBacklog = false;
+    this.#bulkWaitMs = undefined;
   }
 
   /** Only for a confirmed key/session reset, never queue pressure. A shared
@@ -363,6 +368,7 @@ export class OutboundChannelMux<T> {
     if (this.#stopped) return;
     // 这一轮为什么停下，决定下一轮什么时候来（见 `#syncTimer`）。每次重新判定。
     this.#gatedByBacklog = false;
+    this.#bulkWaitMs = undefined;
     // 严格优先级：ctl 永远先走。它是交互的那一条，也是唯一「用户在等」的那一条。
     for (;;) {
       const entry =
@@ -425,6 +431,13 @@ export class OutboundChannelMux<T> {
       if (channel === "bulk") this.#options.onBulkStalled?.(this.#bulkBytes);
       return undefined;
     }
+    if (channel === "bulk") {
+      const delay = this.#options.bulkSendDelayMs?.(head.bytes) ?? 0;
+      if (delay > 0) {
+        this.#bulkWaitMs = delay;
+        return undefined;
+      }
+    }
     queue.shift();
     return head;
   }
@@ -432,9 +445,9 @@ export class OutboundChannelMux<T> {
   /**
    * 队列里还压着东西 → 起一个定时器，等链路消化完（或被水位挡住的那件事过去）再来。
    *
-   * **节拍分两种，因为两种「等」的性质不同**：被水位挡住是链路在正常工作，等得越短链路越不容易
+   * 被水位挡住时链路在正常工作，等得越短链路越不容易
    * 空转，而节拍本身就是吞吐上界（水位 / 节拍）——用 `DEFAULT_PUMP_INTERVAL_MS` 去复查会把
-   * 吞吐压在 6.4 MiB/s。写被拒则是对端有问题，慢一点重试正好。见这两个常量的注释。
+   * 吞吐压在 6.4 MiB/s。写被拒则慢一点重试；发送配额不足按补充配额所需时间唤醒。
    */
   #syncTimer(): void {
     // `ctl` 也算在内：它平时不排队，但写被拒时同样会留在队首等重试。
@@ -447,18 +460,25 @@ export class OutboundChannelMux<T> {
       this.#gatedByBacklog = false;
       return;
     }
-    if (this.#timer !== undefined) return;
+    const delay = this.#gatedByBacklog ? this.#drainPollIntervalMs : this.#bulkWaitMs ?? this.#pumpIntervalMs;
+    const dueAt = Date.now() + delay;
+    // A new msg can need a fast backlog check while bulk is waiting for credit.
+    // Keep an earlier wakeup, but never leave that msg behind a long bulk timer.
+    if (this.#timer !== undefined) {
+      if (this.#timerDueAt <= dueAt) return;
+      clearTimeout(this.#timer);
+    }
+    this.#timerDueAt = dueAt;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#reportStall();
       this.#pump();
-    }, this.#gatedByBacklog ? this.#drainPollIntervalMs : this.#pumpIntervalMs);
+    }, delay);
     this.#timer.unref?.();
   }
 
-  /** 队列压了太久 → 这是「链路真的堵了」，值得进日志，而不是悄悄降速。 */
   /**
-   * 队列压了太久 → 这是「链路真的堵了」，值得进日志，而不是悄悄降速。
+   * 记录队首实际等待时间；等待可能来自 socket 水位或显式速率配额。
    *
    * **只报队首一条**：队首是等待最久的那条，它没到阈值就没有任何一条到了；逐条上报在慢链路上
    * 会退化成「每 tick × 队列长度」次回调——pump 被积压挡住时 tick 是 1ms 一次，而队列可以压着
