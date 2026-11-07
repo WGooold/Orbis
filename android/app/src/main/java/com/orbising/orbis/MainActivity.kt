@@ -944,6 +944,9 @@ internal fun RuntimeListScreen(
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth().then(if (departure != null) Modifier.clearAndSetSemantics { } else Modifier).animateItem(
+                                    // HOME-STABILITY-01: viewport corrections reset LazyList's animation
+                                    // history. Existing cards must stay opaque when that history restarts.
+                                    fadeInSpec = null,
                                     fadeOutSpec = tween(InteractionMotion.duration(InteractionMotion.State)),
                                     placementSpec = tween(InteractionMotion.duration(InteractionMotion.State))),
                                 verticalAlignment = Alignment.CenterVertically,

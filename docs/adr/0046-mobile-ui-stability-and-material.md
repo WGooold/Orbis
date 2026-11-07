@@ -57,6 +57,8 @@ Status: accepted
 
 列表更新维护当前阅读锚点与用户滚动，顶部保持顶部，其余位置按稳定卡片身份和像素偏移结算。
 
+2026-11-07 HOME-STABILITY-01（V21 / M10）：Android 首页卡片在视口校正后保持不透明，继续使用既有移动和关闭动画。修复 `requestScrollToItem` 重置列表动画记录后，默认入场淡入让已显示卡片整体变淡的闪屏。逐帧回归见 [HomeViewportInstrumentedTest](../../android/app/src/androidTest/java/com/orbising/orbis/HomeViewportInstrumentedTest.kt)；修复前重排首帧失败，修复后同一断言与首页手势共 9 项设备测试、6 项视口单元测试通过。构建使用隔离副本，供应商页面的编译调整仅在副本内应用；本次未安装真机，待用户验证。执行边界与原始证据见 [verification.json](../../.artifacts/home-stability-20261107/verification.json)。
+
 参考：[HomePresentation.kt](../../android/app/src/main/java/com/orbising/orbis/HomePresentation.kt)；[HomeViewportAnchorTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomeViewportAnchorTest.kt)；[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
 
 ### 7. 本机外观选择（S25）

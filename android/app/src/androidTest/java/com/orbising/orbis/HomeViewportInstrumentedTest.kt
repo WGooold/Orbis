@@ -1,11 +1,15 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - r15 首页 / 目录视口与下拉刷新（M15、V21）
+// - HOME-STABILITY-01：重排和关闭时逐帧检查未操作卡片，防止视口校正重播整屏淡入。
 package com.orbising.orbis
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -14,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import kotlin.math.roundToInt
 
 /** ADR-0046 V21 / ADR-0058 M15: the home list is never pushed away, and it refreshes by pulling. */
 class HomeViewportInstrumentedTest {
@@ -23,6 +28,7 @@ class HomeViewportInstrumentedTest {
     private val cards = (0 until 12).map { "c%02d".format(it) }
     private val state = mutableStateOf(home(cards))
     private var refreshes = 0
+    private var closeAccepted = false
     private val opened = mutableListOf<String>()
 
     /** Newest first: the first id gets the latest modification time. */
@@ -37,7 +43,16 @@ class HomeViewportInstrumentedTest {
         compose.setContent {
             OrbisTheme(darkTheme = darkTheme) {
                 RuntimeListScreen(state.value, listOf(HostSnapshot(pairing, state.value)),
-                    onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
+                    onOpenRuntime = { _, id -> opened += id },
+                    onCloseRuntimes = { _, ids ->
+                        if (closeAccepted) {
+                            state.value = state.value.copy(
+                                runtimes = state.value.runtimes - ids,
+                                homeSnapshot = state.value.homeSnapshot?.filter { it.runtime.runtimeId !in ids },
+                            )
+                            ids
+                        } else emptySet()
+                    }, onOpenDownloads = {}, onUnpairHost = {},
                     onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                     onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {},
                     onRetryHome = { refreshes++ })
@@ -168,6 +183,61 @@ class HomeViewportInstrumentedTest {
         File(directory, "$name.png").outputStream().use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
         }
+    }
+
+    @Test fun reorderedCardsKeepTheirInkThroughoutViewportCorrection() {
+        show()
+        compose.onNodeWithTag("home-session-list").performScrollToIndex(5)
+        compose.waitForIdle()
+        assertCardInkSurvives("c06") {
+            state.value = home(listOf("c10") + cards.filter { it != "c10" })
+        }
+    }
+
+    @Test fun swipeCloseKeepsOtherCardsVisibleThroughoutRemoval() {
+        show()
+        closeAccepted = true
+        val list = compose.onNodeWithTag("home-session-list")
+        list.performScrollToIndex(5)
+        // Leave the leading card partly clipped: retaining the next complete card requires
+        // an index/offset correction both when the exit row departs and when rows fill its gap.
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 24f) }
+        compose.waitForIdle()
+        val card = compose.onNodeWithTag("home-runtime-c05")
+        card.performTouchInput {
+            down(Offset(width * 0.9f, height * 0.75f))
+            moveBy(Offset(-width * 0.7f, 0f), delayMillis = 200)
+        }
+        compose.waitForIdle()
+        assertCardInkSurvives("c07") { card.performTouchInput { up() } }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithTag("home-runtime-c05").assertDoesNotExist()
+    }
+
+    private fun assertCardInkSurvives(id: String, change: () -> Unit) {
+        fun ink(): Int {
+            val bounds = compose.onNodeWithTag("home-runtime-$id").fetchSemanticsNode().boundsInRoot
+            val pixels = compose.onRoot().captureToImage().toPixelMap()
+            var count = 0
+            for (y in bounds.top.roundToInt() until bounds.bottom.roundToInt()) {
+                for (x in bounds.left.roundToInt() until bounds.right.roundToInt()) {
+                    if (pixels[x, y].luminance() < 0.4f) count++
+                }
+            }
+            return count
+        }
+        val baseline = ink()
+        assertTrue("Fixture must contain visible text and icons", baseline > 100)
+        compose.mainClock.autoAdvance = false
+        change()
+        // Includes the initial correction and the later removal after the swipe exit finishes.
+        repeat(28) { frame ->
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            assertTrue("Card $id lost its text/icons at frame $frame", ink() >= baseline * 0.9f)
+        }
+        compose.mainClock.autoAdvance = true
     }
 
     @Test fun catalogChangesWaitForTheReadersDragToFinish() {
