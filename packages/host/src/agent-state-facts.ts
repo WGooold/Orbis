@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mergeAgentTaskInventory } from "./agent-tasks.js";
 
 import {
   type AgentCapabilityItem, type AgentContextState, type AgentDeliveryItem, type AgentExecutionState,
@@ -142,7 +143,7 @@ export class AgentStateFacts {
   prepareOffline(runtimeId: string): PreparedRegistryCommit | undefined {
     const session = this.#sessionFor(runtimeId); if (!session) return;
     const next = this.#clone(session); next.revision += 1; next.fresh.clear();
-    if (next.tasks) next.tasks = { ...next.tasks, availability: "unknown" };
+    if (next.tasks) next.tasks = { ...next.tasks, availability: "unknown", truncated: false };
     return { changes: this.#unverified(next), onCommitted: () => { this.#sessions.set(next.key, next); } };
   }
 
@@ -271,8 +272,7 @@ export class AgentStateFacts {
         pending.fresh.add("delivery");
         break;
       case "execution.activity": pending.activity = event; break;
-      case "execution.tasks": pending.tasks = event.tasks.availability === "ready" ? event.tasks :
-        { ...event.tasks, items: pending.tasks?.items ?? event.tasks.items }; break;
+      case "execution.tasks": pending.tasks = mergeAgentTaskInventory(pending.tasks, event.tasks); break;
       case "interaction.requested":
         if (pending.interactions.size >= MAX_PENDING_ITEMS) pending.interactions.delete(pending.interactions.keys().next().value as string);
         pending.interactions.set(event.request.requestId, interactionItem(event.request));
@@ -342,8 +342,7 @@ export class AgentStateFacts {
       session.queueComplete = pending.queueComplete === true;
       session.interactionsComplete = pending.interactionsComplete === true;
       if (pending.activity) session.activity = pending.activity;
-      if (pending.tasks) session.tasks = pending.tasks.availability === "ready" ? pending.tasks :
-        { ...pending.tasks, items: session.tasks?.items ?? pending.tasks.items };
+      if (pending.tasks) session.tasks = mergeAgentTaskInventory(session.tasks, pending.tasks);
     }
     session.revision += 1;
     const touched = new Set<StateDomain>(SESSION_KEYS);
@@ -397,7 +396,7 @@ export class AgentStateFacts {
     switch (event.type) {
       case "execution.activity": session.activity = event; touched.add("execution"); break;
       case "execution.tasks":
-        session.tasks = event.tasks.availability === "ready" ? event.tasks : { ...event.tasks, items: session.tasks?.items ?? event.tasks.items };
+        session.tasks = mergeAgentTaskInventory(session.tasks, event.tasks);
         touched.add("execution"); break;
       case "delivery.snapshot":
         session.queue.clear();
@@ -478,7 +477,8 @@ export class AgentStateFacts {
         retry: session.activity?.retry ?? "unavailable",
         compaction: session.activity?.compaction ?? "unavailable",
         turn: session.turn ?? null,
-        ...(session.tasks ? { tasks: session.tasks } : session.agentKind === "claude" ? { tasks: { availability: "unknown" as const, items: [], truncated: false } } : {}),
+        // Every backend has the same domain; no native inventory means unconfirmed, not empty.
+        tasks: session.tasks ?? { availability: "unknown", items: [], truncated: false },
       };
       commitValue("execution", { source, availability: "ready", completeness: "complete", value: execution });
     }

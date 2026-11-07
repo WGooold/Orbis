@@ -102,7 +102,8 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var id: String { runtimeId }
     var presentationStatus: String {
         if compactionPhase == "running" && ["idle", "running"].contains(status) { return "compacting" }
-        if status == "idle", let tasks = backgroundTasks {
+        if status == "idle", let tasks = backgroundTasks, tasks.visible {
+            if tasks.truncated && tasks.activeCount > 0 { return "background" }
             if !tasks.confirmed { return "tasks_unknown" }
             if tasks.activeCount > 0 { return "background" }
         }
@@ -113,11 +114,12 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
             return runtimeStatusTitle(presentationStatus)
         }
         if presentationStatus == "compacting" { return L10n.tr("压缩中 · {0}", summary) }
+        if status == "running" && tasks.truncated { return L10n.tr("运行中 · {0}", summary) }
         if status == "running" { return tasks.confirmed ? L10n.tr("运行中 · {0} 个子任务", tasks.activeCount) : L10n.tr("运行中 · 子任务待核对") }
         return summary
     }
     func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
-        (backgroundTasks?.allowsQuit ?? true) && commands.contains { $0.name == "quit" && $0.argument?.required != true }
+        (backgroundTasks?.visible != true || backgroundTasks?.allowsQuit == true) && commands.contains { $0.name == "quit" && $0.argument?.required != true }
     }
 }
 
@@ -128,8 +130,8 @@ struct BackgroundTask: Codable, Hashable, Identifiable {
     var kind: String
     var status: String
     var statusTitle: String {
-        ["pending": L10n.tr("启动中"), "running": L10n.tr("运行中"), "waiting": L10n.tr("等待中"), "idle": L10n.tr("空闲"), "completed": L10n.tr("已完成"),
-         "failed": L10n.tr("失败"), "killed": L10n.tr("已停止"), "unknown": L10n.tr("状态待核对")][status] ?? L10n.tr("状态待核对")
+        ["pending": L10n.tr("启动中"), "running": L10n.tr("工作中"), "waiting": L10n.tr("等待"), "idle": L10n.tr("空闲"), "completed": L10n.tr("完成"),
+         "failed": L10n.tr("失败"), "killed": L10n.tr("已停止"), "unknown": L10n.tr("未知")][status] ?? L10n.tr("未知")
     }
 }
 
@@ -148,8 +150,38 @@ struct BackgroundTaskInventory: Codable, Hashable {
     var confirmed: Bool { availability == "ready" && !truncated && !items.contains { $0.status == "unknown" } }
     var activeCount: Int { items.filter { ["pending", "running", "waiting"].contains($0.status) }.count }
     var allowsQuit: Bool { confirmed && activeCount == 0 }
-    var visible: Bool { !confirmed || !items.isEmpty }
+    var visible: Bool { !items.isEmpty || truncated }
+    var panelTitle: String {
+        if truncated { return L10n.tr("子代理 · {0} 项 · 清单不完整", items.count) }
+        if !confirmed { return L10n.tr("子代理 · {0} 项 · 状态待核对", items.count) }
+        return L10n.tr("子代理 · {0} 项", items.count)
+    }
+    var inventoryNotice: String? {
+        if truncated { return L10n.tr("清单不完整，显示已知任务") }
+        if !confirmed { return L10n.tr("状态待核对，显示最后已知信息") }
+        return nil
+    }
+    /// Partial inventories update known IDs but cannot remove unseen rows or prove closure.
+    func reconciled(previous: BackgroundTaskInventory?) -> BackgroundTaskInventory {
+        guard availability != "ready", let previous else { return self }
+        var result = self
+        guard truncated else { result.items = previous.items; return result }
+        let incoming = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        let previousIDs = Set(previous.items.map(\.id))
+        let merged = previous.items.map { incoming[$0.id] ?? $0 } + items.filter { !previousIDs.contains($0.id) }
+        result.items = merged.count <= 256 ? merged :
+            items + Array(previous.items.filter { incoming[$0.id] == nil }.prefix(256 - items.count))
+        return result
+    }
     var activityTitle: String? {
+        guard visible else { return nil }
+        if truncated {
+            let known = [("running", L10n.tr("工作中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待"))].compactMap { state, title -> String? in
+                let count = items.filter { $0.status == state }.count
+                return count > 0 ? L10n.tr("{0} 个子代理{1}", count, title) : nil
+            }.joined(separator: " · ")
+            return known.isEmpty ? panelTitle : L10n.tr("{0} · 清单不完整", known)
+        }
         guard confirmed else { return L10n.tr("子任务状态待核对") }
         let labels = [("running", L10n.tr("运行中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待中"))].compactMap { state, title -> String? in
             let count = items.filter { $0.status == state }.count

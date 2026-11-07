@@ -4,7 +4,7 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前沿用 r48 消息旁菜单与显式选字、r43 按钮轻压；iOS 双侧边缘增强暂不交付。具体几何、时长、曲线和覆盖由实现及测试断言决定，不在 ADR 复制。SC01–SC50、MOT-01–MOT-27 为保留标识。
+当前沿用 r48 消息旁菜单与显式选字、r43 按钮轻压；iOS 双侧边缘增强暂不交付。具体几何、时长、曲线和覆盖由实现及测试断言决定，不在 ADR 复制。SC01–SC52、MOT-01–MOT-27 为保留标识。
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
 
@@ -64,6 +64,7 @@
 | SC48 | 当前连接协议与电脑、路径、断线状态同步（S28） |
 | SC49 | 设置页三种协议模式选择与 Host 隔离（S29） |
 | SC50 | 各后端内容步骤分卡、并行工具组折叠与局部分页（S31） |
+| SC52 | 跨 Agent 子代理短标题、状态与不完整 / 待核对提示（S33；复用既有任务折叠与稳定身份） |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

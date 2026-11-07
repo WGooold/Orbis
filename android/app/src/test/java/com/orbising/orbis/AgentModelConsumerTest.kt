@@ -39,10 +39,30 @@ class AgentModelConsumerTest {
         state = receive(state, domain("execution", """{"phase":"idle","tasks":{"availability":"ready","items":[],"truncated":false}}""", 3))
         assertEquals("空闲", state.runtimes.getValue("runtime").presentationTitle)
         state = receive(state, domain("execution", """{"phase":"idle"}""", 4))
-        assertEquals("子任务状态待核对", state.runtimes.getValue("runtime").presentationTitle)
+        assertEquals("空闲", state.runtimes.getValue("runtime").presentationTitle)
         state = receive(state, domain("execution", "null", 5, availability = "unknown"))
         assertEquals("unknown", state.runtimes.getValue("runtime").status)
         assertEquals("unknown", state.runtimes.getValue("runtime").backgroundTasks!!.availability)
+    }
+
+    // S33 / SC52: partial generic tasks must update rows, not replace them with an old snapshot.
+    @Test fun `partial tasks update known rows and retain unseen tasks`() {
+        var state = receive(initial(), domain("execution", """{"phase":"idle","tasks":{"availability":"ready","items":[{"id":"child","title":"检查","kind":"agent","status":"running"},{"id":"retained","title":"已有任务","kind":"agent","status":"running"}],"truncated":false}}"""))
+        state = receive(state, domain("execution", """{"phase":"idle","tasks":{"availability":"unknown","items":[{"id":"child","title":"检查完成","kind":"agent","status":"completed"},{"id":"new","parentId":"child","title":"等待检查","kind":"agent","status":"waiting"}],"truncated":true}}""", 2))
+        val runtime = state.runtimes.getValue("runtime")
+        val tasks = runtime.backgroundTasks!!
+        assertEquals("idle", runtime.status)
+        assertEquals(listOf("child", "retained", "new"), tasks.items.map { it.id })
+        assertEquals("completed", tasks.items.first().status)
+        assertEquals("检查完成", tasks.items.first().title)
+        assertEquals("waiting", tasks.items.last().status)
+        assertEquals("child", tasks.items.last().parentId)
+        assertEquals("子代理 · 3 项 · 清单不完整", tasks.panelTitle)
+        assertFalse(tasks.allowsQuit)
+        state = receive(state, domain("execution", "null", 3, availability = "unknown"))
+        val stale = state.runtimes.getValue("runtime").backgroundTasks!!
+        assertFalse(stale.truncated)
+        assertEquals("状态待核对，显示最后已知信息", stale.inventoryNotice)
     }
 
     @Test fun `compaction activity drives presentation without changing execution phase`() {

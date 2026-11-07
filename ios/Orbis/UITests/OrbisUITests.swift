@@ -55,7 +55,10 @@ final class OrbisUITests: XCTestCase {
             card.tap()
             let toggle = app.buttons["background-tasks-toggle"]
             XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+            // S33 / SC52: native-independent subagent labels reuse the same disclosure and rows.
+            XCTAssertTrue(toggle.label.contains("子代理 · 2 项"))
             toggle.tap()
+            XCTAssertTrue(app.staticTexts["工作中"].firstMatch.exists)
             XCTAssertTrue(app.descendants(matching: .any)["background-task-review"].exists)
             XCTAssertTrue(app.descendants(matching: .any)["background-task-tests"].exists)
             XCTAssertFalse(app.buttons["停止生成"].exists)

@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CodexAppServer, type CodexTransport } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import type { RuntimeEvent } from "@orbis/protocol";
 
 function transport(reply: (frame: Record<string, unknown>) => Record<string, unknown> | undefined) {
   const messages: Array<(text: string) => void> = [];
@@ -31,6 +32,8 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   const loaded = new Set<string>();
   const native = new Set<string>();
   const subagents = new Set<string>();
+  const parents = new Map<string, string>();
+  const events: Array<{ event: RuntimeEvent; threadId?: string }> = [];
   const archived = new Set<string>();
   const status = new Map<string, "idle" | "active">();
   const calls: string[] = [];
@@ -47,7 +50,8 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
     })) };
     const id = params?.threadId ?? "";
     const thread = { id, cwd: "D:/repo", name: id, path: archived.has(id) ? "D:/archived_sessions/rollout.jsonl" : "D:/sessions/rollout.jsonl", status: { type: status.get(id) ?? "idle" }, turns: [],
-      ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}) };
+      ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}),
+      ...(parents.has(id) ? { parentThreadId: parents.get(id), agentNickname: id } : {}) };
     if (method === "thread/read") return { thread };
     if (method === "thread/archive" || method === "thread/unarchive") {
       if (method === "thread/archive") archived.add(id);
@@ -65,9 +69,9 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   });
   const server = { mode, endpoint, request, stop, notify: vi.fn() } as unknown as CodexAppServer;
   const opened: string[] = [];
-  const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
+  const runtime = new CodexRuntime({ server, onEvent: (event, threadId) => { events.push({ event, ...(threadId ? { threadId } : {}) }); }, rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
-  return { loaded, native, subagents, archived, status, calls, stop, request, server, runtime, notify, opened,
+  return { loaded, native, subagents, parents, events, archived, status, calls, stop, request, server, runtime, notify, opened,
     pause: () => { pauseResume = true; },
     release: () => { releaseResume?.(); },
   };
@@ -140,6 +144,22 @@ describe("Codex desktop attachment", () => {
     expect(h.request).toHaveBeenCalledWith("thread/unsubscribe", { threadId: "first" });
     await h.runtime.stop();
     expect(h.stop).toHaveBeenCalledOnce();
+  });
+
+  // Startup ordering is arbitrary: descendants only become tasks of an adopted root.
+  it("restores already loaded nested children without attaching them as sessions", async () => {
+    const h = desktopHarness();
+    for (const id of ["grandchild", "child", "parent"]) h.loaded.add(id);
+    h.parents.set("child", "parent"); h.parents.set("grandchild", "child");
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.events.filter(item => item.event.type === "execution.tasks").at(-1)).toMatchObject({
+      threadId: "parent", event: { tasks: { availability: "unknown", truncated: true, items: [
+        { id: "child", status: "idle" }, { id: "grandchild", parentId: "child", status: "idle" },
+      ] } },
+    }));
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]);
+    expect(h.request.mock.calls.filter(([method]) => method === "thread/resume").map(([, args]) => args?.threadId)).toEqual(["parent"]);
+    await h.runtime.stop();
   });
 
   it("does not expose subagent threads from loaded or persistent desktop catalogs", async () => {

@@ -7,7 +7,7 @@ import {
   NotificationSource, inputMutationError,
   RecoverableSessionSource,
   SessionSyncPreparer,
-  type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
+  type AgentTaskInventory, type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
   type ToolContentLocator,
 } from "@orbis/protocol";
@@ -69,6 +69,8 @@ type WebSession = {
    * 内容没变就不发；`announce()`（新设备接入）强制重发。
    */
   metadataSignature?: string;
+  tasks?: AgentTaskInventory;
+  tasksSignature?: string;
   /**
    * 当前原生 head 到根的父链已完整缓存。重连尾页合并和历史分页按实际覆盖更新；连续实时
    * append 保持完整性，catchup 只补当前缺口。
@@ -206,9 +208,14 @@ export class DshWebRuntime implements AgentBackend {
         this.onArchiveChange?.(publicId(id), archived);
       },
       changed: () => this.onCatalogChange?.(),
+      tasks: id => { const session = this.#sessions.get(publicId(id)); if (session) this.#publishTasks(session); },
+      unverified: () => { for (const session of this.#sessions.values()) this.#publishTasks(session); },
     });
     client.onEvent = event => this.#event(event);
-    client.onDiagnostic = event => this.onDiagnostic?.(event);
+    client.onDiagnostic = event => {
+      if (event.event === "socket.closed" || event.event === "failed") this.#discovery.invalidate();
+      this.onDiagnostic?.(event);
+    };
     client.onReconnect = () => { void this.#resyncAll().catch(error => this.#report(textOf(error))); };
     client.onExit = reason => {
       if (!this.#ready) return;
@@ -267,6 +274,7 @@ export class DshWebRuntime implements AgentBackend {
       void this.#loadModelCatalog(session);
       session.notifications.announce();
       this.#publishMetadata(session, true);
+      this.#publishTasks(session, true);
       void this.#loadDelivery(session);
       this.#emit(session, structuredClone(session.activity));
       // 新接入的设备手里没有命令词表，必须强制重发一次。
@@ -445,6 +453,7 @@ export class DshWebRuntime implements AgentBackend {
     this.#sessions.set(runtimeId, session);
     // Announce before follow can deliver messages: APP needs the runtime identity first.
     this.#publishMetadata(session);
+    this.#publishTasks(session, true);
     this.#followSession(session);
     this.#publishCapabilities(session, true);
     void this.#loadSkills(session);
@@ -498,6 +507,7 @@ export class DshWebRuntime implements AgentBackend {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         if (command.range === "preview") await this.#checkSource(session);
         await this.#loadDelivery(session);
+        this.#publishTasks(session, true);
         this.#emit(session, structuredClone(session.activity));
         // Catchup fills the native parent gap toward the phone's known branch. Re-reading the
         // latest tail cannot repair a hole between an old cached prefix and a reconnect tail.
@@ -1514,6 +1524,14 @@ export class DshWebRuntime implements AgentBackend {
     this.onMetadataChange?.();
     session.notifications.announce();
   }
+  #publishTasks(session: WebSession, force = false): void {
+    const tasks = this.#discovery.tasks(session.id, session.tasks);
+    const signature = JSON.stringify(tasks);
+    if (!force && signature === session.tasksSignature) return;
+    session.tasks = tasks; session.tasksSignature = signature;
+    this.#emit(session, { type: "execution.tasks", tasks });
+  }
+
   #detachSession(session: WebSession, reason: string): void {
     const producer = this.#toolProducers.get(publicId(session.id));
     this.#toolProducers.delete(publicId(session.id)); void producer?.dispose();

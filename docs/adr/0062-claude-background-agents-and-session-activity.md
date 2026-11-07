@@ -42,6 +42,10 @@ agent.list 提供完整库存，按会话和代次串行核对，内容变化驱
 
 证据：[后台任务回归](../../.artifacts/ui-regression/20261103-claude-background-agents/)。
 
+## 2026-11-07 跨 Agent 统一（S33 / SC52）
+
+跨 Agent 的共同模型、精简字段、部分 / 失联库存与双端提示见 [ADR-0068](0068-unified-subagent-inventory-and-app-hints.md)（S33 / SC52）。Claude 的原生采集、进程身份与完整库存规则继续沿用本 ADR；原生联动和用户验收状态分别保留。
+
 ## Consequences
 
 主回合可接收输入与后台仍有工作可以同时准确展示。代价是维护独立任务库存及未知状态，而不再用一个 busy 布尔代表全部执行。后续其他后端具备可靠任务来源时可复用同一投影与展示，仍由各自适配器定义控制能力。

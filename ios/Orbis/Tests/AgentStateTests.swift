@@ -122,10 +122,32 @@ struct AgentStateTests {
         #expect(h.runtime.presentationTitle == "空闲")
         #expect(h.runtime.backgroundTasks?.items.isEmpty == true)
         h.receive([domain("execution", ["phase": "idle"], revision: 4)])
-        #expect(h.runtime.presentationTitle == "子任务状态待核对")
+        #expect(h.runtime.presentationTitle == "空闲")
         h.receive([domain("execution", NSNull(), revision: 5, availability: "unknown")])
         #expect(h.runtime.status == "unknown")
         #expect(h.runtime.backgroundTasks?.availability == "unknown")
+    }
+
+    // S33 / SC52: partial generic tasks must update rows, not replace them with an old snapshot.
+    @Test func partialTasksUpdateKnownRowsAndRetainUnseenTasks() {
+        let h = Harness()
+        let child = ["id": "child", "title": "检查", "kind": "agent", "status": "running"]
+        let retained = ["id": "retained", "title": "已有任务", "kind": "agent", "status": "running"]
+        h.receive([domain("execution", ["phase": "idle", "tasks": ["availability": "ready", "items": [child, retained], "truncated": false]])])
+        let completed = ["id": "child", "title": "检查完成", "kind": "agent", "status": "completed"]
+        let next = ["id": "new", "parentId": "child", "title": "等待检查", "kind": "agent", "status": "waiting"]
+        h.receive([domain("execution", ["phase": "idle", "tasks": ["availability": "unknown", "items": [completed, next], "truncated": true]], revision: 2)])
+        #expect(h.runtime.status == "idle")
+        #expect(h.runtime.backgroundTasks?.items.map(\.id) == ["child", "retained", "new"])
+        #expect(h.runtime.backgroundTasks?.items.first?.status == "completed")
+        #expect(h.runtime.backgroundTasks?.items.first?.title == "检查完成")
+        #expect(h.runtime.backgroundTasks?.items.last?.status == "waiting")
+        #expect(h.runtime.backgroundTasks?.items.last?.parentId == "child")
+        #expect(h.runtime.backgroundTasks?.panelTitle == "子代理 · 3 项 · 清单不完整")
+        #expect(h.runtime.backgroundTasks?.allowsQuit == false)
+        h.receive([domain("execution", NSNull(), revision: 3, availability: "unknown")])
+        #expect(h.runtime.backgroundTasks?.truncated == false)
+        #expect(h.runtime.backgroundTasks?.inventoryNotice == "状态待核对，显示最后已知信息")
     }
 
     @Test func compactionActivityDrivesPresentationWithoutChangingExecutionPhase() {

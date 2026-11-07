@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type {
-  AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentNotificationsState, AgentPermissionsState,
+  AgentKind, AgentDeliveryItem, AgentExecutionState, AgentModelState, AgentNotificationsState, AgentPermissionsState,
   InteractionRequest, RuntimeEvent, RuntimeMetadata,
 } from "@orbis/protocol";
 
@@ -9,7 +9,7 @@ import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry, type StateDomain, type StateScope } from "./agent-state-registry.js";
 
 const HOST = "host-1";
-const kinds: Record<string, "codex" | "pi" | "claude"> = { "codex:r1": "codex", "codex:r2": "codex", "pi:r1": "pi", "claude:r1": "claude", "claude:r2": "claude" };
+const kinds: Record<string, AgentKind> = { "codex:r1": "codex", "codex:r2": "codex", "pi:r1": "pi", "claude:r1": "claude", "claude:r2": "claude", "dsh:r1": "dsh", "codexDesktop:r1": "codexDesktop" };
 
 const setup = () => {
   const registry = new AgentStateRegistry({ modelEpoch: "model-1" });
@@ -31,13 +31,29 @@ const request = (requestId: string): InteractionRequest => ({
   expiresAt: 1_800_000_000_000,
 });
 
-const scope = (sessionId = "s1", agentKind: "codex" | "pi" | "claude" = "codex"): StateScope =>
+const scope = (sessionId = "s1", agentKind: AgentKind = "codex"): StateScope =>
   ({ kind: "agent", key: { hostId: HOST, agentKind, sessionId } });
 
-const read = <T>(registry: AgentStateRegistry, domain: StateDomain, sessionId = "s1", agentKind: "codex" | "pi" | "claude" = "codex") =>
+const read = <T>(registry: AgentStateRegistry, domain: StateDomain, sessionId = "s1", agentKind: AgentKind = "codex") =>
   registry.read<T>(scope(sessionId, agentKind), domain);
 
 describe("AgentStateFacts 运行 / 模型 / 上下文", () => {
+  // S33 / SC52: all backends use the same task domain; partial evidence updates known
+  // children even before metadata arrives and never fabricates completion.
+  it.each(["codex", "codexDesktop", "dsh", "pi", "claude"] as const)("%s shares task reconciliation independent of main phase", agentKind => {
+    const { registry, facts } = setup();
+    const runtimeId = `${agentKind}:r1`;
+    facts.observe(runtimeId, metadata({}, runtimeId));
+    const execution = () => read<AgentExecutionState>(registry, "execution", "s1", agentKind)?.value;
+    expect(execution()?.tasks).toEqual({ availability: "unknown", items: [], truncated: false });
+    const child = { id: "child", title: "Review", kind: "subagent", status: "running" as const };
+    facts.observe(runtimeId, { type: "execution.tasks", tasks: { availability: "ready", items: [child], truncated: false } });
+    facts.observe(runtimeId, { type: "execution.tasks", tasks: { availability: "unknown", items: [{ ...child, status: "completed" }], truncated: true } });
+    expect(execution()).toMatchObject({ phase: "idle", tasks: { availability: "unknown", truncated: true, items: [{ ...child, status: "completed" }] } });
+    facts.observe(runtimeId, { type: "execution.tasks", tasks: { availability: "ready", items: [], truncated: false } });
+    expect(execution()?.tasks?.items).toEqual([]);
+  });
+
   // FT-G02-FACTS: missing optional metadata must not turn polling into full replay;
   // unconfirmed requested inventories still recover after source replacement.
   it("FT-G02 reconciles only requested inventories missing a source confirmation", () => {
@@ -109,7 +125,8 @@ describe("AgentStateFacts 运行 / 模型 / 上下文", () => {
     }));
     const execution = read<AgentExecutionState>(registry, "execution");
     expect(execution?.availability).toBe("ready");
-    expect(execution?.value).toEqual({ phase: "running", waitingFor: [], retry: "unavailable", compaction: "unavailable", turn: null });
+    expect(execution?.value).toEqual({ phase: "running", waitingFor: [], retry: "unavailable", compaction: "unavailable", turn: null,
+      tasks: { availability: "unknown", items: [], truncated: false } });
     expect(read<AgentModelState>(registry, "model")?.value).toEqual({ provider: "openai", id: "gpt-5", thinkingLevel: "high" });
     expect(read<{ contextWindow: number }>(registry, "context")?.value?.contextWindow).toBe(1_000);
   });

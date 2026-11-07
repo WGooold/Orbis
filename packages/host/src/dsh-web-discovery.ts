@@ -1,3 +1,5 @@
+import type { AgentTaskInventory } from "@orbis/protocol";
+import { dshAgentTasks } from "./dsh-agent-tasks.js";
 import type { DshWebConnection, DshWebEvent } from "./dsh-web-client.js";
 import { DshSessionTitles } from "./dsh-session-titles.js";
 
@@ -17,6 +19,8 @@ type DiscoveryCallbacks = {
   offline: (id: string, removed: boolean) => void;
   archived: (id: string, archived: boolean) => void;
   changed: () => void;
+  tasks?: (id: string) => void;
+  unverified?: () => void;
 };
 
 /** Observes the native registry without creating Agents for cold history. */
@@ -60,6 +64,7 @@ export class DshWebDiscovery {
         const fail = (error: Error) => {
           finish();
           this.#workspaceReady = false;
+          this.#callbacks.unverified?.();
           this.#workspace?.(); this.#workspace = undefined;
           if (!opened) reject(error);
           else this.#scheduleRetry();
@@ -89,12 +94,21 @@ export class DshWebDiscovery {
   reconnect(): Promise<void> {
     // The replayed Workspace baseline must not publish the previous generation's
     // live rows while its fresh Session list is still in flight (or vice versa).
-    this.#workspaceReady = false;
-    this.#catalogReady = false;
+    this.invalidate();
     return this.refresh();
   }
 
+  invalidate(): void {
+    this.#workspaceReady = false; this.#catalogReady = false;
+    this.#callbacks.unverified?.();
+  }
+
   retry(): void { this.#scheduleRetry(); }
+
+  tasks(id: string, previous?: AgentTaskInventory): AgentTaskInventory {
+    if (!this.#workspaceReady || !this.#catalogReady) return { availability: "unknown", items: previous?.items ?? [], truncated: false };
+    return dshAgentTasks(id, this.#rows, previous, (childId, item) => this.titles.read(childId, item));
+  }
 
   titleProjection(id: string, baseline: unknown, complete = false): void {
     if (this.#closed || !this.titles.apply(id, baseline, "sequenced", complete)) return;
@@ -123,7 +137,7 @@ export class DshWebDiscovery {
       this.#callbacks.changed();
       this.#publish();
     })();
-    this.#refreshing = operation.catch(error => { this.#scheduleRetry(); throw error; }).finally(() => {
+    this.#refreshing = operation.catch(error => { this.#catalogReady = false; this.#callbacks.unverified?.(); this.#scheduleRetry(); throw error; }).finally(() => {
       this.#refreshing = undefined;
       this.#changes = undefined;
     });
@@ -169,6 +183,7 @@ export class DshWebDiscovery {
       this.#callbacks.live({ sessionId: item.sessionId, cwd: item.cwd, running: item.running === true,
         createdAt: Number(item.createdAt ?? item.updatedAt ?? Date.now()),
         ...(title === undefined ? {} : { title }) });
+      this.#callbacks.tasks?.(item.sessionId);
     }
     for (const id of this.#published) if (!live.has(id)) this.#callbacks.offline(id, false);
     this.#published = live;

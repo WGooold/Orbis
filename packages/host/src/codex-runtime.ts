@@ -32,6 +32,7 @@ import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_
 import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, type RuntimeInputState } from "@orbis/protocol";
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
+import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
 import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
 
 import type {
@@ -303,6 +304,7 @@ type ThreadState = {
   permissions: RuntimePermissions | undefined;
   approvalItems: Map<string, Record<string, unknown>>;
   asyncInputs: CodexAsyncInputs;
+  tasks: CodexAgentTasks;
   lastError: { message: string; willRetry: boolean; turnId?: string } | undefined;
   activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
   /** Native owner identities are kept untruncated; delayed item completions cannot settle a newer compaction. */
@@ -587,6 +589,7 @@ export class CodexRuntime implements AgentBackend {
           text: item.text, delivery: item.delivery, state: "rejected", error: "Codex 已断开，消息尚未提交" });
         this.#setCompaction(thread, "unavailable");
         thread.asyncInputs.close("disconnected");
+        this.#emit(thread.id, { type: "execution.tasks", tasks: thread.tasks.stale() });
       }
       for (const pending of this.#permissionUpdates.values()) pending.reject(new Error("Codex 已断开，无法确认权限设置"));
       this.#permissionUpdates.clear();
@@ -723,6 +726,7 @@ export class CodexRuntime implements AgentBackend {
       permissions: this.#observedSettings.get(id),
       approvalItems: new Map(),
       asyncInputs: new CodexAsyncInputs(this.runtimeIdFor(id), event => this.#emit(id, event)),
+      tasks: new CodexAgentTasks(id),
       lastError: undefined,
       activity: { type: "execution.activity", retry: "unavailable", compaction: "unavailable" },
       settledCompactions: new Set(),
@@ -905,13 +909,14 @@ export class CodexRuntime implements AgentBackend {
       for (const id of this.#desktopThreads) {
         if (!loaded.has(id) && !this.#desktopClientProtected.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
       }
+      const children: Record<string, unknown>[] = [];
       for (const id of loaded) {
         if (this.#desktopClientProtected.has(id)) continue;
         if (this.#threads.has(id) && !this.#threads.get(id)?.tuiAttachPending) continue;
         const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
         if (!this.#started || !loaded.has(id)) return;
         const snapshot = object(result.thread);
-        if (isCodexSubagentSource(snapshot.source)) continue;
+        if (isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) { children.push(snapshot); continue; }
         if (snapshot.ephemeral === true || typeof snapshot.cwd !== "string"
           || (typeof snapshot.path === "string" && snapshot.path.split(/[\\/]/).includes("archived_sessions"))) continue;
         const status = object(snapshot.status);
@@ -924,6 +929,18 @@ export class CodexRuntime implements AgentBackend {
         }
         await this.#adoptDesktopThread(id, snapshot);
       }
+      // loaded/list can place a nested child before its root. Adopt roots first, then
+      // resolve only proven ancestry; missing/unloaded children never clear tasks.
+      let pending = children;
+      while (pending.length) {
+        const remaining: Record<string, unknown>[] = [];
+        for (const child of pending) {
+          this.#observeChildNotification("thread/started", { thread: child });
+          if (![...this.#threads.values()].some(root => typeof child.id === "string" && root.tasks.has(child.id))) remaining.push(child);
+        }
+        if (remaining.length === pending.length) break;
+        pending = remaining;
+      }
     } finally {
       this.#desktopRefreshing = false;
       if (this.#desktopRefreshPending && this.#started) {
@@ -934,7 +951,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   async #adoptDesktopThread(id: string, snapshot: Record<string, unknown>): Promise<void> {
-    if (isCodexSubagentSource(snapshot.source)) {
+    if (isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) {
       this.#options.log?.(`忽略 Codex 子代理线程：${id}`);
       return;
     }
@@ -1201,7 +1218,7 @@ export class CodexRuntime implements AgentBackend {
         data?: Array<Record<string, unknown>>;
       };
       live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
-        if (isCodexSubagentSource(thread.source)) return [];
+        if (isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
         const id = thread.id;
         const cwd = thread.cwd;
         const createdAt = toMillis(thread.createdAt);
@@ -1344,7 +1361,7 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
-    if (isCodexSubagentSource(threadJson?.source)) {
+    if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
     if (existing !== undefined && !this.#isCurrentReconcile(existing, existingGeneration!)) {
@@ -1784,6 +1801,8 @@ export class CodexRuntime implements AgentBackend {
       const row = object(item);
       if (row.type === "userMessage") this.#confirmQueuedMessage(thread, row.clientId);
     }
+    const tasks = thread.tasks.replay(turns);
+    if (tasks) this.#emit(thread.id, { type: "execution.tasks", tasks });
     return true;
   }
 
@@ -3093,7 +3112,7 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
-    if (isCodexSubagentSource(snapshot?.source)) {
+    if (isCodexSubagentSource(snapshot?.source, snapshot?.parentThreadId)) {
       this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
       return;
     }
@@ -3130,7 +3149,7 @@ export class CodexRuntime implements AgentBackend {
     const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
       ? nested as Record<string, unknown>
       : await this.#threadFromList(threadId);
-    if (isCodexSubagentSource(snapshot?.source)) {
+    if (isCodexSubagentSource(snapshot?.source, snapshot?.parentThreadId)) {
       this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
       return;
     }
@@ -3327,6 +3346,21 @@ export class CodexRuntime implements AgentBackend {
     else this.#reconcileExternalRevert(thread);
   }
 
+  /** Route native child observations to their root without making children active sessions. */
+  #observeChildNotification(method: string, record: Record<string, unknown>): boolean {
+    const native = object(record.thread), child = codexChildThread(native);
+    const id = typeof record.threadId === "string" ? record.threadId : child?.id;
+    const root = [...this.#threads.values()].find(thread => child
+      ? thread.id === child.parentId || thread.tasks.has(child.parentId)
+      : id !== undefined && thread.tasks.has(id));
+    if (!root) return child !== undefined;
+    const tasks = child ? root.tasks.observeThread(native)
+      : method === "thread/status/changed" && id ? root.tasks.observeStatus(id, record.status)
+      : method === "item/started" || method === "item/completed" ? root.tasks.observeItem(record.item) : undefined;
+    if (tasks) this.#emit(root.id, { type: "execution.tasks", tasks });
+    return true;
+  }
+
   async #handleNotification(method: string, params: unknown, replaying = false): Promise<void> {
     const record = (params ?? {}) as Record<string, unknown>;
     if (method === "windowsSandbox/setupCompleted") {
@@ -3345,6 +3379,7 @@ export class CodexRuntime implements AgentBackend {
         scope: {}, severity: "warning", message: [record.summary, record.details].filter((v) => typeof v === "string").join("\n") || "Codex 配置警告" });
       return;
     }
+    if (this.#observeChildNotification(method, record)) return;
     const threadId = record.threadId;
     if (method === "thread/settings/updated" && typeof threadId === "string") {
       const settings = object(record.threadSettings ?? record);
@@ -3478,6 +3513,8 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
+        const tasks = thread.tasks.observeItem(data);
+        if (tasks) this.#emit(thread.id, { type: "execution.tasks", tasks });
         if (data.type === "contextCompaction") {
           if (typeof record.turnId === "string" && thread.turnId !== undefined && record.turnId !== thread.turnId) return;
           if (typeof record.turnId === "string" && thread.settledCompactions.has(`turn:${record.turnId}`)
@@ -3589,6 +3626,8 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
+        const tasks = thread.tasks.observeItem(data);
+        if (tasks) this.#emit(thread.id, { type: "execution.tasks", tasks });
         if (data.type === "fileChange" && typeof data.id === "string" && typeof record.turnId === "string" && record.turnId === thread.turnId) {
           this.onFileChangeEvidence?.(this.runtimeIdFor(thread.id), { type: "item", turnId: record.turnId, itemId: data.id,
             status: typeof data.status === "string" ? data.status : "unknown" });
@@ -4290,6 +4329,7 @@ export class CodexRuntime implements AgentBackend {
     this.#emit(thread.id, { type: "runtime.metadata", metadata: this.threadMetadata(thread) });
     this.#publishInteractions(thread.id);
     this.#publishDelivery(thread);
+    this.#emit(thread.id, { type: "execution.tasks", tasks: thread.tasks.snapshot() });
     this.#emit(thread.id, thread.activity);
     thread.notifications.announce();
     void this.#checkNativeSource(thread).catch(() => undefined);
@@ -4753,7 +4793,8 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
   };
 }
 
-function isCodexSubagentSource(source: unknown): boolean {
+function isCodexSubagentSource(source: unknown, parentThreadId?: unknown): boolean {
+  if (typeof parentThreadId === "string" && parentThreadId.length > 0) return true;
   if (source === null || typeof source !== "object" || Array.isArray(source)) return false;
   const record = source as Record<string, unknown>;
   // Rollout JSON uses snake_case (`subagent`); app-server responses from newer Codex

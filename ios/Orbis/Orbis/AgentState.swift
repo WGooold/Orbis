@@ -345,6 +345,7 @@ struct AgentProjection {
                 if name == "execution" {
                     result.runtime.status = "unknown"; result.runtime.compactionPhase = nil
                     result.runtime.backgroundTasks?.availability = "unknown"
+                    result.runtime.backgroundTasks?.truncated = false
                 }
                 continue
             }
@@ -362,10 +363,9 @@ struct AgentProjection {
                 result.runtime.status = phase
                 result.runtime.compactionPhase = value["compaction"]["phase"].string
                 if value["tasks"] != .null {
-                    guard var tasks: BackgroundTaskInventory = value["tasks"].decoded(), tasks.valid else { return nil }
-                    if tasks.availability != "ready", let previous = result.runtime.backgroundTasks { tasks.items = previous.items }
-                    result.runtime.backgroundTasks = tasks
-                } else if complete, result.runtime.backgroundTasks != nil || result.runtime.agentKind == "claude" {
+                    guard let tasks: BackgroundTaskInventory = value["tasks"].decoded(), tasks.valid else { return nil }
+                    result.runtime.backgroundTasks = tasks.reconciled(previous: result.runtime.backgroundTasks)
+                } else if complete, result.runtime.backgroundTasks != nil {
                     result.runtime.backgroundTasks = BackgroundTaskInventory(availability: "unknown",
                         items: result.runtime.backgroundTasks?.items ?? [], truncated: false)
                 }

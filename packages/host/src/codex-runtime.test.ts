@@ -164,6 +164,54 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
+// Child lifecycles belong to execution.tasks for both native transports; main input stays independent.
+describe("Codex CLI/Desktop child task integration", () => {
+  const tasks = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.tasks").at(-1)?.tasks;
+  const collab = (status: string) => ({ type: "collabAgentToolCall", id: "spawn-call", tool: "spawnAgent", status: "completed",
+    senderThreadId: "th-1", receiverThreadIds: ["child"], agentsStates: { child: { status, message: "private output" } }, prompt: "private prompt" });
+
+  it.each([false, true])("projects native items and child source/status without creating sessions (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop }); await activate(h);
+    h.notify("item/completed", { threadId: "th-1", turnId: "main", item: collab("running") });
+    expect(tasks(h)).toMatchObject({ availability: "unknown", truncated: true, items: [{ id: "child", status: "running" }] });
+    expect(h.events.filter(event => event.type === "runtime.metadata").at(-1)?.metadata.status).toBe("idle");
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "main", startedAt: 1 } });
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "main", status: "completed" } });
+    expect(tasks(h)?.items[0]?.status).toBe("running");
+    expect(h.events.filter(event => event.type === "runtime.metadata").at(-1)?.metadata.status).toBe("idle");
+    h.notify("thread/started", { thread: { id: "nested", parentThreadId: "child", agentNickname: "Ada", agentRole: "worker", status: { type: "active", activeFlags: [] } } });
+    h.notify("thread/status/changed", { threadId: "nested", status: { type: "idle" } });
+    expect(tasks(h)?.items).toContainEqual({ id: "nested", parentId: "child", title: "Ada", kind: "worker", status: "idle" });
+    expect(h.runtime.activeThreadIds()).toEqual(["th-1"]);
+    h.runtime.announce("th-1");
+    expect(tasks(h)?.items).toHaveLength(2);
+    h.server.onExit?.(0);
+    expect(tasks(h)).toMatchObject({ availability: "unknown", truncated: false, items: [{ id: "child", status: "running" }, { id: "nested", status: "idle" }] });
+  });
+
+  it.each([false, true])("does not regress live completion from a lagging active native snapshot (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop }); await activate(h);
+    h.notify("turn/started", { threadId: "th-1", turn: { id: "main", startedAt: 1 } });
+    h.notify("item/completed", { threadId: "th-1", turnId: "main", item: collab("completed") });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads.mock.calls).toHaveLength(1));
+    h.events.length = 0;
+    h.resolveNext({ data: [{ id: "main", status: "inProgress", items: [collab("running")] }] });
+    await vi.waitFor(() => expect(h.events.some(event => event.type === "runtime.metadata")).toBe(true));
+    h.runtime.announce("th-1");
+    expect(tasks(h)?.items[0]?.status).toBe("completed");
+    h.server.onExit?.(0);
+  });
+
+  it.each([false, true])("restores task lifecycle from full native history (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop, initialTurns: [{ id: "t", status: "completed", items: [collab("completed")] }] });
+    await activate(h);
+    expect(tasks(h)).toMatchObject({ availability: "unknown", truncated: true, items: [{ id: "child", status: "completed" }] });
+    expect(JSON.stringify(tasks(h))).not.toMatch(/private|prompt|message/);
+    h.server.onExit?.(0);
+  });
+});
+
 describe("Codex recoverable source checkpoints", () => {
   const compaction = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.activity").at(-1)?.compaction;
   const startCompaction = (h: ReturnType<typeof makeHarness>, turnId = "t", itemId = "compact") => {
@@ -3049,9 +3097,12 @@ describe("CodexRuntime TUI 切换会话", () => {
     expect(h.queue).toEqual([]);
 
     h.notify("thread/status/changed", { threadId: "th-subagent", status: { type: "idle" } });
-    await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
-    h.queue.shift()!.resolve({ data: [{ id: "th-subagent", cwd: "D:/repo", source, createdAt: 1, updatedAt: 2, turns: [] }] });
     await flush();
+    // A known child updates its parent task list directly, never triggering TUI adoption.
+    expect(h.queue).toEqual([]);
+    expect(h.events.filter(event => event.type === "execution.tasks").at(-1)).toMatchObject({
+      tasks: { availability: "unknown", truncated: true, items: [{ id: "th-subagent", status: "idle" }] },
+    });
     expect(h.offline).toEqual([]);
     expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
 

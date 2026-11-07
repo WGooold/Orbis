@@ -16,6 +16,7 @@ import {
   type ToolContentPage,
   type ToolContentReadRequest,
 } from "@orbis/protocol";
+import { mergeAgentTaskInventory } from "./agent-tasks.js";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { claudeConfigDir, type ClaudeTranscriptFacts } from "./claude-transcript.js";
 import { localHostname } from "./sessions.js";
@@ -426,7 +427,7 @@ export class ClaudeModsBridge {
     }
     if (parsed.type === "tasks.snapshot") {
       session.tasksCheckedAt = Date.now();
-      const tasks = parsed.tasks.availability === "ready" ? parsed.tasks : { ...parsed.tasks, items: session.tasks.items };
+      const tasks = mergeAgentTaskInventory(session.tasks, parsed.tasks);
       const changed = JSON.stringify(tasks) !== JSON.stringify(session.tasks);
       session.tasks = tasks;
       if (changed) this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks });

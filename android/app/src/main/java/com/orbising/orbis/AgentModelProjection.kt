@@ -36,7 +36,7 @@ internal fun RemoteState.applyAgentDomainProjection(
             // unknown/unavailable 保留最后已知值；availability 本身仍已登记在镜像内。
             if (domain.availability != "ready") {
                 if (name == "execution") runtime = runtime.copy(status = "unknown", compactionPhase = null,
-                    backgroundTasks = runtime.backgroundTasks?.copy(availability = "unknown"))
+                    backgroundTasks = runtime.backgroundTasks?.copy(availability = "unknown", truncated = false))
                 continue
             }
             val value = domain.value?.takeUnless { it is JsonNull }
@@ -59,10 +59,9 @@ internal fun RemoteState.applyAgentDomainProjection(
                     if (taskValue != null) {
                         val tasks = json.decodeFromJsonElement<BackgroundTaskInventory>(taskValue)
                         require(tasks.valid)
-                        runtime = runtime.copy(backgroundTasks = if (tasks.availability == "ready") tasks else
-                            tasks.copy(items = runtime.backgroundTasks?.items ?: tasks.items))
+                        runtime = runtime.copy(backgroundTasks = tasks.reconciled(runtime.backgroundTasks))
                     } else if ((domain.completeness == "complete" || domain.projectionComplete == true) &&
-                        (runtime.backgroundTasks != null || runtime.agentKind == "claude")) {
+                        runtime.backgroundTasks != null) {
                         runtime = runtime.copy(backgroundTasks = BackgroundTaskInventory("unknown", runtime.backgroundTasks?.items.orEmpty(), false))
                     }
                     conversation = conversation.copy(waitingLocalInteraction = phase == "waiting_local_interaction")

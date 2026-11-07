@@ -1693,7 +1693,7 @@ struct BackgroundTasksView: View {
             OrbisMotionButton { expanded.toggle() } label: {
                 HStack(spacing: 8) {
                     OrbisActionSymbol(systemName: expanded ? "chevron.down" : "chevron.right")
-                    Text(tasks.activityTitle ?? L10n.tr("子任务 · {0} 项", tasks.items.count)).font(.orbisCaption(.medium)).lineLimit(2)
+                    Text(tasks.panelTitle).font(.orbisCaption(.medium)).lineLimit(2)
                     Spacer(minLength: 0)
                 }.frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("background-tasks-toggle")
@@ -1701,8 +1701,8 @@ struct BackgroundTasksView: View {
             OrbisCollapse(expanded: expanded) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        if !tasks.confirmed {
-                            Text(L10n.tr("正在核对子任务状态，以下为最后已知信息")).font(.orbisCaption())
+                        if let notice = tasks.inventoryNotice {
+                            Text(notice).font(.orbisCaption())
                         }
                         ForEach(tasks.items) { task in
                             VStack(alignment: .leading, spacing: 4) {

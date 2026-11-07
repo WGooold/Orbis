@@ -68,11 +68,17 @@ class BackgroundTasksInstrumentedTest {
         compose.onNodeWithTag("background-task-b").assertIsDisplayed()
         compose.runOnIdle { tasks = tasks.copy(items = tasks.items.map { if (it.id == "a") it.copy(status = "completed") else it }) }
         compose.onNodeWithTag("background-task-a").assertIsDisplayed()
-        compose.onNodeWithText("已完成").assertIsDisplayed()
+        compose.onNodeWithText("完成").assertIsDisplayed()
         compose.onNodeWithText("主回合：idle").assertIsDisplayed()
         compose.runOnIdle { tasks = tasks.copy(availability = "unknown") }
         compose.onNodeWithTag("background-task-b").assertIsDisplayed()
-        compose.onNodeWithText("正在核对子任务状态，以下为最后已知信息").assertIsDisplayed()
+        compose.onNodeWithText("状态待核对，显示最后已知信息").assertIsDisplayed()
+        // S33 / SC52: partial lists retain disclosure, task titles and their known local status.
+        compose.runOnIdle { tasks = tasks.copy(truncated = true) }
+        compose.onNodeWithText("子代理 · 2 项 · 清单不完整").assertIsDisplayed()
+        compose.onNodeWithText("清单不完整，显示已知任务").assertIsDisplayed()
+        compose.onNodeWithText("完成").assertIsDisplayed()
+        compose.onNodeWithText("工作中").assertIsDisplayed()
         compose.onNodeWithTag("background-tasks-toggle").performClick()
         compose.onNodeWithTag("background-task-b").assertDoesNotExist()
     }

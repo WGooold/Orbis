@@ -627,6 +627,29 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.metadata).toHaveBeenCalled();
   });
 
+  // S33 / SC52: child work is a display-only inventory on the parent, not a new
+  // runtime, a main turn, or an inferred terminal outcome. Reannounce recovers it.
+  it("publishes bounded child task facts without changing parent admission or exposing native payloads", async () => {
+    const f = discoveryFixture();
+    f.list([f.live("parent", true)]); await f.runtime.start();
+    const inventory = () => f.events.flatMap(({ event, runtimeId }) => runtimeId === "dsh:parent" && event.type === "execution.tasks" ? [event.tasks] : []).at(-1)!;
+    f.emit("api-session/added", { ...f.live("child", true), origin: "subagent", parentSessionId: "parent", prompt: "private instruction", result: "private result" });
+    expect(inventory()).toMatchObject({ availability: "unknown", truncated: true, items: [{ id: "child", title: "Title child", kind: "subagent", status: "running" }] });
+    expect(JSON.stringify(inventory())).not.toContain("private");
+    f.emit("api-session/status", "parent", false);
+    expect(f.runtime.directoryEntries()[0]?.status).toBe("idle");
+    expect(inventory().items[0]?.status).toBe("running");
+    f.emit("api-session/status", "child", false);
+    expect(inventory().items[0]?.status).toBe("idle");
+    f.emit("api-session/removed", "child");
+    expect(inventory().items[0]?.status).toBe("unknown");
+    const before = f.events.length; f.runtime.announce();
+    expect(f.events.slice(before).some(({ event }) => event.type === "execution.tasks")).toBe(true);
+    expect(f.runtime.directoryEntries().map(item => item.sessionId)).toEqual(["dsh:parent"]);
+    f.client.onDiagnostic?.({ event: "socket.closed" });
+    expect(inventory()).toMatchObject({ availability: "unknown", truncated: false, items: [{ id: "child" }] });
+  });
+
   it("does not add subagent runs or replacement blank drafts to the ordinary sidebar after each prompt", async () => {
     const f = discoveryFixture();
     const parent = f.live("parent", true);
