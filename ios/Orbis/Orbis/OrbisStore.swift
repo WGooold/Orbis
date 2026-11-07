@@ -528,7 +528,6 @@ final class HostConnection: ObservableObject {
                 if let baseline = self.pendingAppliedBaselines.removeValue(forKey: id), self.sourcePositions[runtime]?.epoch == baseline.epoch, self.sourcePositions[runtime]?.seq == baseline.seq { self.appliedBaselines[runtime] = baseline }
                 if let page = self.pendingReadPages.removeValue(forKey: id), let summary = self.runtimes.first(where: { $0.runtimeId == runtime }) {
                     self.completeRemoteRead(id, runtime: summary, page: page, sourceConfirmed: self.appliedBaselines[runtime] != nil)
-                    self.beginCatchup(summary)
                 }
                 self.acknowledge(runtimeId: runtime, syncId: id, result: "applied")
             }
@@ -1064,23 +1063,6 @@ final class HostConnection: ObservableObject {
         if let known = gap.knownLeafId { body["knownLeafId"] = known }
         startSync(sync, runtime: runtime, commandId: command, range: "catchup", boundary: nil,
             leaf: gap.targetLeafId, command: body, known: nil, readId: operation)
-    }
-
-    private func beginCatchup(_ runtime: RuntimeSummary) {
-        guard let host = selectedHost, let session = runtime.sessionId, let target = sessionLeaves[runtime.runtimeId],
-              let owner = readOwner(runtime) else { return }
-        let acceptance = sessionReads.begin(kind: .catchup, owner: owner, targetLeafId: target)
-        guard let operation = acceptance.operationId, !acceptance.merged else { return }
-        runAsyncTransaction { [weak self] in
-            guard let self else { return }
-            do {
-                let page = try await self.historyWorker.page(host: host, sessionId: session, leafId: target, limit: 1)
-                guard let current = self.readOwner(runtime), self.sessionReads.owns(operation, current: current) else { return }
-                if page.targetCovered { self.sessionReads.finish(operation, phase: .succeeded) }
-                else if let gap = page.coverageGap { self.requestCatchup(runtime, operation: operation, gap: gap) }
-                else { self.failRead(operation, runtime: runtime, message: L10n.tr("历史补齐范围无法确认。")) }
-            } catch { self.failRead(operation, runtime: runtime, message: L10n.tr("历史补齐读取失败。")) }
-        }
     }
 
     var isViewingCachedSession: Bool { selectedOfflineSession != nil }
@@ -2627,7 +2609,6 @@ final class HostConnection: ObservableObject {
                 finishSync(syncId, readPhase: nil)
                 completeRemoteRead(syncId, runtime: runtime, page: page, sourceConfirmed: true)
                 acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
-                beginCatchup(runtime)
             }
             return
         }
@@ -2736,7 +2717,6 @@ final class HostConnection: ObservableObject {
             finishSync(syncId, readPhase: nil)
             acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
             completeRemoteRead(syncId, runtime: runtime, page: page)
-            if sessionReads.operations[operation]?.phase == .succeeded { beginCatchup(runtime) }
             return
         }
         guard let committed = await commitHistory(event, runtime: runtime, activate: true, rawEnvelope: rawEnvelope) else {
@@ -2780,7 +2760,6 @@ final class HostConnection: ObservableObject {
             if toolInventories.covers(reference, runtime: runtimeId) {
                 if let baseline { appliedBaselines[runtimeId] = baseline }
                 completeRemoteRead(syncId, runtime: runtime, page: committed.page, sourceConfirmed: baseline != nil)
-                beginCatchup(runtime)
                 acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
             }
             else if toolAcknowledgements.count < 8, toolInventories.loading.contains(runtimeId) { toolAcknowledgements[syncId] = (runtimeId, reference); pendingAppliedBaselines[syncId] = baseline; pendingReadPages[syncId] = committed.page }
@@ -2791,7 +2770,6 @@ final class HostConnection: ObservableObject {
         } else {
             if let baseline { appliedBaselines[runtimeId] = baseline }
             completeRemoteRead(syncId, runtime: runtime, page: committed.page, sourceConfirmed: baseline != nil)
-            beginCatchup(runtime)
             acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
         }
     }

@@ -16,6 +16,17 @@ class SessionSyncTasksTest {
     private fun ack(state: RemoteState, id: String, sequence: Int = 1) = RelayReducer().reduce(state,
         """{"type":"runtime.event","runtimeId":"r0","sequence":$sequence,"event":{"type":"command.result","commandId":"$id","ok":true}}""")
 
+    @Test fun `source recovery remains a bounded preview even when a cached head exists`() {
+        val state = initial().copy(sessionSyncRequests = setOf("r0"), conversations = mapOf(
+            "r0" to RuntimeConversation(hasLiveSnapshot = true, sourceEpoch = "epoch", sourceSeq = 10,
+                sourceHeadLeafId = "leaf", sourceReady = true),
+        ))
+        val recovery = state.requestedSessionRecovery("r0", 7, "recovery")
+        assertEquals("preview", recovery?.range)
+        assertNull(recovery?.knownLeafId)
+        assertEquals("leaf", recovery?.viewLeafId)
+    }
+
     @Test fun `slow acknowledgement retains snapshot ownership and stable retry identity`() {
         val first = tick(initial().queueSessionSync("c", task()), 1_000)
         assertEquals(1, first.send.size)

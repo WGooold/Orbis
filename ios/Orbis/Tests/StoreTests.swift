@@ -1086,19 +1086,15 @@ struct StoreTests {
         return result
     }
 
-    @Test func fixedTargetCatchupCommitsAncestorsWithoutMovingLiveHead() async throws {
+    @Test func previewDoesNotBackfillAncestorsAndStillTracksTheCurrentLiveHead() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [3, 4], hasOlder: true))
-        let catchup = try #require(transport.syncCommands.last { $0["range"] as? String == "catchup" })
-        #expect(catchup["targetLeafId"] as? String == "e2")
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1, "seq": 2,
             "source": ["epoch": "source", "seq": 2, "ready": true], "head": ["leafId": "e5"],
             "entries": [["entryId": "e5", "parentId": "e4"]],
             "display": ["entries": [["entryId": "e5", "message": message("m5", text: "row 5")]]]], sequence: 2)
-        await transport.event(rangeSnapshot(catchup, ids: [1, 2]), sequence: 3)
         #expect(store.messages.map(\.text) == ["row 3", "row 4", "row 5"])
-        let child = try #require(store.connection(for: "host-1"))
-        #expect(child.sessionReads.latest(historyKey: "a", kind: .catchup)?.phase == .succeeded)
         store.refresh()
         let known = try #require(transport.syncCommands.last?["knownState"] as? [String: Any])
         #expect(known["seq"] as? Int64 == 2)
@@ -1156,26 +1152,19 @@ struct StoreTests {
         #expect(child.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .failed)
     }
 
-    @Test(arguments: ["msg", "catchup"]) func backgroundCatchupAdvancesAcrossMultipleForwardPages(channel: String) async throws {
+    @Test func previewKeepsTheTailAndOlderHistoryUsesAnExplicitBoundary() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
-        var last = 0
-        for page in 0..<4 {
-            let request = try #require(transport.syncCommands.last { $0["range"] as? String == "catchup" })
-            #expect(request["targetLeafId"] as? String == "e498")
-            #expect(request["knownLeafId"] as? String == (last == 0 ? nil : "e\(last)"))
-            let end = min(498, last + 128)
-            await transport.event(rangeSnapshot(request, ids: Array((last + 1)...end), complete: end == 498), sequence: page + 2, channel: channel)
-            last = end
-        }
-        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.count == 4)
-        let child = try #require(store.connection(for: "host-1"))
-        #expect(child.sessionReads.latest(historyKey: "a", kind: .catchup)?.phase == .succeeded)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         #expect(store.messages.map(\.text) == ["row 499", "row 500"])
         #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
+        let history = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        #expect(history["beforeEntryId"] as? String == "e499")
+        #expect(history["targetLeafId"] as? String == "e500")
+        await transport.event(rangeSnapshot(history, ids: Array(469...498)), sequence: 3)
         #expect(store.messages.count == 32)
         #expect(store.messages.first?.text == "row 469")
-        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.isEmpty)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
     }
 
     @Test func toolInventoryFailureRejectsAckAndReleasesSourceRead() async throws {

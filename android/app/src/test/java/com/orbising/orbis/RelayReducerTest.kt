@@ -65,20 +65,6 @@ class RelayReducerTest {
     }
 
     @Test
-    fun `a newly opened runtime requests preview before catchup`() {
-        val conversation = RuntimeConversation()
-
-        assertEquals("preview", initialSessionSyncRange(conversation, "known-leaf"))
-        assertEquals("catchup", initialSessionSyncRange(
-            conversation.copy(hasLiveSnapshot = true),
-            "known-leaf",
-        ))
-        assertEquals("preview", initialSessionSyncRange(conversation, null))
-        assertTrue(shouldStartBranchCatchUpImmediately(conversation.copy(hasLiveSnapshot = true), true))
-        assertFalse(shouldStartBranchCatchUpImmediately(conversation, true))
-    }
-
-    @Test
     fun `runtime refresh keeps an idle snapshot visible while reconciling the graph`() {
         val initial = RemoteState(
             selectedRuntimeId = "runtime-a",

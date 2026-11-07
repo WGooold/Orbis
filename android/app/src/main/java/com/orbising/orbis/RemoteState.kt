@@ -1047,15 +1047,6 @@ private fun RuntimeSummary.sessionView(runtimeId: String): RuntimeSessionView? =
 }
 
 
-internal fun initialSessionSyncRange(
-    conversation: RuntimeConversation?,
-    knownLeafId: String?,
-): String = if (conversation?.hasLiveSnapshot != true || knownLeafId == null) {
-    "preview"
-} else {
-    "catchup"
-}
-
 /**
  * Invalidates only the selected Runtime's display snapshot. The next loader pass requests a
  * fresh preview while preserving the current messages until the replacement arrives.
@@ -1136,11 +1127,6 @@ internal fun RemoteState.requestBranchRefresh(runtimeId: String): RemoteState {
         )),
     ).reconcileHistoryReads()
 }
-
-internal fun shouldStartBranchCatchUpImmediately(
-    conversation: RuntimeConversation?,
-    hasInMemoryGraph: Boolean,
-): Boolean = hasInMemoryGraph && conversation?.hasLiveSnapshot == true
 
 private fun RuntimeSummary.isSyncPending(
     selectedRuntimeId: String?,

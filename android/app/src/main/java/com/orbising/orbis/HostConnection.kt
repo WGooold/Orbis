@@ -1195,60 +1195,6 @@ internal class HostConnection(
         updateState { state -> if (state.historyReads[operation.operationId]?.phase == HistoryReadPhase.LOCAL)
             state.finishHistoryRead(operation.operationId, HistoryReadPhase.FAILED, L10n.tr("历史请求未能加入同步队列，请重试")) else state }
     }
-    private fun startBranchCatchUp(
-        pairedDevice: DeviceCredential,
-        runtime: RuntimeSummary,
-        fixedTarget: String? = runtime.sessionLeafId,
-        completedRange: PendingSessionSync? = null,
-    ) {
-        val sessionId = runtime.sessionId ?: return
-        if (runCatching { prepareSessionCache(pairedDevice, sessionId, runtime.agentKind) }.getOrElse {
-                reportSessionLoadFailure(runtime.runtimeId, it)
-                return
-            }) return
-        val current = mutableState.value
-        if (device != pairedDevice || !shouldConnect || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
-            runtime.runtimeId in current.sessionSyncFailures) return
-        if (sessionRangeFailureKey(runtime.runtimeId, "catchup") in current.sessionRangeFailures) return
-        if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId && it.range == "catchup" }) return
-        var acceptance = SessionReadAcceptance()
-        updateState { it.beginSessionRead(runtime.runtimeId, SessionReadKind.CATCHUP,
-            UUID.randomUUID().toString(), fixedTarget).also { start -> acceptance = start.acceptance }.state }
-        val operationId = acceptance.operationId ?: return
-        val operation = mutableState.value.sessionReads[operationId] ?: return
-        val targetLeafId = operation.leafId
-        if (targetLeafId == null) {
-            updateState { it.finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED) }
-            return
-        }
-        val (gap, cacheEpoch) = try {
-            synchronized(sessionGraphStore) {
-                sessionGraphStore.planCatchUp(pairedDevice, sessionId, targetLeafId) to
-                    sessionGraphStore.cacheEpoch(pairedDevice, sessionId)
-            }
-        } catch (error: Exception) {
-            failLocalSessionRead(operationId, error)
-            return
-        }
-        updateState { it.observeCatchupCoverage(operationId, completedRange, gap, cacheEpoch) }
-        if (gap == null) {
-            if (mutableState.value.sessionReads[operationId]?.phase != SessionReadPhase.SUCCEEDED) return
-            val latest = mutableState.value.runtimes[runtime.runtimeId]
-            if (latest?.sessionId == sessionId && latest.sessionLeafId != targetLeafId)
-                scheduleSessionGraphLoad(pairedDevice, listOf(latest))
-            return
-        }
-        if (!mutableState.value.ownsHistoryRead(operationId)) return
-        val pending = PendingSessionSync(
-            runtimeId = runtime.runtimeId, sessionId = sessionId, syncId = UUID.randomUUID().toString(),
-            range = "catchup", targetLeafId = targetLeafId, knownLeafId = gap.knownLeafId,
-            requestTargetLeafId = gap.targetLeafId, viewLeafId = runtime.sessionLeafId,
-            branchGeneration = operation.branchGeneration,
-            connectionGeneration = generation, historyOperationId = operationId,
-        )
-        sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
-    }
-
     private fun sendSessionSync(pairedDevice: DeviceCredential, commandId: String, pending: PendingSessionSync) {
         val agentKind = mutableState.value.runtimes[pending.runtimeId]?.agentKind
             ?: mutableState.value.sessions[pending.sessionId]?.agentKind
@@ -2817,19 +2763,6 @@ internal class HostConnection(
                     runCatching { relay.acknowledgeSessionSnapshot(runtimeId, snapshot.syncId) }
                 }
             }
-            val runtime = next.runtimes[runtimeId]
-            if (runtime != null && runtime.sessionId == pending.sessionId &&
-                pending.branchGeneration == (next.sessionBranchGenerations[runtimeId] ?: 0) &&
-                snapshot.rangeStatus in setOf(null, "complete", "older_available", "limit_reached")) {
-                // Finish the fixed logical target, reusing any suffix a preview/history already
-                // committed. Only after coverage reaches it may a newer live tail start a round.
-                val fixedTarget = pending.targetLeafId.takeIf { pending.range == "catchup" }
-                if (fixedTarget != null && !sessionGraphStore.hasContinuousCoverage(pairedDevice, pending.sessionId, fixedTarget)) {
-                    startBranchCatchUp(pairedDevice, runtime, fixedTarget, completedRange = pending)
-                } else {
-                    startBranchCatchUp(pairedDevice, runtime)
-                }
-            }
             if (previous.sessions != next.sessions) {
                 scheduleSessionCatalogSave()
             }
@@ -3164,7 +3097,6 @@ internal class HostConnection(
             if (runtime.runtimeId != mutableState.value.selectedRuntimeId) {
                 val recovery = mutableState.value.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
                 if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
-                else startBranchCatchUp(pairedDevice, runtime)
                 continue
             }
             prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
@@ -3194,8 +3126,6 @@ internal class HostConnection(
                 if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
                 val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
                 if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
-                else if (current.conversations[runtime.runtimeId]?.hasLiveSnapshot == true)
-                    startBranchCatchUp(pairedDevice, current.runtimes[runtime.runtimeId] ?: runtime)
             }
         }
     }
