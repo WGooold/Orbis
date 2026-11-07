@@ -4,6 +4,8 @@
 
 2026-10-27：[ADR-0045](0045-tool-summaries-and-on-demand-content.md) 替换工具全文的默认同步路径：producer 在进入共享状态前生成摘要和 locator，完整参数/输出/结果通过独立范围页读取；`session.entry.request` 不承担大工具内容分页。本文关于其他文本的线路截断继续适用，超长助手正文仍可能超过 live 页预算。
 
+2026-11-07：历史窗口实现按 [ADR-0069](0069-session-catalog-and-bounded-history-loading.md) 将 session snapshot / patch 的线路页改为 32 KiB 目标、64 KiB 硬上限；单条 Entry 投影缩至 24 KiB，为 snapshot 中重复出现的 display 投影留出空间。本文早期页上限只代表旧实现。
+
 Status: accepted（2026-10-22 实现 §1–§7：`packages/protocol/src/wire-truncate.ts` 在 `prepareSessionSync` 与 `RecoverableSessionSource.#flush` 两个出口做确定性截断；内容块带 `truncated: true` + `originalBytes`，文本里同时保留"…（已截断，原始 N 字节）"以便任何只读 `text` 的渲染路径也能看见。§8 的"取全文"入口已实现：设备可用 `session.entry.request{requestId,sessionId,entryId}` 按需取回未截断的原文（只回请求设备；超过单条上限按确定性失败拒绝），App 在会话顶部给出「查看完整内容」入口）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)
@@ -18,8 +20,8 @@ ADR-0037 解决的是"同步事务没有终止"。本文解决另一件独立的
 
 ```ts
 const size = bytes(nextSnapshot);                                   // JSON 长度 + wrapper
-if (size > SESSION_SYNC_PAGE_BYTES && selected.length > 0) break;    // 256KB：把大条目挤出页外
-if (size > SESSION_SYNC_MAX_BYTES) throw new Error("session_entry_too_large");  // 1MB：只在页首时到这一步
+if (size > SESSION_SYNC_PAGE_BYTES && selected.length > 0) break;    // 64 KiB hard page
+if (size > SESSION_SYNC_PAGE_BYTES) throw new Error("session_entry_too_large"); // 单条超硬上限
 ```
 
 因此：
@@ -81,7 +83,7 @@ Codex 侧另有直接证据：连接桌面版 app-server（`ws://127.0.0.1:56578
 
 ### §3 预算与确定性
 
-投影按稳定顺序裁剪文本，并在相同输入下得到相同结果。当前字段预算为 64KB、单条 Entry 预算为 256KB，算法见 [wire-truncate.ts](../../packages/protocol/src/wire-truncate.ts)。
+投影按稳定顺序裁剪文本，并在相同输入下得到相同结果。字段预算为 64 KiB；session snapshot / patch 使用 24 KiB 单条 Entry 线路预算，以适配 snapshot 内 canonical 与 display 两种表示；算法见 [wire-truncate.ts](../../packages/protocol/src/wire-truncate.ts)。session 页目标 32 KiB、含 wrapper 预留的硬上限 64 KiB，详见 ADR-0069。
 
 ### §4 载荷与结构
 
@@ -101,8 +103,10 @@ preview、history、catchup 与 patch 共用载荷投影；超出硬上限的条
 
 | 参数 | 值 | 结论 |
 |---|---|---|
-| `SESSION_SYNC_PAGE_BYTES` | 256KB | 不变（也是单条 Entry 的预算） |
-| `SESSION_SYNC_MAX_BYTES` | 1MB | 不变（兜底） |
+| `SESSION_SYNC_TARGET_PAGE_BYTES` | 32 KiB | 默认软目标；遇到首条较大 Entry 可超过目标 |
+| `SESSION_SYNC_PAGE_BYTES` | 64 KiB | 含 wrapper 预留的硬上限 |
+| `SESSION_SYNC_MAX_BYTES` | 1 MiB | 仅供显式 `session.entry.request` 原文读取的单条上限 |
+| `WIRE_ENTRY_LIMIT_BYTES` | 24 KiB | canonical Entry 预算，为 snapshot display 投影留空间 |
 | `SESSION_SYNC_WIRE_LIMIT_BYTES` | 6MB | 不变 |
 | `MAX_ACTIVE` | 2 | 不变 |
 | `PIECE_REASSEMBLY_TIMEOUT_MS` | 60s | 不变 |

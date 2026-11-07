@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, SESSION_SYNC_MAX_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
+import { SESSION_SYNC_DEFAULT_MAX_ENTRIES, SESSION_SYNC_PAGE_BYTES, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
 import { sessionSyncWireBytes, SESSION_SYNC_WIRE_LIMIT_BYTES, type DeviceLink } from "./device-link.js";
 
@@ -21,7 +21,7 @@ const PROCESSING_LEASE_MS = 120_000;
 const DELIVERY_LEASE_MS = 60_000;
 /** ADR-0037 §4：写完字节之后等设备 applied 回执的上限。只对会回执的设备生效。 */
 const ACK_LEASE_MS = 30_000;
-const RESERVED_BYTES = sessionSyncWireBytes(SESSION_SYNC_MAX_BYTES);
+const RESERVED_BYTES = sessionSyncWireBytes(SESSION_SYNC_PAGE_BYTES);
 type Stage = "queued" | "processing" | "sending" | "delivered" | "failed";
 type Task = {
   deviceId: string; runtimeId: string; commandId: string; command: SessionSyncRequest;
@@ -173,7 +173,7 @@ export class SessionSyncTasks {
         return true;
       }
       const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId }, task.deviceId);
-      if (payload.byteLength > SESSION_SYNC_MAX_BYTES) {
+      if (payload.byteLength > SESSION_SYNC_PAGE_BYTES) {
         this.#fail(task, "session_sync_response_too_large");
         return true;
       }
