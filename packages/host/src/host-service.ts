@@ -80,7 +80,7 @@ import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { normalizeDeviceRequest } from "./device-protocol.js";
 import { SessionWireContent } from "./session-wire-content.js";
-import { encodeDeviceMessage } from "./device-message-projection.js";
+import { encodeDeviceMessage, projectCompactDeviceMessage } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -1370,7 +1370,7 @@ export class HostService {
   }
 
   get relayTransportKind(): RelayTransportKind | undefined { return this.#relay?.transportKind; }
-  get relayTransportMode(): RelayTransportMode { return this.#relay?.transportMode ?? this.#options.relayTransport ?? "ws"; }
+  get relayTransportMode(): RelayTransportMode { return this.#relay?.transportMode ?? this.#options.relayTransport ?? "auto"; }
 
   async setRelayTransportMode(mode: RelayTransportMode): Promise<void> {
     if (this.#relay === undefined) throw new Error("Host Relay has not started");
@@ -2445,7 +2445,7 @@ export class HostService {
   }
 
   #encodeForDevice(deviceId: string, message: object): Buffer {
-    return encodeDeviceMessage(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(message) : message);
+    return encodeDeviceMessage(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(projectCompactDeviceMessage(message)) : message);
   }
 
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {

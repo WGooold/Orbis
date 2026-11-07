@@ -1538,3 +1538,9 @@ G07 在已选择 compact-v2 的设备上启用 `runtime.event.sharedContent`（f
 liveDelta 使用同一 source epoch、session 与已应用 baseSeq 重建 live；append 只追加准确文本后缀，改写使用 set，删除 / 落盘使用显式集合编辑或完整 live。Host 与 App 的 live 缓存各限 64 个 Runtime、单项 4 MiB、总计 16 MiB；淘汰后读取完整 checkpoint。App 仅在历史事务与投影成功后推进可用缓存；Host 复用同事件的已编码差分，避免多设备编码推进第二台设备的基准。首次和恢复正文完整取得，旧客户端保持原事件，ACK 仍在实际应用或拒绝后发回。字段展开复用对应领域 / 会话既有正文规则。
 
 G07 验证使用 [Host / Android / iOS 共用线路样本](../../ios/Orbis/Tests/Fixtures/field-transport-session.json)、[Host 正文投影](../../packages/host/src/session-wire-content.test.ts)、两端 SharedSessionContent 用例及既有来源恢复、历史事务、乐观发送、工具依赖与阅读锚点回归；FT-G07 加密联动覆盖实际 checkpoint 与流式更新。证据保存于 `.artifacts/field-transport-implementation-20261106/g07-results.json`。
+
+G08 对 compact-v2 的 ready 来源历史 / patch 执行公开条目投影：message 的 data 只携带 message / remoteFailure；message 内保留 messageId / role / content / timestamp / toolCallId / toolName / toolSummary / isError / clientMessageId，以及原生显示语义需要的 display / stopReason / errorMessage / command / output。正文 text / thinking 块保留内容和截断质量，工具调用只保留准确身份与摘要，附件保留 RemoteArtifact；原生 signature、usage、trace 与未知块留在 Host。compaction 只保留 summary / firstKeptEntryId，branch_summary 保留 summary；custom_message 保留 display / content 及 details.remoteArtifact；其余不可显示原生条目保留图身份与空 data。各字段继续执行 FT-01/04/06/07/11/12/17，firstKeptEntryId 是准确压缩边界 FT-12，remoteFailure / stopReason / errorMessage 是必要错误 FT-10。
+
+来源未确认或未版本化的兼容历史保留原格式；精确 session.entry.result 详情维持完整原生数据。ready 来源按既有 authoritative correction 语义替换旧缓存，不因无关原生元数据省略而改变 entryId、父子关系、时点、显示窗口和应用后 ACK。已登记命令结果继续完整传输，包含 editorText、准确会话 / Runtime / leaf 与确认值；未登记对象键仅保留 Host，必要业务新增先登记。附件 path 当前仍用于本机上传 / 下载身份匹配而保留。工具库存 / 内容、diff 和文件二进制沿用既有范围、版本、取消、持久确认与校验契约。
+
+G08 验证：[公开条目与显示等价](../../packages/host/src/compact-entry-projection.test.ts)、FT-G08 加密联动（默认省略与显式原生详情）、工具库存 / 范围读取、diff / 文件页和上传下载续传用例；证据保存于 `.artifacts/field-transport-implementation-20261106/g08-results.json`。

@@ -76,3 +76,49 @@ export function projectDeviceMessage(message: object): object {
 }
 
 export const encodeDeviceMessage = (message: object): Buffer => Buffer.from(JSON.stringify(projectDeviceMessage(message)), "utf8");
+
+const compactEvents = new WeakMap<object, unknown>();
+const pick = (value: unknown, keys: readonly string[]): unknown => !isObject(value) ? {} :
+  Object.fromEntries(Object.entries(value).filter(([key]) => keys.includes(key)));
+const messageKeys = ["messageId", "role", "content", "timestamp", "toolCallId", "toolName", "toolSummary", "isError",
+  "clientMessageId", "display", "stopReason", "errorMessage", "command", "output"];
+const publicBlocks = (value: unknown): unknown => !Array.isArray(value) ? typeof value === "string" ? value : [] : value.flatMap(block => {
+  if (!isObject(block)) return [];
+  const keys = block.type === "text" ? ["type", "text", "truncated", "originalBytes"]
+    : block.type === "thinking" ? ["type", "text", "thinking", "truncated", "originalBytes"]
+      : block.type === "artifact" ? ["type", "artifact"]
+        : block.type === "tool_call" || block.type === "toolCall" ? ["type", "id", "name", "toolCallId", "toolName", "summary"] : undefined;
+  return keys ? [pick(block, keys)] : [];
+});
+const commandResultKeys = ["provider", "modelId", "level", "sessionName", "sessionId", "runtimeId", "cwd", "leafId", "isIdle",
+  "copied", "compacted", "reloaded", "shutdown", "command", "accepted", "editorText"];
+
+/** FT-G08: only explicitly selected peers receive the registered public entry
+ * projection. Versioned source authority can replace previously cached native
+ * metadata; unversioned history and explicit entry-detail responses stay exact.
+ * Attachment paths remain where mobile matching currently needs their identity.
+ */
+export function projectCompactDeviceMessage(message: object): object {
+  const envelope = projectDeviceMessage(message) as ObjectValue;
+  if (envelope.type !== "runtime.event" || !isObject(envelope.event)) return envelope;
+  const event = envelope.event;
+  if (event.type === "command.result" && isObject(event.result)) return { ...envelope, event: { ...event, result: pick(event.result, commandResultKeys) } };
+  if (!["session.snapshot", "session.patch"].includes(String(event.type)) || !isObject(event.source) || event.source.ready !== true) return envelope;
+  let projected = compactEvents.get(event);
+  if (projected === undefined) {
+    projected = field(event, "entries", value => array(value, item => {
+      if (!isObject(item) || !isObject(item.data)) return item;
+      const data = item.data;
+      let publicData: unknown;
+      if (item.type === "message") publicData = field(pick(data, ["message", "remoteFailure"]), "message", value =>
+        field(pick(value, messageKeys), "content", publicBlocks));
+      else if (item.type === "compaction") publicData = pick(data, ["summary", "firstKeptEntryId"]);
+      else if (item.type === "branch_summary") publicData = pick(data, ["summary"]);
+      else if (item.type === "custom_message") publicData = field(field(pick(data, ["display", "content", "details"]), "content", publicBlocks), "details", value => pick(value, ["remoteArtifact"]));
+      else publicData = {};
+      return { ...item, data: publicData };
+    }));
+    compactEvents.set(event, projected);
+  }
+  return { ...envelope, event: projected };
+}

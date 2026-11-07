@@ -1734,7 +1734,7 @@ describe("host end-to-end over relay", () => {
 
   // FT-G07-WIRE: negotiate the representation, deliver a shared checkpoint
   // through the real sync coordinator, then append live text with an exact base.
-  it("FT-G07 shares checkpoint bodies and streams text deltas over E2E", async () => {
+  it.each(["FT-G07", "FT-G08"])("%s shares public checkpoint bodies and streams exact text over E2E", async scenario => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-content-wire-")); relay = await startRelay(stateDir);
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, reconnect: false, lan: false }); await host.start();
@@ -1751,10 +1751,19 @@ describe("host end-to-end over relay", () => {
     device.sendCommand("runtime", "content-sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
     const request = await runtime.next();
     const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
+    if (scenario === "FT-G08") {
+      fixture.initial.event.entries[0].data.nativePrivate = "raw-native-data".repeat(5000);
+      fixture.initial.event.entries[0].data.message.nativeUsage = { trace: "private-trace".repeat(5000) };
+    }
     runtime.publish(1, { ...fixture.initial.event, syncId: (request.command as { syncId: string }).syncId });
     const checkpoint = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot");
     expect(checkpoint.sharedContent).toEqual(fixture.wireInitial.sharedContent);
     expect(checkpoint.event).toEqual({ ...fixture.wireInitial.event, syncId: "sync" });
+    if (scenario === "FT-G08") {
+      device.sendCommand("runtime", "native-detail", { type: "session.entry.request", sessionId: "session", requestId: "native-detail", entryId: "entry-1" });
+      const detail = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.entry.result");
+      expect((detail.event as { entry: unknown }).entry).toEqual(fixture.initial.event.entries[0]);
+    }
     runtime.publish(2, fixture.patch.event);
     const patch = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch");
     expect(patch.sharedContent).toEqual(fixture.wirePatch.sharedContent);
