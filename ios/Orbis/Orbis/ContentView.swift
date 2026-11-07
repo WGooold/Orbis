@@ -109,7 +109,11 @@ struct ContentView: View {
             }) { newSessionOpen = false }
                 .environmentObject(store).orbisSheet([.large])
         }
-        .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu(); launchIntro = nil; launchIntroReady = false }
+        .onChange(of: store.selectedHostId) { _, _ in
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible(drawerOpen && scenePhase == .active)
+            overlay.dismissMenu(); launchIntro = nil; launchIntroReady = false
+        }
         .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
             store.setHistoryWindowVisible(scenePhase == .active && pages.last == .chat)
@@ -117,7 +121,11 @@ struct ContentView: View {
             // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
             if !pages.contains(.chat) && launchIntro == nil { store.stopFollowingLaunch() }
         }
-        .onChange(of: drawerOpen) { _, open in if open { cancelLaunchIntro() } else { overlay.dismissMenu() } }
+        .onChange(of: drawerOpen) { _, open in
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible(open && scenePhase == .active)
+            if open { cancelLaunchIntro() } else { overlay.dismissMenu() }
+        }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
             if store.selectedRuntime != nil && launchIntro == nil { navigation.replace(with: [.chat]) }
@@ -129,6 +137,8 @@ struct ContentView: View {
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
         .task(id: scenePhase) {
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible(drawerOpen && scenePhase == .active)
             store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {

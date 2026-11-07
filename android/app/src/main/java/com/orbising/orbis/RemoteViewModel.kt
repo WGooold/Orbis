@@ -308,6 +308,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
     fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
+    fun setCatalogVisible(hostId: String?, visible: Boolean) { hostId?.let { connectionFor(it)?.setCatalogVisible(visible) } }
+    fun loadNextCatalogPage(hostId: String?) { hostId?.let { connectionFor(it)?.loadNextCatalogPage() } }
+    fun setCatalogQuery(hostId: String?, query: CatalogQuery) { hostId?.let { connectionFor(it)?.setCatalogQuery(query) } }
 
     fun setAgentModelInterest(hostId: String?, runtimeId: String, owner: String, domains: List<String>) {
         if (hostId != null) connectionFor(hostId)?.setAgentModelInterest(runtimeId, owner, domains)

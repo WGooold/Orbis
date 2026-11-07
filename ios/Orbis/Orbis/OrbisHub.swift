@@ -153,7 +153,7 @@ final class OrbisStore: ObservableObject {
 
     func selectHost(_ hostId: String) {
         guard connections[hostId] != nil else { return }
-        if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false) }
+        if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
         preferences?.set(hostId, forKey: "orbis.selectedHostId")

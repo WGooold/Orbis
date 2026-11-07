@@ -406,6 +406,8 @@ internal class HostConnection(
             while (true) {
                 delay(1_000)
                 try {
+                    catalogReads.tick()
+                    advanceCatalogModelRead()
                     relayStateLock.withLock { runSessionSyncScheduler() }
                 } catch (error: CancellationException) {
                     throw error
@@ -474,8 +476,14 @@ internal class HostConnection(
 
     /** Reads replace the scope's interest; cached versions remain available for reopening. */
     fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) {
+        catalogReads.retryFailed()
+        val reset = "catalog" in domains && mutableState.value.agentCatalogRange?.error != null
+        if (reset) {
+            catalogPageWanted = catalogVisible; catalogRecovered = false
+            updateState { it.copy(agentCatalogRange = null, agentCatalogRangeRequest = null) }
+        }
         directoryReconcile.started(System.currentTimeMillis())
-        requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force)
+        requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force || reset)
         if ("catalog" in domains) requestCatalogPage()
     }
 
@@ -531,7 +539,7 @@ internal class HostConnection(
         updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,
             agentStateReads = it.agentStateReads - existingReads.keys + (requestId to read)) }
         val snapshot = current.agentStateSnapshots[key]
-        val sent = relay.sendDeviceMessage(buildJsonObject {
+        val body = buildJsonObject {
             put("type", "agent.state.request")
             put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", requestId)
@@ -547,7 +555,9 @@ internal class HostConnection(
                     add(buildJsonObject { put("domain", domain.domain); put("modelEpoch", domain.modelEpoch); put("revision", domain.revision) })
                 }
             })
-        })
+        }
+        val sent = relay.sendDeviceMessage(body)
+        if (sent && modelScope == "host" && "catalog" in domains) catalogModelRead = CatalogModelRead(requestId, body, now)
         if (!sent) updateState { it.failHomeRead(requestId, L10n.tr("会话读取未能发送，请重试")).copy(
             agentStateRequests = it.agentStateRequests - requestId, error = "Model read could not use an authenticated channel") }
         if (sent && modelScope == "agent") scope.launch {
@@ -560,29 +570,115 @@ internal class HostConnection(
         }
     }
 
-    /** Continue a fixed catalog snapshot without mixing versions or pruning omitted pages. */
-    private fun requestCatalogPage() {
+    @Volatile private var catalogVisible = false
+    private data class CatalogModelRead(val id: String, val body: JsonObject, val started: Long, val retried: Boolean = false)
+    @Volatile private var catalogModelRead: CatalogModelRead? = null
+    private fun advanceCatalogModelRead() {
+        val read = catalogModelRead ?: return
         val current = mutableState.value
-        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
+        val owner = current.agentStateReads[read.id]
+        if (owner == null || "catalog" !in owner.pendingDomains || !current.e2eReady) {
+            if (catalogModelRead === read) catalogModelRead = null
+            return
+        }
+        val elapsed = System.currentTimeMillis() - read.started
+        fun failed() = updateState { state ->
+            if (state.agentStateReads[read.id]?.pendingDomains?.contains("catalog") != true) state else {
+                val previous = state.agentStateSnapshots[owner.key]
+                val snapshot = previous?.copy(requestId = read.id, error = "catalog_timeout")
+                    ?: AgentStateSnapshotView(owner.key, "host", read.id, error = "catalog_timeout")
+                state.copy(agentStateRequests = state.agentStateRequests - read.id,
+                    agentStateReads = state.agentStateReads + (read.id to owner.copy(pendingDomains = emptySet())),
+                    agentStateSnapshots = state.agentStateSnapshots + (owner.key to snapshot))
+            }
+        }
+        if (elapsed >= 45_000) { if (catalogModelRead === read) catalogModelRead = null; failed(); return }
+        if (elapsed >= 25_000 && !read.retried && catalogModelRead === read) {
+            catalogModelRead = read.copy(retried = true)
+            if (!relay.sendDeviceMessage(read.body)) { catalogModelRead = null; failed() }
+        }
+    }
+    private var catalogQuery = CatalogQuery()
+    private val catalogReads by lazy {
+        CatalogViewReads(relay::sendDeviceMessage, { result, rows ->
+            updateState { state ->
+                val merged = if (rows.isEmpty()) state.sessions else state.sessions + rows.associate { entry ->
+                    val prior = state.sessions[entry.sessionId]
+                    entry.sessionId to entry.copy(hasHistoryCache = prior?.hasHistoryCache == true, cachedDisplayName = prior?.cachedDisplayName)
+                }
+                state.copy(catalogQuery = result, sessions = merged)
+            }
+            if (rows.isNotEmpty()) scheduleSessionCatalogSave()
+        })
+    }
+
+    fun setCatalogQuery(query: CatalogQuery) {
+        catalogQuery = query
+        catalogReads.setView(query.takeIf { catalogVisible })
+    }
+    @Volatile private var catalogPageWanted = false
+    private var catalogPageJob: Job? = null
+    private var catalogRecovered = false
+
+    fun setCatalogVisible(visible: Boolean) {
+        if (visible && !catalogVisible) catalogRecovered = false
+        catalogVisible = visible
+        catalogReads.setView(catalogQuery.takeIf { visible })
+        if (!visible) {
+            catalogPageWanted = false; catalogPageJob?.cancel()
+            updateState { it.copy(agentCatalogRangeRequest = null) }
+        }
+    }
+
+    fun loadNextCatalogPage() {
+        if (!catalogVisible) return
+        if (catalogReads.supported) { catalogReads.needMore(); return }
+        catalogPageWanted = true
+        requestCatalogPage()
+    }
+
+    /** Continue only a demanded page; the UI requests another when its viewport needs it. */
+    private fun requestCatalogPage() {
+        if (catalogReads.supported) return
+        val current = mutableState.value
+        if (!catalogVisible || current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
         val range = current.agentCatalogRange ?: return
         if (range.error != null) {
+            if (range.error != "snapshot_changed" || catalogRecovered) { catalogPageWanted = false; return }
+            catalogRecovered = true
             updateState { it.copy(agentCatalogRange = null, agentCatalogRangeRequest = null) }
             requestModel("host", listOf("catalog"), force = true)
             return
         }
+        if (!catalogPageWanted || current.agentCatalogRangeRequest != null) return
         val cursor = range.nextCursor ?: return
         val now = System.currentTimeMillis()
-        if (current.agentCatalogRangeRequest?.let { now - it.sentAt < 15_000 } == true) return
         val request = AgentCatalogRangeRequest(UUID.randomUUID().toString(), cursor, range.modelEpoch,
             range.revision, range.snapshotId, range.sessions.size, now)
         updateState { if (it.agentCatalogRange == range) it.copy(agentCatalogRangeRequest = request) else it }
         if (mutableState.value.agentCatalogRangeRequest != request) return
-        val sent = relay.sendDeviceMessage(buildJsonObject {
+        catalogPageWanted = false
+        val body = buildJsonObject {
             put("type", "agent.state.range.request"); put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", request.requestId); put("scope", "host"); put("domain", "catalog")
             put("cursor", cursor); put("limit", 200)
-        })
-        if (!sent) updateState { if (it.agentCatalogRangeRequest == request) it.copy(agentCatalogRangeRequest = null) else it }
+        }
+        if (!relay.sendDeviceMessage(body)) { failCatalogPage(request, "send_failed"); return }
+        catalogPageJob?.cancel()
+        catalogPageJob = scope.launch {
+            delay(20_000)
+            if (mutableState.value.agentCatalogRangeRequest != request || !catalogVisible) return@launch
+            delay(5_000)
+            if (mutableState.value.agentCatalogRangeRequest != request || !catalogVisible) return@launch
+            if (!relay.sendDeviceMessage(body)) { failCatalogPage(request, "send_failed"); return@launch }
+            delay(20_000)
+            failCatalogPage(request, "timeout")
+        }
+    }
+
+    private fun failCatalogPage(request: AgentCatalogRangeRequest, error: String) {
+        updateState { if (it.agentCatalogRangeRequest != request) it else it.copy(agentCatalogRangeRequest = null,
+            agentCatalogRange = it.agentCatalogRange?.copy(error = error)) }
     }
 
     /**
@@ -2347,6 +2443,13 @@ internal class HostConnection(
                     continue
                 }
                 val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
+                if (interactiveChannel != null && incomingMessage != null && catalogReads.consume(incomingMessage)) {
+                    if (catalogReads.supported) {
+                        catalogPageWanted = false; catalogPageJob?.cancel()
+                        updateState { it.copy(agentCatalogRangeRequest = null) }
+                    }
+                    continue
+                }
                 if (interactiveChannel != null && historyInterestRequestId != null && incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull == historyInterestRequestId) {
                     if (incomingMessage?.get("accepted")?.jsonPrimitive?.booleanOrNull != true) historyInterestTarget = null
                     historyInterestRequestId = null
@@ -2562,6 +2665,7 @@ internal class HostConnection(
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
                     if (deviceReadyArrived && currentGeneration == generation) {
+                        catalogReads.connect()
                         historyWindowSupported = false
                         historyInterestTarget = null
                         historyWindowRequestId = UUID.randomUUID().toString()
@@ -2604,6 +2708,8 @@ internal class HostConnection(
                                 sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "runtime.metadata"
                             }
                         changedRuntimeId?.let { refreshAgentModel(it) }
+                        mutableState.value.agentCatalogRange?.let { catalogReads.sourceChanged(it.modelEpoch, it.revision) }
+                        if (!catalogReads.supported && catalogVisible) catalogPageWanted = true
                         requestCatalogPage()
                     }
                     // 调度器故障不能拖垮整个帧消费循环：丢帧只该让这一轮重传，不该让 App 崩。

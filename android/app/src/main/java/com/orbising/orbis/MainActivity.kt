@@ -390,6 +390,9 @@ internal fun RemoteApp(
                 onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
                 onAddHost = { cancelLaunchIntro(); addingHost = true },
                 onRequestProviders = model::refreshProviderFacts,
+                onCatalogVisibility = model::setCatalogVisible,
+                onNextCatalogPage = model::loadNextCatalogPage,
+                onCatalogQuery = model::setCatalogQuery,
                 onOpenStatus = { cancelLaunchIntro(); statusOpen = true },
                 onRetryHome = model::refreshHome,
             )
@@ -658,6 +661,9 @@ internal fun RuntimeListScreen(
     onAddHost: () -> Unit,
     onOpenStatus: () -> Unit,
     onRequestProviders: () -> Unit,
+    onCatalogVisibility: (String?, Boolean) -> Unit = { _, _ -> },
+    onNextCatalogPage: (String?) -> Unit = {},
+    onCatalogQuery: (String?, CatalogQuery) -> Unit = { _, _ -> },
     onRetryHome: () -> Unit = {},
     launchIntro: LaunchState? = null,
     onLaunchPresented: (String) -> Unit = {},
@@ -733,6 +739,9 @@ internal fun RuntimeListScreen(
                 onAddHost = onAddHost,
                 onSetArchived = onSetArchived,
                 onRequestProviders = onRequestProviders,
+                onCatalogVisibility = onCatalogVisibility,
+                onNextCatalogPage = onNextCatalogPage,
+                onCatalogQuery = onCatalogQuery,
                 // 打开别的电脑的会话前先切过去：交互命令永远只发给当前电脑。
                 onOpenSession = { hostId, sessionId ->
                     scope.launch { drawerState.close() }

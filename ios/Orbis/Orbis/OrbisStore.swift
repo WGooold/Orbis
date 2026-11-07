@@ -517,6 +517,9 @@ final class HostConnection: ObservableObject {
             // ADR-0049 §7.5：完整目录是归档的权威状态。
             self.ledgerAuthority(OperationKinds.catalogDomain, read: nil, complete: true)
         }
+        hostState.didChangeCatalogQuery = { [weak self] in
+            self?.directoryViewRevision &+= 1; self?.objectWillChange.send()
+        }
         hostState.didChangeProviders = { [weak self] in self?.refreshSessions() }
         transfers.sendBinary = { [weak self] in self?.transport.sendBinary($0) ?? false }
         transfers.didSettleUpload = { [weak self] id, path, error in self?.uploadSettled(id, path: path, error: error) }
@@ -2330,7 +2333,8 @@ final class HostConnection: ObservableObject {
             }
             return
         }
-        if hostState.consume(message) || agentState.consume(message) { return }
+        if channel != nil, hostState.consume(message) { return }
+        if agentState.consume(message) { return }
         switch type {
         case "_transport.lan":
             guard let endpoints = message["endpoints"] as? [LANEndpoint], let index = pairings.firstIndex(where: { $0.hostId == selectedHostId }) else { return }
@@ -2343,6 +2347,7 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
+            let catalogWasConnected = hostState.connected
             historyWindowSupported = false
             historyInterestTarget = nil
             let capabilityRequest = UUID().uuidString
@@ -2354,6 +2359,7 @@ final class HostConnection: ObservableObject {
                 errorMessage = L10n.tr("会话目录格式无法识别，请重新连接。"); return
             }
             hostState.setConnection(selectedHost, connected: true)
+            if catalogWasConnected { hostState.negotiateCatalogReadFormat() }
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)
             guard hostState.beginEpoch(message["modelEpoch"] as? String), agentState.beginEpoch(message["modelEpoch"] as? String) else { return }

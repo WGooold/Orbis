@@ -6,6 +6,7 @@ import {
   StateDeltaSchema, AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
   AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
+  CatalogQueryRequestSchema, CatalogQueryPageSchema,
 } from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
 import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchema, ToolContentPageSchema,
@@ -1207,6 +1208,8 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("session.catalog.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
+  CatalogQueryRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.history.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
   z.strictObject({ type: z.literal("session.history.interest"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
     runtimeId: z.string().min(1).max(256).nullable(), sessionId: z.string().min(1).max(256).nullable() })
@@ -1312,6 +1315,8 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("session.catalog.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128), format: z.literal("v1") }),
+  CatalogQueryPageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.history.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
     format: z.literal("v1"), maxPageBytes: z.literal(65536) }),
   z.strictObject({ type: z.literal("session.history.interest.result"), protocolVersion: z.literal(PROTOCOL_VERSION),

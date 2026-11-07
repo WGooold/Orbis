@@ -558,6 +558,7 @@ data class RemoteState(
     val agentStateReads: Map<String, AgentStateRead> = emptyMap(),
     val agentCatalogRange: AgentCatalogRange? = null,
     val agentCatalogRangeRequest: AgentCatalogRangeRequest? = null,
+    val catalogQuery: CatalogQueryResult? = null,
     /** 只能由经过认证的 device.ready 建立或替换。 */
     val agentModelEpoch: String? = null,
     val retiredAgentModelEpochs: Set<String> = emptySet(),

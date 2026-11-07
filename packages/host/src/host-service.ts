@@ -150,7 +150,7 @@ export function channelForDeviceMessage(message: {
       .concat(message.unchanged ?? []);
     if (domains.length > 0 && domains.every(domain => domain === "execution")) return "ctl";
   }
-  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
+  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "session.catalog.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
   if (eventType === "session.tool.content.page" || eventType === "session.change.detail.page") return "bulk";
@@ -313,6 +313,7 @@ export class HostService {
    */
   readonly #eventSequences = new Map<string, number>();
   readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null>();
+  readonly #catalogQueryDevices = new Set<string>();
   /**
    * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
    *
@@ -1590,6 +1591,7 @@ export class HostService {
     for (const link of this.#links.values()) link.close();
     this.#links.clear();
     this.#historyInterests.clear();
+    this.#catalogQueryDevices.clear();
     await this.#loopback?.stop();
     this.#loopback = undefined;
     await this.#relay?.stop();
@@ -1687,6 +1689,7 @@ export class HostService {
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
@@ -1805,6 +1808,25 @@ export class HostService {
         device.appVersionCode = message.versionCode;
         this.#persist();
       }
+      return;
+    }
+    if (message.type === "session.catalog.capabilities.request") {
+      this.#catalogQueryDevices.add(deviceId);
+      this.#sendToDevice(deviceId, { type: "session.catalog.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1" }); return;
+    }
+    if (message.type === "session.catalog.query") {
+      if (!this.#catalogQueryDevices.has(deviceId)) return;
+      const link = this.#links.get(deviceId);
+      void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
+        if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
+        const response = { ...this.#hostStateFacts.catalogQuery(message), protocolVersion: PROTOCOL_VERSION };
+        if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
+          this.#sendToDevice(deviceId, { type: "protocol.error",
+            requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
+        }
+        this.#sendToDevice(deviceId, response);
+      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
       return;
     }
     if (message.type === "session.history.capabilities.request") {
@@ -2441,6 +2463,7 @@ export class HostService {
     this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
@@ -2674,11 +2697,15 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    if (message.type === "runtime.event" && (message.event.type === "session.patch" || message.event.type === "session.snapshot")) {
+    const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
+      "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
+    if (message.type === "runtime.event" && chatEvent) {
+      const scope = this.#agentFacts.scopeOf(message.runtimeId);
+      const sessionId = "sessionId" in message.event ? message.event.sessionId : scope?.kind === "agent" ? scope.key.sessionId : undefined;
       for (const [deviceId, link] of this.#links) {
         const interest = this.#historyInterests.get(deviceId);
         if (this.#historyInterests.has(deviceId) &&
-            (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== message.event.sessionId)) continue;
+            (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }

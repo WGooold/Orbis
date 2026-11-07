@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -10,6 +10,7 @@ import {
   type HostIdentityState, type HostManagementState, type HostOperationsState, type HostProvidersState,
   type HostStateDomain, type HostWorkspacesState,
   type AgentSessionSummary, type HostCatalogRange, type AgentStateRangeRequest,
+  type CatalogQuery, type CatalogQueryRequest, type CatalogQueryPage,
 } from "@orbis/protocol";
 
 import { AgentStateRegistry, type CommitResult, type StateScope } from "./agent-state-registry.js";
@@ -44,6 +45,10 @@ function boundedArray<T>(items: readonly T[], bytes: number, wrap: (items: T[]) 
 }
 
 const catalogCursor = (snapshotId: string, offset: number): string => Buffer.from(JSON.stringify([snapshotId, offset])).toString("base64url");
+const queryKey = (query: CatalogQuery): string => createHash("sha256").update(JSON.stringify([
+  query.text, query.agentKind, query.archived, query.provider, query.directory ?? null,
+])).digest("hex");
+const searchKey = (value: string): string => value.normalize("NFKD").toLowerCase().replace(/\p{M}/gu, "");
 
 /**
  * 「有供应商切换正在进行」这条事实（模块 20）。
@@ -173,7 +178,7 @@ export class HostStateFacts {
       const validated = HostCatalogStateSchema.parse(this.#withCheckedAt("catalog", value));
       this.#catalogInventory = candidate;
       staged = true;
-      const complete = full.backends.every(backend => backend.complete) && !value.truncated;
+      const complete = full.backends.every(backend => backend.complete) && !value.truncated && projected.length === inventory.length;
       const committed = this.#commit("catalog", validated, "ready", complete ? "complete" : "partial");
       if (!committed.ok) this.#catalogInventory = previous;
     } catch {
@@ -188,7 +193,7 @@ export class HostStateFacts {
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
   // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
-  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): HostCatalogRange {
+  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
     const inventory = this.#catalogInventory;
     const empty = (error: NonNullable<HostCatalogRange["error"]>): HostCatalogRange => ({
@@ -196,23 +201,69 @@ export class HostStateFacts {
       offset: 0, totalSessions: state?.value?.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
     });
     if (!inventory || inventory.modelEpoch !== this.#registry.currentModelEpoch() || state?.value?.snapshotId !== inventory.snapshotId) return empty("catalog_unavailable");
+    const query = request.query;
+    const matched = query ? this.#catalogMatches(query) : inventory.sessions;
+    const hash = query && queryKey(query);
     let offset = 0;
     if (request.cursor) {
       let cursor: unknown;
       if (request.cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(request.cursor)) return empty("invalid_cursor");
       try { cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString("utf8")); } catch { return empty("invalid_cursor"); }
-      if (!Array.isArray(cursor) || cursor.length !== 2 || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0) return empty("invalid_cursor");
+      if (!Array.isArray(cursor) || cursor.length !== (query ? 3 : 2) || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0 || query && cursor[2] !== hash) return empty("invalid_cursor");
       if (cursor[0] !== inventory.snapshotId) return empty("snapshot_changed");
       offset = cursor[1] as number;
-      if (offset > inventory.sessions.length) return empty("invalid_cursor");
+      if (offset > matched.length) return empty("invalid_cursor");
     }
     const limit = Number.isSafeInteger(request.limit) ? Math.max(1, Math.min(200, request.limit!)) : 100;
-    const sessions = boundedArray(inventory.sessions.slice(offset, offset + limit), CATALOG_PAGE_VALUE_BYTES, items => ({ sessions: items }));
+    const totals = new Map<string, number>();
+    if (query) for (const row of matched) totals.set(row.cwd, (totals.get(row.cwd) ?? 0) + 1);
+    const candidates = matched.slice(offset, offset + limit).map(row => query ? { ...row, directoryTotal: totals.get(row.cwd)! } : row);
+    const sessions = boundedArray(candidates, CATALOG_PAGE_VALUE_BYTES, items => ({ sessions: items }));
+    // One valid public row can exceed the 28 KiB target (e.g. escaped Unicode paths).
+    // It still fits the 64 KiB hard page; never produce a cursor that points to itself.
+    if (sessions.length === 0 && candidates[0]) sessions.push(candidates[0]);
     const next = offset + sessions.length;
-    const complete = inventory.state.backends.every(backend => backend.complete) && !inventory.state.truncated;
+    const backends = query?.agentKind ? inventory.state.backends.filter(backend => backend.kind === query.agentKind) : inventory.state.backends;
+    const complete = backends.length > 0 && backends.every(backend => backend.complete) && !inventory.state.truncated;
     return { modelEpoch: inventory.modelEpoch, revision: state.revision, snapshotId: inventory.snapshotId,
-      offset, totalSessions: inventory.state.totalSessions, sessions, nextCursor: next < inventory.sessions.length ? catalogCursor(inventory.snapshotId, next) : null,
+      offset, totalSessions: query ? matched.length : inventory.state.totalSessions, sessions,
+      nextCursor: next < matched.length ? (query ? Buffer.from(JSON.stringify([inventory.snapshotId, next, hash])).toString("base64url") : catalogCursor(inventory.snapshotId, next)) : null,
       complete, truncated: inventory.state.truncated };
+  }
+
+  catalogQuery(request: CatalogQueryRequest): CatalogQueryPage {
+    const page = this.catalogRange(request);
+    const rows = this.#catalogInventory?.sessions.filter(row => request.query.agentKind === null || row.agentKind === request.query.agentKind) ?? [];
+    const all = [...new Set(rows.flatMap(row => row.modelProvider ? [row.modelProvider] : []))].sort();
+    const providers = boundedArray(all.slice(0, 64), 8 * 1024, providers => providers);
+    // Facets describe this immutable source inventory; loaded rows and global matches are separate.
+    const groups = page.error ? [] : this.#catalogMatches(request.query);
+    const counts = new Map<string, number>();
+    for (const row of groups) counts.set(row.cwd, (counts.get(row.cwd) ?? 0) + 1);
+    const previewCount = [...counts.values()].reduce((sum, count) => sum + Math.min(5, count), 0);
+    return { type: "session.catalog.page", requestId: request.requestId, format: "v1", query: request.query, page,
+      directoryCount: new Set(groups.map(row => row.cwd)).size,
+      previewsComplete: page.offset + page.sessions.length >= previewCount,
+      ...(request.cursor ? {} : { providers, unknownProvider: rows.some(row => !row.modelProvider), providersTruncated: providers.length < all.length }) };
+  }
+
+  #catalogMatches(query: CatalogQuery): AgentSessionSummary[] {
+    const inventory = this.#catalogInventory;
+    const current = inventory?.state.currentProviders?.find(row => row.agentKind === query.agentKind)?.provider;
+    const text = searchKey(query.text.trim());
+    const matched = inventory?.sessions.filter(session =>
+      (query.agentKind === null || session.agentKind === query.agentKind) && (session.archived === true) === query.archived &&
+      (!query.directory || createHash("sha256").update(session.cwd).digest("hex") === query.directory) &&
+      (!text || [session.cwd, session.name ?? "", session.firstMessage ?? "", session.sessionId].some(value => searchKey(value).includes(text))) &&
+      (query.agentKind !== "codex" && query.agentKind !== "codexDesktop" || query.provider === "all" ||
+        query.provider === "current" && current !== undefined && session.modelProvider === current ||
+        query.provider === "unknown" && !session.modelProvider || query.provider.startsWith("provider:") && session.modelProvider === query.provider.slice(9))) ?? [];
+    if (query.directory) return matched;
+    // Surface directory headers and their five-row previews before hidden older rows.
+    // Expanding a directory uses its exact path hash instead of downloading other groups.
+    const groups = new Map<string, AgentSessionSummary[]>();
+    for (const row of matched) { const group = groups.get(row.cwd) ?? []; group.push(row); groups.set(row.cwd, group); }
+    return [...[...groups.values()].flatMap(rows => rows.slice(0, 5)), ...[...groups.values()].flatMap(rows => rows.slice(5))];
   }
 
   /**

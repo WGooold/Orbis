@@ -36,13 +36,13 @@ struct SessionProviderOption: Identifiable {
     var id: String { key }
 }
 
-func sessionProviderOptions(_ sessions: [SessionSummary], kind: String, current: String?) -> [SessionProviderOption] {
+func sessionProviderOptions(_ sessions: [SessionSummary], kind: String, current: String?, knownProviders: [String] = [], hasUnknown: Bool = false) -> [SessionProviderOption] {
     let rows = sessions.filter { $0.agentKind == kind }
     var result = [SessionProviderOption(key: "current", label: current.map { L10n.tr("{0}（当前使用）", $0) } ?? L10n.tr("当前 provider（尚未获取）")),
                   SessionProviderOption(key: "all", label: L10n.tr("全部 provider"))]
-    let providers = Set(rows.compactMap(\.modelProvider).filter { !$0.isEmpty }).sorted()
+    let providers = Set((rows.compactMap(\.modelProvider) + knownProviders).filter { !$0.isEmpty }).sorted()
     result += providers.filter { $0 != current }.map { SessionProviderOption(key: "provider:" + $0, label: $0) }
-    if rows.contains(where: { $0.modelProvider == nil || $0.modelProvider?.isEmpty == true }) {
+    if hasUnknown || rows.contains(where: { $0.modelProvider == nil || $0.modelProvider?.isEmpty == true }) {
         result.append(SessionProviderOption(key: "unknown", label: L10n.tr("未知 provider")))
     }
     return result
@@ -1048,6 +1048,7 @@ struct SessionDirectoryFilter: Hashable {
     let provider: String
     let currentProvider: String?
     let language: String
+    var queryRevision: UUID? = nil
     func sameView(as other: Self) -> Bool {
         hostId == other.hostId && query == other.query && kind == other.kind && archived == other.archived &&
             provider == other.provider && currentProvider == other.currentProvider && language == other.language
@@ -1079,10 +1080,11 @@ actor SessionDirectoryWorker {
     private let beforeResolve: (@Sendable () -> Void)?
     private var previous: SessionDirectoryProjection?
     init(beforeResolve: (@Sendable () -> Void)? = nil) { self.beforeResolve = beforeResolve }
-    func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter) -> SessionDirectoryProjection {
+    func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter, knownProviders: [String] = [], hasUnknown: Bool = false) -> SessionDirectoryProjection {
         if let previous, previous.filter == filter { return previous }
         beforeResolve?()
-        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider)
+        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider,
+            knownProviders: knownProviders, hasUnknown: hasUnknown)
         let provider = options.contains { $0.key == filter.provider } ? filter.provider : "current"
         let visible = filter.kind == "codex" || filter.kind == "codexDesktop" ? catalog.sessions.filter {
             matchesSessionProvider($0, filter: provider, current: filter.currentProvider)

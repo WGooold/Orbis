@@ -687,6 +687,7 @@ describe("device model channel routing", () => {
     expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }], missing: [{ domain: "live" }] })).toBe("msg");
     expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "host", missing: [{ domain: "execution" }] })).toBe("msg");
     expect(channelForDeviceMessage({ type: "agent.state.range.page" })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "session.catalog.page" })).toBe("msg");
   });
 });
 
@@ -1818,29 +1819,33 @@ describe("host end-to-end over relay", () => {
       const next = structuredClone(fixture.patch.event);
       next.source.seq = 3; next.baseSeq = 2; next.seq = 3; next.checkpointId = "checkpoint-3";
       runtime.publish(3, next);
+      runtime.publish(4, { type: "message.delta", messageId: "stream", delta: "hidden legacy body" });
       // A backend FIFO barrier proves the hidden patch was processed. Control replies and
       // notifications remain allowed; none may contain chat content after closing interest.
       device.sendCommand("runtime", "history-barrier", { type: "stop" });
       expect(await runtime.next()).toMatchObject({ commandId: "history-barrier" });
-      runtime.publish(4, { type: "command.result", commandId: "history-barrier", ok: true });
+      runtime.publish(5, { type: "command.result", commandId: "history-barrier", ok: true });
       for (;;) {
         const message = await device.receiveMessage();
-        expect((message.event as RuntimeEvent | undefined)?.type).not.toBe("session.patch");
+        expect(["session.patch", "message.delta"]).not.toContain((message.event as RuntimeEvent | undefined)?.type);
         if ((message.event as { commandId?: string } | undefined)?.commandId === "history-barrier") break;
       }
       // msg and ctl have independent scheduling: also inspect delayed msg frames.
       for (;;) {
         const incoming = await device.nextIncoming(200).catch(() => undefined);
         if (!incoming) break;
-        if ("payload" in incoming) expect(JSON.parse(incoming.payload.toString()).event?.type).not.toBe("session.patch");
+        if ("payload" in incoming) expect(["session.patch", "message.delta"]).not.toContain(JSON.parse(incoming.payload.toString()).event?.type);
       }
       device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-reopen",
         runtimeId: "runtime", sessionId: "session" }));
       expect(await readMatching(device, message => message.requestId === "history-reopen")).toMatchObject({ accepted: true });
       next.source.seq = 4; next.baseSeq = 3; next.seq = 4; next.checkpointId = "checkpoint-4";
-      runtime.publish(5, next);
+      runtime.publish(6, next);
       expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch"))
         .toMatchObject({ event: { seq: 4 } });
+      runtime.publish(7, { type: "message.delta", messageId: "stream", delta: "visible legacy body" });
+      expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "message.delta"))
+        .toMatchObject({ event: { delta: "visible legacy body" } });
     }
   });
 
@@ -1884,10 +1889,15 @@ describe("host end-to-end over relay", () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-catalog-read-wire-")); relay = await startRelay(stateDir);
     const sessionsRoot = join(stateDir, "sessions"), group = join(sessionsRoot, "repo");
     await mkdir(group, { recursive: true });
-    const writeSession = (n: number, name = `Session ${n} ${"title ".repeat(28)}`) => {
+    const writeSession = async (n: number, name = `Session ${n} ${"title ".repeat(28)}`) => {
       const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-      return writeFile(join(group, `${id}.jsonl`), JSON.stringify({ type: "session", version: 3, id,
+      const path = join(group, `${id}.jsonl`);
+      await writeFile(path, JSON.stringify({ type: "session", version: 3, id,
         name, cwd: "/repo/" + "workspace/".repeat(20) }) + "\n");
+      // This scenario changes a title only. Concurrent file writes otherwise create mtime
+      // ties and Date round-tripping can move the renamed row, testing a different workload.
+      const time = new Date(Date.UTC(2026, 10, 7, 0, 0, n));
+      await utimes(path, time, time);
     };
     await Promise.all(Array.from({ length: 180 }, (_, n) => writeSession(n)));
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
@@ -1943,6 +1953,16 @@ describe("host end-to-end over relay", () => {
     expect((legacy.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
     expect(Buffer.byteLength(JSON.stringify(legacy))).toBeLessThan(32 * 1024);
     expect(await collect((legacy.domains as AgentStateDomainSnapshot[])[0]!.value as Record<string, unknown>)).toHaveLength(180);
+    device.sendData(JSON.stringify({ type: "session.catalog.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "query-capability" }));
+    expect(await readMatching(device, message => message.requestId === "query-capability"))
+      .toMatchObject({ type: "session.catalog.capabilities", format: "v1" });
+    const query = { text: "Renamed without changing directory order", agentKind: "pi", archived: false, provider: "all" };
+    device.sendData(JSON.stringify({ type: "session.catalog.query", protocolVersion: PROTOCOL_VERSION, requestId: "query-global", format: "v1",
+      query, cursor: null, limit: 100 }));
+    const result = await readMatching(device, message => message.requestId === "query-global");
+    expect(result).toMatchObject({ type: "session.catalog.page", query, page: { offset: 0, totalSessions: 1,
+      sessions: [{ sessionId: firstSession.sessionId }], nextCursor: null, complete: true } });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
   });
 
   // FT-G05-WIRE: options travel only in requested bounded pages, invocation is

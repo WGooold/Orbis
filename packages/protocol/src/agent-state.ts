@@ -324,6 +324,28 @@ export const AgentStateRangePageSchema = z.strictObject({
 });
 export type AgentStateRangePage = z.infer<typeof AgentStateRangePageSchema>;
 
+/** Independently negotiated directory view; strict deployed range readers keep their schema. */
+export const CatalogQuerySchema = z.strictObject({
+  text: z.string().max(256), agentKind: AgentKindSchema.nullable(), archived: z.boolean(),
+  provider: z.string().min(1).max(137).refine(value => ["all", "current", "unknown"].includes(value) || value.startsWith("provider:")),
+  directory: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+});
+export type CatalogQuery = z.infer<typeof CatalogQuerySchema>;
+export const CatalogQueryRequestSchema = z.strictObject({
+  type: z.literal("session.catalog.query"), requestId: identity, format: z.literal("v1"), query: CatalogQuerySchema,
+  cursor: z.string().min(1).max(512).nullable(), limit: z.number().int().min(1).max(200),
+});
+export type CatalogQueryRequest = z.infer<typeof CatalogQueryRequestSchema>;
+export const CatalogQueryPageSchema = z.strictObject({
+  type: z.literal("session.catalog.page"), requestId: identity, format: z.literal("v1"), query: CatalogQuerySchema,
+  page: HostCatalogRangeSchema.safeExtend({ sessions: z.array(AgentCatalogSessionSchema.safeExtend({
+    directoryTotal: z.number().int().nonnegative().optional(),
+  })).max(200) }), directoryCount: z.number().int().nonnegative(),
+  previewsComplete: z.boolean(),
+  providers: z.array(z.string().min(1).max(128)).max(64).optional(), unknownProvider: z.boolean().optional(), providersTruncated: z.boolean().optional(),
+});
+export type CatalogQueryPage = z.infer<typeof CatalogQueryPageSchema>;
+
 /**
  * 一个后端的供应商摘要（模块 20–22：手机摘要、配置与认证绑定、用量/健康度/路由）。
  *
