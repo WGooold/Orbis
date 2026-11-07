@@ -74,7 +74,7 @@ struct RelaySwitchTests {
         let cancelled = sockets[2]
         transport.setRelayTransportMode(next)
         #expect(sockets.count == 3) // same pending mode is idempotent
-        transport.setRelayTransportMode(.auto)
+        transport.setRelayTransportMode(initial)
         cancelled.ready(); await settle()
         #expect(cancelled.cancelled && cancelled.sent.isEmpty && !old.cancelled)
         transport.setRelayTransportMode(next)
@@ -114,8 +114,32 @@ struct RelaySwitchTests {
         defer { restored.disconnect() }
         restored.connect(pairing: pairing("a"), identity: .generate(), receive: { _, _ in }, state: { _, _ in })
         #expect(sockets.last?.mode == .quic)
-        #expect(second.desiredRelayMode == .ws)
+        #expect(second.desiredRelayMode == .auto)
     }
+    // NQ-16: Auto defaults to WS and replaces QUIC only once the WS candidate is ready.
+    @Test func automaticModeDefaultsToWSAndHandsOffAnExistingQUICConnection() async {
+        var sockets: [SwitchSocket] = []
+        let transport = RelayTransport(preferences: nil, makeSocket: { _, mode, opened, closed in
+            let socket = SwitchSocket(mode, opened, closed); sockets.append(socket); return socket
+        })
+        defer { transport.disconnect() }
+        transport.connect(pairing: pairing(), identity: .generate(), receive: { _, _ in }, state: { _, _ in })
+        #expect(transport.desiredRelayMode == .auto)
+        let first = sockets[0]; first.ready(); await settle()
+        #expect(transport.relayTransportKind == .ws)
+        transport.setRelayTransportMode(.quic)
+        let quic = sockets[1]; quic.ready(); await settle()
+        transport.setRelayTransportMode(.auto)
+        let automatic = sockets[2]
+        #expect(!quic.cancelled && automatic.sent.isEmpty)
+        #expect(transport.relayTransportKind == .quic)
+        automatic.ready(); await settle()
+        #expect(quic.joined && automatic.authentications == 1)
+        #expect(transport.relayTransportKind == .ws && transport.desiredRelayMode == .auto)
+        transport.setRelayTransportMode(.ws); transport.setRelayTransportMode(.auto)
+        #expect(sockets.count == 3 && !automatic.cancelled)
+    }
+
     @Test func wsReadinessWaitsForHS3WriteCompletion() async throws {
         var socket: SwitchSocket!
         var secured = 0

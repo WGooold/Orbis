@@ -168,6 +168,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         setActiveHost(hostId)
     }
 
+    /** Saves phone-to-Relay selection for the active Host. */
+    fun setRelayTransportMode(mode: RelayTransportMode) {
+        active()?.setRelayTransportMode(mode)
+    }
+
     private fun setActiveHost(hostId: String?) {
         active()?.closeToolDetail()
         active()?.closeChangeViewer()

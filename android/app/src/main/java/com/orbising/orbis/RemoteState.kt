@@ -586,6 +586,10 @@ data class RemoteState(
     /** 当前生效的传输路径（device.path 宣布，spec §14 B4）：lan / relay。 */
     val path: String? = null,
     val pathRttMs: Long? = null,
+    /** 实际 Relay 承载；与保存的 ws/quic/auto 偏好分开。LAN 使用独立 WebSocket。 */
+    val relayTransportKind: RelayTransportKind? = null,
+    /** 当前 Host 保存的 Relay 选择策略；不代表已经连接的实际承载。 */
+    val relayTransportMode: RelayTransportMode = RelayTransportMode.AUTO,
     /**
      * 端到端加密通道是否已建立（spec §5 的 HS1/HS2/HS3 走完）。
      *

@@ -4,15 +4,15 @@
 
 旧三流使用设备 `orbis-relay-v2`、Host `orbis-relay-host-v2`，保留 ctl / msg / bulk。新五流使用明确的 `orbis-relay-v3` / `orbis-relay-host-v3`，追加独立 history / catchup，原三流索引不变。Android 使用 quic-go，Apple 使用 NWConnectionGroup；Go 下行和 Android 上行采用原生 SetPriority，Apple 上行由系统调度。两端共用 `RelaySocketConnection` 业务边界，原 Host、E2E、LAN 和文件 / 同步语义保持。历史单流 v1 只作为测试对照，服务命令入口接受 v2 / v3。
 
-每个 Host 的 `setRelayTransportMode` 支持 ws / quic / auto 并保存偏好。候选只准备传输，失败保留现任；最新候选就绪后，旧 Relay 停止并等待本地任务退出，再认证 / 握手。QUIC 等待 Host 加密 bootstrap 后开放其他流；切到 auto 保留当前健康连接。没有新增设置页 UI。
+每个 Host 的 `setRelayTransportMode` 支持 ws / quic / auto 并保存偏好。候选只准备传输，失败保留现任；最新候选就绪后，旧 Relay 停止并等待本地任务退出，再认证 / 握手。QUIC 等待 Host 加密 bootstrap 后开放其他流。手机设置页按 Host 提供 auto / ws / quic 三种 Relay 模式：auto 直接使用 WS，跳过 QUIC 发现与准备；ws 与 quic 分别强制对应承载。设置页“连接协议”通过 S28 / SC48 显示手机当前路径的实际协议：Relay 为 WS / QUIC，LAN 为 WS，未连接或未知为“暂不可用”。
 
-当前未保存偏好的 Host 默认 **ws**；quic 强制模式失败明确报错，auto 只允许认证前回退。`relayTransportKind` 表示实际承载，`relaySwitchPhase` / `relaySwitchError` 独立报告切换状态。未通过完整设备、弱网 / 快网和现场门禁，不启用默认 auto，不宣称复现 Hysteria 2 的效果。
+未保存偏好的 Host 与手机连接默认选择 **auto**，实际承载为 **WS**；已有显式偏好保持。由 QUIC 改选 auto 时，WS 候选就绪后按原生命周期交接，失败保留当前连接。quic 强制模式失败明确报错。`relayTransportKind` 表示实际承载，`relaySwitchPhase` / `relaySwitchError` 独立报告切换状态。QUIC 的完整设备、弱网 / 快网和现场收益继续分别验收。
 
 [ADR-0065](adr/0065-native-quic-relay-transport.md)记录替换边界、优势条件、预算和验收；[主分支集成报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)与[原功能回归矩阵](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-functional-regression.md)区分已跑的底层、业务、平台和未跑的设备 / 现场结果。
 
 两段 WSS / 原生 QUIC 的有效吞吐、加压控制延迟、全部失败和复跑入口见[完整公网测试报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-public-performance-20261104.md)。Host 与参考客户端在同一 Mac，两段均连接真正公网 Relay；五轮对照观察到 QUIC 加压控制回复更可用，但未证明吞吐提速，且下载排空五轮均超时。原[单侧回环报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-performance-20261104.md)已中止，保留历史证据。公网参考端结果不代替 Q06 / Q12 的真实手机、同机 Hysteria 和受控线路验收。
 
-后续[分层方案](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-diagnostics.md)与[诊断报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-results-20261104.md)完成 20 个原始传输窗口及 24 个双段负载窗口，控制延迟改善重复出现，吞吐仍有方向差异；定位到独立测试 socket 的内核接收丢包和 CPU quota 条件。20 秒诊断窗口全部通过不等于旧 60 秒失败已修复，默认 WS 与发布门禁保持。显式设置 `ORBIS_QUIC_DIAGNOSTICS_FILE` 仅输出按秒聚合的 QUIC / writer 元数据，缺省不记录；不是配置拥塞算法的入口。
+后续[分层方案](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-diagnostics.md)与[诊断报告](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-layered-results-20261104.md)完成 20 个原始传输窗口及 24 个双段负载窗口，控制延迟改善重复出现，吞吐仍有方向差异；定位到独立测试 socket 的内核接收丢包和 CPU quota 条件。20 秒诊断窗口全部通过不等于旧 60 秒失败已修复，当时默认 WS 的证据及发布门禁保留；当前默认策略见 ADR-0065 §14。显式设置 `ORBIS_QUIC_DIAGNOSTICS_FILE` 仅输出按秒聚合的 QUIC / writer 元数据，缺省不记录；不是配置拥塞算法的入口。
 
 ## 构建
 
@@ -30,13 +30,13 @@ Android Gradle 的 `buildRelayQuic` 自动从源码生成 `app/build/generated/r
 
 ## 桌面 Host 配置
 
-`config.json` 的 `relayTransport` 或优先级更高的 `ORBIS_RELAY_TRANSPORT` 支持 `ws` / `quic` / `auto`，缺省 `ws`。非法枚举明确报错。Host 通过原域名发现 `hostAlpn`，不存在时强制 QUIC 失败，auto 仅认证前回退。运行中使用 `HostService.setRelayTransportMode(mode)`；`relayTransportMode` 与 `relayTransportKind` 分别报告期望和实际值，auto / 当前承载不触发健康连接重建。
+`config.json` 的 `relayTransport` 或优先级更高的 `ORBIS_RELAY_TRANSPORT` 支持 `ws` / `quic` / `auto`，缺省 `auto`，直接使用 WS。非法枚举明确报错。只有显式 quic 通过原域名发现 `hostAlpn`，不存在时明确失败。运行中使用 `HostService.setRelayTransportMode(mode)`；`relayTransportMode` 与 `relayTransportKind` 分别报告期望和实际值，auto / 当前承载不触发健康连接重建。
 
 `package-host-runtime.mjs` 自动调用 `build-host-quic.mjs`，将本机架构 helper、Go 模块版本与许可证放入 `runtime/packages/host/native/`。构建需要 Go 1.27.3，`ORBIS_GO` 可指定工具链；开发态 `ORBIS_QUIC_HELPER` 可指定 helper，发行运行无需安装 Go。Windows / macOS 构建工作流已固定 Go。额外 CA 仅用于隔离测试或既有企业信任，证书与主机名持续校验。
 
 Host helper 只接收一次性 IPC token 和远端地址，业务凭据经 ctl 流发送；按协商使用三条或五条独立回环 TCP 连接转发对应 QUIC 流。`bufferedAmount` 包含尚未完成 QUIC writer 的 IPC 帧，回执不代表对端确认。父进程退出、任一 lane 失败、取消均终止 helper 并 join；准备失败保留现任，认证失败不回退，快速改选只允许最后候选接管。
 
-显式 `quic` 使用 3 秒 HTTPS 发现、5 秒原生准备预算；`auto` 保持 1 秒 / 1.5 秒后仅在认证前回退，认证预算均为 10 秒。该差异来自真实公网短跑对 1 秒发现超时的复现，原失败记录保留。运行中 Host API 更改当前实例期望模式；下次启动使用 `config.json` / 环境变量，API 本身不回写用户配置文件。手机每 Host 偏好仍由原手机存储入口保存。
+Host 显式 `quic` 使用 3 秒 HTTPS 发现、5 秒原生准备预算；`auto` 直接准备 WS，认证预算仍为 10 秒。该差异来自真实公网短跑对 1 秒发现超时的复现，原失败记录保留。运行中 Host API 更改当前实例期望模式；下次启动使用 `config.json` / 环境变量，API 本身不回写用户配置文件。手机每 Host 偏好仍由原手机存储入口保存。
 
 ## 服务部署示例
 
@@ -64,9 +64,9 @@ Host helper 只接收一次性 IPC token 和远端地址，业务凭据经 ctl �
 {"version":1,"quic":{"port":24443,"alpn":"orbis-relay-v2","hostAlpn":"orbis-relay-host-v2"}}
 ```
 
-未配置时返回 `quic:null`。发现端点不缓存，不接受新的域名。ws 模式跳过发现；auto 的本地 HTTP / WS 夹具跳过探测。App 的发现预算为 1 秒，QUIC 到 transport.ready 的预算为 1.5 秒；只有 auto 在准备失败后回到原 WSS，强制 quic 在无安全发现 / QUIC 不可用时明确失败。ready 后断线由原生命周期处理，不跨通道重放业务命令。
+未配置时返回 `quic:null`。发现端点不缓存，不接受新的域名。auto 与 ws 模式都跳过发现。App 显式 quic 的发现预算为 1 秒，QUIC 到 transport.ready 的预算为 1.5 秒；无安全发现 / QUIC 不可用时明确失败。ready 后断线由原生命周期处理，不跨通道重放业务命令。
 
-5. 回退发布时先移除 `ORBIS_QUIC_PORT`，auto 新连接会使用 WS；强制 quic 会明确失败，需要将模式改为 ws 或 auto。再按维护窗口停止适配器。已有 QUIC 连接不会仅因移除宣告而迁移，停止服务会触发它们重连。Node Relay 的普通 WS 始终保留。
+5. 回退发布时先移除 `ORBIS_QUIC_PORT`，auto 新连接始终使用 WS；强制 quic 会明确失败，需要将模式改为 ws 或 auto。再按维护窗口停止适配器。已有 QUIC 连接不会仅因移除宣告而迁移，停止服务会触发它们重连。Node Relay 的普通 WS 始终保留。
 
 ## 调度与限制
 

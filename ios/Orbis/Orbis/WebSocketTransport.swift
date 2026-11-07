@@ -122,6 +122,10 @@ private final class OutboundEncodingQueue {
 protocol OrbisTransport: AnyObject {
     /// Valid only during receive; the authenticated wire bytes avoid re-encoding large events.
     var receivedPayload: Data? { get }
+    /// The established Relay adapter, independent of the requested ws/quic/auto mode.
+    var relayTransportKind: RelayTransportKind? { get }
+    /// This Host's saved phone-to-Relay policy, independent of the active adapter.
+    var relayTransportMode: RelayTransportMode { get }
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void)
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void)
     func disconnect()
@@ -132,6 +136,8 @@ protocol OrbisTransport: AnyObject {
 
 extension OrbisTransport {
     var receivedPayload: Data? { nil }
+    var relayTransportKind: RelayTransportKind? { nil }
+    var relayTransportMode: RelayTransportMode { .auto }
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
     func setRelayTransportMode(_ mode: RelayTransportMode) {}
 }
@@ -221,10 +227,11 @@ final class RelayTransport: NSObject, OrbisTransport {
     private let initialMode: RelayTransportMode?
     private let preferences: UserDefaults?
     private let makeSocket: SocketFactory
-    private(set) var desiredRelayMode: RelayTransportMode = .ws
+    private(set) var desiredRelayMode: RelayTransportMode = .auto
     private(set) var relaySwitchPhase = "idle"
     private(set) var relaySwitchError: String?
     var relayTransportKind: RelayTransportKind? { socket?.kind }
+    var relayTransportMode: RelayTransportMode { desiredRelayMode }
     private var bootstrapReady = false
     private var credential: RelayCredential?
     private var pairing: HostPairing?
@@ -316,7 +323,7 @@ final class RelayTransport: NSObject, OrbisTransport {
         receiveHandler = receive
         stateHandler = state
         hostId = pairing.hostId
-        desiredRelayMode = initialMode ?? preferences?.string(forKey: modeKey).flatMap(RelayTransportMode.init(rawValue:)) ?? .ws
+        desiredRelayMode = initialMode ?? preferences?.string(forKey: modeKey).flatMap(RelayTransportMode.init(rawValue:)) ?? .auto
         fromId = pairing.relay.deviceId
         reconnect = true
         updateLANEndpoints(pairing.lan)
@@ -481,7 +488,8 @@ final class RelayTransport: NSObject, OrbisTransport {
         candidate?.cancel(); candidate = nil
         switchTask?.cancel(); switchTask = nil
         guard pairing != nil else { return }
-        if let socket, socket.kind != nil, mode == .auto || socket.kind?.rawValue == mode.rawValue {
+        let desiredKind: RelayTransportKind = mode == .quic ? .quic : .ws
+        if let socket, socket.kind == desiredKind {
             relaySwitchPhase = bootstrapReady ? "active" : "handshaking"; return
         }
         guard let credential, let url = RelayURL.endpoint(credential.relayUrl, path: "v1/device", webSocket: true) else { return }
@@ -517,7 +525,7 @@ final class RelayTransport: NSObject, OrbisTransport {
         hostId = qr.hostId
         fromId = relay.deviceId
         credential = relay
-        desiredRelayMode = initialMode ?? .ws
+        desiredRelayMode = initialMode ?? .auto
         self.pairingSession = pairingSession
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.pairingContinuation = continuation

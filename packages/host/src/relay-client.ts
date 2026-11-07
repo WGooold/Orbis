@@ -78,7 +78,7 @@ export class HostRelayClient {
   setTransportMode(mode: RelayTransportMode): Promise<void> {
     this.#mode = relayTransportMode(mode);
     if (this.#stopped) return Promise.resolve();
-    if (this.#state === "connected" && (mode === "auto" || mode === this.#kind)) {
+    if (this.#state === "connected" && this.#kind === (mode === "quic" ? "quic" : "ws")) {
       this.#generation++;
       this.#preparation?.abort(new Error("Relay transport selection superseded"));
       return Promise.allSettled([...this.#tasks]).then(() => undefined);

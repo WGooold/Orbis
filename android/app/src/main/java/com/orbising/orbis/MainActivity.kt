@@ -104,6 +104,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
 import com.orbising.orbis.NeumorphDialog as AlertDialog
@@ -3155,6 +3156,38 @@ internal fun StatusScreen(
                     else relayConnectionTone(state.connection),
                 )
                 StatusRow(L10n.tr("连接方式"), connectionMethodText(state), connectionMethodTone(state))
+                StatusRow(L10n.tr("连接协议"), connectionProtocolText(state), StatusTone.Neutral)
+                Text(L10n.tr("协议模式"), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
+                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        RelayTransportMode.AUTO to L10n.tr("自动"),
+                        RelayTransportMode.WS to "WS",
+                        RelayTransportMode.QUIC to "QUIC",
+                    ).forEach { (mode, title) ->
+                        val selected = state.relayTransportMode == mode
+                        NeumorphSurface(
+                            modifier = Modifier.weight(1f)
+                                .selectable(selected = selected, enabled = state.hostId != null, role = Role.RadioButton) {
+                                    model.setRelayTransportMode(mode)
+                                }
+                                .heightIn(min = 48.dp)
+                                .testTag("relay-mode-${mode.name}"),
+                            shape = RoundedCornerShape(16.dp),
+                            style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                            shadowScale = 0.32f,
+                        ) {
+                            Box(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
+                                Text(title, style = MaterialTheme.typography.labelLarge,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+                Text(
+                    relayTransportModeDescription(state.relayTransportMode),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 StatusRow(L10n.tr("连接延迟"), connectionLatencyText(state), StatusTone.Neutral)
                 StatusRow(L10n.tr("端到端加密"), if (state.e2eReady) L10n.tr("已启用") else L10n.tr("未建立"), e2eTone(state))
             }
@@ -3391,6 +3424,18 @@ internal fun connectionMethodText(state: RemoteState): String =
 internal fun connectionMethodTone(state: RemoteState): StatusTone = when (state.path) {
     "lan" -> StatusTone.Good
     else -> StatusTone.Neutral
+}
+
+internal fun connectionProtocolText(state: RemoteState): String = when {
+    !state.e2eReady -> L10n.tr("暂不可用")
+    state.path == "lan" -> "WS"
+    else -> state.relayTransportKind?.name ?: L10n.tr("暂不可用")
+}
+
+internal fun relayTransportModeDescription(mode: RelayTransportMode): String = when (mode) {
+    RelayTransportMode.AUTO -> L10n.tr("自动模式使用 WS")
+    RelayTransportMode.WS -> L10n.tr("强制使用 WS")
+    RelayTransportMode.QUIC -> L10n.tr("强制使用 QUIC；准备失败时保留当前连接并报告错误")
 }
 
 internal fun connectionLatencyText(state: RemoteState): String =

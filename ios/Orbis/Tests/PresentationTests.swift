@@ -51,6 +51,23 @@ struct PresentationTests {
         withExtendedLifetime(observer) {}
     }
 
+    // S29 / SC49: the saved automatic policy stays separate from the active adapter.
+    @Test func automaticRelaySelectionDoesNotMisreportTheActiveProtocol() {
+        #expect(relayTransportModeDescription(.auto) == "自动模式使用 WS")
+        #expect(connectionProtocolText(.ws, path: "relay", connected: true) == "WS")
+        #expect(connectionProtocolText(.quic, path: "relay", connected: true) == "QUIC")
+    }
+
+    // S28 / SC48: hide stale/disconnected values and report LAN's own WS instead of a standby QUIC Relay.
+    @Test func connectionProtocolFollowsTheActivePathAndActualAdapter() {
+        #expect(connectionProtocolText(.ws, path: "relay", connected: true) == "WS")
+        #expect(connectionProtocolText(.quic, path: "relay", connected: true) == "QUIC")
+        #expect(connectionProtocolText(.quic, path: "lan", connected: true) == "WS")
+        #expect(connectionProtocolText(nil, path: "lan", connected: true) == "WS")
+        #expect(connectionProtocolText(.quic, path: "relay", connected: false) == "暂不可用")
+        #expect(connectionProtocolText(nil, path: "relay", connected: true) == "暂不可用")
+    }
+
     @Test func connectionLatencyRequiresAConnectedValidSampleAndRoundsMilliseconds() {
         #expect(connectionLatencyText(42, connected: false) == "暂不可用")
         for missing: Double? in [nil, -1, Double.infinity, Double.nan] {

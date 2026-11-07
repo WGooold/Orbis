@@ -1,6 +1,21 @@
 import Foundation
 import Combine
 
+func connectionProtocolText(_ relayKind: RelayTransportKind?, path: String?, connected: Bool) -> String {
+    guard connected else { return L10n.tr("暂不可用") }
+    // LAN uses its own WebSocket even when the standby Relay uses QUIC.
+    if path == "lan" { return "WS" }
+    return relayKind?.rawValue.uppercased() ?? L10n.tr("暂不可用")
+}
+
+func relayTransportModeDescription(_ mode: RelayTransportMode) -> String {
+    switch mode {
+    case .auto: return L10n.tr("自动模式使用 WS")
+    case .ws: return L10n.tr("强制使用 WS")
+    case .quic: return L10n.tr("强制使用 QUIC；准备失败时保留当前连接并报告错误")
+    }
+}
+
 func connectionLatencyText(_ rttMs: Double?, connected: Bool) -> String {
     guard connected, let rttMs, rttMs.isFinite, rttMs >= 0 else { return L10n.tr("暂不可用") }
     return String(format: "%.0f ms", locale: Locale(identifier: "en_US_POSIX"), rttMs.rounded())

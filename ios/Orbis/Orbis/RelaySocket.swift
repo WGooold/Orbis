@@ -245,7 +245,7 @@ final class RelaySocket: NSObject, RelaySocketConnection, URLSessionDataDelegate
         config.waitsForConnectivity = true
         config.timeoutIntervalForRequest = 20
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
-        if mode == .ws { discovering = false; openWS(); return }
+        if mode != .quic { discovering = false; openWS(); return }
         guard url.scheme == "wss", let base = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let endpoint = RelayURL.endpoint(baseForDiscovery(base), path: "v1/transports", webSocket: false) else {
             finishDiscovery(nil); return

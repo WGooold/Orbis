@@ -233,6 +233,9 @@ final class OrbisStore: ObservableObject {
     var selectedRuntimeId: String? { activeConnection.selectedRuntimeId }
     var connection: ConnectionState { activeConnection.connection }
     var activePath: String? { activeConnection.activePath }
+    var relayTransportKind: RelayTransportKind? { activeConnection.relayTransportKind }
+    var relayTransportMode: RelayTransportMode { activeConnection.relayTransportMode }
+    func setRelayTransportMode(_ mode: RelayTransportMode) { activeConnection.setRelayTransportMode(mode) }
     var errorMessage: String? {
         get { pairingError ?? activeConnection.errorMessage }
         set { pairingError = nil; activeConnection.errorMessage = newValue }

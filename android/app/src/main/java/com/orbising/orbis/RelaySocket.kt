@@ -135,7 +135,7 @@ internal class RelaySocket(
     // Called only after RelayClient has installed this identity as its current socket.
     override fun start() {
         synchronized(lock) { if (state != State.NEW) return; state = State.DISCOVERING }
-        if (mode == RelayTransportMode.WS) { openWS(); return }
+        if (mode != RelayTransportMode.QUIC) { openWS(); return }
         scope.launch {
             val port = if (originalRequest.url.isHttps) runCatching {
                 if (discoveryOverride != null) discoveryOverride.invoke(originalRequest) else discover(http, originalRequest)

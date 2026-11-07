@@ -206,11 +206,16 @@ private final class PreviewStorage: SecureStorage {
 
 @MainActor
 private final class PreviewTransport: OrbisTransport {
+    var relayTransportKind: RelayTransportKind? {
+        ProcessInfo.processInfo.arguments.contains("--preview-relay-quic") ? .quic : .ws
+    }
+    var relayTransportMode: RelayTransportMode = .auto
     let screen: String
     /// 0 is the main fixture computer; 1 is a second computer with its own sessions.
     let variant: Int
     init(screen: String, variant: Int = 0) { self.screen = screen; self.variant = variant }
     var receive: (([String: Any], String?) -> Void)?
+    func setRelayTransportMode(_ mode: RelayTransportMode) { relayTransportMode = mode }
     var sequence = 0
     private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1

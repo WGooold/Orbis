@@ -58,7 +58,7 @@ private final class QUICDiscoveryFixture: URLProtocol {
 
 @Suite("Network.framework native interoperability", .serialized) @MainActor
 struct RelayQUICInteropTests {
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_QUIC_FIXTURE"] != nil, "Build native/relayquic/testdata/fixture and set ORBIS_QUIC_FIXTURE."), arguments: [RelayTransportMode.auto, .quic], [2, 3])
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["ORBIS_QUIC_FIXTURE"] != nil, "Build native/relayquic/testdata/fixture and set ORBIS_QUIC_FIXTURE."), arguments: [RelayTransportMode.quic], [2, 3])
     func systemQUICExchangesOrderedUnicodeFramesWithGoAdapter(mode: RelayTransportMode, version: Int) async throws {
         let executable = try #require(ProcessInfo.processInfo.environment["ORBIS_QUIC_FIXTURE"])
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-quic-\(UUID())")
@@ -221,19 +221,22 @@ struct RelaySelectionTests {
         }
     }
 
-    @Test func automaticModeFallsBackWhenDiscoveryHasNoQUIC() async throws {
+    // NQ-16: default Auto opens WS even when the server advertises a compatible QUIC endpoint.
+    @Test func automaticModeOpensWSWithoutDiscoveryOrNativePreparation() async throws {
         let ws = PolicyWebSocket(); var opened = 0
-        let socket = RelaySocket(url: URL(string: "wss://relay.invalid/relay/v1/device")!, configuration: config(),
+        let socket = RelaySocket(url: URL(string: "wss://relay.invalid/relay/v1/device")!, configuration: config(port: 24443),
+            makeQUIC: { host, port in Issue.record("Auto must not prepare QUIC"); return RelaySocket.makeConnection(host: host, port: port) },
             makeWebSocket: { _, _, onOpen, onClose in ws.onOpen = onOpen; ws.onClose = onClose; return ws },
             onOpen: { connection in #expect(connection.kind == .ws); opened += 1 },
             onClose: { _, _ in Issue.record("Unexpected close") })
         defer { socket.cancel() }
         socket.start(); try await until { opened > 0 }
         #expect(opened == 1); #expect(ws.sent.isEmpty)
+        #expect(PolicyDiscoveryFixture.requests == 0)
     }
 
     @Test(arguments: [RelayTransportMode.auto, .quic])
-    func failedQUICOnlyFallsBackInAutomaticMode(mode: RelayTransportMode) async throws {
+    func onlyExplicitQUICPreparesNativeTransport(mode: RelayTransportMode) async throws {
         let ws = PolicyWebSocket(); var opened = 0; var closed = 0; var fallbacks = 0
         let socket = RelaySocket(url: URL(string: "wss://localhost/relay/v1/device")!, mode: mode, configuration: config(port: 9),
             makeQUIC: { _, _ in RelaySocket.makeConnection(host: "127.0.0.1", port: 9) },
@@ -247,7 +250,7 @@ struct RelaySelectionTests {
 
     @Test func cancellationDuringQUICPreparationCannotStartFallback() async throws {
         var preparing = false; var events = 0
-        let socket = RelaySocket(url: URL(string: "wss://localhost/relay/v1/device")!, configuration: config(port: 9),
+        let socket = RelaySocket(url: URL(string: "wss://localhost/relay/v1/device")!, mode: .quic, configuration: config(port: 9),
             makeQUIC: { _, _ in preparing = true; return RelaySocket.makeConnection(host: "127.0.0.1", port: 9) },
             makeWebSocket: { _, _, _, _ in events += 1; return PolicyWebSocket() },
             onOpen: { _ in events += 1 }, onClose: { _, _ in events += 1 })

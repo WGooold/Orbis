@@ -13,12 +13,15 @@ private final class MultiHostSecureStore: SecureStorage {
 
 @MainActor
 private final class MultiHostTransport: OrbisTransport {
+    var relayTransportKind: RelayTransportKind?
+    var relayTransportMode: RelayTransportMode = .auto
     var sent: [[String: Any]] = []
     var connectCount = 0
     var disconnectCount = 0
     var receive: (([String: Any], String?) -> Void)?
     var state: ((ConnectionState, String?) -> Void)?
     var drain: (() async -> Void)?
+    func setRelayTransportMode(_ mode: RelayTransportMode) { relayTransportMode = mode }
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity,
               completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void,
@@ -81,6 +84,41 @@ private final class MultiHostFixture {
 
 @Suite("Independent always-on Hosts") @MainActor
 struct MultiHostTests {
+    // S29 / SC49: all three modes are saved per Host; policy changes retain the live adapter.
+    @Test func relayTransportModeIsSavedPerSelectedHostWithoutReplacingTheActiveLink() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        let first = try #require(fixture.transports["host-1"])
+        let second = try #require(fixture.transports["host-2"])
+        first.relayTransportKind = .ws; second.relayTransportKind = .quic
+        first.state?(.secured, nil); second.state?(.secured, nil)
+        fixture.store.setRelayTransportMode(.quic)
+        #expect(first.relayTransportMode == .quic)
+        #expect(second.relayTransportMode == .auto)
+        #expect(fixture.store.relayTransportKind == .ws)
+        fixture.store.setRelayTransportMode(.auto)
+        #expect(first.relayTransportMode == .auto)
+        fixture.store.selectHost("host-2")
+        fixture.store.setRelayTransportMode(.quic)
+        #expect(second.relayTransportMode == .quic)
+        #expect(first.relayTransportMode == .auto)
+        #expect(fixture.store.relayTransportKind == .quic)
+    }
+
+    // S28 / SC48: the status page must use the selected Host's live adapter, including a later switch.
+    @Test func connectionProtocolUsesTheSelectedHostsActualAdapter() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        let first = try #require(fixture.transports["host-1"])
+        let second = try #require(fixture.transports["host-2"])
+        first.relayTransportKind = .ws; second.relayTransportKind = .quic
+        first.state?(.secured, nil); second.state?(.secured, nil)
+        #expect(fixture.store.relayTransportKind == .ws)
+        fixture.store.selectHost("host-2")
+        #expect(fixture.store.relayTransportKind == .quic)
+        second.relayTransportKind = .ws
+        second.state?(.secured, nil)
+        #expect(fixture.store.relayTransportKind == .ws)
+    }
+
     @Test func closingSelectedRuntimesUsesTheirHostWithoutChangingTheActiveChat() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
         await fixture.ready()

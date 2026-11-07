@@ -396,6 +396,7 @@ internal object LocalizationCatalog {
         "加载更多文件" to "Load more files",
         "助手" to "Assistant",
         "助手回复" to "Assistant reply",
+        "协议模式" to "Protocol mode",
         "单选" to "Choose one",
         "历史与分支" to "History and branches",
         "历史加载失败" to "History failed to load",
@@ -468,9 +469,9 @@ internal object LocalizationCatalog {
         "发送消息" to "Send message",
         "发送队列已满，请稍后重试。" to "Send queue is full. Try again shortly.",
         "取消" to "Cancel",
-        "取消回答" to "Cancel answer",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "取消回答" to "Cancel answer",
         "取消导出" to "Cancel export",
         "取消添加电脑" to "Cancel adding computer",
         "取消请求" to "Cancel request",
@@ -620,9 +621,9 @@ internal object LocalizationCatalog {
         "工具清单未完整接收。" to "Tool inventory was not fully received.",
         "工具清单版本不连续。" to "Tool inventory versions are not contiguous.",
         "工具清单版本或大小无效" to "Invalid tool inventory version or size",
-        "工具清单版本或大小无效。" to "Invalid tool inventory version or size.",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "工具清单版本或大小无效。" to "Invalid tool inventory version or size.",
         "工具清单等待任务已满。" to "Tool inventory waiting task limit reached.",
         "工具清单读取未送达。" to "Tool inventory request was not delivered.",
         "工具清单读取超时" to "Tool inventory read timed out",
@@ -707,6 +708,8 @@ internal object LocalizationCatalog {
         "开始 {0}" to "Start {0}",
         "开始新的 Codex 会话" to "Start a new Codex session",
         "异常" to "Error",
+        "强制使用 QUIC；准备失败时保留当前连接并报告错误" to "Always use QUIC; if preparation fails, keep the current connection and report an error.",
+        "强制使用 WS" to "Always use WS",
         "归档未完成：" to "Archive did not complete: ",
         "归档选中会话" to "Archive selected sessions",
         "当前 Agent 版本无法按队列项取消，消息仍会保留" to "This Agent version cannot cancel individual queued messages. The message is still queued.",
@@ -770,11 +773,11 @@ internal object LocalizationCatalog {
         "所选路径不是普通文件" to "Selected path is not a regular file",
         "手动输入" to "Enter manually",
         "手机无法安全处理此下载项，请在电脑端处理" to "This download cannot be handled safely on the phone. Use the computer.",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "手机无法安全处理此运行时事件，请在电脑端处理" to "This runtime event cannot be handled safely on the phone. Use the computer.",
         "手机无法安全渲染此交互，请在电脑端处理。" to "This interaction cannot be displayed safely on the phone. Use the computer.",
         "手机系统“下载”目录，{0}" to "Phone's Downloads folder, {0}",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "打开" to "Open",
         "打开下载" to "Open downloads",
         "打开会话目录" to "Open session drawer",
@@ -922,11 +925,11 @@ internal object LocalizationCatalog {
         "期望 {0} 帧，收到 {1}" to "Expected {0} frame, received {1}",
         "未保存" to "Not saved",
         "未发现文件变化" to "No file changes found",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "未启用" to "Disabled",
         "未启用供应商" to "Provider disabled",
         "未安装" to "Not installed",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "未完成" to "Incomplete",
         "未完成的导出文件无法删除：{0}" to "Could not delete the incomplete export file: {0}",
         "未完成的工具导出文件无法删除，请在文件管理器中删除" to "Could not delete the incomplete tool export. Delete it in the file manager.",
@@ -1074,11 +1077,11 @@ internal object LocalizationCatalog {
         "此文件类型暂不支持文本差异。" to "Text diffs are not yet supported for this file type.",
         "此电脑在本机保存的配对和草稿将被移除。之后可以重新扫码连接。" to "This computer's pairing and drafts on this phone will be removed. You can scan again to reconnect later.",
         "此目录没有可浏览的文件或子目录" to "No browsable files or subfolders here",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "此目录没有子目录" to "No subfolders here",
         "此节点没有可显示的缓存内容。" to "No cached content to display for this node.",
         "此轮文件版本已超过电脑端保留期限。" to "The computer's retention period for this turn's file versions has expired.",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "此轮未保存可比较的文件版本。" to "No comparable file versions were saved for this turn.",
         "此部分内容已无法恢复" to "This content cannot be recovered",
         "没有{0}会话" to "No {0}sessions",
@@ -1226,11 +1229,11 @@ internal object LocalizationCatalog {
         "等待确认" to "Awaiting confirmation",
         "答案已填好，可继续修改或提交" to "Answers are ready. You can edit or submit them.",
         "筛选会话：{0}" to "Filter sessions: {0}",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "筛选历史" to "Filter history",
         "简体中文" to "Simplified Chinese",
         "类型变化" to "Type changed",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "粘贴电脑端二维码的 JSON 内容" to "Paste the QR code's JSON from the computer",
         "粘贴配对二维码内容" to "Paste pairing QR code data",
         "系统语言为中文时使用简体中文，其他未支持的语言使用英文。" to "Uses your preferred supported language. Falls back to English.",
@@ -1258,9 +1261,11 @@ internal object LocalizationCatalog {
         "聊天记录已更新，正在重新同步" to "Chat history updated. Syncing again.",
         "聊天记录已更新，请连接后重新同步" to "Chat history updated. Connect to sync again.",
         "联网操作受沙箱限制，可否申请放行取决于审批策略。" to "Network operations are restricted by the sandbox. Whether access can be requested depends on the approval policy.",
+        "自动" to "Auto",
         "自动审查" to "Automatic review",
         "自动接受编辑" to "Accept edits automatically",
         "自动模式" to "Automatic mode",
+        "自动模式使用 WS" to "Automatic mode uses WS.",
         "自定义" to "Custom",
         "至少输入 {0} 个字符" to "Enter at least {0} characters",
         "至少选择 {0} 项" to "Select at least {0} items",
@@ -1376,13 +1381,13 @@ internal object LocalizationCatalog {
         "运行路径待同步" to "Working path awaiting sync",
         "返回" to "Back",
         "返回会话目录" to "Back to sessions",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "返回会话筛选" to "Back to session filters",
         "返回电脑菜单" to "Back to computer menu",
         "返回聊天" to "Back to chat",
         "还有 {0} 个文件" to "{0} more files",
         "还有更新的没读" to "Newer records remain unread",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
         "还没有可显示的会话" to "No sessions to display yet",
@@ -1401,6 +1406,7 @@ internal object LocalizationCatalog {
         "远程交互" to "Remote interaction",
         "连接" to "Connect",
         "连接你的电脑" to "Connect your computer",
+        "连接协议" to "Connection protocol",
         "连接已关闭" to "Connection closed",
         "连接已断开，仅显示已缓存内容" to "Disconnected. Showing cached content only.",
         "连接已断开，可在重连后继续" to "Disconnected. Continue after reconnecting.",

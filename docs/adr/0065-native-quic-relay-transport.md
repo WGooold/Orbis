@@ -6,7 +6,7 @@ Status: accepted（代码、设备门禁、真实线路收益分别验收）
 
 编号修订：2026-11-04 主工作树 ADR-0064 / R64 已用于协议兼容，本专项迁至 ADR-0065 / R65；2026-11-05 主工作树 r47 / r48 已使用 R65（侧边栏）和 R66（消息菜单），本专项活动回归号再迁至 **R67**，ADR-0065 不变。既有 `.artifacts` 中 ADR-0063 / R62、ADR-0064 / R64、ADR-0065 / R65 均为本专项当时编号，原始证据不改写。拆流沿用已部署 18 / 19 的兼容格式；主工作树集成与发布状态分别记录。
 
-**2026-11-04 全链路范围修订：Host ↔ Relay ↔ 手机的两段公网承载均支持 QUIC。最新决策为 §9；此前“首版 Host 保持 WS”的描述与单侧结果仅保留为历史阶段。** 两段公网承载可独立选择 ws/quic/auto，全 QUIC 模式以两段实际 QUIC 为准；默认 WS 及业务 / E2E 契约不变。实施范围为 NQ-09～NQ-12，各项按实际证据记录状态。
+**2026-11-04 全链路范围修订：Host ↔ Relay ↔ 手机的两段公网承载均支持 QUIC。最新默认策略为 §14；此前“首版 Host 保持 WS”的描述与单侧结果仅保留为历史阶段。** 两段公网承载可独立选择 ws/quic/auto，全 QUIC 模式以两段实际 QUIC 为准；默认策略见 §14，业务 / E2E 契约保持。实施范围为 NQ-09～NQ-12，各项按实际证据记录状态。
 
 2026-11-04 当前决策：在现有 Relay 路径下提供可互换的 WS / QUIC adapter；首次连接和运行中切换使用同一选择入口，详见 §3。QUIC 按现有 ctl/msg/bulk 拆为三流并使用 Go 原生优先级，详见 §6。§8 给出原业务契约、适用优势与量化验收。当前 v2 三流、双端运行中切换和每 Host 模式存储已实现；代码自动验证、设备及线路收益分别登记，尚未发布。
 
@@ -182,3 +182,9 @@ Node 旧 18/19、四承载组合及 Android / Apple↔Go 的结果见[主分支�
 30 Mbps 出口采用 Relay 设备下行共享 bulk 配额，默认按编码后 UTF-8 帧限制为 2,000,000 字节/秒、突发 64 KiB；文件有效吞吐约 1.5 MB/s。所有 Host / 设备在一个 Relay 进程内共用配额，等待按帧轮转，socket 积压让出位置；交互通道继续按原优先级发送。已封密文留在原 FIFO 等待，旧端单个大帧完整计账，握手与连接生命周期释放等待位置。配置 `ORBIS_RELAY_BULK_BYTES_PER_SECOND=0` 可恢复不限速。Go 每流最大接收窗口调整为 2 MiB，连接总上限 12 MiB；Apple 调整初始额度，后续窗口仍由系统管理。
 
 实现：[共享配额](../../packages/relay/src/bulk-send-budget.ts)、[Relay 接入](../../packages/relay/src/index.ts)、[出站 mux](../../packages/protocol/src/outbound-mux.ts)、[Go 窗口](../../native/relayquic/multistream.go)、[Apple 配置](../../ios/Orbis/Orbis/RelaySocket.swift)。专项验证复用 [mux 测试](../../packages/protocol/src/outbound-mux.test.ts)、[配额测试](../../packages/relay/src/bulk-send-budget.test.ts)、[真实 Relay 双 Host 测试](../../packages/relay/src/bulk-pacing.test.ts)及既有三流 / 五流回归。本机 Node 60/60、Go race 5/5、TypeScript 构建 / 测试类型检查、lint 与 Apple 语法检查通过；首次 HS2 等待失败、原断言与唤醒修复保留在[验证摘要](../../.artifacts/quic-bandwidth-20261106/verification.json)及同目录日志。生产未部署，真实下载期间的交互与吞吐待用户验证。多进程 Relay、其他服务及非 bulk 流量另有出口占用。
+
+## 14. Auto 默认使用 WS（NQ-16，2026-11-07）
+
+Host、Android 与 iOS 未保存传输偏好时选择 auto；auto 的实际承载固定为 WS，首次连接和重连均跳过 QUIC 发现与原生准备。显式 ws / quic 与已保存偏好继续生效。由 QUIC 改选 auto 时，沿用候选准备、旧连接退休与新认证流程切到 WS；候选失败保留现任并报告错误。已有 WS 改选 auto 复用连接。LAN 优先、E2E、操作确认与历史 / 文件恢复保持原语义。此前章节的 QUIC 优先 auto 与默认 ws 为历史策略。
+
+设置页 Auto 说明同步为“自动模式使用 WS”；当前协议继续由实际 adapter 与 active path 决定。NQ-16 回归覆盖跳过发现、缺省偏好、QUIC 到 Auto 的就绪交接、手动 QUIC 及已保存偏好。Host 16 项、Swift 20 项与 Android 隔离副本 18 项定向测试通过；主工作区 Android 编译受并行供应商界面未完成代码阻塞，首次日志保留。实施、Release 专项安装包及验证证据位于 `.artifacts/relay-auto-ws-20261107/completion.json`；尚未安装或部署，待用户覆盖安装后选择自动并验证连接。

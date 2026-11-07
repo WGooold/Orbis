@@ -23,7 +23,7 @@ const LANE_LIMITS = [4 * 1024 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024, 16 * 1
 const MAX_FRAMES = 16384;
 
 export function relayTransportMode(value: unknown): RelayTransportMode {
-  if (value === undefined) return "ws";
+  if (value === undefined) return "auto";
   if (value === "ws" || value === "quic" || value === "auto") return value;
   throw new Error("relayTransport / ORBIS_RELAY_TRANSPORT 必须是 ws、quic 或 auto");
 }
@@ -243,13 +243,13 @@ async function prepareWS(relayUrl: string, signal: AbortSignal): Promise<Prepare
 }
 
 export async function prepareRelaySocket(relayUrl: string, mode: RelayTransportMode, signal: AbortSignal, options: RelaySocketOptions = {}): Promise<PreparedRelaySocket> {
-  if (mode === "ws") return prepareWS(relayUrl, signal);
+  if (mode !== "quic") return prepareWS(relayUrl, signal);
   try {
     const url = new URL(relayUrl.replace(/\/$/u, "") + "/v1/transports");
     const hostname = url.hostname.replace(/^\[|\]$/gu, "");
     if (url.protocol !== "wss:" && !(url.protocol === "ws:" && ["localhost", "127.0.0.1", "::1"].includes(hostname))) throw new Error("QUIC discovery requires HTTPS");
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
-    const discoverySignal = AbortSignal.any([signal, AbortSignal.timeout(mode === "quic" ? 3000 : 1000)]);
+    const discoverySignal = AbortSignal.any([signal, AbortSignal.timeout(3000)]);
     const response = await fetch(url, { signal: discoverySignal, redirect: "error" });
     if (!response.ok || response.body === null) throw new Error("Relay has no Host QUIC advertisement");
     const reader = response.body.getReader();
@@ -268,11 +268,10 @@ export async function prepareRelaySocket(relayUrl: string, mode: RelayTransportM
     const port = info.quic?.port;
     if (info.version !== 1 || info.quic?.hostAlpn !== "orbis-relay-host-v2" || !Number.isInteger(port) || port! < 1 || port! > 65535) throw new Error("Relay has no compatible Host QUIC endpoint");
     const address = `${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`;
-    const socket = await NativeQuicSocket.prepare(address, hostname, AbortSignal.any([signal, AbortSignal.timeout(options.prepareTimeoutMs ?? (mode === "quic" ? 5000 : 1500))]), { ...options, ...(info.quic?.historyHostAlpn === "orbis-relay-host-v3" ? { streamVersion: 3 as const } : {}) });
+    const socket = await NativeQuicSocket.prepare(address, hostname, AbortSignal.any([signal, AbortSignal.timeout(options.prepareTimeoutMs ?? 5000)]), { ...options, ...(info.quic?.historyHostAlpn === "orbis-relay-host-v3" ? { streamVersion: 3 as const } : {}) });
     return { socket, kind: "quic" };
   } catch (error) {
     signal.throwIfAborted();
-    if (mode !== "auto") throw error;
-    return prepareWS(relayUrl, signal);
+    throw error;
   }
 }

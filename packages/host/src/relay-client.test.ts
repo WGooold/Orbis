@@ -1,9 +1,10 @@
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { PROTOCOL_VERSION } from "@orbis/protocol";
 import { HostRelayClient } from "./relay-client.js";
+import * as relaySockets from "./relay-socket.js";
 import { createRelayServer } from "@orbis/relay";
 import { createBusinessRelayServer, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
@@ -66,6 +67,30 @@ describe("Host Relay handshake errors", () => {
 });
 
 describe("Host Relay transport handoff", () => {
+  // NQ-16: exercise policy handoff with local authenticated sockets; native QUIC framing has its own tests.
+  it("replaces a QUIC incumbent with WS when selecting Auto and reuses an existing WS", async () => {
+    const relay = await createRelayServer({ port: 0, host: "127.0.0.1", runtimeCredentials: ["secret"] });
+    const prepare = relaySockets.prepareRelaySocket;
+    const selection = vi.spyOn(relaySockets, "prepareRelaySocket").mockImplementation(async (url, mode, signal, options) => {
+      const prepared = await prepare(url, "ws", signal, options);
+      return { ...prepared, kind: mode === "quic" ? "quic" : "ws" };
+    });
+    const client = new HostRelayClient({ relayUrl: relay.url, credential: "secret", transportMode: "quic",
+      runtime: { runtimeId: "host-auto", name: "Host", cwd: "/", status: "idle" }, onFrame: () => undefined, reconnect: false });
+    try {
+      await client.start();
+      expect(client.transportKind).toBe("quic");
+      await client.setTransportMode("auto");
+      expect(client.state).toBe("connected");
+      expect(client.transportMode).toBe("auto");
+      expect(client.transportKind).toBe("ws");
+      expect(selection).toHaveBeenCalledTimes(2);
+      await client.setTransportMode("ws");
+      await client.setTransportMode("auto");
+      expect(selection).toHaveBeenCalledTimes(2);
+    } finally { await client.stop(); selection.mockRestore(); await relay.close(); }
+  });
+
   it("keeps the authenticated incumbent when a forced QUIC candidate has no advertisement", async () => {
     const relay = await createRelayServer({ port: 0, host: "127.0.0.1", runtimeCredentials: ["secret"] });
     const states: string[] = [];
@@ -92,6 +117,10 @@ describe("Host Relay transport handoff", () => {
     try {
       await client.start();
       expect(client.transportKind).toBe(options.relayTransport ?? "ws");
+      // NQ-16: Auto must hand an existing QUIC connection back to WS too.
+      await client.setTransportMode("auto");
+      expect(client.transportMode).toBe("auto");
+      expect(client.transportKind).toBe("ws");
       for (let n = 0; n < 3; n++) {
         const incumbent = client.transportKind!;
         const obsolete = client.setTransportMode(incumbent === "ws" ? "quic" : "ws").then(() => "ready", () => "superseded");
@@ -108,7 +137,7 @@ describe("Host Relay transport handoff", () => {
     } finally { await client.stop(); await stopRelayBusinessTransports(); await relay.close(); }
   });
 
-  it("never falls back after the chosen QUIC transport sends runtime authentication", async () => {
+  it("does not redial another transport after runtime authentication is rejected", async () => {
     const relay = await createBusinessRelayServer({ port: 0, host: "127.0.0.1", runtimeCredentials: ["correct"] });
     const options = relayBusinessHostOptions(relay.url);
     const errors: string[] = [];

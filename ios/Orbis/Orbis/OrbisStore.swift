@@ -270,7 +270,12 @@ final class HostConnection: ObservableObject {
     private var agentStateObservation: AnyCancellable?
     private let secure: SecureStorage
     private let transport: OrbisTransport
-    func setRelayTransportMode(_ mode: RelayTransportMode) { transport.setRelayTransportMode(mode) }
+    var relayTransportKind: RelayTransportKind? { transport.relayTransportKind }
+    var relayTransportMode: RelayTransportMode { transport.relayTransportMode }
+    func setRelayTransportMode(_ mode: RelayTransportMode) {
+        transport.setRelayTransportMode(mode)
+        objectWillChange.send()
+    }
     private let deviceName: String
     private let preferences: UserDefaults?
     let historyWorker: SessionHistoryWorker

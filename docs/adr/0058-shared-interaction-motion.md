@@ -61,6 +61,8 @@
 | SC45 | 后台子任务 |
 | SC46 | 语言选择 |
 | SC47 | 回复卡片变化 |
+| SC48 | 当前连接协议与电脑、路径、断线状态同步（S28） |
+| SC49 | 设置页三种协议模式选择与 Host 隔离（S29） |
 | SC50 | 各后端内容步骤分卡、并行工具组折叠与局部分页（S31） |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。

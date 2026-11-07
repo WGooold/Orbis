@@ -57,7 +57,7 @@ class RelaySocketTest {
                 assertTrue(connection.send("""{"type":"device.authenticate"}""")); opened.countDown()
             }
             override fun onFailure(connection: RelaySocketConnection, error: Throwable) { failed.countDown() }
-        }, { 443 }, { _, _ -> quic }, { _, _ -> fallbacks.incrementAndGet(); error("unexpected fallback") })
+        }, { 443 }, { _, _ -> quic }, { _, _ -> fallbacks.incrementAndGet(); error("unexpected fallback") }, mode = RelayTransportMode.QUIC)
         try {
             assertFalse(socket.send("{}"))
             socket.start()
@@ -70,17 +70,18 @@ class RelaySocketTest {
         } finally { socket.cancel() }
     }
 
-    @Test fun closesFailedCandidateBeforeWsAuthenticationWithWrapperIdentity() {
-        val quic = FakeQuic { throw IOException("UDP unavailable") }
+    // NQ-16: default Auto must authenticate directly over WS without a discovery/UDP delay.
+    @Test fun automaticModeUsesWsWithoutDiscoveryOrNativePreparation() {
         val ready = CountDownLatch(1)
         val ws = FakeWS(request)
         var observed: RelaySocketConnection? = null
         val socket = RelaySocket(OkHttpClient(), request, object : RelaySocketListener {
             override fun onOpen(connection: RelaySocketConnection) {
-                observed = connection; assertTrue(connection.send("{}")); ready.countDown()
+                observed = connection
+                assertEquals(RelayTransportKind.WS, connection.kind)
+                assertTrue(connection.send("{}")); ready.countDown()
             }
-        }, { 443 }, { _, _ -> quic }, { _, callback ->
-            assertEquals(0, quic.closed.count)
+        }, { error("Auto must skip discovery") }, { _, _ -> error("Auto must skip QUIC") }, { _, callback ->
             callback.onOpen(ws, response()); ws
         })
         try {
@@ -88,7 +89,6 @@ class RelaySocketTest {
             assertTrue(ready.await(3, TimeUnit.SECONDS))
             assertSame(socket, observed)
             assertEquals("{}", ws.sent.poll(1, TimeUnit.SECONDS))
-            assertTrue(quic.sent.isEmpty())
         } finally { socket.cancel() }
         assertTrue(ws.cancelled)
     }
@@ -99,7 +99,7 @@ class RelaySocketTest {
         val callbacks = AtomicInteger()
         val socket = RelaySocket(OkHttpClient(), request, object : RelaySocketListener {
             override fun onOpen(connection: RelaySocketConnection) { callbacks.incrementAndGet() }
-        }, { 443 }, { _, _ -> quic }, { _, _ -> callbacks.incrementAndGet(); FakeWS(request) })
+        }, { 443 }, { _, _ -> quic }, { _, _ -> callbacks.incrementAndGet(); FakeWS(request) }, mode = RelayTransportMode.QUIC)
         try {
             socket.start(); assertTrue(entered.await(3, TimeUnit.SECONDS))
             socket.cancel(); release.countDown()

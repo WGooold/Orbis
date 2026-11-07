@@ -56,4 +56,25 @@ class StatusScreenTest {
         assertEquals("0 ms", connectionLatencyText(RemoteState(e2eReady = true, pathRttMs = 0L)))
         assertEquals("42 ms", connectionLatencyText(RemoteState(e2eReady = true, pathRttMs = 42L)))
     }
+
+    /** S28 / SC48：实际协议随 Relay 切换，LAN 不误用备用 Relay 的 QUIC，断线不展示旧值。 */
+    @Test
+    fun `connection protocol follows the active path and actual adapter`() {
+        val state = RemoteState(e2eReady = true, path = "relay", relayTransportKind = RelayTransportKind.WS)
+        assertEquals("WS", connectionProtocolText(state))
+        assertEquals("QUIC", connectionProtocolText(state.copy(relayTransportKind = RelayTransportKind.QUIC)))
+        assertEquals("WS", connectionProtocolText(state.copy(path = "lan", relayTransportKind = RelayTransportKind.QUIC)))
+        assertEquals("WS", connectionProtocolText(state.copy(path = "lan", relayTransportKind = null, connection = RelayConnection.OFFLINE)))
+        assertEquals("暂不可用", connectionProtocolText(state.copy(e2eReady = false)))
+        assertEquals("暂不可用", connectionProtocolText(state.copy(relayTransportKind = null)))
+    }
+
+    /** NQ-16 / S29：缺省选 Auto，说明使用 WS，实际连接协议继续单独展示。 */
+    @Test
+    fun `relay mode descriptions distinguish auto ws and quic`() {
+        assertEquals(RelayTransportMode.AUTO, RemoteState().relayTransportMode)
+        assertEquals("自动模式使用 WS", relayTransportModeDescription(RelayTransportMode.AUTO))
+        assertEquals("强制使用 WS", relayTransportModeDescription(RelayTransportMode.WS))
+        assertEquals("强制使用 QUIC；准备失败时保留当前连接并报告错误", relayTransportModeDescription(RelayTransportMode.QUIC))
+    }
 }

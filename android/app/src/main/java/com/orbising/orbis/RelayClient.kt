@@ -149,7 +149,7 @@ class RelayClient internal constructor(
     private var switchAttempt = 0L
     private var retirement: Job? = null
     private var switchRelay: ((RelayTransportMode) -> Unit)? = null
-    @Volatile var desiredRelayMode = RelayTransportMode.WS
+    @Volatile var desiredRelayMode = RelayTransportMode.AUTO
         private set
     @Volatile var relaySwitchPhase = "idle"
         private set
@@ -274,7 +274,7 @@ class RelayClient internal constructor(
         // 连接照常成功、中继照常回 device.ready，但配对帧/HS1 永远发不出去（Android 侧从
         // f822ef9 起正是如此，整整一个 E2E 层没接上）。改成必填后，漏传是编译错误。
         e2eOptions: E2eConnectOptions,
-        relayMode: RelayTransportMode = RelayTransportMode.WS,
+        relayMode: RelayTransportMode = RelayTransportMode.AUTO,
     ) {
         synchronized(relayLock) {
             requireSupportedRelay(device.relayUrl)
@@ -467,7 +467,8 @@ class RelayClient internal constructor(
                 val attempt = switchAttempt
                 candidate?.cancel(); candidate = null
                 val active = webSocket
-                if (active?.kind != null && (mode == RelayTransportMode.AUTO || mode.name == active.kind?.name)) {
+                val desiredKind = if (mode == RelayTransportMode.QUIC) RelayTransportKind.QUIC else RelayTransportKind.WS
+                if (active?.kind == desiredKind) {
                     relaySwitchPhase = if (connection.bootstrapReady) "active" else "handshaking"
                     return@switch
                 }

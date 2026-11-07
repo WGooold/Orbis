@@ -28,6 +28,33 @@ struct ConnectionStatusView: View {
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : store.connection == .error ? OrbisPalette(scheme).error : OrbisPalette(scheme).warning)
                         StatusRow(label: L10n.tr("连接方式"), value: pathTitle(store.activePath),
                                   tone: store.activePath == "lan" ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)
+                        StatusRow(label: L10n.tr("连接协议"), value: connectionProtocolText(store.relayTransportKind, path: store.activePath, connected: store.connection == .secured), tone: OrbisPalette(scheme).secondary)
+                        Text(L10n.tr("协议模式")).font(.orbisBody())
+                        HStack(spacing: 10) {
+                            ForEach([
+                                (RelayTransportMode.auto, L10n.tr("自动")),
+                                (.ws, "WS"),
+                                (.quic, "QUIC"),
+                            ], id: \.0.rawValue) { mode, title in
+                                let selected = store.relayTransportMode == mode
+                                OrbisMotionButton { store.setRelayTransportMode(mode) } label: {
+                                    HStack(spacing: 5) {
+                                        if selected { Image(systemName: "checkmark").accessibilityHidden(true) }
+                                        Text(title).lineLimit(1)
+                                    }
+                                    .font(.orbisLabel(.semibold))
+                                    .foregroundStyle(selected ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
+                                    .frame(maxWidth: .infinity, minHeight: 48)
+                                }
+                                .buttonStyle(NeuButtonStyle(selected: selected))
+                                .disabled(store.selectedHost == nil)
+                                .accessibilityIdentifier("relay-mode-\(mode.rawValue)")
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                            }
+                        }
+                        Text(relayTransportModeDescription(store.relayTransportMode))
+                            .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         StatusRow(label: L10n.tr("连接延迟"), value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured), tone: OrbisPalette(scheme).secondary)
                         StatusRow(label: L10n.tr("端到端加密"), value: store.connection == .secured ? L10n.tr("已启用") : L10n.tr("未建立"),
                                   tone: store.connection == .secured ? OrbisPalette(scheme).success : OrbisPalette(scheme).secondary)

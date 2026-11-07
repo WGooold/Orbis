@@ -1379,5 +1379,11 @@
   "：": ": ",
   "：{0}": ": {0}",
   "{0} 次工具调用": "{0} tool calls",
-  "显示更多工具（剩余 {0} 项）": "Show more tools ({0} remaining)"
+  "显示更多工具（剩余 {0} 项）": "Show more tools ({0} remaining)",
+  "连接协议": "Connection protocol",
+  "协议模式": "Protocol mode",
+  "自动": "Auto",
+  "自动模式使用 WS": "Automatic mode uses WS.",
+  "强制使用 WS": "Always use WS",
+  "强制使用 QUIC；准备失败时保留当前连接并报告错误": "Always use QUIC; if preparation fails, keep the current connection and report an error."
 }

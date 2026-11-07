@@ -52,7 +52,7 @@ class RelaySwitchTest {
                 client.setRelayTransportMode(next)
                 val cancelled = sockets[2]
                 client.setRelayTransportMode(next); assertEquals(3, sockets.size)
-                client.setRelayTransportMode(RelayTransportMode.AUTO)
+                client.setRelayTransportMode(initial)
                 cancelled.ready()
                 assertTrue(cancelled.cancelled); assertTrue(cancelled.sent.isEmpty()); assertFalse(old.cancelled)
                 client.setRelayTransportMode(next)
@@ -72,6 +72,35 @@ class RelaySwitchTest {
             } finally { sockets.forEach { it.closeGate.complete(Unit) }; client.disconnect() }
         }
     }
+    // NQ-16: Auto is the default policy and switching from QUIC hands off to WS only after ready.
+    @Test fun automaticModeDefaultsToWsAndRetiresQuicOnlyAfterWsIsReady() {
+        val sockets = CopyOnWriteArrayList<Socket>()
+        val client = RelayClient(socketFactory = { _, mode, listener -> Socket(mode, listener).also { sockets.add(it) } })
+        try {
+            client.connect(DeviceCredential("wss://relay.invalid", "phone", "test"), onMessage = { _, _ -> },
+                onOpen = {}, onClosed = {}, e2eOptions = E2eConnectOptions("host", "phone", X25519KeyPair.generate(), pskRoot = ByteArray(32) { 1 }))
+            assertEquals(RelayTransportMode.AUTO, client.desiredRelayMode)
+            val first = sockets.single(); first.ready()
+            assertEquals(RelayTransportKind.WS, client.relayTransportKind)
+            client.setRelayTransportMode(RelayTransportMode.QUIC)
+            val quic = sockets[1]; quic.ready()
+            awaitCondition { quic.authentications == 1 }
+            client.setRelayTransportMode(RelayTransportMode.AUTO)
+            val automatic = sockets[2]
+            assertFalse(quic.cancelled); assertTrue(automatic.sent.isEmpty())
+            assertEquals(RelayTransportKind.QUIC, client.relayTransportKind)
+            automatic.ready()
+            awaitCondition { automatic.authentications == 1 }
+            assertTrue(quic.joined)
+            assertEquals(RelayTransportKind.WS, client.relayTransportKind)
+            assertEquals(RelayTransportMode.AUTO, client.desiredRelayMode)
+            client.setRelayTransportMode(RelayTransportMode.WS)
+            client.setRelayTransportMode(RelayTransportMode.AUTO)
+            assertEquals(3, sockets.size)
+            assertFalse(automatic.cancelled)
+        } finally { client.disconnect() }
+    }
+
     @Test fun quicWaitsForAuthenticatedBootstrapAndNeverReplaysAcceptedInputAfterSwitch() {
         val sockets = CopyOnWriteArrayList<Socket>()
         val root = ByteArray(32) { 7 }

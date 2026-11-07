@@ -122,11 +122,12 @@ internal class HostConnection(
     private val relay = RelayClient()
     private val relayPreferences = application.getSharedPreferences("orbis_relay_transport", android.content.Context.MODE_PRIVATE)
     private fun savedRelayMode(): RelayTransportMode = runCatching {
-        RelayTransportMode.valueOf(relayPreferences.getString(hostId, RelayTransportMode.WS.name)!!)
-    }.getOrDefault(RelayTransportMode.WS)
+        RelayTransportMode.valueOf(relayPreferences.getString(hostId, RelayTransportMode.AUTO.name)!!)
+    }.getOrDefault(RelayTransportMode.AUTO)
     fun setRelayTransportMode(mode: RelayTransportMode) {
         relayPreferences.edit().putString(hostId, mode.name).apply()
         relay.setRelayTransportMode(mode)
+        updateState { it.copy(relayTransportMode = mode) }
     }
     private val reducer = RelayReducer(publishHome = false)
     private val notifier = stores.notifier
@@ -154,6 +155,7 @@ internal class HostConnection(
             deviceId = initial.deviceId,
             hostId = initial.hostId,
             hostName = initial.hostName,
+            relayTransportMode = savedRelayMode(),
         ),
     )
     val state: StateFlow<RemoteState> = mutableState.asStateFlow()
@@ -2193,6 +2195,7 @@ internal class HostConnection(
             updateState { RemoteState(
                 connection = RelayConnection.OFFLINE,
                 error = L10n.tr("这台手机上的配对不完整（缺少端到端加密材料）：请重新扫码配对"),
+                relayTransportMode = savedRelayMode(),
             ) }
             return
         }
@@ -2497,7 +2500,7 @@ internal class HostConnection(
                 // a reducer's older snapshot can overwrite LAN with the previous Relay label.
                 relayStateLock.withLock {
                     if (currentGeneration != generation) return@launch
-                    updateState { it.copy(path = path, pathRttMs = rttMs) }
+                    updateState { it.copy(path = path, pathRttMs = rttMs, relayTransportKind = relay.relayTransportKind) }
                 }
             }
         }
@@ -2510,6 +2513,7 @@ internal class HostConnection(
                     updateState { current ->
                         (if (ready) current else current.markReconnecting()).copy(
                             e2eReady = ready,
+                            relayTransportKind = relay.relayTransportKind,
                             connection = if (!ready && current.connection == RelayConnection.ONLINE) RelayConnection.RECONNECTING else current.connection,
                             error = if (ready && L10n.matches(current.error, HANDSHAKE_STALLED_ERROR_SOURCE)) null else current.error,
                         ).let { if (ready) it.ledgerOpenConnection() else it }

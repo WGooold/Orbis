@@ -22,11 +22,14 @@ describe("Orbis Host configuration", () => {
     await expect(loadHostConfig({ stateDir, env: { ORBIS_RELAY_HISTORY_MODE: "new-channel" } })).rejects.toThrow("relayHistoryMode");
   });
 
-  it("defaults to WS, persists the chosen mode and strictly validates environment overrides", async () => {
+  // NQ-16: a missing preference selects Auto while explicit WS/QUIC and overrides retain their meaning.
+  it("defaults to Auto, persists the chosen mode and strictly validates environment overrides", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "orbis-transport-config-"));
     temporaryDirectories.push(stateDir);
     const base = { relayUrl: "wss://relay.example.test", runtimeCredential: "fixture" };
     await writeFile(join(stateDir, "config.json"), JSON.stringify(base));
+    expect((await loadHostConfig({ stateDir, env: {} })).relayTransport).toBe("auto");
+    await writeFile(join(stateDir, "config.json"), JSON.stringify({ ...base, relayTransport: "ws" }));
     expect((await loadHostConfig({ stateDir, env: {} })).relayTransport).toBe("ws");
     await writeFile(join(stateDir, "config.json"), JSON.stringify({ ...base, relayTransport: "quic" }));
     expect((await loadHostConfig({ stateDir, env: {} })).relayTransport).toBe("quic");

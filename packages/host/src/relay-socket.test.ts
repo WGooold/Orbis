@@ -31,7 +31,7 @@ describe("Host QUIC preparation budgets", () => {
     expect(prepare).toHaveBeenCalledWith("relay.example:24443", "relay.example", expect.any(AbortSignal), { streamVersion: 3 });
   });
 
-  it("allows explicit QUIC on a slow path beyond the opportunistic auto budgets", async () => {
+  it("allows explicit QUIC on a slow path within its preparation budgets", async () => {
     discoveryAfter(1200);
     const native = {} as NativeQuicSocket;
     const prepare = vi.spyOn(NativeQuicSocket, "prepare").mockImplementation(
@@ -42,7 +42,8 @@ describe("Host QUIC preparation budgets", () => {
     expect(prepare).toHaveBeenCalledWith("relay.example:24443", "relay.example", expect.any(AbortSignal), {});
   });
 
-  it("keeps auto's short discovery deadline and falls back before runtime authentication", async () => {
+  // NQ-16: Auto must skip even a slow QUIC discovery and let the caller own WS authentication.
+  it("prepares Auto directly over WS without discovery or a native candidate", async () => {
     const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await once(server, "listening");
     const address = server.address();
@@ -55,6 +56,7 @@ describe("Host QUIC preparation budgets", () => {
       const result = await prepareRelaySocket(`ws://127.0.0.1:${address.port}`, "auto", new AbortController().signal);
       expect(result.kind).toBe("ws");
       expect(prepare).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
       expect(frames).toBe(0);
       await closeRelaySocket(result.socket);
     } finally { for (const socket of server.clients) socket.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); }
@@ -64,7 +66,7 @@ describe("Host QUIC preparation budgets", () => {
     discoveryAfter(2000);
     const prepare = vi.spyOn(NativeQuicSocket, "prepare");
     const controller = new AbortController();
-    const pending = prepareRelaySocket("wss://relay.example", "auto", controller.signal);
+    const pending = prepareRelaySocket("wss://relay.example", "quic", controller.signal);
     controller.abort(new Error("selection superseded"));
     await expect(pending).rejects.toThrow("selection superseded");
     expect(prepare).not.toHaveBeenCalled();
