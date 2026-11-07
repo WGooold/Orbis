@@ -205,6 +205,8 @@ export type HostServiceOptions = {
    * 出站多路复用器的职责，与这个上限无关——即使限速全开，控制帧也照样插队。
    */
   bulkBytesPerSecond?: number;
+  /** Grace period for compact-state bootstrap before replaying the full legacy menu. */
+  bootstrapReplayDelayMs?: number;
   /** Pi 会话根目录。测试注入临时目录；缺省 `~/.pi/agent/sessions`。 */
   sessionsRoot?: string;
   /** 进程激活器。测试注入 mock；缺省真 spawner（spec §8）。 */
@@ -634,6 +636,7 @@ export class HostService {
     onUnconfirmed: (record, event) => this.#publishRuntimeEvent(record.runtimeId, event),
   });
   readonly #interactionIds = new Map<string, Set<string>>();
+  readonly #bootstrapReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #notificationChecks = new Map<string, number>();
   /** 同一台设备的离线回绝只报一次的时间戳（详见 `#shouldReportOfflineDevice`）。 */
   readonly #offlineDeviceReportedAt = new Map<string, number>();
@@ -1363,6 +1366,28 @@ export class HostService {
     };
   }
 
+  /** Give compact clients time to request their scoped model after device.ready;
+   * strict old clients still receive the full menu after the bounded grace period. */
+  #scheduleBootstrapReplay(deviceId: string, kind: PathKind): void {
+    const old = this.#bootstrapReplayTimers.get(deviceId);
+    if (old !== undefined) clearTimeout(old);
+    const timer = setTimeout(() => {
+      if (this.#bootstrapReplayTimers.get(deviceId) !== timer) return;
+      this.#bootstrapReplayTimers.delete(deviceId);
+      const link = this.#links.get(deviceId);
+      if (!link?.active || link.protocolVersion(kind) === undefined) return;
+      for (const backend of this.#backends) if (backend instanceof CodexRuntime && backend.isReady())
+        for (const threadId of backend.activeThreadIds()) backend.announce(threadId);
+      this.#dshRuntime?.announce(); this.#claudeBackend.announce();
+      for (const { runtimeId, event } of this.#loopback?.runtimeCapabilities() ?? []) {
+        if (this.#compactStateSubscriptions.owns(deviceId, runtimeId, "capabilities")) continue;
+        this.#sendToDeviceOn(deviceId, kind, { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
+          sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event });
+      }
+    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 250)));
+    this.#bootstrapReplayTimers.set(deviceId, timer);
+  }
+
   /** 接入分档变了（探测结果、握手成功、接入失败）：让已配对的手机马上看到。 */
   announceCodexDesktopStatus(): void {
     this.#broadcastDeviceReady();
@@ -1532,6 +1557,8 @@ export class HostService {
     this.#modelLifecycle = "stopping";
     clearTimeout(this.#dshRecoveryTimer); this.#dshRecoveryTimer = undefined;
     this.#commandOwners.close();
+    for (const timer of this.#bootstrapReplayTimers.values()) clearTimeout(timer);
+    this.#bootstrapReplayTimers.clear();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
     await this.#dshStarting?.catch(() => {});
@@ -2392,36 +2419,13 @@ export class HostService {
       path: active,
       ...(rttMs === undefined ? {} : { rttMs: Math.round(rttMs) }),
     });
-    // Codex 是 Host 内部后端，没有 Pi RuntimeBridge 那样的 transport connected/resync
-    // 钩子来重播 capabilities——重连后 `runtime.online` 会把 capabilities 清掉，slash 菜单
-    // 就再也不出来。这里趁刚握手完成、这条路确定能通，把每个活跃 codex thread 的
-    // capabilities + metadata 补发给这台设备（走运行中事件通道，序号照常递增防丢）。
-    for (const backend of this.#backends) {
-      if (backend instanceof CodexRuntime && backend.isReady()) {
-        for (const threadId of backend.activeThreadIds()) backend.announce(threadId);
-      }
-    }
-    this.#dshRuntime?.announce();
-    this.#claudeBackend.announce();
-    // Pi 侧同理：扩展只在自己的 transport 重连时才重播 capabilities，而那和“手机刚重连”
-    // 是两件事——手机侧被 `device.ready` / `runtime.online` 清掉词表后，只要扩展的 transport
-    // 没断过，`/` 菜单就一直空着（一直要到下一轮 turn 结束刷新 capabilities）。
-    for (const { runtimeId, event } of this.#loopback?.runtimeCapabilities() ?? []) {
-      this.#sendToDeviceOn(deviceId, kind, {
-        type: "runtime.event",
-        protocolVersion: PROTOCOL_VERSION,
-        runtimeId,
-        sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })),
-        event,
-      });
+    // Let compact model reads triggered by device.ready establish their subscription
+    // first; the legacy replay is bounded and filtered per device at expiry.
+    this.#scheduleBootstrapReplay(deviceId, kind);
+    for (const runtime of this.#loopback?.runtimes ?? []) {
       // 手机重开时，Pi 的 loopback transport 通常没有断过，因此 Pi 不会自动收到
       // `RuntimeBridge` 的 transport.connected/resync 回调。主动请求一次权威交互快照，
       // 否则手机只能恢复目录和状态角标，却永远拿不到已经在电脑端 Pending 的问题详情。
-      this.#loopback?.sendResync(runtimeId, "device_reconnected");
-    }
-    // 没上报过 capabilities 的 runtime 也可能持有交互；resync 不应依赖命令词表。
-    for (const runtime of this.#loopback?.runtimes ?? []) {
-      if (this.#loopback?.runtimeCapabilities().some((entry) => entry.runtimeId === runtime.runtimeId)) continue;
       this.#loopback?.sendResync(runtime.runtimeId, "device_reconnected");
     }
   }

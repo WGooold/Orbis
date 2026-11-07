@@ -1568,3 +1568,7 @@ G09 逐字段计量以最终 UTF-8 JSON 明文为输入：消息数和总字节�
 字段路径只输出协议登记键与动态键通配符，数组索引归并为 []；不输出正文、凭据、动态目标值和内容摘要，重复判断使用带进程随机盐的私有摘要。backend / 消息类别 / 发送原因和时间窗口分别统计；逐字段扫描不会再次序列化业务对象，也不写诊断日志。`transport.fields.read/page` 是显式诊断读取，每设备一次固定快照、有效期 60 秒，最多 100 行 / 页并受 64 KiB 预算约束，游标绑定设备快照；普通状态更新不附带字段报告。records 的引用仅在明确读取或仍有订阅兴趣的会话上随诊断变化核对，不将日志追加传播到全部会话。
 
 G09 的计量报告快照全局限制为最多 8 份、合计 16,384 行；计量页自身只累计消息数和大小，避免递归采样扩大报告。消息字节表示最终 JSON 明文发送尝试；封帧、分片、重试和实际传输量由既有线路计数单独核对，不能直接把明文字节当成实际网络字节。验证指针：[字段计量](../../packages/host/src/field-traffic-meter.test.ts)、Host 诊断 / 领域用例与 FT-G09 加密联动；证据保存于 `.artifacts/field-transport-implementation-20261106/g09-results.json`。
+
+G10 在握手发送 `device.ready` 与 `device.path` 后，为兼容菜单恢复留出默认 250 ms、有 1 秒上限的 compact 订阅建立时间；设备在目标 Runtime 上订阅 `capabilities` 后，该 Runtime 不再重播 legacy capabilities，未协商的旧客户端仍取得完整菜单。交互 `resync` 仍立即发起。队列准入必须在封帧前按 channel 和预算判定；控制 / 普通消息 / bulk / history / catchup 使用独立通道与预算，`ctl` 优先、`msg` 次之，已封帧即使队列超限也不可静默丢弃或合并。bulk 分片可在封帧前因无预算而延后，由接收端 pull 重试；路径写入失败保留队首重试，耗尽时摘除路径并在新会话恢复。控制结果、交互终态、来源 / 基准版本和正在传输的正文不得用通用队列合并替代。
+
+G10 实现与验证：[握手兼容恢复](../../packages/host/src/host-service.ts)及 FT-G10 compact / legacy 联动回归（[Host 测试](../../packages/host/src/host-service.test.ts)）；[出站队列准入、优先级及密文帧保留](../../packages/protocol/src/outbound-mux.test.ts)；[封帧前 admission、分片、换路与恢复](../../packages/host/src/device-link.test.ts)。记录及重连结果保存于 `.artifacts/field-transport-implementation-20261106/g10-results.json`。

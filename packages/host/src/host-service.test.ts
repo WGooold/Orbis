@@ -1958,7 +1958,7 @@ describe("host end-to-end over relay", () => {
 
   // FT-G01-WIRE: verify the real encrypted Host exit, model response, reconnect
   // seed, and exact dispatch target; a helper-only projection test cannot cover wiring.
-  it("FT-G01 projects menus over encrypted Host exits and preserves exact dispatch", async () => {
+  it("FT-G01/FT-G10 project menus, suppress compact bootstrap replay, and preserve exact dispatch", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-menu-wire-"));
     relay = await startRelay(stateDir);
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
@@ -2012,11 +2012,33 @@ describe("host end-to-end over relay", () => {
     await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     const ready = await readMatching(device, message => message.type === "device.ready");
     checkMetadata((ready.runtimes as unknown[])[0]);
-    const replay = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
-    expect(replay.event).toEqual(menu.event);
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "menu-compact-reconnect",
+      scope: "agent", runtimeId: "pi-menu", stateFormat: "compact-v2", domains: ["capabilities"], subscribe: true }));
+    const compactReplay = await readMatching(device, message => message.requestId === "menu-compact-reconnect");
+    expect(compactReplay).toMatchObject({ type: "agent.state.snapshot", stateFormat: "compact-v2",
+      domains: [{ domain: "capabilities", value: { [command.name]: expect.objectContaining({ optionCount: 1 }) } }] });
+
+    // FT-G10: the scoped compact menu satisfies bootstrap. The delayed legacy
+    // compatibility replay must not enqueue the same 634 KB-class catalog.
+    const deadline = Date.now() + 400;
+    const legacyMenuEvents: Record<string, unknown>[] = [];
+    while (Date.now() < deadline) {
+      try {
+        const incoming = await device.nextIncoming(deadline - Date.now());
+        if (!("payload" in incoming)) continue;
+        const message = JSON.parse(incoming.payload.toString("utf8")) as Record<string, unknown>;
+        const event = message.event as RuntimeEvent | undefined;
+        if (message.type === "runtime.event" && message.runtimeId === "pi-menu" && event?.type === "runtime.capabilities")
+          legacyMenuEvents.push(message);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("超时")) break;
+        throw error;
+      }
+    }
+    expect(legacyMenuEvents).toEqual([]);
   });
 
-  it("手机重开（同一条中继路上重新握手）也要重新拿到 runtime 目录", async () => {
+  it("FT-G10 legacy client gets menu and directory after same-relay reconnect", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
 
@@ -2123,8 +2145,9 @@ describe("host end-to-end over relay", () => {
       runtimeId: "pi-restart",
       event: { type: "runtime.capabilities", capabilities: { commands: [expect.objectContaining({ name: "model" })] } },
     });
-    // 手机重开时，Host 还必须让 Pi 重播当前交互；否则目录和 waiting 状态都恢复了，
-    // 但待回答问题本身只存在于 Pi SDK 内存，手机无法渲染详情页。
+    // FT-G10 legacy fallback: without compact model reads, the delayed replay still
+    // restores the slash menu for older clients. Host also asks Pi to replay pending
+    // interaction details, which remain authoritative in the runtime.
     await expect(runtime.next()).resolves.toEqual({
       type: "runtime.resync",
       runtimeId: "pi-restart",
@@ -3741,7 +3764,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     codexDevice.close();
   });
 
-  it("手机重连握手后，Host 为活跃 Codex thread 重播 capabilities（slash 菜单不丢）", async () => {
+  it("FT-G10 legacy device receives active Codex menu after delayed reconnect bootstrap", async () => {
     process.env.ORBIS_CODEX_HEAD = "0";
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);
