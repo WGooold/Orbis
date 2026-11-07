@@ -102,7 +102,7 @@ final class AgentState: ObservableObject {
     private var retiredEpochs: Set<String> = []
     private var reads: [String: Read] = [:]
     private var interests: [String: ModelInterests] = [:]
-    private var preferCompact = true
+    private var preferredFormat: String? = "compact-v2"
     private var timeouts: [String: Task<Void, Never>] = [:]
     private struct Read {
         let id: String
@@ -121,7 +121,7 @@ final class AgentState: ObservableObject {
         if key != hostKey { snapshots = [:]; retiredEpochs = []; interests = [:] }
         for id in snapshots.keys { snapshots[id]?.pending = [] }
         hostKey = key; self.connected = connected; epoch = nil
-        preferCompact = true
+        preferredFormat = "compact-v2"
     }
 
     /// Only an authenticated device.ready may establish a replacement Host model generation.
@@ -160,7 +160,7 @@ final class AgentState: ObservableObject {
         snapshot.pending = wanted; snapshot.error = nil
         snapshots[runtime.runtimeId] = snapshot
         let id = UUID().uuidString
-        let format = preferCompact ? "compact-v1" : nil
+        let format = preferredFormat
         let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted, stateFormat: format, runtime: runtime)
         reads[id] = read
         let known: [[String: Any]] = force || snapshot.stateFormat != format ? [] : snapshot.domains.values.filter { wanted.contains($0.domain) }.map {
@@ -191,7 +191,7 @@ final class AgentState: ObservableObject {
         if let id = message["requestId"] as? String, let read = reads[id], read.stateFormat != nil,
            type == "protocol.error" && ["invalid_request", "unsupported_request"].contains(message["code"] as? String ?? "") ||
            type == "agent.state.snapshot" && message["stateFormat"] == nil {
-            preferCompact = false
+            preferredFormat = read.stateFormat == "compact-v2" ? "compact-v1" : nil
             subscribe(runtime: read.runtime, force: true)
             return true
         }
@@ -213,7 +213,13 @@ final class AgentState: ObservableObject {
         var snapshot = snapshots[read.runtimeId] ?? AgentSnapshot(runtimeId: read.runtimeId, sessionId: read.sessionId)
         if snapshot.modelEpoch != newEpoch || snapshot.stateFormat != read.stateFormat { snapshot.domains = [:]; snapshot.missing = [:] }
         var incoming: [String: HostDomain] = [:]
-        for raw in rawDomains {
+        for source in rawDomains {
+            let raw: [String: Any]
+            do {
+                if source["delta"] != nil && read.stateFormat != "compact-v2" { throw StateDeltas.Failure.invalid }
+                guard let expanded = try StateDeltas.expand(source, old: snapshot.domains[source["domain"] as? String ?? ""], epoch: newEpoch) else { continue }
+                raw = expanded
+            } catch { subscribe(runtime: read.runtime, force: true); return true }
             guard let data = try? JSONSerialization.data(withJSONObject: raw),
                   let domain = try? JSONDecoder().decode(HostDomain.self, from: data), domain.valid,
                   domain.modelEpoch == newEpoch, read.domains.contains(domain.domain), incoming[domain.domain] == nil else { reject(read); return true }

@@ -1175,7 +1175,7 @@ export class HostService {
       if (this.#dshRuntime?.ownsRuntime(runtimeId)) this.#dshRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
-    const compact = request.stateFormat === "compact-v1";
+    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
     const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
     const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
     if (request.subscribe !== undefined) (compact ? this.#agentStateSubscriptions : this.#compactStateSubscriptions).register(deviceId, scope, { ...request, subscribe: false });

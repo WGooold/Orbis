@@ -78,12 +78,35 @@ struct AgentStateTests {
         #expect(h.runtime.status == "idle")
         let old = h.request
         h.state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": old["requestId"]!])
+        #expect(h.request["stateFormat"] as? String == "compact-v1")
+        h.state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": h.request["requestId"]!])
         #expect(h.request["stateFormat"] == nil)
         #expect((h.request["known"] as? [[String: Any]])?.isEmpty == true)
         h.receive([domain("identity", ["runtimeId": "runtime", "sessionId": "session", "name": "Legacy", "cwd": "/repo", "status": "idle"])])
         #expect(h.runtime.name == "Legacy")
         h.receive([domain("identity", ["runtimeId": "runtime", "sessionId": "session", "name": "Stale", "cwd": "/repo"])], request: old)
         #expect(h.runtime.name == "Legacy")
+    }
+
+    // FT-G06: patch only an exact baseline, retain committed UI on a gap and
+    // recover with a fresh read; no partial domain from the rejected batch applies.
+    @Test func collectionDeltasApplyAtomicallyAndRecoverMissingBaselines() {
+        let h = Harness()
+        h.receive([domain("interactions", ["question": question()])])
+        var row = domain("interactions", NSNull(), revision: 2)
+        row["delta"] = ["baseRevision": 1, "operations": [["op": "remove", "path": ["question"]]]]
+        h.receive([row])
+        #expect(h.projection?.interactions.isEmpty == true)
+        let sent = h.sent.count
+        row["revision"] = 4
+        row["delta"] = ["baseRevision": 3, "operations": [["op": "set", "path": ["question"], "value": question()]]]
+        h.receive([domain("model", ["provider": "p", "id": "must-not-apply"]), row])
+        #expect(h.sent.count == sent + 1)
+        #expect(h.runtime.model == nil)
+        #expect(h.projection?.interactions.isEmpty == true)
+        #expect((h.request["known"] as? [[String: Any]])?.isEmpty == true)
+        h.receive([domain("interactions", ["question": question()], revision: 4)])
+        #expect(h.projection?.interactions.count == 1)
     }
 
     @Test func taskInventoryIsProjectedIndependentlyAndUnknownKeepsTheLastTasks() {

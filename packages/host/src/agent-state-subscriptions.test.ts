@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RelayToDeviceMessage } from "@orbis/protocol";
+import { applyStateDelta, type RelayToDeviceMessage } from "@orbis/protocol";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { AgentStateSubscriptions } from "./agent-state-subscriptions.js";
 import { buildAgentStateSnapshot } from "./agent-state-snapshot.js";
@@ -8,6 +8,34 @@ const scope: StateScope = { kind: "agent", key: { hostId: "h", agentKind: "pi", 
 const fact = (value: unknown, revision = 1) => ({ source: { producer: "adapter" as const, sourceId: "s", sourceEpoch: "e", sourceRevision: revision }, availability: "ready" as const, completeness: "complete" as const, value });
 
 describe("model subscriptions", () => {
+  // FT-G06: negotiated peers receive exact collection edits; legacy peers and
+  // new source generations always receive self-contained recovery values.
+  it("FT-G06 sends versioned collection changes and preserves terminal records", async () => {
+    const registry = new AgentStateRegistry({ modelEpoch: "model" });
+    const messages: Array<{ device: string; message: RelayToDeviceMessage }> = [];
+    const subscriptions = new AgentStateSubscriptions(registry, (device, message) => messages.push({ device, message }));
+    const before = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`q${i}`, { queueId: `q${i}`, text: "body".repeat(100), state: "accepted" }]));
+    registry.commitValue(scope, "delivery", fact(before));
+    for (const device of ["compact", "legacy"]) subscriptions.register(device, scope, { type: "agent.state.request", requestId: device,
+      subscribe: true, domains: ["delivery"], ...(device === "compact" ? { stateFormat: "compact-v2" as const } : {}) });
+    const after: Record<string, unknown> = { ...before, q0: { ...before.q0!, state: "delivered" } }; delete after.q1;
+    registry.commitValue(scope, "delivery", fact(after, 2));
+    await Promise.resolve();
+    const compact = messages.find(x => x.device === "compact")!.message;
+    const legacy = messages.find(x => x.device === "legacy")!.message;
+    if (compact.type !== "agent.state.snapshot" || legacy.type !== "agent.state.snapshot") throw Error("snapshot");
+    const row = compact.domains[0]!;
+    expect(row.delta?.baseRevision).toBe(1); expect(row.value).toBeNull();
+    expect(applyStateDelta(before, row.delta!.operations)).toEqual(after);
+    expect(Buffer.byteLength(JSON.stringify(row))).toBeLessThan(Buffer.byteLength(JSON.stringify(legacy.domains[0])) / 10);
+    expect(legacy.domains[0]!.value).toEqual(after); expect(legacy.domains[0]!.delta).toBeUndefined();
+    registry.commitValue(scope, "delivery", { ...fact(after, 3), source: { ...fact(after, 3).source, sourceEpoch: "replacement" } });
+    await Promise.resolve();
+    const replaced = messages.at(-2)!.message;
+    expect(replaced).toMatchObject({ domains: [{ value: after }] });
+    if (replaced.type === "agent.state.snapshot") expect(replaced.domains[0]!.delta).toBeUndefined();
+    subscriptions.close();
+  });
   it("publishes a committed cross-domain transaction with execution separate, scoped to its device and selected domains", async () => {
     const registry = new AgentStateRegistry();
     const received: Array<{ device: string; message: RelayToDeviceMessage }> = [];

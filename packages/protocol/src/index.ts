@@ -1488,3 +1488,5 @@ export * from "./inline-media.js";
 export * from "./display-entries.js";
 
 export * from "./runtime-input-policy.js";
+
+export * from "./state-delta.js";

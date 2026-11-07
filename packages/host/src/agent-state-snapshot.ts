@@ -34,7 +34,7 @@ export type AgentStateSnapshotInput = {
   readonly maxBytes?: number;
   readonly known?: readonly { domain: string; modelEpoch: string; revision: number }[];
   readonly update?: boolean;
-  readonly stateFormat?: "compact-v1" | undefined;
+  readonly stateFormat?: "compact-v1" | "compact-v2" | undefined;
 };
 
 export type AgentStateSnapshotMessage = Extract<RelayToDeviceMessage, { type: "agent.state.snapshot" }>;

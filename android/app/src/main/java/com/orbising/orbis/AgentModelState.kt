@@ -28,6 +28,7 @@ data class AgentStateDomainView(
     val value: JsonElement? = null,
     /** 完整的 Host 已提交投影；与 source 清单是否 complete 无关。 */
     val projectionComplete: Boolean = false,
+    val source: JsonObject? = null,
 )
 
 data class AgentStateRead(
@@ -132,6 +133,7 @@ internal fun RemoteState.withAgentStateSnapshot(
             availability = availability, completeness = completeness, checkedAt = checkedAt,
             value = row["value"],
             projectionComplete = row["projectionComplete"]?.jsonPrimitive?.booleanOrNull == true,
+            source = row["source"] as? JsonObject,
         )
     }
     val missing = LinkedHashMap<String, String>()
@@ -168,7 +170,7 @@ internal fun RemoteState.withAgentStateSnapshot(
         merged[name]?.let { confirmed[name] = it }
     }
     val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json,
-        staticIdentity = message.string("stateFormat") == "compact-v1", parseInteraction = parseInteraction)
+        staticIdentity = message.string("stateFormat") in setOf("compact-v1", "compact-v2"), parseInteraction = parseInteraction)
         else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
     if (projected.error != null && L10n.hasPrefix(projected.error, "Host 模型领域格式无效：") && projected.error != base.error) {
         return cleared.rejectedSnapshot(key, scope, requestId, projected.error)

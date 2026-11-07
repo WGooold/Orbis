@@ -465,6 +465,18 @@ export type DiagnosticsPageMessage = z.infer<typeof DiagnosticsPageMessageSchema
  * `value` 对协议层是不透明的领域负载——它的形状由该领域自己的 schema 定义，读的人按
  * `domain` 去解释，而不是让协议层认识每个领域的内容。
  */
+/** compact-v2 only: paths are exact JSON keys; array edits preserve order. */
+export const StateDeltaOperationSchema = z.discriminatedUnion("op", [
+  z.strictObject({ op: z.literal("set"), path: z.array(z.string()).max(32), value: z.unknown() }),
+  z.strictObject({ op: z.literal("remove"), path: z.array(z.string()).min(1).max(32) }),
+  z.strictObject({ op: z.literal("splice"), path: z.array(z.string()).max(32), index: z.number().int().nonnegative(),
+    deleteCount: z.number().int().nonnegative(), items: z.array(z.unknown()) }),
+]);
+export type StateDeltaOperation = z.infer<typeof StateDeltaOperationSchema>;
+export const StateDeltaSchema = z.strictObject({
+  baseRevision: z.number().int().nonnegative(), operations: z.array(StateDeltaOperationSchema).min(1).max(256),
+});
+
 export const AgentStateDomainSnapshotSchema = z.strictObject({
   domain: z.string().min(1).max(64),
   modelEpoch: z.string().min(1).max(256),
@@ -474,6 +486,8 @@ export const AgentStateDomainSnapshotSchema = z.strictObject({
   source: DomainSourceSchema,
   checkedAt: z.number().int().nonnegative(),
   value: z.unknown().nullable(),
+  /** With delta, value is null until the receiver atomically reconstructs it. */
+  delta: StateDeltaSchema.optional(),
   /** Complete Host projection, independent of the native source inventory completeness. */
   projectionComplete: z.literal(true).optional(),
 });
@@ -487,7 +501,7 @@ export const AgentStateRequestSchema = z.strictObject({
   type: z.literal("agent.state.request"),
   requestId: z.string().min(1).max(128),
   /** Explicit read-only representation selection. Old strict Hosts reject it by requestId. */
-  stateFormat: z.literal("compact-v1").optional(),
+  stateFormat: z.enum(["compact-v1", "compact-v2"]).optional(),
   scope: z.enum(["host", "agent", "device"]).optional(),
   runtimeId: z.string().min(1).max(1_024).optional(),
   agentKind: AgentKindSchema.optional(),
@@ -508,7 +522,7 @@ export type AgentStateRequest = z.infer<typeof AgentStateRequestSchema>;
 export const AgentStateSnapshotSchema = z.strictObject({
   type: z.literal("agent.state.snapshot"),
   requestId: z.string().min(1).max(128),
-  stateFormat: z.literal("compact-v1").optional(),
+  stateFormat: z.enum(["compact-v1", "compact-v2"]).optional(),
   scope: z.enum(["host", "agent", "device"]),
   runtimeId: z.string().min(1).max(1_024).optional(),
   agentKind: AgentKindSchema.optional(),

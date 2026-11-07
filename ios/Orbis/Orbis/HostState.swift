@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreFoundation
 
 // Public, bounded Host facts only. Native configuration and credentials stay on the Host.
 indirect enum HostJSON: Codable, Equatable {
@@ -65,6 +66,61 @@ struct HostDomain: Decodable, Equatable {
     func sameFacts(as other: HostDomain) -> Bool {
         revision == other.revision && modelEpoch == other.modelEpoch && value == other.value && availability == other.availability &&
         completeness == other.completeness && source == other.source && projectionComplete == other.projectionComplete
+    }
+}
+
+/// FT-G06: exact-baseline edits are expanded before the ordinary atomic projection.
+enum StateDeltas {
+    enum Failure: Error { case invalid }
+    private static func integer(_ value: Any?) -> Int64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, number.doubleValue >= 0, number.doubleValue <= 9_007_199_254_740_991,
+              number.doubleValue.rounded() == number.doubleValue else { return nil }
+        return number.int64Value
+    }
+    static func expand(_ raw: [String: Any], old: HostDomain?, epoch: String) throws -> [String: Any]? {
+        guard let delta = raw["delta"] as? [String: Any] else { return raw }
+        guard let old, old.modelEpoch == epoch, let revision = integer(raw["revision"]) else { throw Failure.invalid }
+        if revision <= old.revision { return nil }
+        guard integer(delta["baseRevision"]) == old.revision,
+              let source = raw["source"] as? [String: Any], source["producer"] as? String == old.source.producer,
+              source["sourceId"] as? String == old.source.sourceId, source["sourceEpoch"] as? String == old.source.sourceEpoch,
+              let edits = delta["operations"] as? [[String: Any]], (1...256).contains(edits.count) else { throw Failure.invalid }
+        var value = old.value
+        for edit in edits {
+            guard let path = edit["path"] as? [String], path.count <= 32, let op = edit["op"] as? String else { throw Failure.invalid }
+            func decoded(_ object: Any?) throws -> HostJSON {
+                guard let object, let data = try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed]),
+                      let value = try? JSONDecoder().decode(HostJSON.self, from: data) else { throw Failure.invalid }; return value
+            }
+            func change(_ current: HostJSON, _ depth: Int) throws -> HostJSON {
+                if depth == path.count {
+                    if op == "set" { return try decoded(edit["value"]) }
+                    guard op == "splice", case .array(var items) = current, let index = edit["index"] as? Int,
+                          let count = edit["deleteCount"] as? Int, index >= 0, index <= items.count, count >= 0, count <= items.count - index,
+                          case .array(let added) = try decoded(edit["items"]) else { throw Failure.invalid }
+                    items.replaceSubrange(index..<(index + count), with: added); return .array(items)
+                }
+                let key = path[depth]
+                switch current {
+                case .object(var object):
+                    if depth == path.count - 1, op == "remove" {
+                        guard object.removeValue(forKey: key) != nil else { throw Failure.invalid }
+                    } else if depth == path.count - 1, op == "set" { object[key] = try decoded(edit["value"]) }
+                    else { guard let child = object[key] else { throw Failure.invalid }; object[key] = try change(child, depth + 1) }
+                    return .object(object)
+                case .array(var items):
+                    guard let index = Int(key), String(index) == key, items.indices.contains(index) else { throw Failure.invalid }
+                    items[index] = try change(items[index], depth + 1); return .array(items)
+                default: throw Failure.invalid
+                }
+            }
+            value = try change(value, 0)
+        }
+        let data = try JSONEncoder().encode(value)
+        guard data.count <= 4 * 1024 * 1024 else { throw Failure.invalid }
+        var result = raw; result["delta"] = nil
+        result["value"] = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]); return result
     }
 }
 
@@ -161,6 +217,8 @@ final class HostState: ObservableObject {
     private var hostId: String?
     private var epoch: String?
     private var retiredEpochs: Set<String> = []
+    private var preferDeltaState = true
+    private var subscriptionFormat: String?
     private var subscriptionId: String?
     private var subscribedDomains: Set<String> = []
     private var modelTimeout: Task<Void, Never>?
@@ -188,6 +246,7 @@ final class HostState: ObservableObject {
             diagnosticPage = nil; providerNotice = nil; providerError = nil; diagnosticsError = nil
         }
         epoch = nil
+        preferDeltaState = true
         modelError = nil
         if connected { refresh() }
     }
@@ -212,19 +271,24 @@ final class HostState: ObservableObject {
         if interests != previous { refresh() }
     }
 
-    func refresh(_ requested: [String] = Array(HostState.homeDomains)) {
+    func refresh(_ requested: [String] = Array(HostState.homeDomains), force: Bool = false) {
         guard connected else { modelError = L10n.tr("请先连接已配对的电脑"); return }
         let wanted = Set(requested).intersection(Self.domainNames)
         subscribedDomains = Self.homeDomains.union(interests.domains).union(wanted)
         let id = UUID().uuidString
         subscriptionId = id; pendingDomains = subscribedDomains; modelError = nil
         // Retain only current view interests, carrying applied versions for the retained domains.
-        let known = domains.values.filter { subscribedDomains.contains($0.domain) && $0.modelEpoch == epoch }.map {
+        let format: String? = preferDeltaState ? "compact-v2" : nil
+        let known = domains.values.filter { !force && subscriptionFormat == format && subscribedDomains.contains($0.domain) && $0.modelEpoch == epoch }.map {
             ["domain": $0.domain, "modelEpoch": $0.modelEpoch, "revision": $0.revision] as [String: Any]
         }
         modelTimeout?.cancel()
-        guard send?(["type": "agent.state.request", "protocolVersion": orbisProtocolVersion, "requestId": id,
-                     "scope": "host", "subscribe": true, "domains": subscribedDomains.sorted(), "known": known]) == true else {
+        if subscriptionFormat != format { domains = [:]; missing = [:] }
+        subscriptionFormat = format
+        var request: [String: Any] = ["type": "agent.state.request", "protocolVersion": orbisProtocolVersion, "requestId": id,
+                     "scope": "host", "subscribe": true, "domains": subscribedDomains.sorted(), "known": known]
+        if let format { request["stateFormat"] = format }
+        guard send?(request) == true else {
             subscriptionId = nil; pendingDomains = []; modelError = L10n.tr("状态读取未发送，请重新连接"); return
         }
         modelTimeout = Task { [weak self] in
@@ -455,7 +519,12 @@ final class HostState: ObservableObject {
             if let id, id == providerRequest?.id {
                 stopProviderChange(error); return true
             }
-            if let id, id == subscriptionId { modelTimeout?.cancel(); pendingDomains = []; modelError = error; return true }
+            if let id, id == subscriptionId {
+                if preferDeltaState, ["invalid_request", "unsupported_request"].contains(message["code"] as? String ?? "") {
+                    preferDeltaState = false; refresh(subscribedDomains.sorted()); return true
+                }
+                modelTimeout?.cancel(); pendingDomains = []; modelError = error; return true
+            }
             if let id, id == catalogRequest?.id { rejectCatalog(error); return true }
             return false
         default: return false
@@ -481,13 +550,23 @@ final class HostState: ObservableObject {
     private func consumeSnapshot(_ message: [String: Any]) {
         guard let id = message["requestId"] as? String, id == subscriptionId, message["scope"] as? String == "host",
               message["runtimeId"] == nil, message["sessionId"] == nil, message["agentKind"] == nil else { return }
+        if subscriptionFormat != message["stateFormat"] as? String {
+            if preferDeltaState { preferDeltaState = false; refresh(subscribedDomains.sorted()) }
+            else { rejectModel() }; return
+        }
         if let error = message["error"] as? String { modelError = error; pendingDomains = []; modelTimeout?.cancel(); return }
         guard let newEpoch = message["modelEpoch"] as? String, !newEpoch.isEmpty else { rejectModel(); return }
         if retiredEpochs.contains(newEpoch) || epoch.map({ $0 != newEpoch }) == true { return }
         guard let rawDomains = message["domains"] as? [[String: Any]], let rawMissing = message["missing"] as? [[String: Any]],
               let isTruncated = message["truncated"] as? Bool else { rejectModel(); return }
         var decoded: [String: HostDomain] = [:]
-        for raw in rawDomains {
+        for source in rawDomains {
+            let raw: [String: Any]
+            do {
+                if source["delta"] != nil && subscriptionFormat != "compact-v2" { throw StateDeltas.Failure.invalid }
+                guard let expanded = try StateDeltas.expand(source, old: domains[source["domain"] as? String ?? ""], epoch: newEpoch) else { continue }
+                raw = expanded
+            } catch { refresh(subscribedDomains.sorted(), force: true); return }
             guard let domain: HostDomain = decode(raw), domain.valid, domain.modelEpoch == newEpoch,
                   subscribedDomains.contains(domain.domain), decoded[domain.domain] == nil else { rejectModel(); return }
             decoded[domain.domain] = domain

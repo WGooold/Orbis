@@ -14,7 +14,7 @@ internal fun AgentStateRead.matchesInterest(wanted: List<String>, now: Long): Bo
     domains == wanted.toSet() && now - sentAt < 14_000
 
 internal fun AgentStateRead.needsLegacyRetry(message: JsonObject): Boolean {
-    if (stateFormat != "compact-v1") return false
+    if (stateFormat !in setOf("compact-v1", "compact-v2")) return false
     val type = message["type"]?.jsonPrimitive?.contentOrNull
     return type == "protocol.error" && message["code"]?.jsonPrimitive?.contentOrNull in setOf("invalid_request", "unsupported_request") ||
         type == "agent.state.snapshot" && message["stateFormat"] == null

@@ -27,7 +27,7 @@ struct HostStateTests {
          "checkedAt": 100, "value": value, "projectionComplete": true]
     }
     private func snapshot(_ sent: Sent, domains: [[String: Any]], missing: [[String: String]] = [], epoch: String = "model-a") -> [String: Any] {
-        ["type": "agent.state.snapshot", "requestId": sent.last["requestId"]!, "scope": "host", "modelEpoch": epoch,
+        ["type": "agent.state.snapshot", "requestId": sent.last["requestId"]!, "scope": "host", "modelEpoch": epoch, "stateFormat": sent.last["stateFormat"] ?? NSNull(),
          "domains": domains, "missing": missing, "truncated": false]
     }
     private func providers(enabled: String = "official", kind: String = "codex", additive: Bool = false) -> [String: Any] {
@@ -41,6 +41,19 @@ struct HostStateTests {
 
     // FT-G03: ordinary home refreshes retain a bounded baseline; closing an
     // inspector replaces the subscription and excludes cached diagnostic versions.
+    // FT-G06: old Hosts reject the read-only format by request ID; retry only
+    // the Host scope and avoid reusing versions from a different representation.
+    @Test func deltaFormatFallsBackOnCorrelatedOldHostRejection() {
+        let (state, sent) = setup()
+        #expect(sent.last["stateFormat"] as? String == "compact-v2")
+        let request = sent.last
+        state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": request["requestId"]!])
+        #expect(sent.last["stateFormat"] == nil)
+        #expect((sent.last["known"] as? [[String: Any]])?.isEmpty == true)
+        state.consume(snapshot(sent, domains: [domain("identity", value: ["name": "Old Host"])]))
+        #expect(state.domains["identity"]?.value["name"].string == "Old Host")
+    }
+
     @Test func homeInterestDoesNotRetainClosedManagementViews() {
         let state = HostState(), sent = Sent()
         state.send = { sent.values.append($0); return true }
@@ -198,7 +211,7 @@ struct HostStateTests {
         #expect(state.changingProvider)
         // A subscription update may arrive before this device's operation result.
         let subscription = try #require(sent.values.first { $0["type"] as? String == "agent.state.request" })
-        let response: [String: Any] = ["type": "agent.state.snapshot", "requestId": subscription["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+        let response: [String: Any] = ["type": "agent.state.snapshot", "requestId": subscription["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": subscription["stateFormat"] ?? NSNull(),
             "domains": [domain("providers", revision: 2, value: providers(enabled: "team"))], "missing": [], "truncated": false]
         state.consume(response)
         #expect(state.changingProvider)
@@ -343,7 +356,7 @@ struct HostStateTests {
     }
     private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog") {
         let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
-        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": [domain("catalog", revision: revision, value: ["totalSessions": 2, "sessions": [session("first")],
                 "snapshotId": snapshotId, "nextCursor": "cursor-" + snapshotId, "truncated": false,
                 "backends": [["kind": "pi", "ready": true, "complete": true, "sessions": 2]]])], "missing": [], "truncated": false])
@@ -411,7 +424,7 @@ struct HostStateTests {
         #expect(state.catalogRange?.error == nil)
         #expect(sent.last["type"] as? String == "agent.state.range.request")
         let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
-        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a",
+        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": [domain("catalog", revision: 2, value: ["totalSessions": 0, "sessions": [session("bad")], "truncated": false])], "missing": [], "truncated": false])
         #expect(state.domains["catalog"]?.revision == 1)
         #expect(state.modelError != nil)

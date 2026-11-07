@@ -446,7 +446,7 @@ Status: proposed
 | `H:agent.state.snapshot` | 默认 | `FT-03/FT-12/FT-16` | 点名读取 / 订阅，内容变化发布，已知版本返回 unchanged。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
-| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1 或 compact-v2；表示版本隔离，旧 Host 关联拒绝后逐级降级重读。 |
 | | `scope`、`update` | `FT-03/FT-12/FT-16` |  |
 | | `modelEpoch`、`truncated`、`unchanged` | `FT-12` |  |
 | | `domains` | `FT-03/FT-12/FT-16` |  展开：`S:AgentStateDomainSnapshot`。 |
@@ -665,7 +665,7 @@ Status: proposed
 | | `type` | `FT-01/FT-13` |  |
 | | `messageId` | `FT-01` |  |
 | | `contentType`、`contentIndex` | `FT-13` |  |
-| | `delta` | `FT-04/FT-07` | 正文只装载一份；按来源基准增量或所请求历史页取得。 |
+| | `delta` | `FT-04/FT-12/FT-13` | compact-v2 的 value 重建指令；value 为 null 占位，实际提交后推进领域版本。 |
 | `E:message.finished` | 默认 | `FT-13` | 按设备业务权威输出；已接入对应模型 / 聊天事务的设备关闭同义旧事件。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `message` | `FT-10/FT-12` | 保留必要可操作原因与原请求关联；长诊断走详情。 展开：`S:ChatMessage`。 |
@@ -780,7 +780,7 @@ Status: proposed
 | `U:agent.state.request` | 默认 | `FT-12/FT-16` | 只请求实际兴趣与已应用版本，不连带触发整后端外发。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
-| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1 或 compact-v2；表示版本隔离，旧 Host 关联拒绝后逐级降级重读。 |
 | | `scope`、`domains`、`subscribe` | `FT-12/FT-16` |  |
 | | `known` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 展开：`U:agent.state.request.known[]`。 |
 | `U:agent.state.request.known[]` | 默认 | `FT-01/FT-10` | 精确目标与请求身份提交一次，重试核对原结果。 |
@@ -1211,9 +1211,19 @@ Status: proposed
 | | `source` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 展开：`S:DomainSource`。 |
 | | `checkedAt` | `FT-12/FT-15` | 随有效核对 / 诊断装载，单独变化不广播整个业务域。 |
 | | `value` | `FT-07/FT-12/FT-19` | 按第 3 节 scope/domain 的 32 个分支展开。 |
+| | `delta` | `FT-04/FT-12/FT-13` | compact-v2 的 value 重建指令；value 为 null 占位，实际提交后推进领域版本。 展开：`S:StateDelta`。 |
 | `S:DomainSource` | 默认 | `FT-01/FT-12` | 随所属提交装载，不跨代次复用。 源码：`DomainSourceSchema`。 |
 | | `producer`、`sourceId` | `FT-01/FT-12` |  |
 | | `sourceEpoch`、`sourceRevision` | `FT-12` |  |
+| `S:StateDelta` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 源码：`StateDeltaSchema`。 |
+| | `baseRevision` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| | `operations` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 展开：`S:StateDelta.operations[]{0}`、`S:StateDelta.operations[]{1}`、`S:StateDelta.operations[]{2}`。 |
+| `S:StateDelta.operations[]{0}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path`、`value` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| `S:StateDelta.operations[]{1}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| `S:StateDelta.operations[]{2}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path`、`index`、`deleteCount`、`items` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
 | `S:HostCatalogRange` | 默认 | `FT-02/FT-05/FT-12` | 目录 / 首屏与分页兴趣驱动，版本和覆盖明确。 源码：`HostCatalogRangeSchema`。 |
 | | `modelEpoch`、`revision`、`complete`、`truncated` | `FT-12` |  |
 | | `snapshotId` | `FT-01` |  |
@@ -1317,13 +1327,13 @@ Status: proposed
 | `S:AgentStateRequest` | 默认 | `FT-05/FT-12/FT-16` | 实际兴趣和已应用版本驱动读取。 源码：`AgentStateRequestSchema`。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
-| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1 或 compact-v2；表示版本隔离，旧 Host 关联拒绝后逐级降级重读。 |
 | | `scope`、`domains`、`subscribe` | `FT-05/FT-12/FT-16` |  |
 | | `known` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 展开：`U:agent.state.request.known[]`。 |
 | `S:AgentStateSnapshot` | 默认 | `FT-03/FT-12/FT-16` | 分领域发布，已知版本不重发 value。 源码：`AgentStateSnapshotSchema`。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId`、`agentKind`、`sessionId` | `FT-01` |  |
-| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1；表示版本独立，旧 Host 关联拒绝后按原格式重读。 |
+| | `stateFormat` | `FT-01/FT-12/FT-13` | 显式选择 / 确认 compact-v1 或 compact-v2；表示版本隔离，旧 Host 关联拒绝后逐级降级重读。 |
 | | `scope`、`update` | `FT-03/FT-12/FT-16` |  |
 | | `modelEpoch`、`truncated`、`unchanged` | `FT-12` |  |
 | | `domains` | `FT-03/FT-12/FT-16` |  展开：`S:AgentStateDomainSnapshot`。 |
@@ -1509,3 +1519,7 @@ compact-v1 的 identity 只装载 `hostId/agentKind/runtimeId/sessionId/name/cwd
 G05 在 compact-v1 中把全部 tree 选项及超过 50 项或 8 KiB 的 select 选项替换为 `optionCatalog{id,count}`；小型静态选项按版本内联。目录 ID 绑定 Host / agent / session、来源代次、命令及完整内容，resources 以 `capabilityRef` 复用同作用域目录。`agent.menu.options.read/page` 只由可见选择器触发，每页最多 200 项、目标 32 KiB、上限 64 KiB，超大单项明确失败；游标绑定目录与位置，来源变化返回 catalog_changed。App 完整组装且核对计数后提交，关闭、超时及新目录使旧页失效。调用携带 `optionCatalogId`，Host 校验当前来源和精确 value 后执行；旧表示保持完整选项与原调用格式。
 
 G05 实现与验证：[Host 目录页](../../packages/host/src/menu-option-catalogs.ts)、[分页与来源回归](../../packages/host/src/menu-option-catalogs.test.ts)、[Android 加载器](../../android/app/src/main/java/com/orbising/orbis/MenuOptionsLoader.kt)、[iOS 加载器](../../ios/Orbis/Orbis/AgentState.swift)、[加密联动](../../packages/host/src/host-service.test.ts)的 FT-G05 场景；[自动验证证据](../../.artifacts/field-transport-implementation-20261106/g05-results.json)。初次连接的旧菜单恢复仍由兼容入口发送，提前选择新表示与关闭旧恢复由 G10 处理。
+
+G06 的 `compact-v2` 明确启用领域增量；首次读取、来源换代、不可用状态、超预算及收益不足时发送完整 value。订阅更新的 `delta.baseRevision` 必须匹配本机已提交版本；路径是准确 JSON 键序列，set 设置原领域子树、remove 显式删除对象键、splice 按准确索引更新有序数组。每批最多 256 操作、路径深度 32；value 为 null 占位，接收端先私有重建并校验全部领域，成功后一次提交与推进版本。重复或旧 revision 不重放；基准缺失、非法路径、来源或代次不同自动完整重读，现有显示保留至恢复。部分来源库存继续保持原完整性语义。App 只对关联的只读格式拒绝降级（agent：v2 → v1 → legacy；host：v2 → legacy），不跨表示复用 known。增量只在比原 value 小至少 20% 时使用；旧客户端始终取得完整领域。
+
+G06 开放字段 `StateDeltaOperation{set}.value` 与 `{splice}.items[]` 按路径复用第 3 节对应领域及第 5 节子树字段规则，不允许未登记原生键进入出口。实现与验证：[差分契约](../../packages/protocol/src/state-delta.ts)、[订阅差分回归](../../packages/host/src/agent-state-subscriptions.test.ts)、[Android 重建](../../android/app/src/main/java/com/orbising/orbis/StateDeltas.kt)、[iOS 重建](../../ios/Orbis/Orbis/HostState.swift)及两端模型用例；FT-G06 加密联动覆盖完整基线、增量和缺口重读。证据保存于 `.artifacts/field-transport-implementation-20261106/g06-results.json`。

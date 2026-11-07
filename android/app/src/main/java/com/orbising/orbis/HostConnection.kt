@@ -182,6 +182,7 @@ internal class HostConnection(
     private val modelInterestLock = Any()
     private var modelInterests = ModelInterests()
     @Volatile private var preferCompactState = true
+    @Volatile private var preferDeltaState = true
     private val menuOptions = MenuOptionsLoader()
 
     fun setMenuOptionInterest(runtimeId: String, name: String?) {
@@ -474,7 +475,7 @@ internal class HostConnection(
         if (!force && existingReads.values.any { it.matchesInterest(domains, now) }) return
         val subscribedDomains = domains.distinct()
         val requestId = UUID.randomUUID().toString()
-        val stateFormat = if (modelScope == "agent" && preferCompactState) "compact-v1" else null
+        val stateFormat = if (preferDeltaState) "compact-v2" else if (modelScope == "agent" && preferCompactState) "compact-v1" else null
         val read = AgentStateRead(key, modelScope, subscribedDomains.toSet(), runtimeId, sessionId, agentKind, sentAt = now, stateFormat = stateFormat)
         updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,
             agentStateReads = it.agentStateReads - existingReads.keys + (requestId to read)) }
@@ -2229,9 +2230,9 @@ internal class HostConnection(
                 }
                 // 走到这里只可能是交互帧：分片在上面那条分支就 `continue` 了。
                 val interactive = frame as InboundFrameLanes.InteractiveFrame
-                val payload = interactive.payload
+                var payload = interactive.payload
                 val interactiveChannel = interactive.channel
-                val incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
                 if (interactiveChannel != null && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "agent.menu.options.page") {
                     menuOptions.consume(incomingMessage, messageJson)?.let { result ->
                         result.next?.let(::sendMenuOptionRequest)
@@ -2249,9 +2250,19 @@ internal class HostConnection(
                 }
                 val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
                 if (interactiveChannel != null && incomingMessage != null && incomingRead?.needsLegacyRetry(incomingMessage) == true) {
-                    preferCompactState = false
-                    incomingRead.runtimeId?.let { refreshAgentModel(it, force = true) }
+                    if (incomingRead.stateFormat == "compact-v2") preferDeltaState = false else preferCompactState = false
+                    if (incomingRead.scope == "host") refreshHostModel(force = true)
+                    else incomingRead.runtimeId?.let { refreshAgentModel(it, force = true) }
                     continue
+                }
+                if (incomingRead?.stateFormat == "compact-v2" && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "agent.state.snapshot") {
+                    val expanded = StateDeltas.expand(incomingMessage, mutableState.value.agentStateSnapshots[incomingRead.key])
+                    if (expanded == null) {
+                        if (incomingRead.scope == "host") refreshHostModel(force = true)
+                        else incomingRead.runtimeId?.let { refreshAgentModel(it, force = true) }
+                        continue
+                    }
+                    incomingMessage = expanded; payload = expanded.toString()
                 }
                 val sessionEvent = runCatching {
                     incomingMessage?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.event" }
@@ -2400,6 +2411,7 @@ internal class HostConnection(
                     if (deviceReadyArrived && currentGeneration == generation) {
                         menuOptions.cancel()
                         preferCompactState = true
+                        preferDeltaState = true
                         val application = application
                         val packageInfo = application.packageManager.getPackageInfo(application.packageName, 0)
                         val appVersion = packageInfo.versionName

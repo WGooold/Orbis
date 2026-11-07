@@ -35,6 +35,7 @@ import {
   type PairingQrPayload,
 } from "@orbis/e2e";
 import {
+  applyStateDelta, type AgentStateDomainSnapshot,
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
   RelayToDeviceMessageSchema,
@@ -1729,6 +1730,40 @@ describe("host end-to-end over relay", () => {
     // 通道真的又能干活：一条业务消息走通整条路。
     host.sendData(device.deviceId, Buffer.from("抖动之后还能说话", "utf8"), "ctl");
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
+  });
+
+  // FT-G06-WIRE: exercise negotiated patches through real encrypted delivery,
+  // then recover an intentionally missed update with a full read.
+  it("FT-G06 sends collection deltas and recovers full state over E2E", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-deltas-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-deltas", sessionId: "deltas", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const commands = Array.from({ length: 100 }, (_, i) => ({ name: `command-${i}`, source: "builtin" as const }));
+    runtime.publish(1, { type: "runtime.capabilities", capabilities: { commands } });
+    await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    const read = (id: string) => device!.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: id,
+      scope: "agent", runtimeId: "pi-deltas", stateFormat: "compact-v2", domains: ["capabilities"], subscribe: true }));
+    read("delta-baseline");
+    const baseline = await readMatching(device, message => message.requestId === "delta-baseline");
+    const old = (baseline.domains as AgentStateDomainSnapshot[])[0]!;
+    runtime.publish(2, { type: "runtime.capabilities", capabilities: { commands: commands.slice(1) } });
+    const update = await readMatching(device, message => message.requestId === "delta-baseline");
+    const row = (update.domains as AgentStateDomainSnapshot[])[0]!;
+    expect(row.delta?.baseRevision).toBe(old.revision); expect(row.value).toBeNull();
+    const reconstructed = applyStateDelta(old.value, row.delta!.operations);
+    expect(reconstructed).not.toHaveProperty("command-0"); expect(Object.keys(reconstructed as object)).toHaveLength(99);
+    expect(Buffer.byteLength(JSON.stringify(update))).toBeLessThan(Buffer.byteLength(JSON.stringify(baseline)) / 2);
+    read("delta-recovery");
+    const recovered = await readMatching(device, message => message.requestId === "delta-recovery");
+    expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.value).toEqual(reconstructed);
+    expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
   });
 
   // FT-G05-WIRE: options travel only in requested bounded pages, invocation is
