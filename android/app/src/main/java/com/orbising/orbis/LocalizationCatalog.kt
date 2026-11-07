@@ -14,6 +14,7 @@ internal object LocalizationCatalog {
         putAll(part8())
         putAll(part9())
         putAll(part10())
+        putAll(part11())
     }
     private fun part0(): Map<String, String> = mapOf(
         "\n\n附件路径：\n" to "\n\nAttachment paths:\n",
@@ -1537,6 +1538,23 @@ internal object LocalizationCatalog {
     )
     private fun part10(): Map<String, String> = mapOf(
         "：{0}" to ": {0}",
+    )
+    private fun part11(): Map<String, String> = mapOf(
+        "5 小时" to "5 hours",
+        "供应商拨盘" to "Provider dial",
+        "供应商指针" to "Provider pointer",
+        "启用后可查询官方额度" to "Enable the official provider to check its quota",
+        "已启用，可同时使用" to "Enabled; can be used alongside others",
+        "当前供应商无需切换" to "No switch is needed for this provider",
+        "拨盘转动 {0} 格" to "Dial turned {0} detents",
+        "松手以确认切换" to "Release to confirm the switch",
+        "正在查询官方额度" to "Checking official quota",
+        "沿右侧指针向外拉动" to "Pull the right-side pointer outward",
+        "沿右侧指针向外拉动并松手以{0}" to "Pull the right-side pointer outward and release to {0}",
+        "沿指针外拉以{0}" to "Pull the pointer outward to {0}",
+        "沿指针外拉并松手以{0}" to "Pull the pointer outward and release to {0}",
+        "点击额度环查询" to "Tap the quota dial to check it",
+        "聊天" to "Chats",
     )
     val singular: Map<String, String> = mapOf(
         "{0} 个会话" to "{0} session",

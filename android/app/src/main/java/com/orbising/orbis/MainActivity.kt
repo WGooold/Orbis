@@ -32,6 +32,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -323,7 +328,7 @@ internal fun RemoteApp(
     // 添加电脑：已经配对过也能再扫一台；取消只是回主界面，不动已有连接。
     var addingHost by rememberSaveable { mutableStateOf(false) }
     var allDownloadsOpen by rememberSaveable { mutableStateOf(false) }
-    var statusOpen by rememberSaveable { mutableStateOf(false) }
+    var homeTab by rememberSaveable { mutableStateOf(HomeTab.Chat) }
     // 新建会话面板：newSessionOpen 管可见性，newSessionCwd 只在「目录捷径」模式下带预设目录。
     // 两者必须分开——抽屉头的「新会话」按钮带上来的 cwd 就是 null（它意在让你先浏览目录），
     // 若拿 cwd != null 当可见性判据，面板永远不会出现（抽屉收回、什么也没发生）。
@@ -390,10 +395,41 @@ internal fun RemoteApp(
                 onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
                 onAddHost = { cancelLaunchIntro(); addingHost = true },
                 onRequestProviders = model::refreshProviderFacts,
-                onOpenStatus = { cancelLaunchIntro(); statusOpen = true },
+                onOpenStatus = { cancelLaunchIntro(); homeTab = HomeTab.Settings },
                 onRetryHome = model::refreshHome,
             )
         }
+    }
+    val rootStateHolder = rememberSaveableStateHolder()
+    val rootHome: @Composable () -> Unit = {
+        Column(Modifier.fillMaxSize()) {
+            // The sibling tab bar owns the bottom system inset; root Scaffolds must not add it again.
+            Box(Modifier.weight(1f).fillMaxWidth()
+                .consumeWindowInsets(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
+                rootStateHolder.SaveableStateProvider(homeTab.key) {
+                    when (homeTab) {
+                        HomeTab.Chat -> runtimeList()
+                        HomeTab.Providers -> ProviderDialScreen(
+                            state = state, hosts = hosts,
+                            onSelectHost = model::selectHost,
+                            onLoad = model::loadAgentProviders,
+                            onEnable = model::switchAgentProvider,
+                            onQuerySubscription = model::querySubscription,
+                            showBack = false,
+                        )
+                        HomeTab.Settings -> StatusScreen(state, model, model.pairingStatus(),
+                            onBack = { homeTab = HomeTab.Chat }, root = true)
+                    }
+                }
+            }
+            HomeTabBar(homeTab, onSelect = { tab -> cancelLaunchIntro(); homeTab = tab })
+        }
+    }
+    // Returning from a chat exposes the same source root. Back on a peer root returns to Chats.
+    BackHandler(enabled = LocalPageActive.current && homeTab != HomeTab.Chat &&
+        !addingHost && !allDownloadsOpen && !newSessionOpen &&
+        state.selectedRuntimeId == null && state.selectedOfflineSessionId == null) {
+        homeTab = HomeTab.Chat
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     // session.activated（spec §8）：只证明进程已拉起；会话真正上线后 runtime.online 会接管 UI。
@@ -427,7 +463,6 @@ internal fun RemoteApp(
                 addingHost -> HomeOverlay.Pairing
                 state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> HomeOverlay.OfflineHistory
                 state.selectedRuntimeId != null -> HomeOverlay.Chat
-                statusOpen -> HomeOverlay.Settings
                 allDownloadsOpen -> HomeOverlay.Downloads
                 else -> null
             }
@@ -437,12 +472,11 @@ internal fun RemoteApp(
                         HomeOverlay.Pairing -> { addingHost = false; model.clearPairingError() }
                         HomeOverlay.OfflineHistory -> model.selectOfflineSession(null)
                         HomeOverlay.Chat -> model.selectRuntime(null)
-                        HomeOverlay.Settings -> statusOpen = false
                         HomeOverlay.Downloads -> allDownloadsOpen = false
                         null -> Unit
                     }
                 },
-                underlay = runtimeList,
+                underlay = rootHome,
                 open = page != null,
                 contentKey = page,
                 canNavigateBack = page != HomeOverlay.Pairing || !pairingInProgress,
@@ -461,12 +495,6 @@ internal fun RemoteApp(
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                         ChatScreen(state, model)
                     }
-                    HomeOverlay.Settings -> StatusScreen(
-                        state = state,
-                        model = model,
-                        pairing = model.pairingStatus(),
-                        onBack = { statusOpen = false },
-                    )
                     HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                     null -> Unit
                 }
@@ -506,7 +534,7 @@ internal fun RemoteApp(
 }
 
 /** Pages that slide in over the home list. */
-private enum class HomeOverlay { Chat, Settings, Downloads, Pairing, OfflineHistory }
+private enum class HomeOverlay { Chat, Downloads, Pairing, OfflineHistory }
 
 /** The computer's downloads page; the home, chat and history entries all open this same page. */
 @Composable
@@ -3117,14 +3145,14 @@ internal fun StatusScreen(
     model: RemoteViewModel,
     pairing: PairingStatus,
     onBack: () -> Unit,
+    root: Boolean = false,
 ) {
-    LaunchedEffect(state.hostId, state.e2eReady) { if (state.e2eReady) model.refreshHostModel(listOf("providers"), force = true) }
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
-                    NeumorphIconButton(
+                    if (!root) NeumorphIconButton(
                         onClick = onBack,
                         icon = Icons.Rounded.ArrowBack,
                         contentDescription = L10n.tr("返回"),
@@ -3142,9 +3170,6 @@ internal fun StatusScreen(
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            StatusSectionTitle(L10n.tr("Agent 供应商"))
-            AgentStatusProvidersCard(state, model::switchAgentProvider, model::querySubscription)
-
             statusAdvice(state, pairing)?.let { WarningCard(it) }
             StatusSectionTitle(L10n.tr("当前连接"))
             StatusCard {
