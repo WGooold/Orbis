@@ -309,6 +309,7 @@ Status: proposed
 | `RuntimeCommandSchema` | `permissions.update` | `C:permissions.update` |
 | `RuntimeCommandSchema` | `stop` | `C:stop` |
 | `RuntimeCommandSchema` | `interaction.respond` | `C:interaction.respond` |
+| `RelayToDeviceMessageSchema` | `transport.fields.page` | `H:transport.fields.page` |
 | `RelayToDeviceMessageSchema` | `agent.menu.options.page` | `H:agent.menu.options.page` |
 | `RelayToDeviceMessageSchema` | `notification.snapshot` | `H:notification.snapshot` |
 | `RelayToDeviceMessageSchema` | `device.ready` | `H:device.ready` |
@@ -333,6 +334,7 @@ Status: proposed
 | `RelayToDeviceMessageSchema` | `session.activated` | `H:session.activated` |
 | `RelayToDeviceMessageSchema` | `protocol.error` | `H:protocol.error` |
 | `RelayToDeviceMessageSchema` | `v2.frame` | `S:V2Frame` |
+| `DeviceE2ePayloadSchema` | `transport.fields.read` | `U:transport.fields.read` |
 | `DeviceE2ePayloadSchema` | `agent.menu.options.read` | `U:agent.menu.options.read` |
 | `DeviceE2ePayloadSchema` | `notification.sync` | `U:notification.sync` |
 | `DeviceE2ePayloadSchema` | `notification.dismiss` | `U:notification.dismiss` |
@@ -375,6 +377,13 @@ Status: proposed
 
 | 结构 | 字段 | 规则 | 补充 / 展开结构 |
 | --- | --- | --- | --- |
+| `H:transport.fields.page` | 默认 | `FT-01/FT-05/FT-12/FT-15/FT-16` | 显式字段计量分页；固定快照、采样统计口径与发送总数分别返回，不包含内容或凭据。 源码：`TransportFieldsPageSchema`。 |
+| | `type`、`protocolVersion` | `FT-01/FT-13` |  |
+| | `requestId`、`snapshotId` | `FT-01` |  |
+| | `offset`、`nextCursor` | `FT-01/FT-05/FT-12` | 范围、顺序、可信总数与边界完整保留；按字节和条数共同限流。 |
+| | `totalRows`、`startedAt`、`observedAt`、`sampledMessages`、`sampledBytes`、`skippedSamples` | `FT-01/FT-05/FT-12/FT-15/FT-16` |  |
+| | `rows` | `FT-01/FT-05/FT-12/FT-15/FT-16` |  展开：`S:TransportFieldRow`。 |
+| | `error` | `FT-10/FT-12` | 保留必要可操作原因与原请求关联；长诊断走详情。 |
 | `H:agent.menu.options.page` | 默认 | `FT-01/FT-05/FT-08/FT-12/FT-16` | 选择器打开时读取固定目录的有界页；关闭取消本地等待，旧游标与迟到页不能应用。 源码：`MenuOptionsPageSchema`。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId` | `FT-01` |  |
@@ -736,6 +745,11 @@ Status: proposed
 
 | 结构 | 字段 | 规则 | 补充 / 展开结构 |
 | --- | --- | --- | --- |
+| `U:transport.fields.read` | 默认 | `FT-01/FT-05/FT-12/FT-15/FT-16` | 显式字段计量分页；固定快照、采样统计口径与发送总数分别返回，不包含内容或凭据。 源码：`TransportFieldsRequestSchema`。 |
+| | `type`、`protocolVersion` | `FT-01/FT-13` |  |
+| | `requestId` | `FT-01` |  |
+| | `cursor`、`limit` | `FT-01/FT-05/FT-12` | 范围、顺序、可信总数与边界完整保留；按字节和条数共同限流。 |
+| | `backend`、`messageType` | `FT-01/FT-05/FT-12/FT-15/FT-16` |  |
 | `U:agent.menu.options.read` | 默认 | `FT-01/FT-05/FT-08/FT-12/FT-16` | 选择器打开时读取固定目录的有界页；关闭取消本地等待，旧游标与迟到页不能应用。 源码：`MenuOptionsRequestSchema`。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `requestId`、`runtimeId` | `FT-01` |  |
@@ -1198,6 +1212,10 @@ Status: proposed
 | | `id`、`values`、`other`、`notes` | `FT-10/FT-18` | 有效问题 / 响应的决策字段，不能按菜单说明删除。 |
 | `S:InteractionResponse{cancel}` | 默认 | `FT-18` | 随有效问题或响应装载，库存按 ID 变化。 |
 | | `kind` | `FT-10/FT-18` | 有效问题 / 响应的决策字段，不能按菜单说明删除。 |
+| `S:TransportFieldRow` | 默认 | `FT-01/FT-05/FT-12/FT-15/FT-16` | 显式字段计量分页；固定快照、采样统计口径与发送总数分别返回，不包含内容或凭据。 源码：`TransportFieldRowSchema`。 |
+| | `backend`、`messageType`、`path`、`sampleCount`、`nonNullCount`、`meanBytes`、`p95Bytes`、`totalSampleBytes`、`ownSampleBytes`、`repeatedCount`、`repeatedBytes`、`messageCount`、`messageBytes` | `FT-01/FT-05/FT-12/FT-15/FT-16` |  |
+| | `reason` | `FT-10/FT-12` | 保留必要可操作原因与原请求关联；长诊断走详情。 |
+| | `maxBytes` | `FT-01/FT-05/FT-12` | 范围、顺序、可信总数与边界完整保留；按字节和条数共同限流。 |
 | `S:ActiveNotification` | 默认 | `FT-04/FT-07/FT-12/FT-18` | 设备私有通知与引用，出现 / 结束 / 删除准确同步。 源码：`ActiveNotificationSchema`。 |
 | | `code`、`severity`、`message`、`lifecycle`、`displayMs`、`createdAt`、`updatedAt`、`expiresAt` | `FT-01/FT-04/FT-10/FT-18` | 同一通知身份下保留必要正文、严重度、生命周期与有效期；终态不可合并丢失。 |
 | | `occurrenceId`、`notificationId` | `FT-01` |  |
@@ -1544,3 +1562,9 @@ G08 对 compact-v2 的 ready 来源历史 / patch 执行公开条目投影：mes
 来源未确认或未版本化的兼容历史保留原格式；精确 session.entry.result 详情维持完整原生数据。ready 来源按既有 authoritative correction 语义替换旧缓存，不因无关原生元数据省略而改变 entryId、父子关系、时点、显示窗口和应用后 ACK。已登记命令结果继续完整传输，包含 editorText、准确会话 / Runtime / leaf 与确认值；未登记对象键仅保留 Host，必要业务新增先登记。附件 path 当前仍用于本机上传 / 下载身份匹配而保留。工具库存 / 内容、diff 和文件二进制沿用既有范围、版本、取消、持久确认与校验契约。
 
 G08 验证：[公开条目与显示等价](../../packages/host/src/compact-entry-projection.test.ts)、FT-G08 加密联动（默认省略与显式原生详情）、工具库存 / 范围读取、diff / 文件页和上传下载续传用例；证据保存于 `.artifacts/field-transport-implementation-20261106/g08-results.json`。
+
+G09 逐字段计量以最终 UTF-8 JSON 明文为输入：消息数和总字节逐次累计；字段采用首条及每 32 条的有界样本，低频消息至少每秒可采样一次，总扫描预算每分钟 8 MiB、单条 2 MiB、单样本最多 16,384 个节点、字段组最多 8,192。每字段报告样本出现 / 非 null 次数、包含子树的均值 / P95 / 最大 / 总字节、互不重叠的自身开销、相同内容的重复次数与字节；消息总数 / 字节与字段样本口径分别标记，不能把采样总量当完整流量。父对象大小不可与子字段大小相加，自身开销可逐层相加还原整条消息。P95 来自最多 128 个有界分布样本。
+
+字段路径只输出协议登记键与动态键通配符，数组索引归并为 []；不输出正文、凭据、动态目标值和内容摘要，重复判断使用带进程随机盐的私有摘要。backend / 消息类别 / 发送原因和时间窗口分别统计；逐字段扫描不会再次序列化业务对象，也不写诊断日志。`transport.fields.read/page` 是显式诊断读取，每设备一次固定快照、有效期 60 秒，最多 100 行 / 页并受 64 KiB 预算约束，游标绑定设备快照；普通状态更新不附带字段报告。records 的引用仅在明确读取或仍有订阅兴趣的会话上随诊断变化核对，不将日志追加传播到全部会话。
+
+G09 的计量报告快照全局限制为最多 8 份、合计 16,384 行；计量页自身只累计消息数和大小，避免递归采样扩大报告。消息字节表示最终 JSON 明文发送尝试；封帧、分片、重试和实际传输量由既有线路计数单独核对，不能直接把明文字节当成实际网络字节。验证指针：[字段计量](../../packages/host/src/field-traffic-meter.test.ts)、Host 诊断 / 领域用例与 FT-G09 加密联动；证据保存于 `.artifacts/field-transport-implementation-20261106/g09-results.json`。

@@ -813,6 +813,32 @@ export const RuntimeCapabilitiesSchema = z.strictObject({
 });
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 
+export const TransportFieldRowSchema = z.strictObject({
+  backend: z.string().max(32), messageType: z.string().max(160),
+  reason: z.enum(["bootstrap", "change", "range", "recovery", "reconcile", "read", "producer"]),
+  path: z.string().max(2048), sampleCount: z.number().int().nonnegative(), nonNullCount: z.number().int().nonnegative(),
+  meanBytes: z.number().nonnegative(), p95Bytes: z.number().int().nonnegative(), maxBytes: z.number().int().nonnegative(),
+  totalSampleBytes: z.number().int().nonnegative(), ownSampleBytes: z.number().int().nonnegative(),
+  repeatedCount: z.number().int().nonnegative(), repeatedBytes: z.number().int().nonnegative(),
+  messageCount: z.number().int().nonnegative(), messageBytes: z.number().int().nonnegative(),
+});
+export type TransportFieldRow = z.infer<typeof TransportFieldRowSchema>;
+export const TransportFieldsRequestSchema = z.strictObject({
+  type: z.literal("transport.fields.read"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+  cursor: z.string().max(512).nullable(), limit: z.number().int().min(1).max(100).optional(),
+  backend: z.string().max(32).optional(), messageType: z.string().max(160).optional(),
+});
+export type TransportFieldsRequest = z.infer<typeof TransportFieldsRequestSchema>;
+export const TransportFieldsPageSchema = z.strictObject({
+  type: z.literal("transport.fields.page"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+  snapshotId: z.string().nullable(), offset: z.number().int().nonnegative(), totalRows: z.number().int().nonnegative(),
+  rows: z.array(TransportFieldRowSchema).max(100), nextCursor: z.string().nullable(),
+  startedAt: z.number().int().nonnegative(), observedAt: z.number().int().nonnegative(),
+  sampledMessages: z.number().int().nonnegative(), sampledBytes: z.number().int().nonnegative(), skippedSamples: z.number().int().nonnegative(),
+  error: z.literal("invalid_cursor").optional(),
+});
+export type TransportFieldsPage = z.infer<typeof TransportFieldsPageSchema>;
+
 export const MenuOptionsRequestSchema = z.strictObject({
   type: z.literal("agent.menu.options.read"), protocolVersion: z.literal(PROTOCOL_VERSION),
   requestId: z.string().min(1).max(128), runtimeId: z.string().min(1).max(128),
@@ -1175,6 +1201,7 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  TransportFieldsRequestSchema,
   MenuOptionsRequestSchema,
   z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
   z.strictObject({ type: z.literal("notification.dismiss"), protocolVersion: z.literal(PROTOCOL_VERSION), hostEpoch: z.string().min(1).max(256), runtimeId: z.string().min(1).max(256), notificationId: z.string().min(1).max(256) }),
@@ -1275,6 +1302,7 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  TransportFieldsPageSchema,
   MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({

@@ -1732,6 +1732,38 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
   });
 
+  // FT-G09-WIRE: records only follow active interests; the explicit field report
+  // travels over E2E and contains counts/paths, never source content or credentials.
+  it("FT-G09 scopes records and exposes bounded field statistics over E2E", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-fields-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-fields", sessionId: "fields", name: "private-content-name", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const read = (id: string, domains: string[]) => device!.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19,
+      requestId: id, runtimeId: "pi-fields", scope: "agent", stateFormat: "compact-v2", domains, subscribe: true }));
+    read("records-open", ["records", "identity"]);
+    await readMatching(device, message => message.requestId === "records-open");
+    host.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "transport", severity: "info", message: "synthetic record" });
+    const update = await readMatching(device, message => message.requestId === "records-open");
+    expect(update).toMatchObject({ update: true, domains: [{ domain: "records" }] });
+    read("records-closed", ["identity"]);
+    await readMatching(device, message => message.requestId === "records-closed");
+    host.recordDiagnostic({ scope: "host", agentKind: null, sessionId: null, category: "transport", severity: "info", message: "second record" });
+    device.sendData(JSON.stringify({ type: "transport.fields.read", protocolVersion: 19, requestId: "field-report", backend: "pi", cursor: null, limit: 100 }));
+    const report = await device.receiveMessage();
+    expect(report.type).toBe("transport.fields.page"); expect(report.requestId).toBe("field-report");
+    expect((report.rows as unknown[]).length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(JSON.stringify(report))).toBeLessThan(64 * 1024);
+    for (const secret of ["private-content-name", "runtime-secret", "owner-secret", "synthetic record", "second record"])
+      expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
   // FT-G07-WIRE: negotiate the representation, deliver a shared checkpoint
   // through the real sync coordinator, then append live text with an exact base.
   it.each(["FT-G07", "FT-G08"])("%s shares public checkpoint bodies and streams exact text over E2E", async scenario => {

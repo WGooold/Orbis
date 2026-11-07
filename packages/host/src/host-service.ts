@@ -79,6 +79,7 @@ import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
 import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { normalizeDeviceRequest } from "./device-protocol.js";
+import { FieldTrafficMeter } from "./field-traffic-meter.js";
 import { SessionWireContent } from "./session-wire-content.js";
 import { encodeDeviceMessage, projectCompactDeviceMessage } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
@@ -149,7 +150,7 @@ export function channelForDeviceMessage(message: {
       .concat(message.unchanged ?? []);
     if (domains.length > 0 && domains.every(domain => domain === "execution")) return "ctl";
   }
-  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page") return "msg";
+  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
   if (eventType === "session.tool.content.page" || eventType === "session.change.detail.page") return "bulk";
@@ -615,7 +616,8 @@ export class HostService {
       oldestAt: stats.oldestAt,
       newestAt: stats.newestAt,
     });
-    for (const runtime of this.#runtimesSnapshot()) this.#agentFacts.refreshRecords(runtime.runtimeId);
+    for (const runtime of new Set([...(this.#agentStateSubscriptions?.interestedRuntimes("records") ?? []), ...(this.#compactStateSubscriptions?.interestedRuntimes("records") ?? [])]))
+      this.#agentFacts.refreshRecords(runtime);
   }
   /** 单写者本身：设备读模型时按作用域直接读它，而不是让每个领域各自暴露读取接口。 */
   readonly #agentStateRegistry: AgentStateRegistry;
@@ -653,6 +655,7 @@ export class HostService {
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
   readonly #workspaceGit = new Map<string, HostWorkspacesState["workspaces"][number]["git"]>();
+  readonly #fieldTraffic = new FieldTrafficMeter();
   readonly #sessionWireContent = new SessionWireContent();
   readonly #sharedOperations = new Map<string, HostSharedOperation>();
   #sharedOperationsTruncatedAt = 0;
@@ -681,7 +684,7 @@ export class HostService {
       send: (deviceId, runtimeId, event) => {
         const message = this.#runtimeEventMessage(runtimeId, event);
         assertToolWireBudget(message);
-        const payload = encodeDeviceMessage(message), link = this.#links.get(deviceId);
+        const payload = this.#encodeMeasured(message), link = this.#links.get(deviceId);
         if (!link) return false;
         return event.type === "session.tool.content.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
@@ -849,7 +852,7 @@ export class HostService {
       directory: join(stateDir, "turn-file-changes"), scope: changeScope,
       send: (deviceId, runtimeId, event) => {
         const link = this.#links.get(deviceId); if (!link) return false;
-        const message = this.#runtimeEventMessage(runtimeId, event), payload = encodeDeviceMessage(message);
+        const message = this.#runtimeEventMessage(runtimeId, event), payload = this.#encodeMeasured(message);
         return event.type === "session.change.detail.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
           : link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
@@ -1177,6 +1180,7 @@ export class HostService {
       if (this.#dshRuntime?.ownsRuntime(runtimeId)) this.#dshRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
+    if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
     const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
     const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
     const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
@@ -1647,6 +1651,7 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
+    this.#fieldTraffic.release(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#persist();
@@ -1765,6 +1770,9 @@ export class HostService {
         this.#persist();
       }
       return;
+    }
+    if (message.type === "transport.fields.read") {
+      this.#sendToDevice(deviceId, this.#fieldTraffic.page(deviceId, message)); return;
     }
     if (message.type === "agent.menu.options.read") {
       const scope = this.#agentFacts.scopeOf(message.runtimeId);
@@ -2445,7 +2453,26 @@ export class HostService {
   }
 
   #encodeForDevice(deviceId: string, message: object): Buffer {
-    return encodeDeviceMessage(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(projectCompactDeviceMessage(message)) : message);
+    return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(projectCompactDeviceMessage(message)) : message);
+  }
+
+  readTransportFields(): ReturnType<FieldTrafficMeter["snapshot"]> { return this.#fieldTraffic.snapshot(); }
+
+  #encodeMeasured(message: object): Buffer {
+    const payload = encodeDeviceMessage(message);
+    this.#measurePayload(payload, message); return payload;
+  }
+
+  #measurePayload(payload: Uint8Array, message: object): void {
+    const object = message as Record<string, unknown>;
+    const event = object.event as Record<string, unknown> | undefined;
+    const runtime = typeof object.runtimeId === "string" ? this.#agentFacts.scopeOf(object.runtimeId) : undefined;
+    const type = String(event?.type ?? object.type ?? "unknown");
+    const reason = object.type === "device.ready" ? "bootstrap" : object.update === true ? "change" :
+      type.includes(".page") || event?.range === "history" || event?.range === "catchup" ? "range" :
+        event?.selection === "snapshot" ? "recovery" : Array.isArray(object.unchanged) && object.unchanged.length ? "reconcile" :
+          type.includes("snapshot") || type.includes("result") ? "read" : "producer";
+    this.#fieldTraffic.record(payload, { backend: runtime?.kind === "agent" ? runtime.key.agentKind : "host", messageType: type, reason });
   }
 
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {
@@ -2607,7 +2634,7 @@ export class HostService {
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
-        try { link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
+        try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
       return;
@@ -2619,6 +2646,8 @@ export class HostService {
   #broadcastPayload(payload: Uint8Array, channel: EnvelopeChannel, source: OutboundQueueSource): void {
     for (const [deviceId, link] of this.#links) {
       try {
+        this.#measurePayload(payload, { type: source.type, runtimeId: source.runtimeId,
+          ...(source.eventType ? { event: { type: source.eventType } } : {}) });
         if (!link.send(payload, channel, source)) continue;
       } catch (error) {
         this.#options.onDeviceError?.(deviceId, error);
