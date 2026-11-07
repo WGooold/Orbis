@@ -321,10 +321,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     suspend fun reconcileModels() = withContext(Dispatchers.Default) {
         // The lifecycle caller waits for this pass before its next tick. Model reads can
         // take the state-writer/encryption locks; keep that work away from IME/layout.
-        synchronized(lock) { connections.values.toList() }.forEach { connection ->
-            connection.refreshHostModel()
-            connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
-        }
+        val connection = active() ?: return@withContext
+        connection.reconcileHostModel()
+        connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
     }
 
     /** Retain the originating Host while the lifecycle refresh leaves Main. */

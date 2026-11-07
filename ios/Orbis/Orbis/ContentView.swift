@@ -127,9 +127,16 @@ struct ContentView: View {
         .onChange(of: store.isPairing) { old, active in
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                store.reconcileCatalog()
+                do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
+            }
+        }
         .onChange(of: scenePhase) { old, new in
             if new != .active { store.toolContent.close() }
-            if old == .background && new == .active { store.refresh() }
+            if old == .background && new == .active { store.resumeForeground() }
         }
         .overlay {
             if store.isPairing {

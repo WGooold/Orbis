@@ -193,6 +193,12 @@ struct HostDiagnosticPage: Decodable {
 /// partial/missing/unavailable publications never masquerade as an empty, current inventory.
 @MainActor
 final class HostState: ObservableObject {
+    private var directoryReconcile = ReadReconcileSchedule()
+
+    func reconcile(now: Date = Date()) {
+        guard connected, directoryReconcile.claim(now) else { return }
+        refresh()
+    }
     nonisolated static let domainNames = ["identity", "backends", "catalog", "providers", "workspaces", "files", "operations", "diagnostics", "connections", "management"]
     nonisolated static let homeDomains: Set<String> = ["identity", "backends", "catalog", "providers"]
     private var interests = ModelInterests()
@@ -283,6 +289,7 @@ final class HostState: ObservableObject {
 
     func refresh(_ requested: [String] = Array(HostState.homeDomains), force: Bool = false) {
         guard connected else { modelError = L10n.tr("请先连接已配对的电脑"); return }
+        directoryReconcile.started(Date())
         let wanted = Set(requested).intersection(Self.domainNames)
         subscribedDomains = Self.homeDomains.union(interests.domains).union(wanted)
         let id = UUID().uuidString
@@ -610,6 +617,7 @@ final class HostState: ObservableObject {
         for name in unchanged { if let value = domains[name] { accepted[name] = value } }
         didProject?(accepted)
         if let catalog = accepted["catalog"] { beginCatalog(catalog) }
+        if accepted["catalog"] != nil { directoryReconcile.confirmed(Date()) }
         if pendingDomains.isEmpty { modelTimeout?.cancel() }
     }
 

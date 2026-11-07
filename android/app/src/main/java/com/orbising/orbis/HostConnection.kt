@@ -29,6 +29,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -402,7 +403,28 @@ internal class HostConnection(
     // 这些消息是设备级 E2E 载荷，与 runtime.command 共用同一条密文 data 通道。
 
     /** 拉取电脑上的全部会话索引，合并进侧栏目录（连接建立后自动调一次）。 */
+    private var catalogFallbackJob: Job? = null
+
     fun refreshSessions() {
+        val current = mutableState.value
+        if (current.agentStateSnapshots.values.any { it.scope == "host" && it.domains["catalog"]?.availability == "ready" }) {
+            refreshHostModel()
+            return
+        }
+        if (catalogFallbackJob?.isActive == true) return
+        val connectionGeneration = generation
+        val paired = device
+        // FT-G11: prefer one model authority. A truly old/unresponsive Host gets
+        // the legacy read after the bounded model wait, not a duplicate bootstrap.
+        catalogFallbackJob = scope.launch {
+            delay(20_000)
+            if (connectionGeneration != generation || paired != device) return@launch
+            if (mutableState.value.agentStateSnapshots.values.none { it.scope == "host" && it.domains["catalog"]?.availability == "ready" })
+                requestLegacySessions()
+        }
+    }
+
+    private fun requestLegacySessions() {
         val requestId = UUID.randomUUID().toString()
         sendSessionPayload(
             requestId = requestId,
@@ -435,8 +457,17 @@ internal class HostConnection(
 
     /** Reads replace the scope's interest; cached versions remain available for reopening. */
     fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) {
+        directoryReconcile.started(System.currentTimeMillis())
         requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force)
         if ("catalog" in domains) requestCatalogPage()
+    }
+
+    private val directoryReconcile = ReadReconcileSchedule()
+
+    fun reconcileHostModel() {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || !current.e2eReady) return
+        if (directoryReconcile.claim(System.currentTimeMillis())) refreshHostModel()
     }
 
     fun refreshAgentModel(runtimeId: String, force: Boolean = false) {
@@ -456,7 +487,7 @@ internal class HostConnection(
             return
         }
         refreshSessions()
-        refreshHostModel(force = true)
+        refreshHostModel()
         current.runtimes.keys.forEach { refreshAgentModel(it, force = true) }
     }
 
@@ -2393,6 +2424,17 @@ internal class HostConnection(
                                     )
                                 }
                                 next = mutableState.value
+                                if (incomingRead?.scope == "host" && messageType == "agent.state.snapshot" &&
+                                    incomingMessage?.get("scope")?.jsonPrimitive?.contentOrNull == "host" &&
+                                    ((incomingMessage["domains"] as? JsonArray)?.any {
+                                        (it as? JsonObject)?.get("domain")?.jsonPrimitive?.contentOrNull == "catalog"
+                                    } == true || (incomingMessage["unchanged"] as? JsonArray)?.any {
+                                        it.jsonPrimitive.contentOrNull == "catalog"
+                                    } == true) &&
+                                    next.agentStateSnapshots[incomingRead.key]?.let { snapshot ->
+                                        snapshot.requestId == incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull &&
+                                            snapshot.error == null && "catalog" in snapshot.domains
+                                    } == true) directoryReconcile.confirmed(System.currentTimeMillis())
                                 if (interactiveChannel != null && messageType == "provider.result" &&
                                     previous.agentProviders.requestId != null &&
                                     previous.agentProviders.requestId == message?.get("requestId")?.jsonPrimitive?.contentOrNull &&

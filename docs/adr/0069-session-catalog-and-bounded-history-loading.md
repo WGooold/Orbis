@@ -22,7 +22,7 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 | 目录读取入口 | `agent.state.request(scope=host, domains 包含 catalog, subscribe=true)` 携带本地领域版本。Android 在连接建立、归档变化、刷新等路径还会请求 `session.list`；iOS 在尚未收到模型目录时保留该回退。 | [Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/OrbisStore.swift) |
 | Host 目录聚合 | 读取 catalog 时调用 `readHostRange()`；缓存有效期 5 秒，并发读取合并。部分后端变动只使缓存失效，等待后续读取重新聚合；5 秒是本机缓存有效期。 | [Host](../../packages/host/src/host-service.ts) |
 | 目录对账应答 | `known` 的 modelEpoch / revision 相同则返回 `unchanged`；不同或缺少 known 时返回整个 catalog 领域 value。主动订阅更新另行计算 compact-v2 增量，差分小于原 value 的 80% 时使用。 | [读取应答](../../packages/host/src/agent-state-snapshot.ts)、[订阅更新](../../packages/host/src/agent-state-subscriptions.ts) |
-| 目录页 | 公共目录投影最多 2,000 条，使用 192 KiB 公共值预算并预留 2 KiB；后续范围页默认 100 条、最多 200 条，也按公共值预算裁剪。两端在存在 nextCursor 时继续取页；尚未按目录视图限定后续读取。 | [目录库存与页](../../packages/host/src/host-state-facts.ts)、[协议](../../packages/protocol/src/agent-state.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/HostState.swift) |
+| 目录页 | 公共目录投影最多 2,000 条、192 KiB；首页模型最多承载 28 KiB 目录 value。范围页默认 100 条、最多 200 条，value 最多 28 KiB；两端当前收到 cursor 后会连续取完剩余页。 | [目录库存与页](../../packages/host/src/host-state-facts.ts)、[协议](../../packages/protocol/src/agent-state.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/HostState.swift) |
 | 历史首屏与翻页 | preview 默认最多 30 条；两端主动历史页最多 30 条。Android catchup 请求 30 条，iOS catchup 请求 128 条。普通页预算 512 KiB，计算包含 4 KiB wrapper 预留；单条导致超页预算时可放宽至完整响应 1 MiB 硬上限。 | [选择与预算](../../packages/protocol/src/session-sync.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/OrbisStore.swift) |
 | 历史条件核对 | preview 支持 knownState。可信的同代完整基线下：同 head / seq 返回 unchanged；同 head 且 seq 前进返回 state；能容纳的新增后缀返回 delta；其他情况返回有界尾页 snapshot。 | [选择器](../../packages/protocol/src/session-sync.ts)、[契约用例](../../packages/protocol/src/session-sync-selection.test.ts) |
 | 周期性聊天核对 | Android 当前聊天在前台进入时及每次等待 15 秒后调用 refreshRuntime，读取已有源端基线或补缓存缺口。iOS 已有基线核对由打开、恢复、来源或 head 变化等路径触发；聊天页的 15 秒循环读取工作分支。 | [Android 调度](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt)、[Android 聊天](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)、[iOS Store](../../ios/Orbis/Orbis/OrbisStore.swift)、[iOS 聊天](../../ios/Orbis/Orbis/ChatView.swift) |
@@ -38,7 +38,8 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 | --- | --- |
 | 目录 / 历史页 | 目标 32 KiB，硬上限 64 KiB；条数与字节数先到者决定页边界。 |
 | 读取请求、版本确认、ACK、pending 与关联错误 | 目标不超过 2 KiB，硬上限 8 KiB；准确身份、范围和必要错误保留。长详情使用有版本的内容引用。 |
-| 目录页条数 | 默认 100，最多 200；64 KiB 包上限优先。 |
+| 目录页 value | 目标不超过 28 KiB JSON；保留完整 Host envelope 后目标包不超过 32 KiB。 |
+| 目录页条数 | 默认 100，最多 200；32 KiB 包目标优先。 |
 | 历史页条数 | 首屏、用户翻页和自动预留每页默认最多 30；64 KiB 包上限优先。 |
 | 目录 / 当前聊天的兜底核对 | 前台且当前需要该数据时，距最近有效核对至少 60 秒；后台暂停定期核对。 |
 | 单目录请求并发 | 同一 Host、快照、过滤范围最多 1 个在途读取；相同需求合并。 |
@@ -240,8 +241,8 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 
 | 组 | 规则 | 针对性回归范围与实现指针 | 当前状态 |
 | --- | --- | --- | --- |
-| FT-G11 | SC-01–SC-07 | 60 秒条件核对、前后台与多 Host、同版本小确认、变化差异、固定快照分页、查询覆盖、部分后端保留、过期游标、重复连接读取、旧格式。对应 [Host 目录](../../packages/host/src/host-state-facts.test.ts)、[订阅](../../packages/host/src/agent-state-subscriptions.test.ts)、[Host 联动](../../packages/host/src/host-service.test.ts)及两端目录接收 / 调度测试。 | 规则记录；实现、运行回归、部署、用户验证待完成。 |
+| FT-G11 | SC-01–SC-07 | 已实现 60 秒条件核对、前后台与当前 Host、同版本小确认、缺更差异恢复、28 KiB 固定快照分页、来源变化主动聚合，保留 `session.list` 兼容。对应 [Host 目录](../../packages/host/src/host-state-facts.test.ts)、[差异与淘汰](../../packages/host/src/catalog-reconcile.test.ts)、[Host 加密与分页联动](../../packages/host/src/host-service.test.ts)、[Android 调度](../../android/app/src/test/java/com/orbising/orbis/ReadReconcileScheduleTest.kt)、[iOS 调度](../../ios/Orbis/Tests/ReadReconcileScheduleTests.swift)。定向回归通过；未展开时停止后续页、查询范围请求仍待完成。部署、真实网络与用户验收待完成。 |
 | FT-G12 | SH-01–SH-09 | 长会话冷缓存首屏加有界预留、达到条数 / 字节 / 页数任一上限停止、重复事件不补根、真实滚动才扩窗、离线页、窗口内缺口、切分支 / 来源换代、压缩与显示缺口、live 落盘、乱序 / 重复、ACK 丢失、背压、旧端根覆盖兼容。对应 [范围选择](../../packages/protocol/src/session-sync-selection.test.ts)、[Host 事务](../../packages/host/src/session-sync-tasks.test.ts)、[Android 覆盖规划](../../android/app/src/main/java/com/orbising/orbis/SessionGraphStore.kt)、[iOS 历史测试](../../ios/Orbis/Tests/SessionHistoryTests.swift)及两端读取状态机测试。 | 规则记录；实现、运行回归、部署、用户验证待完成。 |
 
 - 本次文档静态校验与后续实现证据保存于 `.artifacts/catalog-history-rules-20261107/`；文档检查只确认链接、规则覆盖、参数与格式。
-- 每组独立实现、完成针对性回归后提交。真实线路测量分别记录 JSON 发送尝试、实际 socket 字节、成功应用范围和完整性；实施收益以相同工作负载对照为准。
+- 每组独立实现、完成针对性回归后提交。真实线路测量分别记录 JSON 发送尝试、实际 socket 字节、成功应用范围和完整性；实施收益以相同工作负载对照为准。目录页面按需兴趣及全局查询范围仍需专项实现。

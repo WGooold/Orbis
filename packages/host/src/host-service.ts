@@ -646,7 +646,9 @@ export class HostService {
    * 目录变化很慢、拉取很贵，而手机端会反复请求——不收敛就会互相堆叠。
    */
   #catalogCache: { at: number; sessions: AgentSessionSummary[] } | undefined;
-  #catalogInFlight: Promise<AgentSessionSummary[]> | undefined;
+  #catalogRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  #catalogRefreshFirstAt = 0;
+  #catalogInFlight: { epoch: number; promise: Promise<AgentSessionSummary[]> } | undefined;
   #catalogEpoch = 0;
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
@@ -1198,6 +1200,7 @@ export class HostService {
       scope,
       identity,
       stateFormat: request.stateFormat,
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision) } : {}),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(request.known === undefined ? {} : { known: request.known }),
     })) this.#sendToDevice(deviceId, part);
@@ -1553,6 +1556,7 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
     clearTimeout(this.#dshRecoveryTimer); this.#dshRecoveryTimer = undefined;
@@ -2114,20 +2118,28 @@ export class HostService {
     }
     const epoch = this.#catalogEpoch;
     if (this.#catalogInFlight !== undefined) {
-      const sessions = await this.#catalogInFlight;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      const flight = this.#catalogInFlight;
+      const sessions = await flight.promise;
+      if (flight.epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       return { sessions, cached: true };
     }
     const task = this.#collectCatalogs(epoch);
-    this.#catalogInFlight = task;
+    const flight = { epoch, promise: task };
+    this.#catalogInFlight = flight;
     try {
       const sessions = await task;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      if (epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       this.#catalogCache = { at: Date.now(), sessions };
       this.refreshHostFacts();
       return { sessions, cached: false };
     } finally {
-      if (this.#catalogInFlight === task) this.#catalogInFlight = undefined;
+      if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
     }
   }
 
@@ -2185,7 +2197,20 @@ export class HostService {
   #invalidateCatalog(): void {
     this.#catalogEpoch += 1;
     this.#catalogCache = undefined;
-    this.#catalogInFlight = undefined;
+    // FT-G11: source invalidation must publish without waiting for a periodic
+    // phone read. Coalesce bursts, bounded by the first invalidation's deadline.
+    if (this.#serviceClosed || this.#providerFactsClosing ||
+        !(this.#compactStateSubscriptions?.interestedInCatalog() || this.#agentStateSubscriptions?.interestedInCatalog())) return;
+    const now = Date.now();
+    if (this.#catalogRefreshTimer === undefined) this.#catalogRefreshFirstAt = now;
+    clearTimeout(this.#catalogRefreshTimer);
+    this.#catalogRefreshTimer = setTimeout(() => {
+      this.#catalogRefreshTimer = undefined;
+      if (this.#serviceClosed || this.#providerFactsClosing ||
+          !(this.#compactStateSubscriptions.interestedInCatalog() || this.#agentStateSubscriptions.interestedInCatalog())) return;
+      void this.#catalogWithCache().catch(error => this.#options.log?.(`目录聚合失败：${describeError(error)}`));
+    }, Math.max(0, Math.min(250, this.#catalogRefreshFirstAt + 1_000 - now)));
+    this.#catalogRefreshTimer.unref();
   }
 
   /** §8 的四个请求。所有失败都走 `protocol.error` 并带回 `requestId`，不静默吞。 */

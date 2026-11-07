@@ -286,6 +286,8 @@ final class OrbisStore: ObservableObject {
     func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool { activeConnection.moveHistory(to: option, fallbackText: fallbackText) }
     func respond(_ request: InteractionRequest, response: [String: Any]) -> Bool { activeConnection.respond(request, response: response) }
     func refresh() { activeConnection.refresh() }
+    func reconcileCatalog() { activeConnection.reconcileCatalog() }
+    func resumeForeground() { activeConnection.resumeForeground() }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
     func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }

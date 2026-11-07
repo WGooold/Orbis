@@ -858,11 +858,19 @@ final class HostConnection: ObservableObject {
 
     func refresh() {
         if connection == .secured {
-            hostState.refresh()
             refreshSessions()
             for runtime in runtimes { agentState.subscribe(runtime: runtime, force: true) }
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         } else { reconnectSelectedHost() }
+    }
+
+    func reconcileCatalog() { if connection == .secured { hostState.reconcile() } }
+
+    func resumeForeground() {
+        guard connection == .secured else { reconnectSelectedHost(); return }
+        hostState.reconcile()
+        for runtime in runtimes { agentState.subscribe(runtime: runtime) }
+        if let selectedRuntime { syncSession(selectedRuntime, force: true) }
     }
 
     private func syncSession(_ runtime: RuntimeSummary, force: Bool = false) {

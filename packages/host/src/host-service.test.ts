@@ -11,7 +11,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1835,6 +1835,73 @@ describe("host end-to-end over relay", () => {
     const recovered = await readMatching(device, message => message.requestId === "delta-recovery");
     expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.value).toEqual(reconstructed);
     expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
+  });
+
+  // FT-G11-WIRE: source invalidation publishes without another phone poll;
+  // a lost publication then reconciles the actual old applied revision.
+  it("FT-G11 reconciles a missed catalog publication over encrypted delivery", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-catalog-read-wire-")); relay = await startRelay(stateDir);
+    const sessionsRoot = join(stateDir, "sessions"), group = join(sessionsRoot, "repo");
+    await mkdir(group, { recursive: true });
+    const writeSession = (n: number, name = `Session ${n} ${"title ".repeat(28)}`) => {
+      const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      return writeFile(join(group, `${id}.jsonl`), JSON.stringify({ type: "session", version: 3, id,
+        name, cwd: "/repo/" + "workspace/".repeat(20) }) + "\n");
+    };
+    await Promise.all(Array.from({ length: 180 }, (_, n) => writeSession(n)));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const read = (id: string, known: unknown[] = [], compact = true) => device!.sendData(JSON.stringify({ type: "agent.state.request",
+      protocolVersion: PROTOCOL_VERSION, requestId: id, scope: "host", domains: ["catalog"], subscribe: true, known,
+      ...(compact ? { stateFormat: "compact-v2" } : {}) }));
+    read("catalog-before");
+    const initial = await readMatching(device, message => message.requestId === "catalog-before");
+    const before = (initial.domains as AgentStateDomainSnapshot[])[0]!;
+    expect((before.value as { sessions: unknown[]; nextCursor: string | null }).sessions.length).toBeLessThan(180);
+    expect((before.value as { nextCursor: string | null }).nextCursor).toBeTruthy();
+    expect(Buffer.byteLength(JSON.stringify(initial))).toBeLessThan(32 * 1024);
+    const firstSession = ((before.value as { sessions: Array<{ sessionId: string }> }).sessions[0]!);
+    const firstSessionNumber = Number(firstSession.sessionId.slice(-12));
+    const firstSessionPath = join(group, `${firstSession.sessionId}.jsonl`);
+    const firstSessionMtime = (await stat(firstSessionPath)).mtime;
+    await writeSession(firstSessionNumber, "Renamed without changing directory order");
+    await utimes(firstSessionPath, firstSessionMtime, firstSessionMtime);
+    await host.reloadProviderConfiguration("pi", {});
+    const published = await readMatching(device, message => message.requestId === "catalog-before" && message.update === true);
+    const current = (published.domains as AgentStateDomainSnapshot[])[0]!;
+    const value = current.delta ? applyStateDelta(before.value, current.delta.operations) : current.value;
+    expect((value as { sessions: Array<{ sessionId: string; name?: string }> }).sessions.find(session => session.sessionId === firstSession.sessionId)?.name)
+      .toBe("Renamed without changing directory order");
+    read("catalog-after-loss", [{ domain: "catalog", modelEpoch: before.modelEpoch, revision: before.revision }]);
+    const recovered = await readMatching(device, message => message.requestId === "catalog-after-loss");
+    const delta = (recovered.domains as AgentStateDomainSnapshot[])[0]!;
+    expect(delta.delta?.baseRevision).toBe(before.revision);
+    expect(applyStateDelta(before.value, delta.delta!.operations)).toEqual(value);
+    expect(Buffer.byteLength(JSON.stringify(recovered))).toBeLessThan(4_096);
+    const collect = async (domain: Record<string, unknown>): Promise<unknown[]> => {
+      let cursor = domain.nextCursor as string | null; let offset = (domain.sessions as unknown[]).length;
+      const sessions = [...domain.sessions as unknown[]]; let pageNumber = 0;
+      while (cursor) {
+        const requestId = `catalog-range-${pageNumber++}`;
+        device!.sendData(JSON.stringify({ type: "agent.state.range.request", protocolVersion: PROTOCOL_VERSION, requestId,
+          scope: "host", domain: "catalog", cursor, limit: 200 }));
+        const response = await readMatching(device!, message => message.requestId === requestId);
+        const page = response.page as { offset: number; sessions: unknown[]; nextCursor: string | null };
+        expect(page.offset).toBe(offset);
+        expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(32 * 1024);
+        sessions.push(...page.sessions); offset += page.sessions.length; cursor = page.nextCursor;
+      }
+      return sessions;
+    };
+    expect(await collect(value as Record<string, unknown>)).toHaveLength(180);
+    read("catalog-old-peer", [], false);
+    const legacy = await readMatching(device, message => message.requestId === "catalog-old-peer");
+    expect((legacy.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(legacy))).toBeLessThan(32 * 1024);
+    expect(await collect((legacy.domains as AgentStateDomainSnapshot[])[0]!.value as Record<string, unknown>)).toHaveLength(180);
   });
 
   // FT-G05-WIRE: options travel only in requested bounded pages, invocation is

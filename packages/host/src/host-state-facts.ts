@@ -27,6 +27,8 @@ export type HostStateFactsOptions = {
 };
 
 const PUBLIC_VALUE_BYTES = 192 * 1024;
+/** A committed catalog response is the first page, not an inline directory dump. */
+const CATALOG_PAGE_VALUE_BYTES = 28 * 1024;
 const CATALOG_INVENTORY_BYTES = 8 * 1024 * 1024;
 const CATALOG_INVENTORY_ENTRIES = 20_000;
 type CatalogInput = Omit<HostCatalogState, "checkedAt">;
@@ -161,10 +163,12 @@ export class HostStateFacts {
       const fingerprint = JSON.stringify(full);
       const modelEpoch = this.#registry.currentModelEpoch();
       const snapshotId = previous?.fingerprint === fingerprint && previous.modelEpoch === modelEpoch ? previous.snapshotId : randomUUID();
-      const projected = boundedArray(inventory.slice(0, 2_000), PUBLIC_VALUE_BYTES - 2_048, items => ({ ...full, sessions: items, snapshotId }));
+      const projected = boundedArray(inventory.slice(0, 2_000), CATALOG_PAGE_VALUE_BYTES, items => ({ ...full, sessions: items, snapshotId }));
       const value = { ...full, sessions: projected, snapshotId,
         nextCursor: projected.length < inventory.length ? catalogCursor(snapshotId, projected.length) : null,
-        truncated: full.truncated || projected.length < inventory.length };
+        // The committed domain is a bounded first page. More pages are not a lost
+        // source inventory; nextCursor expresses their availability independently.
+        truncated: full.truncated };
       const candidate = { snapshotId, modelEpoch, fingerprint, state: full, sessions: inventory };
       const validated = HostCatalogStateSchema.parse(this.#withCheckedAt("catalog", value));
       this.#catalogInventory = candidate;
@@ -203,7 +207,7 @@ export class HostStateFacts {
       if (offset > inventory.sessions.length) return empty("invalid_cursor");
     }
     const limit = Number.isSafeInteger(request.limit) ? Math.max(1, Math.min(200, request.limit!)) : 100;
-    const sessions = boundedArray(inventory.sessions.slice(offset, offset + limit), PUBLIC_VALUE_BYTES - 2_048, items => ({ sessions: items }));
+    const sessions = boundedArray(inventory.sessions.slice(offset, offset + limit), CATALOG_PAGE_VALUE_BYTES, items => ({ sessions: items }));
     const next = offset + sessions.length;
     const complete = inventory.state.backends.every(backend => backend.complete) && !inventory.state.truncated;
     return { modelEpoch: inventory.modelEpoch, revision: state.revision, snapshotId: inventory.snapshotId,
