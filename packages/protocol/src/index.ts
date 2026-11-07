@@ -3,7 +3,7 @@ export * from "./turn-file-changes.js";
 import { z } from "zod";
 export { orbisEnvironment } from "./product-environment.js";
 import {
-  AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
+  StateDeltaSchema, AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
   AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
 } from "./agent-state.js";
@@ -1267,6 +1267,13 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
 ]);
 export type DeviceE2ePayload = z.infer<typeof DeviceE2ePayloadSchema>;
 
+/** compact-v2 peers rehydrate shared bodies before validating/applying the ordinary event. */
+export const SharedSessionContentSchema = z.strictObject({
+  format: z.literal("shared-v1"),
+  references: z.array(z.strictObject({ path: z.array(z.string()).max(32), target: z.array(z.string()).max(32) })).max(512),
+  liveDelta: StateDeltaSchema.optional(),
+});
+
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
@@ -1374,7 +1381,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   // UI 显示「已连接」而所有请求石沉大海。hostId 供手机过滤（广播发给所有设备）。
   z.strictObject({ type: z.literal("host.online"), hostId: z.string().min(1) }),
   z.strictObject({ type: z.literal("host.offline"), hostId: z.string().min(1), reason: z.string().optional() }),
-  z.strictObject({ type: z.literal("runtime.event"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string(), sequence: z.number().int().nonnegative(), event: RuntimeWireEventSchema.refine((event): boolean => event.type !== "session.tools.produced", "producer_inventory_is_private") }),
+  z.strictObject({ type: z.literal("runtime.event"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string(), sequence: z.number().int().nonnegative(), sharedContent: SharedSessionContentSchema.optional(), event: RuntimeWireEventSchema.refine((event): boolean => event.type !== "session.tools.produced", "producer_inventory_is_private") }),
   // ── 统一 Agent 状态模型（ADR-0032）的响应。读的是 Host 已经提交的当前投影，不是原生直通：
   // 每个领域带自己的版本与可信度，点名要但确实没有状态的领域会出现在 `missing` 里，
   // 而不是悄悄缺席。负载本身的形状在 agent-state.ts，这里只补协议版本。

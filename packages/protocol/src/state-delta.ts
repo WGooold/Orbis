@@ -23,7 +23,8 @@ export function stateDelta(before: unknown, after: unknown): StateDeltaOperation
         while (end < Math.min(a.length, b.length) - start && equal(a[a.length - 1 - end], b[b.length - 1 - end])) end++;
         operations.push({ op: "splice", path, index: start, deleteCount: a.length - start - end, items: b.slice(start, b.length - end) });
       }
-    } else operations.push({ op: "set", path, value: b });
+    } else if (typeof a === "string" && typeof b === "string" && a.length >= 128 && b.startsWith(a)) operations.push({ op: "append", path, text: b.slice(a.length) });
+    else operations.push({ op: "set", path, value: b });
   }
   try { visit(before, after, []); } catch { return undefined; }
   return operations.length > 0 && operations.length <= 256 && operations.every(edit => edit.path.length <= 32) ? operations : undefined;
@@ -34,12 +35,15 @@ export function applyStateDelta(value: unknown, operations: readonly StateDeltaO
   let result: unknown = structuredClone(value);
   for (const edit of operations) {
     let target: unknown = result;
-    for (const key of edit.path.slice(0, edit.op === "splice" ? undefined : -1)) {
+    for (const key of edit.path.slice(0, edit.op === "splice" || edit.op === "append" ? undefined : -1)) {
       if (Array.isArray(target)) { if (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= target.length) throw Error("path"); target = target[Number(key)]; }
       else if (object(target) && Object.hasOwn(target, key)) target = target[key];
       else throw Error("path");
     }
-    if (edit.op === "splice") {
+    if (edit.op === "append") {
+      if (typeof target !== "string") throw Error("append");
+      result = applyStateDelta(result, [{ op: "set", path: edit.path, value: target + edit.text }]);
+    } else if (edit.op === "splice") {
       if (!Array.isArray(target) || edit.index > target.length || edit.index + edit.deleteCount > target.length) throw Error("splice");
       target.splice(edit.index, edit.deleteCount, ...structuredClone(edit.items));
     } else if (edit.path.length === 0) {

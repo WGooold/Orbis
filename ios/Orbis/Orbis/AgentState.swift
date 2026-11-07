@@ -2,6 +2,65 @@ import Foundation
 import Combine
 import CoreFoundation
 
+/// FT-G07: keep only bounded, applied live bodies; missing caches recover a full checkpoint.
+final class SharedSessionContent {
+    private struct Live { let session: String; let epoch: String; let seq: Int64; let value: HostJSON; let bytes: Int }
+    private var live: [String: Live] = [:]
+    private var order: [String] = []
+    func clear() { live = [:]; order = [] }
+    private func json(_ value: Any) throws -> HostJSON {
+        try JSONDecoder().decode(HostJSON.self, from: JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]))
+    }
+    private func object(_ value: HostJSON) throws -> Any {
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(value), options: [.fragmentsAllowed])
+    }
+    func expand(_ envelope: [String: Any], epoch: String?, seq: Int64?) throws -> [String: Any] {
+        guard let shared = envelope["sharedContent"] as? [String: Any] else { return envelope }
+        guard shared["format"] as? String == "shared-v1", let runtime = envelope["runtimeId"] as? String,
+              let raw = envelope["event"] as? [String: Any], let type = raw["type"] as? String,
+              ["session.snapshot", "session.patch"].contains(type), let refs = shared["references"] as? [[String: Any]], refs.count <= 512 else { throw StateDeltas.Failure.invalid }
+        var event = try json(raw)
+        if let delta = shared["liveDelta"] as? [String: Any] {
+            guard type == "session.patch", let cached = live[runtime], cached.epoch == epoch, cached.seq == seq,
+                  event["sessionId"].string == cached.session, event["source"]["epoch"].string == epoch,
+                  event["source"]["ready"].bool == true, event["baseSeq"].integer == seq,
+                  try json(delta["baseRevision"] ?? NSNull()).integer == seq,
+                  let edits = delta["operations"] as? [[String: Any]] else { throw StateDeltas.Failure.invalid }
+            let value = try StateDeltas.apply(cached.value, edits: edits)
+            event = try StateDeltas.apply(event, edits: [["op": "set", "path": ["live"], "value": object(value)]])
+        }
+        func at(_ path: [String]) throws -> HostJSON {
+            guard path.count <= 32 else { throw StateDeltas.Failure.invalid }
+            var value = event
+            for key in path {
+                if let object = value.object, let child = object[key] { value = child }
+                else if value.isArray, let index = Int(key), String(index) == key, value.array.indices.contains(index) { value = value.array[index] }
+                else { throw StateDeltas.Failure.invalid }
+            }
+            return value
+        }
+        for ref in refs {
+            guard let path = ref["path"] as? [String], let target = ref["target"] as? [String],
+                  let text = try at(target).string, !text.isEmpty, try at(path) == .string("") else { throw StateDeltas.Failure.invalid }
+            event = try StateDeltas.apply(event, edits: [["op": "set", "path": path, "value": text]])
+        }
+        guard try JSONEncoder().encode(event).count <= 4 * 1024 * 1024 else { throw StateDeltas.Failure.invalid }
+        var result = envelope; result["event"] = try object(event); result["sharedContent"] = nil; return result
+    }
+    /// Called only after history commit and projection validation succeed.
+    func remember(_ event: [String: Any], runtime: String) {
+        guard let parsed = try? json(event), let session = parsed["sessionId"].string, let epoch = parsed["source"]["epoch"].string,
+              let seq = parsed["source"]["seq"].integer, parsed["source"]["ready"].bool == true,
+              parsed["live"]["complete"].bool == true, let data = try? JSONEncoder().encode(parsed["live"]), data.count <= 4 * 1024 * 1024 else { return }
+        if let old = live[runtime], old.epoch == epoch, old.seq > seq { return }
+        live[runtime] = Live(session: session, epoch: epoch, seq: seq, value: parsed["live"], bytes: data.count)
+        order.removeAll { $0 == runtime }; order.append(runtime)
+        while order.count > 64 || live.values.reduce(0, { $0 + $1.bytes }) > 16 * 1024 * 1024 {
+            live[order.removeFirst()] = nil
+        }
+    }
+}
+
 /// FT-G03: independent view owners retain and release their own domain interest.
 struct ModelInterests: Equatable {
     private var values: [String: Set<String>] = [:]

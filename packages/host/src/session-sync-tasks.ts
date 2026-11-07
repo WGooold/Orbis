@@ -38,7 +38,7 @@ type Options = {
   link: (deviceId: string) => (Pick<DeviceLink, "active" | "sendSessionSnapshot" | "sessionSyncQueuedBytes"> &
     Partial<Pick<DeviceLink, "sessionSyncRejection">>) | undefined;
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
-  encodeEvent: (runtimeId: string, event: RuntimeEvent) => Buffer;
+  encodeEvent: (runtimeId: string, event: RuntimeEvent, deviceId: string) => Buffer;
   acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean;
   needsBaseline?: (runtimeId: string, command: SessionSyncRequest) => boolean;
   sendEvent: (deviceId: string, runtimeId: string, event: RuntimeEvent) => void;
@@ -172,7 +172,7 @@ export class SessionSyncTasks {
         });
         return true;
       }
-      const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId });
+      const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId }, task.deviceId);
       if (payload.byteLength > SESSION_SYNC_MAX_BYTES) {
         this.#fail(task, "session_sync_response_too_large");
         return true;

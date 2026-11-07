@@ -1732,6 +1732,36 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
   });
 
+  // FT-G07-WIRE: negotiate the representation, deliver a shared checkpoint
+  // through the real sync coordinator, then append live text with an exact base.
+  it("FT-G07 shares checkpoint bodies and streams text deltas over E2E", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-content-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "runtime", sessionId: "session", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: "content-format", scope: "agent",
+      runtimeId: "runtime", stateFormat: "compact-v2", domains: ["identity"], subscribe: true }));
+    await readMatching(device, message => message.requestId === "content-format");
+    device.sendCommand("runtime", "content-sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
+    const request = await runtime.next();
+    const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
+    runtime.publish(1, { ...fixture.initial.event, syncId: (request.command as { syncId: string }).syncId });
+    const checkpoint = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot");
+    expect(checkpoint.sharedContent).toEqual(fixture.wireInitial.sharedContent);
+    expect(checkpoint.event).toEqual({ ...fixture.wireInitial.event, syncId: "sync" });
+    runtime.publish(2, fixture.patch.event);
+    const patch = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch");
+    expect(patch.sharedContent).toEqual(fixture.wirePatch.sharedContent);
+    const delta = (patch.sharedContent as { liveDelta: { operations: Parameters<typeof applyStateDelta>[1] } }).liveDelta;
+    expect(applyStateDelta(fixture.initial.event.live, delta.operations)).toEqual(fixture.patch.event.live);
+  });
+
   // FT-G06-WIRE: exercise negotiated patches through real encrypted delivery,
   // then recover an intentionally missed update with a full read.
   it("FT-G06 sends collection deltas and recovers full state over E2E", async () => {

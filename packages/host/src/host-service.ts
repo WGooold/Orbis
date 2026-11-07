@@ -79,6 +79,7 @@ import { buildDiagnosticsPageMessage } from "./diagnostic-page-message.js";
 import { HostStateFacts, providerSwitchingFact } from "./host-state-facts.js";
 import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.js";
 import { normalizeDeviceRequest } from "./device-protocol.js";
+import { SessionWireContent } from "./session-wire-content.js";
 import { encodeDeviceMessage } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
@@ -652,6 +653,7 @@ export class HostService {
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
   readonly #workspaceGit = new Map<string, HostWorkspacesState["workspaces"][number]["git"]>();
+  readonly #sessionWireContent = new SessionWireContent();
   readonly #sharedOperations = new Map<string, HostSharedOperation>();
   #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
@@ -728,7 +730,7 @@ export class HostService {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         return !scope || !this.#conversationState.hasBaseline(scope);
       },
-      encodeEvent: (runtimeId, event) => encodeDeviceMessage(this.#runtimeEventMessage(runtimeId, event)),
+      encodeEvent: (runtimeId, event, deviceId) => this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
       acceptSnapshot: (runtimeId, event) => {
         return this.#acceptConversation(runtimeId, event);
       },
@@ -2442,6 +2444,10 @@ export class HostService {
     this.#options.onPathChange?.(deviceId, change);
   }
 
+  #encodeForDevice(deviceId: string, message: object): Buffer {
+    return encodeDeviceMessage(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(message) : message);
+  }
+
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {
     this.#sendJsonToDevice(deviceId, message, channelForDeviceMessage(message));
   }
@@ -2452,7 +2458,7 @@ export class HostService {
     try {
       // `send` 走当前生效路径；没有可用路径时返回 false，此时消息就是发不出去，
       // 也不该假装发出去了——上层会靠重连后的 `device.ready` 重新对齐。
-      const payload = encodeDeviceMessage(message);
+      const payload = this.#encodeForDevice(deviceId, message);
       link.send(payload, channel, outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
@@ -2464,7 +2470,7 @@ export class HostService {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
     try {
-      const payload = encodeDeviceMessage(message);
+      const payload = this.#encodeForDevice(deviceId, message);
       link.sendOn(kind, payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
     } catch (error) {
       this.#options.onDeviceError?.(deviceId, error);
@@ -2590,6 +2596,13 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
+    if (message.type === "runtime.event" && (message.event.type === "session.patch" || message.event.type === "session.snapshot")) {
+      for (const [deviceId, link] of this.#links) {
+        try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
+        catch (error) { this.#options.onDeviceError?.(deviceId, error); }
+      }
+      return;
+    }
     const payload = encodeDeviceMessage(message);
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {

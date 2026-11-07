@@ -442,6 +442,7 @@ Status: proposed
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `runtimeId` | `FT-01` |  |
 | | `sequence` | `FT-01/FT-12/FT-14` | 保留本通道传输顺序，与业务 source 版本分开。 |
+| | `sharedContent` | `FT-01/FT-04/FT-07/FT-12/FT-13` | 只向已选择 compact-v2 的设备发送 shared-v1；旧表示保留原单条事件。 展开：`S:SharedSessionContent`。 |
 | | `event` | `FT-10` |  展开：`E:session.changes.summaries`、`E:session.changes.updated`、`E:session.changes.page`、`E:session.change.detail.page`、`E:session.changes.failed`、`E:tool.activity`、`E:session.tool.content.page`、`E:session.tool.read.failed`、`E:session.tools.page`、`E:session.tools.patch`、`E:session.tools.changed`、`E:session.tools.produced`、`E:session.tools.opened`、`E:delivery.snapshot`、`E:execution.tasks`、`E:execution.activity`、`E:notification.source`、`E:runtime.status`、`E:runtime.metadata`、`E:runtime.capabilities`、`E:session.catalog`、`E:message.queued`、`E:session.sync.pending`、`E:session.entry.result`、`E:session.snapshot`、`E:session.patch`、`E:message.started`、`E:message.delta`、`E:message.finished`、`E:turn.started`、`E:turn.finished`、`E:tool.started`、`E:tool.updated`、`E:tool.finished`、`E:interaction.requested`、`E:interaction.snapshot`、`E:interaction.resolved`、`E:interaction.cancelled`、`E:local_interaction.required`、`E:command.result`、`E:artifact.started`、`E:artifact.failed`、`E:runtime.error`。 |
 | `H:agent.state.snapshot` | 默认 | `FT-03/FT-12/FT-16` | 点名读取 / 订阅，内容变化发布，已知版本返回 unchanged。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
@@ -1205,6 +1206,23 @@ Status: proposed
 | `S:CodexDesktopAttach` | 默认 | `FT-03` | 接入状态真实变化发布。 源码：`CodexDesktopAttachSchema`。 |
 | | `state` | `FT-03` |  |
 | | `reason` | `FT-10/FT-12` | 保留必要可操作原因与原请求关联；长诊断走详情。 |
+| `S:SharedSessionContent` | 默认 | `FT-01/FT-04/FT-07/FT-12/FT-13` | compact-v2 共享正文；引用与 live 增量在历史落盘及投影前完整重建，缺基准恢复。 源码：`SharedSessionContentSchema`。 |
+| | `format` | `FT-01/FT-04/FT-07/FT-12/FT-13` | 同事件内准确正文 path / target；liveDelta 绑定同 session、source epoch 与已应用 baseSeq，引用不得猜测。 |
+| | `references` | `FT-01/FT-04/FT-07/FT-12/FT-13` | 同事件内准确正文 path / target；liveDelta 绑定同 session、source epoch 与已应用 baseSeq，引用不得猜测。 展开：`S:SharedSessionContent.references[]`。 |
+| | `liveDelta` | `FT-01/FT-04/FT-07/FT-12/FT-13` | 同事件内准确正文 path / target；liveDelta 绑定同 session、source epoch 与已应用 baseSeq，引用不得猜测。 展开：`S:StateDelta`。 |
+| `S:SharedSessionContent.references[]` | 默认 | `FT-01/FT-04/FT-07/FT-12/FT-13` | compact-v2 共享正文；引用与 live 增量在历史落盘及投影前完整重建，缺基准恢复。 |
+| | `path`、`target` | `FT-01/FT-04/FT-07/FT-12/FT-13` | 同事件内准确正文 path / target；liveDelta 绑定同 session、source epoch 与已应用 baseSeq，引用不得猜测。 |
+| `S:StateDelta` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 源码：`StateDeltaSchema`。 |
+| | `baseRevision` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| | `operations` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 展开：`S:StateDelta.operations[]{0}`、`S:StateDelta.operations[]{1}`、`S:StateDelta.operations[]{2}`、`S:StateDelta.operations[]{3}`。 |
+| `S:StateDelta.operations[]{0}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path`、`value` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| `S:StateDelta.operations[]{1}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| `S:StateDelta.operations[]{2}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path`、`index`、`deleteCount`、`items` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
+| `S:StateDelta.operations[]{3}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
+| | `op`、`path`、`text` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
 | `S:AgentStateDomainSnapshot` | 默认 | `FT-01/FT-12` | 随所属提交装载，不跨代次复用。 源码：`AgentStateDomainSnapshotSchema`。 |
 | | `domain` | `FT-01/FT-12` |  |
 | | `modelEpoch`、`revision`、`availability`、`completeness`、`projectionComplete` | `FT-12` |  |
@@ -1215,15 +1233,6 @@ Status: proposed
 | `S:DomainSource` | 默认 | `FT-01/FT-12` | 随所属提交装载，不跨代次复用。 源码：`DomainSourceSchema`。 |
 | | `producer`、`sourceId` | `FT-01/FT-12` |  |
 | | `sourceEpoch`、`sourceRevision` | `FT-12` |  |
-| `S:StateDelta` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 源码：`StateDeltaSchema`。 |
-| | `baseRevision` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
-| | `operations` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 展开：`S:StateDelta.operations[]{0}`、`S:StateDelta.operations[]{1}`、`S:StateDelta.operations[]{2}`。 |
-| `S:StateDelta.operations[]{0}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
-| | `op`、`path`、`value` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
-| `S:StateDelta.operations[]{1}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
-| | `op`、`path` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
-| `S:StateDelta.operations[]{2}` | 默认 | `FT-01/FT-04/FT-12/FT-13` | compact-v2 的准确基准增量；所有操作先私有重建，整批校验后提交，缺口完整重读。 |
-| | `op`、`path`、`index`、`deleteCount`、`items` | `FT-01/FT-04/FT-12/FT-13` | 准确 path、set 值、remove 删除或 splice 范围 / 插入项；value 与 items 使用原领域已登记的子树结构。 |
 | `S:HostCatalogRange` | 默认 | `FT-02/FT-05/FT-12` | 目录 / 首屏与分页兴趣驱动，版本和覆盖明确。 源码：`HostCatalogRangeSchema`。 |
 | | `modelEpoch`、`revision`、`complete`、`truncated` | `FT-12` |  |
 | | `snapshotId` | `FT-01` |  |
@@ -1523,3 +1532,9 @@ G05 实现与验证：[Host 目录页](../../packages/host/src/menu-option-catal
 G06 的 `compact-v2` 明确启用领域增量；首次读取、来源换代、不可用状态、超预算及收益不足时发送完整 value。订阅更新的 `delta.baseRevision` 必须匹配本机已提交版本；路径是准确 JSON 键序列，set 设置原领域子树、remove 显式删除对象键、splice 按准确索引更新有序数组。每批最多 256 操作、路径深度 32；value 为 null 占位，接收端先私有重建并校验全部领域，成功后一次提交与推进版本。重复或旧 revision 不重放；基准缺失、非法路径、来源或代次不同自动完整重读，现有显示保留至恢复。部分来源库存继续保持原完整性语义。App 只对关联的只读格式拒绝降级（agent：v2 → v1 → legacy；host：v2 → legacy），不跨表示复用 known。增量只在比原 value 小至少 20% 时使用；旧客户端始终取得完整领域。
 
 G06 开放字段 `StateDeltaOperation{set}.value` 与 `{splice}.items[]` 按路径复用第 3 节对应领域及第 5 节子树字段规则，不允许未登记原生键进入出口。实现与验证：[差分契约](../../packages/protocol/src/state-delta.ts)、[订阅差分回归](../../packages/host/src/agent-state-subscriptions.test.ts)、[Android 重建](../../android/app/src/main/java/com/orbising/orbis/StateDeltas.kt)、[iOS 重建](../../ios/Orbis/Orbis/HostState.swift)及两端模型用例；FT-G06 加密联动覆盖完整基线、增量和缺口重读。证据保存于 `.artifacts/field-transport-implementation-20261106/g06-results.json`。
+
+G07 在已选择 compact-v2 的设备上启用 `runtime.event.sharedContent`（format 为 shared-v1）；canonical、display、live 的结构和身份保留，同事件内相同且较长的 text / thinking / content / summary 字符串复用首个正文路径，重复位置暂存空串。引用数量最多 512、路径深度 32，仅在引用实际小于原正文时启用。接收端在存储解析、显示投影和应用确认之前恢复全部引用；缺失路径、空引用目标、错误类型与预算超限拒绝整条并按原同步身份恢复，不能将占位正文落盘。
+
+liveDelta 使用同一 source epoch、session 与已应用 baseSeq 重建 live；append 只追加准确文本后缀，改写使用 set，删除 / 落盘使用显式集合编辑或完整 live。Host 与 App 的 live 缓存各限 64 个 Runtime、单项 4 MiB、总计 16 MiB；淘汰后读取完整 checkpoint。App 仅在历史事务与投影成功后推进可用缓存；Host 复用同事件的已编码差分，避免多设备编码推进第二台设备的基准。首次和恢复正文完整取得，旧客户端保持原事件，ACK 仍在实际应用或拒绝后发回。字段展开复用对应领域 / 会话既有正文规则。
+
+G07 验证使用 [Host / Android / iOS 共用线路样本](../../ios/Orbis/Tests/Fixtures/field-transport-session.json)、[Host 正文投影](../../packages/host/src/session-wire-content.test.ts)、两端 SharedSessionContent 用例及既有来源恢复、历史事务、乐观发送、工具依赖与阅读锚点回归；FT-G07 加密联动覆盖实际 checkpoint 与流式更新。证据保存于 `.artifacts/field-transport-implementation-20261106/g07-results.json`。

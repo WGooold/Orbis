@@ -86,7 +86,15 @@ enum StateDeltas {
               let source = raw["source"] as? [String: Any], source["producer"] as? String == old.source.producer,
               source["sourceId"] as? String == old.source.sourceId, source["sourceEpoch"] as? String == old.source.sourceEpoch,
               let edits = delta["operations"] as? [[String: Any]], (1...256).contains(edits.count) else { throw Failure.invalid }
-        var value = old.value
+        let value = try apply(old.value, edits: edits)
+        let data = try JSONEncoder().encode(value)
+        guard data.count <= 4 * 1024 * 1024 else { throw Failure.invalid }
+        var result = raw; result["delta"] = nil
+        result["value"] = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]); return result
+    }
+    static func apply(_ root: HostJSON, edits: [[String: Any]]) throws -> HostJSON {
+        guard (1...256).contains(edits.count) else { throw Failure.invalid }
+        var value = root
         for edit in edits {
             guard let path = edit["path"] as? [String], path.count <= 32, let op = edit["op"] as? String else { throw Failure.invalid }
             func decoded(_ object: Any?) throws -> HostJSON {
@@ -96,6 +104,10 @@ enum StateDeltas {
             func change(_ current: HostJSON, _ depth: Int) throws -> HostJSON {
                 if depth == path.count {
                     if op == "set" { return try decoded(edit["value"]) }
+                    if op == "append" {
+                        guard case .string(let text) = current, let suffix = edit["text"] as? String else { throw Failure.invalid }
+                        return .string(text + suffix)
+                    }
                     guard op == "splice", case .array(var items) = current, let index = edit["index"] as? Int,
                           let count = edit["deleteCount"] as? Int, index >= 0, index <= items.count, count >= 0, count <= items.count - index,
                           case .array(let added) = try decoded(edit["items"]) else { throw Failure.invalid }
@@ -117,11 +129,9 @@ enum StateDeltas {
             }
             value = try change(value, 0)
         }
-        let data = try JSONEncoder().encode(value)
-        guard data.count <= 4 * 1024 * 1024 else { throw Failure.invalid }
-        var result = raw; result["delta"] = nil
-        result["value"] = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]); return result
+        return value
     }
+
 }
 
 struct AgentProvider: Identifiable, Hashable {

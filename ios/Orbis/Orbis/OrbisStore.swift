@@ -414,6 +414,7 @@ final class HostConnection: ObservableObject {
     private var handledSyncRejections: [String] = []
     private var authenticatedModelEpoch: String?
     private var menuOptions = MenuOptionsLoader()
+    private let sharedSessionContent = SharedSessionContent()
     private var menuOptionsTimeout: Task<Void, Never>?
 
     func loadMenuOptions(runtimeId: String, name: String) {
@@ -697,6 +698,7 @@ final class HostConnection: ObservableObject {
         conversations = [:]; liveMessageIds = [:]; unfinishedLiveMessageIds = [:]; streamingMessageIds = []; displayMessageIds = [:]; messageAliases = [:]; excludedDisplayEntries = [:]
         liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
+        sharedSessionContent.clear()
         sourcePositions = [:]; appliedBaselines = [:]; retiredEpochs = [:]; graphs = [:]; runtimeEventSequences = [:]
         pendingActivation = nil; activePath = nil
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
@@ -2366,9 +2368,19 @@ final class HostConnection: ObservableObject {
         }
     }
 
-    private func consumeEvent(_ envelope: [String: Any], channel: String?, rawEnvelope: Data?) async {
-        guard let runtimeId = envelope["runtimeId"] as? String, runtimes.contains(where: { $0.runtimeId == runtimeId }),
-              let event = envelope["event"] as? [String: Any], let type = event["type"] as? String else { return }
+    private func consumeEvent(_ wireEnvelope: [String: Any], channel: String?, rawEnvelope wirePayload: Data?) async {
+        guard let runtimeId = wireEnvelope["runtimeId"] as? String, runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
+        let envelope: [String: Any]
+        do { envelope = try sharedSessionContent.expand(wireEnvelope, epoch: sourcePositions[runtimeId]?.epoch, seq: sourcePositions[runtimeId]?.seq) }
+        catch {
+            if let syncId = (wireEnvelope["event"] as? [String: Any])?["syncId"] as? String {
+                rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史内容基准已失效，正在重新同步。"))
+            }
+            if let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) { syncSession(runtime, force: true) }
+            return
+        }
+        let rawEnvelope = wireEnvelope["sharedContent"] == nil ? wirePayload : try? JSONSerialization.data(withJSONObject: envelope)
+        guard let event = envelope["event"] as? [String: Any], let type = event["type"] as? String else { return }
         let changesHome = ["runtime.metadata", "runtime.status", "interaction.requested", "interaction.snapshot",
                            "interaction.resolved", "interaction.cancelled"].contains(type)
         defer { if changesHome { commitHomePresentation() } }
@@ -2906,6 +2918,7 @@ final class HostConnection: ObservableObject {
                 toolInventories.require(reference, runtime: runtimeId)
                 if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
             } else if prepared.hasLive { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
+            sharedSessionContent.remember(event, runtime: runtimeId)
             return true
         }
         return false

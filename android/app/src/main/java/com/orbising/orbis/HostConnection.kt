@@ -184,6 +184,7 @@ internal class HostConnection(
     @Volatile private var preferCompactState = true
     @Volatile private var preferDeltaState = true
     private val menuOptions = MenuOptionsLoader()
+    private val sharedSessionContent = SharedSessionContent()
 
     fun setMenuOptionInterest(runtimeId: String, name: String?) {
         if (name == null) { menuOptions.cancel(); return }
@@ -2264,13 +2265,36 @@ internal class HostConnection(
                     }
                     incomingMessage = expanded; payload = expanded.toString()
                 }
+                val wireRuntime = incomingMessage?.get("runtimeId")?.jsonPrimitive?.contentOrNull
+                val wirePrevious = wireRuntime?.let { mutableState.value.conversations[it] }
+                if (incomingMessage?.containsKey("sharedContent") == true) {
+                    val expanded = sharedSessionContent.expand(incomingMessage, wirePrevious?.sourceEpoch, wirePrevious?.sourceSeq ?: -1)
+                    if (expanded == null) {
+                        if (wireRuntime != null) {
+                            val syncId = incomingMessage["event"]?.jsonObject?.get("syncId")?.jsonPrimitive?.contentOrNull
+                            if (syncId != null) relay.acknowledgeSessionSnapshot(wireRuntime, syncId, "rejected")
+                            updateState { state -> state.copy(sessionSyncRequests = state.sessionSyncRequests + wireRuntime,
+                                conversations = state.conversations + (wireRuntime to (state.conversations[wireRuntime] ?: RuntimeConversation())
+                                    .copy(forceSourceSnapshot = true, isChatSyncing = true))) }
+                        }
+                        continue
+                    }
+                    incomingMessage = expanded; payload = expanded.toString()
+                }
                 val sessionEvent = runCatching {
                     incomingMessage?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.event" }
                         ?.get("event")?.jsonObject
                 }.getOrNull()
                 if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.snapshot") {
                     // 单帧失败不能让消费协程死掉（scope 里的未捕获异常会崩进程）。
-                    runCatching { handleSessionSnapshotPayload(payload, currentGeneration) }
+                    runCatching {
+                        handleSessionSnapshotPayload(payload, currentGeneration)
+                        if (incomingMessage != null && wireRuntime != null) {
+                            val applied = mutableState.value.conversations[wireRuntime]
+                            if (applied != null && applied.revision != wirePrevious?.revision)
+                                sharedSessionContent.remember(incomingMessage, applied.sourceEpoch, applied.sourceSeq)
+                        }
+                    }
                         .onFailure { error ->
                             Log.e(RELOAD_TRACE_TAG, "frame.snapshot_failed ${error::class.simpleName}: ${error.message}")
                         }
@@ -2404,12 +2428,18 @@ internal class HostConnection(
                                 updateState { current -> current.copy(error = L10n.tr("收到无效的中继服务器消息")) }
                             }
                     }
+                    if (incomingMessage != null && wireRuntime != null) {
+                        val applied = mutableState.value.conversations[wireRuntime]
+                        if (applied != null && applied.revision != wirePrevious?.revision)
+                            sharedSessionContent.remember(incomingMessage, applied.sourceEpoch, applied.sourceSeq)
+                    }
                     flushToolRequests()
                     // 只有 Host 的加密 device.ready 才触发刷新；Relay 的明文确认不携带会话目录。
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
                     if (deviceReadyArrived && currentGeneration == generation) {
                         menuOptions.cancel()
+                        sharedSessionContent.clear()
                         preferCompactState = true
                         preferDeltaState = true
                         val application = application

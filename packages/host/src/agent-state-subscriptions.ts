@@ -34,6 +34,9 @@ export class AgentStateSubscriptions {
   clearDevice(deviceId: string): void {
     for (const [key, entry] of this.#entries) if (entry.deviceId === deviceId) this.#entries.delete(key);
   }
+  supportsSharedContent(deviceId: string): boolean {
+    return [...this.#entries.values()].some(entry => entry.deviceId === deviceId && entry.request.stateFormat === "compact-v2");
+  }
   owns(deviceId: string, runtimeId: string, domain: string): boolean {
     return [...this.#entries.values()].some(entry => entry.deviceId === deviceId && entry.scope.kind === "agent" &&
       entry.request.runtimeId === runtimeId && (entry.request.domains === undefined || entry.request.domains.includes(domain)));

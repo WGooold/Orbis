@@ -1,0 +1,332 @@
+{
+  "initial": {
+    "type": "runtime.event",
+    "protocolVersion": 19,
+    "runtimeId": "runtime",
+    "sequence": 1,
+    "event": {
+      "type": "session.snapshot",
+      "sessionId": "session",
+      "syncId": "sync",
+      "cursor": {
+        "leafId": "entry-1"
+      },
+      "mode": "replace",
+      "entries": [
+        {
+          "entryId": "entry-1",
+          "parentId": null,
+          "type": "message",
+          "timestamp": "2026-11-07T00:00:00.000Z",
+          "data": {
+            "message": {
+              "messageId": "entry-1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂"
+                }
+              ],
+              "timestamp": 1
+            }
+          }
+        }
+      ],
+      "source": {
+        "epoch": "source",
+        "seq": 1,
+        "ready": true
+      },
+      "live": {
+        "complete": true,
+        "turn": null,
+        "messages": [
+          {
+            "message": {
+              "messageId": "stream",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂"
+                }
+              ],
+              "timestamp": 1
+            },
+            "finished": false,
+            "contentComplete": true
+          }
+        ],
+        "tools": []
+      },
+      "display": {
+        "projectionVersion": 3,
+        "entries": [
+          {
+            "displayId": "entry-1",
+            "entryId": "entry-1",
+            "nativeType": "message",
+            "kind": "message",
+            "message": {
+              "messageId": "entry-1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂"
+                }
+              ],
+              "timestamp": 1
+            },
+            "reason": null
+          }
+        ],
+        "windowStart": null
+      },
+      "range": "preview",
+      "checkpoint": {
+        "checkpointId": "checkpoint-1",
+        "head": {
+          "leafId": "entry-1"
+        },
+        "headCompleteness": "complete",
+        "inventoryComplete": true
+      }
+    }
+  },
+  "wireInitial": {
+    "type": "runtime.event",
+    "protocolVersion": 19,
+    "runtimeId": "runtime",
+    "sequence": 1,
+    "event": {
+      "type": "session.snapshot",
+      "sessionId": "session",
+      "syncId": "sync",
+      "cursor": {
+        "leafId": "entry-1"
+      },
+      "mode": "replace",
+      "entries": [
+        {
+          "entryId": "entry-1",
+          "parentId": null,
+          "type": "message",
+          "timestamp": "2026-11-07T00:00:00.000Z",
+          "data": {
+            "message": {
+              "messageId": "entry-1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂"
+                }
+              ],
+              "timestamp": 1
+            }
+          }
+        }
+      ],
+      "source": {
+        "epoch": "source",
+        "seq": 1,
+        "ready": true
+      },
+      "live": {
+        "complete": true,
+        "turn": null,
+        "messages": [
+          {
+            "message": {
+              "messageId": "stream",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": ""
+                }
+              ],
+              "timestamp": 1
+            },
+            "finished": false,
+            "contentComplete": true
+          }
+        ],
+        "tools": []
+      },
+      "display": {
+        "projectionVersion": 3,
+        "entries": [
+          {
+            "displayId": "entry-1",
+            "entryId": "entry-1",
+            "nativeType": "message",
+            "kind": "message",
+            "message": {
+              "messageId": "entry-1",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": ""
+                }
+              ],
+              "timestamp": 1
+            },
+            "reason": null
+          }
+        ],
+        "windowStart": null
+      },
+      "range": "preview",
+      "checkpoint": {
+        "checkpointId": "checkpoint-1",
+        "head": {
+          "leafId": "entry-1"
+        },
+        "headCompleteness": "complete",
+        "inventoryComplete": true
+      }
+    },
+    "sharedContent": {
+      "format": "shared-v1",
+      "references": [
+        {
+          "path": [
+            "live",
+            "messages",
+            "0",
+            "message",
+            "content",
+            "0",
+            "text"
+          ],
+          "target": [
+            "entries",
+            "0",
+            "data",
+            "message",
+            "content",
+            "0",
+            "text"
+          ]
+        },
+        {
+          "path": [
+            "display",
+            "entries",
+            "0",
+            "message",
+            "content",
+            "0",
+            "text"
+          ],
+          "target": [
+            "entries",
+            "0",
+            "data",
+            "message",
+            "content",
+            "0",
+            "text"
+          ]
+        }
+      ]
+    }
+  },
+  "patch": {
+    "type": "runtime.event",
+    "protocolVersion": 19,
+    "runtimeId": "runtime",
+    "sequence": 2,
+    "event": {
+      "type": "session.patch",
+      "sessionId": "session",
+      "source": {
+        "epoch": "source",
+        "seq": 2,
+        "ready": true
+      },
+      "baseSeq": 1,
+      "seq": 2,
+      "checkpointId": "checkpoint-2",
+      "head": {
+        "leafId": "entry-1"
+      },
+      "headCompleteness": "complete",
+      "live": {
+        "complete": true,
+        "turn": null,
+        "messages": [
+          {
+            "message": {
+              "messageId": "stream",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂正文🙂 新增🙂"
+                }
+              ],
+              "timestamp": 1
+            },
+            "finished": false,
+            "contentComplete": true
+          }
+        ],
+        "tools": []
+      }
+    }
+  },
+  "wirePatch": {
+    "type": "runtime.event",
+    "protocolVersion": 19,
+    "runtimeId": "runtime",
+    "sequence": 2,
+    "event": {
+      "type": "session.patch",
+      "sessionId": "session",
+      "source": {
+        "epoch": "source",
+        "seq": 2,
+        "ready": true
+      },
+      "baseSeq": 1,
+      "seq": 2,
+      "checkpointId": "checkpoint-2",
+      "head": {
+        "leafId": "entry-1"
+      },
+      "headCompleteness": "complete",
+      "live": {
+        "complete": false,
+        "turn": null,
+        "messages": [],
+        "tools": []
+      }
+    },
+    "sharedContent": {
+      "format": "shared-v1",
+      "references": [],
+      "liveDelta": {
+        "baseRevision": 1,
+        "operations": [
+          {
+            "op": "append",
+            "path": [
+              "messages",
+              "0",
+              "message",
+              "content",
+              "0",
+              "text"
+            ],
+            "text": " 新增🙂"
+          }
+        ]
+      }
+    }
+  }
+}

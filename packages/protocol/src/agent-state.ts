@@ -471,6 +471,7 @@ export const StateDeltaOperationSchema = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("remove"), path: z.array(z.string()).min(1).max(32) }),
   z.strictObject({ op: z.literal("splice"), path: z.array(z.string()).max(32), index: z.number().int().nonnegative(),
     deleteCount: z.number().int().nonnegative(), items: z.array(z.unknown()) }),
+  z.strictObject({ op: z.literal("append"), path: z.array(z.string()).max(32), text: z.string() }),
 ]);
 export type StateDeltaOperation = z.infer<typeof StateDeltaOperationSchema>;
 export const StateDeltaSchema = z.strictObject({

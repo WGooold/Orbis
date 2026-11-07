@@ -19,13 +19,19 @@ internal object StateDeltas {
             require(listOf("producer", "sourceId", "sourceEpoch").all { source[it] == old.source?.get(it) })
             val edits = delta["operations"]!!.jsonArray
             require(edits.size in 1..256)
-            var value = old.value ?: JsonNull
-            for (entry in edits) value = apply(value, entry.jsonObject)
+            val value = applyEdits(old.value ?: JsonNull, edits)
             require(value.toString().toByteArray(Charsets.UTF_8).size <= 4 * 1024 * 1024)
             JsonObject(row - "delta" + ("value" to value))
         }
         JsonObject(message + ("domains" to JsonArray(expanded)))
     }.getOrNull()
+
+    fun applyEdits(root: JsonElement, edits: JsonArray): JsonElement {
+        require(edits.size in 1..256)
+        var value = root
+        for (entry in edits) value = apply(value, entry.jsonObject)
+        return value
+    }
 
     private fun apply(root: JsonElement, edit: JsonObject): JsonElement {
         val path = edit["path"]!!.jsonArray.map { it.jsonPrimitive.content }
@@ -34,6 +40,7 @@ internal object StateDeltas {
         fun change(value: JsonElement, depth: Int): JsonElement {
             if (depth == path.size) return when (op) {
                 "set" -> edit["value"] ?: error("value")
+                "append" -> { require(value is JsonPrimitive && value.isString); JsonPrimitive(value.content + edit["text"]!!.jsonPrimitive.content) }
                 "splice" -> {
                     val items = value.jsonArray.toMutableList()
                     val index = edit["index"]!!.jsonPrimitive.int
