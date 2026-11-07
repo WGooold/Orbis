@@ -1751,11 +1751,15 @@ internal fun ChatScreen(
     }
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            model.reconcileChat(runtimeId)
-            while (isActive) {
-                delay(15_000)
+            val historyHost = state.hostId
+            model.setHistoryWindowVisible(historyHost, runtimeId, true)
+            try {
                 model.reconcileChat(runtimeId)
-            }
+                while (isActive) {
+                    delay(15_000)
+                    model.reconcileChat(runtimeId)
+                }
+            } finally { model.setHistoryWindowVisible(historyHost, runtimeId, false) }
         }
     }
     fun loadHistoryPage() {

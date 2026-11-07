@@ -9,6 +9,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HistoryReadOperationsTest {
+    // ADR-0069: reserve budgets are distinct from the visible history boundary and from
+    // full-root coverage. Cached reserve pages must not prepend messages or turn on a spinner.
+    @Test fun `automatic reserve is bounded and a cached page leaves the visible window intact`() {
+        var budget = SessionHistoryPrefetch("window", "tail", beforeEntryId = "tail")
+        assertEquals(2, budget.maxAttempts)
+        budget = budget.addingResponse(20, 28 * 1024, 1)
+        assertEquals(1, budget.maxAttempts)
+        budget = budget.addingResponse(20, 28 * 1024, 1).addingResponse(10, 28 * 1024, 1)
+        assertEquals(44 * 1024, budget.nextMaxBytes)
+        budget = budget.addingResponse(1, 10 * 1024, 1)
+        assertFalse(budget.canContinue)
+        assertEquals(4, budget.responsePages)
+        assertFalse(SessionHistoryPrefetch("window", "tail").addingCachedEntries(60).canContinue)
+        assertFalse(SessionHistoryPrefetch("window", "tail").spendingFailedAttempts(1).canContinue)
+        val before = initial()
+        val started = before.beginHistoryRead("r", "reserve", SessionHistoryPrefetch("window", "tail", beforeEntryId = "tail"))
+        assertEquals(SessionReadKind.PREFETCH, started.state.sessionReads["reserve"]?.kind)
+        assertFalse(started.state.sessionHistory.getValue("r").loading)
+        val applied = started.state.applyLocalHistoryRead("reserve", page)
+        assertEquals(SessionReadPhase.SUCCEEDED, applied.sessionReads["reserve"]?.phase)
+        assertEquals(before.conversations, applied.conversations)
+        assertEquals(before.sessionHistory, applied.sessionHistory)
+        assertFalse(started.state.cancelForegroundSessionSyncs(null).copy(selectedRuntimeId = null).ownsHistoryRead("reserve"))
+    }
     private fun entry(id: String, parent: String?) = SessionGraphEntry(id, parent, "message", "stable",
         buildJsonObject { put("message", buildJsonObject { put("role", "user"); put("content", id) }) })
     private fun initial(offline: Boolean = false): RemoteState {

@@ -9,12 +9,12 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 ## 1. 范围与状态
 
 - 本 ADR 只规定会话目录和会话历史的网络读取、变化推送、缓存、恢复与确认；适用于全部后端、Android 和 iOS。
-- 第 2 节记录当前实现；第 3–8 节规定目标行为及默认参数。目标参数进入经过协商的新表示后生效，当前发布包继续遵守已有契约。
+- 第 2 节记录实施前基线；第 3–8 节规定目标行为及默认参数。目标参数进入经过协商的新表示后生效，当前发布包继续遵守已有契约。
 - FT-G11 实施目录规则 SC-01–SC-07；FT-G12 实施历史规则 SH-01–SH-09。字段装载继续执行 ADR-0067，本文细化这两类数据的触发和范围。
 - `KiB = 1024 bytes`；实测中的 `KB = 1000 bytes`。目标包预算指最终字段投影、正文复用之后，包含业务路由 envelope 的 UTF-8 JSON 明文字节；加密、信封、分片、TLS 和重传的线路字节单独计量。
 - 条目数指 canonical Entry 数，包含工具及其他非消息节点；条目数、屏幕消息数、回合数分别统计。
 
-## 2. 当前实现
+## 2. 实施前规则与基线
 
 | 项目 | 当前条件、大小与行为 | 实现指针 |
 | --- | --- | --- |
@@ -237,12 +237,28 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 - 已协商设备在一个作用域内使用一种目录及历史业务权威；旧格式继续采用原字段、预算、根覆盖与恢复契约。
 - 全部后端共用 Host 出口的触发、预算与覆盖规则；后端原生事实采集和本机保存独立于 App 的缓存窗口。
 
-## 8. 实施与验证登记
+## 8. 协商字段与实施登记
+
+### 8.1 历史窗口字段
+
+| 消息 / 字段 | 规则与行为 |
+| --- | --- |
+| `session.history.capabilities.request.type/protocolVersion/requestId` | SH-09：认证后每次连接探测一次；准确关联应答，旧 Host 拒绝或不应答时保持用户主动翻页。 |
+| `session.history.capabilities.type/protocolVersion/requestId/format/maxPageBytes` | SH-09：`format=v1` 且 `maxPageBytes=65536` 确认预算与可见兴趣能力。 |
+| `session.history.interest.type/protocolVersion/requestId/runtimeId/sessionId` | SH-02 / SH-06：每设备保留一个可见聊天目标；两个目标字段同时为 null 表示关闭。相同目标去重，关闭和切换立即替换。 |
+| `session.history.interest.result.type/protocolVersion/requestId/accepted` | SH-06 / SH-09：准确回执，拒绝后释放客户端去重状态以便重新登记。已协商设备关闭或目标不匹配时停止正文推送；未协商旧设备保持原广播。 |
+| `session.sync.historyWindow.format/maxBytes/maxDeliveries` | SH-01 / SH-08 / SH-09：仅固定 `targetLeafId + beforeEntryId` 的 history 可用。Host 校验最终 envelope 不超过剩余额度，单事务投递次数固定；转发旧 adapter 前移除此 Host 参数。 |
+
+- 每轮的请求上限为 `min(64 KiB, 128 KiB - 已支出字节)`；不足 8 KiB 停止。可投递次数为剩余页数与“剩余字节 / 本次请求上限”的较小值。
+- 收到的成功页计原始 UTF-8 JSON envelope 字节；请求重试而未观测到的响应按该请求固定上限预留成本。失败与撤销结算原事务，重复 ACK 不创建下一页或刷新额度。
+- 自动页只落库，用户主动翻页从 SQLite 读取预留页后才推进可见最早边界。到终点、错误、撤销或边界未推进记录本轮已停止；周期 preview、live 与重新进入同一边界复用原额度。
+
+### 8.2 分组验证登记
 
 | 组 | 规则 | 针对性回归范围与实现指针 | 当前状态 |
 | --- | --- | --- | --- |
 | FT-G11 | SC-01–SC-07 | 已实现 60 秒条件核对、前后台与当前 Host、同版本小确认、缺更差异恢复、28 KiB 固定快照分页、来源变化主动聚合，保留 `session.list` 兼容。对应 [Host 目录](../../packages/host/src/host-state-facts.test.ts)、[差异与淘汰](../../packages/host/src/catalog-reconcile.test.ts)、[Host 加密与分页联动](../../packages/host/src/host-service.test.ts)、[Android 调度](../../android/app/src/test/java/com/orbising/orbis/ReadReconcileScheduleTest.kt)、[iOS 调度](../../ios/Orbis/Tests/ReadReconcileScheduleTests.swift)。定向回归通过；未展开时停止后续页、查询范围请求仍待完成。部署、真实网络与用户验收待完成。 |
-| FT-G12 | SH-01–SH-09 | 长会话冷缓存首屏加有界预留、达到条数 / 字节 / 页数任一上限停止、重复事件不补根、真实滚动才扩窗、离线页、窗口内缺口、切分支 / 来源换代、压缩与显示缺口、live 落盘、乱序 / 重复、ACK 丢失、背压、旧端根覆盖兼容。对应 [范围选择](../../packages/protocol/src/session-sync-selection.test.ts)、[Host 事务](../../packages/host/src/session-sync-tasks.test.ts)、[Android 覆盖规划](../../android/app/src/main/java/com/orbising/orbis/SessionGraphStore.kt)、[iOS 历史测试](../../ios/Orbis/Tests/SessionHistoryTests.swift)及两端读取状态机测试。 | 子组 G12.1：32 KiB 目标 / 64 KiB hard page、24 KiB 单条线路投影已实现；Protocol 165 项回归通过。G12.2：Android / iOS 自动根向 catchup 已移除；iOS 首屏与显式历史边界测试、Android 来源恢复测试通过。iOS StoreTests 另有 `homeWaitsForCardFactsAndPersistsIdentityBeforeCatalogArrives` 在基线工作树复现的既有失败。G12.3 自动 60 条预留仍待实现。部署、用户验证待完成。 |
+| FT-G12 | SH-01–SH-09 | 长会话冷缓存首屏加有界预留、达到条数 / 字节 / 页数任一上限停止、重复事件不补根、真实滚动才扩窗、离线页、窗口内缺口、切分支 / 来源换代、压缩与显示缺口、live 落盘、乱序 / 重复、ACK 丢失、背压、旧端根覆盖兼容。对应 [范围选择](../../packages/protocol/src/session-sync-selection.test.ts)、[Host 事务](../../packages/host/src/session-sync-tasks.test.ts)、[Android 覆盖规划](../../android/app/src/main/java/com/orbising/orbis/SessionGraphStore.kt)、[iOS 历史测试](../../ios/Orbis/Tests/SessionHistoryTests.swift)及两端读取状态机测试。 | 子组 G12.1：32 KiB 目标 / 64 KiB hard page、24 KiB 单条线路投影已实现；Protocol 165 项回归通过。G12.2：Android / iOS 自动根向 catchup 已移除；iOS 首屏与显式历史边界测试、Android 来源恢复测试通过。iOS StoreTests 另有 `homeWaitsForCardFactsAndPersistsIdentityBeforeCatalogArrives` 在基线工作树复现的既有失败。G12.3：已实现额外 60 条 / 128 KiB / 4 页预留、按实际响应和重试预算结算、缓存写入与可见范围分离、60 秒来源核对及可见聊天推送兴趣。能力未确认的旧 Host 保留用户主动翻页。自动验证见本任务 `g12-ios-final/run.log`、`g12-android-final/run.log`、`g12-node-latest.log`、`g12-e2e-latest.log`；既有基线失败保留原证据。部署、用户验证待完成。 |
 
 - 本次文档静态校验与后续实现证据保存于 `.artifacts/catalog-history-rules-20261107/`；文档检查只确认链接、规则覆盖、参数与格式。
 - 每组独立实现、完成针对性回归后提交。真实线路测量分别记录 JSON 发送尝试、实际 socket 字节、成功应用范围和完整性；实施收益以相同工作负载对照为准。目录页面按需兴趣及全局查询范围仍需专项实现。

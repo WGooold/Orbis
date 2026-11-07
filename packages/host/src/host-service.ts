@@ -312,6 +312,7 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
+  readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null>();
   /**
    * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
    *
@@ -723,6 +724,8 @@ export class HostService {
       dispatch: (runtimeId, commandId, command) => {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         const forwarded = { ...command };
+        // Window limits belong to the Host/device transaction; deployed adapters retain their strict command schema.
+        delete forwarded.historyWindow;
         if (!scope || !this.#conversationState.hasBaseline(scope)) delete forwarded.knownState;
         const recovered = scope ? this.#conversationState.recover(scope, forwarded) : undefined;
         if (recovered) {
@@ -1586,6 +1589,7 @@ export class HostService {
     this.#lan = undefined;
     for (const link of this.#links.values()) link.close();
     this.#links.clear();
+    this.#historyInterests.clear();
     await this.#loopback?.stop();
     this.#loopback = undefined;
     await this.#relay?.stop();
@@ -1682,6 +1686,7 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
+    this.#historyInterests.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
@@ -1800,6 +1805,22 @@ export class HostService {
         device.appVersionCode = message.versionCode;
         this.#persist();
       }
+      return;
+    }
+    if (message.type === "session.history.capabilities.request") {
+      this.#historyInterests.set(deviceId, null);
+      this.#sendToDevice(deviceId, { type: "session.history.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1", maxPageBytes: 65536 });
+      return;
+    }
+    if (message.type === "session.history.interest") {
+      const scope = message.runtimeId === null ? undefined : this.#agentFacts.scopeOf(message.runtimeId);
+      const accepted = this.#historyInterests.has(deviceId) && (message.runtimeId === null ||
+        scope?.kind === "agent" && scope.key.sessionId === message.sessionId);
+      if (accepted) this.#historyInterests.set(deviceId, message.runtimeId === null ? null :
+        { runtimeId: message.runtimeId, sessionId: message.sessionId! });
+      this.#sendToDevice(deviceId, { type: "session.history.interest.result", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, accepted });
       return;
     }
     if (message.type === "transport.fields.read") {
@@ -2419,6 +2440,7 @@ export class HostService {
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
+    this.#historyInterests.delete(deviceId);
     this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
@@ -2654,6 +2676,9 @@ export class HostService {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
     if (message.type === "runtime.event" && (message.event.type === "session.patch" || message.event.type === "session.snapshot")) {
       for (const [deviceId, link] of this.#links) {
+        const interest = this.#historyInterests.get(deviceId);
+        if (this.#historyInterests.has(deviceId) &&
+            (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== message.event.sessionId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }

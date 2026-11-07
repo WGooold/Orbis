@@ -39,6 +39,29 @@ function harness(synchronous = false, options: Partial<ConstructorParameters<typ
 }
 
 describe("SessionSyncTasks", () => {
+  // ADR-0069: Host enforces exact final-envelope bytes and does not replay more reserved pages
+  // than the client could afford, even if ACK was lost or the request is duplicated.
+  it("bounds reserved history responses and preserves the nearest boundary suffix", () => {
+    const h = harness();
+    const command = { ...request("window", "history"), targetLeafId: "e4", beforeEntryId: "e4",
+      historyWindow: { format: "v1" as const, maxBytes: 8192, maxDeliveries: 1 } };
+    h.manager.request("a", "runtime", "command", command); h.manager.tick();
+    const entries = [1, 2, 3].map(n => ({ entryId: `e${n}`, parentId: n === 1 ? null : `e${n - 1}`,
+      type: "message", timestamp: "1", data: { text: "界".repeat(1100) } }));
+    h.manager.handleEvent("runtime", { ...snapshot(h.dispatches[0]!.id), range: "history", mode: "prepend",
+      cursor: { leafId: "e4" }, targetLeafId: "e4", beforeEntryId: "e4", entries, hasOlder: false });
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.payload.byteLength).toBeLessThanOrEqual(8192);
+    expect(JSON.parse(h.sends[0]!.payload.toString()).event).toMatchObject({
+      entries: entries.slice(1), hasOlder: true, complete: false, rangeStatus: "older_available", beforeEntryId: "e4",
+    });
+    h.sends[0]!.done(true); h.time(31_000);
+    h.manager.request("a", "runtime", "command", command); h.manager.tick();
+    expect(h.error).toHaveBeenLastCalledWith("a", "command", "session_sync_retry_exhausted");
+    expect(h.sends).toHaveLength(1);
+    h.manager.request("a", "runtime", "command", { ...command, historyWindow: { ...command.historyWindow, maxDeliveries: 2 } });
+    expect(h.error).toHaveBeenLastCalledWith("a", "command", "session_sync_id_conflict");
+  });
   it.each(["history", "catchup"] as const)("rebuilds Host state privately before %s without changing the device request", async range => {
     // DSH-SYNC-09：Host重启后先取完整preview；只把原range交给原设备，迟到的内部回应不再生效。
     let needsBaseline = true;

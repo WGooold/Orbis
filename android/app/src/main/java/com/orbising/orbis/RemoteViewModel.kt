@@ -317,6 +317,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         if (hostId != null) connectionFor(hostId)?.setMenuOptionInterest(runtimeId, name)
     }
 
+    fun setHistoryWindowVisible(hostId: String?, runtimeId: String, visible: Boolean) {
+        if (hostId != null) connectionFor(hostId)?.setHistoryWindowVisible(runtimeId, visible)
+    }
+
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     suspend fun reconcileModels() = withContext(Dispatchers.Default) {
         // The lifecycle caller waits for this pass before its next tick. Model reads can
@@ -331,7 +335,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val connection = active() ?: return
         withContext(Dispatchers.Default) {
             connection.syncNotifications(runtimeId)
-            connection.refreshRuntime(runtimeId)
+            connection.reconcileRuntime(runtimeId)
             connection.refreshWorkingBranch(runtimeId)
         }
     }

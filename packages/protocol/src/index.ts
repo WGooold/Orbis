@@ -1055,8 +1055,14 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     maxEntries: z.number().int().positive().max(2_000).optional(),
     range: SessionSyncRangeSchema.optional(),
     knownState: SessionAppliedStateSchema.optional(),
+    historyWindow: z.strictObject({
+      format: z.literal("v1"), maxBytes: z.number().int().min(8192).max(65536),
+      maxDeliveries: z.number().int().min(1).max(4),
+    }).optional(),
   }).refine(command => command.knownState === undefined || command.range === "preview",
-    { message: "An applied baseline is only valid for preview reconciliation" }),
+    { message: "An applied baseline is only valid for preview reconciliation" })
+    .refine(command => command.historyWindow === undefined || command.range === "history" && !!command.beforeEntryId && !!command.targetLeafId,
+      { message: "A reserved history window requires a fixed leaf and older boundary" }),
   z.strictObject({
     /**
      * 设备对快照的提交回执（ADR-0037 §4）：`applied` 表示已在本地事务里提交并推进已应用版本。
@@ -1201,6 +1207,10 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("session.history.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
+  z.strictObject({ type: z.literal("session.history.interest"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+    runtimeId: z.string().min(1).max(256).nullable(), sessionId: z.string().min(1).max(256).nullable() })
+    .refine(value => (value.runtimeId === null) === (value.sessionId === null)),
   TransportFieldsRequestSchema,
   MenuOptionsRequestSchema,
   z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
@@ -1302,6 +1312,10 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("session.history.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+    format: z.literal("v1"), maxPageBytes: z.literal(65536) }),
+  z.strictObject({ type: z.literal("session.history.interest.result"), protocolVersion: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1).max(128), accepted: z.boolean() }),
   TransportFieldsPageSchema,
   MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),

@@ -16,6 +16,20 @@ class SessionSyncTasksTest {
     private fun ack(state: RemoteState, id: String, sequence: Int = 1) = RelayReducer().reduce(state,
         """{"type":"runtime.event","runtimeId":"r0","sequence":$sequence,"event":{"type":"command.result","commandId":"$id","ok":true}}""")
 
+    @Test fun `automatic history retries share their reserved byte and page allowance`() {
+        val budget = SessionHistoryPrefetch("window", "leaf")
+        var state = initial().queueSessionSync("reserve", task(range = "history").copy(historyPrefetch = budget))
+        val first = tick(state, 1000); state = first.state
+        assertEquals(1, first.send.size)
+        val retry = tick(state, 31_000); state = retry.state
+        assertEquals(1, retry.send.size)
+        assertEquals(2, retry.send.single().task.attempts)
+        assertTrue(tick(state, 61_000).send.isEmpty())
+        val failed = tick(state, 151_000).state
+        assertTrue(failed.sessionRangeFailures.isEmpty())
+        assertTrue(failed.sessionSyncFailures.isEmpty())
+    }
+
     @Test fun `source recovery remains a bounded preview even when a cached head exists`() {
         val state = initial().copy(sessionSyncRequests = setOf("r0"), conversations = mapOf(
             "r0" to RuntimeConversation(hasLiveSnapshot = true, sourceEpoch = "epoch", sourceSeq = 10,

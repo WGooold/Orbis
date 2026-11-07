@@ -112,6 +112,7 @@ struct ContentView: View {
         .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu(); launchIntro = nil; launchIntroReady = false }
         .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
+            store.setHistoryWindowVisible(scenePhase == .active && pages.last == .chat)
             overlay.dismissMenu()
             // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
             if !pages.contains(.chat) && launchIntro == nil { store.stopFollowingLaunch() }
@@ -128,9 +129,11 @@ struct ContentView: View {
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
         .task(id: scenePhase) {
+            store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 store.reconcileCatalog()
+                store.reconcileHistoryWindow()
                 do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             }
         }

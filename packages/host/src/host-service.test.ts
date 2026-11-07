@@ -1780,6 +1780,16 @@ describe("host end-to-end over relay", () => {
     device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: "content-format", scope: "agent",
       runtimeId: "runtime", stateFormat: "compact-v2", domains: ["identity"], subscribe: true }));
     await readMatching(device, message => message.requestId === "content-format");
+    // FT-G07 remains a deployed client without history-interest negotiation.
+    if (scenario === "FT-G08") {
+    device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: 19, requestId: "history-format" }));
+    expect(await readMatching(device, message => message.requestId === "history-format"))
+      .toMatchObject({ type: "session.history.capabilities", format: "v1", maxPageBytes: 65536 });
+    device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-interest",
+      runtimeId: "runtime", sessionId: "session" }));
+    expect(await readMatching(device, message => message.requestId === "history-interest"))
+      .toMatchObject({ type: "session.history.interest.result", accepted: true });
+    }
     device.sendCommand("runtime", "content-sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
     const request = await runtime.next();
     const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
@@ -1801,6 +1811,37 @@ describe("host end-to-end over relay", () => {
     expect(patch.sharedContent).toEqual(fixture.wirePatch.sharedContent);
     const delta = (patch.sharedContent as { liveDelta: { operations: Parameters<typeof applyStateDelta>[1] } }).liveDelta;
     expect(applyStateDelta(fixture.initial.event.live, delta.operations)).toEqual(fixture.patch.event.live);
+    if (scenario === "FT-G08") {
+      device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-close",
+        runtimeId: null, sessionId: null }));
+      expect(await readMatching(device, message => message.requestId === "history-close")).toMatchObject({ accepted: true });
+      const next = structuredClone(fixture.patch.event);
+      next.source.seq = 3; next.baseSeq = 2; next.seq = 3; next.checkpointId = "checkpoint-3";
+      runtime.publish(3, next);
+      // A backend FIFO barrier proves the hidden patch was processed. Control replies and
+      // notifications remain allowed; none may contain chat content after closing interest.
+      device.sendCommand("runtime", "history-barrier", { type: "stop" });
+      expect(await runtime.next()).toMatchObject({ commandId: "history-barrier" });
+      runtime.publish(4, { type: "command.result", commandId: "history-barrier", ok: true });
+      for (;;) {
+        const message = await device.receiveMessage();
+        expect((message.event as RuntimeEvent | undefined)?.type).not.toBe("session.patch");
+        if ((message.event as { commandId?: string } | undefined)?.commandId === "history-barrier") break;
+      }
+      // msg and ctl have independent scheduling: also inspect delayed msg frames.
+      for (;;) {
+        const incoming = await device.nextIncoming(200).catch(() => undefined);
+        if (!incoming) break;
+        if ("payload" in incoming) expect(JSON.parse(incoming.payload.toString()).event?.type).not.toBe("session.patch");
+      }
+      device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-reopen",
+        runtimeId: "runtime", sessionId: "session" }));
+      expect(await readMatching(device, message => message.requestId === "history-reopen")).toMatchObject({ accepted: true });
+      next.source.seq = 4; next.baseSeq = 3; next.seq = 4; next.checkpointId = "checkpoint-4";
+      runtime.publish(5, next);
+      expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch"))
+        .toMatchObject({ event: { seq: 4 } });
+    }
   });
 
   // FT-G06-WIRE: exercise negotiated patches through real encrypted delivery,
