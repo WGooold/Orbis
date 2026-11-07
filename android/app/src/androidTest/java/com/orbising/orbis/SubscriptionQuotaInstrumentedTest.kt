@@ -102,11 +102,10 @@ class SubscriptionQuotaInstrumentedTest {
         var state by mutableStateOf(RemoteState(hostId = "host", e2eReady = true, connection = RelayConnection.ONLINE,
             providerCatalogs = mapOf("codex" to listOf(official, team), "claude" to listOf(official.copy(kind = "claude")))))
         var dark by mutableStateOf(false)
-        var visualStyle by mutableStateOf(OrbisVisualStyle.Classic)
         var queries = 0
         var switched: AgentProvider? = null
         compose.setContent {
-            OrbisTheme(darkTheme = dark, visualStyle = visualStyle) {
+            OrbisTheme(darkTheme = dark) {
                 Column(Modifier.width(340.dp).padding(12.dp)) {
                     AgentStatusProvidersCard(state, { provider, _ -> switched = provider }, { provider, _ ->
                         queries++; state = state.beginSubscriptionQuery(provider, "query")
@@ -136,12 +135,10 @@ class SubscriptionQuotaInstrumentedTest {
         assertTrue(compose.onNodeWithTag("provider-quota-codex").fetchSemanticsNode().boundsInRoot.height / compose.density.density < 130)
         compose.onNodeWithText("轻点卡片查询配额").assertDoesNotExist()
         compose.onNodeWithText("查询订阅配额").assertDoesNotExist()
-        for (appearance in listOf("light", "dark", "inset-light", "inset-dark")) {
-            compose.runOnIdle {
-                dark = appearance.endsWith("dark")
-                visualStyle = if (appearance.startsWith("inset")) OrbisVisualStyle.InsetFocus else OrbisVisualStyle.Classic
-            }
+        for (darkMode in listOf(false, true)) {
+            compose.runOnIdle { dark = darkMode }
             compose.waitForIdle()
+            val appearance = if (darkMode) "dark" else "light"
             val context = ApplicationProvider.getApplicationContext<Context>()
             val file = File(context.getExternalFilesDir(null), "quota-compact-$appearance.png")
             file.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }

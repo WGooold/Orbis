@@ -36,7 +36,6 @@ class SessionDrawerLayoutInstrumentedTest {
 
     private fun exercise(dark: Boolean) {
         val scale = mutableStateOf(1f)
-        val style = mutableStateOf(OrbisVisualStyle.Classic)
         val state = mutableStateOf(RemoteState(hostId = "layout-host", e2eReady = true,
             sessions = listOf(
                 SessionCatalogEntry(sessionId = "short", name = "短标题", cwd = "/repo", agentKind = "codex"),
@@ -47,7 +46,7 @@ class SessionDrawerLayoutInstrumentedTest {
             val configuration = Configuration(LocalConfiguration.current).apply { screenWidthDp = 360 }
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale.value),
                 LocalConfiguration provides configuration) {
-                OrbisTheme(darkTheme = dark, visualStyle = style.value) {
+                OrbisTheme(darkTheme = dark) {
                     val host = HostSnapshot(HostPairing("layout-host", "Test Host", "test-public", "test-root",
                         relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only"), state.value)
                     ModalNavigationDrawer(
@@ -62,8 +61,8 @@ class SessionDrawerLayoutInstrumentedTest {
                 }
             }
         }
-        for (visualStyle in OrbisVisualStyle.values()) for (fontScale in listOf(1f, 1.5f)) {
-            compose.runOnIdle { style.value = visualStyle; scale.value = fontScale }
+        for (fontScale in listOf(1f, 1.5f)) {
+            compose.runOnIdle { scale.value = fontScale }
             val short = compose.onNodeWithTag("drawer-session-short")
             val long = compose.onNodeWithTag("drawer-session-long")
             val before = short.fetchSemanticsNode().boundsInRoot
@@ -75,17 +74,21 @@ class SessionDrawerLayoutInstrumentedTest {
             assertEquals(other, long.fetchSemanticsNode().boundsInRoot)
             compose.onNodeWithContentDescription("退出多选").performClick()
             val context = InstrumentationRegistry.getInstrumentation().targetContext
-            File(context.getExternalFilesDir(null), "drawer-layout-${visualStyle.key}-${if (dark) "dark" else "light"}-$fontScale.png")
+            File(context.getExternalFilesDir(null), "drawer-layout-${if (dark) "dark" else "light"}-$fontScale.png")
                 .outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
-            // Geometry alone cannot detect a material parent flattening every card.
-            // Sample the blank top padding, away from rounded corners and text.
-            val card = short.captureToImage().asAndroidBitmap()
-            val x = card.width / 2
-            val edge = card.getPixel(x, (2 * compose.density.density).toInt())
-            val inside = card.getPixel(x, (10 * compose.density.density).toInt())
+            // S30: the expanded directory owns one inset tray; rows no longer own shadows.
+            // Sample its blank top padding, away from rounded corners and text.
+            val tray = compose.onNodeWithTag("drawer-session-tray-start", useUnmergedTree = true)
+            val card = compose.onRoot().captureToImage().asAndroidBitmap()
+            val bounds = tray.fetchSemanticsNode().boundsInRoot
+            val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+            val x = (bounds.center.x - root.left).toInt()
+            val y = (bounds.top - root.top).toInt()
+            val edge = card.getPixel(x, y + (2 * compose.density.density).toInt())
+            val inside = card.getPixel(x, y + (10 * compose.density.density).toInt())
             fun brightness(pixel: Int) = (android.graphics.Color.red(pixel) +
                 android.graphics.Color.green(pixel) + android.graphics.Color.blue(pixel)) / 3f
-            assertTrue("${visualStyle.key} / dark=$dark / font=$fontScale must retain the inset top shadow",
+            assertTrue("dark=$dark / font=$fontScale must retain the inset top shadow",
                 brightness(inside) - brightness(edge) > 2f)
         }
     }

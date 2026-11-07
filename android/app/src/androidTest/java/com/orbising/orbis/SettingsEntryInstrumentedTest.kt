@@ -3,6 +3,7 @@
 package com.orbising.orbis
 
 import android.content.Context
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.unit.dp
@@ -60,8 +61,8 @@ class SettingsEntryInstrumentedTest {
     @Test fun settingsPutProvidersFirstAndHaveNoComputerEntries() = settingsOrder(dark = false)
     @Test fun darkSettingsKeepTheSameOrder() = settingsOrder(dark = true)
 
-    @Test fun insetFocusAppearanceSwitchUpdatesSelectionWithoutLeavingSettings() = appearanceSwitch(dark = false)
-    @Test fun darkInsetFocusAppearanceSwitchKeepsSelection() = appearanceSwitch(dark = true)
+    @Test fun lightSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = false)
+    @Test fun darkSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = true)
 
     @Test fun languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage() {
         val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
@@ -180,26 +181,25 @@ class SettingsEntryInstrumentedTest {
         }
     }
 
-    private fun appearanceSwitch(dark: Boolean) {
+    private fun noAppearanceSwitch(dark: Boolean) {
         val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
         owner.put("appearance", model)
-        val visualStyle = mutableStateOf(OrbisVisualStyle.Classic)
+        var surface = androidx.compose.ui.graphics.Color.Unspecified
         try {
             compose.setContent {
-                OrbisTheme(darkTheme = dark, visualStyle = visualStyle.value, onVisualStyleChange = { visualStyle.value = it }) {
+                OrbisTheme(darkTheme = dark) {
+                    surface = MaterialTheme.colorScheme.surface
                     StatusScreen(RemoteState(hostId = "host", hostName = "Work"), model, model.pairingStatus(), onBack = {})
                 }
             }
-            compose.onNodeWithTag("appearance-insetFocus").performScrollTo()
-            compose.onNodeWithText("雾蓝").assertIsDisplayed()
-            compose.onNodeWithTag("appearance-insetFocus").performClick()
-            compose.onNodeWithTag("appearance-insetFocus").assertIsSelected()
-            compose.runOnIdle { assertEquals(OrbisVisualStyle.InsetFocus, visualStyle.value) }
-            capture(if (dark) "settings-inset-focus-dark" else "settings-inset-focus-light")
-            compose.onNodeWithTag("appearance-classic").performClick()
-            compose.onNodeWithTag("appearance-classic").assertIsSelected()
+            compose.onNodeWithText("外观").assertDoesNotExist()
+            compose.onNodeWithText("经典").assertDoesNotExist()
+            compose.onNodeWithText("雾蓝").assertDoesNotExist()
+            compose.onNodeWithText("语言").performScrollTo().assertIsDisplayed()
+            assertEquals(orbisMaterialColors(dark).base, surface)
+            capture(if (dark) "settings-unified-dark" else "settings-unified-light")
         } finally {
             owner.clear()
             app.dispose()

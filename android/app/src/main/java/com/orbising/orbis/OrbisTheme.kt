@@ -46,8 +46,7 @@ private val LightColors = lightColorScheme(
     onTertiaryContainer = Color(0xFF0B4230),
     error = Color(0xFFB3261E),
     errorContainer = Color(0xFFF5DCDA),
-    // 页面地面 = NeumorphColors.Light.base（#E6EBF4）。柔影的前提是「控件和地面是同一块
-    // 材质」，主题底色若和底板差几个色阶，凸起/凹陷的对比就跟设计稿对不上了。
+    // The approved sage surface is applied by orbisMaterialColorScheme; this source keeps semantic roles only.
     background = Color(0xFFE6EBF4),
     onBackground = Color(0xFF232A36),
     surface = Color(0xFFE6EBF4),
@@ -56,8 +55,7 @@ private val LightColors = lightColorScheme(
     onSurfaceVariant = Color(0xFF4A5364),
     outline = Color(0xFF8A93A5),
     outlineVariant = Color(0xFFC9D1DE),
-    // M3 的 surfaceContainer 系列不会从上面给的自定义色派生，缺省是基线紫灰——
-    // 对话框/底部弹层/下拉菜单全在用它，必须在蓝灰家族里显式补齐。
+    // The helper replaces the full M3 surface family so dialogs and menus share the same base.
     surfaceTint = Color(0xFFE6EBF4),
     surfaceDim = Color(0xFFDDE3EF),
     surfaceBright = Color(0xFFF3F6FB),
@@ -87,7 +85,7 @@ private val DarkColors = darkColorScheme(
     onTertiaryContainer = Color(0xFFA8E8CE),
     error = Color(0xFFFFB4AB),
     errorContainer = Color(0xFF6E201B),
-    // 同上：暗色地面 = NeumorphColors.Dark.base（#23262E）。
+    // The approved graphite surface is applied by orbisMaterialColorScheme.
     background = Color(0xFF23262E),
     onBackground = Color(0xFFDDE1E9),
     surface = Color(0xFF23262E),
@@ -110,39 +108,6 @@ private val DarkColors = darkColorScheme(
     inversePrimary = Color(0xFF2459D3),
 )
 
-enum class OrbisVisualStyle(val key: String) {
-    Classic("classic"), InsetFocus("insetFocus");
-    companion object {
-        fun fromKey(key: String?): OrbisVisualStyle = entries.firstOrNull { it.key == key } ?: Classic
-    }
-}
-
-private val InsetFocusLightColors = LightColors.copy(
-    primary = Color(0xFF5F8FE5), primaryContainer = Color(0xFFDCE7FC),
-    onPrimaryContainer = Color(0xFF24457E),
-    background = Color(0xFFEEF0F5), onBackground = Color(0xFF4A5368),
-    surface = Color(0xFFEEF0F5), onSurface = Color(0xFF4A5368),
-    surfaceVariant = Color(0xFFE4E7EF), onSurfaceVariant = Color(0xFF798396),
-    outline = Color(0xFF9CA7B8), outlineVariant = Color(0xFFC8CEDA),
-    surfaceTint = Color(0xFFEEF0F5), surfaceDim = Color(0xFFE4E7EF),
-    surfaceBright = Color(0xFFFAFBFD), surfaceContainerLowest = Color(0xFFE4E7EF),
-    surfaceContainerLow = Color(0xFFEEF0F5), surfaceContainer = Color(0xFFEEF0F5),
-    surfaceContainerHigh = Color(0xFFF3F5F9), surfaceContainerHighest = Color(0xFFFAFBFD),
-    inversePrimary = Color(0xFF8DB4FF),
-)
-
-private val InsetFocusDarkColors = DarkColors.copy(
-    primary = Color(0xFF8DB4FF), primaryContainer = Color(0xFF344D79),
-    background = Color(0xFF293244), onBackground = Color(0xFFE3E9F5),
-    surface = Color(0xFF293244), onSurface = Color(0xFFE3E9F5),
-    surfaceVariant = Color(0xFF222A39), onSurfaceVariant = Color(0xFFB9C4D8),
-    outline = Color(0xFF8290A7), outlineVariant = Color(0xFF4B5870),
-    surfaceTint = Color(0xFF293244), surfaceDim = Color(0xFF222A39),
-    surfaceBright = Color(0xFF37435A), surfaceContainerLowest = Color(0xFF222A39),
-    surfaceContainerLow = Color(0xFF293244), surfaceContainer = Color(0xFF293244),
-    surfaceContainerHigh = Color(0xFF303B4F), surfaceContainerHighest = Color(0xFF37435A),
-)
-
 /** 控件 16dp、卡片 20dp、弹层 28dp，保持同一套圆角层级。 */
 private val NeumorphShapes = Shapes(
     extraSmall = RoundedCornerShape(10.dp),
@@ -153,38 +118,35 @@ private val NeumorphShapes = Shapes(
 )
 
 internal val LocalOrbisDarkTheme = staticCompositionLocalOf { false }
-internal val LocalOrbisVisualStyle = staticCompositionLocalOf { OrbisVisualStyle.Classic }
-internal val LocalOrbisVisualStyleChange = staticCompositionLocalOf<(OrbisVisualStyle) -> Unit> { {} }
 
+/** One window owner chooses the visible page color; retained underlays never write the bars. */
 @Composable
-fun OrbisTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    visualStyle: OrbisVisualStyle = OrbisVisualStyle.Classic,
-    onVisualStyleChange: (OrbisVisualStyle) -> Unit = {},
-    content: @Composable () -> Unit,
-) {
-    val colors = when {
-        visualStyle == OrbisVisualStyle.InsetFocus && darkTheme -> InsetFocusDarkColors
-        visualStyle == OrbisVisualStyle.InsetFocus -> InsetFocusLightColors
-        darkTheme -> DarkColors
-        else -> LightColors
-    }
+internal fun OrbisSystemBars(surface: Color, darkTheme: Boolean) {
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colors.surface.toArgb()
-            window.navigationBarColor = colors.surface.toArgb()
+            window.statusBarColor = surface.toArgb()
+            window.navigationBarColor = surface.toArgb()
             WindowCompat.getInsetsController(window, view).apply {
                 isAppearanceLightStatusBars = !darkTheme
                 isAppearanceLightNavigationBars = !darkTheme
             }
         }
     }
+}
+
+@Composable
+fun OrbisTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    manageWindow: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val sourceColors = if (darkTheme) DarkColors else LightColors
+    val colors = orbisMaterialColorScheme(sourceColors, darkTheme)
+    if (manageWindow) OrbisSystemBars(colors.surface, darkTheme)
     CompositionLocalProvider(
         LocalOrbisDarkTheme provides darkTheme,
-        LocalOrbisVisualStyle provides visualStyle,
-        LocalOrbisVisualStyleChange provides onVisualStyleChange,
         LocalContentColor provides colors.onSurface,
     ) {
         MaterialTheme(

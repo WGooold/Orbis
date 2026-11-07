@@ -227,18 +227,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLocalization.configure(this)
-        val appearancePreferences = getSharedPreferences("orbis-appearance", MODE_PRIVATE)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         setContent {
-            var visualStyle by remember {
-                mutableStateOf(OrbisVisualStyle.fromKey(appearancePreferences.getString("visualStyle", null)))
-            }
-            OrbisTheme(visualStyle = visualStyle, onVisualStyleChange = { choice ->
-                visualStyle = choice
-                appearancePreferences.edit().putString("visualStyle", choice.key).apply()
-            }) {
+            OrbisTheme {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val homeUi by model.homeUi.collectAsStateWithLifecycle()
@@ -3223,35 +3216,6 @@ internal fun StatusScreen(
                 StatusRow(L10n.tr("配对状态"), pairingText(pairing), pairingTone(pairing))
             }
 
-            StatusSectionTitle(L10n.tr("外观"))
-            val visualStyle = LocalOrbisVisualStyle.current
-            val changeVisualStyle = LocalOrbisVisualStyleChange.current
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                listOf(OrbisVisualStyle.Classic to L10n.tr("经典"), OrbisVisualStyle.InsetFocus to L10n.tr("雾蓝")).forEach { (choice, label) ->
-                    val selected = visualStyle == choice
-                    NeumorphSurface(
-                        modifier = Modifier.weight(1f).heightIn(min = 56.dp).testTag("appearance-${choice.key}")
-                            .semantics { this.selected = selected },
-                        shape = RemoteUi.ControlShape,
-                        style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                        onClick = { changeVisualStyle(choice) },
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (selected) {
-                                Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                        }
-                    }
-                }
-            }
             StatusSectionTitle(L10n.tr("语言"))
             AppLanguage.entries.forEach { choice ->
                 val selected = AppLocalization.preference == choice

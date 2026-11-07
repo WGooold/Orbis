@@ -32,10 +32,9 @@ class AgentIconRecessInstrumentedTest {
                 subscriptionSupported = true, official = true)) },
             subscriptionQuotas = kinds.associateWith { ProviderQuotaSnapshot(providerId = "official", quota = quota) })
         var dark by mutableStateOf(false)
-        var style by mutableStateOf(OrbisVisualStyle.Classic)
         var queries = 0
         compose.setContent {
-            OrbisTheme(darkTheme = dark, visualStyle = style) {
+            OrbisTheme(darkTheme = dark) {
                 Column(Modifier.width(360.dp).padding(16.dp)) {
                     AgentStatusProvidersCard(state, { _, _ -> }, { _, _ -> queries++ })
                 }
@@ -43,10 +42,10 @@ class AgentIconRecessInstrumentedTest {
         }
         compose.mainClock.advanceTimeBy(800)
         val bounds = kinds.associateWith { compose.onNodeWithTag("quota-coin-$it").fetchSemanticsNode().boundsInRoot }
-        for (appearance in OrbisVisualStyle.entries) for (night in listOf(false, true)) {
-            compose.runOnIdle { style = appearance; dark = night }
+        for (night in listOf(false, true)) {
+            compose.runOnIdle { dark = night }
             compose.mainClock.advanceTimeBy(800)
-            val label = "${appearance.name}-${if (night) "dark" else "light"}"
+            val label = if (night) "dark" else "light"
             capture("$label-rest")
             compose.mainClock.autoAdvance = false
             for (kind in kinds) {

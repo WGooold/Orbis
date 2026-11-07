@@ -1,6 +1,5 @@
 package com.orbising.orbis
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -8,7 +7,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -18,16 +16,16 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun OrbisWordmark(modifier: Modifier = Modifier) {
     val colors = rememberNeumorphColors()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalOrbisDarkTheme.current
     val relief = 1.8.dp
     val type = MaterialTheme.typography.titleLarge.copy(
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 0.sp,
     )
     // The face carries the contrast (about 6:1 on the base); the walls stay a soft relief around it.
-    val face = if (dark) Color(0xFFD3D9E3) else Color(0xFF4E5F7A)
-    val darkWall = if (dark) colors.darkShadow.copy(alpha = 0.9f) else Color(0xFFA6B2C6).copy(alpha = 0.6f)
-    val lightWall = if (dark) Color(0xFF3A3F4A).copy(alpha = 0.92f) else Color.White.copy(alpha = 0.92f)
+    val face = MaterialTheme.colorScheme.onSurface
+    val darkWall = colors.darkShadow.copy(alpha = if (dark) 0.9f else 0.6f)
+    val lightWall = colors.lightShadow.copy(alpha = 0.92f)
 
     // Keep one semantic Text node while the two wall layers remain purely visual.
     Box(modifier = modifier.padding(end = relief, bottom = relief)) {

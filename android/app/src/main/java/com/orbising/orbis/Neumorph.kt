@@ -47,6 +47,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -98,6 +99,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
@@ -133,11 +136,15 @@ data class NeumorphColors(
     val lightShadow: Color,
     /** 右下暗影。 */
     val darkShadow: Color,
-    /** 凹下（Pressed）时的底板色，比 base 深一点。 */
+    /** 凹下（Pressed）时的底板色；连续材质可与 base 同色，由内阴影塑形。 */
     val insetBase: Color,
     val lift: Color,
     val top: Color,
     val scrim: Color,
+    val darkShadowOpacity: Float = 0.38f,
+    val lightShadowOpacity: Float = 0.70f,
+    /** Gaussian highlight softness only; ring fallback keeps its reach <= offset constraint. */
+    val lightShadowBlurScale: Float = 1f,
 ) {
     fun layer(index: Int): Color = when (index.coerceIn(0, 3)) {
         0 -> insetBase
@@ -145,43 +152,13 @@ data class NeumorphColors(
         2 -> lift
         else -> top
     }
-
-    companion object {
-        val Light = NeumorphColors(
-            base = Color(0xFFE6EBF4),
-            lightShadow = Color(0xFFFFFFFF),
-            darkShadow = Color(0xFFA6B2C6),
-            insetBase = Color(0xFFDDE3EF),
-            lift = Color(0xFFEDF1F8), top = Color(0xFFF3F6FB), scrim = Color(0xFF2A3344),
-        )
-        val Dark = NeumorphColors(
-            base = Color(0xFF23262E),
-            lightShadow = Color(0xFF2E323C),
-            darkShadow = Color(0xFF0A0C11),
-            insetBase = Color(0xFF1C1F26),
-            lift = Color(0xFF292D36), top = Color(0xFF2F333D), scrim = Color(0xFF0A0C11),
-        )
-        val InsetFocusLight = NeumorphColors(
-            base = Color(0xFFEEF0F5), lightShadow = Color.White,
-            darkShadow = Color(0xFFA9B2C3), insetBase = Color(0xFFE4E7EF),
-            lift = Color(0xFFF3F5F9), top = Color(0xFFFAFBFD), scrim = Color(0xFF2A3344),
-        )
-        val InsetFocusDark = NeumorphColors(
-            base = Color(0xFF293244), lightShadow = Color(0xFF44516A),
-            darkShadow = Color(0xFF101828), insetBase = Color(0xFF222A39),
-            lift = Color(0xFF303B4F), top = Color(0xFF37435A), scrim = Color(0xFF101828),
-        )
-    }
 }
+
+internal val LocalNeumorphColors = staticCompositionLocalOf<NeumorphColors?> { null }
 
 @Composable
 fun rememberNeumorphColors(): NeumorphColors =
-    when {
-        LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus && LocalOrbisDarkTheme.current -> NeumorphColors.InsetFocusDark
-        LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus -> NeumorphColors.InsetFocusLight
-        LocalOrbisDarkTheme.current -> NeumorphColors.Dark
-        else -> NeumorphColors.Light
-    }
+    LocalNeumorphColors.current ?: orbisMaterialColors(LocalOrbisDarkTheme.current)
 
 /** 凸起 = Raised（按钮/卡片），凹下 = Pressed（输入框/内嵌面板）。 */
 enum class NeumorphStyle { Raised, Pressed }
@@ -207,11 +184,8 @@ private const val SHADOW_RINGS_INNER = 16
 /** 衰减曲线指数（兜底路径）：2.0 时 (1-u)² 的剖面与高斯 erfc 尾形几乎重合。 */
 private const val SHADOW_FALLOFF = 2.0f
 
-// 柔影强度：真高斯模糊下，可见边缘处的实际 alpha ≈ 画笔 alpha 的一半（高斯在形体边缘
-// 正好衰减一半）。此前环近似把 target 顶在边缘（0.9/0.5 全额贴边）所以「太亮」；
-// 换真模糊后按 0.70/0.38 的画笔值，边缘观感 ≈ 0.35/0.19，且尾形连续——太亮/不够模糊一起解决。
-private const val ALPHA_DARK = 0.38f
-private const val ALPHA_LIGHT = 0.70f
+// Gaussian edges show approximately half the paint opacity. Keep the default material at
+// dark 0.38 / light 0.70; scoped palettes may tune both Gaussian and ring fallback together.
 
 /**
  * 形状的圆角半径（柔影环按同曲率放大）。CircleShape 也是 RoundedCornerShape(50%)，
@@ -248,27 +222,27 @@ private fun ringAlphas(
     }
 }
 
-private val OuterDarkAlphas = ringAlphas(ALPHA_DARK)
-private val OuterLightAlphas = ringAlphas(ALPHA_LIGHT)
-// 内阴影的环数独立（路径裁剪更贵）；drawInnerShadow 的 step 按数组长度自适应。
-private val InnerDarkAlphas = ringAlphas(ALPHA_DARK, rings = SHADOW_RINGS_INNER)
-private val InnerLightAlphas = ringAlphas(ALPHA_LIGHT, rings = SHADOW_RINGS_INNER)
-
 /**
  * 真高斯模糊的绘制画笔（仅 API 28+ 使用；BlurMaskFilter 自 28 起才有硬件加速支持）。
  * alpha 直接编进画笔色：高斯模糊下形体边缘处可见 alpha ≈ 画笔值的一半。
  * 每个 Composable 记住一份，避免每帧分配 Paint/BlurMaskFilter。
  */
 private class ShadowPaints(colors: NeumorphColors, blurPx: Float) {
+    val lightBlurPx = blurPx * colors.lightShadowBlurScale
+    val maxBlurPx = maxOf(blurPx, lightBlurPx)
+    val outerDarkAlphas = ringAlphas(colors.darkShadowOpacity)
+    val outerLightAlphas = ringAlphas(colors.lightShadowOpacity)
+    val innerDarkAlphas = ringAlphas(colors.darkShadowOpacity, rings = SHADOW_RINGS_INNER)
+    val innerLightAlphas = ringAlphas(colors.lightShadowOpacity, rings = SHADOW_RINGS_INNER)
     val dark = android.graphics.Paint().apply {
         isAntiAlias = true
-        color = colors.darkShadow.copy(alpha = ALPHA_DARK).toArgb()
+        color = colors.darkShadow.copy(alpha = colors.darkShadowOpacity).toArgb()
         maskFilter = BlurMaskFilter(blurPx, BlurMaskFilter.Blur.NORMAL)
     }
     val light = android.graphics.Paint().apply {
         isAntiAlias = true
-        color = colors.lightShadow.copy(alpha = ALPHA_LIGHT).toArgb()
-        maskFilter = BlurMaskFilter(blurPx, BlurMaskFilter.Blur.NORMAL)
+        color = colors.lightShadow.copy(alpha = colors.lightShadowOpacity).toArgb()
+        maskFilter = BlurMaskFilter(lightBlurPx, BlurMaskFilter.Blur.NORMAL)
     }
 }
 
@@ -430,7 +404,7 @@ private fun Modifier.neumorphShadows(
         val corner = shapeCornerPx(shape, bodySize, this)
         val useGaussian = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
         val innerPaths = if (style == NeumorphStyle.Pressed && useGaussian) {
-            InnerBlurPaths(bodySize, offsetPx, corner, ShadowBlur.toPx())
+            InnerBlurPaths(bodySize, offsetPx, corner, paints.maxBlurPx)
         } else null
         // ADR-0042：硬件 BlurMaskFilter 的蒙版纹理随「见过的尺寸」累积。把一组柔影渲染成
         // 「角块 + 可拉伸边」的小图集（与尺寸无关，只有圆角/配色/模糊半径进键），绘制时用
@@ -448,14 +422,14 @@ private fun Modifier.neumorphShadows(
                     drawOuterBlur(paints.dark, bodySize, 0f, 1f, offsetPx, corner)
                     drawOuterBlur(paints.light, bodySize, 0f, -1f, offsetPx, corner)
                 } else {
-                    drawSoftShadow(shape, bodySize, 0f, 1f, colors.darkShadow, offsetPx, reachPx, OuterDarkAlphas)
-                    drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, OuterLightAlphas)
+                    drawSoftShadow(shape, bodySize, 0f, 1f, colors.darkShadow, offsetPx, reachPx, paints.outerDarkAlphas)
+                    drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, paints.outerLightAlphas)
                 }
             } else if (innerPaths != null) {
                 drawInnerBlur(innerPaths, paints)
             } else {
-                drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, InnerDarkAlphas)
-                drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, InnerLightAlphas)
+                drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, paints.innerDarkAlphas)
+                drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, paints.innerLightAlphas)
             }
         }
     }
@@ -524,6 +498,7 @@ private object ShadowPatchCache {
         val style: Int,
         val dark: Int,
         val light: Int,
+        val lightBlur: Int,
     )
 
     private val entries = object : LinkedHashMap<Key, ShadowPatch>(8, 0.75f, true) {
@@ -544,6 +519,7 @@ private object ShadowPatchCache {
             style = style.ordinal,
             dark = paints.dark.color,
             light = paints.light.color,
+            lightBlur = paints.lightBlurPx.roundToInt(),
         )
         synchronized(entries) { entries[key]?.let { return it } }
         val built = build(corner, offsetPx, blurPx, style, paints) ?: return null
@@ -557,7 +533,7 @@ private object ShadowPatchCache {
         style: NeumorphStyle,
         paints: ShadowPaints,
     ): ShadowPatch? {
-        val margin = (offsetPx + blurPx * 3f).roundToInt() + 2
+        val margin = (offsetPx + maxOf(blurPx, paints.maxBlurPx) * 3f).roundToInt() + 2
         val block = corner.roundToInt() + margin
         val body = block * 2
         val side = body + margin * 2
@@ -583,7 +559,7 @@ private object ShadowPatchCache {
             canvas.drawRoundRect(rect, corner, corner, paints.light)
             canvas.restore()
         } else {
-            val paths = InnerBlurPaths(Size(body.toFloat(), body.toFloat()), offsetPx, corner, blurPx)
+            val paths = InnerBlurPaths(Size(body.toFloat(), body.toFloat()), offsetPx, corner, paints.maxBlurPx)
             canvas.clipPath(paths.body.asAndroidPath())
             canvas.drawPath(paths.dark.asAndroidPath(), paints.dark)
             canvas.drawPath(paths.light.asAndroidPath(), paints.light)
@@ -613,6 +589,8 @@ fun NeumorphSurface(
     contentInset: Dp = contentPadding,
     selectionSelected: Boolean? = null,
     selectionMode: Boolean = false,
+    /** Optional tactile tone for interactive pressed cards; static recessed wells keep their base. */
+    pressedColor: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
@@ -622,8 +600,7 @@ fun NeumorphSurface(
     val inheritedPressed = LocalGlyphPressed.current
     val parent = LocalOrbisSurface.current
     val resolvedShape = concentricShape(shape)
-    val insetScale = if (LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus && style == NeumorphStyle.Pressed) 1.25f else 1f
-    val effectiveShadowScale = shadowScale * insetScale
+    val effectiveShadowScale = shadowScale
     val paints = rememberShadowPaints(colors, effectiveShadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
     val currentStyle = if (pressed && active && !selectionMode) NeumorphStyle.Pressed else style
@@ -640,7 +617,8 @@ fun NeumorphSurface(
     } else Modifier
     val layer = parent?.let { nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
         ?: if (currentStyle == NeumorphStyle.Pressed) 0 else 1
-    val bodyColor = if (parent != null) {
+    val bodyColor = if (currentStyle == NeumorphStyle.Pressed && pressedColor != null) pressedColor
+    else if (parent != null) {
         if (parent.depth >= 2 && currentStyle == NeumorphStyle.Raised) Color.Transparent else colors.layer(layer)
     } else if (currentStyle == NeumorphStyle.Pressed) colors.insetBase else colors.base
     val corner = (resolvedShape as? RoundedCornerShape)?.topStart?.let { size ->
@@ -687,11 +665,166 @@ fun NeumorphSurface(
     }
 }
 
+/**
+ * Draw one vertical slice of a continuous surface without collecting lazy children into a
+ * single measured item. Missing ends extend beyond this item's clip, so intermediate rows
+ * have straight, seamless edges. Uses the same palette and bounded shadow cache as surfaces.
+ * This drawing-only primitive deliberately does not consult nested material context: a
+ * directory's shared tray must retain its inset shadow inside its raised outer frame.
+ */
+@Composable
+internal fun Modifier.neumorphSurfaceSlice(
+    style: NeumorphStyle,
+    first: Boolean,
+    last: Boolean,
+    radius: Dp,
+    shadowScale: Float = 0.65f,
+): Modifier {
+    val colors = rememberNeumorphColors()
+    val scale = shadowScale
+    val paints = rememberShadowPaints(colors, scale)
+    return drawWithCache {
+        val corner = radius.toPx().coerceAtMost(size.width / 2f)
+        val offset = ShadowOffset.toPx() * scale
+        val reach = ShadowBlur.toPx() * scale
+        val extension = (corner + reach + offset) * 2f
+        val above = if (first) 0f else extension
+        val below = if (last) 0f else extension
+        val body = Size(size.width, size.height + above + below)
+        val shape = RoundedCornerShape(radius)
+        val patch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ShadowPatchCache.patch(corner, offset, reach, style, paints) else null
+        val paths = if (style == NeumorphStyle.Pressed && patch == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) InnerBlurPaths(body, offset, corner, paints.maxBlurPx) else null
+        val margin = reach * 2f + offset
+        onDrawBehind {
+            if (size.width <= 0f || size.height <= 0f) return@onDrawBehind
+            clipRect(left = -margin, top = if (first) -margin else 0f,
+                right = size.width + margin, bottom = size.height + if (last) margin else 0f) {
+                translate(top = -above) {
+                    if (style == NeumorphStyle.Raised) {
+                        if (patch != null && body.width >= patch.block * 2 && body.height >= patch.block * 2) drawShadowPatch(patch, body)
+                        else {
+                            drawSoftShadow(shape, body, 0f, 1f, colors.darkShadow, offset, reach, paints.outerDarkAlphas)
+                            drawSoftShadow(shape, body, 0f, -1f, colors.lightShadow, offset, reach, paints.outerLightAlphas)
+                        }
+                    }
+                    drawRoundRect(if (style == NeumorphStyle.Pressed) colors.insetBase else colors.base,
+                        size = body, cornerRadius = CornerRadius(corner, corner))
+                    if (style == NeumorphStyle.Pressed) {
+                        if (patch != null && body.width >= patch.block * 2 && body.height >= patch.block * 2) drawShadowPatch(patch, body)
+                        else if (paths != null) drawInnerBlur(paths, paints)
+                        else {
+                            drawInnerShadow(shape, body, colors.darkShadow, 1f, offset, reach, paints.innerDarkAlphas)
+                            drawInnerShadow(shape, body, colors.lightShadow, -1f, offset, reach, paints.innerLightAlphas)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Paint each directory once behind its virtualized children. Bounds follow measured animated
+ * item heights, so the bottom rounded edge travels with expansion instead of switching the
+ * header's bottom corners off before its children have grown. Reading layoutInfo in the draw
+ * phase also keeps scrolling out of composition. Keys are header, sessions, then optional more.
+ */
+@Composable
+internal fun Modifier.neumorphDirectoryPanels(
+    listState: LazyListState,
+    groups: List<List<String>>,
+): Modifier {
+    val colors = rememberNeumorphColors()
+    val outerScale = 1.1f
+    val innerScale = 1f
+    val outerPaints = rememberShadowPaints(colors, outerScale)
+    val innerPaints = rememberShadowPaints(colors, innerScale)
+    val groupKeys = remember(groups) { groups.map { it.toHashSet() } }
+    return drawWithCache {
+        val horizontal = 12.dp.toPx()
+        val gutter = 10.dp.toPx()
+        val outerCorner = 24.dp.toPx()
+        val innerCorner = 28.dp.toPx()
+        val outerOffset = ShadowOffset.toPx() * outerScale
+        val outerReach = ShadowBlur.toPx() * outerScale
+        val innerOffset = ShadowOffset.toPx() * innerScale
+        val innerReach = ShadowBlur.toPx() * innerScale
+        val extension = (outerCorner + outerReach + outerOffset) * 2f
+        val outerPatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            ShadowPatchCache.patch(outerCorner, outerOffset, outerReach, NeumorphStyle.Raised, outerPaints) else null
+        val innerPatch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+            ShadowPatchCache.patch(innerCorner, innerOffset, innerReach, NeumorphStyle.Pressed, innerPaints) else null
+        onDrawBehind {
+            val layoutInfo = listState.layoutInfo
+            val visible = layoutInfo.visibleItemsInfo
+            // Item offsets use the padded content origin; the draw scope uses the viewport origin.
+            val contentOrigin = -layoutInfo.viewportStartOffset.toFloat()
+            val byKey = visible.associateBy { it.key }
+            // Background drawing does not inherit LazyColumn's child clipping. Keep offscreen
+            // extensions and their shadows inside the scroll viewport, above its fixed footer.
+            clipRect {
+            groups.forEachIndexed { index, keys ->
+                if (keys.isEmpty()) return@forEachIndexed
+                val members = visible.filter { it.key in groupKeys[index] }
+                if (members.none { it.size > 0 }) return@forEachIndexed
+                val header = byKey[keys.first()]
+                val terminal = byKey[keys.last()]
+                val gap = byKey["gap:" + keys.first().removePrefix("directory:")]
+                val nextHeader = groups.getOrNull(index + 1)?.firstOrNull()?.let(byKey::get)
+                val top = header?.let { it.offset + contentOrigin } ?: -extension
+                val bottom = gap?.let { it.offset + contentOrigin }
+                    ?: terminal?.let { it.offset + it.size + contentOrigin }
+                    ?: nextHeader?.let { it.offset + contentOrigin - 14.dp.toPx() }
+                    ?: (size.height + extension)
+                val body = Size((size.width - horizontal * 2f).coerceAtLeast(0f), bottom - top)
+                if (body.width <= 0f || body.height <= 0f) return@forEachIndexed
+                translate(left = horizontal, top = top) {
+                    if (outerPatch != null && body.width >= outerPatch.block * 2 && body.height >= outerPatch.block * 2)
+                        drawShadowPatch(outerPatch, body)
+                    else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        // Short collapsed cards may not fit the atlas corners; retain the same Gaussian
+                        // highlight instead of switching to the narrower ring approximation.
+                        drawOuterBlur(outerPaints.dark, body, 0f, 1f, outerOffset, outerCorner)
+                        drawOuterBlur(outerPaints.light, body, 0f, -1f, outerOffset, outerCorner)
+                    } else {
+                        val shape = RoundedCornerShape(24.dp)
+                        drawSoftShadow(shape, body, 0f, 1f, colors.darkShadow, outerOffset, outerReach, outerPaints.outerDarkAlphas)
+                        drawSoftShadow(shape, body, 0f, -1f, colors.lightShadow, outerOffset, outerReach, outerPaints.outerLightAlphas)
+                    }
+                    drawRoundRect(colors.base, size = body, cornerRadius = CornerRadius(outerCorner, outerCorner))
+                }
+                if (keys.size < 2) return@forEachIndexed
+                val firstContent = byKey[keys[1]]
+                val trayTop = firstContent?.let { it.offset + contentOrigin }
+                    ?: header?.let { it.offset + it.size + contentOrigin }
+                    ?: -extension
+                val trayBottom = bottom - gutter
+                val tray = Size((body.width - gutter * 2f).coerceAtLeast(0f), trayBottom - trayTop)
+                if (tray.width <= 0f || tray.height <= 0f) return@forEachIndexed
+                val trayCorner = minOf(innerCorner, tray.width / 2f, tray.height / 2f)
+                translate(left = horizontal + gutter, top = trayTop) {
+                    drawRoundRect(colors.insetBase, size = tray, cornerRadius = CornerRadius(trayCorner, trayCorner))
+                    if (innerPatch != null && tray.width >= innerPatch.block * 2 && tray.height >= innerPatch.block * 2)
+                        drawShadowPatch(innerPatch, tray)
+                    else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                        drawInnerBlur(InnerBlurPaths(tray, innerOffset, trayCorner, innerPaints.maxBlurPx), innerPaints)
+                    else {
+                        val shape = RoundedCornerShape(trayCorner.toDp())
+                        drawInnerShadow(shape, tray, colors.darkShadow, 1f, innerOffset, innerReach, innerPaints.innerDarkAlphas)
+                        drawInnerShadow(shape, tray, colors.lightShadow, -1f, innerOffset, innerReach, innerPaints.innerLightAlphas)
+                    }
+                }
+            }
+            }
+        }
+    }
+}
+
 /** S02 / S19 identity recess only. Never reset the parent material or clip the foreground coin. */
 @Composable
 internal fun AgentIconRecess(modifier: Modifier = Modifier, shape: Shape = RemoteUi.ControlShape) {
     val colors = rememberNeumorphColors()
-    val scale = if (LocalOrbisVisualStyle.current == OrbisVisualStyle.InsetFocus) 0.8f else 0.65f
+    val scale = 0.65f
     val paints = rememberShadowPaints(colors, scale)
     Box(modifier.clip(shape).background(colors.insetBase)
         .neumorphShadows(shape, NeumorphStyle.Pressed, colors, scale, paints))
@@ -872,7 +1005,7 @@ fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
                 ShadowPatchCache.patch(corner, offsetPx, reachPx, NeumorphStyle.Pressed, paints)
             } else null
             val paths = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                InnerBlurPaths(bodySize, offsetPx, corner, reachPx)
+                InnerBlurPaths(bodySize, offsetPx, corner, paints.maxBlurPx)
             } else null
             onDrawWithContent {
                 drawContent()
@@ -882,8 +1015,8 @@ fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
                 } else if (paths != null) {
                     drawInnerBlur(paths, paints)
                 } else {
-                    drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, InnerDarkAlphas)
-                    drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, InnerLightAlphas)
+                    drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, paints.innerDarkAlphas)
+                    drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, paints.innerLightAlphas)
                 }
             }
         }
