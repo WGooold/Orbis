@@ -83,7 +83,12 @@ internal fun RemoteState.applyAgentDomainProjection(
                 }
                 "capabilities" -> {
                     val rows = collection(value, domain) ?: continue
-                    val incoming = rows.values.map { json.decodeFromJsonElement<RuntimeSlashCommand>(it) }
+                    val incoming = rows.values.map { row ->
+                        val command = json.decodeFromJsonElement<RuntimeSlashCommand>(row)
+                        val catalog = command.argument?.optionCatalog
+                        val cached = commands?.commands?.find { it.name == command.name && it.argument?.optionCatalog == catalog }
+                        if (catalog != null && cached?.argument != null) command.copy(argument = command.argument.copy(options = cached.argument.options)) else command
+                    }
                     require(incoming.map { it.name }.distinct().size == incoming.size)
                     val all = if (domain.projectionComplete || domain.completeness == "complete") incoming
                         else commands?.commands.orEmpty().associateBy { it.name }.plus(incoming.associateBy { it.name }).values.toList()

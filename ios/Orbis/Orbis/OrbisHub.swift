@@ -273,6 +273,8 @@ final class OrbisStore: ObservableObject {
     func draft(for runtime: RuntimeSummary) -> String { activeConnection.draft(for: runtime) }
     func saveDraft(_ text: String, for runtime: RuntimeSummary) { activeConnection.saveDraft(text, for: runtime) }
     func refreshWorkingBranch() { activeConnection.refreshWorkingBranch() }
+    func loadMenuOptions(runtimeId: String, name: String) { activeConnection.loadMenuOptions(runtimeId: runtimeId, name: name) }
+    func cancelMenuOptions(runtimeId: String, name: String) { activeConnection.cancelMenuOptions(runtimeId: runtimeId, name: name) }
     func previewEntry(_ entryId: String) { activeConnection.previewEntry(entryId) }
     @discardableResult func openCachedSession(_ session: SessionSummary) -> Bool { activeConnection.openCachedSession(session) }
     func selectCachedBranch(_ leafId: String) { activeConnection.selectCachedBranch(leafId) }

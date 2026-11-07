@@ -34,6 +34,10 @@ export class AgentStateSubscriptions {
   clearDevice(deviceId: string): void {
     for (const [key, entry] of this.#entries) if (entry.deviceId === deviceId) this.#entries.delete(key);
   }
+  owns(deviceId: string, runtimeId: string, domain: string): boolean {
+    return [...this.#entries.values()].some(entry => entry.deviceId === deviceId && entry.scope.kind === "agent" &&
+      entry.request.runtimeId === runtimeId && (entry.request.domains === undefined || entry.request.domains.includes(domain)));
+  }
   #changed(change: RegistryChange): void {
     if (this.#closed || change.kind === "reset") return;
     for (const entry of this.#entries.values()) {

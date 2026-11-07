@@ -241,7 +241,8 @@ internal fun HistoryTreePage(
             }
             if (rows.isEmpty()) {
                 Text(
-                    if (treeOptions.isEmpty()) L10n.tr("这个会话还没有可显示的分支记录") else L10n.tr("没有匹配的节点"),
+                    if (treeOptions.isEmpty() && state.capabilities[runtimeId]?.commands?.find { it.name == HISTORY_TREE_COMMAND }?.argument?.optionCatalog?.count?.let { it > 0 } == true)
+                        L10n.tr("读取中…") else if (treeOptions.isEmpty()) L10n.tr("这个会话还没有可显示的分支记录") else L10n.tr("没有匹配的节点"),
                     modifier = Modifier.padding(RemoteUi.PagePadding),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

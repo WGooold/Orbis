@@ -9,6 +9,70 @@ struct ModelInterests: Equatable {
     var domains: Set<String> { values.values.reduce(into: []) { $0.formUnion($1) } }
 }
 
+/// FT-G05: fixed-catalog paging with a single active selector and atomic completion.
+struct MenuOptionsLoader {
+    private struct Read {
+        let runtimeId: String
+        let name: String
+        let catalog: MenuOptionCatalog
+        var requestId = UUID().uuidString
+        var items: [RuntimeOption] = []
+        var cursors: Set<String> = []
+        var bytes = 0
+    }
+    struct Result {
+        let runtimeId: String
+        let name: String
+        let catalogId: String
+        var options: [RuntimeOption]?
+        var next: [String: Any]?
+        var error: String?
+    }
+    private var read: Read?
+    mutating func expire(_ requestId: String) -> Bool {
+        guard read?.requestId == requestId else { return false }; read = nil; return true
+    }
+    mutating func cancel(runtimeId: String? = nil, name: String? = nil) {
+        if runtimeId == nil || read?.runtimeId == runtimeId && (name == nil || read?.name == name) { read = nil }
+    }
+    mutating func start(runtimeId: String, command: SlashCommand) -> [String: Any]? {
+        guard let catalog = command.argument?.optionCatalog, catalog.count != (command.argument?.options?.count ?? 0),
+              (0...100_000).contains(catalog.count), !catalog.id.isEmpty else { return nil }
+        if let read, read.runtimeId == runtimeId, read.name == command.name, read.catalog == catalog { return nil }
+        let next = Read(runtimeId: runtimeId, name: command.name, catalog: catalog)
+        read = next; return request(next, cursor: nil)
+    }
+    private func request(_ read: Read, cursor: String?) -> [String: Any] {
+        ["type": "agent.menu.options.read", "protocolVersion": orbisProtocolVersion, "requestId": read.requestId,
+         "runtimeId": read.runtimeId, "commandName": read.name, "catalogId": read.catalog.id, "cursor": cursor as Any? ?? NSNull()]
+    }
+    mutating func consume(_ message: [String: Any]) -> Result? {
+        guard var current = read, message["requestId"] as? String == current.requestId,
+              message["runtimeId"] as? String == current.runtimeId, message["commandName"] as? String == current.name,
+              message["catalogId"] as? String == current.catalog.id else { return nil }
+        var result = Result(runtimeId: current.runtimeId, name: current.name, catalogId: current.catalog.id)
+        let data = try? JSONSerialization.data(withJSONObject: message["options"] ?? NSNull())
+        guard message["error"] == nil, message["totalCount"] as? Int == current.catalog.count,
+              let data, let items = try? JSONDecoder().decode([RuntimeOption].self, from: data), items.count <= 200,
+              current.bytes + data.count <= 16 * 1024 * 1024, current.items.count + items.count <= current.catalog.count else {
+            read = nil; result.error = message["error"] as? String ?? "invalid_options"; return result
+        }
+        current.items += items; current.bytes += data.count
+        if let cursor = message["nextCursor"] as? String {
+            guard !items.isEmpty, !current.cursors.contains(cursor), current.items.count < current.catalog.count else {
+                read = nil; result.error = "invalid_cursor"; return result
+            }
+            current.cursors.insert(cursor); current.requestId = UUID().uuidString
+            read = current; result.next = request(current, cursor: cursor)
+        } else {
+            read = nil
+            if current.items.count == current.catalog.count { result.options = current.items }
+            else { result.error = "incomplete_options" }
+        }
+        return result
+    }
+}
+
 struct AgentSnapshot {
     let runtimeId: String
     let sessionId: String
@@ -270,7 +334,11 @@ struct AgentProjection {
                 if name == "capabilities" {
                     var parsed: [SlashCommand] = []
                     for (key, row) in rows {
-                        guard let command: SlashCommand = row.decoded(), command.name == key, !key.isEmpty else { return nil }
+                        guard var command: SlashCommand = row.decoded(), command.name == key, !key.isEmpty else { return nil }
+                        if let catalog = command.argument?.optionCatalog,
+                           let cached = commands.first(where: { $0.name == key && $0.argument?.optionCatalog == catalog }) {
+                            command.argument?.options = cached.argument?.options
+                        }
                         parsed.append(command)
                     }
                     result.commands = complete ? parsed : merge(commands, parsed, key: \.name)

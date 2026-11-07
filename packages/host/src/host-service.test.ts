@@ -1731,6 +1731,52 @@ describe("host end-to-end over relay", () => {
     await expect(device.receiveData()).resolves.toBe("抖动之后还能说话");
   });
 
+  // FT-G05-WIRE: options travel only in requested bounded pages, invocation is
+  // validated against the selected catalog, and new model clients avoid old menu replay.
+  it("FT-G05 pages a long menu and validates exact versioned dispatch over E2E", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-options-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-options", sessionId: "options", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const options = Array.from({ length: 2009 }, (_, i) => ({ value: `native:${i}`, label: `节点 ${i}`, tree: {
+      parentId: i ? `native:${i - 1}` : null, entryType: "message", role: "assistant", defaultHidden: false, isCurrent: i === 2008, isOnActivePath: true,
+    } }));
+    runtime.publish(1, { type: "runtime.capabilities", capabilities: { commands: [{ name: "tree", source: "builtin", argument: { kind: "tree", required: true, options } }] } });
+    await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: "menu-catalog", scope: "agent", runtimeId: "pi-options",
+      stateFormat: "compact-v1", domains: ["capabilities"], subscribe: true }));
+    const snapshot = await readMatching(device, message => message.requestId === "menu-catalog");
+    const ref = (snapshot.domains as Array<{ value: { tree: { argument: { optionCatalog: { id: string; count: number } } } } }>)[0]!.value.tree.argument.optionCatalog;
+    expect(ref.count).toBe(2009); expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(4 * 1024);
+    let cursor: string | null = null; const collected: unknown[] = [];
+    do {
+      device.sendData(JSON.stringify({ type: "agent.menu.options.read", protocolVersion: 19, requestId: "options-page", runtimeId: "pi-options",
+        commandName: "tree", catalogId: ref.id, cursor }));
+      const page = await readMatching(device, message => message.requestId === "options-page");
+      expect(page.error).toBeUndefined(); expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(64 * 1024);
+      collected.push(...page.options as unknown[]); cursor = page.nextCursor as string | null;
+    } while (cursor);
+    expect(collected).toEqual(options);
+    device.sendData(JSON.stringify({ type: "runtime.command", protocolVersion: 19, runtimeId: "pi-options", commandId: "exact-option",
+      command: { type: "slash.execute", name: "tree", args: "native:2008", optionCatalogId: ref.id } }));
+    const forwarded = await runtime.next();
+    expect(forwarded).toMatchObject({ commandId: "exact-option", command: { type: "slash.execute", name: "tree", args: "native:2008" } });
+    expect(forwarded.command).not.toHaveProperty("optionCatalogId"); // private to the Host's validation boundary
+    runtime.publish(2, { type: "runtime.capabilities", capabilities: { commands: [{ name: "tree", source: "builtin", argument: { kind: "tree", required: true, options: options.slice(0, 2) } }] } });
+    const update = await device.receiveMessage();
+    expect(update).toMatchObject({ type: "agent.state.snapshot", update: true, stateFormat: "compact-v1" });
+    device.sendData(JSON.stringify({ type: "runtime.command", protocolVersion: 19, runtimeId: "pi-options", commandId: "stale-option",
+      command: { type: "slash.execute", name: "tree", args: "native:2008", optionCatalogId: ref.id } }));
+    const failed = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "command.result");
+    expect(failed.event).toMatchObject({ commandId: "stale-option", ok: false, error: "stale_menu_options" });
+  });
+
   // FT-G04-WIRE: representation is explicitly selected per read and old clients
   // keep the full identity. Token updates cannot invalidate compact identity.
   it("FT-G04 versions static identity independently over the encrypted link", async () => {

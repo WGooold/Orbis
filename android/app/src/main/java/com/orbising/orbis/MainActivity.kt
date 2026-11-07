@@ -1640,6 +1640,13 @@ internal fun ChatScreen(
     // 历史与分支整页：顶栏入口和输入 /tree 进的是同一页。动作（跳分支）走 /tree 命令，
     // 节点 ID 只在页面内部流转，不会再被拼进输入框。
     var historyOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    val optionCommand = if (historyOpen) "tree" else selectedSlashCommandName
+    val optionCatalogId = state.capabilities[runtimeId]?.commands?.find { it.name == optionCommand }?.argument?.optionCatalog?.id
+    DisposableEffect(model, state.hostId, runtimeId, optionCommand, optionCatalogId) {
+        val originHost = state.hostId
+        model.setMenuOptionInterest(originHost, runtimeId, optionCommand)
+        onDispose { model.setMenuOptionInterest(originHost, runtimeId, null) }
+    }
     // 历史页顶栏的下载入口：下载页滑入后返回历史页（ADR-0054）。
     var historyDownloadsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
     LaunchedEffect(historyOpen) { if (!historyOpen) historyDownloadsOpen = false }

@@ -1764,6 +1764,12 @@ export class HostService {
       }
       return;
     }
+    if (message.type === "agent.menu.options.read") {
+      const scope = this.#agentFacts.scopeOf(message.runtimeId);
+      if (scope) this.#compactState.ensure(scope);
+      this.#sendToDevice(deviceId, this.#compactState.menuOptions.read(scope && this.#agentStateRegistry.read(scope, "capabilities")?.availability === "ready" ? JSON.stringify(scope) : undefined, message));
+      return;
+    }
     if (message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription") {
       void this.#handleProviderRequest(deviceId, message);
       return;
@@ -1921,6 +1927,17 @@ export class HostService {
     deviceId: string,
     message: Extract<DeviceE2ePayload, { type: "runtime.command" }>,
   ): void {
+    if (message.command.type === "slash.execute" && message.command.optionCatalogId !== undefined) {
+      const scope = this.#agentFacts.scopeOf(message.runtimeId);
+      if (!scope || this.#agentStateRegistry.read(scope, "capabilities")?.availability !== "ready"
+        || !this.#compactState.menuOptions.valid(JSON.stringify(scope), message.command.name, message.command.optionCatalogId, message.command.args)) {
+        this.#sendToDevice(deviceId, this.#runtimeEventMessage(message.runtimeId, { type: "command.result", commandId: message.commandId,
+          ok: false, status: "failure", error: "stale_menu_options" }));
+        return;
+      }
+      const command = { ...message.command }; delete command.optionCatalogId;
+      message = { ...message, command };
+    }
     const { runtimeId, commandId, command } = message;
     if (command.type === "session.changes.list" || command.type === "session.changes.read"
       || command.type === "session.change.detail.read" || command.type === "session.change.detail.cancel") {
@@ -2574,6 +2591,14 @@ export class HostService {
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
     const payload = encodeDeviceMessage(message);
+    if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
+      for (const [deviceId, link] of this.#links) {
+        if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
+        try { link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
+        catch (error) { this.#options.onDeviceError?.(deviceId, error); }
+      }
+      return;
+    }
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
   }
 

@@ -792,6 +792,8 @@ export const RuntimeSlashCommandArgumentSchema = z.strictObject({
   required: z.boolean(),
   hint: z.string().max(256).optional(),
   options: z.array(RuntimeSlashCommandOptionSchema).optional(),
+  /** Only selected compact-v1 catalogs use this on-demand option inventory. */
+  optionCatalog: z.strictObject({ id: z.string().min(1).max(128), count: z.number().int().nonnegative() }).optional(),
 });
 export type RuntimeSlashCommandArgument = z.infer<typeof RuntimeSlashCommandArgumentSchema>;
 
@@ -810,6 +812,23 @@ export const RuntimeCapabilitiesSchema = z.strictObject({
   commands: z.array(RuntimeSlashCommandSchema),
 });
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
+
+export const MenuOptionsRequestSchema = z.strictObject({
+  type: z.literal("agent.menu.options.read"), protocolVersion: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(128), runtimeId: z.string().min(1).max(128),
+  commandName: RuntimeSlashCommandNameSchema, catalogId: z.string().min(1).max(128),
+  cursor: z.string().min(1).max(512).nullable(),
+});
+export type MenuOptionsRequest = z.infer<typeof MenuOptionsRequestSchema>;
+export const MenuOptionsPageSchema = z.strictObject({
+  type: z.literal("agent.menu.options.page"), protocolVersion: z.literal(PROTOCOL_VERSION),
+  requestId: z.string().min(1).max(128), runtimeId: z.string().min(1).max(128),
+  commandName: RuntimeSlashCommandNameSchema, catalogId: z.string().min(1).max(128),
+  options: z.array(RuntimeSlashCommandOptionSchema).max(200),
+  nextCursor: z.string().min(1).max(512).nullable(), totalCount: z.number().int().nonnegative(),
+  error: z.enum(["catalog_changed", "invalid_cursor", "unavailable", "item_too_large"]).optional(),
+});
+export type MenuOptionsPage = z.infer<typeof MenuOptionsPageSchema>;
 
 export const RuntimeCommandStatusSchema = z.enum(["pending", "success", "failure", "cancelled", "not_cancelable", "already_delivered", "message_id_conflict", "unconfirmed"]);
 export type RuntimeCommandStatus = z.infer<typeof RuntimeCommandStatusSchema>;
@@ -1051,6 +1070,7 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("slash.execute"),
     name: RuntimeSlashCommandNameSchema,
     args: z.string().max(100_000),
+    optionCatalogId: z.string().min(1).max(128).optional(),
     /**
      * ADR-0049 §6.1：来源为 prompt / skill 的命令会产生一条用户消息。App 为它分配身份并立即显示本地气泡；
      * 后端在该用户消息首次出现时声明为 `clientMessageId`，暂时不能声明的走 §4 的兼容兜底。
@@ -1155,6 +1175,7 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  MenuOptionsRequestSchema,
   z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
   z.strictObject({ type: z.literal("notification.dismiss"), protocolVersion: z.literal(PROTOCOL_VERSION), hostEpoch: z.string().min(1).max(256), runtimeId: z.string().min(1).max(256), notificationId: z.string().min(1).max(256) }),
   z.strictObject({
@@ -1247,6 +1268,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
 export type DeviceE2ePayload = z.infer<typeof DeviceE2ePayloadSchema>;
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({
     type: z.literal("device.ready"),

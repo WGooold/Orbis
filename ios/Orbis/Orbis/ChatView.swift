@@ -184,6 +184,14 @@ struct ChatView: View {
                     store.refreshWorkingBranch()
                 }
             }
+            .task(id: command?.argument?.optionCatalog?.id) {
+                guard let command else { return }
+                store.loadMenuOptions(runtimeId: runtime.runtimeId, name: command.name)
+            }
+            .onChange(of: selectedCommand) { old, _ in
+                if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
+            }
+            .onDisappear { if let selectedCommand { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: selectedCommand) } }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
             .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
             .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in

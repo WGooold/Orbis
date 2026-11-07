@@ -308,6 +308,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         if (hostId != null) connectionFor(hostId)?.setAgentModelInterest(runtimeId, owner, domains)
     }
 
+    fun setMenuOptionInterest(hostId: String?, runtimeId: String, name: String?) {
+        if (hostId != null) connectionFor(hostId)?.setMenuOptionInterest(runtimeId, name)
+    }
+
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     suspend fun reconcileModels() = withContext(Dispatchers.Default) {
         // The lifecycle caller waits for this pass before its next tick. Model reads can

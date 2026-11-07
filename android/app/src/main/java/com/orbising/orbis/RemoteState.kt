@@ -270,7 +270,11 @@ data class RuntimeSlashCommandArgument(
     val required: Boolean,
     val hint: String? = null,
     val options: List<RuntimeSlashCommandOption> = emptyList(),
+    val optionCatalog: MenuOptionCatalog? = null,
 )
+
+@Serializable
+data class MenuOptionCatalog(val id: String, val count: Int)
 
 @Serializable
 data class RuntimeSlashCommand(

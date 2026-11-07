@@ -413,6 +413,27 @@ final class HostConnection: ObservableObject {
     // The Host echoes a rejected ACK as protocol.error; the local read already owns its result.
     private var handledSyncRejections: [String] = []
     private var authenticatedModelEpoch: String?
+    private var menuOptions = MenuOptionsLoader()
+    private var menuOptionsTimeout: Task<Void, Never>?
+
+    func loadMenuOptions(runtimeId: String, name: String) {
+        guard let command = commands[runtimeId]?.first(where: { $0.name == name }) else { return }
+        if let request = menuOptions.start(runtimeId: runtimeId, command: command) { sendMenuOptionRequest(request) }
+    }
+
+    func cancelMenuOptions(runtimeId: String, name: String) { menuOptions.cancel(runtimeId: runtimeId, name: name) }
+
+    private func sendMenuOptionRequest(_ request: [String: Any]) {
+        guard let id = request["requestId"] as? String else { return }
+        menuOptionsTimeout?.cancel()
+        guard transport.send(request) else {
+            if menuOptions.expire(id) { errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }; return
+        }
+        menuOptionsTimeout = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 12_000_000_000) } catch { return }
+            if self?.menuOptions.expire(id) == true { self?.errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }
+        }
+    }
     var didUpdatePairing: ((HostPairing) -> Void)?
     private var modelCatalogReceived = false
 
@@ -2051,7 +2072,12 @@ final class HostConnection: ObservableObject {
     }
 
     private func sendCommand(runtimeId: String, commandId: String = UUID().uuidString, command: [String: Any]) -> Bool {
-        transport.send(["type": "runtime.command", "protocolVersion": orbisProtocolVersion, "runtimeId": runtimeId, "commandId": commandId, "command": command])
+        var projected = command
+        if command["type"] as? String == "slash.execute", let name = command["name"] as? String,
+           let catalog = commands[runtimeId]?.first(where: { $0.name == name })?.argument?.optionCatalog {
+            projected["optionCatalogId"] = catalog.id
+        }
+        return transport.send(["type": "runtime.command", "protocolVersion": orbisProtocolVersion, "runtimeId": runtimeId, "commandId": commandId, "command": projected])
     }
 
     /// 上次从这台电脑收到的会话目录。连接或切换电脑时先显示它，等 session.list 回来再整体替换，
@@ -2147,6 +2173,20 @@ final class HostConnection: ObservableObject {
             // 只有被接受的快照才是权威状态（校验失败的快照不推进回执计数）。
             if let runtimeId = noticeRuntime, notifications.receipts[runtimeId] != noticeReceipts {
                 ledgerAuthority(OperationKinds.noticesDomain(runtimeId), read: nil, complete: notifications.projections[runtimeId]?.complete == true)
+            }
+            return
+        }
+        if type == "agent.menu.options.page" {
+            if let result = menuOptions.consume(message) {
+                if let next = result.next { sendMenuOptionRequest(next) }
+                if result.error != nil { errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }
+                if let options = result.options {
+                    commands[result.runtimeId] = commands[result.runtimeId]?.map { command in
+                        var value = command
+                        if value.name == result.name, value.argument?.optionCatalog?.id == result.catalogId { value.argument?.options = options }
+                        return value
+                    }
+                }
             }
             return
         }

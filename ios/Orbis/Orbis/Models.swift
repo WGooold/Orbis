@@ -319,14 +319,20 @@ struct SlashCommand: Codable, Hashable, Identifiable {
     let name: String
     let description: String?
     let source: String
-    let argument: Argument?
+    var argument: Argument?
     var id: String { name }
     struct Argument: Codable, Hashable {
         let kind: String
         let required: Bool
         let hint: String?
-        let options: [RuntimeOption]?
+        var options: [RuntimeOption]?
+        var optionCatalog: MenuOptionCatalog? = nil
     }
+}
+
+struct MenuOptionCatalog: Codable, Hashable {
+    let id: String
+    let count: Int
 }
 
 struct BrowseEntry: Codable, Hashable, Identifiable {

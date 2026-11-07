@@ -612,6 +612,12 @@ export const AgentCapabilityItemSchema = z.strictObject({
 });
 export type AgentCapabilityItem = z.infer<typeof AgentCapabilityItemSchema>;
 
+/** compact-v1 resources share the capabilities catalog by exact scoped key. */
+export const AgentCapabilityReferenceSchema = z.strictObject({
+  name: z.string().min(1).max(256), source: z.enum(["builtin", "extension", "prompt", "skill", "mcp"]),
+  capabilityRef: z.string().min(1).max(256),
+});
+
 /**
  * 是否允许按「缺席」删除条目。
  *

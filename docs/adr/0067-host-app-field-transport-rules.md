@@ -181,7 +181,7 @@ Status: proposed
 | agent / model | `AgentModelState`；当前值 FT-03，名称引用 FT-02/FT-07，原生确认沿用 ADR-0061。 |
 | agent / context | `AgentContextState`；FT-03，确定性百分比 FT-09，未知 FT-12。 |
 | agent / capabilities | `{commandName: AgentCapabilityItem}`；键 / 目标准确 FT-01，目录 FT-02，说明删除 FT-08，动态选项 FT-05。 |
-| agent / resources | `{commandName: RuntimeSlashCommand}`；与 capabilities 同一目录 FT-07，独立资源以稳定 ID / 版本读取 FT-05/FT-06，菜单字段 FT-08。 |
+| agent / resources | `{commandName: RuntimeSlashCommand}`（compact-v1 为 `AgentCapabilityReference`）；与 capabilities 同一目录 FT-07，独立资源以稳定 ID / 版本读取 FT-05/FT-06，菜单字段 FT-08。 |
 | agent / notifications | `AgentNotificationsState`；引用与计数 FT-07/FT-12，相关条件 FT-03，正文仅 NotificationSnapshot 一份。 |
 | agent / artifacts | `{artifactId: RemoteArtifact + messageId}`；键和消息身份 FT-01，描述符 FT-07/FT-17，内容 FT-06，窗口删除 FT-04/FT-12。 |
 | agent / records | `scope/domain/agentKind/sessionId/modelEpoch/revision`；查询作用域 FT-01，诊断入口 FT-07/FT-15，按诊断兴趣核对，日志追加不向每个会话扩散广播。 |
@@ -309,6 +309,7 @@ Status: proposed
 | `RuntimeCommandSchema` | `permissions.update` | `C:permissions.update` |
 | `RuntimeCommandSchema` | `stop` | `C:stop` |
 | `RuntimeCommandSchema` | `interaction.respond` | `C:interaction.respond` |
+| `RelayToDeviceMessageSchema` | `agent.menu.options.page` | `H:agent.menu.options.page` |
 | `RelayToDeviceMessageSchema` | `notification.snapshot` | `H:notification.snapshot` |
 | `RelayToDeviceMessageSchema` | `device.ready` | `H:device.ready` |
 | `RelayToDeviceMessageSchema` | `device.path` | `H:device.path` |
@@ -332,6 +333,7 @@ Status: proposed
 | `RelayToDeviceMessageSchema` | `session.activated` | `H:session.activated` |
 | `RelayToDeviceMessageSchema` | `protocol.error` | `H:protocol.error` |
 | `RelayToDeviceMessageSchema` | `v2.frame` | `S:V2Frame` |
+| `DeviceE2ePayloadSchema` | `agent.menu.options.read` | `U:agent.menu.options.read` |
 | `DeviceE2ePayloadSchema` | `notification.sync` | `U:notification.sync` |
 | `DeviceE2ePayloadSchema` | `notification.dismiss` | `U:notification.dismiss` |
 | `DeviceE2ePayloadSchema` | `device.version.report` | `U:device.version.report` |
@@ -373,6 +375,13 @@ Status: proposed
 
 | 结构 | 字段 | 规则 | 补充 / 展开结构 |
 | --- | --- | --- | --- |
+| `H:agent.menu.options.page` | 默认 | `FT-01/FT-05/FT-08/FT-12/FT-16` | 选择器打开时读取固定目录的有界页；关闭取消本地等待，旧游标与迟到页不能应用。 源码：`MenuOptionsPageSchema`。 |
+| | `type`、`protocolVersion` | `FT-01/FT-13` |  |
+| | `requestId`、`runtimeId` | `FT-01` |  |
+| | `commandName`、`catalogId` | `FT-01/FT-05/FT-08/FT-12/FT-16` |  |
+| | `options` | `FT-01/FT-05/FT-08/FT-12/FT-16` |  展开：`S:RuntimeSlashCommandOption`。 |
+| | `nextCursor`、`totalCount` | `FT-01/FT-05/FT-12` | 范围、顺序、可信总数与边界完整保留；按字节和条数共同限流。 |
+| | `error` | `FT-10/FT-12` | 保留必要可操作原因与原请求关联；长诊断走详情。 |
 | `H:notification.snapshot` | 默认 | `FT-04/FT-12/FT-18` | 设备私有通知权威，重连核对基线，正文单份。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `hostEpoch`、`revision`、`complete`、`verification`、`removedNotificationIds` | `FT-12` |  |
@@ -726,6 +735,11 @@ Status: proposed
 
 | 结构 | 字段 | 规则 | 补充 / 展开结构 |
 | --- | --- | --- | --- |
+| `U:agent.menu.options.read` | 默认 | `FT-01/FT-05/FT-08/FT-12/FT-16` | 选择器打开时读取固定目录的有界页；关闭取消本地等待，旧游标与迟到页不能应用。 源码：`MenuOptionsRequestSchema`。 |
+| | `type`、`protocolVersion` | `FT-01/FT-13` |  |
+| | `requestId`、`runtimeId` | `FT-01` |  |
+| | `commandName`、`catalogId` | `FT-01/FT-05/FT-08/FT-12/FT-16` |  |
+| | `cursor` | `FT-01/FT-05/FT-12` | 范围、顺序、可信总数与边界完整保留；按字节和条数共同限流。 |
 | `U:notification.sync` | 默认 | `FT-05/FT-16` | 明确读取作用域与范围，取消已释放兴趣。 |
 | | `type`、`protocolVersion` | `FT-01/FT-13` |  |
 | | `runtimeId` | `FT-01` |  |
@@ -894,6 +908,7 @@ Status: proposed
 | `C:slash.execute` | 默认 | `FT-01/FT-10` | 原目标输入 / 取消；Host 校验准入并确认业务结果。 |
 | | `type` | `FT-01/FT-13` |  |
 | | `name`、`args` | `FT-01/FT-10` |  |
+| | `optionCatalogId` | `FT-01/FT-08/FT-10/FT-12/FT-13` | 调用提交已显示目录版本；Host 验证准确目标与版本后移除此本机验证字段再执行。 |
 | | `messageId` | `FT-01` |  |
 | `C:permissions.update` | 默认 | `FT-01/FT-10` | 原目标输入 / 取消；Host 校验准入并确认业务结果。 |
 | | `type` | `FT-01/FT-13` |  |
@@ -1047,6 +1062,7 @@ Status: proposed
 | | `kind`、`required` | `FT-02/FT-08` | 仅保留分类、输入类型与必填性等必要选择信息。 |
 | | `hint` | `FT-08` |  |
 | | `options` | `FT-02/FT-05/FT-08` | 小静态选项按版本缓存；树 / 会话动态选项打开时分页。 展开：`S:RuntimeSlashCommandOption`。 |
+| | `optionCatalog` | `FT-01/FT-02/FT-05/FT-08/FT-12/FT-13` | compact-v1 中替代大型选项；id 绑定作用域、来源代次和完整内容，count 保留全量计数。 展开：`S:RuntimeSlashCommandArgument.optionCatalog`。 |
 | `S:RuntimeSlashCommandOption` | 默认 | `FT-02/FT-08` | 精简目录按版本缓存；大型选项独立分页。 源码：`RuntimeSlashCommandOptionSchema`。 |
 | | `value` | `FT-01/FT-02/FT-08` | 准确调用目标 / 选项值，App 原样提交。 |
 | | `label` | `FT-02/FT-08` | 必要选项名称；等于 value 时按新表示复用。 |
@@ -1055,6 +1071,8 @@ Status: proposed
 | `S:RuntimeSlashCommandOption.tree` | 默认 | `FT-02/FT-08` | 精简目录按版本缓存；大型选项独立分页。 |
 | | `parentId`、`entryType`、`role`、`label`、`defaultHidden` | `FT-01/FT-05/FT-12` | 只在历史树范围装载；当前位置独立变化，关系准确保留。 |
 | | `isCurrent`、`isOnActivePath` | `FT-03/FT-05/FT-12` | 只在历史树范围装载；当前位置独立变化，关系准确保留。 |
+| `S:RuntimeSlashCommandArgument.optionCatalog` | 默认 | `FT-02/FT-08` | 精简目录按版本缓存；大型选项独立分页。 |
+| | `id`、`count` | `FT-01/FT-02/FT-05/FT-08/FT-12/FT-13` | compact-v1 中替代大型选项；id 绑定作用域、来源代次和完整内容，count 保留全量计数。 |
 | `S:SessionCatalogEntry` | 默认 | `FT-02/FT-05/FT-12` | 目录 / 首屏与分页兴趣驱动，版本和覆盖明确。 源码：`SessionCatalogEntrySchema`。 |
 | | `sessionId` | `FT-01` |  |
 | | `name`、`cwd`、`createdAt`、`modifiedAt`、`messageCount` | `FT-02/FT-05/FT-12` |  |
@@ -1235,6 +1253,10 @@ Status: proposed
 | | `argumentKind`、`argumentRequired` | `FT-07/FT-08` | 与 argument 内同义字段只保留一份。 |
 | | `optionCount` | `FT-05/FT-09/FT-12` | 只用于分页总数，不能由部分页长度推断。 |
 | | `argument` | `FT-02/FT-05/FT-08` | 展开 RuntimeSlashCommandArgument；选项独立版本。 |
+| `S:AgentCapabilityReference` | 默认 | `FT-02/FT-08` | 精简目录按版本缓存；大型选项独立分页。 源码：`AgentCapabilityReferenceSchema`。 |
+| | `name` | `FT-02/FT-08` |  |
+| | `source` | `FT-01/FT-12` | 来源、已应用基准与恢复边界完整保留。 |
+| | `capabilityRef` | `FT-01/FT-07/FT-08/FT-13` | compact-v1 资源引用同作用域 capabilities 精确键，复用唯一目录。 |
 | `S:AgentContextState` | 默认 | `FT-03/FT-09` | 合并真实用量变化，确定性值按明确算法派生。 源码：`AgentContextStateSchema`。 |
 | | `tokens`、`contextWindow` | `FT-03/FT-09` |  |
 | | `percent` | `FT-03/FT-09/FT-12` | 语义一致时由 tokens/window 派生，否则保留来源百分比。 |
@@ -1483,3 +1505,7 @@ G04 以只读请求的 `stateFormat: compact-v1` 明确选择新表示，响应�
 compact-v1 的 identity 只装载 `hostId/agentKind/runtimeId/sessionId/name/cwd/hostname/sessionName/sessionGraphSync`；status、历史位置、模型、思考、上下文、权限由各自领域拥有。App 将身份与已确认执行状态合并展示。Host 按新表示内容独立推进领域 revision，缓存键含 stateFormat；原生来源换代、质量变化、Host epoch 变化与作用域隔离沿用 FT-01/12。完整原生 / 兼容 metadata 仍由原权威保存。
 
 实现与验证指针：G01 的[出口投影](../../packages/host/src/device-message-projection.ts)、[菜单字段回归](../../packages/host/src/device-message-projection.test.ts)；G02 的[来源确认](../../packages/host/src/agent-state-facts.ts)、[确认 / 恢复回归](../../packages/host/src/agent-state-facts.test.ts)、[Codex 发布](../../packages/host/src/codex-runtime.ts)及[后端回归](../../packages/host/src/codex-runtime.test.ts)。两组的实际加密出口与恢复由 [Host 联动回归](../../packages/host/src/host-service.test.ts)的 `FT-G01/FT-G02` 场景覆盖；[G01 证据](../../.artifacts/field-transport-implementation-20261106/g01-results.json)、[G02 证据](../../.artifacts/field-transport-implementation-20261106/g02-results.json)分别记录实施、自动验证、部署和用户验收状态。
+
+G05 在 compact-v1 中把全部 tree 选项及超过 50 项或 8 KiB 的 select 选项替换为 `optionCatalog{id,count}`；小型静态选项按版本内联。目录 ID 绑定 Host / agent / session、来源代次、命令及完整内容，resources 以 `capabilityRef` 复用同作用域目录。`agent.menu.options.read/page` 只由可见选择器触发，每页最多 200 项、目标 32 KiB、上限 64 KiB，超大单项明确失败；游标绑定目录与位置，来源变化返回 catalog_changed。App 完整组装且核对计数后提交，关闭、超时及新目录使旧页失效。调用携带 `optionCatalogId`，Host 校验当前来源和精确 value 后执行；旧表示保持完整选项与原调用格式。
+
+G05 实现与验证：[Host 目录页](../../packages/host/src/menu-option-catalogs.ts)、[分页与来源回归](../../packages/host/src/menu-option-catalogs.test.ts)、[Android 加载器](../../android/app/src/main/java/com/orbising/orbis/MenuOptionsLoader.kt)、[iOS 加载器](../../ios/Orbis/Orbis/AgentState.swift)、[加密联动](../../packages/host/src/host-service.test.ts)的 FT-G05 场景；[自动验证证据](../../.artifacts/field-transport-implementation-20261106/g05-results.json)。初次连接的旧菜单恢复仍由兼容入口发送，提前选择新表示与关闭旧恢复由 G10 处理。

@@ -182,6 +182,22 @@ internal class HostConnection(
     private val modelInterestLock = Any()
     private var modelInterests = ModelInterests()
     @Volatile private var preferCompactState = true
+    private val menuOptions = MenuOptionsLoader()
+
+    fun setMenuOptionInterest(runtimeId: String, name: String?) {
+        if (name == null) { menuOptions.cancel(); return }
+        val command = mutableState.value.capabilities[runtimeId]?.commands?.find { it.name == name } ?: return
+        menuOptions.start(runtimeId, command)?.let(::sendMenuOptionRequest)
+    }
+
+    private fun sendMenuOptionRequest(request: JsonObject) {
+        val id = request["requestId"]!!.jsonPrimitive.content
+        val sent = relay.sendDeviceMessage(request)
+        scope.launch {
+            if (sent) delay(12_000)
+            if (menuOptions.expire(id)) updateState { it.copy(error = L10n.tr("命令选项读取失败，请重新打开菜单")) }
+        }
+    }
     private val sessionLoads = SessionLoadQueue()
     private val historyPageSize = 30
     private val previewPageSize = 30
@@ -1525,7 +1541,7 @@ internal class HostConnection(
             val label = command.argument?.options?.firstOrNull { it.value == normalizedArgs }?.label ?: normalizedArgs
             return submitConfig(runtimeId, name, normalizedArgs, label)
         }
-        val commandId = relay.executeSlashCommand(runtimeId, name, normalizedArgs)
+        val commandId = relay.executeSlashCommand(runtimeId, name, normalizedArgs, optionCatalogId = command.argument?.optionCatalog?.id)
         Log.i(RELOAD_TRACE_TAG, "ui.slash.sent name=$name runtimeId=$runtimeId commandId=${commandId ?: "<not_sent>"}")
         trackCommand(commandId, runtimeId, L10n.tr("命令未发送：中继服务器当前离线"))
         return commandId
@@ -1568,7 +1584,8 @@ internal class HostConnection(
             if (created) next else current
         }
         if (!created) return null
-        if (relay.executeSlashCommand(runtimeId, setting, value, commandId) == null) {
+        if (relay.executeSlashCommand(runtimeId, setting, value, commandId,
+            optionCatalogId = state.capabilities[runtimeId]?.commands?.find { it.name == setting }?.argument?.optionCatalog?.id) == null) {
             updateState { it.copy(ledger = it.ledger.remove(commandId), error = L10n.tr("命令未发送：中继服务器当前离线")) }
             return null
         }
@@ -2215,6 +2232,21 @@ internal class HostConnection(
                 val payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 val incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                if (interactiveChannel != null && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "agent.menu.options.page") {
+                    menuOptions.consume(incomingMessage, messageJson)?.let { result ->
+                        result.next?.let(::sendMenuOptionRequest)
+                        if (result.error != null) updateState { it.copy(error = L10n.tr("命令选项读取失败，请重新打开菜单")) }
+                        if (result.options != null) updateState { state ->
+                            val capabilities = state.capabilities[result.runtimeId] ?: return@updateState state
+                            val commands = capabilities.commands.map { command ->
+                                if (command.name == result.name && command.argument?.optionCatalog?.id == result.catalogId)
+                                    command.copy(argument = command.argument.copy(options = result.options)) else command
+                            }
+                            state.copy(capabilities = state.capabilities + (result.runtimeId to capabilities.copy(commands = commands)))
+                        }
+                    }
+                    continue
+                }
                 val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
                 if (interactiveChannel != null && incomingMessage != null && incomingRead?.needsLegacyRetry(incomingMessage) == true) {
                     preferCompactState = false
@@ -2366,6 +2398,7 @@ internal class HostConnection(
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
                     if (deviceReadyArrived && currentGeneration == generation) {
+                        menuOptions.cancel()
                         preferCompactState = true
                         val application = application
                         val packageInfo = application.packageManager.getPackageInfo(application.packageName, 0)

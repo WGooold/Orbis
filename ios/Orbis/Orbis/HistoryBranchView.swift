@@ -22,6 +22,10 @@ struct HistoryBranchView: View {
         guard let id = store.selectedRuntimeId else { return [] }
         return store.isViewingCachedSession ? store.cachedHistoryOptions : store.commands[id]?.first { $0.name == "tree" }?.argument?.options ?? store.cachedHistoryOptions
     }
+    private var optionCatalog: MenuOptionCatalog? {
+        guard let id = store.selectedRuntimeId else { return nil }
+        return store.commands[id]?.first { $0.name == "tree" }?.argument?.optionCatalog
+    }
     private var visible: [RuntimeOption] {
         options.filter { option in
             let tree = option.tree
@@ -51,7 +55,12 @@ struct HistoryBranchView: View {
                     .opacity(query.isEmpty ? 0 : 1).disabled(query.isEmpty).accessibilityHidden(query.isEmpty)
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused).padding(.horizontal, 20)
             if store.isViewingCachedSession { OrbisNotice(text: L10n.tr("当前显示本机缓存。浏览节点和分支不会改变电脑端会话。")).padding(.horizontal, 20) }
-            if options.isEmpty {
+            if options.isEmpty && (optionCatalog?.count ?? 0) > 0 {
+                ProgressView(L10n.tr("读取中…")).padding(24)
+                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {
+                    if let id = store.selectedRuntimeId { store.loadMenuOptions(runtimeId: id, name: "tree") }
+                }.padding(.horizontal, 24)
+            } else if options.isEmpty {
                 OrbisEmptyState(symbol: "clock.arrow.circlepath", title: L10n.tr("当前会话尚未提供历史分支"))
                 OrbisActionButton(title: L10n.tr("刷新会话"), symbol: "arrow.clockwise", action: store.refresh).padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
             } else {
@@ -88,7 +97,13 @@ struct HistoryBranchView: View {
             .onChange(of: store.historyRevision) { _, _ in onBack() }
             .onChange(of: store.pendingActionIds) { _, ids in if ids.isEmpty { actionPending = false } }
             .onAppear { openingDownloads = false }
-            .onDisappear { if !openingDownloads { store.dismissPreview() } }
+            .task(id: optionCatalog?.id) {
+                if let id = store.selectedRuntimeId { store.loadMenuOptions(runtimeId: id, name: "tree") }
+            }
+            .onDisappear {
+                if let id = store.selectedRuntimeId { store.cancelMenuOptions(runtimeId: id, name: "tree") }
+                if !openingDownloads { store.dismissPreview() }
+            }
     }
 
     private func node(_ option: RuntimeOption) -> some View {
