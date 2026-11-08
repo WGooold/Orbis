@@ -4,7 +4,7 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC53、MOT-01–MOT-28 保留历史身份；本轮新增 SC54–SC59、M25–M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
+当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC53、MOT-01–MOT-28 保留历史身份；本轮新增 SC54–SC60、M25–M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
 
@@ -73,6 +73,7 @@
 | SC57 | 双圈初触分区、凹槽、阈值、吸附、停稳后应用与双配额 |
 | SC58 | 单行目录树、状态 / 时间槽、目录末新建与阅读保持 |
 | SC59 | 40% 关闭上膛、回拖解除、未上膛快甩回弹 |
+| SC60 | 回复完成通知只由来源明确终态驱动，跨来源代次与重连保持去重 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

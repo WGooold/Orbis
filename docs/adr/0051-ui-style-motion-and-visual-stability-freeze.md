@@ -1,12 +1,12 @@
 # ADR-0051：UI 风格、动效与画面稳定性基线
 
-日期：2026-10-30；Status: accepted。当前基线：`2026-11-08/r49`。
+日期：2026-10-30；Status: accepted。当前基线：`2026-11-08/r50`。
 
 保留共用材质、原生文本、稳定消息身份、阅读位置及平台手势。基线按需求演进，性能优化保持既有可见行为，新增 feature 使用新编号。
 
 当前修订采用[统一设计与交互 ADR-0070](0070-unified-design-and-interaction.md)：四主题、连续深度、根标签、本地首句草稿、双圈供应商、三组设置及单行目录树。视觉、UX 与动效按[交互稿](../design/Orbis%20交互稿.html)对齐；业务确认、阅读稳定和可恢复操作继续沿用既有契约。实施、自动验证与用户验收分别记录。
 
-登记 100 项（S 38、M 29、V 22、X 11）。历史交付与截图不代表本轮重验，实际验证与验收状态以本轮证据为准。
+登记 101 项（S 39、M 29、V 22、X 11）。历史交付与截图不代表本轮重验，实际验证与验收状态以本轮证据为准。
 
 | ID | 作用 |
 | --- | --- |
@@ -48,6 +48,7 @@
 | S36 | Agent / 配置双圈盘、显式应用与双周期配额（SC57） |
 | S37 | 三组设置、协议候选与显式确认重连（SC56） |
 | S38 | 单行目录树、活动摘要与目录新建（SC58） |
+| S39 | 回复完成默认系统通知与来源结果去重（SC60） |
 | M01 | 自定义拖拽回位 |
 | M02 | 勾选小反馈 |
 | M03 | 自然高度折叠 |
@@ -115,6 +116,6 @@
 
 视觉核对依据已确认来源的安装包与受影响行为，验证和验收分别保留对应证据；选测遵循 [根部规则](../../AGENTS.md#测试)。
 
-实现与本轮验证入口：[ADR-0070](0070-unified-design-and-interaction.md)、[本次证据](../../.artifacts/design-alignment-20261108/)。全部用户安装验收待完成。
+实现与本轮验证入口：[ADR-0070](0070-unified-design-and-interaction.md)、[本次证据](../../.artifacts/design-alignment-20261108/)。全部用户安装验收待完成；S39 / SC60 的系统授权与后台可达性另行验收。
 
 历史证据保留于 `.artifacts/ui-regression/20261106-native-directory-tray/`、`.artifacts/ui-regression/20261106-sidebar-material/`、`.artifacts/ui-regression/20261107-sidebar-highlight/`、`.artifacts/ui-regression/20261107-home-raised-sync-dot/`；其中目录外框、页面私有材质和呼吸状态点已由本轮决策替换。统一聊天分卡见 [ADR-0066](0066-unified-chat-card-presentation.md)与 `.artifacts/unified-chat-cards-20261106/`，目录性能见 [ADR-0060](0060-mobile-relay-history-performance.md)。

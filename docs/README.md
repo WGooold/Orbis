@@ -18,7 +18,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 - [供应商管理与订阅配额](adr/0019-host-provider-management.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: current architecture decisions and constraints with lasting value. Replaced or duplicate material is removed after useful constraints and references are merged into the current decision. Retired numbers are not reused; Git retains deleted history.
-- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：`2026-11-08/r49` UI 基线与稳定 feature 标识。
+- [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：`2026-11-08/r50` UI 基线与稳定 feature 标识。
 - [ADR-0070](adr/0070-unified-design-and-interaction.md)：四主题、首句草稿、双圈供应商、三组设置、目录树与共用动效；[交互稿](design/Orbis%20交互稿.html)和[设计规范](design/orbis-design-system.md)为本轮对照来源。自动验证与用户验收分开记录。
 - [ADR-0066](adr/0066-unified-chat-card-presentation.md)：各后端共用内容步骤分卡、折叠工具组及显示片段锚点；S31 / SC50，双端已实现并通过定向自动验证，设备视觉与用户验收待完成。
 - [ADR-0067](adr/0067-host-app-field-transport-rules.md)：Host↔App 的 19 条传输规则、完整字段归类及分组回归门槛。

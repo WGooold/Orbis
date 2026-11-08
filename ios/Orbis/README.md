@@ -1,6 +1,6 @@
 # Orbis for iOS
 
-原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。协议与加密使用 Apple 系统框架；传输使用 LAN / Relay WebSocket，固定局域网优先。源码与二进制依赖保留各自许可，见 [第三方声明](../../THIRD-PARTY-NOTICES.md)。
+原生 SwiftUI 客户端，最低支持 iOS 17，适配 iPhone 和 iPad。端到端加密使用 Apple 系统框架；传输使用 LAN / Relay，固定局域网优先，实际协议与能力见 [ADR-0065](../../docs/adr/0065-native-quic-relay-transport.md)。源码与二进制依赖保留各自许可，见 [第三方声明](../../THIRD-PARTY-NOTICES.md)。
 
 当前界面按[交互稿](../../docs/design/Orbis%20交互稿.html)与[统一设计 ADR-0070](../../docs/adr/0070-unified-design-and-interaction.md)对齐。构建、自动回归与安装验收分别记录在 `.artifacts/design-alignment-20261108/`，待用户验证。包含：
 
@@ -13,7 +13,7 @@
 - 首页会话列表保留原生上下拖动与惯性滚动，多选时仍可滚动；左滑关闭按起手卡片与方向锁定，滚动后继续命中对应卡片。左滑会话卡片显露“关闭”，达到卡片宽度 40% 时触觉确认、转危险色并显示“松手关闭”，回拖解除，未上膛快甩回弹；长按会话进入多选，关闭在线会话保留历史，切换电脑或离开首页清空选择。
 - 首页以完整认证快照发布会话列表，后台同步通过连接胶囊呈现；刷新和会话替换维持上一版卡片、稳定阅读几何及真实可操作性。
 - 会话目录长按条目进入多选，点按增减选择，顶部批量归档或恢复；搜索、筛选、切换电脑或关闭目录清空选择。单选未归档会话时，顶部保留“在电脑继续会话”入口。
-- 协议 v17、Keychain 身份、CryptoKit 端到端加密、LAN / Relay 两路径与 Host 固定选路、最近历史预览及更早历史分页。
+- 当前内部协议 v19，保留已发布版本兼容，见 [ADR-0064](../../docs/adr/0064-protocol-compatibility.md)；Keychain 身份、CryptoKit 端到端加密、LAN / Relay 两路径与 Host 固定选路、最近历史预览及更早历史分页。
 
 逐页完成项、与 Android 尚有的差距和验收范围见 [UI / UX 对齐记录](UITests/OrbisUITests.swift)。
 

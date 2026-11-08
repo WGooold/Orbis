@@ -210,6 +210,7 @@ Slash 的 messageId 已由 Codex skill 和 DSH Web skill 声明。Pi prompt 与 
 
 #### 7.7 与现有实现的关系
 
+- 2026-11-08 的新建入口先保留本地首句草稿，只有通过空白、长度和命令前缀校验的首发才创建 `launch` 并加入依赖它的 `send`；本地校验失败保留草稿且不创建远端空会话。两端继续复用现有账本与失败恢复，页面形变见 [ADR-0070](0070-unified-design-and-interaction.md)。
 - `closingRuntimes`、Android `sessionArchiveRequests`、`pendingQueueCancellations`、`submittingInteractions`，以及模型 / 思考级别
   原先经 `pendingActionIds` 的跟踪，都已迁为账本中的种类，并删除各自的计时与断线代码。
 - `send` 种类（2026-11-01 实施决定）：账本负责写入通道之前的 `waiting`（附件上传、配置切换、会话启动这三种前置，

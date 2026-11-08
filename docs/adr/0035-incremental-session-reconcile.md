@@ -105,6 +105,8 @@ App 的 `historyPageSize` 是 30 条（[HostConnection.kt](../../android/app/src
 
 当前合并窗口为 100ms，目录 TTL 为 60 秒，扩展发布高 / 低水位为 8MB / 2MB。DSH 的 Host 侧帧增量测量为：8.7MB 会话、5240 帧、11,978 事件，整份 373ms，追加一帧 7ms，未变 0ms；原生游标 API 尚未接入。
 
+2026-11-08：Pi 回合起止作为具名边界在窗口外显式发布，已完成的原生结果保留到下一回合；普通流式片段继续合并。事务的净变化指纹包含回合结果，后来的空事务保留先前尚未发布的变化，避免同步读取吞掉正文或完成事实。实现与回归：[session-source.ts](../../packages/protocol/src/session-source.ts)、[source 测试](../../packages/protocol/src/session-source.test.ts)、[Pi 集成测试](../../packages/pi-extension/src/session-source.test.ts)；[本次执行证据](../../.artifacts/design-alignment-20261108/source-outcome-recovery-tests.log)。
+
 参考：[ADR-0040](0040-bounded-inbound-delivery.md)。
 
 ### 17. 超预算 canonical 批次转为 checkpoint 恢复（2026-11-03）
