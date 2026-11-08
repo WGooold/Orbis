@@ -406,7 +406,9 @@ export class DshAcpRuntime implements AgentBackend {
     finally {
       session.source.transaction(() => {
         for (const message of session.streamed.values()) session.source.upsertMessage({ message, finished: true, contentComplete: true });
-        this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Date.now() - startedAt, persistedMessages });
+        const outcome = failure instanceof DshUnconfirmedError ? "unknown" : failure ? "failed"
+          : stopReason === "cancelled" ? "cancelled" : stopReason === "end_turn" ? "completed" : "unknown";
+        this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Date.now() - startedAt, outcome, persistedMessages });
         session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null, persistedMessages);
       });
       session.running = false;

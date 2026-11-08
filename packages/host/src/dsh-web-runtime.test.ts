@@ -1305,7 +1305,7 @@ describe("DeepSeek Web runtime adapter", () => {
     event(4, "assistant/message", { turn: 1, step: 1, message: { id: "a1", role: "assistant", source: { kind: "model", provider: "p", model: "m" }, content: [{ type: "text", text: "done" }] }, stream: [] });
     event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }, 1200);
     const final = events.filter(item => item.type === "session.patch").at(-1);
-    expect(final).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: 100 }), messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
+    expect(final).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: 100, outcome: "completed" }), messages: [], tools: [] }, head: { leafId: "dsh:web-1:web:5" } });
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "session.tools.produced", page: expect.objectContaining({ tools: [expect.objectContaining({ tool: expect.objectContaining({ toolCallId: "call-1" }), toolName: "bash", phase: "started" })] }) }),
       expect.objectContaining({ type: "message.queued", queueId: "mobile-1", state: "delivered" }),

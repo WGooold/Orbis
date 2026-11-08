@@ -637,6 +637,8 @@ export const SessionLiveTurnSchema = z.strictObject({
   turnId: z.string().min(1).max(256),
   startedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   durationMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  /** Native terminal evidence; elapsed time alone cannot prove a successful reply. */
+  outcome: z.enum(["completed", "failed", "cancelled", "unknown"]).optional(),
 });
 export type SessionLiveTurn = z.infer<typeof SessionLiveTurnSchema>;
 

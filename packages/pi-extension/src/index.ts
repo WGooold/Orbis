@@ -47,6 +47,7 @@ import type { RelayRuntimeConnectionState } from "./transport.js";
 import {
   formatTurnDuration,
   PiTurnTiming,
+  piTurnOutcome,
 } from "./turn-timing.js";
 import { PiTurnTimingStore } from "./turn-timing-store.js";
 
@@ -749,7 +750,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       const reason = (event.message as { stopReason?: string }).stopReason;
       fileReview.outcome = reason === "aborted" ? "cancelled" : reason === "error" ? "failed" : "completed";
     }
-    const finished = turnTiming.finish(event.turnIndex, messageId, persistedMessageId, persistedMessages);
+    const finished = turnTiming.finish(event.turnIndex, messageId, persistedMessageId, persistedMessages,
+      piTurnOutcome((event.message as { stopReason?: string }).stopReason));
     if (finished) {
       stopLiveTurn(ctx);
       const persistedTimingMessageId = persistedMessageId ?? messageId;

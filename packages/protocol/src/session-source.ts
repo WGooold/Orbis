@@ -276,12 +276,16 @@ export class RecoverableSessionSource {
         this.#turn = { turnId: event.turnId, startedAt: event.startedAt };
         this.#touch();
         return true;
-      case "turn.finished":
+      case "turn.finished": {
+        const outcome = event.outcome ?? (this.#turn?.turnId === event.turnId && this.#turn.startedAt === event.startedAt
+          ? this.#turn.outcome : undefined);
         if (this.#turn?.turnId === event.turnId && this.#turn.startedAt === event.startedAt &&
-          this.#turn.durationMs === event.durationMs) return true;
-        this.#turn = { turnId: event.turnId, startedAt: event.startedAt, durationMs: event.durationMs };
+          this.#turn.durationMs === event.durationMs && this.#turn.outcome === outcome) return true;
+        this.#turn = { turnId: event.turnId, startedAt: event.startedAt, durationMs: event.durationMs,
+          ...(outcome === undefined ? {} : { outcome }) };
         this.#touch();
         return true;
+      }
       case "tool.started":
       case "tool.updated":
       case "tool.finished": {

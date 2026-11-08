@@ -814,6 +814,8 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
       for (const [messageId, live] of active?.messages ?? []) events.push(finishedMessage(messageId, live));
       events.push({ type: "turn.finished", turnId: native.turnId, startedAt,
         durationMs: native.durationMs ?? Math.max(0, Date.now() - startedAt),
+        outcome: native.isAborted === true || native.reason === "aborted" ? "cancelled"
+          : native.reason === "error" ? "failed" : native.reason === "answer" ? "completed" : "unknown",
         ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) });
       return events;
     }

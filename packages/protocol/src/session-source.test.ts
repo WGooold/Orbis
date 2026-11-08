@@ -185,6 +185,23 @@ describe("recoverable source", () => {
     source.observe({ type: "turn.started", turnId: "t2", startedAt: 200 });
     expect(source.snapshot().live.turn).toEqual({ turnId: "t2", startedAt: 200 });
   });
+  it.each(["completed", "failed", "cancelled", "unknown"] as const)("recovers native %s outcome without treating timing as completion", outcome => {
+    // S37: completion notifications consume versioned native evidence, including recovery and replay.
+    const patches: SessionPatch[] = [];
+    const source = new RecoverableSessionSource("session", patch => patches.push(patch));
+    source.setAvailability(true, true);
+    source.observe({ type: "turn.started", turnId: "turn", startedAt: 100 });
+    source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75 });
+    expect(source.published().live.turn?.outcome).toBeUndefined();
+    source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75, outcome });
+    expect(patches.at(-1)?.live.turn).toEqual({ turnId: "turn", startedAt: 100, durationMs: 75, outcome });
+    const seq = source.version.seq;
+    source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75 });
+    expect(source.version.seq).toBe(seq);
+    expect(source.published().live.turn?.outcome).toBe(outcome);
+    source.observe({ type: "turn.started", turnId: "next", startedAt: 200 });
+    expect(source.published().live.turn?.outcome).toBeUndefined();
+  });
   it("hands a live reply to canonical storage atomically and recovers the same partition without lifecycle replay", () => {
     const patches: SessionPatch[] = [];
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));

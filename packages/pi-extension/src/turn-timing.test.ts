@@ -2,9 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   formatTurnDuration,
   PiTurnTiming,
+  piTurnOutcome,
 } from "./turn-timing.js";
 
 describe("PiTurnTiming", () => {
+  it("distinguishes final native stops from tool continuations and failed or aborted turns", () => {
+    // S37: toolUse is one model step, not a completed Agent reply notification.
+    expect(["stop", "toolUse", "error", "aborted", "future"].map(piTurnOutcome))
+      .toEqual(["completed", "unknown", "failed", "cancelled", "unknown"]);
+    const timing = new PiTurnTiming(() => "native", () => 200);
+    timing.start(1, 100);
+    expect(timing.finish(1, undefined, undefined, undefined, "completed")).toMatchObject({ outcome: "completed" });
+  });
   it("formats timing labels like the Android chat UI", () => {
     expect(formatTurnDuration(59_999)).toBe("59s");
     expect(formatTurnDuration(60_000)).toBe("1m 0s");

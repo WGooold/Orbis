@@ -27,6 +27,22 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  it.each([
+    [{ reason: "answer", isAborted: false }, "completed"],
+    [{ reason: "error" }, "failed"],
+    [{ reason: "aborted", isAborted: true }, "cancelled"],
+    [{ reason: "future" }, "unknown"],
+  ] as const)("publishes native turn outcome in the recoverable source: %j", async (native, outcome) => {
+    // S37: notifications use the source checkpoint, never a second legacy event path.
+    const bridge = bridgeWith();
+    try {
+      const current = online(bridge);
+      bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.start", turnId: "turn", startedAt: 100 });
+      bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.complete", turnId: "turn", durationMs: 75, ...native });
+      const state = await bridge.sync(current.runtimeId, { type: "session.sync", sessionId: "session-1", syncId: "outcome", range: "preview" });
+      expect(state?.live?.turn).toMatchObject({ turnId: "turn", outcome });
+    } finally { bridge.close(); }
+  });
   it("awaits the pre-write snapshot before acknowledging a native start, and the end snapshot before completion", async () => {
     let resume!: () => void;
     const before = vi.fn(() => new Promise<void>(resolve => { resume = resolve; }));

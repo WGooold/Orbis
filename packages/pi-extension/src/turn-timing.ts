@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { RuntimeEvent } from "@orbis/protocol";
 
+/** A tool-use turn is followed by more work; only a native stop proves a finished reply. */
+export function piTurnOutcome(stopReason: string | undefined): "completed" | "failed" | "cancelled" | "unknown" {
+  return stopReason === "stop" ? "completed" : stopReason === "error" ? "failed"
+    : stopReason === "aborted" ? "cancelled" : "unknown";
+}
+
 export function formatTurnDuration(durationMs: number): string {
   const totalSeconds = Math.floor(durationMs / 1_000);
   return totalSeconds < 60
@@ -36,6 +42,7 @@ export class PiTurnTiming {
     messageId?: string,
     persistedMessageId?: string,
     persistedMessages?: readonly { messageId: string; entryId: string }[],
+    outcome?: Extract<RuntimeEvent, { type: "turn.finished" }>["outcome"],
   ): Extract<RuntimeEvent, { type: "turn.finished" }> | undefined {
     const turn = this.#active;
     if (!turn || turn.turnIndex !== turnIndex) return undefined;
@@ -44,6 +51,7 @@ export class PiTurnTiming {
       type: "turn.finished",
       ...turn,
       durationMs: Math.max(0, this.#now() - turn.startedAt),
+      ...(outcome === undefined ? {} : { outcome }),
       ...(messageId === undefined ? {} : { messageId }),
       ...(persistedMessageId === undefined ? {} : { persistedMessageId }),
       ...(persistedMessages === undefined || persistedMessages.length === 0

@@ -1105,7 +1105,10 @@ export class DshWebRuntime implements AgentBackend {
       delete session.turnId;
       delete session.turnStartedAt;
       session.source.setAvailability(true, true);
-      this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Math.max(0, event.time - startedAt), ...(session.fileChangeAnchor ? { persistedMessageId: session.fileChangeAnchor } : {}), ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}), ...(persistedMessages.length ? { persistedMessages } : {}) });
+      const reason = object(data.reason).kind;
+      const outcome = reason === "completed" ? "completed" : reason === "error" ? "failed"
+        : reason === "cancelled" || reason === "aborted" ? "cancelled" : "unknown";
+      this.#emit(session, { type: "turn.finished", turnId, startedAt, durationMs: Math.max(0, event.time - startedAt), outcome, ...(session.fileChangeAnchor ? { persistedMessageId: session.fileChangeAnchor } : {}), ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}), ...(persistedMessages.length ? { persistedMessages } : {}) });
     }
     if (existing) this.#emit(session, { type: "message.finished", message: existing });
     this.#publishMetadata(session);
