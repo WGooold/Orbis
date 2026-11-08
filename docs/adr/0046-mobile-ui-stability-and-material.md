@@ -6,7 +6,7 @@ Status: accepted
 
 关联：[ADR-0039](0039-content-change-signals.md)、[ADR-0041](0041-history-paging-edge-trigger.md)、[ADR-0042](0042-bounded-shadow-bitmaps.md)
 
-2026-10-30：本文的 17 项约束及后续 UI feature 已归入 [ADR-0051 冻结基线](0051-ui-style-motion-and-visual-stability-freeze.md)。相关设计与修改先查该索引；本文继续保留具体决策与历史验收证据。卡片旁操作中的旧别名 / 下载方案已被后续实现替换，当前适用范围按该基线 S14 / S20，不恢复已移除按钮。
+当前 UI 索引见 [ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)。2026-11-08 的材质、外观与页面流程由 [ADR-0070](0070-unified-design-and-interaction.md) 修订；本文继续维护阅读位置、稳定身份与可恢复操作的约束。
 
 ## Context
 
@@ -29,11 +29,7 @@ Status: accepted
 
 独立表面使用统一材质外框，后代按层级与内容内距继承平铺明度、圆角和聚焦表达；相关操作按阅读宽度与所属关系布局。Android 阴影采用 ADR-0042 的有界缓存。
 
-材质参数：浅色四层 `#DDE3EF / #E6EBF4 / #EDF1F8 / #F3F6FB`，深色 `#1C1F26 / #23262E / #292D36 / #2F333D`；相邻层 HSL 明度约差 1–3%，阴影采用带色墨色。侧边图标的可见圆面为 36pt/dp，图标 18pt/dp，触控区 48pt/dp。
-
-2026-11-03 / r38（S02 / S19，验证中）：首页 Agent 身份图标与设置供应商图标通过共用 `AgentIconRecess` 绘制局部凹槽。首页徽标为 44pt/dp、16pt/dp 圆角；供应商图标为 32pt/dp，背景凹槽为 40pt/dp、14pt/dp 圆角；配额币为 44pt/dp，背景圆槽为 48pt/dp，命中区 64×56pt/dp。两端经典 / 雾蓝浅深色的 Claude Code 与 Codex 翻面帧已审阅，设置区凹槽保留；完整手动与设备验收仍未完成，证据见 UI 回归 R59。
-
-2026-11-05 / r47（S02 / S03 / S04 / S19，验证中）：iOS 侧边栏采用独立表面根，圆角 24pt/dp、柔影强度 1、位移与模糊 4pt/dp、暗影 alpha 0.38、高光 alpha 0.70，后代继承 layer=1 / depth=1；专项及待验收范围见 R65。Android 已恢复原生抽屉形状、背景及原有入口阴影。
+材质采用雾蓝 / 灰绿与浅 / 深组合的四主题、三层表面；凹陷继承所在表面的底色并保留内影。只有最外层凸起投外影，嵌套凸起使用明度台阶。参数统一见[设计规范](../design/orbis-design-system.md)第 12 节与各端共用组件。
 
 ### 3. 字体、文件名和稳定的反馈槽
 
@@ -49,11 +45,11 @@ Status: accepted
 
 ### 5. 设置与配对入口（S22 / S23 / S28 / S29）
 
-设置集中呈现供应商、连接、配对、外观和语言，电脑行与侧边栏提供电脑管理入口。连接胶囊呈现实际路径状态和重试，整页导航共用 ADR-0054。
+设置集中呈现连接、外观和语言；供应商是平级根页面，电脑切换与配对复用电脑菜单。连接胶囊呈现实际路径状态和重试，整页导航共用 ADR-0054。
 
 2026-11-06 S28 / SC48：当前连接增加“连接协议”，从所选电脑的实际 adapter 显示 WS / QUIC，LAN 显示 WS，未连接或未知显示“暂不可用”。复用两端 `StatusRow` 和中英文目录；协议与断线判定见 `PresentationTests` / `StatusScreenTest`，电脑隔离见 `MultiHostTests`，设备显示见 `testCurrentConnectionProtocol` / `SettingsEntryInstrumentedTest`。实现已完成，构建、自动验证及额外回归失败分别见 [本次验证记录](../../.artifacts/ui-regression/20261106-connection-protocol/verification.json)；未部署，待用户安装验证。
 
-2026-11-06 S29 / SC49：增加 per-Host 协议模式三选项，保存手机到 Relay 的 `auto` / `ws` / `quic` 偏好。auto 在下次连接或重连时优先 QUIC、传输准备失败时认证前回退 WS；ws 与 quic 按各自强制模式交接。实现复用现有 Relay adapter 选择、新拟物选择按钮及实际协议状态，验证见 `MultiHostTests`、`StatusScreenTest` 与两端设置页测试。构建、部署及验收状态见 [协议模式验证记录](../../.artifacts/ui-regression/20261106-auto-relay-selection/verification.json)。
+per-Host 协议模式保留 `auto` / `ws` / `quic` 偏好，当前 Auto 使用 WebSocket，实际路由见 [ADR-0065](0065-native-quic-relay-transport.md)。选择面板暂存候选，显式应用后保存并重新连接，摘要依据实际 adapter 与路径更新。原 SC49 证据保留于[协议模式验证记录](../../.artifacts/ui-regression/20261106-auto-relay-selection/verification.json)，新交互以 SC56 单独验证。
 
 参考：[ADR-0054](0054-shared-full-page-navigation.md)；[ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)；[StatusViews.swift](../../ios/Orbis/Orbis/StatusViews.swift)；[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)；[SettingsEntryInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SettingsEntryInstrumentedTest.kt)。
 
@@ -67,7 +63,7 @@ Status: accepted
 
 ### 7. 本机外观选择（S25）
 
-外观按本机选择即时生效，复用统一材质、字号和聚焦规则，保留导航、内容身份与语义色。默认经典，雾蓝对应既有 insetFocus 存储值，明暗跟随系统设置。
+外观按本机选择即时生效，复用统一材质、字号和聚焦规则，保留导航、内容身份与语义色。默认雾蓝并跟随系统浅深色；缩略屏允许手动指定浅色 / 深色，材质色块选择雾蓝 / 灰绿。iOS 旧 `classic` / `insetFocus` 偏好迁为雾蓝，实施与验证见 ADR-0070。
 
 参考：[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)；[Neumorph.kt](../../android/app/src/main/java/com/orbising/orbis/Neumorph.kt)。
 
@@ -81,11 +77,4 @@ Status: accepted
 UI 状态更新不改变消息 key、会话身份或协议事实；历史位置校正只维持原来的阅读锚点。
 模糊渐显是可降级的绘制效果，不是消息完成或同步完成的证据。
 
-2026-11-03 / r40（验证中）：放大设置供应商凹槽，普通图标后方由40改为48pt/dp、圆角16，配额币后方由48改为56pt/dp、圆角28；图标和币面尺寸、供应商行布局与命中区保持。硬币底部改为常驻柔和接触影，34×10pt/dp、中心下移21pt/dp，随翻面收窄至35%，侧面透明度保留静止的75%；浅 / 深色使用既有带色scrim，中心alpha分别0.32 / 0.52。完整软影足迹位于56圆槽内；减少动画仍保留静止投影。分类沿用QuotaCoin / SC27 / MOT-22，影响S02、S04、S19，关联S13、S22、S25、M11；R58 / R59与双端L0–L4、C01–C18、A1–A4逐项记录，未完成门禁不记验收。证据 `.artifacts/ui-regression/20261103-provider-well-shadow/`。
-
-
-2026-11-03 / r42（验证中）：设置供应商凹槽统一为圆角矩形，普通标识与配额币均直接复用 `AgentIconRecess` 的默认16pt/dp圆角、既有材质与内影方向；取消配额币专用圆形/半边长圆角。普通32pt/dp标识配48pt/dp底座、44pt/dp硬币配56pt/dp底座，原居中、行布局、角标和64×56pt/dp命中区保持；硬币常驻底影与翻面几何/时序不变。范围S02 / S03 / S04 / S19，关联S22 / S25、SC27 / MOT-22、R58 / R59。新形状仍需双端L1–L4、C01–C18及A1–A4验证；旧r40圆形截图不替代本轮结果。证据 `.artifacts/ui-regression/20261103-provider-well-rounded/`。
-
-
-
-2026-11-05 Android 目录后台专项：S19 / V21、ADR-0060 PERF-07。仅调整后台投影、行事实复用、标题缓存和IO启动水合；原 DrawerPanel / NeumorphSurface / 形状 / 阴影 / 布局参数不改。SC03 / SC08 / SC36、MOT-14 的受影响设备专项及结果见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`；用户体感仍待验证。
+历史材质与配额币对照保存在 `.artifacts/ui-regression/20261103-provider-well-shadow/`、`.artifacts/ui-regression/20261103-provider-well-rounded/`；目录后台投影证据见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`。这些证据对应当时实现，本轮视觉验收单独记录。

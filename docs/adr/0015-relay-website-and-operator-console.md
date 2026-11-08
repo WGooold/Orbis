@@ -12,6 +12,10 @@ The operator console is a Relay administration surface. It reports Relay health,
 
 The public Relay hosts the console, whose authority is limited to Relay-owned state.
 
+## 2026-11-08: unified public design and demonstrations
+
+The public `cinema-site` entry uses the shared appearance tokens and components from [ADR-0070](0070-unified-design-and-interaction.md). Its local demonstrations follow the current draft-first session flow, directory tree, provider dial and settings. The cinematic marketing layout remains; the demonstrations use synthetic data. The earlier r39 / r41 visual revisions below are historical. Browser, visual comparison and release evidence are recorded separately from deployment and user acceptance in [.artifacts/design-alignment-20261108/site](../../.artifacts/design-alignment-20261108/site/).
+
 ## 2026-11-05: per-device bandwidth (X11)
 
 The console's bandwidth page groups authenticated Relay message bytes by device ID, with upload/download totals and one-second active-window mean, P95 and peak rates. UTC daily records are retained for 30 days; seven- and thirty-day percentiles merge the sample histograms. P95 uses a bounded histogram with an upper-bound error below 4.5%. Idle seconds and the unfinished current second are excluded from rates. Totals include authentication and control messages. LAN traffic, transport headers and retransmission are outside this measurement; QUIC downlink measures the Node-to-adapter handoff rather than confirmed device reception.
