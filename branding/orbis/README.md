@@ -2,7 +2,7 @@
 
 品牌名：Orbis。Slogan：Easy Agents Everywhere。
 
-开口方环象征稳定的基地，右上小方块象征可以独立出发的能力。定版强化小方块与主体的距离，保持冷静、轻盈的新拟物气质。所有尺寸由同一母稿导出。
+开口方环象征稳定的基地，右上小方块象征可以独立出发的能力。当前 B 版图标采用瓷白主体与中等深度雾蓝底面（#617FA3），以柔和边缘光影表现轻微凸起的平面 UI 质感；底色通过合成直接调整。
 
 ## 文件与用途
 
@@ -12,14 +12,14 @@
 | `master/orbis-symbol-transparent-2048.png` | 2048×2048 透明彩色符号；材质来自生成母稿，放大不代表增加原始细节 |
 | `master/orbis-symbol-mono.svg` | 可缩放的单色轮廓，适合印刷、品牌与纯色场景 |
 | `store/google-play-512.png` | Google Play 图标，512×512 PNG、不透明、无文字/圆角 |
-| `store/app-store-1024.png` | 预留 iOS 商店图标，1024×1024、不透明；不包含 iOS 工程接入 |
+| `store/app-store-1024.png` | iOS 商店图标，1024×1024、不透明；与 iOS 工程内 AppIcon 相同 |
 | `android/adaptive-foreground-1080.png` | Android 自适应前景，透明背景，108dp 画布的 10× 素材 |
-| `android/adaptive-background-1080.png` | Android 自适应背景，纯色 #10213D |
+| `android/adaptive-background-1080.png` | Android 自适应背景，纯色 #617FA3 |
 | `android/res/` | 可直接放入 Android 项目的完整资源目录 |
 | `preview.png` | 真实母稿缩放的裁切、尺寸与单色预览 |
 | `geometry.json` | 间隙、安全区域等实际导出参数 |
-| `source-generated.png` | gpt-image-2 生成的材质源图 |
-| `build_icons.py` | 可复现的提取、轮廓、缩放和资源导出脚本 |
+| `source-generated.png` | gpt-image-2 生成的 B 版母图 |
+| `build_icons.py` | 可复现的前景提取、轮廓、平台缩放和资源导出脚本 |
 | `build_macos_icon.swift` | 在 macOS 上从图标母版导出带圆角底板的应用 PNG 和完整尺寸 ICNS |
 
 ## 品牌字标
@@ -37,22 +37,22 @@
 
 ## 几何与使用规范
 
-- 图标沿用母稿的独立形状与统一间距，导出参数见 `geometry.json`。
+- 图标沿用 B 版母图提取的两个亮色主体与贴边阴影，方形图标合成当前底色；透明标记和自适应前景保留独立形状与安全区，导出参数见 `geometry.json`。
 - 各平台使用对应的原始导出素材，裁切与主题效果交由平台处理。
 - 单色轮廓与彩色版本共享形状；彩色材质来自栅格母稿，SVG 提供单色轮廓。
 
 ## 重新导出
 
-在仓库根目录运行 Windows Python：
+在仓库根目录运行 Python：
 
 ```powershell
 python -m pip install pillow numpy scipy
 python branding/orbis/build_icons.py
 ```
 
-脚本重新写入本套图标及 Android 对应资源；导出前确认这些文件的编辑归属。
+脚本重新写入品牌母稿、商店图标、iOS 与 Relay 图标、Host 的 PNG/ICO、Android 资源及应用内标记。
 
-macOS Host 的访达、启动台和 Dock 使用带深蓝圆角底板的应用图标；菜单栏和窗口内使用透明符号。在 macOS 上重新导出：
+macOS Host 的访达、启动台和 Dock 使用带圆角底板的应用图标；菜单栏和窗口内使用透明符号。在 macOS 上重新导出 ICNS 与圆角 Host 图标：
 
 ```sh
 swift branding/orbis/build_macos_icon.swift
