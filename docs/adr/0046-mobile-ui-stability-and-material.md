@@ -47,9 +47,13 @@ Status: accepted
 
 参考：[ADR-0048](0048-online-chat-entry-budget.md)；[ADR-0058 SC47](0058-shared-interaction-motion.md)；[Android 连续性决策](0057-android-tool-transcript-continuity.md)。
 
-### 5. 设置与配对入口（S22 / S23）
+### 5. 设置与配对入口（S22 / S23 / S28 / S29）
 
 设置集中呈现供应商、连接、配对、外观和语言，电脑行与侧边栏提供电脑管理入口。连接胶囊呈现实际路径状态和重试，整页导航共用 ADR-0054。
+
+2026-11-06 S28 / SC48：当前连接增加“连接协议”，从所选电脑的实际 adapter 显示 WS / QUIC，LAN 显示 WS，未连接或未知显示“暂不可用”。复用两端 `StatusRow` 和中英文目录；协议与断线判定见 `PresentationTests` / `StatusScreenTest`，电脑隔离见 `MultiHostTests`，设备显示见 `testCurrentConnectionProtocol` / `SettingsEntryInstrumentedTest`。实现已完成，构建、自动验证及额外回归失败分别见 [本次验证记录](../../.artifacts/ui-regression/20261106-connection-protocol/verification.json)；未部署，待用户安装验证。
+
+2026-11-06 S29 / SC49：增加 per-Host 协议模式三选项，保存手机到 Relay 的 `auto` / `ws` / `quic` 偏好。auto 在下次连接或重连时优先 QUIC、传输准备失败时认证前回退 WS；ws 与 quic 按各自强制模式交接。实现复用现有 Relay adapter 选择、新拟物选择按钮及实际协议状态，验证见 `MultiHostTests`、`StatusScreenTest` 与两端设置页测试。构建、部署及验收状态见 [协议模式验证记录](../../.artifacts/ui-regression/20261106-auto-relay-selection/verification.json)。
 
 参考：[ADR-0054](0054-shared-full-page-navigation.md)；[ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)；[StatusViews.swift](../../ios/Orbis/Orbis/StatusViews.swift)；[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)；[SettingsEntryInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SettingsEntryInstrumentedTest.kt)。
 

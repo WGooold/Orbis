@@ -19,6 +19,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [供应商管理与订阅配额](adr/0019-host-provider-management.md)：Host、iOS 和 Android 的配置切换与 5 小时 / 周配额查询。
 - `docs/adr/`: current architecture decisions and constraints with lasting value. Replaced or duplicate material is removed after useful constraints and references are merged into the current decision. Retired numbers are not reused; Git retains deleted history.
 - [ADR-0051](adr/0051-ui-style-motion-and-visual-stability-freeze.md)：UI 基线与稳定 feature 标识。
+- [ADR-0066](adr/0066-unified-chat-card-presentation.md)：各后端共用内容步骤分卡、折叠工具组及显示片段锚点；S31 / SC50，双端已实现并通过定向自动验证，设备视觉与用户验收待完成。
 - [ADR-0067](adr/0067-host-app-field-transport-rules.md)：Host↔App 的 19 条传输规则、完整字段归类及分组回归门槛。
 - [ADR-0050](adr/0050-fixed-lan-relay-routing.md): LAN / Relay only with fixed LAN-first routing; configurable priorities are removed. Merged into main and locally verified; release validation pending.
 - [ADR-0052](adr/0052-turn-file-changes-and-on-demand-diff.md)：Host 保存轮次前后版本、先同步文件元数据，双端按需查看差异并带动画切换文件。

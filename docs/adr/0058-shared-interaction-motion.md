@@ -4,7 +4,7 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前沿用 r48 消息旁菜单与显式选字、r43 按钮轻压；iOS 双侧边缘增强暂不交付。具体几何、时长、曲线和覆盖由实现及测试断言决定，不在 ADR 复制。SC01–SC52、MOT-01–MOT-27 为保留标识。
+当前沿用 r48 消息旁菜单与显式选字、r43 按钮轻压；iOS 双侧边缘增强暂不交付。具体几何、时长、曲线和覆盖由实现及测试断言决定，不在 ADR 复制。SC01–SC53、MOT-01–MOT-28 为保留标识。
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
 
@@ -63,11 +63,15 @@
 | SC47 | 回复卡片变化 |
 | SC48 | 当前连接协议与电脑、路径、断线状态同步（S28） |
 | SC49 | 设置页三种协议模式选择与 Host 隔离（S29） |
-| SC50 | 各后端内容步骤分卡、并行工具组折叠与局部分页（S31） |
+| SC50 | 各后端内容步骤分卡、并行工具组折叠与局部分页（S31 / [ADR-0066](0066-unified-chat-card-presentation.md)） |
+| SC51 | Android 首页三根导航、横拨 Agent、弧盘浏览与显式供应商确认（S32；实现中，执行证据待补） |
 | SC52 | 跨 Agent 子代理短标题、状态与不完整 / 待核对提示（S33；复用既有任务折叠与稳定身份） |
+| SC53 | 首页后台同步使用新拟物凸起状态点的轻微明暗呼吸，保持连接文字与布局稳定（S18 / MOT-28） |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 
 2026-11-05 MOT-14 / SC03 / SC08 / SC36：Android 目录后台投影与 IO 首载保持既有动效与视口行为。对应 S19 / V21、PERF-07、R48 / R57 / R65，回归见 [DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)；实际验证与待验收项见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`。
 
 2026-11-06 MOT-27 / SC50 / S31：统一内容步骤复用回复增高和自然折叠；默认收起多工具组，展开后按固定页增加工具。已显示卡片边界在历史前插时保留，工具组以首个原生工具身份跨实时与历史表示保持外框身份。双端共用夹具与实际执行见 [证据](../../.artifacts/unified-chat-cards-20261106/)；设备与用户视觉验收待完成。
+
+2026-11-07 MOT-28 / SC53 / S18：首页连接点采用哑光底板与成对柔影表达凸起，后台同步只改变点面高光，点面颜色、连接路径文字、图标槽和列表位置保持稳定。辅助功能保留同步状态，减少动画时常亮。实现见 [Android 状态点](../../android/app/src/main/java/com/orbising/orbis/NeumorphStatusDot.kt)、两端首页连接胶囊；回归见 [Android 胶囊用例](../../android/app/src/androidTest/java/com/orbising/orbis/HomeConnectionStatusInstrumentedTest.kt)、既有首页加载用例及 iOS `testHomePublishesCompleteSnapshotsWithoutReturningToLoading`。[本次执行证据](../../.artifacts/ui-regression/20261107-home-raised-sync-dot/)；安装与用户验收待完成。
