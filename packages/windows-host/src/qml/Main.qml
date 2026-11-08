@@ -11,10 +11,16 @@ ApplicationWindow {
     width: 1180; height: 820
     minimumWidth: 1020; minimumHeight: 700
     title: "Orbis Host"
-    color: "#E6EBF4"
-    font.family: "Microsoft YaHei UI"
-    font.pixelSize: 14
+    color: Theme.surfaceBase
+        font.pixelSize: Theme.body
+    palette.windowText: Theme.ink
+    palette.text: Theme.ink
+    palette.buttonText: Theme.ink
+    palette.base: Theme.surfaceBase
+    palette.highlight: Theme.accentSoft
+    palette.highlightedText: Theme.ink
     readonly property bool motionEnabled: typeof orbisMotionEnabled === "undefined" || orbisMotionEnabled
+    onMotionEnabledChanged: if (!motionEnabled) { pageArrival.stop(); pageContent.entryProgress = 1 }
     property int page: 0
     property var pageNames: ["概览", "设备", "Agent", "设置", "诊断"]
     property string revokeId: ""
@@ -23,12 +29,12 @@ ApplicationWindow {
     // “发现可用更新”提示条只在本轮运行里露一次：关掉后仍可从侧边栏圆点和各页面按钮进入。
     property bool updateNoticeDismissed: false
     readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
-    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek Harness"})[kind] || kind }
+    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
     function codexDesktopLabel() { return ({attached:"已接入", closed:"未接入", notInstalled:"未安装", unsupported:"不可用", error:"接入失败"})[window.codexDesktopState()] || (!host.bridgeReady ? "未知" : host.codexEnabled ? "正在检测" : "未启用") }
-    function codexDesktopColor() { return ({attached:"#278868", closed:"#b46b19", error:"#a63838", notInstalled:"#73819a", unsupported:"#73819a"})[window.codexDesktopState()] || "#73819a" }
+    function codexDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, error:Theme.danger, notInstalled:Theme.inkMuted, unsupported:Theme.inkMuted})[window.codexDesktopState()] || Theme.inkMuted }
     function piAgent() { return host.agents.find(a => a.kind === "pi") || {} }
     function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
@@ -209,7 +215,7 @@ ApplicationWindow {
         return draft
     }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
-    function selectPage(index) { page = index; if (index === 3) settingsPane.load() }
+    function selectPage(index) { if (page !== index) { page = index; if (window.motionEnabled) { pageContent.entryProgress = 0; pageArrival.restart() } } if (index === 3) settingsPane.load() }
     function openProviders(kind) { page = 2; providersOpen = true; providerSearch.text = ""; host.loadProviders(kind) }
     function closeProviderEditor() { providerDialog.close() }
     function requestCloseProviderEditor() { if (providerFormDirty) discardProviderDialog.open(); else closeProviderEditor() }
@@ -219,7 +225,7 @@ ApplicationWindow {
     }
     function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
-        return ({connected: "已连接", connecting: "正在连接", reconnecting: "正在重连", closed: "连接已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
+        return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
     function agentUpdatesAvailable() { return host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
     function androidUpdatesAvailable() { return host.devices.some(function(device) { return device.androidUpdateAvailable }) }
@@ -244,15 +250,15 @@ ApplicationWindow {
 
     component Field: TextField {
         property bool marksProviderDirty: true
-        implicitHeight: 46
-        leftPadding: 14; rightPadding: 14
+        implicitHeight: Theme.fieldHeight
+        leftPadding: 16; rightPadding: 16
         selectByMouse: true
-        color: "#21314d"
-        placeholderTextColor: "#98a4b8"
-        background: NeuSurface { margin: 0; cornerRadius: 6; inset: true; surface: "#DDE3EF"; focused: parent.activeFocus }
+        color: Theme.ink
+        placeholderTextColor: Theme.inkMuted
+        background: Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; inset: true; focused: parent.activeFocus; disabled: !parent.enabled }
         onTextEdited: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
     }
-    component Heading: MotionText { font.pixelSize: 20; font.weight: Font.DemiBold; color: "#172a49" }
+    component Heading: MotionText { font.pixelSize: Theme.body; font.weight: Font.DemiBold; color: Theme.ink }
     function formatBytes(value) {
         if (!(value > 0)) return "0 MB"
         var mb = value / 1048576
@@ -271,32 +277,32 @@ ApplicationWindow {
         spacing: 6
         RowLayout {
             Layout.fillWidth: true; spacing: 8
-            Label { text: label; color: "#253651"; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+            Label { text: label; color: Theme.ink; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
             Label {
                 text: total > 0
                     ? window.formatBytes(received) + " / " + window.formatBytes(total) + "（" + Math.floor(ratio * 100) + "%）"
                     : "已下载 " + window.formatBytes(received)
-                color: "#60728e"; font.pixelSize: 12
+                color: Theme.inkMuted; font.pixelSize: Theme.caption
             }
-            Label { text: "已用 " + window.downloadSeconds + " 秒"; color: "#8f9caf"; font.pixelSize: 12 }
+            Label { text: "已用 " + window.downloadSeconds + " 秒"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
         }
         Rectangle {
             id: track
-            Layout.fillWidth: true; Layout.preferredHeight: 6; radius: 3; color: "#dde3ef"
-            Rectangle { visible: total > 0; width: track.width * ratio; height: track.height; radius: 3; color: "#2459D3"; Behavior on width { NumberAnimation { duration: 200 } } }
+            Layout.fillWidth: true; Layout.preferredHeight: 6; radius: 3; color: Theme.surfaceBase
+            Rectangle { visible: total > 0; width: track.width * ratio; height: track.height; radius: 3; color: Theme.accent; Behavior on width { NumberAnimation { duration: window.motionEnabled ? Theme.durState : 0; easing.type: Easing.OutCubic } } }
             Rectangle {
                 visible: total <= 0
-                width: track.width * 0.3; height: track.height; radius: 3; color: "#8aa3dd"
+                width: track.width * 0.3; height: track.height; radius: 3; color: Theme.accent
                 SequentialAnimation on x {
-                    running: visible
+                    running: visible && window.motionEnabled
                     loops: Animation.Infinite
-                    NumberAnimation { from: 0; to: track.width * 0.7; duration: 1100; easing.type: Easing.InOutQuad }
-                    NumberAnimation { from: track.width * 0.7; to: 0; duration: 1100; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 0; to: track.width * 0.7; duration: Theme.durLoop; easing.type: Easing.Linear }
+                    NumberAnimation { from: track.width * 0.7; to: 0; duration: Theme.durLoop; easing.type: Easing.Linear }
                 }
             }
         }
     }
-    component Hint: MotionText { color: "#73819a"; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: 13 }
+    component Hint: MotionText { color: Theme.inkMuted; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: Theme.label }
     component EngravedWordmark: Item {
         id: wordmark
         property alias text: face.text
@@ -307,17 +313,19 @@ ApplicationWindow {
         // The darker face keeps the word readable against the same neumorphic panel.
         Label {
             id: darkWall
+            Accessible.ignored: true
             x: 0; y: 0
             text: face.text
-            color: "#71819A"
-            opacity: 0.9
+            color: Theme.shade
+            opacity: 0.6
             font: face.font
         }
         Label {
             id: lightWall
+            Accessible.ignored: true
             x: wordmark.relief; y: wordmark.relief
             text: face.text
-            color: "#FFFFFF"
+            color: Theme.highlight
             opacity: 0.92
             font: face.font
         }
@@ -325,38 +333,55 @@ ApplicationWindow {
             id: face
             x: wordmark.relief / 2; y: wordmark.relief / 2
             text: "Orbis"
-            color: "#AAB8CB"
-            font.pixelSize: 29
+            color: Theme.inkMuted
+            font.pixelSize: Theme.title
             font.weight: Font.DemiBold
-            font.family: "Segoe UI"
+
         }
     }
-    component DialogSurface: Rectangle { color: "#E6EBF4"; radius: 8; border.width: 1; border.color: "#C8D3E2" }
+    component DialogSurface: Surface {
+        anchors.fill: parent; anchors.margins: -16; margin: 16
+        cornerRadius: Theme.radiusXl; shadowScale: 1
+    }
     component SoftDialog: Dialog {
         id: dialog
-        palette.window: "#E6EBF4"
+        readonly property int orbisSurfaceLevel: 0
+        padding: 16
+        palette.window: Theme.surfaceBase
+        palette.windowText: Theme.ink
         background: DialogSurface {}
         header: Label {
             text: dialog.title; visible: text.length > 0
-            padding: 18; bottomPadding: 16
-            font.pixelSize: 17; font.weight: Font.DemiBold; color: "#21314d"
+            padding: 16; bottomPadding: 16
+            font.pixelSize: Theme.title; font.weight: Font.DemiBold; color: Theme.ink
             wrapMode: Text.WordWrap
-            background: Rectangle {
-                color: "transparent"
-                Rectangle { anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 1; height: 1; color: "#C8D3E2" }
+        }
+        Overlay.modal: Rectangle { color: Qt.alpha(Theme.scrim, 0.34) }
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: window.motionEnabled ? Theme.durPanel : 0; easing.type: Easing.OutCubic }
+                NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: window.motionEnabled ? Theme.durPanel : 0; easing.type: Easing.OutCubic }
+            }
+        }
+        exit: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 1; to: 0; duration: window.motionEnabled ? Theme.durExit : 0; easing.type: Easing.InCubic }
+                NumberAnimation { property: "scale"; from: 1; to: 0.96; duration: window.motionEnabled ? Theme.durExit : 0; easing.type: Easing.InCubic }
             }
         }
         footer: SoftDialogButtons { visible: count > 0 }
     }
     component SoftDialogButtons: DialogButtonBox {
-        spacing: 14; padding: 18; alignment: Qt.AlignRight
+        readonly property int orbisSurfaceLevel: 0
+        spacing: 8; padding: 16; alignment: Qt.AlignRight
         background: Item {}
         delegate: ActionButton {}
     }
     component SoftDialogActions: Pane {
         id: dialogActions
+        readonly property int orbisSurfaceLevel: 0
         default property alias actions: actionRow.data
-        spacing: 12; padding: 18
+        spacing: 8; padding: 16
         background: Item {}
         contentItem: RowLayout { id: actionRow; spacing: dialogActions.spacing }
     }
@@ -367,94 +392,61 @@ ApplicationWindow {
         Accessible.name: (text || "开关") + "，当前状态：" + stateLabel
         onToggled: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         spacing: 12
-        implicitHeight: 40
-        readonly property real knobSize: 34 // fills the groove height, as the reference does
-        readonly property real knobRadius: 12 // large radius with a flat edge: the reference thumb is a rounded square, not a circle
+        implicitHeight: Theme.touchTarget
         indicator: Item {
-            implicitWidth: 80; implicitHeight: 36
-            opacity: softSwitch.enabled ? 1 : 0.45
-            x: softSwitch.leftPadding
-            y: (softSwitch.height - height) / 2
-            // Recessed groove: the surface keeps the panel colour, the relief comes from the clipped inner shadow.
-            NeuSurface {
-                anchors.fill: parent; margin: 0; cornerRadius: 13
-                inset: true; depth: 5; focused: softSwitch.activeFocus
-            }
-            // The two engraved labels keep the available states visible even when the thumb moves.
-            Label {
-                text: "关"
-                x: 9; width: 22; height: parent.height
-                verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter
-                color: softSwitch.checked ? "#9aa7b9" : "#536681"
-                font.pixelSize: 12; font.weight: softSwitch.checked ? Font.Normal : Font.DemiBold
-            }
-            Label {
-                text: "开"
-                x: parent.width - width - 9; width: 22; height: parent.height
-                verticalAlignment: Text.AlignVCenter; horizontalAlignment: Text.AlignHCenter
-                color: softSwitch.checked ? "#2459D3" : "#9aa7b9"
-                font.pixelSize: 12; font.weight: softSwitch.checked ? Font.DemiBold : Font.Normal
-            }
-            // Raised knob. The item is inflated by the shadow margin so the blur has room inside its own image.
-            Item {
-                width: softSwitch.knobSize + 24; height: width
-                x: (softSwitch.checked ? indicator.width - softSwitch.knobSize : 0) - 12
-                y: (indicator.height - height) / 2
-                Behavior on x { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-                NeuSurface { anchors.fill: parent; margin: 12; cornerRadius: softSwitch.knobRadius; surface: softSwitch.checked ? "#EEF4FF" : "#F7F9FD"; depth: softSwitch.checked ? 1.8 : 2.2; blur: 0.55 }
-                Label {
-                    anchors.centerIn: parent
-                    text: softSwitch.stateLabel
-                    color: softSwitch.checked ? "#2459D3" : "#536681"
-                    font.pixelSize: 12; font.weight: Font.DemiBold
-                }
+            implicitWidth: 64; implicitHeight: 32
+            x: softSwitch.leftPadding; y: (softSwitch.height - height) / 2
+            Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusSm; inset: true; shadowScale: 0.4; disabled: !softSwitch.enabled; focused: softSwitch.activeFocus }
+            Rectangle {
+                width: 24; height: 24; radius: Theme.radiusXs
+                x: softSwitch.checked ? parent.width - width - 4 : 4; y: 4
+                color: softSwitch.enabled ? Theme.surfaceLift : Theme.surfaceBase
+                border.width: softSwitch.enabled ? 0 : 1; border.color: Theme.hairline
+                Behavior on x { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durSelection; easing.type: Easing.OutCubic } }
+                SymbolIcon { anchors.centerIn: parent; width: 16; height: 16; name: softSwitch.checked ? "check" : "close"; color: softSwitch.enabled ? (softSwitch.checked ? Theme.accent : Theme.inkMuted) : Theme.inkFaint }
             }
         }
-        contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? "#40516c" : "#8995a9" }
+        contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; wrapMode: Text.WordWrap }
     }
-
     component SoftComboBox: ComboBox {
         id: softCombo
         onActivated: if (providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
-        implicitHeight: 46
+        implicitHeight: Theme.fieldHeight
         implicitWidth: 180
         leftPadding: 14; rightPadding: 42
-        font.pixelSize: 14
+        font.pixelSize: Theme.body
         contentItem: TextField {
             text: softCombo.editable ? softCombo.editText : softCombo.displayText
             font: softCombo.font
-            color: softCombo.enabled ? "#21314d" : "#8995a9"
-            placeholderTextColor: "#98a4b8"
+            color: softCombo.enabled ? Theme.ink : Theme.inkFaint
+            placeholderTextColor: Theme.inkMuted
             verticalAlignment: Text.AlignVCenter
             readOnly: !softCombo.editable
             selectByMouse: true
             background: Item {}
             onTextEdited: if (softCombo.editable) softCombo.editText = text
         }
-        indicator: Label {
-            x: softCombo.width - width - 14; y: (softCombo.height - height) / 2
-            width: 20; height: 24
-            text: "⌄"
-            color: softCombo.enabled ? "#50617b" : "#9aa6b8"
-            font.pixelSize: 20; font.family: "Segoe UI Symbol"
-            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+        indicator: SymbolIcon {
+            x: softCombo.width - width - 16; y: (softCombo.height - height) / 2
+            width: 22; height: 22; name: "keyboard_arrow_down"
+            color: softCombo.enabled ? Theme.inkMuted : Theme.inkFaint
         }
-        background: NeuSurface {
-            anchors.fill: parent; margin: 0; cornerRadius: 8
-            inset: true; focused: softCombo.activeFocus; surface: "#DDE3EF"
+        background: Surface {
+            anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusMd
+            inset: true; focused: softCombo.activeFocus; disabled: !softCombo.enabled
         }
         delegate: ItemDelegate {
-            width: softCombo.width - 16; implicitHeight: 40
+            width: softCombo.width - 16; implicitHeight: Theme.controlHeight
             highlighted: softCombo.highlightedIndex === index
             contentItem: Text {
                 text: modelData && softCombo.textRole ? modelData[softCombo.textRole] : modelData
-                color: softCombo.enabled ? "#21314d" : "#8995a9"
-                font.pixelSize: 14; verticalAlignment: Text.AlignVCenter
+                color: softCombo.enabled ? Theme.ink : Theme.inkFaint
+                font.pixelSize: Theme.body; verticalAlignment: Text.AlignVCenter
                 elide: Text.ElideRight
             }
-            background: NeuSurface {
-                anchors.fill: parent; margin: 0; cornerRadius: 6
-                inset: parent.highlighted || parent.down; surface: "#E6EBF4"
+            background: Surface {
+                anchors.fill: parent; margin: 0; cornerRadius: Theme.radiusMd
+                inset: parent.highlighted || parent.down; surface: Theme.surfaceBase
             }
         }
         popup: Popup {
@@ -468,9 +460,9 @@ ApplicationWindow {
                 currentIndex: softCombo.highlightedIndex
                 highlightMoveDuration: 0
             }
-            background: NeuSurface {
+            background: Surface {
                 anchors.fill: parent; anchors.margins: -12; margin: 12
-                cornerRadius: 9; surface: "#E6EBF4"; depth: 1.4; blur: 0.9
+                cornerRadius: Theme.radiusLg; surface: Theme.surfaceBase; shadowScale: 1
             }
         }
     }
@@ -479,64 +471,65 @@ ApplicationWindow {
         property bool marksProviderDirty: true
         onToggled: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         spacing: 12
-        implicitHeight: 38
+        implicitHeight: Theme.touchTarget
         indicator: Item {
             implicitWidth: 24; implicitHeight: 24
             x: softCheck.leftPadding; y: (softCheck.height - height) / 2
-            opacity: softCheck.enabled ? 1 : 0.5
-            NeuSurface {
-                anchors.fill: parent; margin: 0; cornerRadius: 7
-                inset: !softCheck.checked; depth: softCheck.checked ? 1.3 : 1.0
-                blur: 0.8; surface: softCheck.checked ? "#2459D3" : "#DDE3EF"
+                        Surface {
+                anchors.fill: parent; anchors.margins: -8; margin: 8
+                inset: softCheck.checked || softCheck.down; shadowScale: 0.4; disabled: !softCheck.enabled; focused: softCheck.activeFocus; cornerRadius: Theme.radiusXs
             }
-            Label {
-                anchors.fill: parent; visible: softCheck.checked
-                text: "✓"; color: "white"; font.pixelSize: 16; font.bold: true
-                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+            SymbolIcon {
+                anchors.centerIn: parent; visible: softCheck.checked
+                name: "check"; width: 16; height: 16
+                color: softCheck.enabled ? Theme.accent : Theme.inkFaint
             }
         }
         contentItem: Label {
             text: softCheck.text
             leftPadding: softCheck.indicator.width + softCheck.spacing
             verticalAlignment: Text.AlignVCenter
-            color: softCheck.enabled ? "#40516c" : "#8995a9"
+            color: softCheck.enabled ? Theme.inkMuted : Theme.inkFaint
         }
     }
     component SoftTextArea: TextArea {
         onTextChanged: if (activeFocus && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         implicitHeight: 96
-        leftPadding: 14; rightPadding: 14; topPadding: 12; bottomPadding: 12
+        leftPadding: 16; rightPadding: 16; topPadding: 12; bottomPadding: 12
         selectByMouse: true
-        color: "#21314d"
-        placeholderTextColor: "#98a4b8"
-        background: NeuSurface {
-            anchors.fill: parent; margin: 0; cornerRadius: 8
-            inset: true; focused: parent.activeFocus; surface: "#DDE3EF"
+        color: Theme.ink
+        placeholderTextColor: Theme.inkMuted
+        background: Surface {
+            anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusMd
+            inset: true; focused: parent.activeFocus; disabled: !parent.enabled
         }
     }
     component SoftToolButton: ToolButton {
         id: softTool
-        implicitWidth: Math.max(42, contentItem.implicitWidth + 20)
-        implicitHeight: 42
+        property string symbol: "more_horiz"
+        Accessible.name: text || ({close:"关闭",arrow_upward:"上移",arrow_downward:"下移",more_horiz:"更多"})[symbol] || "操作"
+        implicitWidth: Theme.touchTarget
+        implicitHeight: Theme.touchTarget
         hoverEnabled: true
-        contentItem: Text {
-            text: softTool.text
-            font.pixelSize: 18
-            horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-            color: !softTool.enabled ? "#8995a9" : "#253651"
+        contentItem: SymbolIcon {
+            name: softTool.symbol
+            color: !softTool.enabled ? Theme.inkFaint : Theme.inkMuted
+            scale: softTool.down ? 0.94 : 1
+            opacity: softTool.down ? 0.82 : 1
+            Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: softTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
         }
-        background: NeuSurface {
-            anchors.fill: parent; anchors.margins: -8; margin: 8
-            cornerRadius: 7; inset: softTool.down || !softTool.enabled
-            focused: softTool.activeFocus; opacity: softTool.enabled ? 1 : 0.6
+        background: Surface {
+            x: 4 - 8; y: 4 - 8; width: 40 + 16; height: 40 + 16; margin: 8
+            cornerRadius: 20; inset: softTool.down
+            focused: softTool.activeFocus; disabled: !softTool.enabled; hovered: softTool.hovered
         }
     }
     RowLayout {
         anchors.fill: parent
         spacing: 0
         Rectangle {
-            Layout.preferredWidth: 220; Layout.fillHeight: true
-            color: "#E6EBF4"
+            Layout.preferredWidth: Theme.hostSidebar; Layout.fillHeight: true
+            color: Theme.surfaceBase
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 20; spacing: 10
                 RowLayout {
@@ -544,14 +537,14 @@ ApplicationWindow {
                     Image { source: "qrc:/src/assets/orbis.png"; Layout.preferredWidth: 40; Layout.preferredHeight: 40; smooth: true }
                     EngravedWordmark { text: "Orbis" }
                 }
-                Label { text: "Easy Agents Everywhere"; color: "#8298ba"; font.pixelSize: 11; Layout.leftMargin: 4; Layout.bottomMargin: 36 }
+                Label { text: "Easy Agents Everywhere"; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.leftMargin: 4; Layout.bottomMargin: 36 }
                 Repeater {
                     model: window.pageNames
                     delegate: Button {
                         id: pageButton
                         objectName: "page-button-" + index
                         property real selectionProgress: window.page === index || down ? 1 : 0
-                        Behavior on selectionProgress { enabled: window.motionEnabled; NumberAnimation { duration: Motion.stateDuration; easing.type: Easing.OutCubic } }
+                        Behavior on selectionProgress { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durSelection; easing.type: Easing.OutCubic } }
                         Accessible.role: Accessible.PageTab
                         Accessible.name: modelData
                         Accessible.selected: window.page === index
@@ -561,68 +554,68 @@ ApplicationWindow {
                         onClicked: window.selectPage(index)
                         contentItem: RowLayout {
                             spacing: 15
-                            Label { text: ["◈", "▣", "⌘", "⚙", "≡"][index]; color: window.page === index ? "#2459D3" : "#627591"; font.family: "Segoe UI Symbol"; font.pixelSize: 20; Layout.leftMargin: 13; Layout.preferredWidth: 22 }
-                            Label { text: modelData; color: window.page === index ? "#2459D3" : "#50617b"; font.weight: window.page === index ? Font.DemiBold : Font.Normal; Layout.fillWidth: true }
-                            Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 4; color: "#bd6320"; visible: window.pageHasUpdate(index) }
+                            SymbolIcon { name: ["computer", "qr_code_scanner", "tune", "settings", "menu"][index]; color: window.page === index ? Theme.accent : Theme.inkMuted; Layout.leftMargin: 16; Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd }
+                            Label { text: modelData; color: window.page === index ? Theme.accent : Theme.inkMuted; font.weight: window.page === index ? Font.DemiBold : Font.Normal; Layout.fillWidth: true }
+                            Rectangle { Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4; color: Theme.warning; visible: window.pageHasUpdate(index) }
                         }
                         background: Item {
-                            NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: false; opacity: (pageButton.hovered || pageButton.activeFocus ? 1 : 0) * (1 - pageButton.selectionProgress); focused: pageButton.activeFocus }
-                            NeuSurface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: 6; inset: true; opacity: pageButton.selectionProgress; focused: pageButton.activeFocus }
+                            Surface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: Theme.radiusMd; inset: false; opacity: (pageButton.hovered || pageButton.activeFocus ? 1 : 0) * (1 - pageButton.selectionProgress); focused: pageButton.activeFocus }
+                            Surface { anchors.fill: parent; anchors.margins: -12; margin: 12; cornerRadius: Theme.radiusMd; inset: true; opacity: pageButton.selectionProgress; focused: pageButton.activeFocus }
                         }
                     }
                 }
                 Item { Layout.fillHeight: true }
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#cbd4e3" }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
                 RowLayout {
                     Layout.topMargin: 14; spacing: 9
-                    Rectangle { width: 7; height: 7; radius: 4; color: host.state === "connected" ? "#6dd7b5" : "#97a7bf" }
-                    Label { text: stateText(); color: "#627591"; font.pixelSize: 12 }
+                    StatusDot { color: host.state === "connected" ? Theme.success : (host.state === "connecting" || host.state === "reconnecting") ? Theme.warning : Theme.inkFaint; idle: host.state === "stopped"; syncing: host.state === "connecting" || host.state === "reconnecting" }
+                    Label { text: stateText(); color: Theme.inkMuted; font.pixelSize: Theme.caption }
                 }
-                Label { text: Qt.platform.os === "osx" ? "macOS · v" + host.version : "Windows · v" + host.version; color: "#6f85a6"; font.pixelSize: 11; Layout.bottomMargin: 10 }
+                Label { text: Qt.platform.os === "osx" ? "macOS · v" + host.version : "Windows · v" + host.version; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.bottomMargin: 10 }
             }
         }
         ColumnLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
             Rectangle {
-                Layout.fillWidth: true; Layout.preferredHeight: 82; color: "#E6EBF4"
-                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: "#D8E0EC" }
+                Layout.fillWidth: true; Layout.preferredHeight: 82; color: Theme.surfaceBase
+                Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: Theme.hairline }
                 RowLayout {
-                    anchors.fill: parent; anchors.leftMargin: 36; anchors.rightMargin: 36
+                    anchors.fill: parent; anchors.leftMargin: 40; anchors.rightMargin: 40
                     ColumnLayout {
                         spacing: 7
-                        Label { text: window.pageNames[window.page]; font.pixelSize: 27; font.weight: Font.DemiBold; color: "#172a49" }
-                        Hint { text: ["让电脑上的 Agent，随时与你连接。", "管理这台电脑信任的手机。", "连接你正在使用的 coding agent。", "按照你的工作习惯设置 Orbis。", "了解连接状态，快速定位问题。"][window.page] }
+                        Label { text: window.pageNames[window.page]; font.pixelSize: Theme.display; font.weight: Font.DemiBold; color: Theme.ink }
+                        Hint { text: ["让电脑上的 Agent，随时与你连接。", "管理这台电脑信任的手机。", "管理电脑上的 Agent。", "按照你的工作习惯设置 Orbis。", "了解连接状态，快速定位问题。"][window.page] }
                     }
                     Item { Layout.fillWidth: true }
                     Rectangle {
-                        implicitWidth: statusLabel.implicitWidth + 26; implicitHeight: 30; radius: 6
-                        color: host.state === "connected" ? "#e1f4ee" : "#e7ecf4"
-                        MotionText { id: statusLabel; anchors.centerIn: parent; text: stateText(); color: host.state === "connected" ? "#278868" : "#677992"; font.pixelSize: 12 }
+                        implicitWidth: statusLabel.implicitWidth + 32; implicitHeight: 32; radius: 16
+                        color: host.state === "connected" ? Theme.surfaceBase : Theme.surfaceBase
+                        MotionText { id: statusLabel; anchors.centerIn: parent; text: stateText(); color: host.state === "connected" ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.caption }
                     }
                 }
             }
             Rectangle {
                 visible: host.message.length > 0
-                Layout.fillWidth: true; Layout.leftMargin: 36; Layout.rightMargin: 36; Layout.bottomMargin: 16
-                implicitHeight: messageLabel.implicitHeight + 24; radius: 6; color: "#e8effd"
+                Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 16
+                implicitHeight: messageLabel.implicitHeight + 24; radius: Theme.radiusMd; color: Theme.surfaceBase
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 12
-                    MotionText { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#365485"; font.pixelSize: 13 }
-                    SoftToolButton { text: "×"; onClicked: host.clearMessage(); implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭提示" }
+                    MotionText { id: messageLabel; text: host.message; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.inkMuted; font.pixelSize: Theme.label }
+                    SoftToolButton { symbol: "close"; onClicked: host.clearMessage(); implicitWidth: Theme.touchTarget; implicitHeight: Theme.touchTarget; Accessible.name: "关闭提示" }
                 }
             }
             Rectangle {
                 visible: !window.updateNoticeDismissed && (host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable())
-                Layout.fillWidth: true; Layout.leftMargin: 36; Layout.rightMargin: 36; Layout.bottomMargin: 14
-                implicitHeight: updateNoticeRow.implicitHeight + 22; radius: 6; color: "#fff3df"
+                Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 14
+                implicitHeight: updateNoticeRow.implicitHeight + 22; radius: Theme.radiusMd; color: Theme.surfaceBase
                 RowLayout {
                     id: updateNoticeRow
                     anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 10; anchors.topMargin: 8; anchors.bottomMargin: 8; spacing: 12
-                    Label { text: "发现可用更新：" + window.availableUpdatesText(); Layout.fillWidth: true; wrapMode: Text.WordWrap; color: "#76511c"; font.pixelSize: 13 }
+                    Label { text: "发现可用更新：" + window.availableUpdatesText(); Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.warning; font.pixelSize: Theme.label }
                     ActionButton { text: "更新 Host"; visible: host.hostUpdateAvailable; enabled: !host.busy; onClicked: host.updateHost() }
                     ActionButton { text: "查看 Agent"; visible: window.agentUpdatesAvailable(); onClicked: window.selectPage(2) }
                     ActionButton { text: "查看设备"; visible: window.androidUpdatesAvailable(); onClicked: window.selectPage(1) }
-                    SoftToolButton { text: "×"; onClicked: window.updateNoticeDismissed = true; implicitWidth: 30; implicitHeight: 28; Accessible.name: "关闭更新提示" }
+                    SoftToolButton { symbol: "close"; onClicked: window.updateNoticeDismissed = true; implicitWidth: Theme.touchTarget; implicitHeight: Theme.touchTarget; Accessible.name: "关闭更新提示" }
                 }
             }
             ScrollView {
@@ -632,8 +625,13 @@ ApplicationWindow {
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                 contentWidth: availableWidth
                 ColumnLayout {
-                    width: scroll.availableWidth - 72
-                    x: 36; spacing: 20
+                    id: pageContent
+                    property real entryProgress: 1
+                    opacity: entryProgress
+                    transform: Translate { x: 24 * (1 - pageContent.entryProgress) }
+                    NumberAnimation { id: pageArrival; target: pageContent; property: "entryProgress"; from: 0; to: 1; duration: Theme.durPage; easing.type: Easing.OutCubic }
+                    width: Math.min(Theme.contentWidth, scroll.availableWidth - 80)
+                    x: (scroll.availableWidth - width) / 2; spacing: 24
                     Item { Layout.preferredHeight: 22 }
 
                     ColumnLayout {
@@ -646,11 +644,11 @@ ApplicationWindow {
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 9
                                     Hint { text: "这台电脑" }
-                                    Heading { text: host.hostName || "正在准备你的 Host" }
+                                    Heading { text: host.hostName || "正在准备这台电脑" }
                                     Hint { text: host.activated ? (host.email ? "已通过 " + host.email + " 激活" : "这台电脑已激活") : "" }
                                 }
                                 ActionButton { visible: host.activated; text: host.state === "connected" || host.state === "connecting" || host.state === "reconnecting" ? "暂停连接" : "开始连接"; enabled: !host.busy; onClicked: { if (host.state === "connected" || host.state === "connecting" || host.state === "reconnecting") host.stopHost(); else host.startHost() } }
-                                ActionButton { visible: host.activated; text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
+                                ActionButton { visible: host.activated; text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                             }
                         }
                         Card {
@@ -717,9 +715,9 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 15
                                     Heading { text: "连接，从这里开始" }
                                     Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true; Layout.bottomMargin: 9 }
-                                    Label { visible: host.verificationRequired; text: "QQ 邮箱"; color: "#40516c"; font.pixelSize: 13 }
+                                    Label { visible: host.verificationRequired; text: "QQ 邮箱"; color: Theme.inkMuted; font.pixelSize: Theme.label }
                                     Field { id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"; placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱" }
-                                    Label { visible: host.verificationRequired; text: "邮箱验证码"; color: "#40516c"; font.pixelSize: 13 }
+                                    Label { visible: host.verificationRequired; text: "邮箱验证码"; color: Theme.inkMuted; font.pixelSize: Theme.label }
                                     RowLayout {
                                         visible: host.verificationRequired; Layout.fillWidth: true; spacing: 10
                                         Field { id: codeField; objectName: "verificationCode"; placeholderText: "6 位验证码"; Layout.fillWidth: true; maximumLength: 6; validator: RegularExpressionValidator { regularExpression: /[0-9]{0,6}/ } Accessible.name: "验证码" }
@@ -741,8 +739,8 @@ ApplicationWindow {
                                     ColumnLayout {
                                         anchors.fill: parent; spacing: 10
                                         Hint { text: modelData }
-                                        MotionText { objectName: "home-metric-" + index; roll: true; font.pixelSize: 33; font.weight: Font.DemiBold; color: "#203857"; text: String(index === 0 ? host.devices.length : index === 1 ? host.runtimeCount : host.agents.filter(a => a.installed).length + (host.claudeInstalled ? 1 : 0)); Layout.fillWidth: true }
-                                        Hint { text: index === 0 ? "" : index === 1 ? "由这台电脑上的 Host 提供" : "Pi / Codex / Claude Code / DeepSeek"; Layout.fillWidth: true; font.pixelSize: 11 }
+                                        MotionText { objectName: "home-metric-" + index; roll: true; font.pixelSize: Theme.display; font.weight: Font.DemiBold; color: Theme.ink; text: String(index === 0 ? host.devices.length : index === 1 ? host.runtimeCount : host.agents.filter(a => a.installed).length + (host.claudeInstalled ? 1 : 0)); Layout.fillWidth: true }
+                                        Hint { text: index === 0 ? "" : index === 1 ? "由这台电脑提供" : "Pi / Codex / Claude Code / DeepSeek"; Layout.fillWidth: true; font.pixelSize: Theme.caption }
                                     }
                                 }
                             }
@@ -756,7 +754,7 @@ ApplicationWindow {
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
                             ActionButton { text: window.androidUpdatesAvailable() ? "更新Android客户端" : "下载Android客户端"; visible: host.appDownloadQr.length > 0; onClicked: appDownloadDialog.open() }
-                            ActionButton { text: "＋ 添加手机"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
+                            ActionButton { text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                         }
                         Card {
                             visible: host.devices.length === 0; Layout.fillWidth: true
@@ -771,10 +769,10 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 20
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 8
-                                        Heading { text: modelData.label || "手机 · " + modelData.deviceId.slice(0, 8); font.pixelSize: 17 }
+                                        Heading { text: modelData.label || "手机 · " + modelData.deviceId.slice(0, 8); font.pixelSize: Theme.body }
                                         Hint { text: "连接方式：" + (({lan: "局域网直连", relay: "中继", offline: "离线"})[modelData.path || "offline"]) }
-                                        Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: 12 }
-                                        Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: "#b46b19" }
+                                        Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: Theme.caption }
+                                        Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: Theme.warning }
                                     }
                                     ActionButton { text: "重命名"; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; deviceNameField.text = modelData.label || ""; renameDialog.open() } }
                                     ActionButton { text: "撤销配对"; danger: true; enabled: host.bridgeReady && !host.busy; onClicked: { window.revokeId = modelData.deviceId; revokeDialog.open() } }
@@ -805,12 +803,12 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 15
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        Heading { text: modelData.kind === "pi" ? "Pi" : modelData.kind === "dsh" ? "DeepSeek Harness" : "Codex" }
+                                        Heading { text: window.agentName(modelData.kind); color: Theme.agent(modelData.kind) }
                                         Item { Layout.fillWidth: true }
-                                        Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装 · 需要修复" : "尚未安装"; color: modelData.installed ? "#278868" : "#8b7790" }
+                                        Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装 · 需要修复" : "尚未安装"; color: modelData.installed ? Theme.success : Theme.inkMuted }
                                     }
-                                    Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? "#b46b19" : "#60728e" }
-                                    Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: "#b46b19" }
+                                    Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? Theme.warning : Theme.inkMuted }
+                                    Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: Theme.warning }
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
                                     RowLayout {
                                         spacing: 10
@@ -824,7 +822,7 @@ ApplicationWindow {
                         Card { Layout.fillWidth: true
                             ColumnLayout { anchors.fill: parent; spacing: 12
                                 RowLayout { Layout.fillWidth: true
-                                    Heading { text: "Claude Code" }
+                                    Heading { text: "Claude Code"; color: Theme.agentClaude }
                                     Item { Layout.fillWidth: true }
                                     Hint { text: host.claudeInstalled ? "可用" : "尚未安装" }
                                 }
@@ -851,7 +849,7 @@ ApplicationWindow {
                             ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
                             ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
                             ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
-                            ActionButton { text: "＋ 添加供应商"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
+                            ActionButton { text: "添加供应商"; symbol: "add"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
                         }
                         RowLayout { Layout.fillWidth: true
                             Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
@@ -872,14 +870,14 @@ ApplicationWindow {
                                 required property int index
                                 Layout.fillWidth: true
                                 contentHeight: providerCardContent.implicitHeight
-                                Rectangle { anchors.fill: parent; color: "transparent"; border.color: "#2459D3"; border.width: 2; radius: 7; visible: providerDrop.containsDrag }
+                                Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.accent; border.width: 2; radius: Theme.radiusLg; visible: providerDrop.containsDrag }
                                 DropArea { id: providerDrop; anchors.fill: parent; keys: ["provider-card"]; enabled: !host.busy && providerSearch.text.trim().length === 0
                                     onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerCard.modelData.id); drop.acceptProposedAction() }
                                 }
                                 ColumnLayout { id: providerCardContent; anchors.fill: parent; spacing: 12
                                   RowLayout { Layout.fillWidth: true; spacing: 12
                                     Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40
-                                        Label { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; text: "⠿"; font.pixelSize: 24; color: dragMouse.enabled ? "#627591" : "#a5afbf"
+                                        SymbolIcon { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; name: "more_horiz"; width: Theme.iconMd; height: Theme.iconMd; rotation: 90; color: dragMouse.enabled ? Theme.inkMuted : Theme.inkFaint
                                             Drag.active: dragMouse.drag.active; Drag.source: providerCard; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
                                             MouseArea { id: dragMouse; anchors.fill: parent; enabled: !host.busy && providerSearch.text.trim().length === 0; cursorShape: Qt.OpenHandCursor; drag.target: providerDrag
                                                 onPressed: { window.draggedProviderId = modelData.id; providerDrag.anchors.centerIn = undefined }
@@ -889,8 +887,8 @@ ApplicationWindow {
                                         }
                                     }
                                     ColumnLayout { Layout.fillWidth: true
-                                        Heading { text: modelData.name; font.pixelSize: 18; Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? " · Pi 全局默认" : ""); color: modelData.enabled ? "#278868" : "#73819a" }
+                                        Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
+                                        Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? " · Pi 全局默认" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
                                         Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
                                     }
                                     ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { if (modelData.enabled) { window.removeProviderId = modelData.id; removeProviderDialog.open() } else host.switchProvider(modelData.id, true) } }
@@ -900,10 +898,10 @@ ApplicationWindow {
                                   }
                                   RowLayout { Layout.fillWidth: true; spacing: 10
                                     Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
-                                    ActionButton { text: host.checkingProviderIds.indexOf(modelData.id) >= 0 ? "检测中…" : "检测连通"; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
+                                    ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
                                     ActionButton { text: "查询订阅配额"; visible: modelData.enabled && modelData.subscriptionSupported === true; enabled: !host.busy; onClicked: host.querySubscription(modelData.id) }
-                                    SoftToolButton { text: "↑"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
-                                    SoftToolButton { text: "↓"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
+                                    SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
+                                    SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
                                   }
                                 }
                             }
@@ -917,15 +915,72 @@ ApplicationWindow {
                         function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
-                            Heading { text: "常规" }
-                            Label { text: "电脑名称"; color: "#4b5d78" }
-                            Field { id: nameField; Layout.fillWidth: true; maximumLength: 80 }
-                            SoftSwitch { id: startupSwitch; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
-                            SoftSwitch { id: codexSwitch; text: "启动 Host 时预启动 Codex 终端后端" }
-                            SoftSwitch { id: dshSwitch; text: "启动 Host 时预启动 DeepSeek Harness" }
-                            SoftSwitch { id: piIntegrationSwitch; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
+                            Heading { text: "外观" }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 12
+                                Repeater {
+                                    model: ["light", "dark"]
+                                    delegate: Button {
+                                        id: appearanceOption
+                                        required property string modelData
+                                        readonly property bool previewDark: modelData === "dark"
+                                        readonly property bool chosen: Theme.dark === previewDark
+                                        Layout.fillWidth: true; implicitHeight: 168
+                                        Accessible.name: previewDark ? "深色" : "浅色"
+                                        Accessible.selected: chosen
+                                        onClicked: Theme.preferences.mode = modelData
+                                        contentItem: ColumnLayout {
+                                            spacing: 12
+                                            ThemePreview { dark: appearanceOption.previewDark; Layout.fillWidth: true; Layout.preferredHeight: 112 }
+                                            RowLayout {
+                                                Layout.alignment: Qt.AlignHCenter; spacing: 8
+                                                Rectangle { width: 18; height: 18; radius: 9; color: "transparent"; border.width: 1.5; border.color: appearanceOption.chosen ? Theme.accent : Theme.inkMuted; Rectangle { anchors.centerIn: parent; width: 8; height: 8; radius: 4; visible: appearanceOption.chosen; color: Theme.accent } }
+                                                Label { text: (appearanceOption.previewDark ? "深色" : "浅色") + (appearanceOption.chosen && Theme.preferences.mode === "system" ? " · 跟随系统" : ""); color: appearanceOption.chosen ? Theme.accent : Theme.inkMuted; font.pixelSize: Theme.label; font.weight: appearanceOption.chosen ? Font.DemiBold : Font.Normal }
+                                            }
+                                        }
+                                        padding: 12
+                                        background: Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusSm; shadowScale: 0.4; inset: appearanceOption.chosen || appearanceOption.down; focused: appearanceOption.activeFocus; hovered: appearanceOption.hovered }
+                                    }
+                                }
+                            }
+                            SoftSwitch {
+                                objectName: "appearanceSystem"; text: "跟随系统"; checked: Theme.preferences.mode === "system"
+                                onToggled: Theme.preferences.mode = checked ? "system" : Theme.dark ? "dark" : "light"
+                            }
+                            Hint { text: "随电脑的浅色与深色自动切换" }
+                            RowLayout {
+                                spacing: 8
+                                Label { text: "材质"; color: Theme.inkMuted; Layout.rightMargin: 16 }
+                                Repeater {
+                                    model: ["mist", "sage"]
+                                    delegate: Button {
+                                        id: materialOption
+                                        required property string modelData
+                                        readonly property bool chosen: Theme.preferences.material === modelData
+                                        implicitHeight: Theme.controlHeight; implicitWidth: 112
+                                        Accessible.name: modelData === "sage" ? "灰绿" : "雾蓝"
+                                        Accessible.selected: chosen
+                                        onClicked: Theme.preferences.material = modelData
+                                        contentItem: RowLayout {
+                                            spacing: 8
+                                            Rectangle { width: 28; height: 28; radius: 14; color: Theme.colorFor("surface-base", materialOption.modelData === "sage", Theme.dark); border.width: 0; SymbolIcon { anchors.centerIn: parent; width: 16; height: 16; visible: materialOption.chosen; name: "check"; color: Theme.colorFor("accent", materialOption.modelData === "sage", Theme.dark) } }
+                                            Label { text: materialOption.modelData === "sage" ? "灰绿" : "雾蓝"; color: materialOption.chosen ? Theme.accent : Theme.inkMuted; font.pixelSize: Theme.label; font.weight: materialOption.chosen ? Font.DemiBold : Font.Normal }
+                                        }
+                                        background: Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusSm; shadowScale: 0.4; inset: materialOption.chosen || materialOption.down; focused: materialOption.activeFocus; hovered: materialOption.hovered }
+                                    }
+                                }
+                            }
+                            Heading { text: "常规"; Layout.topMargin: 24 }
+                            Hint { text: "暂停连接后修改，保存后生效。"; Layout.fillWidth: true }
+
+                            Label { text: "电脑名称"; color: Theme.inkMuted }
+                            Field { id: nameField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
+                            SoftSwitch { id: startupSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
+                            SoftSwitch { id: codexSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
+                            SoftSwitch { id: dshSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
+                            SoftSwitch { id: piIntegrationSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
-                            SoftSwitch { id: claudeIntegrationSwitch; text: "让终端里运行的 Claude Code 连接 Orbis" }
+                            SoftSwitch { id: claudeIntegrationSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
                             Hint { text: "安装或首次打开 Host 时自动安装 Orbis 插件；未安装 Claude Code 时跳过，安装后重新打开 Host 即可。关闭此项会卸载插件，更新 Host 会保留关闭状态。需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
                             RowLayout {
                                 objectName: "piCommandRow"
@@ -943,15 +998,15 @@ ApplicationWindow {
                             RowLayout {
                                 visible: host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
                                 Layout.fillWidth: true; spacing: 12
-                                Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效"; Layout.fillWidth: true; color: "#b46b19" }
+                                Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效"; Layout.fillWidth: true; color: Theme.warning }
                                 ActionButton { text: "修复终端接入"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.enableCodexTerminal() }
                             }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
-                            Field { id: relayField; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
-                            Label { text: "DeepSeek Web 启动链接（可选）"; color: "#4b5d78" }
-                            Field { id: dshWebUrlField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "保存设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
-                            Rectangle { Layout.fillWidth: true; height: 1; color: "#e5eaf2"; Layout.topMargin: 10 }
+                            Field { id: relayField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
+                            Label { text: "DeepSeek Web 启动链接（可选）"; color: Theme.inkMuted }
+                            Field { id: dshWebUrlField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
+                            ActionButton { text: "应用设置"; primary: true; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         }
@@ -974,8 +1029,8 @@ ApplicationWindow {
                                 Heading { text: "Codex 桌面版接入" }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 10
-                                    Rectangle { width: 7; height: 7; radius: 4; color: window.codexDesktopColor() }
-                                    Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: 15; font.weight: Font.DemiBold }
+                                    StatusDot { color: window.codexDesktopColor(); idle: window.codexDesktopState() === "closed" }
+                                    Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
                                 }
                                 Hint { text: window.codexDesktopReason(); Layout.fillWidth: true }
                             }
@@ -989,7 +1044,7 @@ ApplicationWindow {
                                     active: window.visible && window.page === 4
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 320
-                                    sourceComponent: DiagnosticLogView { logModel: host.logModel }
+                                    sourceComponent: DiagnosticLogView { surfaceColor: Theme.surfaceBase; textColor: Theme.inkMuted; highlightColor: Theme.highlight; shadeColor: Theme.shade; logModel: host.logModel }
                                 }
                             }
                         }
@@ -1008,7 +1063,7 @@ ApplicationWindow {
         footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
         ColumnLayout {
             width: parent.width; spacing: 12
-            Label { text: "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: "#40516c"; font.pixelSize: 13 }
+            Label { text: "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted; font.pixelSize: Theme.label }
             Image {
                 source: host.appDownloadQr
                 sourceSize.width: 320; sourceSize.height: 320
@@ -1031,7 +1086,7 @@ ApplicationWindow {
         ColumnLayout {
             width: parent.width; spacing: 16
             Image { source: host.qr; Layout.preferredWidth: 300; Layout.preferredHeight: 300; Layout.alignment: Qt.AlignHCenter }
-            Label { text: "二维码将在 " + host.pairSeconds + " 秒后失效"; Layout.alignment: Qt.AlignHCenter; color: "#60728e" }
+            Label { text: "二维码将在 " + host.pairSeconds + " 秒后失效"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted }
         }
     }
     SoftDialog {
@@ -1056,7 +1111,7 @@ ApplicationWindow {
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
-            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: "#b46b19" }
+            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.updateAgent(window.installKind)
     }
@@ -1066,7 +1121,7 @@ ApplicationWindow {
         ColumnLayout { width: parent.width; spacing: 12
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
             DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " · 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
-            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: "#b46b19" }
+            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.installAllAgents("update")
     }
@@ -1082,7 +1137,7 @@ ApplicationWindow {
             ColumnLayout { width: providerDialog.width - 48; spacing: 14
                 ColumnLayout { visible: !!window.providerDraft.create && window.providerDraft.kind !== "dsh"; Layout.fillWidth: true; spacing: 10
                     RowLayout { Layout.fillWidth: true
-                        Heading { text: "选择预设或自定义"; font.pixelSize: 17; Layout.fillWidth: true }
+                        Heading { text: "选择预设或自定义"; font.pixelSize: Theme.body; Layout.fillWidth: true }
                         ActionButton { text: presetExpanded.checked ? "收起预设" : "更换预设"; onClicked: presetExpanded.checked = !presetExpanded.checked }
                     }
                     SoftSwitch { id: presetExpanded; marksProviderDirty: false; visible: false }
@@ -1096,14 +1151,14 @@ ApplicationWindow {
                             }
                         }
                     }
-                    Rectangle { Layout.fillWidth: true; height: 1; color: "#C8D3E2" }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
                 }
-                Label { text: "名称"; color: "#4b5d78" }
+                Label { text: "名称"; color: Theme.inkMuted }
                 Field { id: providerName; objectName: "providerName"; Layout.fillWidth: true; maximumLength: 80; placeholderText: "例如：工作账号 / 自建 API" }
-                Label { text: "供应商标识"; visible: window.providerDraft.kind === "pi" || providerDetails.checked; color: "#4b5d78" }
+                Label { text: "供应商标识"; visible: window.providerDraft.kind === "pi" || providerDetails.checked; color: Theme.inkMuted }
                 Field { id: providerKey; visible: window.providerDraft.kind === "pi" || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
                 Hint { visible: window.providerDraft.kind === "pi"; text: window.providerDraft.create ? "标识对应 models.json 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
-                Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: "#4b5d78" }
+                Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: Theme.inkMuted }
                 SoftComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 RowLayout { visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true
                     ActionButton { text: "管理账号"; enabled: !host.busy; onClicked: { host.oauthAccount("list"); oauthDialog.open() } }
@@ -1113,15 +1168,15 @@ ApplicationWindow {
                 ColumnLayout { visible: providerDetails.checked; Layout.fillWidth: true; spacing: 8
                     RowLayout { Layout.fillWidth: true
                         ColumnLayout { Layout.fillWidth: true
-                            Label { text: "分类"; color: "#4b5d78" }
+                            Label { text: "分类"; color: Theme.inkMuted }
                             Field { id: providerCategory; Layout.fillWidth: true; placeholderText: "custom / official / aggregator" }
                         }
                         ColumnLayout { Layout.preferredWidth: 100
-                            Label { text: "排序"; color: "#4b5d78" }
+                            Label { text: "排序"; color: Theme.inkMuted }
                             Field { id: providerOrder; Layout.fillWidth: true; validator: IntValidator {} }
                         }
                         ColumnLayout { Layout.preferredWidth: 130
-                            Label { text: "图标"; color: "#4b5d78" }
+                            Label { text: "图标"; color: Theme.inkMuted }
                             Field { id: providerIcon; Layout.fillWidth: true; placeholderText: "图标名称" }
                         }
                     }
@@ -1141,63 +1196,63 @@ ApplicationWindow {
                 } }
                 Hint { visible: !!window.providerDraft.nativeOnly; text: "原生专有字段或 YAML 标签，只能在原生编辑器修改"; Layout.fillWidth: true }
                 ColumnLayout { visible: !advancedProvider.checked; Layout.fillWidth: true; spacing: 12
-                    Label { text: "API 地址"; visible: !window.officialProvider; color: "#4b5d78" }
+                    Label { text: "API 地址"; visible: !window.officialProvider; color: Theme.inkMuted }
                     Field { id: providerUrl; objectName: "providerUrl"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "例如 https://api.example.com/v1" }
-                    Label { text: "API Key / 凭据"; visible: !window.officialProvider; color: "#4b5d78" }
+                    Label { text: "API Key / 凭据"; visible: !window.officialProvider; color: Theme.inkMuted }
                     Field { id: providerApiKey; objectName: "providerApiKey"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "API Key；已有环境变量认证会保留"; echoMode: TextInput.PasswordEchoOnEdit }
                     ColumnLayout { visible: window.providerDraft.kind === "claude"; Layout.fillWidth: true; spacing: 8
-                        Label { text: "认证字段"; visible: !window.officialProvider; color: "#4b5d78" }
+                        Label { text: "认证字段"; visible: !window.officialProvider; color: Theme.inkMuted }
                         SoftComboBox { id: claudeCredential; visible: !window.officialProvider; Layout.fillWidth: true; model: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] }
                         Field { id: claudeHaiku; Layout.fillWidth: true; placeholderText: "Haiku 模型 ID（留空使用原生默认）" }
                         Field { id: claudeSonnet; Layout.fillWidth: true; placeholderText: "Sonnet 模型 ID（留空使用原生默认）" }
                         Field { id: claudeOpus; Layout.fillWidth: true; placeholderText: "Opus 模型 ID（留空使用原生默认）" }
                     }
-                    Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: "#4b5d78" }
+                    Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: Theme.inkMuted }
                     RowLayout { visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; spacing: 12
                         Field { id: providerModel; objectName: "providerDefaultModel"; Layout.fillWidth: true; placeholderText: "填写模型 ID，或从模型列表选择" }
                         ActionButton { objectName: "fetchDefaultModel"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; visible: window.providerDraft.kind === "codex" && !window.officialProvider; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-2) }
                     }
                     RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
-                        Label { text: "思考档位"; color: "#4b5d78" }
+                        Label { text: "思考档位"; color: Theme.inkMuted }
                         SoftComboBox { id: codexReasoning; objectName: "codexReasoning"; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
                     }
-                    Label { text: "接口格式"; visible: !window.officialProvider; color: "#4b5d78" }
+                    Label { text: "接口格式"; visible: !window.officialProvider; color: Theme.inkMuted }
                     SoftComboBox { id: providerApi; visible: !window.officialProvider; Layout.fillWidth: true; model: [] }
                     Hint { visible: window.providerDraft.kind === "codex" && !window.officialProvider && providerApi.currentText !== "openai-responses"; text: "需要已有的 Codex 本地 API 转换配置"; Layout.fillWidth: true }
                     SoftSwitch { id: providerProxyDetails; marksProviderDirty: false; text: "接口兼容与推理参数"; visible: window.providerDraft.kind === "codex" && !window.officialProvider }
                     ColumnLayout { visible: window.providerDraft.kind === "codex" && providerProxyDetails.checked; Layout.fillWidth: true; spacing: 8
                         SoftSwitch { id: providerFullUrl; text: "使用完整 API 端点地址" }
                         RowLayout { Layout.fillWidth: true
-                            Label { text: "会话缓存路由"; color: "#4b5d78" }
+                            Label { text: "会话缓存路由"; color: Theme.inkMuted }
                             SoftComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
                         }
                         SoftSwitch { id: providerReasoningAuto; text: "自动识别推理参数" }
                         GridLayout { visible: !providerReasoningAuto.checked; columns: 2; Layout.fillWidth: true
                             SoftCheckBox { id: providerThinking; text: "支持思考开关" }
                             SoftCheckBox { id: providerEffort; text: "支持思考档位" }
-                            Label { text: "思考开关参数"; color: "#4b5d78" }
+                            Label { text: "思考开关参数"; color: Theme.inkMuted }
                             SoftComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
-                            Label { text: "档位参数"; color: "#4b5d78" }
+                            Label { text: "档位参数"; color: Theme.inkMuted }
                             SoftComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
-                            Label { text: "档位映射"; color: "#4b5d78" }
+                            Label { text: "档位映射"; color: Theme.inkMuted }
                             SoftComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
                         }
-                        Label { text: "Chat 兼容参数（JSON）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
-                        Label { text: "请求覆盖（headers / body）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+                        Label { text: "Chat 兼容参数（JSON）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
+                        Label { text: "请求覆盖（headers / body）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
                     SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && ["pi", "codex"].indexOf(window.providerDraft.kind) >= 0 }
-                    Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: "#4b5d78" }
-                    SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+                    Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: Theme.inkMuted }
+                    SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     ColumnLayout { visible: window.providerDraft.kind === "pi" || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
-                        Label { text: "兼容参数（JSON 对象）"; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; color: "#4b5d78" }
-                        SoftTextArea { id: piCompat; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+                        Label { text: "兼容参数（JSON 对象）"; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; color: Theme.inkMuted }
+                        SoftTextArea { id: piCompat; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                         RowLayout { Layout.fillWidth: true
-                            Label { text: "模型目录"; color: "#4b5d78"; font.bold: true }
+                            Label { text: "模型目录"; color: Theme.inkMuted; font.bold: true }
                             Item { Layout.fillWidth: true }
                             ActionButton { objectName: "fetchCatalogModels"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-1) }
-                            ActionButton { text: "＋ 添加模型"; enabled: !host.providerModelsLoading; onClicked: window.addProviderModel() }
+                            ActionButton { text: "添加模型"; symbol: "add"; enabled: !host.providerModelsLoading; onClicked: window.addProviderModel() }
                         }
                         Repeater { model: window.providerModels
                             delegate: ColumnLayout {
@@ -1220,15 +1275,15 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth: true
                                     SoftCheckBox { text: "推理"; visible: window.providerDraft.kind === "pi"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
                                     SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updateProviderModel(index, "input", checked ? ["text", "image"] : ["text"]) }
-                                    Label { text: "上下文"; color: "#4b5d78" }
+                                    Label { text: "上下文"; color: Theme.inkMuted }
                                     Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: window.providerDraft.kind === "pi" ? "128000" : window.providerDraft.kind === "dsh" ? "262144" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
-                                    Label { text: "最大输出"; color: "#4b5d78" }
+                                    Label { text: "最大输出"; color: Theme.inkMuted }
                                     Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
                                 SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
                                 ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 6
                                     RowLayout { Layout.fillWidth: true
-                                        Label { text: "思考深度映射"; color: "#4b5d78" }
+                                        Label { text: "思考深度映射"; color: Theme.inkMuted }
                                         SoftComboBox {
                                             objectName: "dshReasoningMode-" + modelEditor.index
                                             Layout.fillWidth: true; textRole: "label"; valueRole: "value"
@@ -1273,28 +1328,28 @@ ApplicationWindow {
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true; spacing: 10
                     Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
                     ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
-                        Label { text: "auth.json（JSON 对象或 null）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerAuthJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
-                        Label { text: "config.toml（原文）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerConfigToml; Layout.fillWidth: true; Layout.preferredHeight: 250; selectByMouse: true; wrapMode: TextEdit.NoWrap; font.family: "Consolas" }
-                        Label { text: "其他字段（JSON 对象，可留空）"; color: "#4b5d78" }
-                        SoftTextArea { id: codexExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+                        Label { text: "auth.json（JSON 对象或 null）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerAuthJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
+                        Label { text: "config.toml（原文）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerConfigToml; Layout.fillWidth: true; Layout.preferredHeight: 250; selectByMouse: true; wrapMode: TextEdit.NoWrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
+                        Label { text: "其他字段（JSON 对象，可留空）"; color: Theme.inkMuted }
+                        SoftTextArea { id: codexExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
                     ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
-                        Label { text: "cordis.patch.yml（原文）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerPatchYaml; Layout.fillWidth: true; Layout.preferredHeight: 220; selectByMouse: true; wrapMode: TextEdit.NoWrap; font.family: "Consolas" }
-                        Label { text: "环境变量（JSON 对象）"; color: "#4b5d78" }
-                        SoftTextArea { id: providerEnvJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
-                        Label { text: "其他字段（JSON 对象，可留空）"; color: "#4b5d78" }
-                        SoftTextArea { id: dshExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+                        Label { text: "cordis.patch.yml（原文）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerPatchYaml; Layout.fillWidth: true; Layout.preferredHeight: 220; selectByMouse: true; wrapMode: TextEdit.NoWrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
+                        Label { text: "环境变量（JSON 对象）"; color: Theme.inkMuted }
+                        SoftTextArea { id: providerEnvJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
+                        Label { text: "其他字段（JSON 对象，可留空）"; color: Theme.inkMuted }
+                        SoftTextArea { id: dshExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
                     ColumnLayout { visible: ["pi", "claude"].indexOf(window.providerDraft.kind) >= 0; Layout.fillWidth: true
                         Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
-                        SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas"; color: "#21314d" }
+                        SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"; color: Theme.ink }
                     }
                 }
-                Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: "#a34d4d" }
-                Hint { visible: window.providerFormError.length > 0; text: window.providerFormError; Layout.fillWidth: true; color: "#a34d4d" }
+                Hint { visible: host.message.length > 0; text: host.message; Layout.fillWidth: true; color: Theme.danger }
+                Hint { visible: window.providerFormError.length > 0; text: window.providerFormError; Layout.fillWidth: true; color: Theme.danger }
             }
         }
         footer: SoftDialogActions {
@@ -1329,7 +1384,7 @@ ApplicationWindow {
                     ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.oauthAccount("list") }
                 }
                 ColumnLayout { visible: !!window.oauthPending.deviceCode; Layout.fillWidth: true
-                    Label { text: window.oauthPending.userCode || ""; font.pixelSize: 24; font.bold: true; color: "#21314d" }
+                    Label { text: window.oauthPending.userCode || ""; font.pixelSize: Theme.display; font.bold: true; color: Theme.ink }
                     RowLayout {
                         ActionButton { text: "打开授权页"; onClicked: Qt.openUrlExternally(window.oauthPending.verificationUrl) }
                         ActionButton { text: "取消登录"; enabled: !host.busy; onClicked: { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } }
@@ -1337,7 +1392,7 @@ ApplicationWindow {
                 }
                 Repeater { model: window.oauthAccounts
                     delegate: ColumnLayout { required property var modelData; Layout.fillWidth: true
-                        Label { text: (modelData.email || modelData.workspace) + (modelData.isDefault ? " · 默认账号" : ""); color: "#21314d"; font.bold: true }
+                        Label { text: (modelData.email || modelData.workspace) + (modelData.isDefault ? " · 默认账号" : ""); color: Theme.ink; font.bold: true }
                         Hint { text: modelData.workspace; Layout.fillWidth: true }
                         RowLayout {
                             ActionButton { text: "设为默认"; enabled: !host.busy && !modelData.isDefault; onClicked: host.oauthAccount("default", modelData.id) }
@@ -1346,7 +1401,7 @@ ApplicationWindow {
                         }
                     }
                 }
-                Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
+                Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: Theme.danger }
             }
         }
         standardButtons: Dialog.Close
@@ -1365,9 +1420,9 @@ ApplicationWindow {
     SoftDialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
-            SoftTextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: "Consolas" }
+            SoftTextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
             SoftSwitch { id: preserveCodexLogin; text: "切换第三方供应商时保留官方登录" }
-            Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: "#a34d4d" }
+            Hint { text: host.message; visible: text.length > 0; Layout.fillWidth: true; color: Theme.danger }
         }
         footer: SoftDialogActions {
             Item { Layout.fillWidth: true }

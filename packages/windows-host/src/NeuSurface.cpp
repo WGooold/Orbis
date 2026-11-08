@@ -40,6 +40,12 @@ QImage gaussianShadow(const QSize &size, const QPainterPath &shape, qreal offset
     for (int y = 0; y < height; ++y) {
         const auto *row = reinterpret_cast<const QRgb *>(mask.constScanLine(y));
         for (int x = 0; x < width; ++x) {
+            // The rounded silhouette is convex: fully covered kernel endpoints
+            // imply a fully covered interval. Avoid convolving the large flat interior.
+            if (x >= reach && x + reach < width && qAlpha(row[x - reach]) == 255 && qAlpha(row[x + reach]) == 255) {
+                horizontal[size_t(y) * width + x] = 255;
+                continue;
+            }
             float alpha = 0;
             for (int k = -reach; k <= reach; ++k) {
                 const int sample = x + k;
@@ -63,9 +69,12 @@ QImage gaussianShadow(const QSize &size, const QPainterPath &shape, qreal offset
         auto *pixels = reinterpret_cast<QRgb *>(result.scanLine(y));
         const auto *basePixels = inset ? reinterpret_cast<const QRgb *>(base.constScanLine(y)) : nullptr;
         for (int x = 0; x < size.width(); ++x) {
+            if (inset && qAlpha(basePixels[x]) == 0) { pixels[x] = 0; continue; }
             float blurred = 0;
-            for (int k = -reach; k <= reach; ++k)
-                blurred += kernel[k + reach] * horizontal[size_t(y + padding + k) * width + x + padding];
+            if (horizontal[size_t(y + padding - reach) * width + x + padding] >= 254.999f &&
+                horizontal[size_t(y + padding + reach) * width + x + padding] >= 254.999f) blurred = 255;
+            else for (int k = -reach; k <= reach; ++k)
+                    blurred += kernel[k + reach] * horizontal[size_t(y + padding + k) * width + x + padding];
             const float coverage = inset ? qAlpha(basePixels[x]) * (1 - blurred / 255.f) : blurred;
             const int alpha = std::clamp(int(std::lround(coverage * opacity)), 0, 255);
             pixels[x] = qRgba(color.red() * alpha / 255, color.green() * alpha / 255,
@@ -82,29 +91,62 @@ void NeuSurface::paint(QPainter *painter) {
     const QRectF rect = boundingRect().adjusted(m_margin, m_margin, -m_margin, -m_margin);
     if (rect.isEmpty() || imageSize.isEmpty()) return;
     const auto base = roundedRect(rect, m_radius);
+    const qreal relief = std::isfinite(m_relief) ? std::clamp(m_relief, qreal(-1), qreal(1)) : (m_inset ? -1 : 1);
     if (m_shadowSize != size() || m_shadowRadius != m_radius ||
-        m_shadowMargin != m_margin || m_shadowInset != m_inset ||
-        m_shadowDepth != m_depth || m_shadowBlur != m_blur) {
+        m_shadowMargin != m_margin ||
+        m_shadowDepth != m_depth || m_shadowBlur != m_blur ||
+        m_cachedScale != m_shadowScale || m_cachedHighlight != m_highlightColor ||
+        m_cachedShade != m_shadeColor || m_cachedHighlightOpacity != m_highlightOpacity ||
+        m_cachedShadeOpacity != m_shadeOpacity) {
         m_shadowSize = size();
         m_shadowRadius = m_radius;
         m_shadowMargin = m_margin;
         m_shadowInset = m_inset;
         m_shadowDepth = m_depth;
         m_shadowBlur = m_blur;
-        const qreal offset = (m_inset ? 2.5 : 3.5) * m_blur;
-        const qreal sigma = (m_inset ? 3.2 : 4.0) * m_blur;
-        m_lightShadow = gaussianShadow(imageSize, base, -offset, sigma, Qt::white,
-                                       m_inset ? 0.65 : 0.78, m_inset);
-        m_darkShadow = gaussianShadow(imageSize, base, offset, sigma, QColor("#93A3BB"),
-                                      (m_inset ? 0.23 : 0.34) * m_depth, m_inset);
+        m_cachedScale = m_shadowScale;
+        m_cachedHighlight = m_highlightColor;
+        m_cachedShade = m_shadeColor;
+        m_cachedHighlightOpacity = m_highlightOpacity;
+        m_cachedShadeOpacity = m_shadeOpacity;
+        // Native depth tokens share offset/blur geometry; blur never exceeds offset.
+        m_lightShadow = {}; m_darkShadow = {}; m_innerLightShadow = {}; m_innerDarkShadow = {};
     }
-    if (m_inset) painter->fillPath(base, m_surface);
-    painter->drawImage(QPointF(0, 0), m_lightShadow);
-    painter->drawImage(QPointF(0, 0), m_darkShadow);
-    if (!m_inset) painter->fillPath(base, m_surface);
-    if (m_focused) {
-        painter->setPen(QPen(QColor("#2459D3"), 1.5));
+    const qreal offset = std::max(qreal(0.1), 4 * m_shadowScale * m_blur);
+    const qreal sigma = offset;
+    if (!m_flat && m_outerShadowEnabled && relief > 0 && m_lightShadow.isNull()) {
+        m_lightShadow = gaussianShadow(imageSize, base, -offset, sigma, m_highlightColor,
+                                       m_highlightOpacity, false);
+        m_darkShadow = gaussianShadow(imageSize, base, offset, sigma, m_shadeColor,
+                                      m_shadeOpacity * m_depth, false);
+    }
+    if (!m_flat && relief < 0 && m_innerLightShadow.isNull()) {
+        m_innerLightShadow = gaussianShadow(imageSize, base, -offset, sigma, m_highlightColor,
+                                            m_highlightOpacity, true);
+        m_innerDarkShadow = gaussianShadow(imageSize, base, offset, sigma, m_shadeColor,
+                                           m_shadeOpacity * m_depth, true);
+    }
+    if (!m_flat && m_outerShadowEnabled && relief > 0) {
+        painter->setOpacity(relief);
+        painter->drawImage(QPointF(0, 0), m_lightShadow);
+        painter->drawImage(QPointF(0, 0), m_darkShadow);
+        painter->setOpacity(1);
+    }
+    painter->fillPath(base, m_surface);
+    if (!m_flat && relief < 0) {
+        painter->setOpacity(-relief);
+        painter->drawImage(QPointF(0, 0), m_innerLightShadow);
+        painter->drawImage(QPointF(0, 0), m_innerDarkShadow);
+        painter->setOpacity(1);
+    }
+    if (m_outlined) {
+        painter->setPen(QPen(m_outlineColor, 1));
         painter->setBrush(Qt::NoBrush);
-        painter->drawPath(base);
+        painter->drawPath(roundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), std::max(qreal(0), m_radius - 0.5)));
+    }
+    if (m_focused) {
+        painter->setPen(QPen(m_focusColor, 2));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(roundedRect(rect.adjusted(-3, -3, 3, 3), m_radius + 3));
     }
 }

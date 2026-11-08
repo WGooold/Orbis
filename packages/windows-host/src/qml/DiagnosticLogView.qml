@@ -5,11 +5,15 @@ import Orbis.Host
 Item {
     id: root
     required property var logModel
+    property color surfaceColor: "#e6ebf4"
+    property color textColor: "#4a5364"
+    property color highlightColor: "#ffffff"
+    property color shadeColor: "#a6b2c6"
     property bool followingTail: true
     property bool removingRows: false
     // Keep the painted surface and text layout bounded independently of log volume.
     implicitHeight: 320
-    NeuSurface { anchors.fill: parent; margin: 0; cornerRadius: 8; inset: true; surface: "#DDE3EF" }
+    NeuSurface { anchors.fill: parent; margin: 0; cornerRadius: 12; inset: true; surface: root.surfaceColor; highlightColor: root.highlightColor; shadeColor: root.shadeColor; shadowScale: 0.65 }
     ListView {
         id: list
         objectName: "diagnosticLogList"
@@ -33,11 +37,11 @@ Item {
             readOnly: true
             selectByMouse: true
             wrapMode: TextEdit.Wrap
-            color: "#50617b"
-            font.family: "Consolas"
+            color: root.textColor
+            font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"
             font.pixelSize: 12
         }
-        Label { anchors.centerIn: parent; visible: list.count === 0; text: "暂无日志"; color: "#50617b" }
+        Label { anchors.centerIn: parent; visible: list.count === 0; text: "暂无日志"; color: root.textColor }
     }
     Connections {
         target: root.logModel

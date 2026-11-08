@@ -6,24 +6,48 @@ Button {
     id: button
     property bool primary: false
     property bool danger: false
-    implicitHeight: 42
-    implicitWidth: Math.max(100, contentItem.implicitWidth + 36)
-    font.pixelSize: 14
-    font.weight: primary ? Font.DemiBold : Font.Normal
+    property bool loading: false
+    property string symbol: ""
+    implicitHeight: Theme.controlHeight
+    implicitWidth: Math.max(100, contentItem.implicitWidth + 32)
+    font.pixelSize: Theme.body
+    font.weight: Font.DemiBold
     hoverEnabled: true
-    contentItem: MotionText {
-        Accessible.ignored: true
-        text: button.text
-        font: button.font
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-        color: !button.enabled ? "#8995a9" : button.primary ? "#2459D3" : button.danger ? "#a63838" : "#253651"
+    Accessible.description: loading ? "处理中" : ""
+    contentItem: Item {
+        implicitWidth: caption.implicitWidth + 26
+        implicitHeight: Math.max(24, caption.implicitHeight)
+        scale: button.down ? 0.94 : 1
+        opacity: button.down ? 0.82 : 1
+        Behavior on scale { enabled: Theme.motionEnabled; NumberAnimation { duration: button.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+        SymbolIcon {
+            id: symbol
+            name: button.symbol; width: 18; height: 18
+            anchors.verticalCenter: parent.verticalCenter
+            visible: !!button.symbol && !button.loading
+            color: caption.color
+        }
+        BusyIndicator {
+            anchors.centerIn: symbol; width: 18; height: 18
+            visible: button.loading; running: visible && Theme.motionEnabled
+            palette.dark: caption.color
+        }
+        MotionText {
+            id: caption
+            anchors.verticalCenter: parent.verticalCenter
+            x: 26
+            width: parent.width - x; height: implicitHeight
+            text: button.text; font: button.font
+            horizontalAlignment: Text.AlignHCenter
+            color: !button.enabled && !button.loading ? Theme.inkFaint : button.danger ? Theme.danger : button.primary ? Theme.accent : Theme.ink
+            Accessible.ignored: true
+        }
     }
-    background: NeuSurface {
+    background: Surface {
         anchors.fill: parent; anchors.margins: -12; margin: 12
-        cornerRadius: 6
-        inset: button.down || !button.enabled
+        inset: button.down
         focused: button.activeFocus
-        opacity: button.enabled ? 1 : 0.6
+        disabled: !button.enabled && !button.loading
+        hovered: button.hovered
     }
 }
