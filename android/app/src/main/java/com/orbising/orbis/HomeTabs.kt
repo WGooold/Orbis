@@ -39,7 +39,7 @@ internal fun HomeTabBar(selected: HomeTab, onSelect: (HomeTab) -> Unit, modifier
         val haptic = rememberActionHaptic()
         Row(
             modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                .navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)
+                .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp)
                 .selectableGroup().testTag("home-tabs"),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -52,23 +52,23 @@ internal fun HomeTabBar(selected: HomeTab, onSelect: (HomeTab) -> Unit, modifier
                 val active = selected == tab
                 val color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 NeumorphSurface(
-                    modifier = Modifier.weight(1f).heightIn(min = 58.dp)
+                    modifier = Modifier.weight(1f).heightIn(min = 56.dp)
                         .testTag("home-tab-${tab.key}")
                         .selectable(selected = active, role = Role.Tab) {
                             if (!active) { haptic(); onSelect(tab) }
                         }.semantics { contentDescription = label },
-                    shape = RoundedCornerShape(19.dp),
+                    shape = RoundedCornerShape(16.dp),
                     style = if (active) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                    shadowScale = 0.32f,
+                    shadowScale = 0.4f,
                 ) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 9.dp),
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Icon(when (tab) {
                             HomeTab.Chat -> Icons.Rounded.ChatBubbleOutline
                             HomeTab.Providers -> Icons.Rounded.Tune
                             HomeTab.Settings -> Icons.Rounded.Settings
-                        }, contentDescription = null, tint = color, modifier = Modifier.size(21.dp))
+                        }, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
                         // Give scaled/fallback glyphs the whole slot instead of a rounded natural-width box.
                         Text(label, modifier = Modifier.fillMaxWidth(), color = color,
                             style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,

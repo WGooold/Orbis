@@ -43,11 +43,11 @@ internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable
 internal fun AgentBrand.accent(): Color = when (this) {
-    AgentBrand.Pi -> if (LocalOrbisDarkTheme.current) Color(0xFFF2AD90) else Color(0xFF99482F)
-    AgentBrand.Codex -> if (LocalOrbisDarkTheme.current) Color(0xFF77D6C7) else Color(0xFF006C64)
+    AgentBrand.Pi -> if (LocalOrbisDarkTheme.current) Color(0xFFF0A9D3) else Color(0xFF8C3870)
+    AgentBrand.Codex -> if (LocalOrbisDarkTheme.current) Color(0xFF77D6C7) else Color(0xFF00655D)
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
-    AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA1B5FF) else Color(0xFF4D6BFE)
-    AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFFB4572E)
+    AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA9BBFF) else Color(0xFF3550CF)
+    AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */
@@ -92,7 +92,7 @@ internal fun AgentEmblem(brand: AgentBrand, size: Dp = 40.dp) {
 
 @Composable
 internal fun AgentLabel(brand: AgentBrand, modifier: Modifier = Modifier, suffix: String? = null) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AgentIcon(brand, Modifier.size(16.dp).orbisIconBaseline(MaterialTheme.typography.labelMedium.fontSize))
         Text(
             if (suffix == null) brand.title else L10n.tr("{0}，{1}", brand.title, suffix),
@@ -111,7 +111,7 @@ internal fun AgentChoice(brand: AgentBrand, selected: Boolean, onClick: () -> Un
         enabled = enabled,
         shape = RemoteUi.ControlShape,
         style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-        shadowScale = 0.6f,
+        shadowScale = 0.65f,
     ) {
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
@@ -119,7 +119,7 @@ internal fun AgentChoice(brand: AgentBrand, selected: Boolean, onClick: () -> Un
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AgentIcon(brand)
-            Text(label, color = if (enabled) brand.accent() else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f), style = MaterialTheme.typography.labelLarge)
+            Text(label, color = if (enabled) brand.accent() else LocalOrbisPalette.current.faint, style = MaterialTheme.typography.labelLarge)
         }
     }
 }

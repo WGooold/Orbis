@@ -227,6 +227,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLocalization.configure(this)
+        AppAppearance.configure(this)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -792,7 +793,7 @@ internal fun RuntimeListScreen(
                         } else Column {
                             OrbisWordmark()
                             Text(
-                                "Easy Agents EveryWhere",
+                                "Easy Agents Everywhere",
                                 style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = FontWeight.SemiBold,
                                     letterSpacing = 0.8.sp,

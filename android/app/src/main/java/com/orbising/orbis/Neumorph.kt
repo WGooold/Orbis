@@ -77,6 +77,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -121,7 +122,7 @@ internal data class OrbisSurfaceContext(val layer: Int, val depth: Int, val inne
 internal val LocalOrbisSurface = staticCompositionLocalOf<OrbisSurfaceContext?> { null }
 
 internal fun nestedSurfaceLayer(parent: Int, pressed: Boolean): Int =
-    if (pressed) { if (parent > 0) parent - 1 else 1 } else { if (parent < 3) parent + 1 else 2 }
+    if (pressed) parent.coerceIn(1, 3) else (parent + 1).coerceIn(1, 3)
 
 @Composable
 internal fun concentricShape(shape: Shape): Shape =
@@ -395,7 +396,10 @@ private fun Modifier.neumorphShadows(
     colors: NeumorphColors,
     shadowScale: Float,
     paints: ShadowPaints,
-): Modifier = then(remember(shape, style, colors, shadowScale, paints) {
+    opacity: () -> Float = { 1f },
+): Modifier {
+    val currentOpacity = rememberUpdatedState(opacity)
+    return then(remember(shape, style, colors, shadowScale, paints) {
     // 保持缓存构建器跨内容重组稳定；drawWithCache 负责在尺寸、密度等变化时重新构建。
     Modifier.drawWithCache {
         val bodySize = size
@@ -411,29 +415,37 @@ private fun Modifier.neumorphShadows(
         // 九宫格贴回来：中间实色、边只沿一个方向拉伸，几何上与原绘制等价。
         val patch = if (useGaussian) ShadowPatchCache.patch(corner, offsetPx, reachPx, style, paints) else null
         onDrawBehind {
-            if (bodySize.width <= 0f || bodySize.height <= 0f) return@onDrawBehind
+            val alpha = currentOpacity.value().coerceIn(0f, 1f)
+            if (alpha == 0f || bodySize.width <= 0f || bodySize.height <= 0f) return@onDrawBehind
             if (patch != null && bodySize.width >= patch.block * 2 && bodySize.height >= patch.block * 2) {
-                drawShadowPatch(patch, bodySize)
+                drawShadowPatch(patch, bodySize, alpha)
                 return@onDrawBehind
             }
+            val darkAlpha = paints.dark.alpha
+            val lightAlpha = paints.light.alpha
+            paints.dark.alpha = (darkAlpha * alpha).roundToInt()
+            paints.light.alpha = (lightAlpha * alpha).roundToInt()
             if (style == NeumorphStyle.Raised) {
                 // 暗影先画，白光压在其上（对侧重叠仅高斯尾，可忽略）。
                 if (useGaussian) {
                     drawOuterBlur(paints.dark, bodySize, 0f, 1f, offsetPx, corner)
                     drawOuterBlur(paints.light, bodySize, 0f, -1f, offsetPx, corner)
                 } else {
-                    drawSoftShadow(shape, bodySize, 0f, 1f, colors.darkShadow, offsetPx, reachPx, paints.outerDarkAlphas)
-                    drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, paints.outerLightAlphas)
+                    drawSoftShadow(shape, bodySize, 0f, 1f, colors.darkShadow, offsetPx, reachPx, paints.outerDarkAlphas.map { it * alpha }.toFloatArray())
+                    drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, paints.outerLightAlphas.map { it * alpha }.toFloatArray())
                 }
             } else if (innerPaths != null) {
                 drawInnerBlur(innerPaths, paints)
             } else {
-                drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, paints.innerDarkAlphas)
-                drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, paints.innerLightAlphas)
+                drawInnerShadow(shape, bodySize, colors.darkShadow, 1f, offsetPx, reachPx, paints.innerDarkAlphas.map { it * alpha }.toFloatArray())
+                drawInnerShadow(shape, bodySize, colors.lightShadow, -1f, offsetPx, reachPx, paints.innerLightAlphas.map { it * alpha }.toFloatArray())
             }
+            paints.dark.alpha = darkAlpha
+            paints.light.alpha = lightAlpha
         }
     }
 })
+}
 
 /**
  * 一组柔影的小图集（ADR-0042）。
@@ -447,7 +459,7 @@ private class ShadowPatch(val image: ImageBitmap, val block: Int, val margin: In
  * 九宫格贴回柔影：四个角对齐形体四角，四条边只沿一个方向拉伸，中间用 1px 实色拉伸。
  * 高斯模糊对直边是平移不变的，所以拉伸边与原图逐像素一致；角块原样贴。
  */
-private fun DrawScope.drawShadowPatch(patch: ShadowPatch, body: Size) {
+private fun DrawScope.drawShadowPatch(patch: ShadowPatch, body: Size, opacity: Float = 1f) {
     val image = patch.image
     val side = image.width
     val block = patch.block
@@ -468,6 +480,7 @@ private fun DrawScope.drawShadowPatch(patch: ShadowPatch, body: Size) {
             srcSize = IntSize(sw, sh),
             dstOffset = IntOffset(dx.roundToInt(), dy.roundToInt()),
             dstSize = IntSize(dw.roundToInt(), dh.roundToInt()),
+            alpha = opacity,
         )
     }
     // 四角
@@ -600,10 +613,15 @@ fun NeumorphSurface(
     val inheritedPressed = LocalGlyphPressed.current
     val parent = LocalOrbisSurface.current
     val resolvedShape = concentricShape(shape)
-    val effectiveShadowScale = shadowScale
+    val effectiveShadowScale = orbisShadowScale(shadowScale)
     val paints = rememberShadowPaints(colors, effectiveShadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
     val currentStyle = if (pressed && active && !selectionMode) NeumorphStyle.Pressed else style
+    val depth by animateFloatAsState(
+        if (!active) 0f else if (currentStyle == NeumorphStyle.Pressed) -1f else 1f,
+        tween(InteractionMotion.duration(if (pressed) InteractionMotion.GlyphPress else if (style == NeumorphStyle.Pressed) InteractionMotion.Selection else InteractionMotion.GlyphRelease), easing = InteractionMotion.GlyphEase),
+        label = "surface-depth",
+    )
     var touchOrigin by remember { mutableStateOf<Offset?>(null) }
     val selectionDecoration = if (selectionSelected != null) {
         val progress by animateFloatAsState(if (selectionSelected) 1f else 0f,
@@ -617,27 +635,25 @@ fun NeumorphSurface(
     } else Modifier
     val layer = parent?.let { nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
         ?: if (currentStyle == NeumorphStyle.Pressed) 0 else 1
-    val bodyColor = if (currentStyle == NeumorphStyle.Pressed && pressedColor != null) pressedColor
-    else if (parent != null) {
-        if (parent.depth >= 2 && currentStyle == NeumorphStyle.Raised) Color.Transparent else colors.layer(layer)
-    } else if (currentStyle == NeumorphStyle.Pressed) colors.insetBase else colors.base
+    val bodyColor = if (parent != null) colors.layer(layer) else colors.base
     val corner = (resolvedShape as? RoundedCornerShape)?.topStart?.let { size ->
         with(LocalDensity.current) { size.toPx(Size(1000f, 1000f), this).toDp() }
     }
     // 凹陷阴影须画在底色之上；外阴影须在 clip 之外。两种状态共用同一块底板。
     Box(
         modifier.then(
-            if (parent == null && currentStyle == NeumorphStyle.Raised) {
-                Modifier.neumorphShadows(resolvedShape, currentStyle, colors, effectiveShadowScale, paints)
+            if (parent == null && active) {
+                Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Raised, colors, effectiveShadowScale, paints) { depth.coerceAtLeast(0f) }
             } else Modifier,
         ),
         propagateMinConstraints = true,
     ) {
         Box(
             Modifier.orbisTouchOrigin(selectionSelected != null && active) { touchOrigin = it }
-                .clip(resolvedShape).background(bodyColor).then(selectionDecoration).then(
-                if (parent == null && currentStyle == NeumorphStyle.Pressed) {
-                    Modifier.neumorphShadows(resolvedShape, currentStyle, colors, effectiveShadowScale, paints)
+                .clip(resolvedShape).background(bodyColor).then(selectionDecoration)
+                .then(if (!active) Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, resolvedShape) else Modifier).then(
+                if (active) {
+                    Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Pressed, colors, effectiveShadowScale, paints) { (-depth).coerceAtLeast(0f) }
                 } else Modifier,
             ).then(
                 if (onClick != null) Modifier.combinedClickable(
@@ -837,7 +853,7 @@ internal fun OrbisSelectionIndicator(selected: Boolean, selecting: Boolean) {
     val progress by animateFloatAsState(if (selected) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.State)), label = "selectionCheck")
     val accent = MaterialTheme.colorScheme.primary
     Box(
-        Modifier.size(22.dp).alpha(visibility)
+        Modifier.size(24.dp).alpha(visibility)
             .background(accent.copy(alpha = progress), CircleShape)
             .border(1.5.dp, if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f), CircleShape),
         contentAlignment = Alignment.Center,
@@ -857,7 +873,8 @@ internal fun Modifier.neumorphRaised(shape: Shape, shadowScale: Float = 0.65f): 
 }
 
 /** 小控件用更浅的柔影，避免相邻按钮的阴影连成一片。 */
-private fun compactShadowScale(size: Dp): Float = (size.value / 64f).coerceIn(0.45f, 1f)
+internal fun orbisShadowScale(value: Float): Float = if (value <= 0.42f) 0.4f else if (value <= 0.8f) 0.65f else 1f
+private fun compactShadowScale(size: Dp): Float = if (size <= 36.dp) 0.4f else 0.65f
 
 /** 新拟物图标按钮（圆形凸起；[style] 传 Pressed 可做开关的「已按下」态）。 */
 @Composable
@@ -899,15 +916,14 @@ fun NeumorphIconButton(
             modifier = Modifier.size(if (compact) 36.dp else size),
             shape = shape,
             style = if (pressed && active) NeumorphStyle.Pressed else style,
-            shadowScale = if (compact) 0.32f else compactShadowScale(size) * 0.8f,
+            shadowScale = if (compact) 0.4f else compactShadowScale(size),
+            enabled = active,
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 OrbisMotionIcon(
                     icon,
                     description = contentDescription,
-                    tint = (tint ?: MaterialTheme.colorScheme.onSurface).let {
-                        if (active) it else it.copy(alpha = 0.38f)
-                    },
+                    tint = if (active) tint ?: MaterialTheme.colorScheme.onSurfaceVariant else LocalOrbisPalette.current.faint,
                     size = if (compact) 18.dp else RemoteUi.IconSize,
                     activation = activation, menuMorph = menuMorph, backMorph = backMorph, pressed = pressed && active,
                     enabled = active, copyFeedback = copyFeedback,
@@ -931,7 +947,7 @@ fun NeumorphActionButton(
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.primary
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+        LocalOrbisPalette.current.faint
     }
     NeumorphSurface(
         modifier = modifier.heightIn(min = RemoteUi.FieldHeight),
@@ -992,9 +1008,8 @@ fun neumorphFieldColors(): androidx.compose.material3.TextFieldColors {
  */
 @Composable
 fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
-    if (LocalOrbisSurface.current != null) return this
     val colors = rememberNeumorphColors()
-    val paints = rememberShadowPaints(colors, 1f)
+    val paints = rememberShadowPaints(colors, 0.65f)
     return then(remember(shape, colors, paints) {
         Modifier.drawWithCache {
             val bodySize = size
@@ -1042,7 +1057,7 @@ fun NeumorphTextButton(
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
     val contentColor = when {
-        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+        !enabled -> LocalOrbisPalette.current.faint
         danger -> MaterialTheme.colorScheme.error
         filled -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.onSurface
@@ -1084,7 +1099,7 @@ fun NeumorphCheckbox(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val checkProgress by animateFloatAsState(if (checked) 1f else 0f, OrbisMotion.pop(), label = "check")
-    val checkColor = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+    val checkColor = if (enabled) MaterialTheme.colorScheme.primary else LocalOrbisPalette.current.faint
     Box(
         modifier.size(RemoteUi.TouchTarget).then(
             if (onCheckedChange != null) Modifier.toggleable(

@@ -68,6 +68,11 @@ internal object InteractionMotion {
         val p = progress.coerceIn(0f, 1f)
         return direction * minOf(24f, (width * EdgeShrink / 2f - gap).coerceAtLeast(0f)) * p
     }
+    const val FadeOut = 90
+    const val FadeIn = 210
+    const val Loop = 1100
+    const val Collapse = 260
+    const val Page = 320
     const val State = 160
     const val Selection = 260
     const val Panel = 220
