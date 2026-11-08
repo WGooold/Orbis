@@ -232,10 +232,11 @@ internal fun SelectionToolbar(
     selecting: Boolean,
     normal: @Composable RowScope.(Float) -> Unit,
     selected: @Composable RowScope.() -> Unit,
+    contentAlignment: Alignment = Alignment.Center,
 ) {
     val progress by animateFloatAsState(if (selecting) 1f else 0f,
         tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "selection-toolbar")
-    Box(contentAlignment = Alignment.Center) {
+    Box(contentAlignment = contentAlignment) {
         CompositionLocalProvider(LocalMotionActionsEnabled provides !selecting) {
             Row(Modifier.zIndex(if (selecting) 0f else 1f).graphicsLayer { alpha = (1 - progress / 0.62f).coerceIn(0f, 1f) }
                 .then(if (selecting) Modifier.clearAndSetSemantics { } else Modifier),

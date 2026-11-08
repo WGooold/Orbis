@@ -1,5 +1,6 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
-// - r15 设置与入口（S18、S22、S23、S25）
+// - r15 设置与入口（S18、S22、S23、S25）；S28 / SC48 实际协议；S29 / SC49 三种 per-Host 协议模式。
+// - S32 / SC51：首页仅保留右对齐下载入口；根设置不再承载供应商或返回入口。
 package com.orbising.orbis
 
 import android.content.Context
@@ -19,14 +20,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
-/** ADR-0046 §5 / S22: download and settings are the only header entries; the capsule only reports. */
+/** S32 / SC51: root tabs own settings; the header keeps only download and the capsule only reports. */
 class SettingsEntryInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
     private fun pairing(id: String, name: String) = HostPairing(id, name, "test-public", "test-root",
         relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
 
-    @Test fun headerKeepsDownloadAndSettingsAndTheCapsuleIsNotAnEntry() {
+    @Test fun headerKeepsOnlyRightAlignedDownloadAndTheCapsuleIsNotAnEntry() {
         val state = RemoteState(hostId = "host", e2eReady = true, connection = RelayConnection.ONLINE,
             runtimes = mapOf("one" to RuntimeSummary("one", "one", "/repo", "idle", sessionId = "one", agentKind = "pi",
                 domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready"))))
@@ -43,14 +44,20 @@ class SettingsEntryInstrumentedTest {
         }
         capture("home-header-light")
         compose.onNodeWithContentDescription("更多操作").assertDoesNotExist()
-        compose.onNodeWithTag("home-settings").assertIsDisplayed().performClick()
-        assertEquals(1, settings)
-        compose.onNodeWithContentDescription("打开下载").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("home-settings").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置").assertDoesNotExist()
+        val download = compose.onNodeWithContentDescription("打开下载").assertIsDisplayed()
+        val rootBounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val downloadBounds = download.fetchSemanticsNode().boundsInRoot
+        val maximumInset = with(compose.density) { 16.dp.toPx() }
+        assertTrue("Download must occupy the trailing header action, without a settings-sized gap",
+            rootBounds.right - downloadBounds.right in 0f..maximumInset)
+        download.performClick()
         assertEquals(1, downloads)
         // The capsule reports the connection as one status and takes no clicks.
         compose.onNodeWithTag("home-connection-status").assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
-        compose.onNodeWithTag("home-connection-status").performClick()
-        assertEquals(1, settings)
+        compose.onNodeWithTag("home-connection-status").performTouchInput { click() }
+        assertEquals(0, settings)
         // The home switcher only switches computers (the drawer's own switcher reads "电脑, Work, 2 台").
         compose.onNode(hasText("Work") and !hasText("台", substring = true)).performClick()
         compose.onNodeWithText("Home").assertIsDisplayed()
@@ -58,8 +65,8 @@ class SettingsEntryInstrumentedTest {
         compose.onAllNodes(hasText("取消配对", substring = true) and hasClickAction()).assertCountEquals(0)
     }
 
-    @Test fun settingsPutProvidersFirstAndHaveNoComputerEntries() = settingsOrder(dark = false)
-    @Test fun darkSettingsKeepTheSameOrder() = settingsOrder(dark = true)
+    @Test fun rootSettingsPutConnectionFirstAndHaveNoProviderOrComputerEntries() = settingsOrder(dark = false)
+    @Test fun darkRootSettingsKeepConnectionFirstAndHaveNoProviderEntry() = settingsOrder(dark = true)
 
     @Test fun lightSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = false)
     @Test fun darkSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = true)
@@ -212,30 +219,43 @@ class SettingsEntryInstrumentedTest {
         val model = RemoteViewModel(app)
         owner.put("settings", model)
         val state = mutableStateOf(RemoteState(hostId = "host", hostName = "Work", e2eReady = true, connection = RelayConnection.ONLINE,
-            path = "lan", pathRttMs = 42L))
+            path = "lan", pathRttMs = 42L, relayTransportKind = RelayTransportKind.QUIC,
+            relayTransportMode = RelayTransportMode.AUTO))
         try {
             compose.setContent {
-                OrbisTheme(darkTheme = dark) { StatusScreen(state = state.value, model = model, pairing = model.pairingStatus(), onBack = {}) }
+                OrbisTheme(darkTheme = dark) { StatusScreen(state = state.value, model = model, pairing = model.pairingStatus(), onBack = {}, root = true) }
             }
             compose.onNodeWithText("设置").assertIsDisplayed()
+            compose.onNodeWithContentDescription("返回").assertDoesNotExist()
+            compose.onNodeWithText("Agent 供应商").assertDoesNotExist()
             capture(if (dark) "settings-dark" else "settings-light")
-            val providers = compose.onNodeWithText("Agent 供应商").fetchSemanticsNode().boundsInRoot.top
-            val connection = compose.onNodeWithText("当前连接").fetchSemanticsNode().boundsInRoot.top
+            compose.onNodeWithText("当前连接").assertIsDisplayed()
+            compose.onNodeWithText("连接协议").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("relay-mode-WS").assertIsDisplayed()
+            compose.onNodeWithTag("relay-mode-AUTO").performScrollTo().assertIsSelected()
+            compose.onNodeWithTag("relay-mode-WS").assertIsNotSelected()
+            compose.onNodeWithTag("relay-mode-QUIC").assertIsNotSelected()
+            compose.runOnIdle { state.value = state.value.copy(relayTransportMode = RelayTransportMode.WS) }
+            compose.onNodeWithTag("relay-mode-WS").assertIsSelected()
+            compose.runOnIdle { state.value = state.value.copy(relayTransportMode = RelayTransportMode.QUIC) }
+            compose.onNodeWithTag("relay-mode-QUIC").assertIsSelected()
+            compose.runOnIdle { state.value = state.value.copy(relayTransportMode = RelayTransportMode.AUTO) }
             compose.onNodeWithText("连接延迟").performScrollTo().assertIsDisplayed()
             compose.onNodeWithText("42 ms").assertIsDisplayed()
             val latencyTop = compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top
             capture(if (dark) "settings-latency-dark" else "settings-latency-light")
             compose.runOnIdle { state.value = state.value.copy(path = "relay", pathRttMs = 137L) }
+            compose.onNodeWithTag("relay-mode-QUIC").assertIsDisplayed()
             compose.onNodeWithText("137 ms").assertIsDisplayed()
             assertEquals(latencyTop, compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top, 1f)
             compose.runOnIdle { state.value = state.value.copy(pathRttMs = null) }
             compose.onNodeWithText("暂不可用").assertIsDisplayed()
             compose.runOnIdle { state.value = state.value.copy(e2eReady = false, pathRttMs = 137L) }
-            compose.onNodeWithText("暂不可用").assertIsDisplayed()
+            compose.onAllNodesWithText("暂不可用").assertCountEquals(2)
             compose.runOnIdle { state.value = state.value.copy(e2eReady = true, pathRttMs = 42L) }
             compose.onNodeWithText("配对信息").performScrollTo()
             val pairing = compose.onNodeWithText("配对信息").fetchSemanticsNode().positionInRoot.y
-            assertTrue(providers < connection)
+            compose.onNodeWithText("Agent 供应商").assertDoesNotExist()
             assertTrue(compose.onNodeWithText("当前连接").fetchSemanticsNode().positionInRoot.y < pairing)
             compose.onAllNodesWithText("已配对电脑").assertCountEquals(0)
             compose.onAllNodesWithText("添加电脑").assertCountEquals(0)

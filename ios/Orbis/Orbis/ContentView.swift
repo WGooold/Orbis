@@ -964,7 +964,7 @@ private struct HomeCardContent: View, Equatable {
     }
 }
 
-/// One capsule tells the computer's whole lifecycle: connecting, securing, syncing, then the transport path.
+/// Connection text stays stable while background synchronization breathes in the raised status dot.
 struct ConnectionPill: View {
     let connection: ConnectionState
     let path: String?
@@ -976,16 +976,22 @@ struct ConnectionPill: View {
         let p = OrbisPalette(scheme)
         let secured = connection == .secured
         let failed: Bool = { if case .failed = sync { return true }; return false }()
-        let busy = connection == .connecting || connection == .online || (secured && sync == .syncing)
+        let busy = connection == .connecting || connection == .online
         let tone = connection == .error || (secured && failed) ? p.error : secured ? p.success : p.warning
-        // Secured: sync progress, then the transport path; otherwise the connection phase. Color carries the state.
-        let title = !secured ? connectionTitle(connection) : sync == .syncing ? L10n.tr("正在同步") : failed ? L10n.tr("同步失败")
+        // SC53: background reads keep the transport label and capsule geometry stable.
+        let title = !secured ? connectionTitle(connection) : failed ? L10n.tr("同步失败")
             : pathTitle(path ?? "relay")
         HStack(spacing: 7) {
             ZStack {
                 if busy { ProgressView().controlSize(.mini).tint(tone).scaleEffect(0.8) }
-                else { Circle().fill(tone).frame(width: 7, height: 7) }
-            }.frame(width: 12, height: 12)
+                else {
+                    NeumorphStatusDot(tone: tone, pulsing: secured && sync == .syncing)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(L10n.tr("连接状态"))
+                        .accessibilityValue(secured && sync == .syncing ? L10n.tr("正在同步") : title)
+                        .accessibilityIdentifier("home-connection-indicator")
+                }
+                }.frame(width: 18, height: 18)
             OrbisMotionText(title).foregroundStyle(secured && failed ? p.error : p.secondary)
             if secured { Image(systemName: "lock.shield").accessibilityLabel(L10n.tr("端到端加密")) }
         }.font(.orbisCaption(.medium)).foregroundStyle(p.secondary).padding(.horizontal, 12).frame(minHeight: 36)
@@ -993,6 +999,36 @@ struct ConnectionPill: View {
             .animation(reduceMotion ? nil : .orbisFade, value: title)
             // A status group, not a button: its texts stay readable one by one.
             .accessibilityElement(children: .contain)
+    }
+}
+
+/// The capsule's matte indicator shares the material's paired shadows, without moving its silhouette.
+private struct NeumorphStatusDot: View {
+    let tone: Color
+    let pulsing: Bool
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var cycleStart = Date()
+
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        let animated = pulsing && !reduceMotion && scenePhase == .active
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animated)) { context in
+            let elapsed = context.date.timeIntervalSince(cycleStart)
+            let light = animated ? (cos(elapsed * 2 * .pi / 1.5) + 1) / 2 : 1
+            Circle().fill(tone)
+                .overlay {
+                    Circle().fill(RadialGradient(
+                        colors: [p.light.opacity(0.03 + 0.88 * light), .clear],
+                        center: .init(x: 0.28, y: 0.28), startRadius: 0, endRadius: 12,
+                    ))
+                }
+                .shadow(color: p.shadow.opacity(0.38), radius: 2, x: 2, y: 2)
+                .shadow(color: p.light.opacity(0.7), radius: 2, x: -2, y: -2)
+        }
+        .frame(width: 10, height: 10)
+        .onChange(of: animated) { _, _ in cycleStart = Date() }
     }
 }
 

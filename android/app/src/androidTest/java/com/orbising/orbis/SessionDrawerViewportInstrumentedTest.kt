@@ -44,7 +44,10 @@ class SessionDrawerViewportInstrumentedTest {
 
     @Test fun aScrolledDirectoryDoesNotFollowItsOwnPromotion() {
         show()
-        compose.onNodeWithTag("drawer-session-list").performScrollToIndex(18)
+        compose.onNodeWithTag("drawer-session-list").performScrollToNode(hasText("查看全部 16 个工作目录"))
+        compose.onNodeWithText("查看全部 16 个工作目录").performClick()
+        // Footer and preview rows change lazy indices; anchor the actual directory being read.
+        compose.onNodeWithTag("drawer-session-list").performScrollToNode(hasTestTag("drawer-directory-/d07"))
         val before = y("drawer-directory-/d07")
         compose.runOnIdle { state.value = catalog(listOf("d06") + ids.filter { it != "d06" }) }
         assertEquals(before, y("drawer-directory-/d07"), 1f)
@@ -54,7 +57,7 @@ class SessionDrawerViewportInstrumentedTest {
 
     @Test fun sessionsWithinTheExpandedDirectoryRetainTheirReadingAnchor() {
         show(oneDirectory = true)
-        compose.onNodeWithText("再显示 11 个会话").performScrollTo().performClick()
+        compose.onNodeWithText("查看全部 16 条").performScrollTo().performClick()
         compose.onNodeWithTag("drawer-session-list").performScrollToIndex(7)
         val before = y("drawer-session-d07")
         compose.runOnIdle { state.value = catalog(listOf("d06") + ids.filter { it != "d06" }, oneDirectory = true) }

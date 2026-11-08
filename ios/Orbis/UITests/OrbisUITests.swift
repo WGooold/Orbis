@@ -818,7 +818,8 @@ final class OrbisUITests: XCTestCase {
     func testHomePublishesCompleteSnapshotsWithoutReturningToLoading() {
         let app = launch("home", arguments: ["--preview-home-staged"])
         let preparing = app.staticTexts["正在加载会话…"]
-        let syncing = app.staticTexts["正在同步"]
+        let syncing = app.descendants(matching: .any).matching(identifier: "home-connection-indicator")
+            .matching(NSPredicate(format: "value == %@", "正在同步")).firstMatch
         let pill = app.descendants(matching: .any)["home-connection-pill"].firstMatch
         let list = app.scrollViews["home-session-list"]
         let card = app.buttons["home-runtime-preview-codex"]
@@ -840,8 +841,12 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(list.frame, listFrame)
         XCTAssertLessThanOrEqual(card.frame.minY - list.frame.minY, 16)
         let cardFrame = card.frame
-        // Background sync after publication stays in the connection capsule; cards keep their place.
+        // SC53: background sync changes the raised dot's accessible value, keeping text and cards still.
+        let pillFrame = pill.frame
         XCTAssertTrue(syncing.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.staticTexts["正在同步"].exists)
+        XCTAssertTrue(app.staticTexts["局域网"].exists)
+        XCTAssertEqual(pill.frame, pillFrame)
         XCTAssertTrue(app.staticTexts["对齐移动端的使用体验"].exists)
         XCTAssertFalse(preparing.exists)
         XCTAssertEqual(list.frame, listFrame)
@@ -923,7 +928,10 @@ final class OrbisUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(loading.frame.minY, listFrame.minY)
             capture("home-list-loading-\(name)", app: app)
             XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 15))
-            XCTAssertTrue(app.staticTexts["正在同步"].waitForExistence(timeout: 4))
+            let syncing = app.descendants(matching: .any).matching(identifier: "home-connection-indicator")
+                .matching(NSPredicate(format: "value == %@", "正在同步")).firstMatch
+            XCTAssertTrue(syncing.waitForExistence(timeout: 4))
+            XCTAssertFalse(app.staticTexts["正在同步"].exists)
             settle(); capture("home-pill-syncing-\(name)", app: app)
             XCTAssertEqual(list.frame, listFrame)
             app.terminate()
@@ -2359,13 +2367,42 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(status.buttons["provider-switch-claude"].exists)
         capture("status-provider-switch", app: status)
     }
+    // S28 / SC48 and S29 / SC49: verify active protocol reporting and all three saved modes.
+    func testCurrentConnectionProtocol() {
+        for (dark, value, arguments) in [(false, "WS", [String]()), (true, "QUIC", ["--preview-relay-quic"])] {
+            let app = launch("status", dark: dark, arguments: arguments)
+            let page = app.descendants(matching: .any)["settings-page"].firstMatch
+            XCTAssertTrue(page.waitForExistence(timeout: 8))
+            let label = app.staticTexts["连接协议"].firstMatch
+            for _ in 0..<8 where !label.isHittable {
+                let upwards = label.frame.midY > page.frame.midY
+                page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upwards ? 0.65 : 0.35))
+                    .press(forDuration: 0.05, thenDragTo: page.coordinate(withNormalizedOffset:
+                        CGVector(dx: 0.5, dy: upwards ? 0.35 : 0.65)))
+            }
+            XCTAssertTrue(label.isHittable)
+            XCTAssertTrue(app.staticTexts[value].firstMatch.isHittable)
+            let automatic = app.buttons["relay-mode-auto"]
+            let ws = app.buttons["relay-mode-ws"]
+            let quic = app.buttons["relay-mode-quic"]
+            XCTAssertTrue(automatic.waitForExistence(timeout: 3))
+            XCTAssertTrue(ws.exists); XCTAssertTrue(quic.exists)
+            XCTAssertTrue(ws.isSelected)
+            automatic.tap(); XCTAssertTrue(automatic.isSelected)
+            quic.tap(); XCTAssertTrue(quic.isSelected)
+            ws.tap(); XCTAssertTrue(ws.isSelected)
+            capture("status-protocol-\(value)-" + (dark ? "dark" : "light"), app: app)
+            app.terminate()
+        }
+    }
+
     func testBasicConnectionStatusAndDirectoryProviderMismatch() {
         for dark in [false, true] {
             let app = launch("status", dark: dark)
             XCTAssertTrue(app.staticTexts["当前连接"].waitForExistence(timeout: 8))
             // Providers now come first (ADR-0046 §5); the connection and pairing facts follow below them.
             let page = app.descendants(matching: .any)["settings-page"].firstMatch
-            for label in ["已连接", "连接方式", "连接延迟", "42 ms", "端到端加密", "电脑", "配对状态"] {
+            for label in ["已连接", "连接方式", "连接协议", "WS", "连接延迟", "42 ms", "端到端加密", "电脑", "配对状态"] {
                 let fact = app.staticTexts[label].firstMatch
                 // The language section extends the page; a full swipe can pass the connection facts.
                 for _ in 0..<8 where !fact.isHittable {

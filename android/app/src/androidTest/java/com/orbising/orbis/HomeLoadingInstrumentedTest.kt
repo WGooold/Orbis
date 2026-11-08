@@ -8,6 +8,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.Density
@@ -90,9 +91,11 @@ class HomeLoadingInstrumentedTest {
             assertEquals(listBounds, list.fetchSemanticsNode().boundsInRoot)
             val cardBounds = compose.onNodeWithTag("home-runtime-a").fetchSemanticsNode().boundsInRoot
             with(compose.density) { assertTrue(cardBounds.top - listBounds.top <= 16.dp.toPx()) }
-            // After publication, background sync lives in the connection capsule and never moves the cards.
+            // SC53: after publication, only the raised dot reports sync; text and cards stay in place.
             compose.runOnIdle { fixture.beginRead("a"); fixture.beginRead("b"); state.value = fixture.state }
-            compose.onNodeWithText("正在同步").assertIsDisplayed()
+            compose.onNodeWithText("正在同步").assertDoesNotExist()
+            compose.onNodeWithTag("home-connection-indicator", useUnmergedTree = true).assert(
+                SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "正在同步"))
             compose.onNodeWithText("正在加载会话…").assertDoesNotExist()
             compose.onNodeWithTag("home-runtime-a").assertIsDisplayed()
             assertEquals(cardBounds, compose.onNodeWithTag("home-runtime-a").fetchSemanticsNode().boundsInRoot)

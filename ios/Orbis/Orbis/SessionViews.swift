@@ -399,7 +399,7 @@ struct SessionDrawerView: View, Equatable {
                         OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
                             .rotationEffect(.degrees(expanded ? 90 : 0)).animation(.orbisCollapse, value: expanded)
                     }.padding(12).frame(minHeight: 60).contentShape(Rectangle())
-                }.buttonStyle(NeuButtonStyle(selected: expanded))
+                }.buttonStyle(.plain)
                     .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
                     .accessibilityIdentifier("drawer-directory-" + directory.path)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
@@ -411,7 +411,7 @@ struct SessionDrawerView: View, Equatable {
             OrbisCollapse(expanded: expanded) {
                 VStack(spacing: 10) {
                     ForEach(visible) { session in
-                        sessionRow(session).padding(.leading, 12)
+                        sessionRow(session)
                             // Rebind only the leaf after search changes; keep group/list identity for motion.
                             // SwiftUI otherwise retains obsolete hit bounds after a collapsed group is searched.
                             .id(session.sessionId + "|" + state.query)
@@ -424,10 +424,23 @@ struct SessionDrawerView: View, Equatable {
                         OrbisTextButton(title: state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("再显示 {0} 个会话", hidden),
                                         symbol: state.showAllSessions ? "chevron.up" : "chevron.down", fill: true) {
                             state.showAllSessions.toggle()
-                        }.padding(.leading, 12)
+                        }
                     }
-                }.padding(.top, 10)
+                }
+                .padding(6)
+                .environment(\.orbisSurface, OrbisSurfaceContext(layer: 0, depth: 2, innerRadius: 12))
+                .background {
+                    // The list owns one recess; leaf controls inherit a flat nested material.
+                    Color.clear.neuSurface(inset: true, radius: 18, intensity: 1)
+                        .environment(\.orbisSurface, nil)
+                }
+                .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, 2)
             }
+        }
+        .background {
+            // Scope the raised frame to this directory, leaving the drawer material unchanged.
+            Color.clear.neuSurface(radius: OrbisRadius.card, intensity: 0.8)
+                .environment(\.orbisSurface, nil)
         }
     }
 

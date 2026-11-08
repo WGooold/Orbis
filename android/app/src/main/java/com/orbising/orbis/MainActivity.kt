@@ -231,7 +231,7 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         setContent {
-            OrbisTheme {
+            OrbisTheme(manageWindow = false) {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val homeUi by model.homeUi.collectAsStateWithLifecycle()
@@ -393,6 +393,7 @@ internal fun RemoteApp(
             )
         }
     }
+    // S32 / SC51: peer tabs share the root; only chats, downloads and management are pushed pages.
     val rootStateHolder = rememberSaveableStateHolder()
     val rootHome: @Composable () -> Unit = {
         Column(Modifier.fillMaxSize()) {
@@ -436,6 +437,18 @@ internal fun RemoteApp(
             model.clearActivationNotice()
         }
     }
+    val page = when {
+        launchIntro != null -> null
+        addingHost -> HomeOverlay.Pairing
+        state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> HomeOverlay.OfflineHistory
+        state.selectedRuntimeId != null -> HomeOverlay.Chat
+        allDownloadsOpen -> HomeOverlay.Downloads
+        else -> null
+    }
+    OrbisSystemBars(
+        surface = if (appearsPaired && page == null && homeTab == HomeTab.Chat) orbisMaterialColors(LocalOrbisDarkTheme.current).base else MaterialTheme.colorScheme.surface,
+        darkTheme = LocalOrbisDarkTheme.current,
+    )
     when {
         !appearsPaired -> PairingScreen(
             error = pairingError ?: state.error,
@@ -451,14 +464,6 @@ internal fun RemoteApp(
         else -> {
             // 所有首页下一级整页共用导航容器；根配对和 sheet 保持独立的呈现方式（M14）。
             // 首页始终留在同一个组合位置，返回后立即可点。
-            val page = when {
-                launchIntro != null -> null
-                addingHost -> HomeOverlay.Pairing
-                state.selectedRuntimeId == null && state.selectedOfflineSessionId != null -> HomeOverlay.OfflineHistory
-                state.selectedRuntimeId != null -> HomeOverlay.Chat
-                allDownloadsOpen -> HomeOverlay.Downloads
-                else -> null
-            }
             OrbisPageHost(
                 onBack = {
                     when (page) {
@@ -686,7 +691,7 @@ internal fun RuntimeListScreen(
     preparedCatalog: List<CachedHostGroup>? = null,
     preparedSync: HomeSyncStatus? = null,
     preparedDownloadCount: Int? = null,
-) {
+) = OrbisMaterialTheme {
     val homeListState = rememberLazyListState()
     LaunchedEffect(launchIntro?.requestId) {
         if (launchIntro != null) {
@@ -803,21 +808,14 @@ internal fun RuntimeListScreen(
                         }
                     },
                     actions = {
-                        SelectionToolbar(selecting = selecting, normal = { progress ->
+                        SelectionToolbar(selecting = selecting, contentAlignment = Alignment.CenterEnd, normal = {
+                            // S32: settings is a peer root tab; downloads is the sole trailing entry.
                             DownloadStatusButton(
                                 activeCount = preparedDownloadCount ?: state.downloads.count { it.value.status in setOf("queued", "downloading") },
                                 enabled = true,
                                 onClick = onOpenDownloads,
-                                modifier = Modifier.graphicsLayer { translationX = 24.dp.toPx() * progress },
+                                modifier = Modifier.testTag("home-downloads"),
                             )
-                            // 右上角只有下载与设置两个入口；添加 / 取消配对只在侧边栏底部的电脑菜单（ADR-0046 §5）。
-                            NeumorphIconButton(
-                                onClick = onOpenStatus,
-                                icon = Icons.Rounded.Settings,
-                                contentDescription = L10n.tr("设置"),
-                                modifier = Modifier.testTag("home-settings").graphicsLayer { translationX = -24.dp.toPx() * progress },
-                            )
-
                         }, selected = {
                             NeumorphTextButton(
                                 text = L10n.tr("关闭"),
@@ -1067,6 +1065,7 @@ internal fun RuntimeListScreen(
                                         enabled = cardCurrent,
                                         shadowScale = 0.8f,
                                         style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                                        pressedColor = androidx.compose.ui.graphics.lerp(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.onSurface, 0.05f),
                                         selectionSelected = runtime.runtimeId in selectedIds,
                                         selectionMode = selecting && canClose,
                                         onClick = {
@@ -3070,9 +3069,9 @@ private fun HomeHostSwitcher(
     }
 }
 
-/** One capsule tells the computer's whole lifecycle: connecting, securing, syncing, then the transport path. */
+/** Connection text stays stable while background synchronization breathes in the raised status dot. */
 @Composable
-private fun ConnectionStatus(
+internal fun ConnectionStatus(
     connection: RelayConnection,
     e2eReady: Boolean,
     path: String? = null,
@@ -3084,7 +3083,7 @@ private fun ConnectionStatus(
     // 握手中也算「忙」：中继认了、加密通道没成时，这段时间是能恢复的，不该显示成稳态。
     val isBusy = connection == RelayConnection.CONNECTING ||
         connection == RelayConnection.RECONNECTING ||
-        (connection == RelayConnection.ONLINE && !e2eReady) || syncing
+        (connection == RelayConnection.ONLINE && !e2eReady)
     val securedColor = MaterialTheme.colorScheme.tertiary
     val color = when {
         failed -> MaterialTheme.colorScheme.error
@@ -3093,9 +3092,8 @@ private fun ConnectionStatus(
         connection == RelayConnection.ONLINE -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    // 加密通道建立后先说同步进度，再说连接方式；之前说连接阶段；颜色始终表达状态（与 iOS 一致）。
+    // SC53: background reads keep the transport label and capsule geometry stable.
     val label = when {
-        syncing -> L10n.tr("正在同步")
         failed -> L10n.tr("同步失败")
         secured -> transportPathLabel(path) ?: L10n.tr("中继")
         connection == RelayConnection.ONLINE -> L10n.tr("正在建立安全通道")
@@ -3112,11 +3110,15 @@ private fun ConnectionStatus(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(12.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
             if (isBusy) {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
             } else {
-                Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+                NeumorphStatusDot(color, pulsing = syncing,
+                    modifier = Modifier.testTag("home-connection-indicator").semantics {
+                        contentDescription = L10n.tr("连接状态")
+                        stateDescription = if (syncing) L10n.tr("正在同步") else label
+                    })
             }
         }
         MotionText(label, color = color, style = MaterialTheme.typography.labelMedium)
@@ -3162,6 +3164,7 @@ internal fun StatusScreen(
                 .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            // S32: providers now live in their own peer tab, not inside Settings.
             statusAdvice(state, pairing)?.let { WarningCard(it) }
             StatusSectionTitle(L10n.tr("当前连接"))
             StatusCard {

@@ -48,7 +48,31 @@ class SessionDrawerScrollInstrumentedTest {
                 compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
             }
         }
+        // Catalog projection runs off the UI thread; wait for publication before testing the preview.
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag("drawer-session-d000-s02").fetchSemanticsNodes().isNotEmpty()
+        }
+        // S30: preview is three rows; footer remains part of the recessed panel.
+        compose.onNodeWithTag("drawer-session-d000-s02").assertExists()
+        compose.onNodeWithTag("drawer-session-d000-s03").assertDoesNotExist()
+        compose.onNodeWithText("查看全部 12 条").assertExists()
         capture("top")
+        compose.onNodeWithText("d000").performClick()
+        compose.waitForIdle()
+        capture("collapsed")
+        // Capture intermediate geometry to catch a square header or a white press frame.
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("d000").performClick()
+        for (step in listOf(16L, 64L, 80L, 120L)) {
+            compose.mainClock.advanceTimeBy(step)
+            capture("expand-${compose.mainClock.currentTime}")
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        // Directory catalog is also a three-item preview until explicitly expanded.
+        compose.onNodeWithTag("drawer-directory-/repo/d003").assertDoesNotExist()
+        compose.onNodeWithTag("drawer-session-list").performScrollToNode(hasText("查看全部 80 个工作目录"))
+        compose.onNodeWithText("查看全部 80 个工作目录").performClick()
         val frames = Collections.synchronizedList(mutableListOf<Long>())
         val thread = HandlerThread("drawer-frame-metrics").apply { start() }
         val listener = Window.OnFrameMetricsAvailableListener { _, metrics, _ ->
@@ -73,17 +97,17 @@ class SessionDrawerScrollInstrumentedTest {
         list.performScrollToNode(hasTestTag("drawer-directory-/repo/d079"))
         capture("end")
         compose.onNodeWithText("d079").performClick()
-        list.performScrollToNode(hasTestTag("drawer-session-d079-s04"))
-        compose.onNodeWithTag("drawer-session-d079-s04").assertIsDisplayed()
-        list.performScrollToNode(hasText("再显示 7 个会话"))
-        compose.onNodeWithText("再显示 7 个会话").performClick()
+        list.performScrollToNode(hasTestTag("drawer-session-d079-s02"))
+        compose.onNodeWithTag("drawer-session-d079-s02").assertIsDisplayed()
+        list.performScrollToNode(hasText("查看全部 12 条"))
+        compose.onNodeWithText("查看全部 12 条").performClick()
         list.performScrollToNode(hasTestTag("drawer-session-d079-s11"))
         compose.onNodeWithText("d079-s11").performClick()
         assertEquals(listOf("drawer-scroll" to "d079-s11"), opened)
         list.performScrollToIndex(0)
         compose.onNodeWithText("d000").performClick()
-        list.performScrollToNode(hasTestTag("drawer-session-d000-s04"))
-        compose.onNodeWithTag("drawer-session-d000-s04").assertIsDisplayed()
+        list.performScrollToNode(hasTestTag("drawer-session-d000-s02"))
+        compose.onNodeWithTag("drawer-session-d000-s02").assertIsDisplayed()
         compose.onNodeWithTag("drawer-session-d000-s11").assertDoesNotExist()
     }
 }

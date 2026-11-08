@@ -20,7 +20,7 @@ internal fun <T> rememberViewportItems(items: List<T>, state: LazyListState, ide
 
 /** Runs before this composition is measured, so no intermediate jump is published. */
 @Composable
-internal fun maintainListViewport(state: LazyListState, keys: List<String>, identity: Any?) {
+internal fun maintainListViewport(state: LazyListState, keys: List<String>, identity: Any?, preserveStationaryItems: Boolean = false) {
     val shown = remember(identity) { ViewportKeys() }
     val slop = with(LocalDensity.current) { 8.dp.roundToPx() }
     if (shown.keys == keys) return
@@ -34,15 +34,30 @@ internal fun maintainListViewport(state: LazyListState, keys: List<String>, iden
             state.requestScrollToItem(0, 0)
         } else {
             val layout = state.layoutInfo
-            val anchor = layout.visibleItemsInfo.firstOrNull {
+            val fullyVisible = layout.visibleItemsInfo.filter {
                 it.size > 0 && it.offset >= layout.viewportStartOffset && it.offset + it.size <= layout.viewportEndOffset
             }
-            val anchorIndex = anchor?.index ?: index
+            val positions = if (preserveStationaryItems) keys.withIndex().associate { it.value to it.index } else emptyMap()
+            // A promoted branch can be the first visible item. Hold the next stationary
+            // row instead: keeping its old numeric slot shifts all following rows when
+            // expanded and collapsed branches have different heights.
+            val stationary = if (preserveStationaryItems) fullyVisible.firstOrNull { item ->
+                val key = item.key as? String
+                val oldIndex = key?.let(previous::indexOf) ?: -1
+                val newIndex = positions[key]
+                item.contentType != "gap" && oldIndex >= 0 && newIndex != null && previous.take(oldIndex).none { (positions[it] ?: -1) > newIndex }
+            } else null
+            val anchor = stationary ?: fullyVisible.firstOrNull()
+            // layoutInfo can still describe the preceding measured catalog while an async
+            // drawer projection has already recomposed. Its key remains authoritative; its
+            // index must never be used to index a newer key list.
+            val anchorKey = anchor?.key as? String
+            val anchorIndex = anchorKey?.let(previous::indexOf)?.takeIf { it >= 0 } ?: index
             // LazyList item offsets already exclude content padding. Subtracting the
             // viewport start again would add that padding on every catalog update.
             val anchorOffset = anchor?.let { -it.offset } ?: offset
-            val special = homeViewportTarget(previous, keys, anchorIndex, anchorOffset, slop)
-            val target = special ?: previous.getOrNull(anchorIndex)?.let(keys::indexOf)?.takeIf { it >= 0 }?.let { it to anchorOffset }
+            val special = if (stationary != null) null else homeViewportTarget(previous, keys, anchorIndex, anchorOffset, slop)
+            val target = special ?: (anchorKey ?: previous.getOrNull(anchorIndex))?.let(keys::indexOf)?.takeIf { it >= 0 }?.let { it to anchorOffset }
             target?.let { state.requestScrollToItem(it.first, it.second) }
         }
     }
