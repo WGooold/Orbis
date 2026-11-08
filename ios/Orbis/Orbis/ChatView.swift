@@ -816,7 +816,7 @@ struct ChatMessageRow: View, Equatable {
                     }
                     if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
-                        TurnChangeCards(changes: changes, anchors: changeAnchors, turns: Set(timings.map(\.turnId)))
+                        TurnChangeCards(changes: changes, anchors: changeAnchors)
                     }
                     ForEach(timings, id: \.turnId) { timing in
                         TimelineView(.animation(minimumInterval: 1, paused: timing.durationMs != nil)) { context in

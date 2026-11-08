@@ -70,6 +70,7 @@ class TurnFileChangesTest {
         assertEquals("other", other.command()!!["fileId"]!!.jsonPrimitive.content)
         val back = other.select(file())
         assertEquals(loaded.current!!.text, back.current!!.text)
+        assertEquals(unifiedDiffLines(loaded.current!!.text, loaded.current!!.eof), loaded.current!!.projection.lines)
         assertNull(back.command())
         assertEquals(back, back.page(page(initial)))
     }

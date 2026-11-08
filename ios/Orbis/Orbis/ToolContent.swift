@@ -3,7 +3,7 @@ import Combine
 
 func validToolId(_ value: String) -> Bool { !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.utf8.count <= 256 }
 
-struct ToolAgent: Codable, Hashable { let hostId: String; let agentKind: String; let sessionId: String }
+struct ToolAgent: Codable, Hashable, Sendable { let hostId: String; let agentKind: String; let sessionId: String }
 struct ToolIdentity: Codable, Hashable { let agent: ToolAgent; let toolCallId: String }
 struct ToolPart: Codable, Hashable { let part: String; let format: String; let availability: String; let readCapability: String }
 struct ToolLocator: Codable, Hashable { var projectionVersion = 1; let tool: ToolIdentity; let part: String }

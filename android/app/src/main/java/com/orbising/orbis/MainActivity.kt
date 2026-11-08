@@ -1533,6 +1533,10 @@ internal fun ChatScreen(
         state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing))
     val messageTurnTimings = projection?.timings.orEmpty()
     val turnIdsByMessageId = projection?.turnIds.orEmpty()
+    val turnChangeProjection = rememberTurnChangePresentation(TurnChangePresentationRequest(
+        TurnChangePresentationIdentity(runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0),
+        projection?.items.orEmpty(), turnIdsByMessageId,
+        state.turnChanges[runtimeId]?.summaries.orEmpty()))
     val latestQuestion = projection?.latestQuestion
     val truncatedContent = projection?.truncated
     val chatItemKeys = projection?.keys.orEmpty()
@@ -2431,14 +2435,9 @@ internal fun ChatScreen(
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
-                                // A source split across visual steps owns its review only at its last fragment.
-                                val ids = item.completedMessageIds
-                                val turns = ids.mapNotNull(turnIdsByMessageId::get).toSet()
                                 val changes = state.turnChanges[runtimeId]
-                                changes?.summaries?.values?.filter { summary ->
-                                    if (summary.anchorEntryId != null) summary.anchorEntryId in ids
-                                    else summary.reviewTurnId in turns || summary.sourceTurnIds.lastOrNull() in turns
-                                }?.sortedBy { it.startedAt }?.forEach { summary ->
+                                turnChangeProjection?.summariesByRow?.get(item.key).orEmpty().forEach { summary ->
+                                    if (changes == null) return@forEach
                                     key(summary.changeSetId) {
                                         TurnChangeSummaryView(summary, changes.manifests[summary.versionKey] ?: ChangeManifest(summary),
                                             state.connection == RelayConnection.ONLINE,

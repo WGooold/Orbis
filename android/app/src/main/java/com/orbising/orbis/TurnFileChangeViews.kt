@@ -349,8 +349,9 @@ private fun DiffFileHeader(file: FileChangeMetadata) {
 
 @Composable
 private fun FileDiffPage(file: FileChangeMetadata, cache: FileDiffCache?, selected: Boolean, onRead: () -> Unit, onPosition: (Int, Int) -> Unit) {
-    val rows = remember(cache?.text, cache?.eof) { unifiedDiffLines(cache?.text.orEmpty(), cache?.eof == true) }
-    val gutterDigits = remember(rows) { maxOf(2, rows.maxOfOrNull { maxOf(it.oldLine ?: 0, it.newLine ?: 0) }?.toString()?.length ?: 2) }
+    val projection = cache?.projection ?: UnifiedDiffProjection.EMPTY
+    val rows = projection.lines
+    val gutterDigits = projection.gutterDigits
     val gutterWidth = with(LocalDensity.current) { MaterialTheme.typography.bodySmall.fontSize.toDp() * (gutterDigits * 0.62f) }
     val state = remember(file.fileId) { LazyListState(cache?.scrollIndex ?: 0, cache?.scrollOffset ?: 0) }
     val currentOnPosition by rememberUpdatedState(onPosition)

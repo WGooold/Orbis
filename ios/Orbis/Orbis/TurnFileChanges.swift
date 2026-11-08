@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-struct TurnFileMetadata: Codable, Hashable, Identifiable {
+struct TurnFileMetadata: Codable, Hashable, Identifiable, Sendable {
     let fileId: String
     let path: String
     let oldPath: String?
@@ -17,7 +17,7 @@ struct TurnFileMetadata: Codable, Hashable, Identifiable {
     var name: String { path.split(separator: "/").last.map(String.init) ?? path }
 }
 
-struct TurnChangeSummary: Codable, Hashable, Identifiable {
+struct TurnChangeSummary: Codable, Hashable, Identifiable, Sendable {
     let projectionVersion: Int
     let agent: ToolAgent
     let reviewTurnId: String
@@ -45,19 +45,27 @@ struct TurnChangeSummary: Codable, Hashable, Identifiable {
     var versionKey: String { "\(changeSetId):\(manifestVersion)" }
 }
 
-private struct TurnChangeListPage: Decodable {
+private struct TurnChangeListPage: Decodable, Sendable {
     let agent: ToolAgent; let runtimeId: String; let requestId: String; let summaries: [TurnChangeSummary]; let nextCursor: String?
 }
-private struct TurnChangeManifestPage: Decodable {
+private struct TurnChangeManifestPage: Decodable, Sendable {
     let agent: ToolAgent; let runtimeId: String; let requestId: String
     let changeSetId: String; let manifestVersion: Int; let files: [TurnFileMetadata]
     let totalCount: Int; let nextCursor: String?
 }
-private struct TurnFileDetailPage: Decodable {
+private struct TurnFileDetailPage: Decodable, Sendable {
     let agent: ToolAgent; let runtimeId: String; let requestId: String
     let changeSetId: String; let manifestVersion: Int; let fileId: String; let contentVersion: String
     let viewerId: String; let readId: String; let text: String; let nextCursor: String?; let eof: Bool
 }
+private struct DecodedTurnFileDetailPage: Sendable {
+    let page: TurnFileDetailPage
+    let textBytes: Int
+}
+
+/// Network events are immutable snapshots by the time they reach this model. Foundation's JSON
+/// object graph is not declared Sendable, so this wrapper transfers that snapshot to the decoder.
+private struct JSONEventSnapshot: @unchecked Sendable { let value: [String: Any] }
 
 struct TurnFileManifest {
     var files: [TurnFileMetadata] = []
@@ -68,8 +76,8 @@ struct TurnFileManifest {
     var error: String?
 }
 
-struct DiffDisplayLine: Identifiable, Equatable {
-    enum Kind { case header, context, addition, deletion, note }
+struct DiffDisplayLine: Identifiable, Equatable, Sendable {
+    enum Kind: Sendable { case header, context, addition, deletion, note }
     let id: Int
     let kind: Kind
     let oldLine: Int?
@@ -81,10 +89,11 @@ struct DiffDisplayLine: Identifiable, Equatable {
 
 /// Pages may end inside a hunk or a UTF-8 line. Keep the parser state across pages;
 /// split exceptionally long lines into bounded display fragments without losing bytes.
-struct UnifiedDiffParser {
+struct UnifiedDiffParser: Sendable {
     private(set) var lines: [DiffDisplayLine] = []
     /// Widest line number seen so far; the viewer sizes its gutters from it.
     private(set) var maxLineNumber = 0
+    private(set) var gutterDigits = 2
     private var pending = ""
     private var oldLine: Int?
     private var newLine: Int?
@@ -127,7 +136,52 @@ struct UnifiedDiffParser {
         else { kind = .header }
         lines.append(.init(id: lines.count, kind: kind, oldLine: old, newLine: new, text: value))
         maxLineNumber = max(maxLineNumber, old ?? 0, new ?? 0)
+        gutterDigits = max(2, String(maxLineNumber).count)
         if continues { continuedKind = kind }
+    }
+}
+
+struct TurnChangeSummaryQuery: Hashable, Sendable {
+    let owner: UUID
+    let revision: UInt64
+    let anchors: Set<String>
+}
+
+/// Summary matching is shared by all transcript rows and cached by stable query identity.
+/// Diff line parsing also runs here so page growth never parses rows on MainActor.
+actor TurnChangeBackgroundWorker {
+    static let shared = TurnChangeBackgroundWorker()
+    private var matchedSummaries: [TurnChangeSummaryQuery: [TurnChangeSummary]] = [:]
+    private var summaryOrder: [TurnChangeSummaryQuery] = []
+
+    func matching(_ query: TurnChangeSummaryQuery, summaries: [String: TurnChangeSummary], agent: ToolAgent?) -> [TurnChangeSummary] {
+        if let cached = matchedSummaries[query] { return cached }
+        let value = summaries.values.filter { summary in
+            guard summary.agent == agent else { return false }
+            guard let anchor = summary.anchorEntryId else { return false }
+            return query.anchors.contains(anchor)
+        }.sorted { ($0.startedAt, $0.reviewTurnId) < ($1.startedAt, $1.reviewTurnId) }
+        matchedSummaries[query] = value
+        summaryOrder.append(query)
+        if summaryOrder.count > 512 {
+            let expiredCount = summaryOrder.count - 512
+            let expired = Array(summaryOrder.prefix(expiredCount))
+            summaryOrder.removeFirst(expiredCount)
+            expired.forEach { matchedSummaries.removeValue(forKey: $0) }
+        }
+        return value
+    }
+
+    func removeSummaryQueries(owner: UUID) {
+        let expired = summaryOrder.filter { $0.owner == owner }
+        summaryOrder.removeAll { $0.owner == owner }
+        expired.forEach { matchedSummaries.removeValue(forKey: $0) }
+    }
+
+    func appending(_ parser: UnifiedDiffParser, text: String, eof: Bool) -> UnifiedDiffParser {
+        var next = parser
+        next.append(text, eof: eof)
+        return next
     }
 }
 
@@ -150,6 +204,7 @@ struct TurnFileDetail {
 @MainActor
 final class TurnFileChanges: ObservableObject {
     @Published private(set) var summaries: [String: TurnChangeSummary] = [:]
+    @Published private(set) var summaryRevision: UInt64 = 0
     @Published private(set) var manifests: [String: TurnFileManifest] = [:]
     @Published private(set) var opened: TurnChangeSummary?
     @Published private(set) var selectedFileId: String?
@@ -167,6 +222,9 @@ final class TurnFileChanges: ObservableObject {
     private var timeouts: [String: Task<Void, Never>] = [:]
     private var visited: [String] = []
     private var readingPositions: [String: Int] = [:]
+    private var detailParseTokens: [String: UUID] = [:]
+    let summaryProjectionOwner = UUID()
+    var summaryProjectionAgent: ToolAgent? { agent }
     private let detailByteLimit = 8 * 1024 * 1024
     private var detailLimitMessage: String { L10n.tr("已达到此文件 8 MiB 阅读上限，已加载内容仍可查看。") }
     private enum Request {
@@ -193,13 +251,6 @@ final class TurnFileChanges: ObservableObject {
         if !entries.isSubset(of: queriedEntries) || !turns.isSubset(of: queriedTurns) {
             observedEntries = nil; observedTurns = nil
         }
-    }
-    func matching(anchors: Set<String>, turns: Set<String>) -> [TurnChangeSummary] {
-        summaries.values.filter { summary in
-            guard summary.agent == agent else { return false }
-            if let anchor = summary.anchorEntryId { return anchors.contains(anchor) }
-            return false // A source turn ID alone does not identify the final displayed entry.
-        }.sorted { ($0.startedAt, $0.reviewTurnId) < ($1.startedAt, $1.reviewTurnId) }
     }
     func manifest(_ summary: TurnChangeSummary) -> TurnFileManifest {
         manifests[summary.versionKey] ?? TurnFileManifest(files: summary.preview)
@@ -271,19 +322,32 @@ final class TurnFileChanges: ObservableObject {
     func closeViewer() { cancelDetail(); opened = nil; selectedFileId = nil; suspended = false }
     func clear() {
         closeViewer(); timeouts.values.forEach { $0.cancel() }; timeouts = [:]; requests = [:]
+        detailParseTokens = [:]
+        let owner = summaryProjectionOwner
+        Task { await TurnChangeBackgroundWorker.shared.removeSummaryQueries(owner: owner) }
+        summaryRevision &+= 1
         summaries = [:]; manifests = [:]; details = [:]; queriedEntries = []; queriedTurns = []; observedEntries = nil; observedTurns = nil; visited = []; readingPositions = [:]
         runtimeId = nil; agent = nil
     }
+
     func disconnected() {
         closeViewer()
         for (id, request) in Array(requests) { fail(id, request: request, message: L10n.tr("连接已断开，请重试。")) }
         queriedEntries = []; queriedTurns = []; observedEntries = nil; observedTurns = nil
     }
 
-    func consume(_ event: [String: Any], runtimeId: String) {
+    func consume(_ event: [String: Any], runtimeId: String) async {
         guard runtimeId == self.runtimeId, let type = event["type"] as? String else { return }
-        if type == "session.changes.updated", let raw = event["summary"] as? [String: Any], let summary: TurnChangeSummary = decode(raw), valid(summary) {
+        if type == "session.changes.updated", let raw = event["summary"] as? [String: Any], let summary: TurnChangeSummary = await decode(raw), valid(summary) {
             accept(summary); return
+        }
+        if type == "session.change.detail.page" {
+            guard let id = event["requestId"] as? String, case .detail(_, let file, _, _, _) = requests[id] else { return }
+            let key = detailKey(file), token = UUID()
+            detailParseTokens[key] = token
+            let decoded = await decodeDetailPage(event)
+            await acceptDetailPage(decoded, id: id, runtimeId: runtimeId, key: key, token: token)
+            return
         }
         guard let id = event["requestId"] as? String, let request = requests[id] else { return }
         if type == "session.changes.failed" {
@@ -292,7 +356,7 @@ final class TurnFileChanges: ObservableObject {
         }
         switch request {
         case .list(let entries, let turns, let cursor):
-            guard type == "session.changes.summaries", let page: TurnChangeListPage = decode(event), page.agent == agent,
+            guard type == "session.changes.summaries", let page: TurnChangeListPage = await decode(event), page.agent == agent,
                   page.runtimeId == runtimeId, page.summaries.count <= 128, page.summaries.allSatisfy(valid) else { return }
             guard page.nextCursor == nil || (page.nextCursor != cursor && !page.summaries.isEmpty) else { return }
             finish(id); page.summaries.forEach(accept)
@@ -302,7 +366,7 @@ final class TurnFileChanges: ObservableObject {
                 _ = dispatch(command, request: .list(entries: entries, turns: turns, cursor: next))
             }
         case .manifest(let summary, let cursor):
-            guard type == "session.changes.page", let page: TurnChangeManifestPage = decode(event), page.agent == agent,
+            guard type == "session.changes.page", let page: TurnChangeManifestPage = await decode(event), page.agent == agent,
                   page.runtimeId == runtimeId, page.changeSetId == summary.changeSetId, page.manifestVersion == summary.manifestVersion,
                   page.files.count <= 100, page.files.allSatisfy(valid), Set(page.files.map(\.id)).count == page.files.count,
                   page.totalCount >= page.files.count, page.nextCursor == nil || (page.nextCursor != cursor && !page.files.isEmpty) else { return }
@@ -314,28 +378,54 @@ final class TurnFileChanges: ObservableObject {
             state.started = true; state.complete = page.nextCursor == nil; state.loading = false; state.error = nil
             manifests[summary.versionKey] = state
             if opened?.versionKey == summary.versionKey, selectedFileId == nil, let first = state.files.first { selectFile(first.fileId) }
-        case .detail(let summary, let file, let cursor, let viewer, _):
-            guard type == "session.change.detail.page", let page: TurnFileDetailPage = decode(event), page.agent == agent,
-                  page.runtimeId == runtimeId, opened?.versionKey == summary.versionKey, selectedFileId == file.fileId,
-                  viewerId == viewer, page.viewerId == viewer, page.changeSetId == summary.changeSetId,
-                  page.manifestVersion == summary.manifestVersion, page.fileId == file.fileId, page.contentVersion == file.contentVersion,
-                  validToolId(page.readId), page.text.utf8.count <= 32_768,
-                  page.eof == (page.nextCursor == nil), page.nextCursor == nil || (page.nextCursor != cursor && !page.text.isEmpty) else { return }
-            let key = detailKey(file)
-            var state = details[key] ?? TurnFileDetail()
-            guard state.readId == nil || state.readId == page.readId else { fail(id, request: request, message: L10n.tr("差异版本不匹配，请重新打开。")); return }
-            let pageBytes = page.text.utf8.count
-            finish(id)
-            guard pageBytes <= detailByteLimit - state.bytes else {
-                state.loading = false; state.limitReached = true; state.error = detailLimitMessage; details[key] = state; return
-            }
-            state.parser.append(page.text, eof: page.eof); state.bytes += pageBytes
-            state.nextCursor = page.nextCursor; state.eof = page.eof; state.started = true; state.loading = false; state.error = nil; state.readId = page.readId
-            // Evict before publishing this page so observers never see an oversized cache.
-            trimDetailCache(protecting: key, additionalBytes: pageBytes)
-            details[key] = state
+        case .detail:
+            break
         }
     }
+
+    private func acceptDetailPage(_ decoded: DecodedTurnFileDetailPage?, id: String, runtimeId: String, key: String, token: UUID) async {
+        guard detailParseTokens[key] == token, let decoded,
+              case .detail(let summary, let file, let cursor, let viewer, _) = requests[id] else {
+            if detailParseTokens[key] == token { detailParseTokens[key] = nil }
+            return
+        }
+        let page = decoded.page
+        guard decoded.textBytes <= 32_768, page.agent == agent, page.runtimeId == runtimeId, opened?.versionKey == summary.versionKey,
+              selectedFileId == file.fileId, viewerId == viewer, page.viewerId == viewer,
+              page.changeSetId == summary.changeSetId, page.manifestVersion == summary.manifestVersion,
+              page.fileId == file.fileId, page.contentVersion == file.contentVersion,
+              validToolId(page.readId),
+              page.eof == (page.nextCursor == nil), page.nextCursor == nil || (page.nextCursor != cursor && !page.text.isEmpty) else {
+            if detailParseTokens[key] == token { detailParseTokens[key] = nil }
+            return
+        }
+        var state = details[key] ?? TurnFileDetail()
+        guard state.readId == nil || state.readId == page.readId else {
+            finish(id); state.loading = false; state.error = L10n.tr("差异版本不匹配，请重新打开。"); details[key] = state
+            detailParseTokens[key] = nil
+            return
+        }
+        let pageBytes = decoded.textBytes
+        finish(id)
+        guard pageBytes <= detailByteLimit - state.bytes else {
+            state.loading = false; state.limitReached = true; state.error = detailLimitMessage; details[key] = state
+            detailParseTokens[key] = nil
+            return
+        }
+        let parser = state.parser
+        let nextParser = await TurnChangeBackgroundWorker.shared.appending(parser, text: page.text, eof: page.eof)
+        guard detailParseTokens[key] == token, viewerId == viewer,
+              opened?.versionKey == summary.versionKey, selectedFileId == file.fileId,
+              var current = details[key], current.loading else { return }
+        current.parser = nextParser; current.bytes += pageBytes
+        current.nextCursor = page.nextCursor; current.eof = page.eof; current.started = true
+        current.loading = false; current.error = nil; current.readId = page.readId
+        // Evict before publishing this page so observers never see an oversized cache.
+        trimDetailCache(protecting: key, additionalBytes: pageBytes)
+        details[key] = current
+        detailParseTokens[key] = nil
+    }
+
     private func reopenExpiredDetail(_ id: String, request: Request) -> Bool {
         guard case .detail(let summary, let file, let cursor, let viewer, let readId) = request,
               let readId, !suspended, opened?.versionKey == summary.versionKey,
@@ -357,8 +447,10 @@ final class TurnFileChanges: ObservableObject {
     private func accept(_ summary: TurnChangeSummary) {
         if let current = summaries[summary.changeSetId] {
             guard summary.manifestVersion >= current.manifestVersion, summary.revision >= current.revision else { return }
+            guard current != summary else { return }
         }
         summaries[summary.changeSetId] = summary
+        summaryRevision &+= 1
     }
     private func valid(_ summary: TurnChangeSummary) -> Bool {
         let native = summary.attribution == "native-tool"
@@ -400,13 +492,30 @@ final class TurnFileChanges: ObservableObject {
                 "viewerId": viewerId, "readId": currentDetail.readId as Any? ?? NSNull()])
         }
         for (id, request) in outstanding { fail(id, request: request, message: L10n.tr("读取已暂停。")) }
-        if let file = selectedFile { details[detailKey(file)]?.readId = nil }
+        if let file = selectedFile {
+            let key = detailKey(file)
+            detailParseTokens[key] = nil
+            if details[key]?.loading == true { details[key]?.loading = false }
+            details[key]?.readId = nil
+        }
         viewerId = UUID().uuidString
     }
     private func detailKey(_ file: TurnFileMetadata) -> String { "\(opened?.versionKey ?? ""):\(file.fileId):\(file.contentVersion)" }
-    private func decode<T: Decodable>(_ value: [String: Any]) -> T? {
-        guard let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 60 * 1024 else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+    private func decode<T: Decodable & Sendable>(_ value: [String: Any]) async -> T? {
+        let snapshot = JSONEventSnapshot(value: value)
+        return await Task.detached(priority: .utility) {
+            guard let data = try? JSONSerialization.data(withJSONObject: snapshot.value), data.count <= 60 * 1024 else { return nil }
+            return try? JSONDecoder().decode(T.self, from: data)
+        }.value
+    }
+
+    private func decodeDetailPage(_ value: [String: Any]) async -> DecodedTurnFileDetailPage? {
+        let snapshot = JSONEventSnapshot(value: value)
+        return await Task.detached(priority: .userInitiated) {
+            guard let data = try? JSONSerialization.data(withJSONObject: snapshot.value), data.count <= 60 * 1024,
+                  let page = try? JSONDecoder().decode(TurnFileDetailPage.self, from: data) else { return nil }
+            return DecodedTurnFileDetailPage(page: page, textBytes: page.text.utf8.count)
+        }.value
     }
 }
 

@@ -128,6 +128,8 @@ data class FileDiffCache(
     val file: FileChangeMetadata, val text: String = "", val nextCursor: String? = null, val readId: String? = null,
     val loaded: Boolean = false, val eof: Boolean = false, val requestId: String? = null, val error: String? = null,
     val scrollIndex: Int = 0, val scrollOffset: Int = 0,
+    val projection: UnifiedDiffProjection = UnifiedDiffProjection.EMPTY,
+    val textBytes: Int = text.toByteArray(Charsets.UTF_8).size,
 ) {
     fun request(): FileDiffCache = if (requestId != null || eof) this else if (file.detail != "available")
         copy(error = changeFailureText(file.detail)) else copy(requestId = changeId(), error = null)
@@ -142,7 +144,7 @@ data class FileChangeViewer(
         val cleared = cache.mapValues { (_, value) -> value.copy(requestId = null, readId = null) }
         var retained = cleared
         // Retain visited ranges, bounded independently of chat and metadata caches.
-        while (retained.values.sumOf { it.text.toByteArray(Charsets.UTF_8).size.toLong() } > 8L * 1024 * 1024 && retained.size > 1) {
+        while (retained.values.sumOf { it.textBytes.toLong() } > 8L * 1024 * 1024 && retained.size > 1) {
             val oldest = retained.keys.firstOrNull { it != file.fileId } ?: break
             retained = retained - oldest
         }
@@ -171,12 +173,17 @@ data class FileChangeViewer(
             page.eof == (page.nextCursor == null) && (page.eof || count > 0 && page.nextCursor != detail.nextCursor)
         val next = when {
             !valid -> detail.copy(requestId = null, error = L10n.tr("差异范围或版本无效"))
-            detail.text.toByteArray(Charsets.UTF_8).size + count > 2 * 1024 * 1024 -> detail.copy(requestId = null, error = L10n.tr("已读取差异达到 2 MiB 显示上限"))
-            else -> detail.copy(text = detail.text + page.text, nextCursor = page.nextCursor, readId = page.readId,
-                loaded = true, eof = page.eof, requestId = null, error = null)
+            detail.textBytes + count > 2 * 1024 * 1024 -> detail.copy(requestId = null, error = L10n.tr("已读取差异达到 2 MiB 显示上限"))
+            else -> {
+                // RelayReducer handles incoming detail pages on the IO lane. Compose consumes this
+                // immutable projection and never reparses the accumulated text during recomposition.
+                detail.copy(text = detail.text + page.text, textBytes = detail.textBytes + count, nextCursor = page.nextCursor, readId = page.readId,
+                    loaded = true, eof = page.eof, requestId = null, error = null,
+                    projection = detail.projection.append(page.text, page.eof))
+            }
         }
         var retained = cache + (selectedFileId to next)
-        while (retained.values.sumOf { it.text.toByteArray(Charsets.UTF_8).size.toLong() } > 8L * 1024 * 1024 && retained.size > 1) {
+        while (retained.values.sumOf { it.textBytes.toLong() } > 8L * 1024 * 1024 && retained.size > 1) {
             val oldest = retained.keys.firstOrNull { it != selectedFileId } ?: break
             retained = retained - oldest
         }
@@ -253,30 +260,114 @@ internal fun reduceTurnChanges(state: RemoteState, envelope: JsonObject): Remote
 
 private fun Set<String>.takeLastBounded(): Set<String> = if (size <= 4096) this else toList().takeLast(4096).toSet()
 
-internal data class UnifiedDiffLine(val text: String, val kind: String, val oldLine: Int? = null, val newLine: Int? = null, val continuation: Boolean = false)
+data class UnifiedDiffLine(val text: String, val kind: String, val oldLine: Int? = null, val newLine: Int? = null, val continuation: Boolean = false)
 private val unifiedHunk = Regex("^@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@.*$")
-/** Reparse bounded cached UTF-8 text; incomplete chunks never become invented line endings. */
-internal fun unifiedDiffLines(text: String, eof: Boolean): List<UnifiedDiffLine> {
-    var old = 0; var new = 0; var inHunk = false
-    return buildList {
-        val all = text.split('\n')
-        all.forEachIndexed { index, raw ->
-            if (index == all.lastIndex && raw.isEmpty()) return@forEachIndexed
-            val line = raw.removeSuffix("\r")
-            val hunk = if (eof || index < all.lastIndex) unifiedHunk.matchEntire(line) else null
-            if (hunk != null) { old = hunk.groupValues[1].toIntOrNull() ?: 0; new = hunk.groupValues[2].toIntOrNull() ?: 0; inHunk = true; add(UnifiedDiffLine(line, "hunk")); return@forEachIndexed }
-            val kind = if (!inHunk) "header" else when (line.firstOrNull()) { '+' -> "addition"; '-' -> "deletion"; ' ' -> "context"; else -> "header" }
-            val oldLine = if (kind == "deletion" || kind == "context") old++ else null
-            val newLine = if (kind == "addition" || kind == "context") new++ else null
+
+/** Immutable chunked rows; each page parses only new text and shares prior rows. */
+class UnifiedDiffProjection private constructor(
+    private val chunks: List<List<UnifiedDiffLine>>,
+    private val chunkEnds: List<Int>,
+    private val pending: String,
+    private val oldLine: Int?,
+    private val newLine: Int?,
+    private val inHunk: Boolean,
+    private val continuedKind: String?,
+    private val continuedOldLine: Int?,
+    private val continuedNewLine: Int?,
+    val maxLineNumber: Int,
+) : AbstractList<UnifiedDiffLine>() {
+    val lines: List<UnifiedDiffLine> get() = this
+    override val size: Int get() = chunkEnds.lastOrNull() ?: 0
+    override fun get(index: Int): UnifiedDiffLine {
+        if (index !in 0 until size) throw IndexOutOfBoundsException(index)
+        val chunk = chunkEnds.binarySearch(index + 1).let { if (it >= 0) it else -it - 1 }
+        val start = if (chunk == 0) 0 else chunkEnds[chunk - 1]
+        return chunks[chunk][index - start]
+    }
+    val gutterDigits: Int get() = maxOf(2, maxLineNumber.toString().length)
+
+    fun append(text: String, eof: Boolean): UnifiedDiffProjection {
+        var buffer = pending + text
+        var old = oldLine; var new = newLine; var hunk = inHunk; var continued = continuedKind
+        var continuedOld = continuedOldLine; var continuedNew = continuedNewLine
+        var maximum = maxLineNumber
+        val rows = ArrayList<UnifiedDiffLine>()
+        fun emit(value: String, kind: String, oldNumber: Int?, newNumber: Int?, continuation: Boolean) {
+            rows += UnifiedDiffLine(value, kind, oldNumber, newNumber, continuation)
+            maximum = maxOf(maximum, oldNumber ?: 0, newNumber ?: 0)
+        }
+        fun emitFragments(value: String, kind: String, oldNumber: Int?, newNumber: Int?, continuationKind: String?) {
             var from = 0
             do {
-                var until = minOf(from + 2048, line.length)
-                if (until < line.length && until > from && Character.isHighSurrogate(line[until - 1])) until--
-                add(UnifiedDiffLine(line.substring(from, until), kind, oldLine, newLine, from != 0)); from = until
-            } while (from < line.length)
+                var until = minOf(from + 2048, value.length)
+                if (until < value.length && until > from && Character.isHighSurrogate(value[until - 1])) until--
+                emit(value.substring(from, until), kind, oldNumber, newNumber,
+                    continuation = from != 0 || continuationKind != null)
+                from = until
+            } while (from < value.length)
         }
+        fun process(raw: String, complete: Boolean, continues: Boolean) {
+            val line = raw.removeSuffix("\r")
+            if (continued != null) {
+                emitFragments(line, continued ?: "header", continuedOld, continuedNew, continuationKind = continued)
+                continued = if (continues) continued else null
+                if (!continues) { continuedOld = null; continuedNew = null }
+                return
+            }
+            val match = if (complete) unifiedHunk.matchEntire(line) else null
+            if (match != null) {
+                old = match.groupValues[1].toIntOrNull() ?: 0
+                new = match.groupValues[2].toIntOrNull() ?: 0
+                hunk = true
+                emit(line, "hunk", null, null, continuation = false)
+                return
+            }
+            val kind = if (!hunk) "header" else when (line.firstOrNull()) {
+                '+' -> "addition"; '-' -> "deletion"; ' ' -> "context"; else -> "header"
+            }
+            val oldNumber = if (kind == "deletion" || kind == "context") old.also { old = old?.plus(1) } else null
+            val newNumber = if (kind == "addition" || kind == "context") new.also { new = new?.plus(1) } else null
+            emitFragments(line, kind, oldNumber, newNumber, continuationKind = null)
+            continued = kind.takeIf { continues }
+            continuedOld = oldNumber.takeIf { continues }; continuedNew = newNumber.takeIf { continues }
+        }
+
+        while (true) {
+            val newline = buffer.indexOf('\n')
+            when {
+                newline >= 0 -> {
+                    process(buffer.substring(0, newline), complete = true, continues = false)
+                    buffer = buffer.substring(newline + 1)
+                }
+                buffer.length > 2048 && !buffer.startsWith("@@") -> {
+                    var until = 2048
+                    if (Character.isHighSurrogate(buffer[until - 1])) until--
+                    process(buffer.substring(0, until), complete = false, continues = true)
+                    buffer = buffer.substring(until)
+                }
+                eof -> {
+                    if (buffer.isNotEmpty()) process(buffer, complete = true, continues = false)
+                    buffer = ""
+                    break
+                }
+                continued != null && buffer.isNotEmpty() -> {
+                    process(buffer, complete = false, continues = true)
+                    buffer = ""
+                }
+                else -> break
+            }
+        }
+        if (rows.isEmpty()) return UnifiedDiffProjection(chunks, chunkEnds, buffer, old, new, hunk, continued, continuedOld, continuedNew, maximum)
+        val chunk = rows.toList()
+        return UnifiedDiffProjection(chunks + listOf(chunk), chunkEnds + (size + chunk.size), buffer, old, new, hunk,
+            continued, continuedOld, continuedNew, maximum)
     }
+
+    companion object { val EMPTY = UnifiedDiffProjection(emptyList(), emptyList(), "", null, null, false, null, null, null, 0) }
 }
+
+internal fun unifiedDiffProjection(text: String, eof: Boolean): UnifiedDiffProjection = UnifiedDiffProjection.EMPTY.append(text, eof)
+internal fun unifiedDiffLines(text: String, eof: Boolean): List<UnifiedDiffLine> = unifiedDiffProjection(text, eof)
 
 /** Preserve compound extensions and grapheme boundaries when the available width is small. */
 internal fun changeFileNameParts(name: String): Pair<String, String> {

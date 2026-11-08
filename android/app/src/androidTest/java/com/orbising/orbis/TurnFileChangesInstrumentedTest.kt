@@ -29,6 +29,7 @@ class TurnFileChangesInstrumentedTest {
     private val summary get() = TurnChangeSummary(1, ToolAgent("host", "codex", "session"), "turn", "set", listOf("turn"), 1,
         "entry", 1, 2, "ready", "completed", "complete", "workspace-window", emptyList(), 5, 4, 1, 0, 200, 3, files.take(4), scope = "git-visible-files", revision = 1)
     private val diff = "--- a/file\n+++ b/file\n@@ -1,150 +1,150 @@\n" + (1..150).joinToString("\n") { " line $it" } + "\n-old\n+new\n"
+    private val diffProjection = unifiedDiffProjection(diff, true)
 
     @Test fun nativeSummaryShowsToolScopeWithoutReadingDetail() {
         var details = 0
@@ -121,7 +122,7 @@ class TurnFileChangesInstrumentedTest {
 
     @Test fun swipingLoadsOnlySettledFileAndRestoresVisitedPosition() {
         val start = FileChangeViewer("runtime", summary, files[0].fileId,
-            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = diff, loaded = true, eof = true)))
+            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = diff, loaded = true, eof = true, projection = diffProjection)))
         val viewer = mutableStateOf(start)
         val requested = mutableListOf<String>()
         compose.setContent { OrbisTheme {
@@ -131,7 +132,7 @@ class TurnFileChangesInstrumentedTest {
                         requested += id
                         viewer.value = viewer.value.select(files.first { it.fileId == id }).let { changed ->
                             if (changed.current?.loaded == true) changed else changed.copy(cache = changed.cache + (id to
-                                FileDiffCache(files.first { it.fileId == id }, text = diff, loaded = true, eof = true)))
+                                FileDiffCache(files.first { it.fileId == id }, text = diff, loaded = true, eof = true, projection = diffProjection)))
                         }
                     }
                 }, onReadDetail = { fail("All fixture content is complete; no additional reads are needed") },
@@ -165,7 +166,7 @@ class TurnFileChangesInstrumentedTest {
 
     @Test fun diffScrollNeverClosesViewerButHeaderPullDoes() {
         val viewer = FileChangeViewer("runtime", summary, files[0].fileId,
-            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = diff, loaded = true, eof = true)))
+            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = diff, loaded = true, eof = true, projection = diffProjection)))
         var closes = 0
         compose.setContent { OrbisTheme {
             FileChangeViewerSheet(viewer, ChangeManifest(summary, files, loaded = true), onClose = { closes++ }, {}, {}, {}, { _, _, _ -> })
@@ -187,8 +188,10 @@ class TurnFileChangesInstrumentedTest {
     }
 
     @Test fun darkViewerLargeTextKeepsFullFilenameAccessibility() {
+        val darkDiff = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n context\n-old 中文😀\n+new 中文😀\n"
+        val darkProjection = unifiedDiffProjection(darkDiff, true)
         val viewer = FileChangeViewer("runtime", summary, files[0].fileId,
-            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n context\n-old 中文😀\n+new 中文😀\n", loaded = true, eof = true)))
+            cache = mapOf(files[0].fileId to FileDiffCache(files[0], text = darkDiff, loaded = true, eof = true, projection = darkProjection)))
         compose.setContent { OrbisTheme(darkTheme = true) {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, 1.6f)) {

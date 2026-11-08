@@ -23,37 +23,40 @@ struct TurnFileChangesTests {
         result["cursor"] = nil; result["maxBytes"] = nil
         return result
     }
+    private func receiveDetail(_ event: [String: Any], in changes: TurnFileChanges) async {
+        await changes.consume(event, runtimeId: "runtime")
+    }
     private func expired(_ request: [String: Any]) -> [String: Any] {
         ["type": "session.changes.failed", "requestId": request["requestId"]!, "runtimeId": "runtime", "reason": "expired"]
     }
-    @Test func nativeToolMetadataExplainsCoverageAndRequiresExplicitDetailReads() throws {
+    @Test func nativeToolMetadataExplainsCoverageAndRequiresExplicitDetailReads() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
         var raw = try object(summary())
         raw["attribution"] = "native-tool"; raw["scope"] = "native-file-tools"; raw["coverage"] = "partial"
         raw["reasons"] = ["native-file-tools-only"]
-        changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
         let native = try #require(changes.summaries["set"])
         #expect(turnChangeCoverageNote(native) == "仅记录 Codex 文件工具变更")
         #expect(turnChangeScopeTitle(native.scope) == "范围：Codex 文件工具")
         #expect(sent.isEmpty)
         raw["coverage"] = "complete"; raw["revision"] = 2
-        changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": raw], runtimeId: "runtime")
         #expect(changes.summaries["set"] == native)
         changes.open(native)
         #expect(sent.last?["type"] as? String == "session.change.detail.read")
         changes.clear()
     }
-    @Test func expiredLeaseReopensAtTheSameCursorWithoutLosingContentOrPosition() {
+    @Test func expiredLeaseReopensAtTheSameCursorWithoutLosingContentOrPosition() async {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
         changes.open(summary())
-        changes.consume(detailPage(sent.last!, text: "@@ -1 +1 @@\n-old\n+new\n", cursor: "immutable-next"), runtimeId: "runtime")
+        await receiveDetail(detailPage(sent.last!, text: "@@ -1 +1 @@\n-old\n+new\n", cursor: "immutable-next"), in: changes)
         changes.rememberScroll(2, file: file)
         changes.loadNext(); let old = sent.last!; let count = sent.count
-        changes.consume(expired(old), runtimeId: "runtime")
+        await changes.consume(expired(old), runtimeId: "runtime")
         #expect(sent.count == count + 1)
         let reopened = sent.last!
         #expect(reopened["readId"] is NSNull)
@@ -64,36 +67,36 @@ struct TurnFileChangesTests {
         #expect(reopened["manifestVersion"] as? Int == old["manifestVersion"] as? Int)
         #expect(changes.currentDetail.lines.count == 3)
         #expect(changes.currentDetail.scrollLine == 2)
-        changes.consume(detailPage(old, text: "stale"), runtimeId: "runtime")
+        await receiveDetail(detailPage(old, text: "stale"), in: changes)
         #expect(changes.currentDetail.lines.count == 3)
-        changes.consume(detailPage(reopened, text: " context\n", read: "renewed-read"), runtimeId: "runtime")
+        await receiveDetail(detailPage(reopened, text: " context\n", read: "renewed-read"), in: changes)
         #expect(changes.currentDetail.lines.count == 4)
         #expect(changes.currentDetail.readId == "renewed-read")
         #expect(changes.currentDetail.scrollLine == 2)
         changes.clear()
     }
-    @Test func expiredReopenStopsAfterOneAttemptAndCannotRestartAnotherViewer() {
+    @Test func expiredReopenStopsAfterOneAttemptAndCannotRestartAnotherViewer() async {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
         changes.open(summary())
-        changes.consume(detailPage(sent.last!, text: " cached\n", cursor: "next"), runtimeId: "runtime")
-        changes.loadNext(); changes.consume(expired(sent.last!), runtimeId: "runtime")
+        await receiveDetail(detailPage(sent.last!, text: " cached\n", cursor: "next"), in: changes)
+        changes.loadNext(); await changes.consume(expired(sent.last!), runtimeId: "runtime")
         let reopened = sent.last!; let count = sent.count
-        changes.consume(expired(reopened), runtimeId: "runtime")
+        await changes.consume(expired(reopened), runtimeId: "runtime")
         #expect(sent.count == count)
         #expect(changes.currentDetail.error == turnChangeFailureTitle("expired"))
         #expect(changes.currentDetail.lines.map(\.text) == [" cached"])
         #expect(changes.currentDetail.nextCursor == "next")
         changes.loadNext(); let late = sent.last!
         changes.open(summary(version: 2)); let afterSwitch = sent.count
-        changes.consume(expired(late), runtimeId: "runtime")
+        await changes.consume(expired(late), runtimeId: "runtime")
         #expect(sent.count == afterSwitch)
         #expect(changes.opened?.manifestVersion == 2)
         #expect(changes.currentDetail.lines.isEmpty)
         changes.clear()
     }
-    @Test func everyPageEnforcesTotalBudgetAndPreservesTheSelectedAndMostRecentFiles() {
+    @Test func everyPageEnforcesTotalBudgetAndPreservesTheSelectedAndMostRecentFiles() async {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
@@ -101,18 +104,18 @@ struct TurnFileChangesTests {
         let files = summary().preview + [third]
         changes.open(summary(files: files))
         let page = String(repeating: "x", count: 32_767) + "\n"
-        func fillSelectedFile(_ id: String) {
+        func fillSelectedFile(_ id: String) async {
             for index in 0..<96 {
                 if index > 0 { changes.loadNext() }
-                changes.consume(detailPage(sent.last!, text: page, cursor: "\(id)-\(index)", read: "read-\(id)"), runtimeId: "runtime")
+                await receiveDetail(detailPage(sent.last!, text: page, cursor: "\(id)-\(index)", read: "read-\(id)"), in: changes)
                 #expect(changes.details.values.reduce(0) { $0 + $1.bytes } <= 8 * 1024 * 1024)
             }
         }
-        fillSelectedFile("f1"); changes.rememberScroll(2, file: file)
-        changes.selectFile("f2"); fillSelectedFile("f2")
+        await fillSelectedFile("f1"); changes.rememberScroll(2, file: file)
+        changes.selectFile("f2"); await fillSelectedFile("f2")
         changes.selectFile("f1")
         #expect(changes.currentDetail.scrollLine == 2)
-        changes.selectFile("f3"); changes.rememberScroll(1, file: third); fillSelectedFile("f3")
+        changes.selectFile("f3"); changes.rememberScroll(1, file: third); await fillSelectedFile("f3")
         #expect(changes.detail(for: file).bytes == 3 * 1024 * 1024)
         #expect(changes.detail(for: file).scrollLine == 2)
         #expect(changes.detail(for: files[1]).bytes == 0)
@@ -120,7 +123,7 @@ struct TurnFileChangesTests {
         #expect(changes.currentDetail.scrollLine == 1)
         changes.clear()
     }
-    @Test func aPageThatExceedsTheSingleFileLimitIsNotAppendedOrRetried() {
+    @Test func aPageThatExceedsTheSingleFileLimitIsNotAppendedOrRetried() async {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
@@ -129,13 +132,13 @@ struct TurnFileChangesTests {
         for index in 0..<256 {
             if index > 0 { changes.loadNext() }
             let text = index == 255 ? String(page.dropFirst()) : page
-            changes.consume(detailPage(sent.last!, text: text, cursor: "next-\(index)"), runtimeId: "runtime")
+            await receiveDetail(detailPage(sent.last!, text: text, cursor: "next-\(index)"), in: changes)
         }
         changes.rememberScroll(255, file: file)
         let before = changes.currentDetail
         #expect(before.bytes == 8 * 1024 * 1024 - 1)
         changes.loadNext()
-        changes.consume(detailPage(sent.last!, text: "+x\n"), runtimeId: "runtime")
+        await receiveDetail(detailPage(sent.last!, text: "+x\n"), in: changes)
         #expect(changes.currentDetail.bytes == before.bytes)
         #expect(changes.currentDetail.lines == before.lines)
         #expect(changes.currentDetail.nextCursor == before.nextCursor)
@@ -146,49 +149,55 @@ struct TurnFileChangesTests {
         #expect(sent.count == count)
         changes.clear()
     }
-    @Test func delayedSummaryListCannotReplaceCompletedMetadata() throws {
+    @Test func delayedSummaryListCannotReplaceCompletedMetadata() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: ["entry"], turnIds: [])
         let ready = summary(revision: 3)
-        changes.consume(["type": "session.changes.updated", "summary": try object(ready)], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(ready)], runtimeId: "runtime")
         var collecting = try object(summary(revision: 2))
         collecting["state"] = "collecting"; collecting["anchorEntryId"] = NSNull(); collecting["finishedAt"] = NSNull()
         var delayedList = sent[0]
         delayedList["type"] = "session.changes.summaries"; delayedList["summaries"] = [collecting]; delayedList["nextCursor"] = NSNull()
-        changes.consume(delayedList, runtimeId: "runtime")
+        await changes.consume(delayedList, runtimeId: "runtime")
         #expect(changes.summaries["set"] == ready)
-        #expect(changes.matching(anchors: ["entry"], turns: []) == [ready])
+        let worker = TurnChangeBackgroundWorker()
+        let query = TurnChangeSummaryQuery(owner: UUID(), revision: changes.summaryRevision, anchors: ["entry"])
+        #expect(await worker.matching(query, summaries: changes.summaries, agent: changes.summaryProjectionAgent) == [ready])
 
         let revised = summary(revision: 4)
-        changes.consume(["type": "session.changes.updated", "summary": try object(revised)], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(revised)], runtimeId: "runtime")
         #expect(changes.summaries["set"] == revised)
-        changes.consume(["type": "session.changes.updated", "summary": try object(summary(version: 0, revision: 5))], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(summary(version: 0, revision: 5))], runtimeId: "runtime")
         #expect(changes.summaries["set"] == revised)
-        changes.consume(["type": "session.changes.updated", "summary": try object(ready)], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(ready)], runtimeId: "runtime")
         #expect(changes.summaries["set"] == revised)
         changes.clear()
     }
-    @Test func summaryRequiresNonnegativeRevision() throws {
+    @Test func summaryRequiresNonnegativeRevision() async throws {
         let changes = TurnFileChanges()
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
         var missing = try object(summary()); missing["revision"] = nil
-        changes.consume(["type": "session.changes.updated", "summary": missing], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": missing], runtimeId: "runtime")
         #expect(changes.summaries.isEmpty)
-        changes.consume(["type": "session.changes.updated", "summary": try object(summary(revision: -1))], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(summary(revision: -1))], runtimeId: "runtime")
         #expect(changes.summaries.isEmpty)
-        changes.consume(["type": "session.changes.updated", "summary": try object(summary(revision: 0))], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(summary(revision: 0))], runtimeId: "runtime")
         #expect(changes.summaries["set"]?.revision == 0)
         changes.clear()
     }
-    @Test func metadataAndAdjacentPagesNeverFetchDetails() throws {
+    @Test func metadataAndAdjacentPagesNeverFetchDetails() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: ["entry"], turnIds: [])
-        changes.consume(["type": "session.changes.updated", "summary": try object(summary())], runtimeId: "runtime")
-        #expect(changes.matching(anchors: ["entry"], turns: []).count == 1)
-        #expect(changes.matching(anchors: [], turns: ["native-turn"]).isEmpty)
-        #expect(changes.matching(anchors: ["another-branch-entry"], turns: []).isEmpty)
+        await changes.consume(["type": "session.changes.updated", "summary": try object(summary())], runtimeId: "runtime")
+        let worker = TurnChangeBackgroundWorker()
+        let query = TurnChangeSummaryQuery(owner: UUID(), revision: changes.summaryRevision, anchors: ["entry"])
+        #expect(await worker.matching(query, summaries: changes.summaries, agent: changes.summaryProjectionAgent).count == 1)
+        let noAnchor = TurnChangeSummaryQuery(owner: query.owner, revision: query.revision, anchors: [])
+        #expect(await worker.matching(noAnchor, summaries: changes.summaries, agent: changes.summaryProjectionAgent).isEmpty)
+        await worker.removeSummaryQueries(owner: query.owner)
+        #expect(await worker.matching(query, summaries: [:], agent: nil).isEmpty)
         _ = changes.manifest(summary()); changes.loadFiles(summary())
         #expect(sent.allSatisfy { $0["type"] as? String != "session.change.detail.read" })
         changes.open(summary())
@@ -198,17 +207,17 @@ struct TurnFileChangesTests {
         #expect(count == 1)
         changes.clear()
     }
-    @Test func swipingCancelsAndIgnoresLateResponsesThenReusesVisitedRanges() throws {
+    @Test func swipingCancelsAndIgnoresLateResponsesThenReusesVisitedRanges() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: ["entry"], turnIds: [])
         changes.open(summary()); let first = sent.last!
-        changes.consume(detailPage(first, text: "@@ -1 +1 @@\n-old\n+new\n", cursor: "next"), runtimeId: "runtime")
+        await receiveDetail(detailPage(first, text: "@@ -1 +1 @@\n-old\n+new\n", cursor: "next"), in: changes)
         changes.rememberScroll(2, file: file)
         changes.loadNext(); let stale = sent.last!
         changes.selectFile("f2")
         #expect(sent.contains { $0["type"] as? String == "session.change.detail.cancel" })
-        changes.consume(detailPage(stale, text: "bad"), runtimeId: "runtime")
+        await receiveDetail(detailPage(stale, text: "bad"), in: changes)
         #expect(changes.currentDetail.lines.isEmpty)
         let reads = sent.filter { $0["type"] as? String == "session.change.detail.read" }.count
         changes.selectFile("f1")
@@ -220,33 +229,33 @@ struct TurnFileChangesTests {
         #expect(sent.last?["readId"] is NSNull)
         changes.clear()
     }
-    @Test func scopeVersionAndViewerAreChecked() throws {
+    @Test func scopeVersionAndViewerAreChecked() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: ["entry"], turnIds: [])
         changes.open(summary()); let request = sent.last!
         var wrong = detailPage(request, text: "wrong")
         wrong["contentVersion"] = "different"
-        changes.consume(wrong, runtimeId: "runtime")
+        await receiveDetail(wrong, in: changes)
         #expect(changes.currentDetail.lines.isEmpty)
         wrong = detailPage(request, text: "wrong"); wrong["viewerId"] = "another"
-        changes.consume(wrong, runtimeId: "runtime")
+        await receiveDetail(wrong, in: changes)
         #expect(changes.currentDetail.lines.isEmpty)
-        changes.consume(["type": "session.changes.updated", "summary": try object(summary(version: 2))], runtimeId: "runtime")
+        await changes.consume(["type": "session.changes.updated", "summary": try object(summary(version: 2))], runtimeId: "runtime")
         #expect(changes.newerVersionAvailable)
         #expect(changes.opened?.manifestVersion == 1)
         changes.observe(runtimeId: "runtime", agent: ToolAgent(hostId: "host", agentKind: "codex", sessionId: "different"), entryIds: [], turnIds: [])
-        changes.consume(detailPage(request, text: "stale"), runtimeId: "runtime")
+        await receiveDetail(detailPage(request, text: "stale"), in: changes)
         #expect(changes.opened == nil); #expect(changes.details.isEmpty)
         changes.clear()
     }
-    @Test func backgroundSuspendsWithoutAutomaticContinuation() {
+    @Test func backgroundSuspendsWithoutAutomaticContinuation() async {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }
         changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
         changes.open(summary()); let request = sent.last!
         changes.suspend(); let count = sent.count
-        changes.consume(detailPage(request, text: "late"), runtimeId: "runtime")
+        await receiveDetail(detailPage(request, text: "late"), in: changes)
         changes.loadNext()
         #expect(changes.suspended); #expect(sent.count == count); #expect(changes.currentDetail.lines.isEmpty)
         changes.resume(); #expect(sent.count == count + 1)

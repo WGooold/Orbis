@@ -2394,7 +2394,7 @@ final class HostConnection: ObservableObject {
             if sequence <= (runtimeEventSequences[key] ?? -1) { return }
             runtimeEventSequences[key] = sequence
         }
-        turnFileChanges.consume(event, runtimeId: runtimeId)
+        await turnFileChanges.consume(event, runtimeId: runtimeId)
         if type.hasPrefix("session.changes.") || type.hasPrefix("session.change.detail.") { return }
         toolContent.consume(event, runtimeId: runtimeId)
         toolInventories.consume(event, runtime: runtimeId)

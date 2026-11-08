@@ -4,10 +4,18 @@ import UIKit
 struct TurnChangeCards: View {
     @ObservedObject var changes: TurnFileChanges
     let anchors: Set<String>
-    let turns: Set<String>
+    @State private var matching: [TurnChangeSummary] = []
     var body: some View {
-        ForEach(changes.matching(anchors: anchors, turns: turns)) { summary in
+        let query = TurnChangeSummaryQuery(owner: changes.summaryProjectionOwner, revision: changes.summaryRevision, anchors: anchors)
+        let summaries = changes.summaries
+        let agent = changes.summaryProjectionAgent
+        ForEach(matching) { summary in
             TurnChangeCard(changes: changes, summary: summary)
+        }
+        .task(id: query) {
+            let result = await TurnChangeBackgroundWorker.shared.matching(query, summaries: summaries, agent: agent)
+            guard !Task.isCancelled else { return }
+            matching = result
         }
     }
 }
@@ -386,7 +394,7 @@ private struct DiffFilePage: View {
         let detail = changes.detail(for: file)
         let selected = changes.selectedFileId == file.fileId
         // Monospaced caption digits are 7.2pt wide; gutters fit the widest number read so far.
-        let gutter = CGFloat(max(2, String(detail.parser.maxLineNumber).count)) * 7.5
+        let gutter = CGFloat(detail.parser.gutterDigits) * 7.5
         VStack(alignment: .leading, spacing: 10) {
             DiffFileHeader(file: file)
             ScrollView {
