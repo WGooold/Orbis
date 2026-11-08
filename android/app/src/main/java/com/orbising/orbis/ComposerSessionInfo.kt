@@ -92,16 +92,22 @@ private fun LocationFact(icon: ImageVector, description: String, text: String, m
         if (!middleEllipsis) {
             Text(text, modifier = Modifier.weight(1f, fill = false), style = style, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-        } else BoxWithConstraints(Modifier.weight(1f, fill = false)) {
-            // A path keeps both ends (as iOS): the folder name at the end is the part that tells sessions apart.
-            val measurer = rememberTextMeasurer()
-            val width = constraints.maxWidth
-            val shown = remember(text, width, style, measurer) {
-                middleEllipsized(text, width) { measurer.measure(it, style, maxLines = 1).size.width }
-            }
-            Text(shown, style = style, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Clip,
-                modifier = Modifier.semantics { contentDescription = text })
+        } else MiddleEllipsizedText(text, style, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f, fill = false))
+    }
+}
+
+/** Shared native text measurement preserves a path's final directory and full accessible label. */
+@Composable
+internal fun MiddleEllipsizedText(text: String, style: androidx.compose.ui.text.TextStyle,
+    color: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+    BoxWithConstraints(modifier) {
+        val measurer = rememberTextMeasurer()
+        val width = constraints.maxWidth
+        val shown = remember(text, width, style, measurer) {
+            middleEllipsized(text, width) { measurer.measure(it, style, maxLines = 1).size.width }
         }
+        Text(shown, style = style, color = color, maxLines = 1, overflow = TextOverflow.Clip,
+            modifier = Modifier.semantics { contentDescription = text })
     }
 }
 

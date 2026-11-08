@@ -1129,7 +1129,7 @@ internal fun RuntimeListScreen(
                                             },
                                         shape = RoundedCornerShape(24.dp),
                                         enabled = cardCurrent,
-                                        shadowScale = 0.8f,
+                                        shadowScale = 0.65f,
                                         style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                                         pressedColor = androidx.compose.ui.graphics.lerp(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.onSurface, 0.05f),
                                         selectionSelected = runtime.runtimeId in selectedIds,
@@ -1148,15 +1148,16 @@ internal fun RuntimeListScreen(
                                     ) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
+                                            verticalAlignment = Alignment.Top,
                                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                                         ) {
-                                            AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
+                                            AgentEmblem(agentBrand(runtime.agentKind), 40.dp)
                                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                                 MotionText(row.card.title, style = MaterialTheme.typography.titleMedium,
                                                     fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                                Text(runtime.cwd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                MiddleEllipsizedText(runtime.cwd,
+                                                    MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                                    MaterialTheme.colorScheme.onSurfaceVariant)
                                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                                     Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
                                                     if (row.card.hasPendingInteraction) {
