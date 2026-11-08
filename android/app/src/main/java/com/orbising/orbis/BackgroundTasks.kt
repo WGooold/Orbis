@@ -22,7 +22,7 @@ internal fun BackgroundTasksPanel(tasks: BackgroundTaskInventory) {
     Column(Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding)) {
         NeumorphTextButton(
             text = tasks.panelTitle,
-            icon = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            icon = if (expanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown,
             onClick = { expanded = !expanded },
             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("background-tasks-toggle")
                 .semantics { stateDescription = if (expanded) L10n.tr("已展开") else L10n.tr("已收起") },

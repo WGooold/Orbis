@@ -72,7 +72,7 @@ fun OrbisTheme(
         MaterialTheme(
             colorScheme = colors,
             typography = Typography().run {
-                fun TextStyle.type(size: Int, height: Int, weight: FontWeight = fontWeight ?: FontWeight.Normal) =
+                fun TextStyle.type(size: Int, height: Int, weight: FontWeight = FontWeight.Normal) =
                     copy(fontSize = size.sp, lineHeight = height.sp, fontWeight = weight,
                         fontFeatureSettings = "tnum", lineBreak = LineBreak.Paragraph)
                 copy(

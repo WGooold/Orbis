@@ -76,9 +76,9 @@ private fun ComposerLocation(path: String?, branch: WorkingBranch?, modifier: Mo
     BoxWithConstraints(modifier) {
         val branchWidth = maxWidth / 2
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            LocationFact(Icons.Rounded.Folder, L10n.tr("运行目录"), path?.takeIf(String::isNotBlank) ?: L10n.tr("运行路径待同步"),
+            LocationFact(OrbisSymbols.Folder, L10n.tr("运行目录"), path?.takeIf(String::isNotBlank) ?: L10n.tr("运行路径待同步"),
                 Modifier.weight(1f, fill = false), middleEllipsis = true)
-            LocationFact(Icons.Rounded.AccountTree, L10n.tr("当前 Git 工作分支"), branchLabel, Modifier.widthIn(max = branchWidth))
+            LocationFact(OrbisSymbols.AccountTree, L10n.tr("当前 Git 工作分支"), branchLabel, Modifier.widthIn(max = branchWidth))
         }
     }
 }

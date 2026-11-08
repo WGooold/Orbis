@@ -46,6 +46,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.layout.Box
@@ -604,6 +608,8 @@ fun NeumorphSurface(
     selectionMode: Boolean = false,
     /** Optional tactile tone for interactive pressed cards; static recessed wells keep their base. */
     pressedColor: Color? = null,
+    /** Navigation surfaces are flat at rest, but a physical press still indents them. */
+    flat: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
@@ -616,9 +622,18 @@ fun NeumorphSurface(
     val effectiveShadowScale = orbisShadowScale(shadowScale)
     val paints = rememberShadowPaints(colors, effectiveShadowScale)
     val pressed by interactionSource.collectIsPressedAsState()
+    val focused by interactionSource.collectIsFocusedAsState()
+    val keyboardFocus = active && focused && LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    val focusColor = MaterialTheme.colorScheme.primary
+    val focusRing = if (keyboardFocus) Modifier.drawBehind {
+        val gap = 3.dp.toPx()
+        val radius = shapeCornerPx(resolvedShape, size, this) + gap
+        drawRoundRect(focusColor, Offset(-gap,-gap), Size(size.width+gap*2,size.height+gap*2),
+            CornerRadius(radius), style = Stroke(2.dp.toPx()))
+    } else Modifier
     val currentStyle = if (pressed && active && !selectionMode) NeumorphStyle.Pressed else style
     val depth by animateFloatAsState(
-        if (!active) 0f else if (currentStyle == NeumorphStyle.Pressed) -1f else 1f,
+        if (!active) 0f else if (currentStyle == NeumorphStyle.Pressed) -1f else if (flat) 0f else 1f,
         tween(InteractionMotion.duration(if (pressed) InteractionMotion.GlyphPress else if (style == NeumorphStyle.Pressed) InteractionMotion.Selection else InteractionMotion.GlyphRelease), easing = InteractionMotion.GlyphEase),
         label = "surface-depth",
     )
@@ -633,7 +648,7 @@ fun NeumorphSurface(
             drawCircle(accent.copy(alpha = 0.07f), InteractionMotion.revealRadius(origin, size) * progress, origin)
         }.border(1.dp, accent.copy(alpha = 0.65f * progress), resolvedShape)
     } else Modifier
-    val layer = parent?.let { nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
+    val layer = parent?.let { if (flat && currentStyle == NeumorphStyle.Raised) it.layer else nestedSurfaceLayer(it.layer, currentStyle == NeumorphStyle.Pressed) }
         ?: if (currentStyle == NeumorphStyle.Pressed) 0 else 1
     val bodyColor = if (parent != null) colors.layer(layer) else colors.base
     val corner = (resolvedShape as? RoundedCornerShape)?.topStart?.let { size ->
@@ -641,10 +656,19 @@ fun NeumorphSurface(
     }
     // 凹陷阴影须画在底色之上；外阴影须在 clip 之外。两种状态共用同一块底板。
     Box(
-        modifier.then(
+        modifier.then(focusRing).then(
             if (parent == null && active) {
                 Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Raised, colors, effectiveShadowScale, paints) { depth.coerceAtLeast(0f) }
             } else Modifier,
+        ).then(
+            if (onClick != null) Modifier.combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = active,
+                role = Role.Button,
+                onLongClick = onLongClick,
+                onClick = { glyphActivation++; onClick() },
+            ) else Modifier,
         ),
         propagateMinConstraints = true,
     ) {
@@ -655,15 +679,6 @@ fun NeumorphSurface(
                 if (active) {
                     Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Pressed, colors, effectiveShadowScale, paints) { (-depth).coerceAtLeast(0f) }
                 } else Modifier,
-            ).then(
-                if (onClick != null) Modifier.combinedClickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    enabled = active,
-                    role = Role.Button,
-                    onLongClick = onLongClick,
-                    onClick = { glyphActivation++; onClick() },
-                ) else Modifier,
             ),
             propagateMinConstraints = true,
         ) {
@@ -697,7 +712,7 @@ internal fun Modifier.neumorphSurfaceSlice(
     shadowScale: Float = 0.65f,
 ): Modifier {
     val colors = rememberNeumorphColors()
-    val scale = shadowScale
+    val scale = orbisShadowScale(shadowScale)
     val paints = rememberShadowPaints(colors, scale)
     return drawWithCache {
         val corner = radius.toPx().coerceAtMost(size.width / 2f)
@@ -840,7 +855,7 @@ internal fun Modifier.neumorphDirectoryPanels(
 @Composable
 internal fun AgentIconRecess(modifier: Modifier = Modifier, shape: Shape = RemoteUi.ControlShape) {
     val colors = rememberNeumorphColors()
-    val scale = 0.65f
+    val scale = 0.4f
     val paints = rememberShadowPaints(colors, scale)
     Box(modifier.clip(shape).background(colors.insetBase)
         .neumorphShadows(shape, NeumorphStyle.Pressed, colors, scale, paints))
@@ -858,7 +873,7 @@ internal fun OrbisSelectionIndicator(selected: Boolean, selecting: Boolean) {
             .border(1.5.dp, if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Rounded.Check, contentDescription = null,
+        Icon(OrbisSymbols.Check, contentDescription = null,
             tint = MaterialTheme.colorScheme.onPrimary,
             modifier = Modifier.size(14.dp).alpha(progress))
     }
@@ -869,7 +884,8 @@ internal fun OrbisSelectionIndicator(selected: Boolean, selecting: Boolean) {
 internal fun Modifier.neumorphRaised(shape: Shape, shadowScale: Float = 0.65f): Modifier {
     if (LocalOrbisSurface.current != null) return this
     val colors = rememberNeumorphColors()
-    return neumorphShadows(shape, NeumorphStyle.Raised, colors, shadowScale, rememberShadowPaints(colors, shadowScale))
+    val scale = orbisShadowScale(shadowScale)
+    return neumorphShadows(shape, NeumorphStyle.Raised, colors, scale, rememberShadowPaints(colors, scale))
 }
 
 /** 小控件用更浅的柔影，避免相邻按钮的阴影连成一片。 */
@@ -917,6 +933,7 @@ fun NeumorphIconButton(
             shape = shape,
             style = if (pressed && active) NeumorphStyle.Pressed else style,
             shadowScale = if (compact) 0.4f else compactShadowScale(size),
+            interactionSource = interactionSource,
             enabled = active,
         ) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -944,6 +961,7 @@ fun NeumorphActionButton(
     style: NeumorphStyle = NeumorphStyle.Raised,
 ) {
     var activation by remember { mutableIntStateOf(0) }
+    val modalCommit = LocalModalCommit.current
     val contentColor = if (enabled) {
         MaterialTheme.colorScheme.primary
     } else {
@@ -954,7 +972,7 @@ fun NeumorphActionButton(
         shape = RemoteUi.ControlShape,
         style = style,
         shadowScale = 0.7f,
-        onClick = { activation++; onClick() },
+        onClick = { activation++; if (modalCommit != null) modalCommit(onClick) else onClick() },
         enabled = enabled,
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -969,6 +987,7 @@ fun NeumorphActionButton(
                 }
                 Text(
                     text,
+                    modifier = Modifier.actionGlyphMotion(LocalGlyphActivation.current),
                     color = contentColor,
                     style = MaterialTheme.typography.labelLarge,
                 )
@@ -978,7 +997,7 @@ fun NeumorphActionButton(
 }
 
 /**
- * 新拟物输入框配色：凹槽底色配轻描边，焦点用主色描边明确提示。
+ * 新拟物输入框配色：凹槽同色；触摸焦点柔光与键盘外环由共享修饰器绘制。
  * 配合 [neumorphInsetOverlay]（内阴影）使用（shape 建议传 RoundedCornerShape(16.dp)）。
  */
 @Composable
@@ -1013,8 +1032,8 @@ fun Modifier.neumorphInsetOverlay(shape: Shape): Modifier {
     return then(remember(shape, colors, paints) {
         Modifier.drawWithCache {
             val bodySize = size
-            val offsetPx = ShadowOffset.toPx()
-            val reachPx = ShadowBlur.toPx()
+            val offsetPx = ShadowOffset.toPx() * 0.65f
+            val reachPx = ShadowBlur.toPx() * 0.65f
             val corner = shapeCornerPx(shape, bodySize, this)
             val patch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 ShadowPatchCache.patch(corner, offsetPx, reachPx, NeumorphStyle.Pressed, paints)
@@ -1056,6 +1075,7 @@ fun NeumorphTextButton(
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
+    val modalCommit = LocalModalCommit.current
     val contentColor = when {
         !enabled -> LocalOrbisPalette.current.faint
         danger -> MaterialTheme.colorScheme.error
@@ -1066,7 +1086,7 @@ fun NeumorphTextButton(
         modifier = modifier.heightIn(min = RemoteUi.TouchTarget),
         shape = RemoteUi.ControlShape,
         shadowScale = 0.5f,
-        onClick = { activation++; onClick() },
+        onClick = { activation++; if (modalCommit != null) modalCommit(onClick) else onClick() },
         enabled = active,
     ) {
         Row(
@@ -1078,9 +1098,9 @@ fun NeumorphTextButton(
                 OrbisMotionIcon(it, description = null, tint = contentColor, size = 18.dp, activation = activation,
                     modifier = Modifier.orbisIconBaseline(MaterialTheme.typography.labelLarge.fontSize),
                     copyFeedback = copyFeedback)
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(8.dp))
             }
-            Text(text, color = contentColor, style = MaterialTheme.typography.labelLarge,
+            Text(text, modifier = Modifier.actionGlyphMotion(LocalGlyphActivation.current), color = contentColor, style = MaterialTheme.typography.labelLarge,
                 maxLines = maxLines, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -1124,7 +1144,7 @@ fun NeumorphCheckbox(
             if (checkProgress > 0f) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
-                        Icons.Rounded.Check,
+                        OrbisSymbols.Check,
                         contentDescription = null,
                         tint = checkColor,
                         modifier = Modifier.size(16.dp).graphicsLayer {

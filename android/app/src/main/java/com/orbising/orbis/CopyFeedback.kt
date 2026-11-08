@@ -75,13 +75,13 @@ internal fun CopyFeedbackIcon(
         label = "copy-feedback",
     )
     Box(modifier.size(size)) {
-        Icon(Icons.Rounded.ContentCopy, contentDescription = null, tint = tint,
+        Icon(OrbisSymbols.ContentCopy, contentDescription = null, tint = tint,
             modifier = Modifier.size(size).graphicsLayer {
                 alpha = 1f - progress
                 scaleX = 1f - 0.4f * progress
                 scaleY = scaleX
             })
-        Icon(Icons.Rounded.Check, contentDescription = null, tint = tint,
+        Icon(OrbisSymbols.Check, contentDescription = null, tint = tint,
             modifier = Modifier.size(size).graphicsLayer {
                 alpha = progress
                 scaleX = 0.5f + 0.5f * progress
@@ -103,7 +103,7 @@ internal fun CopyIconButton(
     val feedback = rememberCopyFeedback(identity, enabled)
     NeumorphIconButton(
         onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
-        icon = Icons.Rounded.ContentCopy,
+        icon = OrbisSymbols.ContentCopy,
         contentDescription = if (feedback.copied) L10n.tr("已复制") else label,
         size = size,
         enabled = enabled,
@@ -119,7 +119,7 @@ internal fun CopyTextButton(label: String, identity: Any? = null, text: () -> St
     NeumorphTextButton(
         text = label,
         onClick = { feedback.perform { clipboard.setText(AnnotatedString(text())) } },
-        icon = Icons.Rounded.ContentCopy,
+        icon = OrbisSymbols.ContentCopy,
         copyFeedback = feedback.copied,
         modifier = Modifier.semantics { contentDescription = if (feedback.copied) L10n.tr("已复制") else label },
     )

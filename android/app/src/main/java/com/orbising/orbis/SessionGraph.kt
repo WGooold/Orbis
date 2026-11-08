@@ -65,6 +65,7 @@ data class SessionLiveTurn(
     val turnId: String,
     val startedAt: Long,
     val durationMs: Long? = null,
+    val outcome: String? = null,
 )
 
 @Serializable

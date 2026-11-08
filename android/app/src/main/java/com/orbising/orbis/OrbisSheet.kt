@@ -25,6 +25,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 
+internal val LocalSheetCommit = staticCompositionLocalOf<((() -> Unit) -> Unit)?> { null }
+internal val LocalModalCommit = staticCompositionLocalOf<((() -> Unit) -> Unit)?> { null }
+
 /** Shared sheet: one material frame, 24dp arrival, a draggable grip and semantic dismissal timing. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,7 +76,15 @@ internal fun OrbisBottomSheet(
                                 onDragEnd = { if (drag.value > with(density) { 72.dp.toPx() }) dismiss() else scope.launch { drag.animateTo(0f, OrbisMotion.drag()) } },
                                 onDragCancel = { scope.launch { drag.animateTo(0f, OrbisMotion.drag()) } },
                             ) }, contentAlignment = Alignment.Center) { dragHandle() }
-                        content()
+                        CompositionLocalProvider(LocalSheetCommit provides { action ->
+                            if (!closing) {
+                                closing = true
+                                scope.launch {
+                                    appearance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Dismiss)))
+                                    action()
+                                }
+                            }
+                        }) { content() }
                     }
                 }
             }
@@ -93,7 +104,7 @@ internal fun OrbisChoiceSheet(title: String, onDismiss: () -> Unit, content: @Co
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge)
-            content()
+            CompositionLocalProvider(LocalModalCommit provides LocalSheetCommit.current) { content() }
         }
     }
 }

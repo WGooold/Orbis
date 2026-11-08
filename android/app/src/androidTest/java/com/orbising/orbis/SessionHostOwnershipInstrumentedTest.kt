@@ -40,9 +40,8 @@ class SessionHostOwnershipInstrumentedTest {
         compose.onNodeWithText("未知主机").assertDoesNotExist()
         compose.onNodeWithText("Old Desktop").assertDoesNotExist()
         compose.onNodeWithContentDescription("切换电脑").assertDoesNotExist()
-        compose.onNodeWithContentDescription("新建会话").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
         compose.onNodeWithContentDescription("在此目录新建会话").assertIsNotEnabled()
-        compose.onNode(hasSetTextAction()).performTextInput("首句")
         compose.runOnIdle { state.value = state.value.copy(e2eReady = true) }
         capture("paired-sessions")
         compose.onNodeWithContentDescription("在此目录新建会话").assertIsEnabled().performClick()
@@ -54,7 +53,7 @@ class SessionHostOwnershipInstrumentedTest {
         compose.onNodeWithContentDescription("在此目录新建会话").assertIsNotEnabled()
         compose.runOnIdle { state.value = RemoteState() }
         compose.onNodeWithText("Paired Desktop").assertDoesNotExist()
-        compose.onNodeWithContentDescription("新建会话").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
     }
 
     @Test fun emptyAndFilteredCatalogKeepThePairedComputerVisible() {

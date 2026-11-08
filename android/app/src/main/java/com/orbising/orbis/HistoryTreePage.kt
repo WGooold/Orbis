@@ -152,7 +152,7 @@ internal fun HistoryTreePage(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
-                        icon = Icons.Rounded.ArrowBack,
+                        icon = OrbisSymbols.ArrowBack,
                         contentDescription = L10n.tr("返回聊天"),
                         size = RemoteUi.IconButtonSize,
                     )
@@ -312,14 +312,14 @@ private fun HistorySearchField(
         onValueChange = onQueryChange,
         modifier = modifier.fillMaxWidth(),
         placeholder = { Text(L10n.tr("搜索消息、分支或书签"), style = MaterialTheme.typography.bodyMedium) },
-        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
+        leadingIcon = { Icon(OrbisSymbols.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
         trailingIcon = if (query.isEmpty()) {
             null
         } else {
             {
                 NeumorphIconButton(
                     onClick = { onQueryChange("") },
-                    icon = Icons.Rounded.Close,
+                    icon = OrbisSymbols.Close,
                     contentDescription = L10n.tr("清除搜索"),
                     size = 28.dp,
                 )
@@ -384,7 +384,7 @@ private fun HistoryTurnCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
-                        if (row.detailsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        if (row.detailsExpanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown,
                         contentDescription = if (row.detailsExpanded) L10n.tr("收起细节") else L10n.tr("展开细节"),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
@@ -486,7 +486,7 @@ private fun HistoryBranchCard(row: HistoryBranchRow, onExpand: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(
-                Icons.Rounded.ChevronRight,
+                OrbisSymbols.ChevronRight,
                 contentDescription = L10n.tr("展开分支"),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp),
@@ -638,7 +638,7 @@ private fun HistoryPreviewActions(
         when (node.action) {
             HistoryNodeAction.EditAndRestart -> NeumorphTextButton(
                 text = L10n.tr("编辑这条消息并重新开始"),
-                icon = Icons.Rounded.Edit,
+                icon = OrbisSymbols.Edit,
                 filled = true,
                 enabled = !busy && !pending,
                 onClick = onEditAndRestart,
@@ -647,7 +647,7 @@ private fun HistoryPreviewActions(
 
             HistoryNodeAction.ContinueFromHere -> NeumorphTextButton(
                 text = L10n.tr("从这条回复后继续"),
-                icon = Icons.Rounded.ArrowDownward,
+                icon = OrbisSymbols.ArrowDownward,
                 filled = true,
                 enabled = !busy && !pending,
                 onClick = onContinueFrom,

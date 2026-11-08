@@ -61,24 +61,25 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
     LaunchedEffect(hostId, kind, providers.map { it.id }) {
         previewId = state.currentProviderForKind(kind)?.id ?: providers.firstOrNull()?.id.orEmpty()
     }
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding()
+        .then(if (showBack) Modifier.navigationBarsPadding() else Modifier)) {
         if (showBack) RemoteTopAppBar(title = { Text(L10n.tr("供应商")) }, navigationIcon = {
             val dispatcher = LocalOnBackPressedDispatcherOwner.current
-            NeumorphIconButton({ dispatcher?.onBackPressedDispatcher?.onBackPressed() }, Icons.Rounded.ArrowBack, L10n.tr("返回"))
+            NeumorphIconButton({ dispatcher?.onBackPressedDispatcher?.onBackPressed() }, OrbisSymbols.ArrowBack, L10n.tr("返回"))
         })
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box {
-                Row(Modifier.heightIn(min = 48.dp).clickable(enabled = active && hosts.size > 1) { hostMenu = true },
+                Row(Modifier.heightIn(min = 48.dp).orbisKeyboardFocus().clickable(enabled = active && hosts.size > 1) { hostMenu = true },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(OrbisSymbols.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column {
                         Text(state.hostName ?: hosts.firstOrNull { it.hostId == hostId }?.name ?: L10n.tr("电脑"),
                             style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(if (kind == "pi") L10n.tr("Pi 可以同时启用多个配置") else L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentBrand(kind).title, providers.size),
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (hosts.size > 1) Icon(Icons.Rounded.ExpandMore, null, Modifier.size(16.dp))
+                    if (hosts.size > 1) Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp))
                 }
                 NeumorphMenu(hostMenu, { hostMenu = false }) {
                     hosts.forEach { host -> NeumorphMenuItem(text = { Text(host.name) },
@@ -107,7 +108,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                 }
                 NeumorphActionButton(text = title, modifier = Modifier.fillMaxWidth().testTag("provider-apply"),
                     enabled = canUse && preview != null && (!preview.enabled || preview.additive),
-                    icon = if (preview?.enabled == true) Icons.Rounded.Check else Icons.Rounded.SwapHoriz,
+                    icon = if (preview?.enabled == true) OrbisSymbols.Check else OrbisSymbols.SwapHoriz,
                     onClick = {
                         val selected = preview ?: return@NeumorphActionButton
                         val fresh = state.providersForKind(kind).firstOrNull { it.id == selected.id }?.takeIf { it == selected }
@@ -117,7 +118,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                         }
                     })
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(L10n.tr("里圈选 Agent，外圈选配置"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(L10n.tr("里圈选 Agent，外圈选配置"), style = MaterialTheme.typography.labelSmall, color = LocalOrbisPalette.current.muted)
                     Text(if (providers.isEmpty()) "0 / 0" else "${currentIndex + 1} / ${providers.size}",
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -130,7 +131,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             state.providersForKind(selected.kind).any { it == selected }
         NeumorphDialog(onDismissRequest = { pending = null },
             title = { Text(L10n.tr("切换 {0} 到 {1}？", agentBrand(selected.kind).title, selected.name)) },
-            text = { Text(L10n.tr("正在运行的会话继续使用原配置，新建会话使用这个配置。")) },
+            text = { Text(L10n.tr("将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。")) },
             confirmButton = { NeumorphTextButton(L10n.tr("切换"), {
                 if (fresh) { pending = null; haptic(); onEnable(selected, expectedHost) }
             }, enabled = fresh) }, dismissButton = { NeumorphTextButton(L10n.tr("取消"), { pending = null }) })
@@ -153,6 +154,20 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
     val currentOnBrowse by rememberUpdatedState(onBrowse)
     val currentOnMoving by rememberUpdatedState(onMoving)
     val tick = rememberActionHaptic()
+    val pointerPop = remember { Animatable(1f) }
+    val agentPop = remember { Animatable(1f) }
+    LaunchedEffect(itemPosition.roundToInt()) {
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            pointerPop.snapTo(1.5f)
+            pointerPop.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.State)))
+        } else pointerPop.snapTo(1f)
+    }
+    LaunchedEffect(kind) {
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            agentPop.snapTo(1.08f)
+            agentPop.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Selection), easing = InteractionMotion.GlyphEase))
+        } else agentPop.snapTo(1f)
+    }
     val palette = LocalOrbisPalette.current
     val material = rememberNeumorphColors()
     val accent = agentBrand(kind).accent()
@@ -180,7 +195,8 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
     }
     BoxWithConstraints(modifier.clipToBounds().testTag("provider-dual-dial")) {
         val height = maxHeight.value
-        val g = DualDialGeometry.measure(maxWidth.value, height)
+        val width = maxWidth.value
+        val g = DualDialGeometry.measure(width, height)
         val px = density.density
         Box(Modifier.fillMaxSize().pointerInput(g, hostId, active) {
             if (!active) return@pointerInput
@@ -233,7 +249,8 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 NeumorphSurface(Modifier.disc(g.hubRadius).graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile) 0.4f else 1f },
                     CircleShape, shadowScale = if (grabbed == ProviderDialRing.Agent) 0.65f else 0.4f) {}
                 NeumorphSurface(Modifier.disc(g.holeRadius), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.65f) {}
-                NeumorphSurface(Modifier.offset(x = (g.cx + g.agentRadius - 20).dp, y = (g.cy - 20).dp).size(40.dp),
+                NeumorphSurface(Modifier.offset(x = (g.cx + g.agentRadius - 20).dp, y = (g.cy - 20).dp).size(40.dp)
+                    .graphicsLayer { scaleX = agentPop.value; scaleY = agentPop.value },
                     CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {}
             }
             Canvas(Modifier.fillMaxSize()) {
@@ -253,7 +270,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                     val a = index * (2 * PI / 100).toFloat()
                     drawCircle(palette.faint.copy(alpha = 0.45f), 0.8.dp.toPx(), point(g.hubRadius - 6, a))
                 }
-                drawCircle(accent, 3.dp.toPx(), Offset((g.cx + g.radius + 8) * px, g.cy * px))
+                drawCircle(accent, 3.dp.toPx() * pointerPop.value, Offset((g.cx + g.radius + 8) * px, g.cy * px))
             }
             DIAL_AGENTS.forEachIndexed { index, agent ->
                 val angle = Math.toRadians(((index - agentPosition) * g.agentStep).toDouble())
@@ -261,7 +278,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 val y = g.cy + g.agentRadius * sin(angle).toFloat()
                 if (x >= 12 && y in 20f..(height - 20)) Box(Modifier.offset(x = (x-24).dp, y = (y-24).dp).size(48.dp)
                     .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile || agent != kind) 0.4f else 1f }
-                    .clickable(enabled = active) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
+                    .orbisKeyboardFocus().clickable(enabled = active) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
                     AgentIcon(agentBrand(agent), Modifier.size(20.dp))
                 }
             }
@@ -271,9 +288,9 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 val y = g.cy + (g.radius + 28) * sin(angle).toFloat()
                 if (y in -40f..(height + 40)) {
                     val selected = index == itemPosition.roundToInt().coerceIn(0, providers.lastIndex)
-                    Column(Modifier.offset(x = x.dp, y = (y - if (selected) 44 else 16).dp).width(136.dp).heightIn(min = 48.dp)
+                    Column(Modifier.offset(x = x.dp, y = (y - if (selected) 44 else 16).dp).width((width - x - 16).coerceIn(64f,136f).dp).heightIn(min = 48.dp)
                         .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Agent) 0.4f else if (selected) 1f else 0.6f }
-                        .clickable(enabled = active) { settle(ProviderDialRing.Profile, index) },
+                        .orbisKeyboardFocus().clickable(enabled = active) { settle(ProviderDialRing.Profile, index) },
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (selected) Text(agentBrand(kind).title, style = MaterialTheme.typography.labelSmall, color = accent)
                         Text(provider.name, style = if (selected) MaterialTheme.typography.titleLarge else MaterialTheme.typography.labelMedium,
@@ -331,20 +348,22 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(if (name == "five_hour") L10n.tr("5 小时") else L10n.tr("7 天"),
                             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (low) { Icon(Icons.Rounded.Warning, null, Modifier.size(12.dp), tint = color)
+                        if (low) { Icon(OrbisSymbols.Warning, null, Modifier.size(12.dp), tint = color)
                             Text(L10n.tr("即将用完"), style = MaterialTheme.typography.labelSmall, color = color) }
                     }
                     MotionText(percent?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—",
                         style = MaterialTheme.typography.displaySmall, color = if (low) color else MaterialTheme.colorScheme.onSurface)
                     NeumorphSurface(Modifier.fillMaxWidth().height(6.dp), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {
-                        Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
+                        Box(Modifier.fillMaxWidth().height(6.dp)) {
+                            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
+                        }
                     }
                     Text(window?.resetsAt?.let { L10n.tr("重置 {0}", DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it))) }
                         ?: if (loading) L10n.tr("查询中") else L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (snapshot?.error != null || !loading && snapshot?.quota == null) NeumorphIconButton({ provider?.let(onQuery) }, Icons.Rounded.Refresh,
+            if (snapshot?.error != null || !loading && snapshot?.quota == null) NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
                 L10n.tr("查询订阅配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
         }
     }

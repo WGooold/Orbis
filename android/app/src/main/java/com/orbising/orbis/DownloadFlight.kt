@@ -117,7 +117,7 @@ internal fun DownloadFlightHost(flight: DownloadFlight, content: @Composable () 
 
 @Composable
 private fun DownloadFlightLayer(flight: DownloadFlight) {
-    val painter = rememberVectorPainter(Icons.Rounded.Description)
+    val painter = rememberVectorPainter(OrbisSymbols.Description)
     val tint = ColorFilter.tint(MaterialTheme.colorScheme.primary)
     Canvas(Modifier.fillMaxSize().testTag("download-flight-layer").onGloballyPositioned { flight.layer = it }) {
         val arc = 120.dp.toPx()

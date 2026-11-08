@@ -4,10 +4,13 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +37,7 @@ internal class LocalSessionDraft(agent: String = "codex", cwd: String = "", text
     val agent = mutableStateOf(agent)
     val cwd = mutableStateOf(cwd)
     val text = mutableStateOf(text)
+    val editing = mutableStateOf(TextFieldValue(text, selection = TextRange(text.length)))
 }
 
 /** Lives above the inline card, so closing it and switching computers keep separate drafts. */
@@ -61,6 +65,8 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var kind by draft.agent
     var text by draft.text
     var cwd by draft.cwd
+    var fieldValue by draft.editing
+    LaunchedEffect(text) { if (fieldValue.text != text) fieldValue = TextFieldValue(text, selection = TextRange(text.length)) }
     var directoryOpen by rememberSaveable { mutableStateOf(false) }
     var agentMenu by remember { mutableStateOf(false) }
     var pressed by remember { mutableStateOf(true) }
@@ -86,7 +92,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
             pressed = true
         }
     }
-    LaunchedEffect(open, presetCwd) {
+    LaunchedEffect(open, presetCwd, state.hostId) {
         if (open) {
             if (presetCwd != null) cwd = presetCwd
             if (cwd.isBlank()) cwd = state.runtimes.values.firstOrNull()?.cwd
@@ -110,10 +116,10 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             role = Role.RadioButton, onClick = { kind = agent },
                             onLongClick = if (agent == "codex" && supported?.contains("codexDesktop") == true) ({ agentMenu = true }) else null,
                         ).semantics { this.selected = selected }) {
-                            NeumorphSurface(Modifier.align(Alignment.Center).size(36.dp), shape = CircleShape,
-                                style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                                shadowScale = 0.4f, enabled = supported?.contains(agent) != false) {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { AgentIcon(brand, Modifier.size(20.dp), brand.title) }
+                            Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
+                                if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
+                                AgentIcon(brand, Modifier.size(20.dp), brand.title,
+                                    tintOverride = if (selected) null else LocalOrbisPalette.current.faint)
                             }
                             if (agent == "codex") NeumorphMenu(agentMenu, { agentMenu = false }) {
                                 listOf("codex", "codexDesktop").forEach { value ->
@@ -126,20 +132,26 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     Text(if (kind == "codexDesktop") L10n.tr("Codex 桌面版") else agentBrand(kind).title,
                         modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                NeumorphTextButton(text = cwd.ifBlank { L10n.tr("选择工作目录") },
-                    onClick = { directoryOpen = true; onBrowse(cwd.takeIf(String::isNotBlank)) }, icon = Icons.Rounded.Folder,
-                    modifier = Modifier.fillMaxWidth().testTag("draft-directory"))
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("draft-directory")
+                    .orbisKeyboardFocus().clickable(role = Role.Button) { directoryOpen = true; onBrowse(cwd.takeIf(String::isNotBlank)) },
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(OrbisSymbols.Folder, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(cwd.ifBlank { L10n.tr("选择工作目录") }, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NeumorphTextField(text, { text = it }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->
+                    NeumorphTextField(fieldValue, { fieldValue = it; text = it.text }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) { onCancel(); true }
-                            else if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && !event.isShiftPressed &&
+                            else if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && fieldValue.composition == null && !event.isShiftPressed &&
                                 text.isNotBlank() && !event.nativeKeyEvent.isAltPressed) { submit(); true }
                             else false
                         },
                         placeholder = { Text(L10n.tr("让 {0} 做什么？", agentBrand(kind).title)) }, maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = { submit() }))
-                    NeumorphIconButton(onClick = ::submit, icon = Icons.Rounded.ArrowUpward, contentDescription = L10n.tr("发出第一句话并创建会话"),
+                        keyboardActions = KeyboardActions(onSend = { if (fieldValue.composition == null) submit() }))
+                    NeumorphIconButton(onClick = ::submit, icon = OrbisSymbols.ArrowUpward, contentDescription = L10n.tr("发出第一句话并创建会话"),
                         enabled = text.isNotBlank() && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }

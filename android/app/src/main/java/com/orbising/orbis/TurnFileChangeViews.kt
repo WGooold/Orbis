@@ -119,7 +119,7 @@ private fun ChangeHairline() = HorizontalDivider(thickness = 0.5.dp, color = Mat
 /** Name first (middle-elided, extension kept), then the nearest directories, then counts. */
 @Composable
 private fun ChangeFileRow(file: FileChangeMetadata, enabled: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).heightIn(min = 40.dp)
+    Row(Modifier.fillMaxWidth().orbisKeyboardFocus().clickable(enabled = enabled, onClick = onClick).heightIn(min = 40.dp)
         .testTag("change-file-${file.fileId}"), verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ChangeKindLetter(file.changeKind)
@@ -184,11 +184,11 @@ internal fun TurnChangeSummaryView(
         NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shape = RemoteUi.ControlShape, shadowScale = 0.5f) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp)
-                    .then(if (opens) Modifier.clickable(enabled = canRead) { openActivation++; onOpenFile(files.first()) }
+                    .then(if (opens) Modifier.orbisKeyboardFocus().clickable(enabled = canRead) { openActivation++; onOpenFile(files.first()) }
                         .semantics { contentDescription = L10n.tr("查看详情，{0}", title) } else Modifier)
                     .testTag("turn-changes-open-${summary.reviewTurnId}"),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(if (summary.state == "unavailable") Icons.Rounded.ErrorOutline else Icons.Rounded.Description,
+                    Icon(if (summary.state == "unavailable") OrbisSymbols.Error else OrbisSymbols.Description,
                         contentDescription = null, tint = muted, modifier = Modifier.size(17.dp).actionGlyphMotion(openActivation))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium,
@@ -197,13 +197,13 @@ internal fun TurnChangeSummaryView(
                     }
                     if (opens) {
                         ChangeCounts(summary.additions, summary.deletions, status = null)
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = muted, modifier = Modifier.size(18.dp).actionGlyphMotion(openActivation))
+                        Icon(OrbisSymbols.ChevronRight, contentDescription = null, tint = muted, modifier = Modifier.size(18.dp).actionGlyphMotion(openActivation))
                     }
                 }
                 files.forEach { file -> ChangeHairline(); ChangeFileRow(file, canRead) { onOpenFile(file) } }
                 if (ready && count > 4) {
                     ChangeHairline()
-                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).clickable(enabled = canRead) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).orbisKeyboardFocus().clickable(enabled = canRead) {
                         expandActivation++
                         expanded = !expanded
                         if (expanded && !manifest.loaded) onReadManifest()
@@ -211,14 +211,14 @@ internal fun TurnChangeSummaryView(
                         Text(if (expanded) L10n.tr("收起") else L10n.tr("还有 {0} 个文件", count - 4), Modifier.weight(1f),
                             style = MaterialTheme.typography.bodySmall, color = muted)
                         if (manifest.requestId != null) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
-                        Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, contentDescription = null,
+                        Icon(if (expanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown, contentDescription = null,
                             tint = muted, modifier = Modifier.size(18.dp).actionGlyphMotion(expandActivation))
                     }
                 }
                 if (expanded && manifest.requestId == null && (manifest.loaded && !manifest.complete || manifest.error != null)) {
                     ChangeHairline()
                     Text(if (manifest.error != null) L10n.tr("重新读取文件清单") else L10n.tr("加载更多文件"),
-                        Modifier.fillMaxWidth().clickable(enabled = canRead, onClick = onReadManifest).heightIn(min = 40.dp)
+                        Modifier.fillMaxWidth().orbisKeyboardFocus().clickable(enabled = canRead, onClick = onReadManifest).heightIn(min = 40.dp)
                             .wrapContentHeight(Alignment.CenterVertically),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (manifest.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
@@ -280,7 +280,7 @@ internal fun FileChangeViewerSheet(
                     .background(MaterialTheme.colorScheme.outlineVariant, CircleShape))
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭文件差异"))
+                    NeumorphIconButton(onClick = onClose, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭文件差异"))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(L10n.tr("本轮文件差异"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                         Text(changeScopeLabel(viewer.summary.scope), style = MaterialTheme.typography.bodySmall,
@@ -305,7 +305,7 @@ internal fun FileChangeViewerSheet(
                 Text("${pager.settledPage + 1} / ${summaryCount(manifest)}", Modifier.weight(1f).testTag("file-change-page"),
                     style = MaterialTheme.typography.labelLarge, fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-                NeumorphIconButton(onClick = { scope.launch { pager.animateScrollToPage(pager.settledPage + 1) } }, icon = Icons.Rounded.ChevronRight,
+                NeumorphIconButton(onClick = { scope.launch { pager.animateScrollToPage(pager.settledPage + 1) } }, icon = OrbisSymbols.ChevronRight,
                     contentDescription = L10n.tr("下一个文件"), enabled = pager.settledPage < files.lastIndex)
             }
             if (!manifest.complete || manifest.error != null) {

@@ -69,12 +69,12 @@ internal fun AgentTheme(brand: AgentBrand, content: @Composable () -> Unit) {
 }
 
 @Composable
-internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, description: String? = null) {
+internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, description: String? = null, tintOverride: Color? = null) {
     Icon(
         painter = painterResource(brand.icon),
         contentDescription = description,
         modifier = modifier.size(22.dp),
-        tint = when (brand) {
+        tint = tintOverride ?: when (brand) {
             AgentBrand.Pi, AgentBrand.Claude -> Color.Unspecified
             else -> brand.accent()
         },

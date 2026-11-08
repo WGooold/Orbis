@@ -82,6 +82,9 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithText("80%").assertIsDisplayed()
         compose.onNodeWithText("15%").assertIsDisplayed()
         compose.onNodeWithText("即将用完").assertIsDisplayed()
+        val footerLayout = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        compose.onNodeWithText("里圈选 Agent，外圈选配置").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(footerLayout) }
+        assertEquals(orbisPalette(false,AppAppearance.material).muted,footerLayout.single().layoutInput.style.color)
         compose.runOnIdle { assertTrue(changes.isEmpty());assertTrue(queries.isEmpty()) }
         capture("quota-pair")
     }

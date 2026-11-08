@@ -18,6 +18,8 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,25 +52,30 @@ internal fun HomeTabBar(selected: HomeTab, onSelect: (HomeTab) -> Unit, modifier
                     HomeTab.Settings -> L10n.tr("设置")
                 }
                 val active = selected == tab
+                val interaction = remember { MutableInteractionSource() }
                 val color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 NeumorphSurface(
                     modifier = Modifier.weight(1f).heightIn(min = 56.dp)
                         .testTag("home-tab-${tab.key}")
-                        .selectable(selected = active, role = Role.Tab) {
+                        .selectable(selected = active, role = Role.Tab, interactionSource = interaction, indication = null) {
                             if (!active) { haptic(); onSelect(tab) }
                         }.semantics { contentDescription = label },
                     shape = RoundedCornerShape(16.dp),
                     style = if (active) NeumorphStyle.Pressed else NeumorphStyle.Raised,
                     shadowScale = 0.4f,
+                    interactionSource = interaction,
                 ) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Icon(when (tab) {
-                            HomeTab.Chat -> Icons.Rounded.ChatBubbleOutline
-                            HomeTab.Providers -> Icons.Rounded.Tune
-                            HomeTab.Settings -> Icons.Rounded.Settings
-                        }, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
+                        androidx.compose.animation.Crossfade(active,
+                            animationSpec = androidx.compose.animation.core.tween(InteractionMotion.duration(InteractionMotion.State)), label = "tab-glyph") { filled ->
+                            Icon(when (tab) {
+                                HomeTab.Chat -> if (filled) OrbisSymbols.ChatBubbleFill else OrbisSymbols.ChatBubble
+                                HomeTab.Providers -> if (filled) OrbisSymbols.TuneFill else OrbisSymbols.Tune
+                                HomeTab.Settings -> if (filled) OrbisSymbols.SettingsFill else OrbisSymbols.Settings
+                            }, contentDescription = null, tint = color, modifier = Modifier.size(22.dp))
+                        }
                         // Give scaled/fallback glyphs the whole slot instead of a rounded natural-width box.
                         Text(label, modifier = Modifier.fillMaxWidth(), color = color,
                             style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,

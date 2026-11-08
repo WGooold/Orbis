@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -108,17 +109,17 @@ internal fun RuntimePermissionsStatus(
     }
     val label = permissionManagement?.summary?.let { L10n.hostSummary(it) } ?: L10n.tr("电脑端管理")
     val icon = when (permissionManagement?.tone) {
-        "problem" -> Icons.Rounded.ErrorOutline
+        "problem" -> OrbisSymbols.Error
         "full" -> Icons.Rounded.LockOpen
-        "restricted" -> Icons.Rounded.Shield
-        null -> Icons.Rounded.Computer
+        "restricted" -> OrbisSymbols.Shield
+        null -> OrbisSymbols.Computer
         else -> Icons.Rounded.HelpOutline
     }
     val tint = if (permissionManagement?.tone == "problem") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     var glyphActivation by remember { mutableStateOf(0) }
     Row(
         modifier = modifier.clip(RoundedCornerShape(12.dp))
-            .clickable(role = Role.Button, onClickLabel = L10n.tr("查看权限与审批设置")) { glyphActivation++; expanded = true }
+            .orbisKeyboardFocus().clickable(role = Role.Button, onClickLabel = L10n.tr("查看权限与审批设置")) { glyphActivation++; expanded = true }
             .semantics { contentDescription = L10n.tr("当前会话权限"); stateDescription = label }
             .heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -127,7 +128,7 @@ internal fun RuntimePermissionsStatus(
         Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp).actionGlyphMotion(glyphActivation), tint = tint)
         Text(label, modifier = Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelMedium,
             color = tint, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Icon(Icons.Rounded.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation), tint = tint)
+        Icon(OrbisSymbols.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation), tint = tint)
     }
     if (expanded) SessionControlDialog(L10n.tr("当前会话权限"), onClose = { expanded = false }) {
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -149,16 +150,21 @@ internal fun RuntimePermissionsStatus(
                 setting?.disabledReason?.let { Text(L10n.hostText(it)) }
                 setting?.options?.forEach { option ->
                     val chosen = (selectedValue ?: current) == option.value
-                    NeumorphSurface(
-                        modifier = Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape,
+                    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape,
                         style = if (chosen) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                        enabled = canEdit,
-                        onClick = { selectedValue = option.value; feedback = null },
-                        contentInset = 14.dp,
-                    ) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("${if (chosen) "● " else "○ "}${L10n.hostText(option.label)}${if (option.value == current) L10n.tr("，当前") else ""}")
-                            option.description?.let { Text(L10n.hostText(it), style = MaterialTheme.typography.bodySmall) }
+                        enabled = canEdit, onClick = { selectedValue = option.value; feedback = null }, contentInset = 12.dp) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                AgentIconRecess(Modifier.fillMaxSize(), androidx.compose.foundation.shape.CircleShape)
+                                if (chosen) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
+                            }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(L10n.hostText(option.label) + if (option.value == current) L10n.tr("，当前") else "",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = if (chosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                option.description?.let { Text(L10n.hostText(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            }
                         }
                     }
                 }

@@ -264,6 +264,7 @@ data class TurnTiming(
     val durationMs: Long? = null,
     val turnIndex: Int? = null,
     val messageId: String? = null,
+    val outcome: String? = null,
 )
 
 data class QueuedMessage(
@@ -1557,7 +1558,7 @@ private fun RuntimeConversation.applySourceLiveCheckpoint(
     }.toMutableMap()
     if (checkpointTurn != null) {
         retainedTimings[checkpointTurn.turnId] = TurnTiming(
-            checkpointTurn.turnId, checkpointTurn.startedAt, checkpointTurn.durationMs,
+            checkpointTurn.turnId, checkpointTurn.startedAt, checkpointTurn.durationMs, outcome = checkpointTurn.outcome,
         )
     }
     val checkpointTools = live.tools.associate { tool ->

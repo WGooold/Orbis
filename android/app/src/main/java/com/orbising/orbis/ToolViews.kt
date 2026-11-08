@@ -59,20 +59,20 @@ internal fun ToolSummaryDisclosure(summary: ToolSummary, canRead: Boolean, onRea
             Row(
                 Modifier.fillMaxWidth()
                     .semantics { contentDescription = L10n.tr("{0}{1}，{2}", if (expanded) L10n.tr("收起") else L10n.tr("展开"), summary.toolName, phase) }
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button) { glyphActivation++; expanded = !expanded }
+                    .orbisKeyboardFocus().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button) { glyphActivation++; expanded = !expanded }
                     .heightIn(min = RemoteUi.TouchTarget),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Icon(
-                    if (summary.isError == true) Icons.Rounded.ErrorOutline else Icons.Rounded.Build,
+                    if (summary.isError == true) OrbisSymbols.Error else OrbisSymbols.Build,
                     contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(17.dp).actionGlyphMotion(glyphActivation),
                 )
                 Text(summary.toolName, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(phase, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                 Spacer(Modifier.weight(1f))
-                Icon(Icons.Rounded.ExpandMore, contentDescription = null,
+                Icon(OrbisSymbols.KeyboardArrowDown, contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).rotate(rotation))
             }
             OrbisCollapse(expanded) {
@@ -137,7 +137,7 @@ internal fun ToolDetailSheet(
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphIconButton(onClick = onClose, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭"))
+                NeumorphIconButton(onClick = onClose, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭"))
                 Text(detail.summary.toolName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 CopyIconButton(L10n.tr("复制已读取内容"), size = 40.dp, enabled = detail.text.isNotEmpty()) { detail.text }
@@ -168,14 +168,14 @@ internal fun ToolDetailSheet(
                 when {
                     detail.error != null -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(detail.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                        NeumorphActionButton(text = L10n.tr("重新读取"), icon = Icons.Rounded.Refresh, onClick = onRetry,
+                        NeumorphActionButton(text = L10n.tr("重新读取"), icon = OrbisSymbols.Refresh, onClick = onRetry,
                             modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting)
                         if (L10n.matches(detail.error, "已读取内容达到 2 MiB 缓存上限，可清空已读内容后继续")) {
                             NeumorphTextButton(L10n.tr("清空已读并继续"), onClick = onClear, modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting)
                         }
                     }
                     detail.nextCursor != null -> NeumorphActionButton(
-                        text = if (loading) L10n.tr("正在读取…") else L10n.tr("读取下一页"), icon = Icons.Rounded.ArrowDownward, onClick = onReadNext,
+                        text = if (loading) L10n.tr("正在读取…") else L10n.tr("读取下一页"), icon = OrbisSymbols.ArrowDownward, onClick = onReadNext,
                         modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting,
                     )
                     loading -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -191,7 +191,7 @@ internal fun ToolDetailSheet(
                     NeumorphTextButton(L10n.tr("取消导出"), onClick = onClose)
                 }
             } else {
-                NeumorphActionButton(text = L10n.tr("导出当前部分"), icon = Icons.Rounded.Download, onClick = onExport,
+                NeumorphActionButton(text = L10n.tr("导出当前部分"), icon = OrbisSymbols.Download, onClick = onExport,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).testTag("tool-export"), enabled = !loading)
                 if (detail.exportComplete) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { SummaryCaption(L10n.tr("已导出 {0}", formatByteCount(detail.exportedBytes))) }

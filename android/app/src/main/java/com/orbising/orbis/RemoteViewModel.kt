@@ -375,6 +375,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean =
         active()?.createSession(agentKind, cwd, expectedHostId, spawnMode) == true
 
+    internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
+        active()?.sendFirstSessionMessage(kind, cwd, text, expectedHost)
+
     fun loadAgentProviders(kind: String) = active()?.loadAgentProviders(kind)
     fun querySubscription(provider: AgentProvider, expectedHostId: String?) = active()?.querySubscription(provider, expectedHostId)
 

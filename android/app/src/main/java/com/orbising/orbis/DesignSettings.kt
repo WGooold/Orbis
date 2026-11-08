@@ -36,7 +36,7 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
     var languageOpen by rememberSaveable { mutableStateOf(false) }
     Scaffold(containerColor = MaterialTheme.colorScheme.surface, topBar = {
         RemoteTopAppBar(title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) }, navigationIcon = {
-            if (!root) NeumorphIconButton(onBack, Icons.Rounded.ArrowBack, L10n.tr("返回"))
+            if (!root) NeumorphIconButton(onBack, OrbisSymbols.ArrowBack, L10n.tr("返回"))
         })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
@@ -44,7 +44,7 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
             SettingsGroup(L10n.tr("连接")) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Rounded.Computer, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    Icon(OrbisSymbols.Computer, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                     Column(Modifier.weight(1f)) {
                         Text(state.hostName ?: L10n.tr("电脑"), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(listOf(connectionMethodText(state), connectionProtocolText(state), connectionLatencyText(state)).joinToString(" · "),
@@ -91,13 +91,13 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
 
 @Composable
 private fun SettingsRow(title: String, sub: String, tag: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(tag).clickable(role = Role.Button, onClick = onClick),
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(tag).orbisKeyboardFocus().clickable(role = Role.Button, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+        Icon(OrbisSymbols.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -157,33 +157,48 @@ internal fun AppearancePicker() {
                 val selected = actualDark == dark
                 val preview = orbisPalette(dark, AppAppearance.material)
                 Column(Modifier.weight(1f).testTag("appearance-${if (dark) "dark" else "light"}")
-                    .clickable(role = Role.RadioButton) { AppAppearance.selectMode(if (dark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light) }
+                    .orbisKeyboardFocus().clickable(role = Role.RadioButton) { AppAppearance.selectMode(if (dark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light) }
                     .semantics { this.selected = selected }, horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     NeumorphSurface(Modifier.fillMaxWidth().height(120.dp), shape = RoundedCornerShape(16.dp),
                         style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised, shadowScale = 0.4f, contentPadding = 8.dp) {
                         Canvas(Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(preview.material.base)) {
-                            val unit = size.width / 100
+                            val unitX = size.width / 100
+                            val unitY = size.height / 100
+                            val unit = minOf(unitX, unitY)
                             fun slab(x: Float, y: Float, w: Float, h: Float, color: Color) = drawRoundRect(color,
-                                Offset(x * unit, y * unit), Size(w * unit, h * unit), CornerRadius(4 * unit))
-                            slab(8f, 10f, 40f, 5f, preview.ink)
-                            slab(8f, 28f, 84f, 22f, preview.material.lift)
-                            slab(8f, 58f, 84f, 22f, preview.material.lift)
-                            drawCircle(preview.success, 2 * unit, Offset(82 * unit, 38 * unit))
-                            slab(8f, 89f, 64f, 10f, preview.material.base)
-                            slab(8f, 89f, 64f, 2f, preview.material.darkShadow.copy(alpha = 0.5f))
-                            drawCircle(preview.accent, 5 * unit, Offset(86 * unit, 94 * unit))
+                                Offset(x * unitX, y * unitY), Size(w * unitX, h * unitY), CornerRadius(4 * unit))
+                            slab(8f, 10f, 36f, 5f, preview.muted)
+                            listOf(24f, 51f).forEachIndexed { index, y ->
+                                slab(9f, y + 1f, 84f, 23f, preview.material.darkShadow.copy(alpha = 0.22f))
+                                slab(8f, y, 84f, 23f, preview.material.lift)
+                                drawCircle(if (index == 0) preview.success else preview.faint,
+                                    3.5f * unit, Offset(15 * unitX, (y + 10) * unitY))
+                                slab(23f, y + 6f, 49f, 3f, preview.muted)
+                                slab(23f, y + 13f, 31f, 3f, preview.faint)
+                            }
+                            slab(8f, 80f, 84f, 15f, preview.material.darkShadow.copy(alpha = 0.24f))
+                            slab(9f, 82f, 82f, 13f, preview.material.base)
+                            drawCircle(preview.accent, 4.5f * unit, Offset(84 * unitX, 88 * unitY))
                         }
                     }
-                    Text((if (dark) L10n.tr("深色") else L10n.tr("浅色")) +
-                        if (selected && AppAppearance.mode == OrbisAppearanceMode.System) " · " + L10n.tr("跟随系统") else "",
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                            AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
+                            if (selected) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+                        }
+                        Text(if (dark) L10n.tr("深色") else L10n.tr("浅色"),
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
+                        if (selected && AppAppearance.mode == OrbisAppearanceMode.System) Text(L10n.tr("跟随系统"),
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("appearance-system")
-            .clickable(role = Role.Switch) { AppAppearance.selectMode(if (AppAppearance.mode == OrbisAppearanceMode.System) {
+            .orbisKeyboardFocus().clickable(role = Role.Switch) { AppAppearance.selectMode(if (AppAppearance.mode == OrbisAppearanceMode.System) {
                 if (systemDark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light
             } else OrbisAppearanceMode.System) }, verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -198,9 +213,10 @@ internal fun AppearancePicker() {
             OrbisMaterial.entries.forEach { material ->
                 val selected = AppAppearance.material == material
                 val p = orbisPalette(actualDark, material)
-                Column(Modifier.widthIn(min = 48.dp).testTag("appearance-material-${material.name.lowercase()}")
-                    .clickable(role = Role.RadioButton) { AppAppearance.selectMaterial(material) }
-                    .semantics { this.selected = selected }, horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(Modifier.widthIn(min = 48.dp).heightIn(min = 48.dp).testTag("appearance-material-${material.name.lowercase()}")
+                    .orbisKeyboardFocus().clickable(role = Role.RadioButton) { AppAppearance.selectMaterial(material) }
+                    .semantics { this.selected = selected }, verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CompositionLocalProvider(LocalNeumorphColors provides p.material, LocalOrbisSurface provides null) {
                         NeumorphSurface(Modifier.size(36.dp), shape = CircleShape,
                             style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised, shadowScale = 0.4f) {

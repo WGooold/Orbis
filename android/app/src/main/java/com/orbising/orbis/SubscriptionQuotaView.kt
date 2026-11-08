@@ -253,7 +253,7 @@ internal fun SubscriptionRefreshGlyph(loading: Boolean, pending: Boolean, tint: 
     }
     val rotation = quotaRotation(loading && ValueAnimator.areAnimatorsEnabled())
     Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
-        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = tint,
+        Icon(OrbisSymbols.Refresh, contentDescription = null, tint = tint,
             modifier = Modifier.size(14.dp).graphicsLayer { rotationZ = if (loading) rotation else invitation.value })
     }
 }

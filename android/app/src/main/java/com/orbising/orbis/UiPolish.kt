@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.AnnotatedString
@@ -31,6 +32,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.input.InputMode
 import androidx.compose.foundation.layout.offset
 import kotlin.math.sqrt
 
@@ -43,14 +46,14 @@ internal object OrbisMotion {
 
 /** Mount on first expansion; retain content identity for later clipping animations (ADR-0048). */
 @Composable
-internal fun OrbisCollapse(expanded: Boolean, content: @Composable () -> Unit) {
+internal fun OrbisCollapse(expanded: Boolean, clipExpanded: Boolean = true, content: @Composable () -> Unit) {
     var hasExpanded by remember { mutableStateOf(expanded) }
     if (expanded) SideEffect { hasExpanded = true }
     val fraction = animateFloatAsState(if (expanded) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.Collapse)), label = "collapse")
     // A zero-height Layout still composes and measures its children. Do not create them
     // until requested, especially long thinking/tool text in an otherwise visible turn.
     if (!expanded && !hasExpanded) return
-    Layout(content = content, modifier = Modifier.clipToBounds().then(if (!expanded) Modifier.clearAndSetSemantics {} else Modifier)) { measurables, constraints ->
+    Layout(content = content, modifier = (if (clipExpanded || fraction.value < 0.999f) Modifier.clipToBounds() else Modifier).then(if (!expanded) Modifier.clearAndSetSemantics {} else Modifier)) { measurables, constraints ->
         val children = measurables.map { it.measure(constraints.copy(minHeight = 0)) }
         val width = children.maxOfOrNull { it.width } ?: constraints.minWidth
         val fullHeight = children.maxOfOrNull { it.height } ?: 0
@@ -98,12 +101,17 @@ internal data class ChatReadingAnchor(val key: String, val index: Int, val offse
 /** Two softly feathered accent rings; focus never changes field bounds or draws a dark outline. */
 @Composable
 internal fun Modifier.orbisFieldFocus(focused: Boolean, shape: Shape): Modifier {
-    val intensity by animateFloatAsState(if (focused) 1f else 0f, tween(160), label = "field-focus")
+    val keyboard = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    val intensity by animateFloatAsState(if (focused) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.State)), label = "field-focus")
     val color = MaterialTheme.colorScheme.primary
     return drawWithCache {
         val radius = (shape as? RoundedCornerShape)?.topStart?.toPx(size, this) ?: 16.dp.toPx()
         onDrawBehind {
-            if (intensity > 0f) {
+            if (intensity > 0f && keyboard) {
+                val gap = 3.dp.toPx()
+                drawRoundRect(color.copy(alpha = intensity), Offset(-gap,-gap), Size(size.width+gap*2,size.height+gap*2),
+                    CornerRadius(radius+gap), style = Stroke(2.dp.toPx()))
+            } else if (intensity > 0f) {
                 for (step in 6 downTo 0) {
                     val spread = step * 0.65.dp.toPx()
                     drawRoundRect(color.copy(alpha = (0.028f + (6 - step) * 0.004f) * intensity),
@@ -121,3 +129,21 @@ internal fun Modifier.orbisFieldFocus(focused: Boolean, shape: Shape): Modifier 
 @Composable
 internal fun Modifier.orbisIconBaseline(size: TextUnit): Modifier =
     offset(y = with(LocalDensity.current) { size.toDp() * 0.125f })
+
+/** A focus-visible ring for flat navigation/link targets outside NeumorphSurface. */
+@Composable
+internal fun Modifier.orbisKeyboardFocus(shape: Shape = RoundedCornerShape(12.dp)): Modifier {
+    var focused by remember { mutableStateOf(false) }
+    val keyboard = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    val accent = MaterialTheme.colorScheme.primary
+    return this.onFocusChanged { focused = it.isFocused }.drawWithCache {
+        val radius = (shape as? RoundedCornerShape)?.topStart?.toPx(size, this) ?: size.minDimension / 2
+        onDrawBehind {
+            if (focused && keyboard) {
+                val gap = 3.dp.toPx()
+                drawRoundRect(accent, Offset(-gap,-gap), Size(size.width+gap*2,size.height+gap*2),
+                    CornerRadius(radius+gap), style = Stroke(2.dp.toPx()))
+            }
+        }
+    }
+}

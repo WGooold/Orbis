@@ -71,7 +71,7 @@ internal fun RemoteDirectoryBrowser(
     val entries = browse?.entries.orEmpty().filter { showFiles || it.isDir }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Icon(OrbisSymbols.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Text(
                 browse?.path?.takeIf(String::isNotBlank) ?: L10n.tr("电脑根目录"),
                 fontFamily = FontFamily.Monospace,
@@ -84,7 +84,7 @@ internal fun RemoteDirectoryBrowser(
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
             } else {
                 NeumorphIconButton(
-                    onClick = { onBrowse(browse?.path) }, icon = Icons.Rounded.Refresh,
+                    onClick = { onBrowse(browse?.path) }, icon = OrbisSymbols.Refresh,
                     contentDescription = L10n.tr("刷新目录"), enabled = connected,
                 )
             }
@@ -92,7 +92,7 @@ internal fun RemoteDirectoryBrowser(
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (!browse?.path.isNullOrBlank()) {
             NeumorphTextButton(L10n.tr("上一级"), onClick = onBrowseUp, enabled = enabled,
-                icon = Icons.Rounded.ArrowUpward, modifier = Modifier.fillMaxWidth())
+                icon = OrbisSymbols.ArrowUpward, modifier = Modifier.fillMaxWidth())
         }
         if (browse?.error != null) {
             Text(browse.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -122,7 +122,7 @@ internal fun RemoteDirectoryBrowser(
                     Row(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(if (entry.isDir) Icons.Rounded.Folder else Icons.Rounded.Description,
+                        Icon(if (entry.isDir) OrbisSymbols.Folder else OrbisSymbols.Description,
                             contentDescription = if (entry.isDir) L10n.tr("目录") else L10n.tr("文件"),
                             tint = if (entry.hasSessions || selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp))
@@ -133,7 +133,7 @@ internal fun RemoteDirectoryBrowser(
                             Text(L10n.tr("有历史"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                         if (entry.isDir || selected) {
-                            Icon(if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.ChevronRight,
+                            Icon(if (selected) OrbisSymbols.CheckCircle else OrbisSymbols.ChevronRight,
                                 contentDescription = null, modifier = Modifier.size(20.dp),
                                 tint = MaterialTheme.colorScheme.primary)
                         }
@@ -183,7 +183,7 @@ internal fun DownloadFileSheet(
             FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
                 style = MaterialTheme.typography.labelSmall)
             NeumorphActionButton(
-                text = L10n.tr("下载到手机"), icon = Icons.Rounded.Download, modifier = Modifier.fillMaxWidth(),
+                text = L10n.tr("下载到手机"), icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
                 enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
                 onClick = {
                     selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }

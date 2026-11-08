@@ -1316,16 +1316,25 @@ internal class HostConnection(
      * [attachments] 是**已经传完**的附件在电脑上的绝对路径。还没传完的留在 composer 上，
      * 不允许随消息发出——否则 agent 会拿到一个不存在的路径。
      */
+    /** Validate before session.activate as well as normal sends, so invalid first input stays local. */
+    internal fun validateMessageInput(text: String): Boolean {
+        val failure = userMessageInputError(text)
+        if (failure != null) updateState { it.copy(error = failure) }
+        return text.isNotBlank() && failure == null
+    }
+
+    internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? {
+        if (!validateMessageInput(text) || !createSession(kind, cwd, expectedHost)) return null
+        return FirstSessionSubmission(sendMessage(text))
+    }
+
     fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null
         // 只剩附件没正文时也得发出：协议要求 text 非空，而用户确实想把这个文件交给 Pi。
         val attachmentCount = maxOf(attachments.size, uploadTaskIds.size)
         val trimmed = text.trim().ifBlank { if (attachmentCount == 0) "" else L10n.tr("已发送 {0} 个附件", attachmentCount) }
         if (trimmed.isBlank()) return null
-        if (text.trim().startsWith("/")) {
-            updateState { it.copy(error = L10n.tr("斜杠命令只能从当前会话提供的菜单中选择")) }
-            return null
-        }
+        if (!validateMessageInput(trimmed)) return null
         // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
         val state = mutableState.value
         val uploads = uploadTaskIds.mapNotNull { state.uploads[it] }
@@ -2818,6 +2827,7 @@ internal class HostConnection(
     }
 
     private fun notifyNewInteractions(previous: RemoteState, next: RemoteState) {
+        for (reply in confirmedReplyCompletions(previous, next)) notifier.showReplyCompleted(reply)
         val previousIds = previous.conversations.values.flatMap { it.interactions.keys }.toSet()
         for ((runtimeId, conversation) in next.conversations) {
             for (request in conversation.interactions.values) {

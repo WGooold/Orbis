@@ -34,6 +34,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.Modifier
@@ -138,8 +141,12 @@ internal fun NeumorphDialog(
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        dismissButton?.invoke()
-                        confirmButton()
+                        CompositionLocalProvider(LocalModalCommit provides { action -> scope.launch {
+                            entrance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Exit))); action()
+                        } }) {
+                            dismissButton?.invoke()
+                            confirmButton()
+                        }
                     }
                 }
             }
@@ -152,6 +159,37 @@ internal fun NeumorphDialog(
 internal fun NeumorphTextField(
     value: String,
     onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    label: (@Composable () -> Unit)? = null,
+    placeholder: (@Composable () -> Unit)? = null,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    trailingIcon: (@Composable () -> Unit)? = null,
+    supportingText: (@Composable () -> Unit)? = null,
+    enabled: Boolean = true,
+    isError: Boolean = false,
+    singleLine: Boolean = false,
+    minLines: Int = 1,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    textStyle: TextStyle = MaterialTheme.typography.bodyLarge,
+    colors: TextFieldColors? = null,
+    shape: Shape = RemoteUi.ControlShape,
+) {
+    var field by remember { mutableStateOf(TextFieldValue(value)) }
+    NeumorphTextField(field.copy(text = value), { next ->
+        field = next
+        if (next.text != value) onValueChange(next.text)
+    }, modifier, label, placeholder, leadingIcon, trailingIcon, supportingText, enabled, isError,
+        singleLine, minLines, maxLines, keyboardOptions, keyboardActions, visualTransformation, textStyle, colors, shape)
+}
+
+/** Keep composition for keyboard submission; labels remain outside the recessed field. */
+@Composable
+internal fun NeumorphTextField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     modifier: Modifier = Modifier,
     label: (@Composable () -> Unit)? = null,
     placeholder: (@Composable () -> Unit)? = null,

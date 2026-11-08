@@ -309,6 +309,7 @@ internal fun RemoteApp(
     homeUi: HomeUiSnapshot? = null,
 ) {
     val actionHaptic = rememberActionHaptic()
+    val permanentDirectory = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
     val modelLifecycle = LocalLifecycleOwner.current
     LaunchedEffect(model, modelLifecycle) {
         modelLifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -324,9 +325,7 @@ internal fun RemoteApp(
     var addingHost by rememberSaveable { mutableStateOf(false) }
     var allDownloadsOpen by rememberSaveable { mutableStateOf(false) }
     var homeTab by rememberSaveable { mutableStateOf(HomeTab.Chat) }
-    // 新建会话面板：newSessionOpen 管可见性，newSessionCwd 只在「目录捷径」模式下带预设目录。
-    // 两者必须分开——抽屉头的「新会话」按钮带上来的 cwd 就是 null（它意在让你先浏览目录），
-    // 若拿 cwd != null 当可见性判据，面板永远不会出现（抽屉收回、什么也没发生）。
+    // The inline draft owns visibility separately from an optional directory shortcut preset.
     var newSessionOpen by rememberSaveable { mutableStateOf(false) }
     var newSessionCwd by rememberSaveable { mutableStateOf<String?>(null) }
     var launchIntro by remember(state.hostId) { mutableStateOf<LaunchState?>(null) }
@@ -354,6 +353,7 @@ internal fun RemoteApp(
     val runtimeList: @Composable () -> Unit = {
         runtimeListStateHolder.SaveableStateProvider("runtime-list") {
             RuntimeListScreen(
+                permanentDirectory = permanentDirectory,
                 draftOpen = newSessionOpen && state.hostId == newSessionHostId,
                 onToggleDraft = {
                     if (newSessionOpen) { newSessionOpen = false; model.dismissBrowse() }
@@ -361,9 +361,10 @@ internal fun RemoteApp(
                 },
                 draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
                     model::browseSessions, model::browseInto, model::browseUp, onCancel = { newSessionOpen = false; model.dismissBrowse() }, drafts = sessionDrafts) { kind, cwd, text, origin, fieldOrigin ->
-                    if (model.createSession(kind, cwd, newSessionHostId)) {
+                    val submission = model.sendFirstSessionMessage(kind, cwd, text, newSessionHostId)
+                    if (submission != null) {
                         draftOrigin = origin
-                        val command = model.sendMessage(text)
+                        val command = submission.commandId
                         firstDraftSend = command?.let(model::submittedSend)?.let { FirstDraftSend(state.hostId, it, fieldOrigin) }
                         if (command == null) model.currentLaunchPresentation()?.let { model.saveDraft(it.placeholder, text) }
                         newSessionOpen = false; model.dismissBrowse(); actionHaptic(); true
@@ -443,7 +444,7 @@ internal fun RemoteApp(
                 }
                 }
             }
-            HomeTabBar(homeTab, onSelect = { tab -> cancelLaunchIntro(); homeTab = tab })
+            if (!permanentDirectory) HomeTabBar(homeTab, onSelect = { tab -> cancelLaunchIntro(); homeTab = tab })
         }
     }
     // Returning from a chat exposes the same source root. Back on a peer root returns to Chats.
@@ -473,7 +474,7 @@ internal fun RemoteApp(
         else -> null
     }
     OrbisSystemBars(
-        surface = if (appearsPaired && page == null && homeTab == HomeTab.Chat) orbisMaterialColors(LocalOrbisDarkTheme.current).base else MaterialTheme.colorScheme.surface,
+        surface = MaterialTheme.colorScheme.surface,
         darkTheme = LocalOrbisDarkTheme.current,
     )
     when {
@@ -491,6 +492,29 @@ internal fun RemoteApp(
         else -> {
             // 所有首页下一级整页共用导航容器；根配对和 sheet 保持独立的呈现方式（M14）。
             // 首页始终留在同一个组合位置，返回后立即可点。
+            Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+                if (permanentDirectory) Column(Modifier.width(320.dp).fillMaxHeight().testTag("permanent-directory")) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        SessionDrawer(homeState, hosts,
+                            onSelectHost = { id -> cancelLaunchIntro(); model.selectHost(id) },
+                            onUnpairHost = model::unpair, onAddHost = { addingHost = true },
+                            onOpenSession = { host, session -> cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session) },
+                            onOpenHistory = { host, session -> cancelLaunchIntro(); allDownloadsOpen = false; model.openOfflineSession(host, session) },
+                            onNewSession = { host, cwd ->
+                                cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
+                                homeTab = HomeTab.Chat; model.selectHost(host); newSessionHostId = host
+                                newSessionCwd = cwd; newSessionOpen = true
+                            },
+                            onSetArchived = model::setSessionArchivedOn, preparedCatalog = homeUi?.catalog,
+                            onRequestProviders = model::refreshProviderFacts, permanent = true)
+                    }
+                    HomeTabBar(homeTab, onSelect = { tab ->
+                        cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
+                        allDownloadsOpen = false; addingHost = false; draftOrigin = null; homeTab = tab
+                    })
+                }
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
             OrbisPageHost(
                 onBack = {
                     when (page) {
@@ -523,6 +547,9 @@ internal fun RemoteApp(
                     }
                     HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                     null -> Unit
+                }
+            }
+                }
                 }
             }
         }
@@ -585,7 +612,7 @@ private fun PairingScreen(
                     if (onCancel != null && !pairingInProgress) {
                         NeumorphIconButton(
                             onClick = onCancel,
-                            icon = Icons.Rounded.Close,
+                            icon = OrbisSymbols.Close,
                             contentDescription = L10n.tr("取消添加电脑"),
                         )
                     }
@@ -617,7 +644,7 @@ private fun PairingScreen(
                     scannerOpen = true
                 },
                 text = if (pairingInProgress) L10n.tr("正在连接…") else L10n.tr("扫码配对"),
-                icon = Icons.Rounded.QrCodeScanner,
+                icon = OrbisSymbols.QrCodeScanner,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !pairingInProgress,
             )
@@ -705,6 +732,7 @@ internal fun RuntimeListScreen(
     preparedCatalog: List<CachedHostGroup>? = null,
     preparedSync: HomeSyncStatus? = null,
     preparedDownloadCount: Int? = null,
+    permanentDirectory: Boolean = false,
     draftOpen: Boolean = false,
     onToggleDraft: () -> Unit = {},
     draftContent: @Composable (Boolean) -> Unit = {},
@@ -775,9 +803,9 @@ internal fun RuntimeListScreen(
     BackHandler(enabled = LocalPageActive.current && selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = !selecting,
+        gesturesEnabled = !selecting && !permanentDirectory,
         drawerContent = {
-            SessionDrawer(
+            if (!permanentDirectory) SessionDrawer(
                 state = state,
                 hosts = hosts,
                 isOpen = drawerState.isOpen,
@@ -808,7 +836,7 @@ internal fun RuntimeListScreen(
                     navigationIcon = {
                         NeumorphIconButton(
                             onClick = { if (selecting) selectedRuntimeIds = emptySet() else scope.launch { drawerState.open() } },
-                            icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.Menu,
+                            icon = if (selecting) OrbisSymbols.Close else OrbisSymbols.Menu,
                             menuMorph = selecting,
                             contentDescription = if (selecting) L10n.tr("退出多选") else L10n.tr("打开会话目录"),
                             size = 40.dp,
@@ -821,16 +849,8 @@ internal fun RuntimeListScreen(
                             OrbisWordmark()
                             Text(
                                 "Easy Agents Everywhere",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 0.8.sp,
-                                    brush = Brush.linearGradient(
-                                        listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.tertiary,
-                                        ),
-                                    ),
-                                ),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                             )
                         }
@@ -844,7 +864,7 @@ internal fun RuntimeListScreen(
                                 onClick = onOpenDownloads,
                                 modifier = Modifier.testTag("home-downloads"),
                             )
-                            NeumorphIconButton(onToggleDraft, Icons.Rounded.Add,
+                            NeumorphIconButton(onToggleDraft, OrbisSymbols.Add,
                                 if (draftOpen) L10n.tr("收起新会话") else L10n.tr("新建会话"),
                                 modifier = Modifier.testTag("home-new-session").graphicsLayer { rotationZ = draftRotation },
                                 enabled = state.canCreateSessionOn(activeHostId) || draftOpen)
@@ -885,7 +905,7 @@ internal fun RuntimeListScreen(
                     if (backgroundSync is HomeSyncStatus.Failed) {
                         NeumorphIconButton(
                             onClick = onRetryHome,
-                            icon = Icons.Rounded.Refresh,
+                            icon = OrbisSymbols.Refresh,
                             contentDescription = if (state.e2eReady) L10n.tr("重新加载会话") else L10n.tr("重新连接"),
                             tint = MaterialTheme.colorScheme.error,
                             compact = true,
@@ -934,7 +954,7 @@ internal fun RuntimeListScreen(
                     contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
                 ) {
                     if (draftOpen || retainDraft) item(key = "session-draft") {
-                        OrbisCollapse(expanded = draftSlotOpen) { draftContent(draftOpen) }
+                        OrbisCollapse(expanded = draftSlotOpen, clipExpanded = false) { draftContent(draftOpen) }
                     }
                     // 首版完整快照发布前列表为空：加载与失败占据空态的位置，而不是压在卡片上方。
                     if (state.homeRuntimesLoading) {
@@ -943,7 +963,7 @@ internal fun RuntimeListScreen(
                         item(key = "empty") {
                             Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-empty"),
                                 verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(44.dp),
+                                Icon(OrbisSymbols.Computer, contentDescription = null, modifier = Modifier.size(44.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.height(14.dp))
                                 Text(L10n.tr("暂无在线会话"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1058,7 +1078,7 @@ internal fun RuntimeListScreen(
                                                         NeumorphSurface(Modifier.size(28.dp), shape = CircleShape,
                                                             style = if (armed) NeumorphStyle.Raised else NeumorphStyle.Pressed, shadowScale = 0.4f) {
                                                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                                Icon(Icons.Rounded.Close, null, tint = closeColor, modifier = Modifier.size(16.dp))
+                                                                Icon(OrbisSymbols.Close, null, tint = closeColor, modifier = Modifier.size(16.dp))
                                                             }
                                                         }
                                                     }
@@ -1141,7 +1161,7 @@ internal fun RuntimeListScreen(
                                                     Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
                                                     if (row.card.hasPendingInteraction) {
                                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                                            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                                                            Icon(OrbisSymbols.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                                             Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                                                         }
                                                     } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
@@ -1176,7 +1196,7 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
     Column(Modifier.fillMaxWidth().heightIn(min = 180.dp).testTag("home-session-status"),
         verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         if (sync is HomeSyncStatus.Failed) {
-            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, modifier = Modifier.size(44.dp),
+            Icon(OrbisSymbols.Error, contentDescription = null, modifier = Modifier.size(44.dp),
                 tint = MaterialTheme.colorScheme.error)
             Spacer(Modifier.height(14.dp))
             Text(sync.message, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
@@ -1185,7 +1205,7 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
             NeumorphActionButton(
                 onClick = onRetry,
                 text = if (e2eReady) L10n.tr("重新加载") else L10n.tr("重新连接"),
-                icon = Icons.Rounded.Refresh,
+                icon = OrbisSymbols.Refresh,
                 modifier = Modifier.fillMaxWidth()
                     .semantics { contentDescription = if (e2eReady) L10n.tr("重新加载会话") else L10n.tr("重新连接") },
             )
@@ -1322,7 +1342,7 @@ internal fun OfflineHistoryScreen(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = onBack,
-                        icon = Icons.Rounded.ArrowBack,
+                        icon = OrbisSymbols.ArrowBack,
                         contentDescription = L10n.tr("返回会话目录"),
                         size = 40.dp,
                     )
@@ -1507,7 +1527,7 @@ internal fun ChatScreen(
     LaunchedEffect(firstDraftSend?.send?.messageId, runtimeId, sessionId) {
         val first = firstDraftSend ?: return@LaunchedEffect
         delay(InteractionMotion.duration(InteractionMotion.Page).toLong())
-        val current = state.pendingSends[first.send.messageId] ?: first.send
+        val current = state.pendingSends[first.send.messageId] ?: first.send.copy(sessionId = state.launchSessions[first.send.sessionId] ?: first.send.sessionId)
         if (first.hostId == state.hostId && current.sessionId == pageSessionId) {
             onFirstDraftSend(); sendFlight.launch(current, true, first.source)
         }
@@ -1974,7 +1994,7 @@ internal fun ChatScreen(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = { model.selectRuntime(null) },
-                        icon = Icons.Rounded.ArrowBack,
+                        icon = OrbisSymbols.ArrowBack,
                         contentDescription = L10n.tr("返回"),
                         size = 40.dp,
                     )
@@ -1988,7 +2008,7 @@ internal fun ChatScreen(
                             historyActionError = null
                             historyOpen = true
                         },
-                        icon = Icons.Rounded.History,
+                        icon = OrbisSymbols.History,
                         contentDescription = L10n.tr("历史与分支"),
                         size = 40.dp,
                     )
@@ -2111,7 +2131,7 @@ internal fun ChatScreen(
                     if (canAttachFiles) {
                         NeumorphIconButton(
                             onClick = { filePicker.launch(arrayOf("*/*")) },
-                            icon = Icons.Rounded.AttachFile,
+                            icon = OrbisSymbols.AttachFile,
                             contentDescription = L10n.tr("发送文件到电脑"),
                             enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
                             modifier = Modifier.padding(bottom = 4.dp),
@@ -2212,7 +2232,7 @@ internal fun ChatScreen(
                                     OrbisMotionIcon(
                                         Icons.Rounded.StopCircle,
                                         description = L10n.tr("打断当前任务"),
-                                        tint = if (sendEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+                                        tint = if (sendEnabled) MaterialTheme.colorScheme.error else LocalOrbisPalette.current.faint,
                                         size = 22.dp, activation = composerActivation,
                                     )
 
@@ -2220,7 +2240,7 @@ internal fun ChatScreen(
                                     OrbisMotionIcon(
                                         Icons.Rounded.Send,
                                         description = L10n.tr("发送"),
-                                        tint = if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+                                        tint = if (sendEnabled) MaterialTheme.colorScheme.primary else LocalOrbisPalette.current.faint,
                                         size = 22.dp, activation = composerActivation,
                                     )
                             }
@@ -2668,7 +2688,7 @@ internal fun DownloadStatusButton(
         // S6：顶栏图标按钮是凸起圆钮。
         NeumorphIconButton(
             onClick = onClick,
-            icon = Icons.Rounded.Download,
+            icon = OrbisSymbols.Download,
             contentDescription = if (activeCount > 0) L10n.tr("{0} 个文件正在下载", activeCount) else L10n.tr("打开下载"),
             enabled = enabled,
             size = 40.dp,
@@ -2724,7 +2744,7 @@ internal fun AllDownloadsScreen(
                 navigationIcon = {
                     NeumorphIconButton(
                         onClick = { if (selectionMode) selectedTaskIds = emptySet() else onBack() },
-                        icon = if (selectionMode) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
+                        icon = if (selectionMode) OrbisSymbols.Close else OrbisSymbols.ArrowBack,
                         backMorph = selectionMode,
                         contentDescription = if (selectionMode) L10n.tr("退出多选") else L10n.tr("返回"),
                         size = 40.dp,
@@ -2734,7 +2754,7 @@ internal fun AllDownloadsScreen(
                     SelectionToolbar(selecting = selectionMode, normal = { Spacer(Modifier.size(48.dp)) }, selected = {
                         NeumorphIconButton(
                             onClick = { pendingDeletion = effectiveSelectedTaskIds },
-                            icon = Icons.Rounded.Delete,
+                            icon = OrbisSymbols.Delete,
                             tint = MaterialTheme.colorScheme.error,
                             contentDescription = L10n.tr("删除所选下载"),
                             size = 40.dp,
@@ -2747,7 +2767,7 @@ internal fun AllDownloadsScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             NeumorphActionButton(
                 text = L10n.tr("浏览电脑文件"),
-                icon = Icons.Rounded.Folder,
+                icon = OrbisSymbols.Folder,
                 onClick = { onDismissBrowse(); filePickerOpen = true },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(top = 12.dp, bottom = 20.dp),
             )
@@ -2758,7 +2778,7 @@ internal fun AllDownloadsScreen(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(OrbisSymbols.Download, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(10.dp))
                     Text(L10n.tr("暂无下载"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -2873,9 +2893,9 @@ private fun DownloadTaskCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(
                     when (task.status) {
-                        "completed" -> Icons.Rounded.CheckCircle
-                        "failed" -> Icons.Rounded.ErrorOutline
-                        else -> Icons.Rounded.Download
+                        "completed" -> OrbisSymbols.CheckCircle
+                        "failed" -> OrbisSymbols.Error
+                        else -> OrbisSymbols.Download
                     },
                     contentDescription = null,
                     tint = statusColor,
@@ -2952,7 +2972,7 @@ private fun HomeHostSwitcher(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Rounded.Computer, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            Icon(OrbisSymbols.Computer, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
             Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
             // 其他电脑上有待确认：列表只显示当前电脑后，这里提醒去切换（菜单里写明是哪台）。
@@ -2974,8 +2994,8 @@ private fun HomeHostSwitcher(
                     text = { Text(host.name + if (host.hasPendingInteraction) L10n.tr("，有待确认") else "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     onClick = { expanded = false; if (host.hostId != activeHostId) onSelectHost(host.hostId) },
                     leadingIcon = {
-                        if (host.hostId == activeHostId) Icon(Icons.Rounded.Check, contentDescription = L10n.tr("当前电脑"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                        else Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(18.dp))
+                        if (host.hostId == activeHostId) Icon(OrbisSymbols.Check, contentDescription = L10n.tr("当前电脑"), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        else Icon(OrbisSymbols.Computer, contentDescription = null, modifier = Modifier.size(18.dp))
                     },
                     trailingIcon = {
                         Text(if (host.state.e2eReady) L10n.tr("在线") else L10n.tr("离线"), style = MaterialTheme.typography.labelSmall,
@@ -3038,7 +3058,7 @@ internal fun ConnectionStatus(
         MotionText(label, color = color, style = MaterialTheme.typography.labelMedium)
         if (secured) {
             // 同步失败不影响加密：锁保持已加密的颜色，不把失败画成通道不安全。
-            Icon(Icons.Rounded.Lock, contentDescription = L10n.tr("端到端加密"), tint = securedColor, modifier = Modifier.size(13.dp))
+            Icon(OrbisSymbols.Lock, contentDescription = L10n.tr("端到端加密"), tint = securedColor, modifier = Modifier.size(13.dp))
         }
     }
 }
@@ -3101,16 +3121,16 @@ internal fun AgentProvidersContent(
     Scaffold(topBar = {
         TopAppBar(title = { MotionText(if (selecting) L10n.tr("已选择 {0} 项", selected.size) else L10n.tr("供应商")) }, navigationIcon = {
             NeumorphIconButton(onClick = { if (selecting) exitSelection() else onBack() },
-                icon = if (selecting) Icons.Rounded.Close else Icons.Rounded.ArrowBack,
+                icon = if (selecting) OrbisSymbols.Close else OrbisSymbols.ArrowBack,
                 backMorph = selecting,
                 contentDescription = if (selecting) L10n.tr("退出多选") else L10n.tr("返回"), size = 40.dp)
         }, actions = {
             SelectionToolbar(selecting = selecting, normal = {
                 NeumorphIconButton(onClick = { exitSelection(); onLoad(catalog.kind) },
-                    icon = Icons.Rounded.Refresh, contentDescription = L10n.tr("刷新"), enabled = connected && !catalog.loading)
+                    icon = OrbisSymbols.Refresh, contentDescription = L10n.tr("刷新"), enabled = connected && !catalog.loading)
             }, selected = {
                 NeumorphIconButton(onClick = { pendingRemoval = catalog.providers.filter { it in selected } },
-                    icon = Icons.Rounded.Delete, contentDescription = L10n.tr("移除所选供应商"), size = 40.dp, tint = MaterialTheme.colorScheme.error,
+                    icon = OrbisSymbols.Delete, contentDescription = L10n.tr("移除所选供应商"), size = 40.dp, tint = MaterialTheme.colorScheme.error,
                     enabled = available && selected.isNotEmpty())
             })
         })
@@ -3630,26 +3650,26 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
             }
             PendingSendState.Queued -> {
                 Text(L10n.tr("已排队"), style = MaterialTheme.typography.labelSmall, color = muted)
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Cancel) }, icon = Icons.Rounded.Close,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Cancel) }, icon = OrbisSymbols.Close,
                     contentDescription = L10n.tr("撤回排队消息"), size = 28.dp, enabled = canResend)
             }
             PendingSendState.Unconfirmed -> {
-                Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = muted, modifier = Modifier.size(14.dp))
+                Icon(OrbisSymbols.Error, contentDescription = null, tint = muted, modifier = Modifier.size(14.dp))
                 Text(L10n.tr("未确认是否送达"), style = MaterialTheme.typography.labelSmall, color = muted)
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Check) }, icon = Icons.Rounded.Refresh,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Check) }, icon = OrbisSymbols.Refresh,
                     contentDescription = L10n.tr("核对送达状态"), size = 28.dp, enabled = canResend)
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = OrbisSymbols.Delete,
                     contentDescription = L10n.tr("删除"), size = 28.dp)
             }
             is PendingSendState.Failed -> {
-                Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                Icon(OrbisSymbols.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                 Text(state.reason, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
                     maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Resend) }, icon = Icons.Rounded.Refresh,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Resend) }, icon = OrbisSymbols.Refresh,
                     contentDescription = L10n.tr("重新发送"), size = 28.dp, enabled = canResend)
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Restore) }, icon = Icons.Rounded.Edit,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Restore) }, icon = OrbisSymbols.Edit,
                     contentDescription = L10n.tr("放回输入框"), size = 28.dp)
-                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = Icons.Rounded.Delete,
+                NeumorphIconButton(onClick = { onAction(PendingSendAction.Discard) }, icon = OrbisSymbols.Delete,
                     contentDescription = L10n.tr("删除"), size = 28.dp)
             }
         }
@@ -3744,7 +3764,7 @@ private fun ChatToolGroup(
     if (calls.size == 1) { callView(calls.first()); return }
     Column(Modifier.fillMaxWidth()) {
         NeumorphTextButton(text = L10n.tr("{0} 次工具调用", calls.size) + " · " + status,
-            icon = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            icon = if (expanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown,
             onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().testTag("chat-tool-group"))
         OrbisCollapse(expanded) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3863,7 +3883,7 @@ private fun ArtifactCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(Icons.Rounded.Download, contentDescription = L10n.tr("下载文件"), tint = MaterialTheme.colorScheme.primary)
+            Icon(OrbisSymbols.Download, contentDescription = L10n.tr("下载文件"), tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
                 FileNameText(artifact.fileName, fontWeight = FontWeight.SemiBold)
                 Text(
@@ -3887,7 +3907,7 @@ internal fun formatByteCount(bytes: Long): String = when {
 private fun CollapsedThinking(text: String) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     CompactDisclosure(
-        icon = Icons.Rounded.Psychology,
+        icon = OrbisSymbols.Psychology,
         title = L10n.tr("思考过程"),
         summary = text,
         collapsedSummary = "",
@@ -3922,7 +3942,7 @@ private fun CollapsedTool(
         else -> activity?.let { toolStateText(it.state) } ?: L10n.tr("已完成")
     }
     CompactDisclosure(
-        icon = Icons.Rounded.Build,
+        icon = OrbisSymbols.Build,
         title = toolName,
         status = status,
         summary = listOfNotNull(arguments, detail).joinToString("\n"),
@@ -3974,7 +3994,7 @@ private fun CompactDisclosure(
                 }
             }
             Icon(
-                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                if (expanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown,
                 contentDescription = if (expanded) L10n.tr("收起") else L10n.tr("展开"),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
@@ -4051,7 +4071,7 @@ private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSe
         }
         // 只有还没送进上下文的消息能撤回；结果由队列事件回报（与 iOS 一致）。
         if (message.state == "accepted") {
-            NeumorphTextButton(if (unconfirmed) L10n.tr("撤回未确认") else L10n.tr("撤回"), onClick = onCancel, icon = Icons.Rounded.Close,
+            NeumorphTextButton(if (unconfirmed) L10n.tr("撤回未确认") else L10n.tr("撤回"), onClick = onCancel, icon = OrbisSymbols.Close,
                 enabled = canSend && !unconfirmed)
         }
     }
@@ -4105,7 +4125,7 @@ private fun ErrorBanner(message: String, needsAction: Boolean, onDismiss: () -> 
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Icon(
-                    Icons.Rounded.ErrorOutline,
+                    OrbisSymbols.Error,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(18.dp),
@@ -4160,7 +4180,7 @@ internal fun RuntimeNotifications(
 private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRecheck: (() -> Unit)?, onClose: (() -> Unit)?) {
     NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
-            Icon(if (isError) Icons.Rounded.ErrorOutline else Icons.Rounded.Info, contentDescription = null,
+            Icon(if (isError) OrbisSymbols.Error else OrbisSymbols.Info, contentDescription = null,
                 tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp).padding(top = 1.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -4173,12 +4193,12 @@ private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRec
                     var glyphActivation by remember { mutableStateOf(0) }
                     Row(Modifier.clip(CircleShape).clickable { glyphActivation++; onRecheck() }.padding(vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation))
+                        Icon(OrbisSymbols.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation))
                         Text(L10n.tr("重新核对"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
-            onClose?.let { NeumorphIconButton(onClick = it, icon = Icons.Rounded.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp) }
+            onClose?.let { NeumorphIconButton(onClick = it, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp) }
         }
     }
 }
@@ -4190,7 +4210,7 @@ private fun NoticeCard(text: String) = FeedbackCard(text, isError = false)
 private fun FeedbackCard(text: String, isError: Boolean) {
     NeumorphSurface(Modifier.fillMaxWidth(), style = NeumorphStyle.Pressed, shadowScale = 0.5f, contentPadding = 14.dp) {
         Row(Modifier, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(if (isError) Icons.Rounded.ErrorOutline else Icons.Rounded.Info, contentDescription = null,
+            Icon(if (isError) OrbisSymbols.Error else OrbisSymbols.Info, contentDescription = null,
                 tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Text(text, style = MaterialTheme.typography.bodyMedium)
         }
@@ -4243,7 +4263,7 @@ internal fun InteractionPanel(
                 // 状态固定在标题行右侧：提交中、已提交、过期只替换这个位置的文字，按钮不移动（与 iOS 一致）。
                 Row(Modifier.fillMaxWidth().heightIn(min = 32.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Icon(OrbisSymbols.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Text(request.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 2,
                         overflow = TextOverflow.Ellipsis)
                     Text(
@@ -4454,7 +4474,7 @@ private fun AttachmentChips(uploads: List<UploadTask>, onRemove: (String) -> Uni
                 }
                 NeumorphIconButton(
                     onClick = { onRemove(upload.taskId) },
-                    icon = Icons.Rounded.Close,
+                    icon = OrbisSymbols.Close,
                     contentDescription = L10n.tr("移除附件"),
                     size = 40.dp,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4503,7 +4523,7 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (launch.failure != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = Icons.Rounded.Refresh, modifier = Modifier.testTag("launch-retry"))
+                NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = OrbisSymbols.Refresh, modifier = Modifier.testTag("launch-retry"))
                 NeumorphTextButton(L10n.tr("返回"), onClick = onBack, modifier = Modifier.testTag("launch-back"))
             }
         }
