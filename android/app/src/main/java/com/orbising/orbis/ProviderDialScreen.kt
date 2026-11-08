@@ -6,6 +6,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
@@ -305,14 +307,28 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                     }
                 }
             }
-            // Two distinct accessible sliders mirror the physical rings without remote writes.
+            // Two distinct keyboard/accessible sliders mirror the physical rings without remote writes.
+            @Composable
+            fun Modifier.keyboardRing(ring: ProviderDialRing, position: Float, lastIndex: Int): Modifier =
+                orbisKeyboardFocus().onPreviewKeyEvent { event ->
+                    if (!active || event.type != KeyEventType.KeyDown) false else {
+                        val next = when (event.key) {
+                            Key.DirectionUp -> position.roundToInt() - 1
+                            Key.DirectionDown -> position.roundToInt() + 1
+                            Key.MoveHome -> 0
+                            Key.MoveEnd -> lastIndex
+                            else -> return@onPreviewKeyEvent false
+                        }
+                        settle(ring,next.coerceIn(0,lastIndex.coerceAtLeast(0)));true
+                    }
+                }.focusable(enabled=active)
             Box(Modifier.offset(x = 20.dp).width((g.cx + g.hubRadius - 20).coerceAtLeast(48f).dp).fillMaxHeight()
-                .testTag("provider-agent-reel").semantics {
+                .testTag("provider-agent-reel").keyboardRing(ProviderDialRing.Agent,agentPosition,DIAL_AGENTS.lastIndex).semantics {
                     contentDescription = "Agent"; stateDescription = agentBrand(kind).title
                     progressBarRangeInfo = ProgressBarRangeInfo(agentPosition.coerceIn(0f, 3f), 0f..3f, 2)
                     setProgress { target -> if (!active) false else { settle(ProviderDialRing.Agent, target.roundToInt()); true } }
                 })
-            Box(Modifier.offset(x = (g.cx + g.seamRadius).dp).fillMaxSize().testTag("provider-arc").semantics {
+            Box(Modifier.offset(x = (g.cx + g.seamRadius).dp).fillMaxSize().testTag("provider-arc").keyboardRing(ProviderDialRing.Profile,itemPosition,providers.lastIndex).semantics {
                 contentDescription = L10n.tr("{0} 的配置", agentBrand(kind).title)
                 stateDescription = providers.getOrNull(selectedIndex)?.name ?: L10n.tr("当前没有可用供应商")
                 progressBarRangeInfo = ProgressBarRangeInfo(itemPosition.coerceIn(0f, providers.lastIndex.coerceAtLeast(0).toFloat()),

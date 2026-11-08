@@ -171,6 +171,20 @@ class DesignAlignmentInstrumentedTest {
 
 
 
+    /** SC55: Desktop-only Hosts still expose the existing Codex slot and valid first send. */
+    @Test fun desktopOnlyHostKeepsTheCodexSlotUsableWithoutFallingBackToPi() {
+        var submitted: String? = null
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(ready().copy(supportedAgents=setOf("codexDesktop"), launchableAgents=setOf("codexDesktop")),
+                true,"/Projects/orbis",{},{},{}) { kind,_,_,_,_ -> submitted=kind;true }
+        } }
+        compose.onNodeWithTag("draft-agent-codex").assertIsEnabled().performClick()
+        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
+        compose.onNode(hasSetTextAction()).performTextInput("首句")
+        compose.onNodeWithTag("draft-send").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals("codexDesktop",submitted) }
+    }
+
     /** S35: the inline card and flat directory remain usable on the smallest supported phone. */
     @Test fun narrowDraftKeepsThePathAgentTargetsAndSendInsideItsCard() {
         compose.setContent { OrbisTheme {
@@ -247,6 +261,30 @@ class DesignAlignmentInstrumentedTest {
             compose.onNodeWithTag("home-tab-providers").performTouchInput { click() }; capture("root-providers")
             compose.onNodeWithTag("home-tab-settings").performTouchInput { click() }; capture("root-settings")
         } finally { compose.runOnIdle { owner.clear() }; app.dispose() }
+    }
+
+    /** S37: explicit draft card heights match the source without losing protocol access. */
+    @Test fun settingsCardDensityMatchesTheDraftAt320And358Dp() {
+        var density: androidx.compose.ui.unit.Density? = null
+        val width = mutableStateOf(358)
+        compose.setContent { OrbisTheme {
+            density=androidx.compose.ui.platform.LocalDensity.current
+            Box(Modifier.width(width.value.dp).height(812.dp)) { DesignSettingsScreen(visualReady(),{},true,{}) }
+        } }
+        for (value in listOf(358,320)) {
+            compose.runOnIdle { width.value=value }
+            val connection=compose.onNodeWithTag("settings-connection-group").fetchSemanticsNode().boundsInRoot
+            assertEquals(120f,with(density!!) { connection.height.toDp().value },0.6f)
+            compose.onNodeWithTag("settings-language").performScrollTo()
+            val language=compose.onNodeWithTag("settings-language-group").fetchSemanticsNode().boundsInRoot
+            assertEquals(64f,with(density!!) { language.height.toDp().value },0.6f)
+            compose.onNodeWithTag("settings-protocol").performScrollTo().performClick()
+            compose.onNodeWithTag("relay-mode-WS").assertIsDisplayed()
+            compose.onNodeWithTag("protocol-apply").assertIsNotEnabled()
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+            compose.waitForIdle()
+            capture("settings-density-$value")
+        }
     }
 
     @Test fun appearanceModesAndBothMaterialsChangeEverySurfaceWithoutChangingSettingsStructure() {

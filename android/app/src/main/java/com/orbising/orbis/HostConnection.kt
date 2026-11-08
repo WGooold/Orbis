@@ -131,6 +131,7 @@ internal class HostConnection(
     }
     private val reducer = RelayReducer(publishHome = false)
     private val notifier = stores.notifier
+    private val replyCompletionObserver = ReplyCompletionObserver()
     private val sessionCatalogStore = SessionCatalogStore(application, initial.hostId)
     private val sessionGraphStore = stores.sessionGraph
     private val draftStore = stores.draft
@@ -2810,7 +2811,7 @@ internal class HostConnection(
             val graphRuntimes = next.sessionSyncRequests.mapNotNull(next.runtimes::get)
             scheduleSessionGraphLoad(pairedDevice, graphRuntimes)
             if (next.connection == RelayConnection.ONLINE) reconnectDelayMs = 500
-            notifyNewInteractions(previous, next)
+            notifyNewInteractions(previous, next, allowReplyCompletion = false)
         }
     }
 
@@ -2833,8 +2834,8 @@ internal class HostConnection(
         sessionCatalogStore.save(pairedDevice, owner, current.sessions.values)
     }
 
-    private fun notifyNewInteractions(previous: RemoteState, next: RemoteState) {
-        for (reply in confirmedReplyCompletions(previous, next)) notifier.showReplyCompleted(reply)
+    private fun notifyNewInteractions(previous: RemoteState, next: RemoteState, allowReplyCompletion: Boolean = true) {
+        for (reply in replyCompletionObserver.observe(previous, next, generation, allowReplyCompletion)) notifier.showReplyCompleted(reply)
         val previousIds = previous.conversations.values.flatMap { it.interactions.keys }.toSet()
         for ((runtimeId, conversation) in next.conversations) {
             for (request in conversation.interactions.values) {

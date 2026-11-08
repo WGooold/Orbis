@@ -13,10 +13,12 @@ import org.junit.Rule
 import org.junit.Test
 
 /** S36 / SC57: browsing never applies; a settled explicit action confirms the exact Host/profile. */
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class, androidx.compose.ui.test.ExperimentalTestApi::class)
 class ProviderDialInstrumentedTest {
     @get:Rule val compose = createComposeRule()
     private val changes = mutableListOf<Pair<AgentProvider,String?>>()
     private val queries = mutableListOf<AgentProvider>()
+    private var keyboard: androidx.compose.ui.input.InputModeManager? = null
     private fun profiles(kind: String) = listOf(
         AgentProvider("$kind-local",kind,"本机配置",true,kind=="pi",official=true,subscriptionSupported=kind=="codex"),
         AgentProvider("$kind-relay",kind,"relay-b",false,kind=="pi"))
@@ -24,6 +26,7 @@ class ProviderDialInstrumentedTest {
         connection=RelayConnection.ONLINE,providerCatalogs=listOf("codex","claude","dsh","pi").associateWith(::profiles))
     private fun show(state: MutableState<RemoteState>, dark: Boolean=false) {
         compose.setContent { OrbisTheme(darkTheme=dark) {
+            keyboard=androidx.compose.ui.platform.LocalInputModeManager.current
             ProviderDialScreen(state.value, emptyList(), {}, {}, { provider,host -> changes += provider to host },
                 { provider,_ -> queries += provider },showBack=false)
         } }
@@ -78,6 +81,28 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithTag("provider-apply").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(listOf(profiles("pi")[0] to "dial-host"),changes) }
         capture("dark")
+    }
+    /** SC57: each ring independently owns arrows/Home/End; keys never apply a configuration. */
+    @Test fun keyboardBrowsesEachRingWithItsOwnFocusAndNeverApplies() {
+        show(mutableStateOf(ready()))
+        compose.runOnIdle { assertTrue(keyboard!!.requestInputMode(androidx.compose.ui.input.InputMode.Keyboard)) }
+        fun focus(tag: String) {
+            compose.onNodeWithTag(tag).performSemanticsAction(SemanticsActions.RequestFocus) { assertTrue(it()) }
+            compose.onNodeWithTag(tag).assertIsFocused()
+        }
+        focus("provider-agent-reel")
+        compose.onNodeWithTag("provider-agent-reel").performKeyInput { pressKey(androidx.compose.ui.input.key.Key.MoveEnd) }
+        compose.onNodeWithTag("provider-agent-reel").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription,"Pi"))
+        compose.onNodeWithTag("provider-agent-reel").performKeyInput { pressKey(androidx.compose.ui.input.key.Key.MoveHome) }
+        compose.onNodeWithTag("provider-agent-reel").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription,"Codex"))
+        focus("provider-arc")
+        compose.onNodeWithTag("provider-arc").performKeyInput { pressKey(androidx.compose.ui.input.key.Key.DirectionDown) }
+        compose.onNodeWithTag("provider-arc").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription,"relay-b"))
+        compose.onNodeWithTag("provider-arc").performKeyInput { pressKey(androidx.compose.ui.input.key.Key.MoveHome) }
+        compose.onNodeWithTag("provider-arc").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription,"本机配置"))
+        compose.onNodeWithTag("provider-arc").performKeyInput { pressKey(androidx.compose.ui.input.key.Key.MoveEnd) }
+        compose.onNodeWithTag("provider-arc").assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription,"relay-b"))
+        compose.runOnIdle { assertTrue(changes.isEmpty()) }
     }
     @Test fun bothQuotaWindowsAppearTogetherAndLowQuotaUsesAnExplicitWarning() {
         val quota=SubscriptionQuota(1,listOf(SubscriptionWindow("five_hour",80.0,null),SubscriptionWindow("seven_day",15.0,null)))

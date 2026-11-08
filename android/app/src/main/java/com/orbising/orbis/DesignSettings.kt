@@ -41,8 +41,9 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-            SettingsGroup(L10n.tr("连接")) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically,
+            SettingsGroup(L10n.tr("连接"), padding = 0.dp, spacing = 0.dp, tag = "settings-connection-group") {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(OrbisSymbols.Computer, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                     Column(Modifier.weight(1f)) {
@@ -59,10 +60,11 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                     }
                 }
                 SettingsRow(L10n.tr("连接协议"), L10n.tr("{0} · 现在走 {1}", protocolName(state.relayTransportMode), connectionProtocolText(state)),
-                    "settings-protocol") { protocolOpen = true }
+                    "settings-protocol", minHeight = 56.dp) { protocolOpen = true }
+                }
             }
             SettingsGroup(L10n.tr("外观")) { AppearancePicker() }
-            SettingsGroup(L10n.tr("语言")) {
+            SettingsGroup(L10n.tr("语言"), padding = 8.dp, tag = "settings-language-group") {
                 SettingsRow(when (AppLocalization.preference) { AppLanguage.System -> L10n.tr("跟随手机"); AppLanguage.Chinese -> "简体中文"; AppLanguage.English -> "English" },
                     if (AppLocalization.language == AppLanguage.Chinese) "简体中文" else "English", "settings-language") { languageOpen = true }
             }
@@ -80,18 +82,19 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
 }
 
 @Composable
-private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsGroup(title: String, padding: androidx.compose.ui.unit.Dp = 16.dp,
+    spacing: androidx.compose.ui.unit.Dp = 12.dp, tag: String = "", content: @Composable ColumnScope.() -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        NeumorphSurface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), contentPadding = 16.dp) {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+        NeumorphSurface(Modifier.fillMaxWidth().testTag(tag), shape = RoundedCornerShape(24.dp), contentPadding = padding) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(spacing), content = content)
         }
     }
 }
 
 @Composable
-private fun SettingsRow(title: String, sub: String, tag: String, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(tag).orbisKeyboardFocus().clickable(role = Role.Button, onClick = onClick),
+private fun SettingsRow(title: String, sub: String, tag: String, minHeight: androidx.compose.ui.unit.Dp = 48.dp, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = minHeight).testTag(tag).orbisKeyboardFocus().clickable(role = Role.Button, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)

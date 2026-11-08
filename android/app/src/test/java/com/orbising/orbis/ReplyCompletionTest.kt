@@ -44,4 +44,32 @@ class ReplyCompletionTest {
         assertTrue(confirmedReplyCompletions(before,finished(before).copy(conversations = mapOf("runtime" to finished(before).conversations.getValue("runtime").copy(sourceEpoch="new")))).isEmpty())
         assertTrue(confirmedReplyCompletions(RemoteState(),finished(before)).isEmpty())
     }
+    @Test fun handshakeThenCompletedRecoveryDoesNotInheritAnOldConnectionsActiveTurn() {
+        val running = active()
+        val starting = running.copy(conversations=running.conversations.mapValues { it.value.copy(sourceSeq=0,activeTurnId=null) })
+        val observer = ReplyCompletionObserver()
+        assertTrue(observer.observe(starting,running,1).isEmpty())
+        assertEquals(1,observer.observe(running,finished(running),1).size)
+        assertTrue(observer.observe(starting,running,2).isEmpty())
+        val disconnected=running.copy(e2eReady=false,connection=RelayConnection.RECONNECTING)
+        observer.observe(running,disconnected,2)
+        val handshake=disconnected.copy(e2eReady=true,connection=RelayConnection.ONLINE)
+        observer.observe(disconnected,handshake,3)
+        assertTrue(observer.observe(handshake,finished(running),3).isEmpty())
+        assertTrue(observer.observe(starting,running,3).isEmpty())
+        assertEquals(1,observer.observe(running,finished(running),3).size)
+    }
+    @Test fun sameConnectionRecoverySnapshotSeedsButNeverNotifiesAndFreshPatchStillCompletes() {
+        val observer=ReplyCompletionObserver();val running=active()
+        val starting=running.copy(conversations=running.conversations.mapValues { it.value.copy(sourceSeq=0,activeTurnId=null) })
+        observer.observe(starting,running,1,allowCompletion=false)
+        assertTrue(observer.observe(running,finished(running),1,allowCompletion=false).isEmpty())
+        assertTrue(observer.observe(running,finished(running),1).isEmpty())
+        val fresh=running.copy(conversations=running.conversations.mapValues { (_,c) -> c.copy(sourceSeq=3,
+            activeTurnId="fresh",turnTimings=mapOf("fresh" to TurnTiming("fresh",200))) })
+        observer.observe(finished(running),fresh,1)
+        val done=fresh.copy(conversations=fresh.conversations.mapValues { (_,c) -> c.copy(sourceSeq=4,
+            activeTurnId=null,turnTimings=mapOf("fresh" to TurnTiming("fresh",200,10,outcome="completed"))) })
+        assertEquals("fresh",observer.observe(fresh,done,1).single().turn)
+    }
 }

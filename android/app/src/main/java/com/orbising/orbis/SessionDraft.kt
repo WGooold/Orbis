@@ -101,7 +101,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
-    LaunchedEffect(supported) { if (supported != null && kind !in supported) kind = kinds.firstOrNull { it in supported } ?: "pi" }
+    LaunchedEffect(supported) { if (supported != null && kind !in supported)
+        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "pi")).firstOrNull { it in supported } ?: "pi"
+    }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
             style = if (pressed) NeumorphStyle.Pressed else NeumorphStyle.Raised, contentPadding = 16.dp) {
@@ -111,14 +113,15 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     kinds.forEach { agent ->
                         val brand = agentBrand(agent)
                         val selected = agent == kind || agent == "codex" && kind == "codexDesktop"
+                        val enabled = supported == null || agent in supported || agent == "codex" && "codexDesktop" in supported
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
-                            enabled = supported?.contains(agent) != false,
-                            role = Role.RadioButton, onClick = { kind = agent },
+                            enabled = enabled,
+                            role = Role.RadioButton, onClick = { kind = if (agent == "codex" && supported?.contains("codex") == false) "codexDesktop" else agent },
                             onLongClick = if (agent == "codex" && supported?.contains("codexDesktop") == true) ({ agentMenu = true }) else null,
                         ).semantics { this.selected = selected }) {
                             Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
                                 if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
-                                AgentIcon(brand, Modifier.size(20.dp), brand.title,
+                                AgentIcon(brand, Modifier.size(20.dp).graphicsLayer { alpha = if (selected) 1f else 0.4f }, brand.title,
                                     tintOverride = if (selected) null else LocalOrbisPalette.current.faint)
                             }
                             if (agent == "codex") NeumorphMenu(agentMenu, { agentMenu = false }) {
