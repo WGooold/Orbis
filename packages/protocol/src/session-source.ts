@@ -142,13 +142,14 @@ export class RecoverableSessionSource {
    */
   transaction(action: () => void): void {
     const before = this.#depth === 0 ? this.#liveToken() : undefined;
+    const pendingBefore = this.#dirty;
     this.#depth++;
     try { action(); } finally {
       this.#depth--;
       if (this.#depth === 0 && this.#dirty) {
         // 事务内的临时改写（例如适配层先清空 live 再补回来）净效果为零时不能推进 seq：
         // 客户端的 knownState 依据 seq，白推进一次就永远对不上（ADR-0026）。
-        if (before !== undefined && before === this.#liveToken()) {
+        if (!pendingBefore && before !== undefined && before === this.#liveToken()) {
           this.#dirty = false;
           this.#committed = [];
         } else {
@@ -165,7 +166,7 @@ export class RecoverableSessionSource {
       this.#ready ? "1" : "0",
       this.#complete ? "1" : "0",
       this.#head ?? "-",
-      this.#turn === null ? "-" : `${this.#turn.turnId}:${this.#turn.startedAt}:${this.#turn.durationMs ?? ""}`,
+      this.#turn === null ? "-" : `${this.#turn.turnId}:${this.#turn.startedAt}:${this.#turn.durationMs ?? ""}:${this.#turn.outcome ?? ""}`,
     ];
     for (const item of this.#messages.values()) {
       parts.push(`m:${item.message.messageId}:${this.#messageRevs.get(item.message.messageId) ?? 0}`);

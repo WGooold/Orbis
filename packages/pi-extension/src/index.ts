@@ -127,7 +127,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       if (ctx.isIdle() && sessionSource) {
         // Native idle is reached after persistence. It also repairs a locally missed message_end;
         // only history owns eligible messages then, including custom-message entries.
-        sessionSource.replaceLive({ complete: true, turn: null, messages: [], tools: [] });
+        const turn = sessionSource.snapshot().live.turn;
+        sessionSource.replaceLive({ complete: true, turn: turn?.durationMs === undefined ? null : turn, messages: [], tools: [] });
         sessionSource.setAvailability(true, true);
       }
     });
@@ -149,6 +150,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       // ADR-0035 §3：只有原生历史真的可能变了才强制核对；tool.started/updated 不改历史。
       reconcileSource(ctx, event.type === "message.finished" || event.type === "turn.finished" || event.type === "tool.finished");
     });
+    // S39 / SC60: terminal evidence must reach the source before settled/queued
+    // work can replace it inside the streaming coalescing window.
+    if (event.type === "turn.started" || event.type === "turn.finished") sessionSource.flushPending();
   };
   let connectionState: RelayRuntimeConnectionState = "closed";
   let runtimeActivity: RuntimeActivity = "idle";
@@ -711,7 +715,10 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     turnTiming.reset();
     sessionSource?.transaction(() => {
       reconcileSource(ctx);
-      sessionSource?.replaceLive({ ...sessionSource.snapshot().live, complete: true, turn: null });
+      if (sessionSource) {
+        const live = sessionSource.snapshot().live;
+        sessionSource.replaceLive({ ...live, complete: true, turn: live.turn?.durationMs === undefined ? null : live.turn });
+      }
       sessionSource?.setAvailability(true, true);
     });
     publishRuntimeStatus("idle");

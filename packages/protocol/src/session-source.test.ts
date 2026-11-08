@@ -7,6 +7,15 @@ const message: ChatMessage = { messageId: "live", role: "assistant", timestamp: 
 const entry: RemoteSessionEntry = { entryId: "entry", parentId: null, type: "message", timestamp: new Date(1).toISOString(), data: { message } };
 
 describe("recoverable source", () => {
+  it("keeps a pending coalesced update when a later transaction has no net change", () => {
+    // SC60 / recovery: sync's no-op reconciliation must not discard an earlier live reply.
+    const source = new RecoverableSessionSource("session", () => {}, { coalesceMs: 100 });
+    source.setAvailability(true, true); source.flushPending();
+    source.upsertMessage({ message, finished: false, contentComplete: true });
+    source.transaction(() => source.setAvailability(true, true));
+    source.flushPending();
+    expect(source.published().live.messages).toMatchObject([{ message }]);
+  });
   it.each([257, 1055])("recovers %i restored entries through a checkpoint and keeps later updates flowing", count => {
     const patches: SessionPatch[] = [];
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));
@@ -193,7 +202,7 @@ describe("recoverable source", () => {
     source.observe({ type: "turn.started", turnId: "turn", startedAt: 100 });
     source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75 });
     expect(source.published().live.turn?.outcome).toBeUndefined();
-    source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75, outcome });
+    source.transaction(() => source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75, outcome }));
     expect(patches.at(-1)?.live.turn).toEqual({ turnId: "turn", startedAt: 100, durationMs: 75, outcome });
     const seq = source.version.seq;
     source.observe({ type: "turn.finished", turnId: "turn", startedAt: 100, durationMs: 75 });

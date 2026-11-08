@@ -54,6 +54,26 @@ async function session(idleAtStart = true) {
 }
 
 describe("Pi recoverable session integration", () => {
+  it("publishes active and completed boundaries before immediate settled cleanup", async () => {
+    // S39 / SC60: a sub-100ms reply must not lose its outcome in streaming coalescing.
+    const f = await session();
+    try {
+      await f.sync("baseline");
+      fixture.events.length = 0;
+      f.idle(false);
+      await f.emit("turn_start", { turnIndex: 0, timestamp: 100 });
+      const message = { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 101, stopReason: "stop" };
+      await f.emit("turn_end", { turnIndex: 0, message });
+      f.idle(true);
+      await f.emit("agent_settled");
+      const turns = fixture.events.flatMap(event => event.type === "session.patch" && event.live.turn ? [event.live.turn] : []);
+      expect(turns).toEqual(expect.arrayContaining([
+        expect.objectContaining({ startedAt: 100 }), expect.objectContaining({ startedAt: 100, outcome: "completed" }),
+      ]));
+      expect(turns.findIndex(turn => turn.durationMs === undefined)).toBeLessThan(turns.findIndex(turn => turn.outcome === "completed"));
+      expect((await f.sync("settled-completion")).live?.turn?.outcome).toBe("completed");
+    } finally { await f.emit("session_shutdown", { reason: "quit" }); }
+  });
   it("keeps 10 MiB tool results out of loopback and reads native SessionManager content only on request", async () => {
     const f = await session();
     try {
@@ -94,7 +114,7 @@ describe("Pi recoverable session integration", () => {
       fixture.handlers!.disconnected?.();
       fixture.handlers!.connected();
       const during = await f.sync("during");
-      expect(during.live?.messages[0]).toMatchObject({ contentComplete: true, message: { content: final.content } });
+      expect(during.live?.messages[0], JSON.stringify(during)).toMatchObject({ contentComplete: true, message: { content: final.content } });
       await f.emit("message_end", { message: final });
       const ended = await f.sync("ended");
       expect(ended.live?.messages).toMatchObject([{ finished: true }]);

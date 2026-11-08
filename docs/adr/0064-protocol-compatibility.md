@@ -49,6 +49,8 @@ schema 保持既有字段语义，按消息类别声明扩展性；影响副作�
 
 2026-11-08：source `live.turn` 新增可选 `outcome`，保留 18 / 19 版本与既有字段含义，旧移动端忽略未知字段；新端缺失结果时保持未知。该字段只投影原生终态，不改变命令、回执或认证。source 恢复、重复与后端映射回归见 `packages/protocol/src/session-source.test.ts`、`packages/host/src/claude-mods-bridge.test.ts`、`packages/host/src/dsh-web-runtime.test.ts` 和 `packages/pi-extension/src/turn-timing.test.ts`；本轮测试证据保存在 `.artifacts/design-alignment-20261108/source-outcome-tests.log`。
 
+本机 Pi 接入按每条 WebSocket upgrade 的 `X-Orbis-Session-Turn-Outcome` 能力头投影该字段，`runtime.ready` 后生效；旧 Host 缺少能力声明时仅剥除 source `live.turn.outcome`，保留原有命令、正文和工具数据。连接重建重新判断能力。兼容与重连回归见 [transport.test.ts](../../packages/pi-extension/src/transport.test.ts)、[loopback-server.test.ts](../../packages/host/src/loopback-server.test.ts)及[本次证据](../../.artifacts/design-alignment-20261108/source-outcome-gate/)。
+
 ### 6. Relay＋Host 承担兼容，保留已安装 App（2026-11-05）
 
 Relay 适配认证路由外层，Host 在端到端业务边界按设备格式完整收发，App 沿用其已发布能力。业务适配保持加密、身份、原语义与真实回执；长期演进由 Host 保留旧 App 的基础互通。
