@@ -335,6 +335,7 @@ internal object LocalizationCatalog {
         "供应商清单尚未读取" to "Provider list has not been read",
         "供应商清单格式无法识别，请刷新后重试" to "Unrecognized provider list format. Refresh and try again.",
         "保存到：{0}" to "Saved to: {0}",
+        "保留" to "Keep",
         "修改" to "Modified",
         "修改设置" to "Change settings",
         "停止生成" to "Stop generating",
@@ -469,9 +470,9 @@ internal object LocalizationCatalog {
         "历史读取暂未完成，请重试。" to "History read is incomplete. Try again.",
         "历史读取请求未送达。" to "History request was not delivered.",
         "历史读取队列繁忙，正在重新同步。" to "History read queue is busy. Syncing again.",
-        "历史页不能替换来源" to "History page cannot replace the source",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "历史页不能替换来源" to "History page cannot replace the source",
         "历史页仍在等待响应" to "History page is still awaiting a response",
         "历史页条目超限" to "History page entry limit exceeded",
         "历史页来源尚未确认" to "History page source is unconfirmed",
@@ -513,7 +514,9 @@ internal object LocalizationCatalog {
         "取消导出" to "Cancel export",
         "取消添加电脑" to "Cancel adding computer",
         "取消请求" to "Cancel request",
+        "取消配对" to "Unpair",
         "取消配对 {0}" to "Unpair {0}",
+        "取消配对 {0}？" to "Unpair {0}?",
         "取消配对「{0}」" to "Unpair “{0}”",
         "取消配对这台电脑？" to "Unpair this computer?",
         "受限操作直接失败；这不代表自动批准所有操作。" to "Restricted operations fail directly. This does not automatically approve all operations.",
@@ -619,11 +622,11 @@ internal object LocalizationCatalog {
         "审批：不申请审批。受限操作直接失败；这不代表自动批准所有操作。" to "Approval: Never request approval. Restricted operations fail directly. This does not automatically approve all operations.",
         "审批：按需询问。由 Codex 判断何时申请额外授权。" to "Approval: Ask when needed. Codex decides when to request additional authorization.",
         "审批：未知（{0}）；当前审批行为尚未确认。" to "Approval: unknown ({0}). The current approval behavior has not been confirmed.",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "审批：未知；当前审批行为尚未确认。" to "Approval: unknown. The current approval behavior has not been confirmed.",
         "密文短于认证标签长度" to "Ciphertext is shorter than the authentication tag",
         "对方 X25519 公钥必须是 {0} 字节" to "Peer X25519 public key must be {0} bytes",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "导出失败" to "Export failed",
         "导出已取消" to "Export cancelled",
         "导出已取消。" to "Export cancelled.",
@@ -771,11 +774,11 @@ internal object LocalizationCatalog {
         "当前 Agent 版本无法按队列项取消，消息仍会保留" to "This Agent version cannot cancel individual queued messages. The message is still queued.",
         "当前 Git 工作分支" to "Current Git branch",
         "当前 provider" to "Current provider",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "当前 provider 筛选" to "Current provider filter",
         "当前 provider（尚未获取）" to "Current provider (not loaded)",
         "当前 {0} 没有匹配的可选项" to "No matching options for {0}",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "当前不可用" to "Currently unavailable",
         "当前会话" to "Current session",
         "当前会话尚未提供历史分支" to "History branches are not available for this session yet",
@@ -923,11 +926,11 @@ internal object LocalizationCatalog {
         "文件范围：只读；写入需要额外授权，是否能申请授权取决于审批策略。" to "File access: read-only. Writes require additional authorization; whether it can be requested depends on the approval policy.",
         "文件范围：当前工作区及原生沙箱允许的临时目录可写；工作区外操作仍受权限限制。" to "File access: writes are allowed in the current workspace and temporary directories permitted by the native sandbox. Operations outside the workspace remain restricted.",
         "文件范围：未知（{0}）；不能据此判断可读写范围。" to "File access: unknown ({0}). Readable and writable locations cannot be determined.",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "文件范围：未知；不能据此判断可读写范围。" to "File access: unknown. Readable and writable locations cannot be determined.",
         "文件范围：由外部沙箱管理；当前信息不能确定具体可读写范围。" to "File access is managed by an external sandbox. The available information does not establish its readable or writable locations.",
         "文件访问范围" to "File access scope",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "文件请求被电脑端拒绝。" to "Computer rejected the file request.",
         "文件读取请求未送达。" to "File read request was not delivered.",
         "文件超过 {0} MB 上限" to "File exceeds the {0} MB limit",
@@ -1075,11 +1078,11 @@ internal object LocalizationCatalog {
         "查看只读历史" to "View read-only history",
         "查看完整内容" to "View full content",
         "查看已归档会话" to "View archived sessions",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "查看或设置 Codex 会话显示名称" to "Show or set the Codex session display name",
         "查看未归档会话" to "View active sessions",
         "查看权限与审批设置" to "View permissions and approval settings",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "查看详情，" to "View details, ",
         "查看详情，{0}" to "View details, {0}",
         "查看这个分支的缓存" to "View this branch's cache",
@@ -1221,17 +1224,18 @@ internal object LocalizationCatalog {
         "由分类器批准或拒绝权限请求" to "A classifier approves or rejects permission requests",
         "由我处理" to "Review myself",
         "电脑" to "Computer",
+        "电脑上的会话与历史不受影响，之后可以重新扫码配对。" to "Sessions and history on your computer stay intact. You can scan again to pair later.",
         "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。" to "The session is still running on the computer. Try again later or close it on the computer.",
         "电脑上的会话目录仍是原状态" to "The computer's session catalog is unchanged",
         "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
         "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
         "电脑尚未核对" to "Not yet checked by computer",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
         "电脑尚未核对此 Agent 的供应商配置" to "The computer has not checked this Agent's provider configuration",
         "电脑已离线，以下为最后读取的状态" to "Computer is offline. Showing the last loaded state.",
         "电脑文件" to "Computer files",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "电脑文件的完整路径" to "Full file path on the computer",
         "电脑无法读取该文件的这一段" to "The computer cannot read this part of the file",
         "电脑未连接，请重新连接" to "Computer disconnected. Reconnect.",
@@ -1378,12 +1382,12 @@ internal object LocalizationCatalog {
         "记录" to "Record",
         "记录不是对象" to "Record is not an object",
         "记录缺少字段" to "Record is missing fields",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "记录范围未确认" to "Record range unconfirmed",
         "记录读取未发送，请重新连接" to "Record request was not sent. Reconnect.",
         "记录读取超时，请重试" to "Record read timed out. Try again.",
         "设备公钥长度不对" to "Invalid device public key length",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "设备尚未配对" to "Device is not paired",
         "设置" to "Settings",
         "设置思考强度" to "Set reasoning effort",
@@ -1530,12 +1534,12 @@ internal object LocalizationCatalog {
         "连接电脑并继续此会话后可取回完整内容。" to "Connect to the computer and continue this session to retrieve the full content.",
         "连接错误" to "Connection error",
         "连接：{0}" to "Connection: {0}",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "退出 Codex（关闭电脑上的 TUI 窗口）" to "Quit Codex (close the TUI window on the computer)",
         "退出多选" to "Exit selection",
         "退出消息操作" to "Exit message actions",
         "退出码 {0}" to "Exit code {0}",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "退出预览" to "Exit preview",
         "选中 runtime {0}    传输路径 {1}" to "Selected runtime {0}    Transfer path {1}",
         "选择下载" to "Select downloads",

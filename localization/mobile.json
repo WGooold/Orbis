@@ -1489,5 +1489,9 @@
   "草稿已保留，下次新建时还在": "Draft saved for the next time you create a session",
   "草稿已保留": "Draft saved",
   "下一轮的权限": "Permissions for the next turn",
-  "应用到下一轮": "Apply to the next turn"
+  "应用到下一轮": "Apply to the next turn",
+  "取消配对 {0}？": "Unpair {0}?",
+  "电脑上的会话与历史不受影响，之后可以重新扫码配对。": "Sessions and history on your computer stay intact. You can scan again to pair later.",
+  "取消配对": "Unpair",
+  "保留": "Keep"
 }
