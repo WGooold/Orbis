@@ -38,6 +38,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -80,6 +85,7 @@ internal fun OrbisPageHost(
     open: Boolean = true,
     contentKey: Any? = null,
     canNavigateBack: Boolean = true,
+    expandFrom: Rect? = null,
     content: @Composable () -> Unit,
 ) {
     val active = LocalPageActive.current
@@ -93,7 +99,7 @@ internal fun OrbisPageHost(
         }
     }
     BackHandler(enabled = active && open && !canNavigateBack) { }
-    SwipeBackLayer(onBack = onBack, open = open, contentKey = contentKey,
+    SwipeBackLayer(onBack = onBack, open = open, contentKey = contentKey, expandFrom = expandFrom,
         gestureEnabled = active && canNavigateBack,
         underlay = {
             // Material's retained drawer has its own BackHandler; isolate that callback too.
@@ -120,6 +126,7 @@ internal fun SwipeBackLayer(
     contentKey: Any? = null,
     gestureEnabled: Boolean = true,
     dragEnabled: Boolean = true,
+    expandFrom: Rect? = null,
     content: @Composable () -> Unit,
 ) {
     val currentOnBack by rememberUpdatedState(onBack)
@@ -137,9 +144,12 @@ internal fun SwipeBackLayer(
     var edgeBack by remember(open, contentKey) { mutableStateOf(false) }
     var edgeDirection by remember(open, contentKey) { mutableFloatStateOf(1f) }
     val scrim = MaterialTheme.colorScheme.scrim
+    val shapeOrigin = remember(open, contentKey) { expandFrom }
+    val shapeProgress = remember(open, contentKey) { Animatable(if (shapeOrigin != null) 0f else 1f) }
 
     fun position(): Float {
         if (!open) return width.toFloat()
+        if (shapeOrigin != null && entering) return 0f
         if (entering && !entranceStarted) return width.toFloat()
         val value = if (dragging) dragOffset else offset.value
         return if (dragging && value > width) width + (value - width) * 0.18f else value
@@ -194,9 +204,14 @@ internal fun SwipeBackLayer(
     LaunchedEffect(open, contentKey, width) {
         if (open && width > 0 && entering) {
             settleJob = launch {
-                if (!entranceStarted) offset.snapTo(width.toFloat())
-                entranceStarted = true
-                offset.animateTo(0f, if (ValueAnimator.areAnimatorsEnabled()) OrbisMotion.swipeBack() else tween(0))
+                if (shapeOrigin != null) {
+                    offset.snapTo(0f); entranceStarted = true
+                    shapeProgress.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Page), easing = InteractionMotion.GlyphEase))
+                } else {
+                    if (!entranceStarted) offset.snapTo(width.toFloat())
+                    entranceStarted = true
+                    offset.animateTo(0f, if (ValueAnimator.areAnimatorsEnabled()) OrbisMotion.swipeBack() else tween(0))
+                }
                 entering = false
             }
         }
@@ -242,9 +257,7 @@ internal fun SwipeBackLayer(
             .then(if (open) Modifier.clearAndSetSemantics { } else Modifier)
             .graphicsLayer {
                 val compression = 1f - progress()
-                transformOrigin = TransformOrigin(0f, 0.5f)
-                scaleX = 1f - 0.025f * compression
-                scaleY = 1f + 0.008f * compression
+                translationX = -24.dp.toPx() * compression
             }
             .drawWithContent {
                 if (!open || entering || dragging || edgeBack || offset.isRunning || offset.value > 0f) {
@@ -267,7 +280,16 @@ internal fun SwipeBackLayer(
                 clip = true
                 // On commit the compressed page leaves before the source becomes interactive.
                 alpha = 1f
-            } else translationX = if (entering && !entranceStarted) size.width else position().coerceAtLeast(0f)
+            } else translationX = if (shapeOrigin == null && entering && !entranceStarted) size.width else position().coerceAtLeast(0f)
+        }.drawWithContent {
+            if (shapeOrigin != null && shapeProgress.value < 1f) {
+                val p = shapeProgress.value
+                val rect = Rect(shapeOrigin.left * (1-p), shapeOrigin.top * (1-p),
+                    shapeOrigin.right + (size.width - shapeOrigin.right) * p,
+                    shapeOrigin.bottom + (size.height - shapeOrigin.bottom) * p)
+                val radius = 24.dp.toPx() * (1-p)
+                clipPath(Path().apply { addRoundRect(RoundRect(rect, CornerRadius(radius))) }) { this@drawWithContent.drawContent() }
+            } else drawContent()
         }) { content() }
     }
 }

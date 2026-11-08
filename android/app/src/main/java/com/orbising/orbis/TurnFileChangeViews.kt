@@ -1,5 +1,7 @@
 package com.orbising.orbis
 
+import com.orbising.orbis.OrbisBottomSheet as ModalBottomSheet
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation

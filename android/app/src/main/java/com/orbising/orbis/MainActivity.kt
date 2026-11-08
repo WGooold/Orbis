@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -126,7 +127,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import com.orbising.orbis.OrbisBottomSheet as ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ModalNavigationDrawer
 import com.orbising.orbis.NeumorphTextField as OutlinedTextField
@@ -330,6 +331,9 @@ internal fun RemoteApp(
     var newSessionCwd by rememberSaveable { mutableStateOf<String?>(null) }
     var launchIntro by remember(state.hostId) { mutableStateOf<LaunchState?>(null) }
     var newSessionHostId by rememberSaveable { mutableStateOf<String?>(null) }
+    var draftOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var firstDraftSend by remember { mutableStateOf<FirstDraftSend?>(null) }
+    val sessionDrafts = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
     LaunchedEffect(state.hostId) {
         if (newSessionOpen && state.hostId != newSessionHostId) {
             newSessionOpen = false
@@ -350,6 +354,21 @@ internal fun RemoteApp(
     val runtimeList: @Composable () -> Unit = {
         runtimeListStateHolder.SaveableStateProvider("runtime-list") {
             RuntimeListScreen(
+                draftOpen = newSessionOpen && state.hostId == newSessionHostId,
+                onToggleDraft = {
+                    if (newSessionOpen) { newSessionOpen = false; model.dismissBrowse() }
+                    else { newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true }
+                },
+                draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
+                    model::browseSessions, model::browseInto, model::browseUp, onCancel = { newSessionOpen = false; model.dismissBrowse() }, drafts = sessionDrafts) { kind, cwd, text, origin, fieldOrigin ->
+                    if (model.createSession(kind, cwd, newSessionHostId)) {
+                        draftOrigin = origin
+                        val command = model.sendMessage(text)
+                        firstDraftSend = command?.let(model::submittedSend)?.let { FirstDraftSend(state.hostId, it, fieldOrigin) }
+                        if (command == null) model.currentLaunchPresentation()?.let { model.saveDraft(it.placeholder, text) }
+                        newSessionOpen = false; model.dismissBrowse(); actionHaptic(); true
+                    } else false
+                } },
                 launchIntro = launchIntro,
                 onLaunchPresented = { requestId -> if (launchIntro?.requestId == requestId) launchIntro = null },
                 onDirectoryOpened = { cancelLaunchIntro() },
@@ -401,8 +420,14 @@ internal fun RemoteApp(
             // The sibling tab bar owns the bottom system inset; root Scaffolds must not add it again.
             Box(Modifier.weight(1f).fillMaxWidth()
                 .consumeWindowInsets(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))) {
-                rootStateHolder.SaveableStateProvider(homeTab.key) {
-                    when (homeTab) {
+                androidx.compose.animation.AnimatedContent(targetState = homeTab, transitionSpec = {
+                    (fadeIn(tween(InteractionMotion.duration(InteractionMotion.FadeIn), delayMillis = InteractionMotion.duration(InteractionMotion.FadeOut))) +
+                        androidx.compose.animation.slideInVertically(tween(InteractionMotion.duration(InteractionMotion.FadeIn), delayMillis = InteractionMotion.duration(InteractionMotion.FadeOut))) { 8 })
+                        .togetherWith(fadeOut(tween(InteractionMotion.duration(InteractionMotion.FadeOut))))
+                        .using(null)
+                }, label = "root-destination") { displayedTab ->
+                rootStateHolder.SaveableStateProvider(displayedTab.key) {
+                    when (displayedTab) {
                         HomeTab.Chat -> runtimeList()
                         HomeTab.Providers -> ProviderDialScreen(
                             state = state, hosts = hosts,
@@ -415,6 +440,7 @@ internal fun RemoteApp(
                         HomeTab.Settings -> StatusScreen(state, model, model.pairingStatus(),
                             onBack = { homeTab = HomeTab.Chat }, root = true)
                     }
+                }
                 }
             }
             HomeTabBar(homeTab, onSelect = { tab -> cancelLaunchIntro(); homeTab = tab })
@@ -470,7 +496,7 @@ internal fun RemoteApp(
                     when (page) {
                         HomeOverlay.Pairing -> { addingHost = false; model.clearPairingError() }
                         HomeOverlay.OfflineHistory -> model.selectOfflineSession(null)
-                        HomeOverlay.Chat -> model.selectRuntime(null)
+                        HomeOverlay.Chat -> { draftOrigin = null; model.selectRuntime(null) }
                         HomeOverlay.Downloads -> allDownloadsOpen = false
                         null -> Unit
                     }
@@ -479,6 +505,7 @@ internal fun RemoteApp(
                 open = page != null,
                 contentKey = page,
                 canNavigateBack = page != HomeOverlay.Pairing || !pairingInProgress,
+                expandFrom = draftOrigin.takeIf { page == HomeOverlay.Chat },
             ) {
                 when (page) {
                     HomeOverlay.Pairing -> PairingScreen(
@@ -492,7 +519,7 @@ internal fun RemoteApp(
                     }
                     HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
-                        ChatScreen(state, model)
+                        ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null })
                     }
                     HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                     null -> Unit
@@ -500,24 +527,8 @@ internal fun RemoteApp(
             }
         }
     }
-    if (newSessionOpen && state.hostId == newSessionHostId) {
-        NewSessionSheet(
-            state = state,
-            presetCwd = newSessionCwd,
-            onDismiss = { newSessionOpen = false; newSessionCwd = null; model.dismissBrowse() },
-            onBrowse = model::browseSessions,
-            onBrowseInto = model::browseInto,
-            onBrowseUp = model::browseUp,
-            onCreate = { agentKind, cwd ->
-                newSessionOpen = false
-                newSessionCwd = null
-                model.dismissBrowse()
-                if (model.createSession(agentKind, cwd, newSessionHostId)) {
-                    launchIntro = model.currentLaunchPresentation()
-                    actionHaptic()
-                }
-            },
-        )
+    BackHandler(enabled = LocalPageActive.current && newSessionOpen && page == null) {
+        newSessionOpen = false; model.dismissBrowse()
     }
     // 共享错误通道按"要不要用户在电脑端动手"分两层显示，**任何一条都不再弹模态确认框**。
     //
@@ -534,6 +545,8 @@ internal fun RemoteApp(
 
 /** Pages that slide in over the home list. */
 private enum class HomeOverlay { Chat, Downloads, Pairing, OfflineHistory }
+
+internal data class FirstDraftSend(val hostId: String?, val send: PendingSend, val source: androidx.compose.ui.geometry.Rect)
 
 /** The computer's downloads page; the home, chat and history entries all open this same page. */
 @Composable
@@ -692,8 +705,22 @@ internal fun RuntimeListScreen(
     preparedCatalog: List<CachedHostGroup>? = null,
     preparedSync: HomeSyncStatus? = null,
     preparedDownloadCount: Int? = null,
+    draftOpen: Boolean = false,
+    onToggleDraft: () -> Unit = {},
+    draftContent: @Composable (Boolean) -> Unit = {},
 ) = OrbisMaterialTheme {
     val homeListState = rememberLazyListState()
+    var retainDraft by remember { mutableStateOf(false) }
+    var draftSlotOpen by remember { mutableStateOf(draftOpen) }
+    LaunchedEffect(draftOpen) {
+        if (draftOpen) { retainDraft = true; draftSlotOpen = true; homeListState.animateScrollToItem(0) }
+        else {
+            delay(InteractionMotion.duration(InteractionMotion.Selection).toLong()); draftSlotOpen = false
+            delay(InteractionMotion.duration(InteractionMotion.Collapse).toLong()); retainDraft = false
+        }
+    }
+    val draftRotation by animateFloatAsState(if (draftOpen) 45f else 0f,
+        tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "new-session-toggle")
     LaunchedEffect(launchIntro?.requestId) {
         if (launchIntro != null) {
             androidx.compose.runtime.withFrameNanos { }
@@ -810,13 +837,17 @@ internal fun RuntimeListScreen(
                     },
                     actions = {
                         SelectionToolbar(selecting = selecting, contentAlignment = Alignment.CenterEnd, normal = {
-                            // S32: settings is a peer root tab; downloads is the sole trailing entry.
+                            // New session rises from the source list instead of creating an empty remote session.
                             DownloadStatusButton(
                                 activeCount = preparedDownloadCount ?: state.downloads.count { it.value.status in setOf("queued", "downloading") },
                                 enabled = true,
                                 onClick = onOpenDownloads,
                                 modifier = Modifier.testTag("home-downloads"),
                             )
+                            NeumorphIconButton(onToggleDraft, Icons.Rounded.Add,
+                                if (draftOpen) L10n.tr("收起新会话") else L10n.tr("新建会话"),
+                                modifier = Modifier.testTag("home-new-session").graphicsLayer { rotationZ = draftRotation },
+                                enabled = state.canCreateSessionOn(activeHostId) || draftOpen)
                         }, selected = {
                             NeumorphTextButton(
                                 text = L10n.tr("关闭"),
@@ -899,9 +930,12 @@ internal fun RuntimeListScreen(
                         }
                         .testTag("home-session-list"),
                     state = homeListState,
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
                 ) {
+                    if (draftOpen || retainDraft) item(key = "session-draft") {
+                        OrbisCollapse(expanded = draftSlotOpen) { draftContent(draftOpen) }
+                    }
                     // 首版完整快照发布前列表为空：加载与失败占据空态的位置，而不是压在卡片上方。
                     if (state.homeRuntimesLoading) {
                         item(key = "status") { HomeFirstLoadStatus(preparedSync ?: state.homeSyncStatus, state.e2eReady, onRetryHome) }
@@ -922,12 +956,12 @@ internal fun RuntimeListScreen(
                         ) { row ->
                             val runtime = row.runtime
                             val departure = departing[runtime.runtimeId]
-                            val cardCurrent = departure == null && state.homeCardIsCurrent(row.card)
+                            val cardCurrent = !draftOpen && departure == null && state.homeCardIsCurrent(row.card)
                             val canClose = cardCurrent && state.canCloseRuntime(runtime.runtimeId)
                             val currentCanClose by rememberUpdatedState(canClose)
                             val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
-                            val closeThreshold = cardWidth / 2f
+                            val closeThreshold = cardWidth * 0.4f
                             var swipeOffset by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
                             var closeArmed by remember(row.hostId, runtime.runtimeId) { mutableStateOf(false) }
                             val swipeScope = rememberCoroutineScope()
@@ -976,15 +1010,15 @@ internal fun RuntimeListScreen(
                                 // Keep the card's outer shadows outside the swipe container.
                                 Box(Modifier.weight(1f).onSizeChanged { cardWidth = it.width.toFloat() }) {
                                     if (!selecting) {
-                                        val armedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        val armedColor = MaterialTheme.colorScheme.error
                                         val closeColor by androidx.compose.animation.animateColorAsState(
-                                            if (closeArmed || departure != null) armedColor else MaterialTheme.colorScheme.error,
+                                            if (closeArmed || departure != null) armedColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                             tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold")
                                         Row(
                                             Modifier.matchParentSize().background(
-                                                closeColor,
-                                                RoundedCornerShape(20.dp),
-                                            )
+                                                MaterialTheme.colorScheme.surface,
+                                                RoundedCornerShape(24.dp),
+                                            ).neumorphInsetOverlay(RoundedCornerShape(24.dp))
                                                 .padding(end = 20.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.End,
@@ -994,20 +1028,20 @@ internal fun RuntimeListScreen(
                                                 enter = slideInHorizontally(
                                                     initialOffsetX = { it / 3 },
                                                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                                                ) + fadeIn(tween(140)) + scaleIn(
+                                                ) + fadeIn(tween(InteractionMotion.duration(InteractionMotion.State))) + scaleIn(
                                                     initialScale = 0.82f,
                                                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                                                 ),
                                                 exit = slideOutHorizontally(
                                                     targetOffsetX = { it / 4 },
-                                                    animationSpec = tween(100),
-                                                ) + fadeOut(tween(90)) + scaleOut(
+                                                    animationSpec = tween(InteractionMotion.duration(InteractionMotion.Exit)),
+                                                ) + fadeOut(tween(InteractionMotion.duration(InteractionMotion.FadeOut))) + scaleOut(
                                                     targetScale = 0.82f,
                                                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                                                 ),
                                             ) {
                                                 Row(
-                                                    Modifier.width(116.dp),
+                                                    Modifier.width(156.dp),
                                                     horizontalArrangement = Arrangement.Center,
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
@@ -1016,11 +1050,21 @@ internal fun RuntimeListScreen(
                                                         animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold") { armed ->
                                                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center,
                                                             verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(if (armed) Icons.Rounded.Check else Icons.Rounded.Close, contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.onError, modifier = Modifier.size(18.dp))
-                                                    Spacer(Modifier.width(6.dp))
-                                                    Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"), color = MaterialTheme.colorScheme.onError,
-                                                        style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                                        androidx.compose.foundation.Canvas(Modifier.size(36.dp)) {
+                                                            drawArc(closeColor, -90f, 360f * (swipeOffset / closeThreshold.coerceAtLeast(1f)).coerceIn(0f, 1f),
+                                                                false, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+                                                        }
+                                                        NeumorphSurface(Modifier.size(28.dp), shape = CircleShape,
+                                                            style = if (armed) NeumorphStyle.Raised else NeumorphStyle.Pressed, shadowScale = 0.4f) {
+                                                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                                Icon(Icons.Rounded.Close, null, tint = closeColor, modifier = Modifier.size(16.dp))
+                                                            }
+                                                        }
+                                                    }
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"), color = closeColor,
+                                                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                                         }
                                                     }
                                                 }
@@ -1029,6 +1073,7 @@ internal fun RuntimeListScreen(
                                     }
                                     NeumorphSurface(
                                         modifier = Modifier.fillMaxWidth().offset { IntOffset(-swipeAnim.value.roundToInt(), 0) }
+                                            .graphicsLayer { alpha = if (draftOpen) 0.4f else 1f }
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
                                             .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
@@ -1049,10 +1094,10 @@ internal fun RuntimeListScreen(
                                                             swipeScope.launch { swipeAnim.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow)) }
                                                         },
                                                         onHorizontalDrag = { change, dragAmount ->
-                                                            val next = (swipeOffset - dragAmount).coerceIn(0f, cardWidth)
+                                                            val next = (swipeOffset - dragAmount * if (swipeOffset >= closeThreshold && dragAmount < 0f) 0.4f else 1f).coerceIn(0f, cardWidth)
                                                             swipeOffset = next
                                                             val armed = closeThreshold > 0f && next >= closeThreshold
-                                                            if (armed != closeArmed) {
+                                                            if (armed && !closeArmed) {
                                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                             }
                                                             closeArmed = armed
@@ -1062,7 +1107,7 @@ internal fun RuntimeListScreen(
                                                     )
                                                 }
                                             },
-                                        shape = RoundedCornerShape(20.dp),
+                                        shape = RoundedCornerShape(24.dp),
                                         enabled = cardCurrent,
                                         shadowScale = 0.8f,
                                         style = if (!selecting && (touchPressed || opening)) NeumorphStyle.Pressed else NeumorphStyle.Raised,
@@ -1089,7 +1134,7 @@ internal fun RuntimeListScreen(
                                             AgentEmblem(agentBrand(runtime.agentKind), 44.dp)
                                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                                 MotionText(row.card.title, style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                                 Text(runtime.cwd, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1145,9 +1190,9 @@ private fun HomeFirstLoadStatus(sync: HomeSyncStatus, e2eReady: Boolean, onRetry
                     .semantics { contentDescription = if (e2eReady) L10n.tr("重新加载会话") else L10n.tr("重新连接") },
             )
         } else {
-            CircularProgressIndicator(modifier = Modifier.size(36.dp), strokeWidth = 3.dp)
-            Spacer(Modifier.height(14.dp))
-            Text(L10n.tr("正在加载会话…"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+            HomeSessionSkeleton()
+            Spacer(Modifier.height(12.dp))
+            Text(L10n.tr("正在加载会话…"), style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -1163,144 +1208,6 @@ private data class HostRuntimeRow(
     val hostName: String,
     val card: HomeRuntimeCard,
 ) { val runtime: RuntimeSummary get() = card.runtime }
-
-/**
- * L2 新建会话（spec §8.1 / §8.2）：选 agent 类型 → 浏览电脑目录（session.browse 逐层下钻，
- * 「有历史」的目录排前）→ 选定目录后 session.activate(new)。presetCwd 非空时跳过浏览
- * （来自抽屉目录节点的「在这里新建」捷径）。
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun NewSessionSheet(
-    state: RemoteState,
-    presetCwd: String?,
-    onDismiss: () -> Unit,
-    onBrowse: (String?) -> Unit,
-    onBrowseInto: (String) -> Unit,
-    onBrowseUp: () -> Unit,
-    onCreate: (String, String) -> Unit,
-) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var agentKind by rememberSaveable { mutableStateOf("pi") }
-    // 电脑端说得很清楚时不让人白点：做不到的 agent 直接置灰（未知=不限制，见 RemoteState）。
-    val codexSupported = state.supportedAgents?.contains("codex") != false
-    val codexDesktopSupported = state.launchableAgents?.contains("codexDesktop") == true
-    // DSH may be launchable even while its backend is offline; Host will start or attach it on request.
-    val dshSupported = (state.launchableAgents ?: state.supportedAgents)?.contains("dsh") == true
-    // Claude Code 只在电脑能打开终端窗口时可新建（Host 的 launchableAgents）。
-    val claudeSupported = state.launchableAgents?.contains("claude") == true
-    LaunchedEffect(codexSupported, codexDesktopSupported, dshSupported, claudeSupported) {
-        // chip 可能停在上一轮选中的 Codex 上（rememberSaveable），电脑不支持就拉回来。
-        if (!codexSupported && agentKind == "codex") agentKind = "pi"
-        if (!codexDesktopSupported && agentKind == "codexDesktop") agentKind = "pi"
-        if (!dshSupported && agentKind == "dsh") agentKind = "pi"
-        if (!claudeSupported && agentKind == "claude") agentKind = "pi"
-    }
-    LaunchedEffect(Unit) {
-        if (presetCwd == null && state.sessionBrowse == null) onBrowse(null)
-    }
-    AgentTheme(agentBrand(agentKind)) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 0.dp,
-        shape = MaterialTheme.shapes.extraLarge,
-        dragHandle = {
-            NeumorphSurface(Modifier.padding(vertical = 16.dp).size(36.dp, 5.dp), shape = CircleShape, style = NeumorphStyle.Pressed, shadowScale = 0.25f) {}
-        },
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().navigationBarsPadding()
-                .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // 标题与 iOS 一致：「新建会话」，目标电脑作为右侧说明，不再写成一整句。
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(L10n.tr("新建会话"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f).semantics { heading() })
-                Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(state.sessionHost?.name ?: L10n.tr("电脑"), style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            // 固定两列网格，每格同宽（与 iOS 一致）。
-            Column(Modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    AgentChoice(AgentBrand.Pi, agentKind == "pi", { agentKind = "pi" }, Modifier.weight(1f))
-                    AgentChoice(AgentBrand.Codex, agentKind == "codex", { agentKind = "codex" }, Modifier.weight(1f), codexSupported, L10n.tr("Codex 终端"))
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    AgentChoice(AgentBrand.Codex, agentKind == "codexDesktop", { agentKind = "codexDesktop" }, Modifier.weight(1f), codexDesktopSupported, L10n.tr("Codex 桌面版"))
-                    AgentChoice(AgentBrand.DeepSeek, agentKind == "dsh", { agentKind = "dsh" }, Modifier.weight(1f), dshSupported)
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    AgentChoice(AgentBrand.Claude, agentKind == "claude", { agentKind = "claude" }, Modifier.weight(1f), claudeSupported)
-                    Spacer(Modifier.weight(1f))
-                }
-            }
-            if (!codexSupported) {
-                Text(
-                    L10n.tr("这台电脑没启用 Codex 后端"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            val offline = !state.canOperateSessions
-            if (offline) {
-                Text(
-                    L10n.tr("未连接到电脑"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            val preset = presetCwd
-            if (preset != null) {
-                // 捷径模式：目录已由抽屉节点指定，直接创建。
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Column {
-                        Text(directoryDisplayName(preset), fontWeight = FontWeight.Medium)
-                        Text(
-                            preset,
-                            fontFamily = FontFamily.Monospace,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                NeumorphActionButton(
-                    onClick = { onCreate(agentKind, preset) },
-                    text = L10n.tr("在此目录新建 {0} 会话", agentBrand(agentKind).title),
-                    enabled = state.canCreateSessionOn(state.hostId),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                val browse = state.sessionBrowse
-                RemoteDirectoryBrowser(
-                    browse = browse,
-                    connected = !offline && state.e2eReady,
-                    onBrowse = onBrowse,
-                    onBrowseInto = onBrowseInto,
-                    onBrowseUp = onBrowseUp,
-                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                )
-                NeumorphActionButton(
-                    onClick = {
-                        val cwd = browse?.path.orEmpty()
-                        if (cwd.isNotBlank()) onCreate(agentKind, cwd)
-                    },
-                    text = L10n.tr("在这里新建 {0} 会话", agentBrand(agentKind).title),
-                    enabled = state.canCreateSessionOn(state.hostId) && browse != null && !browse.isLoading &&
-                        browse.error == null && !browse.path.isNullOrBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-    }
-}
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1498,6 +1405,8 @@ internal fun ChatScreen(
     model: RemoteViewModel,
     scrollState: LazyListState? = null,
     executeSlash: (String, String) -> String? = model::executeSlashCommand,
+    firstDraftSend: FirstDraftSend? = null,
+    onFirstDraftSend: () -> Unit = {},
 ) {
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
@@ -1595,6 +1504,14 @@ internal fun ChatScreen(
     var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val sendFlight = remember(state.hostId, runtimeId, sessionId) { MessageSendFlightState(scope) }
+    LaunchedEffect(firstDraftSend?.send?.messageId, runtimeId, sessionId) {
+        val first = firstDraftSend ?: return@LaunchedEffect
+        delay(InteractionMotion.duration(InteractionMotion.Page).toLong())
+        val current = state.pendingSends[first.send.messageId] ?: first.send
+        if (first.hostId == state.hostId && current.sessionId == pageSessionId) {
+            onFirstDraftSend(); sendFlight.launch(current, true, first.source)
+        }
+    }
     var initialPositioned by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val lineHeightPx = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toPx() }
     var following by remember(runtimeId, sessionId) { mutableStateOf(true) }
@@ -3089,8 +3006,8 @@ internal fun ConnectionStatus(
     val color = when {
         failed -> MaterialTheme.colorScheme.error
         secured -> securedColor
-        connection == RelayConnection.RECONNECTING -> MaterialTheme.colorScheme.error
-        connection == RelayConnection.ONLINE -> MaterialTheme.colorScheme.error
+        connection == RelayConnection.RECONNECTING -> LocalOrbisPalette.current.warning
+        connection == RelayConnection.ONLINE -> LocalOrbisPalette.current.warning
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     // SC53: background reads keep the transport label and capsule geometry stable.
@@ -3112,15 +3029,11 @@ internal fun ConnectionStatus(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
-            if (isBusy) {
-                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
-            } else {
-                NeumorphStatusDot(color, pulsing = syncing,
+                NeumorphStatusDot(color, pulsing = syncing || isBusy,
                     modifier = Modifier.testTag("home-connection-indicator").semantics {
                         contentDescription = L10n.tr("连接状态")
                         stateDescription = if (syncing) L10n.tr("正在同步") else label
                     })
-            }
         }
         MotionText(label, color = color, style = MaterialTheme.typography.labelMedium)
         if (secured) {
@@ -3142,111 +3055,9 @@ internal fun StatusScreen(
     onBack: () -> Unit,
     root: Boolean = false,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) },
-                navigationIcon = {
-                    if (!root) NeumorphIconButton(
-                        onClick = onBack,
-                        icon = Icons.Rounded.ArrowBack,
-                        contentDescription = L10n.tr("返回"),
-                        size = 40.dp,
-                    )
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = RemoteUi.PagePadding, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // S32: providers now live in their own peer tab, not inside Settings.
-            statusAdvice(state, pairing)?.let { WarningCard(it) }
-            StatusSectionTitle(L10n.tr("当前连接"))
-            StatusCard {
-                StatusRow(
-                    L10n.tr("连接状态"),
-                    connectionStatusText(state),
-                    if (state.e2eReady) StatusTone.Good
-                    else if (state.connection == RelayConnection.ONLINE) StatusTone.Warn
-                    else relayConnectionTone(state.connection),
-                )
-                StatusRow(L10n.tr("连接方式"), connectionMethodText(state), connectionMethodTone(state))
-                StatusRow(L10n.tr("连接协议"), connectionProtocolText(state), StatusTone.Neutral)
-                Text(L10n.tr("协议模式"), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
-                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        RelayTransportMode.AUTO to L10n.tr("自动"),
-                        RelayTransportMode.WS to "WS",
-                        RelayTransportMode.QUIC to "QUIC",
-                    ).forEach { (mode, title) ->
-                        val selected = state.relayTransportMode == mode
-                        NeumorphSurface(
-                            modifier = Modifier.weight(1f)
-                                .selectable(selected = selected, enabled = state.hostId != null, role = Role.RadioButton) {
-                                    model.setRelayTransportMode(mode)
-                                }
-                                .heightIn(min = 48.dp)
-                                .testTag("relay-mode-${mode.name}"),
-                            shape = RoundedCornerShape(16.dp),
-                            style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                            shadowScale = 0.32f,
-                        ) {
-                            Box(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
-                                Text(title, style = MaterialTheme.typography.labelLarge,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                }
-                Text(
-                    relayTransportModeDescription(state.relayTransportMode),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                StatusRow(L10n.tr("连接延迟"), connectionLatencyText(state), StatusTone.Neutral)
-                StatusRow(L10n.tr("端到端加密"), if (state.e2eReady) L10n.tr("已启用") else L10n.tr("未建立"), e2eTone(state))
-            }
-
-            StatusSectionTitle(L10n.tr("配对信息"))
-            StatusCard {
-                StatusValueRow(L10n.tr("电脑"), state.hostName?.takeIf(String::isNotBlank) ?: L10n.tr("已配对的电脑"))
-                StatusRow(L10n.tr("配对状态"), pairingText(pairing), pairingTone(pairing))
-            }
-
-            StatusSectionTitle(L10n.tr("语言"))
-            AppLanguage.entries.forEach { choice ->
-                val selected = AppLocalization.preference == choice
-                val label = when (choice) {
-                    AppLanguage.System -> L10n.tr("跟随系统")
-                    AppLanguage.Chinese -> "简体中文"
-                    AppLanguage.English -> "English"
-                }
-                NeumorphSurface(
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)
-                        .testTag("language-${choice.key}").semantics { this.selected = selected },
-                    shape = RemoteUi.ControlShape,
-                    style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                    onClick = { AppLocalization.select(choice) },
-                ) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        if (selected) Icon(Icons.Rounded.Check, contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                        else Spacer(Modifier.size(22.dp))
-                    }
-                }
-            }
-        }
-    }
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode)
 }
+
 
 
 @Composable
@@ -3554,7 +3365,7 @@ private fun StatusValueRow(label: String, value: String) {
 @Composable
 private fun statusToneColor(tone: StatusTone): Color = when (tone) {
     StatusTone.Good -> MaterialTheme.colorScheme.tertiary
-    StatusTone.Warn -> MaterialTheme.colorScheme.primary
+    StatusTone.Warn -> LocalOrbisPalette.current.warning
     StatusTone.Bad -> MaterialTheme.colorScheme.error
     StatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
 }
@@ -3713,8 +3524,8 @@ private fun RuntimeStatus(
     modelLabel: String? = null,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-        RuntimeStatusIndicator(status, title)
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        RuntimeStatusIndicator(status, title, isChatSyncing)
         modelLabel?.takeIf(String::isNotBlank)?.let { label ->
             MotionText(
                 "$label",
@@ -3726,36 +3537,30 @@ private fun RuntimeStatus(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (isChatSyncing) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(11.dp),
-                strokeWidth = 1.5.dp,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-        }
+
     }
 }
 
 @Composable
-internal fun RuntimeStatusIndicator(status: String, title: String? = null) {
-    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-        RuntimeStatusDot(status)
+internal fun RuntimeStatusIndicator(status: String, title: String? = null, syncing: Boolean = false) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        RuntimeStatusDot(status, syncing)
         MotionText(title ?: runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
     }
 }
 
 @Composable
-private fun RuntimeStatusDot(status: String) {
-    Box(Modifier.size(6.dp).clip(CircleShape).background(runtimeStatusColor(status)))
+private fun RuntimeStatusDot(status: String, syncing: Boolean = false) {
+    NeumorphStatusDot(runtimeStatusColor(status), pulsing = syncing || status in setOf("running", "compacting", "starting", "background"),
+        idle = !syncing && status in setOf("idle", "unknown", "tasks_unknown"))
 }
 
 @Composable
 private fun runtimeStatusColor(status: String): Color = when (status) {
-    "unknown", "tasks_unknown" -> MaterialTheme.colorScheme.onSurfaceVariant
-    "idle" -> MaterialTheme.colorScheme.tertiary
+    "unknown", "tasks_unknown", "idle" -> LocalOrbisPalette.current.faint
     // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色，不显示为错误。
-    "running", "compacting", "starting", "background" -> MaterialTheme.colorScheme.primary
-    "waiting_local_interaction", "launch_unconfirmed" -> MaterialTheme.colorScheme.secondary
+    "running", "compacting", "starting", "background" -> LocalOrbisPalette.current.success
+    "waiting_local_interaction", "launch_unconfirmed" -> LocalOrbisPalette.current.warning
     else -> MaterialTheme.colorScheme.error
 }
 

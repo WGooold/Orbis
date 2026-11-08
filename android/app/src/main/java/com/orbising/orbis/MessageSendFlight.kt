@@ -57,11 +57,11 @@ internal class MessageSendFlightState(private val scope: CoroutineScope) {
     val flights = mutableStateListOf<Flight>()
     private val jobs = mutableMapOf<String, Job>()
 
-    fun launch(send: PendingSend, following: Boolean) {
-        if (!ValueAnimator.areAnimatorsEnabled() || composer.isEmpty || root.isEmpty || flights.size >= 3 || flights.any { it.id == send.messageId }) return
-        val width = composer.width.coerceAtMost(root.width * 0.55f)
+    fun launch(send: PendingSend, following: Boolean, source: Rect = composer) {
+        if (!ValueAnimator.areAnimatorsEnabled() || source.isEmpty || root.isEmpty || flights.size >= 3 || flights.any { it.id == send.messageId }) return
+        val width = source.width.coerceAtMost(root.width * 0.55f)
         val fallback = Rect(root.right - width - 20 * density, composer.top - 72 * density, root.right - 20 * density, composer.top - 16 * density)
-        val flight = Flight(send.messageId, send.text, composer, fallback).apply {
+        val flight = Flight(send.messageId, send.text, source, fallback).apply {
             awaitingTarget = following && !send.showsInQueue && !send.queueOwned
         }
         flights.add(flight)

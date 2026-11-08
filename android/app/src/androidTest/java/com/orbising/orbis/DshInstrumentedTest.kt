@@ -17,16 +17,16 @@ class DshInstrumentedTest {
 
     @Test fun selectsLaunchableDeepSeekBeforeBackendReadyAndCreatesSessionInChosenDirectory() {
         var created: Pair<String, String>? = null
-        compose.setContent { OrbisTheme { NewSessionSheet(
+        compose.setContent { OrbisTheme { SessionDraftCard(
             state = RemoteState(hostId = "paired-host", connection = RelayConnection.ONLINE, e2eReady = true,
                 supportedAgents = setOf("pi", "codex"), launchableAgents = setOf("pi", "codex", "dsh")),
-            presetCwd = "D:/orbis-deepseek-harness", onDismiss = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
-            onCreate = { kind, cwd -> created = kind to cwd },
+            open = true, presetCwd = "D:/orbis-deepseek-harness", onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
+            onSubmit = { kind, cwd, _, _, _ -> created = kind to cwd; true },
         ) } }
-        compose.onNodeWithText("DeepSeek", useUnmergedTree = true).performClick()
-        compose.onNodeWithText("DeepSeek Harness 会话在后台运行，支持模型切换与工具审批").assertIsDisplayed()
+        compose.onNodeWithTag("draft-agent-dsh").performClick()
         capture("dsh-new-session.png")
-        compose.onNodeWithText("在此目录新建 DeepSeek 会话").performClick()
+        compose.onNode(hasSetTextAction()).performTextInput("检查工作目录")
+        compose.onNodeWithTag("draft-send").performClick()
         compose.runOnIdle { assertEquals("dsh" to "D:/orbis-deepseek-harness", created) }
     }
 

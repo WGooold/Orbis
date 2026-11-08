@@ -42,6 +42,7 @@ class SessionHostOwnershipInstrumentedTest {
         compose.onNodeWithContentDescription("切换电脑").assertDoesNotExist()
         compose.onNodeWithContentDescription("新建会话").assertIsNotEnabled()
         compose.onNodeWithContentDescription("在此目录新建会话").assertIsNotEnabled()
+        compose.onNode(hasSetTextAction()).performTextInput("首句")
         compose.runOnIdle { state.value = state.value.copy(e2eReady = true) }
         capture("paired-sessions")
         compose.onNodeWithContentDescription("在此目录新建会话").assertIsEnabled().performClick()
@@ -68,27 +69,29 @@ class SessionHostOwnershipInstrumentedTest {
             )
         } }
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
-        compose.onNodeWithContentDescription("新建会话").assertIsEnabled()
+        compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
         capture("paired-empty")
         compose.onNode(hasContentDescription("筛选会话：", substring = true)).performClick()
         compose.onNodeWithText("查看已归档会话").performClick()
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
-        compose.onNodeWithContentDescription("新建会话").assertIsEnabled()
+        compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
     }
 
     @Test fun directoryShortcutRequiresBothPairingAndEncryption() {
         val state = mutableStateOf(RemoteState(connection = RelayConnection.ONLINE, e2eReady = true))
         var created: Pair<String, String>? = null
-        compose.setContent { OrbisTheme { NewSessionSheet(
-            state = state.value, presetCwd = "D:/repo", onDismiss = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
-            onCreate = { kind, cwd -> created = kind to cwd },
+        compose.setContent { OrbisTheme { SessionDraftCard(
+            state = state.value, open = true, presetCwd = "D:/repo", onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
+            onSubmit = { kind, cwd, _, _, _ -> created = kind to cwd; true },
         ) } }
-        compose.onNodeWithText("在此目录新建 Pi 会话").assertIsNotEnabled()
+        compose.onNode(hasSetTextAction()).performTextInput("首句")
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
         compose.runOnIdle { state.value = state.value.copy(hostId = "host-1", hostName = "Desktop", e2eReady = false) }
-        compose.onNodeWithText("在此目录新建 Pi 会话").assertIsNotEnabled()
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+        compose.onNode(hasSetTextAction()).performTextInput("首句")
         compose.runOnIdle { state.value = state.value.copy(e2eReady = true) }
-        compose.onNodeWithText("在此目录新建 Pi 会话").assertIsEnabled().performClick()
-        compose.runOnIdle { assertEquals("pi" to "D:/repo", created) }
+        compose.onNodeWithTag("draft-send").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals("codex" to "D:/repo", created) }
     }
 
 /** Drawer 现在按「已配对电脑 + 各自状态」渲染；夹具只描述这一台。 */

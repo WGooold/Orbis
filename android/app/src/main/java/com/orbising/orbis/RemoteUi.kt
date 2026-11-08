@@ -26,6 +26,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -62,6 +68,7 @@ internal fun RemoteTopAppBar(
         title = { ProvideTextStyle(MaterialTheme.typography.titleLarge, title) },
         navigationIcon = navigationIcon,
         actions = actions,
+        expandedHeight = 56.dp,
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
             scrolledContainerColor = MaterialTheme.colorScheme.background,
@@ -113,7 +120,14 @@ internal fun NeumorphDialog(
     shape: Shape = MaterialTheme.shapes.extraLarge,
     properties: DialogProperties = DialogProperties(),
 ) {
-    BasicAlertDialog(onDismissRequest = onDismissRequest, properties = properties, modifier = Modifier.padding(vertical = 12.dp)) {
+    val entrance = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { entrance.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Panel))) }
+    BasicAlertDialog(onDismissRequest = { scope.launch {
+        entrance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Exit))); onDismissRequest()
+    } }, properties = properties, modifier = Modifier.padding(vertical = 12.dp).graphicsLayer {
+        alpha = entrance.value; scaleX = 0.96f + 0.04f * entrance.value; scaleY = scaleX
+    }) {
         CompositionLocalProvider(LocalOrbisSurface provides null) {
             NeumorphSurface(shape = shape, shadowScale = 1.1f, contentPadding = 16.dp) {
                 Column(Modifier, verticalArrangement = Arrangement.spacedBy(20.dp)) {

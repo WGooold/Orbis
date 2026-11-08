@@ -298,16 +298,15 @@ internal fun MotionText(
     overflow: androidx.compose.ui.text.style.TextOverflow = androidx.compose.ui.text.style.TextOverflow.Clip,
 ) {
     val layoutResult = remember(text) { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
-    val appearance = remember { Animatable(0f) }
-    LaunchedEffect(Unit) { appearance.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.State))) }
+    val appearance = remember { Animatable(1f) }
     androidx.compose.animation.AnimatedContent(targetState = text,
         modifier = modifier.graphicsLayer { alpha = appearance.value }.semantics {
             this.text = androidx.compose.ui.text.AnnotatedString(text)
             getTextLayoutResult { results -> layoutResult.value?.let { results.add(it); true } ?: false }
         },
         transitionSpec = {
-            (androidx.compose.animation.fadeIn(tween(InteractionMotion.duration(InteractionMotion.State))) togetherWith
-                androidx.compose.animation.fadeOut(tween(InteractionMotion.duration(InteractionMotion.State))))
+            (androidx.compose.animation.fadeIn(tween(InteractionMotion.duration(InteractionMotion.FadeIn), delayMillis = InteractionMotion.duration(InteractionMotion.FadeOut))) togetherWith
+                androidx.compose.animation.fadeOut(tween(InteractionMotion.duration(InteractionMotion.FadeOut))))
                 .using(null)
         }, label = "discrete-label") { displayed ->
         androidx.compose.material3.Text(displayed, Modifier.clearAndSetSemantics { }, color = color,

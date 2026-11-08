@@ -76,20 +76,12 @@ class SessionDrawerLayoutInstrumentedTest {
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             File(context.getExternalFilesDir(null), "drawer-layout-${if (dark) "dark" else "light"}-$fontScale.png")
                 .outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
-            // S30: the expanded directory owns one inset tray; rows no longer own shadows.
-            // Sample its blank top padding, away from rounded corners and text.
-            val tray = compose.onNodeWithTag("drawer-session-tray-start", useUnmergedTree = true)
-            val card = compose.onRoot().captureToImage().asAndroidBitmap()
-            val bounds = tray.fetchSemanticsNode().boundsInRoot
-            val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-            val x = (bounds.center.x - root.left).toInt()
-            val y = (bounds.top - root.top).toInt()
-            val edge = card.getPixel(x, y + (2 * compose.density.density).toInt())
-            val inside = card.getPixel(x, y + (10 * compose.density.density).toInt())
-            fun brightness(pixel: Int) = (android.graphics.Color.red(pixel) +
-                android.graphics.Color.green(pixel) + android.graphics.Color.blue(pixel)) / 3f
-            assertTrue("dark=$dark / font=$fontScale must retain the inset top shadow",
-                brightness(inside) - brightness(edge) > 2f)
+            // S38 / SC58: navigation is a single-line tree on the drawer face. The row's
+            // hit area stays >=48dp and neither text length nor multi-selection moves it.
+            assertTrue(before.height >= 48 * compose.density.density)
+            compose.onNodeWithContentDescription("在此目录新建会话").assertDoesNotExist()
+            compose.onNodeWithText("新建会话").assertIsDisplayed()
+
         }
     }
 }

@@ -46,7 +46,7 @@ internal object OrbisMotion {
 internal fun OrbisCollapse(expanded: Boolean, content: @Composable () -> Unit) {
     var hasExpanded by remember { mutableStateOf(expanded) }
     if (expanded) SideEffect { hasExpanded = true }
-    val fraction = animateFloatAsState(if (expanded) 1f else 0f, tween(260), label = "collapse")
+    val fraction = animateFloatAsState(if (expanded) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.Collapse)), label = "collapse")
     // A zero-height Layout still composes and measures its children. Do not create them
     // until requested, especially long thinking/tool text in an otherwise visible turn.
     if (!expanded && !hasExpanded) return

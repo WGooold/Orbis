@@ -69,6 +69,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -297,7 +299,7 @@ internal fun SessionDrawer(
     val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
-    val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp - 32.dp).coerceAtMost(384.dp)
+    val drawerWidth = (LocalConfiguration.current.screenWidthDp.dp * 0.85f).coerceAtMost(336.dp)
 
     blockedSession?.let { (hostId, sessionId) ->
         val snapshot = hosts.firstOrNull { it.hostId == hostId }
@@ -317,10 +319,10 @@ internal fun SessionDrawer(
         Column(
             Modifier.fillMaxSize()
                 .imePadding()
-                .padding(horizontal = 4.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 0.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -345,7 +347,7 @@ internal fun SessionDrawer(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                     keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
                         colors = neumorphFieldColors(),
-                        shape = RemoteUi.ControlShape,
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                     )
                     DrawerAgentFilterMenu(
                         selected = agentFilter,
@@ -357,13 +359,7 @@ internal fun SessionDrawer(
                         onSelectProvider = { requestedProviderKey = it },
                         onRequestProviders = onRequestProviders,
                     )
-                    NeumorphIconButton(
-                        onClick = { activeHostId?.let { onNewSession(it, null) } },
-                        icon = Icons.Rounded.Add,
-                        contentDescription = L10n.tr("新建会话"),
-                        enabled = canCreate,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
+
                 }
             if (agentFilter.hasProviderFilter) {
                 MotionText(
@@ -374,7 +370,7 @@ internal fun SessionDrawer(
                 )
             }
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp).heightIn(min = RemoteUi.TouchTarget),
+                Modifier.fillMaxWidth().padding(vertical = 8.dp).heightIn(min = RemoteUi.TouchTarget),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -425,8 +421,8 @@ internal fun SessionDrawer(
             maintainListViewport(listState, viewportKeys, listOf(viewportIdentity, expandedKey, showAllSessions), preserveStationaryItems = true)
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxWidth().weight(1f).neumorphDirectoryPanels(listState, panelKeys).testTag("drawer-session-list"),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 16.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f).testTag("drawer-session-list"),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
             ) {
                 if (sections.isEmpty()) {
                     item(contentType = "empty") {
@@ -504,10 +500,10 @@ internal fun SessionDrawer(
                         item(key = "more:$branchKey", contentType = "more") {
                             DrawerDirectorySlice { OrbisCollapse(expanded = expanded) {
                                 DrawerBranch(first = branch.sessions.isEmpty(), last = true) {
-                                    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                                    Column(Modifier.fillMaxWidth()) {
                                         if (branch.hasMore) {
-                                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                            Row(Modifier.fillMaxWidth().heightIn(min = 44.dp)
+
+                                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
                                                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { showAllSessions = !showAllSessions },
                                                 verticalAlignment = Alignment.CenterVertically) {
                                                 Text(if (showAllSessions) L10n.tr("收起较早会话") else L10n.tr("查看全部 {0} 条", directory.sessions.size),
@@ -518,12 +514,12 @@ internal fun SessionDrawer(
                                             }
                                         }
                                         if (directory.cwd.isNotBlank()) {
-                                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                Text(directory.cwd, modifier = Modifier.weight(1f), fontFamily = FontFamily.Monospace,
-                                                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(14.dp))
+                                            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                                .clickable(enabled = isActiveHost && canCreate, interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                                    onNewSession(hostId, directory.cwd)
+                                                }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Icon(Icons.Rounded.Add, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                                                Text(L10n.tr("新建会话"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                                             }
                                         }
                                     }
@@ -531,11 +527,11 @@ internal fun SessionDrawer(
                             } }
                         }
                     }
-                    item(key = "gap:$branchKey", contentType = "gap") { Spacer(Modifier.height(14.dp)) }
+                    item(key = "gap:$branchKey", contentType = "gap") { Spacer(Modifier.height(8.dp)) }
                 }
                 if (allDirectoryItems.size > 3 && searchTerm.isEmpty()) {
                     item(key = "directory-preview-more", contentType = "directory-more") {
-                        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 6.dp)
+                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 6.dp)
                             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { showAllDirectories = !showAllDirectories },
                             verticalAlignment = Alignment.CenterVertically) {
                             Text(if (showAllDirectories) L10n.tr("收起工作目录") else L10n.tr("查看全部 {0} 个工作目录", directoryCount),
@@ -592,30 +588,25 @@ private fun DrawerHostSwitcher(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var computers by remember { mutableStateOf(false) }
+    var pendingUnpair by remember { mutableStateOf<HostSnapshot?>(null) }
     LaunchedEffect(activeHostId, hosts.map { it.hostId }) { expanded = false; computers = false }
     val active = hosts.firstOrNull { it.hostId == activeHostId }
     Box(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp, bottom = 4.dp),
+        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
     ) {
         Box(
             modifier = Modifier.fillMaxWidth().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { computers = false; expanded = true },
         ) {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(horizontal = 16.dp, vertical = 6.dp),
+                Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(horizontal = 8.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                CompositionLocalProvider(LocalOrbisSurface provides null) {
-                    NeumorphSurface(shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), shadowScale = 0.65f) {
-                        Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Rounded.Computer, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
+                Icon(Icons.Rounded.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(active?.name ?: L10n.tr("未连接"), style = MaterialTheme.typography.titleSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Box(Modifier.size(5.dp).background(if (active?.state?.e2eReady == true) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant, CircleShape))
                         Text(if (active?.state?.e2eReady == true) L10n.tr("已连接") else L10n.tr("离线"),
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -672,171 +663,81 @@ private fun DrawerHostSwitcher(
             active?.let { host ->
                 NeumorphMenuItem(
                     text = { Text(L10n.tr("取消配对「{0}」", host.name), color = MaterialTheme.colorScheme.error) },
-                    onClick = { expanded = false; onUnpairHost(host.hostId) },
+                    onClick = { expanded = false; pendingUnpair = host },
                     leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) },
                 )
             }
             }
         }
     }
+    pendingUnpair?.let { host ->
+        NeumorphDialog(onDismissRequest = { pendingUnpair = null },
+            title = { Text(L10n.tr("取消配对 {0}？", host.name)) },
+            text = { Text(L10n.tr("电脑上的会话与历史不受影响，之后可以重新扫码配对。")) },
+            confirmButton = { NeumorphTextButton(L10n.tr("取消配对"), { pendingUnpair = null; onUnpairHost(host.hostId) }, danger = true) },
+            dismissButton = { NeumorphTextButton(L10n.tr("保留"), { pendingUnpair = null }) })
+    }
+
 }
 
 @Composable
-private fun DrawerDirectoryHeader(
-    directory: CachedDirectoryGroup,
-    expanded: Boolean,
-    createEnabled: Boolean,
-    onCreate: () -> Unit,
-    onClick: () -> Unit,
-) {
-    val accent = if (expanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    val rotation by animateFloatAsState(if (expanded) 90f else 0f, label = "directory-disclosure")
-    Row(Modifier.fillMaxWidth().testTag("drawer-directory-${directory.cwd}"), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-        NeumorphSurface(
-            modifier = Modifier.weight(1f).semantics { stateDescription = if (expanded) L10n.tr("已展开") else L10n.tr("已收起") }
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick),
-            shape = RemoteUi.CardShape,
-            style = NeumorphStyle.Raised,
-            shadowScale = 0.75f,
-            contentInset = 14.dp,
-        ) {
-            Column(Modifier.padding(14.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
-                        AgentIconRecess(Modifier.fillMaxSize(), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                        Icon(
-                            if (expanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                            tint = accent,
-                        )
-                    }
-                    // Fixed two-line title space keeps directory headers aligned.
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(
-                            directoryDisplayName(directory.cwd).ifBlank { L10n.tr("未记录目录") },
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (expanded) accent else MaterialTheme.colorScheme.onSurface,
-                            minLines = 2,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Text(
-                        "${directory.sessions.size}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.semantics { contentDescription = L10n.tr("{0} 个会话", directory.sessions.size) },
-                    )
-                    Icon(
-                        Icons.Rounded.ChevronRight,
-                        contentDescription = if (expanded) L10n.tr("收起目录") else L10n.tr("展开目录"),
-                        tint = accent,
-                        modifier = Modifier.size(20.dp).rotate(rotation),
-                    )
-                }
-            }
+private fun DrawerDirectoryHeader(directory: CachedDirectoryGroup, expanded: Boolean, createEnabled: Boolean,
+    onCreate: () -> Unit, onClick: () -> Unit) {
+    val rotation by animateFloatAsState(if (expanded) 90f else 0f,
+        androidx.compose.animation.core.tween(InteractionMotion.duration(InteractionMotion.Collapse)), label = "directory-disclosure")
+    NeumorphSurface(Modifier.fillMaxWidth().testTag("drawer-directory-${directory.cwd}")
+        .semantics { stateDescription = if (expanded) L10n.tr("已展开") else L10n.tr("已收起") },
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), shadowScale = 0.4f, onClick = onClick) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(if (expanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder, null, modifier = Modifier.size(20.dp),
+                tint = if (expanded) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(directoryDisplayName(directory.cwd).ifBlank { L10n.tr("未记录目录") }, Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${directory.sessions.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(Icons.Rounded.ChevronRight, if (expanded) L10n.tr("收起目录") else L10n.tr("展开目录"),
+                modifier = Modifier.size(16.dp).rotate(rotation), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        NeumorphIconButton(
-            onClick = onCreate,
-            icon = Icons.Rounded.Add,
-            contentDescription = L10n.tr("在此目录新建会话"),
-            enabled = createEnabled,
-            compact = true,
-            tint = accent,
-        )
     }
 }
 
-/** Header, lazy rows and the more-control share one raised silhouette, with no row regrouping. */
+/** Navigation rows stay on the drawer face; only a press or current selection indents them. */
 @Composable
 private fun DrawerDirectorySlice(content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxWidth()) {
-        // A flat tonal child is intentional. Resetting to null would give header controls
-        // independent shadow frames and break the unified directory silhouette.
-        CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(1, 2, null)) { content() }
-    }
+    CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(0, 2, 12.dp)) { content() }
 }
 
-/** Retain flat row material and spacing; the list paints the continuous tray behind all rows. */
 @Composable
 private fun DrawerBranch(first: Boolean, last: Boolean, content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = if (last) 10.dp else 0.dp)) {
-        Box(Modifier.fillMaxWidth().testTag(if (first) "drawer-session-tray-start" else if (last) "drawer-session-tray-end" else "drawer-session-tray-middle").padding(start = 6.dp, end = 6.dp, top = if (first) 8.dp else 0.dp, bottom = if (last) 8.dp else 0.dp)) {
-            // Raised descendants at depth >= 2 have transparent fill and no shadow.
-            // Selection and click/long-click feedback stay in NeumorphSurface.
-            CompositionLocalProvider(LocalOrbisSurface provides OrbisSurfaceContext(0, 2, 12.dp)) { content() }
-        }
-    }
+    val hairline = MaterialTheme.colorScheme.outlineVariant
+    Box(Modifier.fillMaxWidth().padding(start = 16.dp).drawBehind {
+        drawLine(hairline, Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+    }.padding(start = 16.dp, bottom = if (last) 8.dp else 0.dp)) { content() }
 }
 
 @Composable
-private fun DrawerSessionRow(
-    row: CachedSessionRow,
-    /** Status of the live Runtime for an online row; null for a catalog/history row. */
-    runtimeStatus: String?,
-    runtimeStatusTitle: String? = null,
-    /** Provider that owns this Codex session when it differs from the current one. */
-    otherProvider: String?,
-    onOpenSession: () -> Unit,
-    onOpenHistory: () -> Unit,
-    selecting: Boolean,
-    selected: Boolean,
-    archiveUnavailableReason: String?,
-    onToggleSelection: () -> Unit,
-    onBeginSelection: () -> Unit,
-) {
-    NeumorphSurface(
-        modifier = Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
-            .semantics(mergeDescendants = true) { this.selected = selected },
-        style = NeumorphStyle.Raised,
-        selectionSelected = selected,
-        selectionMode = selecting,
-        shape = RemoteUi.ControlShape,
-        shadowScale = 0.45f,
-        onClick = {
-            if (selecting) onToggleSelection()
-            else if (!row.isArchived) onOpenSession()
-            else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory()
-            else onBeginSelection()
-        },
-        onLongClick = onBeginSelection,
-    ) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(start = 12.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // 与 iOS 同一行结构：agent 图标、标题，下面是状态、时间与必要的标注；整行可点，不再另放箭头。
-            AgentIcon(agentBrand(row.agentKind), modifier = Modifier.size(22.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                // Reserve both title lines so short and wrapped titles keep the same card height.
-                Text(row.title, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                Box {
-                    Row(Modifier.alpha(if (selecting && archiveUnavailableReason != null) 0f else 1f)
-                        .then(if (selecting && archiveUnavailableReason != null) Modifier.clearAndSetSemantics {} else Modifier),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val caption = MaterialTheme.typography.labelSmall
-                        val muted = MaterialTheme.colorScheme.onSurfaceVariant
-                        if (runtimeStatus != null) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
-                        else if (row.catalogEntry?.hasHistoryCache == true) Text(L10n.tr("缓存历史"), style = caption, color = muted)
-                        if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = caption, color = muted, maxLines = 1)
-                        if (row.agentKind == "codexDesktop") Text(L10n.tr("桌面版"), style = caption, color = agentBrand(row.agentKind).accent(), maxLines = 1)
-                        // 与 iOS 同一个提示色（橙），不是错误。
-                        val warning = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) Color(0xFFF2C26B) else Color(0xFF9A5B00)
-                        otherProvider?.let { Text(it, style = caption, color = warning, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                    }
-                    if (archiveUnavailableReason != null) Text(
-                        archiveUnavailableReason, style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.alpha(if (selecting) 1f else 0f)
-                            .then(if (!selecting) Modifier.clearAndSetSemantics {} else Modifier),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            OrbisSelectionIndicator(selected, selecting)
+private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runtimeStatusTitle: String? = null,
+    otherProvider: String?, onOpenSession: () -> Unit, onOpenHistory: () -> Unit, selecting: Boolean,
+    selected: Boolean, archiveUnavailableReason: String?, onToggleSelection: () -> Unit, onBeginSelection: () -> Unit) {
+    NeumorphSurface(Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
+        .semantics(mergeDescendants = true) { this.selected = selected; if (otherProvider != null) contentDescription = "${row.title} · $otherProvider" },
+        selectionSelected = selected, selectionMode = selecting, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+        shadowScale = 0.4f, onClick = {
+            if (selecting) onToggleSelection() else if (!row.isArchived) onOpenSession()
+            else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory() else onBeginSelection()
+        }, onLongClick = onBeginSelection) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AgentIcon(agentBrand(row.agentKind), Modifier.size(16.dp))
+            Text(row.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelMedium)
+            if (selecting && archiveUnavailableReason != null) Text(archiveUnavailableReason,
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                modifier = Modifier.width(56.dp), overflow = TextOverflow.Ellipsis)
+            else if (runtimeStatus != null && runtimeStatus !in setOf("idle", "unknown")) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
+            else if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            if (selecting) OrbisSelectionIndicator(selected, true)
         }
     }
 }

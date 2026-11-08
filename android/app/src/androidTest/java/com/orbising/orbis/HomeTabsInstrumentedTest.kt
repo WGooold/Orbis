@@ -104,13 +104,13 @@ class HomeTabsInstrumentedTest {
             val anchorTop = compose.onNodeWithTag(anchorTag).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
 
             compose.onNodeWithTag("home-tab-settings").performClick().assertIsSelected()
-            compose.onNodeWithText("当前连接").assertIsDisplayed()
+            compose.onNodeWithText("连接").assertIsDisplayed()
             compose.onNodeWithText("Agent 供应商").assertDoesNotExist()
             compose.onNodeWithContentDescription("返回").assertDoesNotExist()
             compose.onNodeWithTag("home-session-list").assertDoesNotExist()
 
             compose.onNodeWithTag("home-tab-providers").performClick().assertIsSelected()
-            compose.onNodeWithText("当前连接").assertDoesNotExist()
+            compose.onNodeWithText("连接").assertDoesNotExist()
             compose.onNodeWithContentDescription("返回").assertDoesNotExist()
             compose.onNodeWithTag("home-tabs").assertIsDisplayed()
 
