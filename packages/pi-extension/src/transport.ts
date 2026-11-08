@@ -95,6 +95,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   #handlers: Handlers | undefined;
   #socket: WebSocket | undefined;
   #ready = false;
+  #sessionTurnOutcome = false;
   #closed = false;
   #reconnectDelayMs: number;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -140,7 +141,16 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     }
     const sequence = nextRuntimeSequence(this.#metadata.runtimeId);
     try {
-      const safeEvent = safeValue(event);
+      // Old Host source schemas reject unknown live-turn keys. Project only this protocol field;
+      // user entries, message content and tool payloads may also contain a key named outcome.
+      let projected = event;
+      if (!this.#sessionTurnOutcome && (event.type === "session.patch" || event.type === "session.snapshot") &&
+          event.live?.turn?.outcome !== undefined) {
+        const turn = { ...event.live.turn };
+        delete turn.outcome;
+        projected = { ...event, live: { ...event.live, turn } };
+      }
+      const safeEvent = safeValue(projected);
       this.#socket.send(JSON.stringify({
         type: "runtime.event",
         protocolVersion: PROTOCOL_VERSION,
@@ -156,6 +166,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   close(): void {
     this.#closed = true;
     this.#ready = false;
+    this.#sessionTurnOutcome = false;
     this.#options.onConnectionStateChange?.("closed");
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
@@ -208,7 +219,13 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#options.onConnectionStateChange?.(this.#hasConnected ? "reconnecting" : "connecting");
     const socket = new WebSocket(`${relayUrl.replace(/\/$/, "")}${this.#options.path ?? DEFAULT_RUNTIME_PATH}`);
     this.#socket = socket;
+    this.#sessionTurnOutcome = false;
+    let advertisedSessionTurnOutcome = false;
     this.#startReadyTimer(socket);
+
+    socket.on("upgrade", response => {
+      if (this.#socket === socket) advertisedSessionTurnOutcome = response.headers["x-orbis-session-turn-outcome"] === "1";
+    });
 
     socket.on("open", () => {
       if (this.#socket !== socket || !this.#metadata) return;
@@ -243,6 +260,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
           return;
         }
         this.#lastRecoverableProtocolError = undefined;
+        this.#sessionTurnOutcome = advertisedSessionTurnOutcome;
         this.#ready = true;
         this.#hasConnected = true;
         this.#stopReadyTimer();
@@ -283,6 +301,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       this.#stopReadyTimer();
       this.#socket = undefined;
       this.#ready = false;
+      this.#sessionTurnOutcome = false;
       this.#handlers?.disconnected?.();
       if (!this.#closed) this.#options.onConnectionStateChange?.("reconnecting");
       this.#scheduleReconnect();

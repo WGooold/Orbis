@@ -123,6 +123,9 @@ export class HostLoopbackServer {
     if (this.#server !== undefined) throw new Error("loopback 服务已经在运行");
 
     const wss = new WebSocketServer({ noServer: true });
+    // Optional source fields are negotiated outside the strict 18/19 business messages.
+    // Older runtimes ignore this HTTP header; upgraded Pi retains the field only for this socket.
+    wss.on("headers", headers => headers.push("X-Orbis-Session-Turn-Outcome: 1"));
     const server = createServer((request, response) => {
       void this.#handleHttp(request, response);
     });

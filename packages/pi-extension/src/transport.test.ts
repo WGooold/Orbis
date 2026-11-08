@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
+import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, RuntimeClientMessageSchema, RuntimeEventSchema, SessionLiveStateSchema, SessionLiveTurnSchema, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
 import { RelayRuntimeTransport } from "./transport.js";
 
 const metadata: RuntimeMetadata = {
@@ -11,6 +11,22 @@ const metadata: RuntimeMetadata = {
   name: "test runtime",
   cwd: "/work/test",
   status: "idle",
+};
+
+// Model the released strict live-turn shape, while retaining every other source field.
+const legacyLive = SessionLiveStateSchema.extend({ turn: SessionLiveTurnSchema.omit({ outcome: true }).nullable() });
+const sourceCompletion = (type: "session.patch" | "session.snapshot"): RuntimeEvent => {
+  const source = { epoch: "source-epoch", seq: 1, ready: true };
+  const head = { leafId: null };
+  const checkpoint = { checkpointId: "source-epoch:1", head, headCompleteness: "complete", inventoryComplete: true };
+  const live = { complete: true, turn: { turnId: "turn", startedAt: 100, durationMs: 75, outcome: "completed" }, messages: [], tools: [] };
+  // These names belong to canonical user/Agent data; compatibility must never recurse into them.
+  const entries = [{ entryId: "entry", parentId: null, type: "message", timestamp: "2026-11-08T00:00:00.000Z",
+    data: { outcome: "canonical-data", live: { turn: { outcome: "nested-data" } },
+      message: { messageId: "message", role: "assistant", timestamp: 100, content: [{ type: "text", text: "outcome remains in content" }] } } }];
+  return RuntimeEventSchema.parse(type === "session.patch"
+    ? { type, sessionId: "session", source, baseSeq: 0, seq: 1, checkpointId: checkpoint.checkpointId, head, headCompleteness: "complete", live, entries }
+    : { type, sessionId: "session", syncId: "sync", cursor: head, mode: "replace", range: "preview", source, checkpoint, live, entries });
 };
 
 describe("RelayRuntimeTransport", () => {
@@ -38,6 +54,53 @@ describe("RelayRuntimeTransport", () => {
     const address = server.address() as AddressInfo;
     return { url: `ws://127.0.0.1:${address.port}`, connection };
   };
+
+  it.each(["session.patch", "session.snapshot"] as const)("sends %s to an old Host without changing nested data or the source object", async type => {
+    // No capability header means the released strict schema, even with the same protocol version.
+    const relay=await listen(),connected=vi.fn();
+    transport=new RelayRuntimeTransport({relayUrl:relay.url,credential:"runtime-secret",reconnect:false});
+    await transport.start(metadata,{connected,resync:vi.fn(),command:vi.fn()});
+    const socket=await relay.connection;await once(socket,"message");
+    const event=sourceCompletion(type),before=structuredClone(event),received: unknown[]=[];
+    socket.on("message",raw=>received.push(JSON.parse(raw.toString())));
+    transport.publish(event); // An HTTP upgrade is insufficient until runtime.ready authenticates it.
+    socket.send(JSON.stringify({type:"runtime.ready",protocolVersion:PROTOCOL_VERSION,runtimeId:metadata.runtimeId}));
+    await vi.waitFor(()=>expect(connected).toHaveBeenCalledOnce());
+    const published=once(socket,"message");transport.publish(event);const [raw]=await published;
+    const envelope=RuntimeClientMessageSchema.parse(JSON.parse(raw.toString()));
+    expect(envelope.type).toBe("runtime.event");
+    if(envelope.type!=="runtime.event"||!(envelope.event.type==="session.patch"||envelope.event.type==="session.snapshot"))throw new Error("expected source event");
+    expect(legacyLive.safeParse(envelope.event.live).success).toBe(true);
+    expect(envelope.event.live?.turn).toEqual({turnId:"turn",startedAt:100,durationMs:75});
+    expect(envelope.event.entries).toEqual((event as Extract<RuntimeEvent,{type:typeof type}>).entries);
+    expect(event).toEqual(before);
+    expect(received).toHaveLength(1);
+    const tool:RuntimeEvent={type:"tool.updated",toolCallId:"tool",toolName:"test",partialResult:{outcome:"completed",live:{turn:{outcome:"preserve-tool-data"}}}};
+    const toolMessage=once(socket,"message");transport.publish(tool);const [toolRaw]=await toolMessage;
+    expect(JSON.parse(toolRaw.toString()).event).toEqual(tool);
+  });
+
+  it("renegotiates source outcomes on every reconnect from old to new and back to old Host", async () => {
+    const relay=await listen(),connected=vi.fn();let supportsOutcome=false;
+    wss!.on("headers",headers=>{if(supportsOutcome)headers.push("X-Orbis-Session-Turn-Outcome: 1");});
+    transport=new RelayRuntimeTransport({relayUrl:relay.url,credential:"runtime-secret",initialReconnectDelayMs:5,maxReconnectDelayMs:5});
+    await transport.start(metadata,{connected,resync:vi.fn(),command:vi.fn()});
+    let socket=await relay.connection;
+    for(let index=0;index<3;index++){
+      await once(socket,"message");
+      socket.send(JSON.stringify({type:"runtime.ready",protocolVersion:PROTOCOL_VERSION,runtimeId:metadata.runtimeId}));
+      await vi.waitFor(()=>expect(connected).toHaveBeenCalledTimes(index+1));
+      for(const type of ["session.patch","session.snapshot"] as const){
+        const event=sourceCompletion(type),published=once(socket,"message");transport.publish(event);const [raw]=await published;
+        const payload=JSON.parse(raw.toString()).event;
+        expect(payload.live.turn.outcome).toBe(index===1?"completed":undefined);
+        expect(payload.entries).toEqual((event as Extract<RuntimeEvent,{type:typeof type}>).entries);
+      }
+      if(index===2)break;
+      supportsOutcome=index===0;
+      const next=once(wss!,"connection").then(([peer])=>peer as WebSocket);socket.close(1012,"Host restarted");socket=await next;
+    }
+  });
 
   it("authenticates outbound, sequences events, and delivers commands", async () => {
     const relay = await listen();

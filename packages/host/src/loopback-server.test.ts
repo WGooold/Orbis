@@ -222,7 +222,11 @@ describe("HostLoopbackServer 的发现文件", () => {
     expect(online).toEqual([]);
 
     const peer = new WebSocket(url);
+    const upgrade = once(peer, "upgrade");
     await once(peer, "open");
+    // Source-field support lives in HTTP so strict released runtime.ready frames stay unchanged.
+    const [response] = await upgrade;
+    expect(response.headers["x-orbis-session-turn-outcome"]).toBe("1");
     const ready = once(peer, "message");
     peer.send(authenticate(version, "runtime-current"));
     const [confirmation] = await ready;
