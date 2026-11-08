@@ -1,14 +1,25 @@
 import SwiftUI
 
+private enum RootTab: String, CaseIterable {
+    case chat, providers, settings
+    var title: String { switch self { case .chat: L10n.tr("聊天"); case .providers: L10n.tr("供应商"); case .settings: L10n.tr("设置") } }
+    var symbol: String { switch self { case .chat: "bubble.left"; case .providers: "slider.horizontal.3"; case .settings: "gearshape" } }
+}
+
 private enum AppPage: Hashable { case chat, pairing, status, providers, history, downloads }
 
 struct ContentView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @StateObject private var navigation = OrbisPageStack<AppPage>()
+    @State private var rootTab: RootTab = .chat
+    @State private var displayedRoot: RootTab = .chat
+    @State private var rootOpacity = 1.0
+    @State private var rootOffset: CGFloat = 0
+    @State private var rootTransition = 0
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
@@ -22,8 +33,8 @@ struct ContentView: View {
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
         case "chat", "slash", "approval", "tool", "queue", "notices", "interactions", "truncated", "viewport", "changes": _navigation = StateObject(wrappedValue: OrbisPageStack([.chat]))
-        case "status": _navigation = StateObject(wrappedValue: OrbisPageStack([.status]))
-        case "providers": _navigation = StateObject(wrappedValue: OrbisPageStack([.status, .providers]))
+        case "status": _rootTab = State(initialValue: .settings); _displayedRoot = State(initialValue: .settings)
+        case "providers": _rootTab = State(initialValue: .providers); _displayedRoot = State(initialValue: .providers)
         case "downloads": _navigation = StateObject(wrappedValue: OrbisPageStack([.downloads]))
         case "history": _navigation = StateObject(wrappedValue: OrbisPageStack([.chat, .history]))
         case "drawer": _drawerOpen = State(initialValue: true)
@@ -39,7 +50,7 @@ struct ContentView: View {
                 if store.pairings.isEmpty {
                     PairingEntryView(onCancel: nil, onCode: store.pair)
                 } else {
-                    home
+                    rootPages
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -62,7 +73,7 @@ struct ContentView: View {
                 .background(OrbisPalette(scheme).base.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
                 .modifier(OrbisPageTransition(onBack: back,
-                                              underlay: { navigation.underlay(below: page) { home } }))
+                                              underlay: { navigation.underlay(below: page) { rootPages } }))
             }
         }
         .environmentObject(store.transfers)
@@ -74,7 +85,7 @@ struct ContentView: View {
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .accessibilityHidden(drawerOpen)
-        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, edgeSwipeEnabled: navigation.pages.isEmpty && !store.pairings.isEmpty && !store.isPairing) {
+        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !store.pairings.isEmpty && !store.isPairing) {
             drawer
         })
         .overlay(alignment: .top) {
@@ -102,13 +113,7 @@ struct ContentView: View {
             }
         }
         #endif
-        .sheet(isPresented: $newSessionOpen, onDismiss: { store.dismissBrowse(); launchIntroReady = launchIntro != nil }) {
-            NewSessionView(presetCwd: newSessionCwd, onCreated: { launch in
-                launchIntro = launch; launchIntroReady = false
-                navigation.replace(with: [])
-            }) { newSessionOpen = false }
-                .environmentObject(store).orbisSheet([.large])
-        }
+        .onChange(of: rootTab) { _, next in switchRoot(next) }
         .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu(); launchIntro = nil; launchIntroReady = false }
         .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
@@ -149,12 +154,65 @@ struct ContentView: View {
         #endif
     }
 
+    /// Keep root views mounted so changing tabs preserves scroll positions and selections.
+    private var rootPages: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                rootContent(.chat) { home }
+                rootContent(.providers) { AgentProvidersView(root: true, onBack: { rootTab = .chat }) }
+                rootContent(.settings) { ConnectionStatusView(root: true, onBack: { rootTab = .chat }) }
+            }.opacity(rootOpacity).offset(y: rootOffset)
+            HStack(spacing: 12) {
+                ForEach(RootTab.allCases, id: \.self) { tab in
+                    OrbisMotionButton {
+                        guard tab != rootTab else { return }
+                        OrbisHaptics.selectionChanged(); rootTab = tab
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab == .chat && rootTab == tab ? "bubble.left.fill" : tab == .settings && rootTab == tab ? "gearshape.fill" : tab.symbol)
+                                .font(.system(size: 22))
+                            Text(tab.title).font(.orbisLabel(rootTab == tab ? .semibold : .regular))
+                        }.foregroundStyle(rootTab == tab ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
+                            .frame(maxWidth: .infinity, minHeight: 56)
+                    }.buttonStyle(NeuButtonStyle(selected: rootTab == tab, radius: 16))
+                        .accessibilityIdentifier("root-tab-" + tab.rawValue)
+                        .accessibilityAddTraits(rootTab == tab ? .isSelected : [])
+                }
+            }.padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8)
+        }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func rootContent<Content: View>(_ tab: RootTab, @ViewBuilder content: () -> Content) -> some View {
+        content().opacity(displayedRoot == tab ? 1 : 0)
+            .allowsHitTesting(displayedRoot == tab && rootOpacity == 1)
+            .accessibilityHidden(displayedRoot != tab)
+    }
+
+    private func switchRoot(_ next: RootTab) {
+        overlay.dismissMenu(); setDrawer(false)
+        rootTransition += 1
+        let token = rootTransition
+        if reduceMotion { displayedRoot = next; rootOpacity = 1; rootOffset = 0; return }
+        withAnimation(.timingCurve(0.4, 0, 1, 1, duration: 0.09)) { rootOpacity = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
+            guard token == rootTransition else { return }
+            displayedRoot = next; rootOffset = 8
+            withAnimation(.timingCurve(0, 0, 0.2, 1, duration: 0.21)) { rootOpacity = 1; rootOffset = 0 }
+        }
+    }
+
     private var home: some View {
         HomeView(store: store, updates: store.homeUpdates, launchIntro: launchIntroReady ? launchIntro : nil, onLaunchPresented: { requestId in
             guard launchIntro?.requestId == requestId, !drawerOpen, !newSessionOpen, navigation.pages.isEmpty else { return }
             launchIntro = nil; launchIntroReady = false
             if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
-        }, onDirectory: { setDrawer(true) }, onSettings: { push(.status) },
+        }, draftOpen: newSessionOpen, draftCwd: newSessionCwd, onDraft: {
+            withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen.toggle() }
+        }, onDraftSubmitted: { launch in
+            launchIntro = launch; launchIntroReady = false
+            newSessionOpen = false
+            if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
+        }, onDirectory: { setDrawer(true) }, onSettings: { rootTab = .settings },
                  onDownloads: { push(.downloads) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
@@ -172,9 +230,10 @@ struct ContentView: View {
                               }
                           },
                           onNewSession: { cwd in
-                              newSessionCwd = cwd; setDrawer(false); newSessionOpen = true
+                              newSessionCwd = cwd; setDrawer(false); rootTab = .chat
+                              withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
                           }, onAddHost: { setDrawer(false); push(.pairing) },
-                          onProviders: { setDrawer(false); push(.status) },
+                          onProviders: { setDrawer(false); rootTab = .providers },
                           onUnpair: { confirmUnpair($0) }).equatable()
     }
 
@@ -209,7 +268,7 @@ struct ContentView: View {
 /// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
 private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Binding var isOpen: Bool
     let edgeSwipeEnabled: Bool
@@ -370,7 +429,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
 struct OrbisPageTransition<Underlay: View>: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @EnvironmentObject private var overlay: OrbisOverlay
     let onBack: () -> Void
     @ViewBuilder let underlay: () -> Underlay
@@ -533,13 +592,13 @@ private struct TransferErrorBanner: View {
 struct HomeView: View, Equatable {
     let store: OrbisStore
     @ObservedObject var updates: ScreenPublication
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.launchIntro == rhs.launchIntro }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.launchIntro == rhs.launchIntro && lhs.draftOpen == rhs.draftOpen && lhs.draftCwd == rhs.draftCwd }
 
     var launchIntro: HostConnection.LaunchState? = nil
     var onLaunchPresented: (String) -> Void = { _ in }
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @State private var selectedRuntimeIds: Set<String> = []
     @State private var swipeTranslations: [String: CGFloat] = [:]
     private struct ExitingCard {
@@ -555,6 +614,10 @@ struct HomeView: View, Equatable {
     @State private var closeSwipeRuntimeId: String?
     @State private var closeSwipeDirectionDecided = false
     @GestureState private var closeSwipeActive = false
+    var draftOpen = false
+    var draftCwd: String? = nil
+    var onDraft: () -> Void = {}
+    var onDraftSubmitted: (HostConnection.LaunchState) -> Void = { _ in }
     let onDirectory: () -> Void
     let onSettings: () -> Void
     let onDownloads: () -> Void
@@ -579,10 +642,10 @@ struct HomeView: View, Equatable {
                 } else {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Orbis").font(.orbisTitle())
-                            .foregroundStyle(Color(hex: scheme == .dark ? 0xD3D9E3 : 0x4E5F7A))
+                            .foregroundStyle(OrbisPalette(scheme).secondary)
                             .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
-                        Text("Easy Agents EveryWhere").font(.orbisCaption(.semibold)).tracking(0.4)
-                            .foregroundStyle(LinearGradient(colors: [OrbisPalette(scheme).accent, OrbisPalette(scheme).success], startPoint: .leading, endPoint: .trailing))
+                        Text("Easy Agents Everywhere").font(.orbisCaption(.semibold)).tracking(0.4)
+                            .foregroundStyle(OrbisPalette(scheme).secondary)
                             .lineLimit(1)
                     }
                 }
@@ -591,8 +654,8 @@ struct HomeView: View, Equatable {
                     HStack(spacing: 8) {
                         OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
                             .offset(x: 24 * progress).accessibilityIdentifier("home-downloads")
-                        OrbisIconButton(symbol: "gearshape", label: L10n.tr("设置"), action: onSettings)
-                            .offset(x: -24 * progress).accessibilityIdentifier("home-settings")
+                        OrbisIconButton(symbol: draftOpen ? "xmark" : "plus", label: draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"), morphFrom: "plus", action: onDraft)
+                            .offset(x: -24 * progress).accessibilityIdentifier("home-new-session")
                     }
                 } selected: {
                     Button(L10n.tr("关闭")) { closeSelectedRuntimes() }
@@ -650,13 +713,18 @@ struct HomeView: View, Equatable {
     private var homeSessionList: some View {
         // Only the current computer's sessions: several paired computers never share one list (ADR-0030 修订).
         ScrollViewReader { proxy in ScrollView {
-            LazyVStack(spacing: 16) {
+            LazyVStack(spacing: 12) {
                 if let host = currentHost {
+                    if draftOpen {
+                        SessionDraftView(presetCwd: draftCwd, onSubmitted: onDraftSubmitted, onCancel: onDraft)
+                            .id("home-draft").transition(.opacity.combined(with: .offset(y: 4)))
+                    }
                     ForEach(presentedCards(host)) { card in
                         // ADR-0049 §5：提交关闭后卡片沿滑动方向退场；电脑拒绝时再回到原位置。
                         runtimeCard(card, host: host)
                             .transition(.opacity)
-                            .allowsHitTesting(exitingCards[card.id] == nil)
+                            .allowsHitTesting(exitingCards[card.id] == nil && !draftOpen)
+                            .opacity(draftOpen ? 0.4 : 1)
                             .accessibilityHidden(exitingCards[card.id] != nil)
                     }
                     if let launchIntro {
@@ -685,6 +753,7 @@ struct HomeView: View, Equatable {
             .simultaneousGesture(closeSwipeGesture)
             .accessibilityAction(named: L10n.tr("刷新会话")) { if !selecting { store.refresh() } }
             .accessibilityIdentifier("home-session-list")
+            .onChange(of: draftOpen) { _, open in if open { withAnimation(reduceMotion ? nil : .orbisCollapse) { proxy.scrollTo("home-draft", anchor: .top) } } }
             .onChange(of: launchIntro?.requestId) { _, id in
                 if let id { proxy.scrollTo("new-session-" + id, anchor: .bottom) }
             }
@@ -760,14 +829,12 @@ struct HomeView: View, Equatable {
                       let card = host.homeCards.first(where: { $0.id == id }),
                       host.connection.homeCardIsCurrent(card), host.connection.canCloseRuntime(card.id) else { return }
                 let width = runtimeCardFrames[id]?.width ?? 0
-                let threshold = width / 2
+                let threshold = width * 0.4
                 let horizontal = value.translation.width
                 swipingRuntimeIds.insert(id)
                 let armed = threshold > 0 && horizontal <= -threshold
-                if armed != armedCloseRuntimeIds.contains(id) {
-                    OrbisHaptics.commit()
-                }
-                swipeTranslations[id] = min(0, max(-width, horizontal))
+                if armed && !armedCloseRuntimeIds.contains(id) { OrbisHaptics.commit() }
+                swipeTranslations[id] = min(0, max(-width, horizontal < -threshold ? -threshold + (horizontal + threshold) * 0.4 : horizontal))
                 if armed { armedCloseRuntimeIds.insert(id) }
                 else { armedCloseRuntimeIds.remove(id) }
             }
@@ -778,7 +845,7 @@ struct HomeView: View, Equatable {
                 guard !selecting, let id else { return }
                 // Let this release's button action finish before accepting taps again.
                 DispatchQueue.main.async { swipingRuntimeIds.remove(id) }
-                let threshold = (runtimeCardFrames[id]?.width ?? 0) / 2
+                let threshold = (runtimeCardFrames[id]?.width ?? 0) * 0.4
                 var closing = false
                 if let host = currentHost,
                    let card = host.homeCards.first(where: { $0.id == id }),
@@ -876,29 +943,23 @@ struct HomeView: View, Equatable {
         return HStack(spacing: 0) {
             ZStack(alignment: .trailing) {
                 if !selecting {
-                    // Keep both labels laid out so reversing the threshold never moves the glyphs.
-                    ZStack {
-                        HStack(spacing: 6) {
-                            Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-                            Text(L10n.tr("关闭")).font(.orbisLabel(.semibold)).lineLimit(1)
-                        }
-                        .opacity(armed ? 0 : 1)
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark").font(.system(size: 14, weight: .bold))
-                            Text(L10n.tr("松手关闭")).font(.orbisLabel(.semibold)).lineLimit(1)
-                        }
-                        .opacity(armed ? 1 : 0)
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: 116).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                    .background(armed ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).error)
-                    .animation(reduceMotion ? nil : InteractionMotion.state, value: armed)
-                    .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.card, style: .continuous))
-                    .opacity(reveal > 0 ? 1 : 0)
-                    .scaleEffect(reveal > 0 ? 1 : 0.88, anchor: .trailing)
-                    .offset(x: reveal > 0 ? 0 : 10)
-                    .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.22, dampingFraction: 0.78), value: reveal > 0)
-                    .accessibilityHidden(true)
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                                .frame(width: 28, height: 28)
+                                .neuSurface(inset: !armed, radius: 14, intensity: 0.4, concentric: false)
+                            Circle().trim(from: 0, to: min(1, reveal / max(1, cardWidth * 0.4)))
+                                .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                                .frame(width: 34, height: 34).rotationEffect(.degrees(-90))
+                        }.scaleEffect(armed ? 1.12 : 1)
+                        OrbisMotionText(armed ? L10n.tr("松手关闭") : L10n.tr("关闭")).font(.orbisLabel(.semibold))
+                    }.foregroundStyle(armed ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
+                        .frame(width: 120).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                        .padding(.trailing, 16)
+                        .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.65)
+                        .animation(reduceMotion ? nil : .orbisPop, value: armed)
+                        .opacity(reveal > 0 ? 1 : 0)
+                        .accessibilityHidden(true)
                 }
                 Button {
                     guard !swipingRuntimeIds.contains(runtime.runtimeId) else { return }
@@ -969,7 +1030,7 @@ struct ConnectionPill: View {
     let connection: ConnectionState
     let path: String?
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     var sync: HomeSyncStatus = .idle
     var body: some View {
@@ -981,54 +1042,48 @@ struct ConnectionPill: View {
         // SC53: background reads keep the transport label and capsule geometry stable.
         let title = !secured ? connectionTitle(connection) : failed ? L10n.tr("同步失败")
             : pathTitle(path ?? "relay")
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
             ZStack {
                 if busy { ProgressView().controlSize(.mini).tint(tone).scaleEffect(0.8) }
                 else {
-                    NeumorphStatusDot(tone: tone, pulsing: secured && sync == .syncing)
+                    OrbisStatusDot(tone: tone, working: secured && sync == .syncing)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(L10n.tr("连接状态"))
                         .accessibilityValue(secured && sync == .syncing ? L10n.tr("正在同步") : title)
                         .accessibilityIdentifier("home-connection-indicator")
                 }
-                }.frame(width: 18, height: 18)
+                }.frame(width: 16, height: 16)
             OrbisMotionText(title).foregroundStyle(secured && failed ? p.error : p.secondary)
             if secured { Image(systemName: "lock.shield").accessibilityLabel(L10n.tr("端到端加密")) }
-        }.font(.orbisCaption(.medium)).foregroundStyle(p.secondary).padding(.horizontal, 12).frame(minHeight: 36)
-            .neuSurface(inset: true, radius: 18, intensity: 0.35, concentric: false)
+        }.font(.orbisLabel()).foregroundStyle(tone).padding(.horizontal, 12).frame(minHeight: 32)
+            .neuSurface(radius: 16, intensity: 0.4, concentric: false)
             .animation(reduceMotion ? nil : .orbisFade, value: title)
             // A status group, not a button: its texts stay readable one by one.
             .accessibilityElement(children: .contain)
     }
 }
 
-/// The capsule's matte indicator shares the material's paired shadows, without moving its silhouette.
-private struct NeumorphStatusDot: View {
+/// Status is ink: a matte dot, with an orbit only while work is in progress.
+struct OrbisStatusDot: View {
     let tone: Color
-    let pulsing: Bool
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisReduceMotion) private var reduceMotion
+    var working = false
+    var hollow = false
+    @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.scenePhase) private var scenePhase
-    @State private var cycleStart = Date()
-
+    @State private var started = Date()
     var body: some View {
-        let p = OrbisPalette(scheme)
-        let animated = pulsing && !reduceMotion && scenePhase == .active
+        let animated = working && !reduced && scenePhase == .active
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animated)) { context in
-            let elapsed = context.date.timeIntervalSince(cycleStart)
-            let light = animated ? (cos(elapsed * 2 * .pi / 1.5) + 1) / 2 : 1
-            Circle().fill(tone)
-                .overlay {
-                    Circle().fill(RadialGradient(
-                        colors: [p.light.opacity(0.03 + 0.88 * light), .clear],
-                        center: .init(x: 0.28, y: 0.28), startRadius: 0, endRadius: 12,
-                    ))
+            ZStack {
+                Circle().fill(hollow ? .clear : tone).frame(width: working ? 6 : 8, height: working ? 6 : 8)
+                    .overlay { if hollow { Circle().strokeBorder(tone, lineWidth: 1.5) } }
+                if working {
+                    Circle().trim(from: 0.10, to: 0.80)
+                        .stroke(AngularGradient(colors: [tone.opacity(0), tone], center: .center), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        .rotationEffect(.degrees(animated ? context.date.timeIntervalSince(started) / 1.1 * 360 : 0))
                 }
-                .shadow(color: p.shadow.opacity(0.38), radius: 2, x: 2, y: 2)
-                .shadow(color: p.light.opacity(0.7), radius: 2, x: -2, y: -2)
-        }
-        .frame(width: 10, height: 10)
-        .onChange(of: animated) { _, _ in cycleStart = Date() }
+            }
+        }.frame(width: 16, height: 16).accessibilityHidden(true)
     }
 }
 

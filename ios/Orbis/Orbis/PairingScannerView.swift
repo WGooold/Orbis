@@ -4,7 +4,7 @@ import AVFoundation
 struct PairingEntryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduced
     @State private var code = ""
     @State private var scannerOpen = false
@@ -76,7 +76,7 @@ struct PairingEntryView: View {
 struct PairingScannerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.openURL) private var openURL
     let onCode: (String) -> Void
     @State private var failure: String?

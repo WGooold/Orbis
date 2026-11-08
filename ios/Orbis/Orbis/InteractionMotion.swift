@@ -284,6 +284,7 @@ struct OrbisTouchOrigin: UIViewRepresentable {
 }
 
 struct OrbisSelectionFill: View {
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let selected: Bool
     let origin: CGPoint?
@@ -294,12 +295,12 @@ struct OrbisSelectionFill: View {
             let point = MotionGeometry.touchOrigin(origin, size: proxy.size)
             let reach = MotionGeometry.revealRadius(origin: point, size: proxy.size)
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-            Circle().fill(color.opacity(0.07))
+            Circle().fill(OrbisPalette(scheme).accentSoft)
                 .frame(width: reach * 2, height: reach * 2)
                 .scaleEffect(selected ? 1 : 0)
                 .position(point)
                 .clipShape(shape)
-                .overlay { shape.strokeBorder(color.opacity(selected ? 0.65 : 0), lineWidth: 1) }
+                .overlay { shape.strokeBorder(color.opacity(selected ? 1 : 0), lineWidth: 1) }
                 .animation(reduceMotion ? nil : selected ? InteractionMotion.selection : InteractionMotion.state, value: selected)
         }.allowsHitTesting(false).accessibilityHidden(true)
     }
@@ -487,7 +488,7 @@ private struct OrbisMessageTextSelection: View {
 /// SwiftUI Text can offer only whole-paragraph Copy/Share on those versions.
 private struct OrbisSelectableMessageText: UIViewRepresentable {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let text: String
 
     func makeUIView(context: Context) -> UITextView {
@@ -686,7 +687,7 @@ private struct MessageSendFlightHost: ViewModifier {
     @ObservedObject var flight: MessageSendFlight
     @Environment(\.scenePhase) private var scene
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var viewportSize: CGSize = .zero
     func body(content: Content) -> some View {

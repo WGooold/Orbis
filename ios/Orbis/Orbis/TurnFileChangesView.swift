@@ -26,7 +26,7 @@ private struct TurnChangeCard: View {
     @ObservedObject var changes: TurnFileChanges
     let summary: TurnChangeSummary
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var expanded = false
     var body: some View {
@@ -104,14 +104,14 @@ private struct TurnChangeCard: View {
 
 private struct ChangeHairline: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     var body: some View { Rectangle().fill(OrbisPalette(scheme).secondary.opacity(0.14)).frame(height: 0.5) }
 }
 
 /// Git-style status letter; VoiceOver reads the Chinese kind.
 private struct ChangeKindLetter: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let kind: String
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -132,7 +132,7 @@ private struct ChangeKindLetter: View {
 /// Name first (middle-elided, extension kept), then the nearest directories, then counts.
 private struct ChangeFileLine: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let file: TurnFileMetadata
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -172,7 +172,7 @@ struct TurnFileReviewPresenter: ViewModifier {
 
 private struct ChangeLineCounts: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let additions: Int?
     let deletions: Int?
     var status: String? = "—"
@@ -211,7 +211,7 @@ struct TurnFileReviewView: View {
     @ObservedObject var changes: TurnFileChanges
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var navigation: Int = 0
@@ -385,7 +385,7 @@ private struct DiffFilePage: View {
     @ObservedObject var changes: TurnFileChanges
     let file: TurnFileMetadata
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @State private var position: Int?
     @State private var restored = false
     @State private var userScrolled = false
@@ -436,7 +436,7 @@ private struct DiffFilePage: View {
 /// previous file. Long-press copies the full path.
 private struct DiffFileHeader: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let file: TurnFileMetadata
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -462,7 +462,7 @@ private struct DiffFileHeader: View {
 
 private struct ChangeKindBadge: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let kind: String
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -477,7 +477,7 @@ private struct ChangeKindBadge: View {
 /// headers span the row; continuation fragments of a long line carry neither number nor marker.
 private struct DiffLineView: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let line: DiffDisplayLine
     let gutter: CGFloat
     var body: some View {

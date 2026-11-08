@@ -3,8 +3,10 @@ import SwiftUI
 @main
 struct OrbisApp: App {
     @StateObject private var store = OrbisStore()
+    @AppStorage("orbis.colorMode") private var colorMode = "system"
     @Environment(\.scenePhase) private var scenePhase
     init() {
+        OrbisAppearance.migrate()
         AppLocalization.shared.configure()
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }),
@@ -44,6 +46,7 @@ struct OrbisApp: App {
     }
     private var appContent: some View {
         ContentView().environmentObject(store)
+            .preferredColorScheme(colorMode == "light" ? .light : colorMode == "dark" ? .dark : nil)
             .environment(\.locale, AppLocalization.shared.locale)
             .environment(\.layoutDirection, .leftToRight)
             .onChange(of: scenePhase) { _, phase in

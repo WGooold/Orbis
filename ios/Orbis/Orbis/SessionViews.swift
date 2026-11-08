@@ -145,7 +145,7 @@ struct SessionDrawerView: View, Equatable {
 
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
     @State private var selectedSessionIds: Set<String> = []
@@ -530,10 +530,107 @@ private func filterTitle(_ kind: String) -> String {
     }
 }
 
+/// A local draft is the first step of creating a session. Nothing is sent to the
+/// computer until the first sentence is submitted through the existing launch/send ledgers.
+struct SessionDraftView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
+    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @AppStorage("orbis.lastDraftAgent") private var agent = "codex"
+    @AppStorage private var text: String
+    let presetCwd: String?
+    let onSubmitted: (HostConnection.LaunchState) -> Void
+    let onCancel: () -> Void
+    @State private var path: String?
+    @State private var choosingDirectory = false
+    @State private var risen = false
+    @FocusState private var focused: Bool
+    init(presetCwd: String?, onSubmitted: @escaping (HostConnection.LaunchState) -> Void, onCancel: @escaping () -> Void) {
+        self.presetCwd = presetCwd; self.onSubmitted = onSubmitted; self.onCancel = onCancel
+        _text = AppStorage(wrappedValue: "", "orbis.newSessionDraft")
+        _path = State(initialValue: presetCwd)
+    }
+    private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
+    private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
+    private var canSend: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && currentPath?.isEmpty == false &&
+            store.connection == .secured && store.activatingSessionId == nil && allowed.contains(agent)
+    }
+    var body: some View {
+        let p = OrbisPalette(scheme)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 4) {
+                ForEach(["pi", "codex", "dsh", "claude"], id: \.self) { kind in
+                    OrbisMotionButton { agent = kind } label: {
+                        AgentEmblem(kind: kind, size: 36, recessed: false)
+                            .saturation(agent == kind ? 1 : 0).opacity(agent == kind ? 1 : 0.4)
+                            .neuSurface(inset: agent == kind, radius: 18, intensity: 0.4, concentric: false)
+                            .frame(width: 48, height: 48)
+                    }.buttonStyle(.plain).disabled(!allowed.contains(kind))
+                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind ? .isSelected : [])
+                }
+                Spacer(minLength: 0)
+                Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
+            }
+            OrbisMotionButton { focused = false; choosingDirectory = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder").font(.system(size: 16))
+                    Text(currentPath ?? L10n.tr("选择工作目录")).font(.orbisCaption(mono: true)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0); Image(systemName: "chevron.down").font(.orbisCaption())
+                }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(L10n.tr("让 {0} 做什么？", agentTitle(agent)), text: $text, axis: .vertical)
+                    .font(.orbisBody()).lineLimit(1...6).focused($focused)
+                    .submitLabel(.send).onSubmit(submit)
+                    .padding(.horizontal, 16).padding(.vertical, 12).frame(minHeight: 56)
+                    .orbisField(focused: focused).accessibilityIdentifier("draft-message")
+                OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送"), tint: p.agent(agent), action: submit)
+                    .disabled(!canSend).accessibilityIdentifier("draft-send").padding(.bottom, 4)
+            }
+            Text(L10n.tr("发出第一句话，才会在电脑上创建这个会话")).font(.orbisCaption()).foregroundStyle(p.secondary)
+        }.opacity(risen ? 1 : 0).offset(y: risen ? 0 : 4)
+            .neuSurface(inset: !risen, radius: 24, intensity: 0.65, padding: 16)
+            .environment(\.orbisAccent, p.agent(agent)).tint(p.agent(agent))
+            .accessibilityIdentifier("session-draft")
+            .onAppear {
+                if !allowed.contains(agent), let first = allowed.first { agent = first }
+                if currentPath == nil { store.browseDirectory() }
+            }
+            .task {
+                if !reduced { try? await Task.sleep(for: .milliseconds(200)) }
+                guard !Task.isCancelled else { return }
+                withAnimation(reduced ? nil : InteractionMotion.selection) { risen = true }
+                if !reduced { try? await Task.sleep(for: .milliseconds(120)) }
+                focused = true
+            }
+            .onKeyPress(.escape) { onCancel(); return .handled }
+            .sheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
+    }
+    private var directorySheet: some View {
+        VStack(spacing: 16) {
+            OrbisPageHeader(title: L10n.tr("在哪个目录里开始"), closes: true, back: { choosingDirectory = false }) { EmptyView() }
+            ScrollView { RemoteDirectoryView() }
+            OrbisActionButton(title: L10n.tr("选择这个目录"), symbol: "checkmark") {
+                path = store.browse?.path; choosingDirectory = false
+            }.disabled(store.browse?.path?.isEmpty != false || store.browse?.loading != false || store.browse?.error != nil)
+        }.padding(16).onAppear { store.browseDirectory(currentPath) }
+            .onDisappear { store.dismissBrowse() }
+    }
+    private func submit() {
+        guard canSend, let cwd = currentPath else { return }
+        let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.createSession(agentKind: agent, cwd: cwd)
+        guard let launch = store.launching, store.sendMessage(sentence) else { return }
+        text = ""; focused = false; OrbisHaptics.commit(); onSubmitted(launch)
+    }
+}
+
 struct NewSessionView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let presetCwd: String?
     var onCreated: ((HostConnection.LaunchState) -> Void)? = nil
     let onDismiss: () -> Void
@@ -595,7 +692,7 @@ struct NewSessionView: View {
 struct RemoteDirectoryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {

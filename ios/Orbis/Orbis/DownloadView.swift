@@ -5,7 +5,7 @@ struct DownloadsView: View {
     @EnvironmentObject private var transfers: FileTransfers
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let onBack: () -> Void
     @State private var browserOpen = false
     @State private var selected: Set<String> = []
@@ -131,7 +131,7 @@ private struct DownloadBrowserView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let onDismiss: () -> Void
     @State private var selected: BrowseEntry?
     var body: some View {

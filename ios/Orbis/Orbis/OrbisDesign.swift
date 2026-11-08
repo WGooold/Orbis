@@ -15,40 +15,55 @@ import UIKit
 // Shared with Android's OrbisTheme / Neumorph: one continuous base, raised
 // actions and cards, recessed inputs and single-choice controls. Batch selection
 // adds a tint and outline without changing depth. All distances are points.
+enum OrbisAppearance: String, CaseIterable {
+    case mist, sage
+    static func migrate(_ defaults: UserDefaults = .standard) {
+        guard defaults.string(forKey: "orbis.appearance") == nil else { return }
+        defaults.set("mist", forKey: "orbis.appearance")
+        defaults.removeObject(forKey: "orbis.visualStyle")
+    }
+}
+
+/// The design specification's four themes share one semantic palette. Recesses
+/// keep their parent material; only the paired inner shadows describe depth.
 struct OrbisPalette {
     let dark: Bool
-    let insetFocus: Bool
-    init(_ scheme: ColorScheme) {
+    let appearance: OrbisAppearance
+    init(_ scheme: ColorScheme, appearance: OrbisAppearance? = nil) {
         dark = scheme == .dark
-        insetFocus = UserDefaults.standard.string(forKey: "orbis.visualStyle") == "insetFocus"
+        self.appearance = appearance ?? OrbisAppearance(rawValue: UserDefaults.standard.string(forKey: "orbis.appearance") ?? "mist") ?? .mist
     }
-    /// Four background layers, each 1–3% lightness apart: well < base < lift < top.
-    /// Hierarchy comes from these steps, never from black borders or #000.
-    var well: Color { Color(hex: insetFocus ? (dark ? 0x222A39 : 0xE4E7EF) : (dark ? 0x1C1F26 : 0xDDE3EF)) }
-    var base: Color { Color(hex: insetFocus ? (dark ? 0x293244 : 0xEEF0F5) : (dark ? 0x23262E : 0xE6EBF4)) }
-    var lift: Color { Color(hex: insetFocus ? (dark ? 0x303B4F : 0xF3F5F9) : (dark ? 0x292D36 : 0xEDF1F8)) }
-    var top: Color { Color(hex: insetFocus ? (dark ? 0x37435A : 0xFAFBFD) : (dark ? 0x2F333D : 0xF3F6FB)) }
-    var inset: Color { well }
-    var light: Color { Color(hex: insetFocus ? (dark ? 0x44516A : 0xFFFFFF) : (dark ? 0x2E323C : 0xFFFFFF)) }
-    var shadow: Color { Color(hex: insetFocus ? (dark ? 0x101828 : 0xA9B2C3) : (dark ? 0x0A0C11 : 0xA6B2C6)) }
-    /// Tinted ink for scrims and drop shadows instead of pure black.
-    var scrim: Color { Color(hex: dark ? 0x0A0C11 : 0x2A3344) }
-    var text: Color { Color(hex: insetFocus ? (dark ? 0xE3E9F5 : 0x4A5368) : (dark ? 0xDDE1E9 : 0x232A36)) }
-    var secondary: Color { Color(hex: insetFocus ? (dark ? 0xB9C4D8 : 0x798396) : (dark ? 0xB8C0CE : 0x4A5364)) }
-    var accent: Color { Color(hex: insetFocus ? (dark ? 0x8DB4FF : 0x5F8FE5) : (dark ? 0xA9C0FF : 0x2459D3)) }
-    var error: Color { Color(hex: dark ? 0xFFB4AB : 0xB3261E) }
-    var success: Color { Color(hex: dark ? 0x84D6B3 : 0x1B7A57) }
-    var warning: Color { Color(hex: dark ? 0xF2C26B : 0x9A5B00) }
-    var outline: Color { Color(hex: insetFocus ? (dark ? 0x4B5870 : 0xC8CEDA) : (dark ? 0x3A4150 : 0xC9D1DE)) }
-
-    func layer(_ index: Int) -> Color { [well, base, lift, top][min(max(index, 0), 3)] }
-
+    private var sage: Bool { appearance == .sage }
+    private func material(_ mistLight: UInt32, _ mistDark: UInt32, _ sageLight: UInt32, _ sageDark: UInt32) -> Color {
+        Color(hex: sage ? (dark ? sageDark : sageLight) : (dark ? mistDark : mistLight))
+    }
+    var base: Color { material(0xE6EBF4, 0x23262E, 0xE0E7DF, 0x33393D) }
+    var lift: Color { material(0xEDF1F8, 0x292D36, 0xE8EEE5, 0x3A4246) }
+    var top: Color { material(0xF3F6FB, 0x2F333D, 0xF0F5ED, 0x424B50) }
+    var well: Color { base }
+    var inset: Color { base }
+    var light: Color { material(0xFFFFFF, 0x343946, 0xF8FBF5, 0x4A555A) }
+    var shadow: Color { material(0xA6B2C6, 0x0A0C11, 0xB2C0B0, 0x1C2427) }
+    var scrim: Color { material(0x2A3344, 0x05070A, 0x203626, 0x0B1214) }
+    var text: Color { material(0x232A36, 0xDDE1E9, 0x2F4235, 0xEFF3F0) }
+    var secondary: Color { material(0x4A5364, 0xB8C0CE, 0x4F6153, 0xBAC7C2) }
+    var faint: Color { material(0x737D90, 0x858D9C, 0x6E7F6F, 0x8E9C97) }
+    var accent: Color { material(0x2F5287, 0xAFC6E6, 0x41603F, 0xA9DDC1) }
+    var accentSoft: Color { material(0xD0D9E7, 0x343944, 0xD3DCD2, 0x414D4D) }
+    var onAccent: Color { material(0xFFFFFF, 0x16233A, 0xFFFFFF, 0x173322) }
+    var error: Color { Color(hex: dark ? 0xFFB4AB : 0xAD241C) }
+    var success: Color { material(0x1A6A4D, 0x84D6B3, 0x1A6A4D, 0x8FDDB8) }
+    var warning: Color { Color(hex: dark ? 0xF2C26B : 0x845000) }
+    var outline: Color { material(0xC9D1DE, 0x3A4150, 0xC7D1C5, 0x4A5653) }
+    var shadeOpacity: Double { dark ? 0.70 : sage ? 0.65 : 0.55 }
+    var highlightOpacity: Double { dark || sage ? (sage && dark ? 0.70 : 0.80) : 0.90 }
+    func layer(_ index: Int) -> Color { [base, base, lift, top][min(max(index, 0), 3)] }
     func agent(_ kind: String?) -> Color {
         switch kind {
-        case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x006C64)
-        case "dsh": return Color(hex: dark ? 0xA1B5FF : 0x4D6BFE)
-        case "claude": return Color(hex: dark ? 0xF0B48C : 0xB4572E)
-        default: return Color(hex: dark ? 0xF2AD90 : 0x99482F)
+        case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x00655D)
+        case "dsh": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
+        case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
+        default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
         }
     }
 }
@@ -64,6 +79,7 @@ extension Color {
 
 /// The whole interface uses four sizes; weight, color and spacing carry the rest of the hierarchy.
 enum OrbisTextSize {
+    static let display: CGFloat = 28
     static let title: CGFloat = 20
     static let body: CGFloat = 15
     static let label: CGFloat = 13
@@ -73,6 +89,7 @@ enum OrbisTextSize {
 
 extension Font {
     /// Digits are tabular everywhere so counts, sizes and timers never shift their neighbours.
+    static func orbisDisplay() -> Font { orbis(OrbisTextSize.display, .semibold) }
     static func orbisTitle(_ weight: Font.Weight = .semibold) -> Font { orbis(OrbisTextSize.title, weight) }
     static func orbisBody(_ weight: Font.Weight = .regular, mono: Bool = false) -> Font { orbis(OrbisTextSize.body, weight, mono) }
     static func orbisLabel(_ weight: Font.Weight = .regular, mono: Bool = false) -> Font { orbis(OrbisTextSize.label, weight, mono) }
@@ -91,7 +108,7 @@ enum OrbisRadius {
     static let menuPadding: CGFloat = 8
     static let dialog: CGFloat = 32
     static let dialogPadding: CGFloat = 16
-    static let sheet: CGFloat = 28
+    static let sheet: CGFloat = 32
 }
 
 extension Animation {
@@ -146,45 +163,55 @@ extension EnvironmentValues {
     }
 }
 
-private func nestedLayer(_ parent: Int, inset: Bool) -> Int {
-    if inset { return parent > 0 ? parent - 1 : parent + 1 }
-    return parent < 3 ? parent + 1 : parent - 1
+/// Quantize the legacy intensity call sites to the three shared depth tokens.
+private func surfaceIntensity(_ value: CGFloat) -> CGFloat {
+    value <= 0 ? 0 : value <= 0.42 ? 0.4 : value < 1 ? 0.65 : 1
 }
 
 private struct NeuSurface: ViewModifier {
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
-    @Environment(\.orbisSurface) private var parent
+    @Environment(\.orbisReduceMotion) private var reduced
     let inset: Bool
     let radius: CGFloat
     let intensity: CGFloat
     let padding: CGFloat
     let concentric: Bool
+    func body(content: Content) -> some View {
+        content.modifier(NeuDepthSurface(depth: (inset ? -1 : 1) * surfaceIntensity(intensity),
+                                        radius: radius, padding: padding, concentric: concentric))
+            .animation(reduced ? nil : InteractionMotion.selection, value: inset)
+    }
+}
 
+/// Signed depth interpolates through the flat material instead of swapping surfaces.
+private struct NeuDepthSurface: AnimatableModifier {
+    @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisSurface) private var parent
+    var depth: CGFloat
+    let radius: CGFloat
+    let padding: CGFloat
+    let concentric: Bool
+    var animatableData: CGFloat { get { depth } set { depth = newValue } }
     func body(content: Content) -> some View {
         let p = OrbisPalette(scheme)
         let r = concentric ? (parent?.innerRadius ?? radius) : radius
-        let layer = parent.map { nestedLayer($0.layer, inset: inset) } ?? (inset ? 0 : 1)
-        // A raised control two levels deep has no fill of its own; it only shows its press.
-        let plain = (parent?.depth ?? 0) >= 2 && !inset
+        let parentLayer = parent?.layer ?? 1
+        let layer = depth < 0 ? parentLayer : min(parentLayer + (parent == nil ? 0 : 1), 3)
+        let fill = p.layer(layer)
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
-        content
-            .padding(padding)
+        let outer = parent == nil ? max(depth, 0) : 0
+        let inner = max(-depth, 0)
+        content.padding(padding)
             .environment(\.orbisSurface, OrbisSurfaceContext(layer: layer, depth: (parent?.depth ?? 0) + 1,
-                                                             innerRadius: padding > 0 ? max(r - padding, 0) : nil))
+                innerRadius: padding > 0 ? max(r - padding, 0) : nil))
             .background {
-                if parent != nil {
-                    shape.fill(plain ? .clear : p.layer(layer))
-                } else if inset {
-                    shape.fill(p.well.shadow(.inner(color: p.shadow.opacity(p.insetFocus ? 0.50 : 0.38), radius: 3 * intensity,
-                                                    x: 3 * intensity, y: 3 * intensity))
-                        .shadow(.inner(color: p.light.opacity(0.7), radius: 3 * intensity,
-                                       x: -3 * intensity, y: -3 * intensity)))
-                } else {
-                    shape.fill(p.base)
-                        .shadow(color: p.shadow.opacity(0.38), radius: 4 * intensity, x: 4 * intensity, y: 4 * intensity)
-                        .shadow(color: p.light.opacity(0.7), radius: 4 * intensity, x: -4 * intensity, y: -4 * intensity)
-                }
+                shape.fill(fill
+                    .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity * inner), radius: 4 * inner,
+                                   x: 4 * inner, y: 4 * inner))
+                    .shadow(.inner(color: p.light.opacity(p.highlightOpacity * inner), radius: 4 * inner,
+                                   x: -4 * inner, y: -4 * inner)))
+                    .shadow(color: p.shadow.opacity(p.shadeOpacity * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
+                    .shadow(color: p.light.opacity(p.highlightOpacity * outer), radius: 4 * outer, x: -4 * outer, y: -4 * outer)
             }
     }
 }
@@ -192,7 +219,7 @@ private struct NeuSurface: ViewModifier {
 extension View {
     /// `padding` is applied inside the surface; nested surfaces then use `radius - padding`.
     /// Circles and capsules pass `concentric: false` to keep their own shape.
-    func neuSurface(inset: Bool = false, radius: CGFloat = 20, intensity: CGFloat = 0.8,
+    func neuSurface(inset: Bool = false, radius: CGFloat = 20, intensity: CGFloat = 0.65,
                     padding: CGFloat = 0, concentric: Bool = true) -> some View {
         modifier(NeuSurface(inset: inset, radius: radius, intensity: intensity, padding: padding, concentric: concentric))
     }
@@ -215,7 +242,7 @@ extension View {
 
 private struct OrbisField: ViewModifier {
     @Environment(\.orbisSurface) private var parent
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let focused: Bool
     let radius: CGFloat
 
@@ -223,10 +250,10 @@ private struct OrbisField: ViewModifier {
         let r = parent?.innerRadius ?? radius
         let shape = RoundedRectangle(cornerRadius: r, style: .continuous)
         content
-            .neuSurface(inset: true, radius: radius, intensity: focused ? 0.9 : (visualStyle == "insetFocus" ? 0.82 : 0.6))
+            .neuSurface(inset: true, radius: radius, intensity: 0.65)
             // Outer halo: only the half outside the field shows; the field covers the rest.
             .background { shape.stroke(.tint.opacity(focused ? 0.12 : 0), lineWidth: 8) }
-            .overlay { shape.strokeBorder(.tint.opacity(focused ? 0.28 : 0), lineWidth: 1.5) }
+            .overlay { shape.stroke(.tint.opacity(focused ? 0.28 : 0), lineWidth: 1) }
             .animation(.orbisFade, value: focused)
     }
 }
@@ -235,7 +262,7 @@ private struct OrbisField: ViewModifier {
 /// so rows and headers separate by background steps instead of drawn lines.
 struct OrbisLayerFill: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisSurface) private var surface
     var offset = 1
     var opacity: Double = 1
@@ -374,6 +401,8 @@ enum OrbisHaptics {
 }
 
 struct NeuButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     let selected: Bool
     let radius: CGFloat
@@ -384,9 +413,10 @@ struct NeuButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: 0.6, padding: padding)
+            .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: enabled ? 0.65 : 0, padding: padding)
+            .overlay { if !enabled { RoundedRectangle(cornerRadius: radius).strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
             .contentShape(RoundedRectangle(cornerRadius: radius))
-            .opacity(enabled ? 1 : 0.4)
+            .animation(reduced ? nil : configuration.isPressed ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease, value: configuration.isPressed)
     }
 }
 
@@ -394,7 +424,7 @@ struct NeuButtonStyle: ButtonStyle {
 struct OrbisSelectionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
     let selecting: Bool
@@ -408,21 +438,21 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
         let accent = OrbisPalette(scheme).accent
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: 0.6, padding: padding)
+            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding)
             .background(OrbisTouchOrigin { touchOrigin = $0 })
             .overlay {
                 OrbisSelectionFill(selected: selected, origin: touchOrigin,
                                    radius: parent?.innerRadius ?? radius, color: accent)
             }
             .contentShape(shape)
-            .opacity(enabled ? 1 : 0.4)
+            .overlay { if !enabled { shape.strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
     }
 }
 
 /// Keep the slot even outside selection mode, so labels and cards never reflow.
 struct OrbisSelectionIndicator: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduced
     let selected: Bool
     let selecting: Bool
@@ -433,9 +463,9 @@ struct OrbisSelectionIndicator: View {
             .overlay { Circle().strokeBorder(selected ? p.accent : p.secondary.opacity(0.55), lineWidth: 1.5) }
             .overlay {
                 Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(p.dark ? Color(hex: 0x12307A) : .white).opacity(selected ? 1 : 0)
+                    .foregroundStyle(p.onAccent).opacity(selected ? 1 : 0)
             }
-            .frame(width: 22, height: 22)
+            .frame(width: 24, height: 24)
             .opacity(selecting ? 1 : 0)
             .animation(reduced ? nil : InteractionMotion.state, value: selected)
             .animation(reduced ? nil : InteractionMotion.state, value: selecting)
@@ -445,8 +475,9 @@ struct OrbisSelectionIndicator: View {
 
 /// `size` is the visible disc; the touch target stays at least 44pt (48pt for the default 40pt disc).
 struct OrbisIconButton: View {
+    @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let symbol: String
     let label: String
     var tint: Color? = nil
@@ -462,7 +493,7 @@ struct OrbisIconButton: View {
         let diameter: CGFloat = compact ? 36 : size
         Button { activation += 1; action() } label: {
             OrbisMotionGlyph(symbol: symbol, size: compact ? 18 : size * 0.55, activation: activation, morphFrom: morphFrom)
-                .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
+                .foregroundStyle(enabled ? (tint ?? OrbisPalette(scheme).secondary) : OrbisPalette(scheme).faint)
                 .frame(width: diameter, height: diameter)
         }
         .buttonStyle(NeuIconButtonStyle(selected: selected, size: diameter, compact: compact)).accessibilityLabel(label)
@@ -470,24 +501,29 @@ struct OrbisIconButton: View {
 }
 
 struct NeuIconButtonStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     let selected: Bool
     var size: CGFloat = 40
     var compact = false
     func makeBody(configuration: Configuration) -> some View {
-        let target = compact ? 48 : max(44, size + 8)
+        let target = max(48, size + 8)
         return configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .neuSurface(inset: selected || configuration.isPressed, radius: size / 2,
-                        intensity: compact ? 0.32 : size < 36 ? 0.4 : 0.5, concentric: false)
-            .frame(width: target, height: target).contentShape(Rectangle()).opacity(enabled ? 1 : 0.4)
+                        intensity: enabled ? (size <= 36 ? 0.4 : 0.65) : 0, concentric: false)
+            .overlay { if !enabled { Circle().strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
+            .frame(width: target, height: target).contentShape(Rectangle())
+            .animation(reduced ? nil : configuration.isPressed ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease, value: configuration.isPressed)
     }
 }
 
 /// Small raised text action (Android `NeumorphTextButton`): replaces bare system-tinted text buttons.
 struct OrbisTextButton: View {
+    @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -508,16 +544,16 @@ struct OrbisTextButton: View {
                 }
                 OrbisMotionText(title).lineLimit(1)
             }.font(.orbisLabel(.semibold))
-                .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
-                .padding(.horizontal, 14).frame(maxWidth: fill ? .infinity : nil, minHeight: 40)
-        }.buttonStyle(NeuButtonStyle(radius: 14))
+                .foregroundStyle(enabled ? (tint ?? pageAccent ?? OrbisPalette(scheme).accent) : OrbisPalette(scheme).faint)
+                .padding(.horizontal, 14).frame(maxWidth: fill ? .infinity : nil, minHeight: 48)
+        }.buttonStyle(NeuButtonStyle(radius: 16))
     }
 }
 
 /// Raised when off, recessed with the accent check when on (Android `NeumorphCheckbox`).
 struct OrbisCheckbox: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduced
     let checked: Bool
     let label: String
@@ -528,18 +564,18 @@ struct OrbisCheckbox: View {
                 .foregroundStyle(OrbisPalette(scheme).accent)
                 .scaleEffect(checked ? 1 : 0.5).opacity(checked ? 1 : 0)
                 .animation(reduced ? nil : .orbisPop, value: checked)
-                .frame(width: 26, height: 26)
+                .frame(width: 24, height: 24)
                 .neuSurface(inset: checked, radius: 8, intensity: 0.42, concentric: false)
-                .frame(width: 44, height: 44).contentShape(Rectangle())
+                .frame(width: 48, height: 48).contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(label).accessibilityAddTraits(checked ? .isSelected : [])
     }
 }
 
-/// Recessed track with a raised knob; the track picks up the accent when on.
+/// Neutral material track and rounded square thumb: accent belongs to the ink.
 struct NeuToggleStyle: ToggleStyle {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var appearance = "mist"
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
@@ -549,16 +585,16 @@ struct NeuToggleStyle: ToggleStyle {
             HStack(spacing: 12) {
                 configuration.label.frame(maxWidth: .infinity, alignment: .leading)
                 ZStack(alignment: on ? .trailing : .leading) {
-                    Capsule().fill(p.accent.opacity(on ? 0.22 : 0))
-                    Circle().fill(on ? p.accent : p.base).frame(width: 22, height: 22)
-                        .shadow(color: p.shadow.opacity(0.45), radius: 2, x: 1.5, y: 1.5)
-                        .shadow(color: p.light.opacity(0.7), radius: 2, x: -1.5, y: -1.5)
+                    RoundedRectangle(cornerRadius: 8).fill(p.base)
+                        .overlay { Circle().fill(enabled && on ? p.accent : p.faint).frame(width: 4, height: 4) }
+                        .frame(width: 24, height: 24)
+                        .neuSurface(radius: 8, intensity: enabled ? 0.4 : 0, concentric: false)
                         .padding(4)
-                }.frame(width: 52, height: 30)
-                    .neuSurface(inset: true, radius: 15, intensity: 0.5, concentric: false)
-                    .animation(reduced ? nil : .orbisPop, value: on)
+                }.frame(width: 56, height: 32)
+                    .neuSurface(inset: true, radius: 12, intensity: enabled ? 0.4 : 0, concentric: false)
+                    .animation(reduced ? nil : InteractionMotion.selection, value: on)
             }.frame(minHeight: 48).contentShape(Rectangle())
-        }.buttonStyle(.plain).opacity(enabled ? 1 : 0.4)
+        }.buttonStyle(.plain)
             .accessibilityAddTraits(.isToggle).accessibilityValue(on ? L10n.tr("开") : L10n.tr("关"))
     }
 }
@@ -566,7 +602,7 @@ struct NeuToggleStyle: ToggleStyle {
 /// Copy action whose glyph animates into success and restores after 2.5 seconds.
 struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.isEnabled) private var enabled
     let label: String
     var size: CGFloat = 28
@@ -594,15 +630,15 @@ struct OrbisCopyButton: View {
 /// recessed grab handle instead of the system indicator. Content starts outside any surface.
 private struct OrbisSheetChrome: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let detents: Set<PresentationDetent>
     func body(content: Content) -> some View {
         content
             .environment(\.orbisSurface, nil)
             .overlay(alignment: .top) {
-                Capsule().fill(.clear).frame(width: 40, height: 6)
+                Capsule().fill(.clear).frame(width: 36, height: 6)
                     .neuSurface(inset: true, radius: 3, intensity: 0.35, concentric: false)
-                    .padding(.top, 7).allowsHitTesting(false).accessibilityHidden(true)
+                    .padding(.top, 8).allowsHitTesting(false).accessibilityHidden(true)
             }
             .presentationDetents(detents)
             .presentationDragIndicator(.hidden)
@@ -744,9 +780,10 @@ struct OrbisMenuButton<Label: View>: View {
 
 /// Icon disc that opens a menu; looks and sizes exactly like `OrbisIconButton`.
 struct OrbisMenuIconButton: View {
+    @Environment(\.isEnabled) private var enabled
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @State private var anchor = OrbisAnchor()
     let symbol: String
     let label: String
@@ -760,7 +797,7 @@ struct OrbisMenuIconButton: View {
         let diameter: CGFloat = compact ? 36 : size
         Button { activation += 1; overlay.showMenu(items(), from: anchor.frame) } label: {
             OrbisMotionGlyph(symbol: symbol, size: compact ? 18 : size * 0.55, activation: activation)
-                .foregroundStyle(tint ?? OrbisPalette(scheme).secondary)
+                .foregroundStyle(enabled ? (tint ?? OrbisPalette(scheme).secondary) : OrbisPalette(scheme).faint)
                 .frame(width: diameter, height: diameter)
         }
         .buttonStyle(NeuIconButtonStyle(selected: selected, size: diameter, compact: compact))
@@ -772,7 +809,7 @@ struct OrbisMenuIconButton: View {
 /// A hand-drawn raised panel (menus, dialogs). Its content counts as nested inside one frame.
 private struct OrbisPanel: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let radius: CGFloat
     let padding: CGFloat
     func body(content: Content) -> some View {
@@ -791,7 +828,7 @@ private struct OrbisPanel: ViewModifier {
 
 private struct OrbisOverlayLayer: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @ObservedObject var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
 
@@ -866,7 +903,7 @@ private struct OrbisPanelEntrance: AnimatableModifier {
 
 private struct OrbisMenuPanel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let request: OrbisOverlay.MenuRequest
     let anchor: CGRect
@@ -999,7 +1036,7 @@ private struct OrbisMenuPanel: View {
 
 private struct OrbisMenuRow: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let item: OrbisMenuItem
     let action: () -> Void
     @StateObject private var feedback = OrbisCopyFeedback()
@@ -1042,7 +1079,7 @@ private struct OrbisMenuRow: View {
 /// Menu rows sit flat on the panel; only the checked or pressed row takes a recessed fill.
 private struct MenuRowStyle: ButtonStyle {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.isEnabled) private var enabled
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
@@ -1060,7 +1097,7 @@ private struct MenuRowStyle: ButtonStyle {
 
 private struct OrbisDialogPanel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let request: OrbisOverlay.DialogRequest
     let onAction: (OrbisDialogAction) -> Void
     let onCancel: () -> Void
@@ -1115,8 +1152,9 @@ private struct OrbisDialogPanel: View {
 }
 
 struct OrbisActionButton: View {
+    @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -1126,11 +1164,11 @@ struct OrbisActionButton: View {
     var body: some View {
         Button { activation += 1; action() } label: {
             HStack(spacing: 8) {
-                if let symbol { OrbisMotionGlyph(symbol: symbol, size: 17, activation: activation) }
+                if let symbol { OrbisMotionGlyph(symbol: symbol, size: 18, activation: activation) }
                 OrbisMotionText(title)
             }.font(.orbisBody(.semibold))
-                .foregroundStyle(tint ?? pageAccent ?? OrbisPalette(scheme).accent)
-                .frame(maxWidth: .infinity, minHeight: 52).padding(.horizontal, 12)
+                .foregroundStyle(enabled ? (tint ?? pageAccent ?? OrbisPalette(scheme).accent) : OrbisPalette(scheme).faint)
+                .frame(maxWidth: .infinity, minHeight: 56).padding(.horizontal, 16)
         }.buttonStyle(NeuButtonStyle())
     }
 }
@@ -1144,7 +1182,7 @@ struct OrbisHeader<Leading: View, Title: View, Trailing: View>: View {
             leading
             title.frame(maxWidth: .infinity, alignment: .leading)
             trailing
-        }.padding(.horizontal, 16).padding(.vertical, 10)
+        }.padding(.horizontal, 16).frame(minHeight: 56)
     }
 }
 
@@ -1169,14 +1207,14 @@ struct OrbisPageHeader<Trailing: View>: View {
 /// Keep it behind the glyph/coin so it never clips a projected edge or intercepts a tap.
 struct AgentIconRecess: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     var radius: CGFloat = 16
 
     var body: some View {
         let palette = OrbisPalette(scheme)
         RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(palette.well
-                .shadow(.inner(color: palette.shadow.opacity(palette.insetFocus ? 0.50 : 0.38),
+                .shadow(.inner(color: palette.shadow.opacity(palette.shadeOpacity),
                                radius: 2.4, x: 2.4, y: 2.4))
                 .shadow(.inner(color: palette.light.opacity(0.7), radius: 2.4, x: -2.4, y: -2.4)))
             .allowsHitTesting(false).accessibilityHidden(true)
@@ -1185,7 +1223,7 @@ struct AgentIconRecess: View {
 
 struct AgentEmblem: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let kind: String?
     var size: CGFloat = 44
     var recessed = true
@@ -1224,38 +1262,31 @@ private func agentAsset(_ kind: String?) -> String {
 
 struct RuntimeStatusLabel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var appearance = "mist"
     let status: String
     var syncing = false
     var title: String? = nil
+    private var working: Bool { syncing || ["running", "compacting", "starting", "background"].contains(status) }
     var body: some View {
-        HStack(spacing: 5) {
-            // Keep the status dot and refresh spinner in the same measured slot.
-            Circle().fill(color).frame(width: 7, height: 7)
-                .opacity(syncing ? 0 : 1)
-                .frame(width: 14, height: 14)
-                .overlay {
-                    if syncing { ProgressView().controlSize(.mini).accessibilityLabel(L10n.tr("正在刷新")) }
-                }
-            OrbisMotionText(title ?? runtimeStatusTitle(status)).font(.orbisCaption()).lineLimit(1)
+        HStack(spacing: 4) {
+            OrbisStatusDot(tone: color, working: working, hollow: status == "idle" && !syncing)
+            OrbisMotionText(title ?? runtimeStatusTitle(status)).font(.orbisLabel()).lineLimit(1)
         }.foregroundStyle(OrbisPalette(scheme).secondary)
     }
     private var color: Color {
         let p = OrbisPalette(scheme)
         switch status {
-        // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色。
-        case "running", "compacting", "starting", "background": return p.accent
+        case "running", "compacting", "starting", "background": return p.success
         case "waiting", "waiting_interaction", "waiting_local_interaction", "launch_unconfirmed": return p.warning
-        case "unknown", "tasks_unknown": return p.secondary
         case "error": return p.error
-        default: return p.success
+        default: return p.faint
         }
     }
 }
 
 struct OrbisEmptyState: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let symbol: String
     let title: String
     var body: some View {
@@ -1268,7 +1299,7 @@ struct OrbisEmptyState: View {
 
 struct OrbisNotice: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let text: String
     var error = false
     var body: some View {
@@ -1395,7 +1426,7 @@ private struct DownloadFlightHost: ViewModifier {
 
 private struct DownloadFlightTarget: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     func body(content: Content) -> some View {
@@ -1410,7 +1441,7 @@ private struct DownloadFlightTarget: ViewModifier {
 
 private struct DownloadFlightLayer: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     /// Chat pages follow the agent's accent (X02).
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight

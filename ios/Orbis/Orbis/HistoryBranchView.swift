@@ -3,7 +3,7 @@ import SwiftUI
 struct HistoryBranchView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let onBack: () -> Void
     /// Same download entry as the chat header; the downloads page returns here (ADR-0054, §7).
     let onDownloads: () -> Void

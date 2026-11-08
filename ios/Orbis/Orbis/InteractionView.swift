@@ -3,7 +3,7 @@ import SwiftUI
 struct InteractionWorkspaceView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let runtimeId: String
     @State private var selectedId: String?
     @State private var open = false
@@ -81,7 +81,7 @@ struct InteractionWorkspaceView: View {
 private struct InteractionRequestView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.visualStyle") private var visualStyle = "classic"
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.openURL) private var openURL
     @Environment(\.orbisAccent) private var pageAccent
     let request: InteractionRequest
