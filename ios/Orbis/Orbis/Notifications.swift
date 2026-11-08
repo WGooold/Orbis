@@ -205,3 +205,95 @@ final class RuntimeNotifications: ObservableObject {
         jobs.values.forEach { $0.cancel() }; jobs = [:]; jobIds = [:]
     }
 }
+
+
+/// Source snapshots seed activity; only an applied, advancing patch may complete
+/// the same turn. Receipts survive a process restart and stay bounded per pairing.
+final class ReplyCompletionTracker {
+    private struct Identity: Codable, Hashable {
+        let session: String
+        let epoch: String
+        let turn: String
+        let startedAt: Int64
+    }
+    private var active: [String: Identity] = [:]
+    private var positions: [String: (epoch: String, seq: Int64)] = [:]
+    private var receipts: [Identity]
+    private var seen: Set<Identity>
+    private let preferences: UserDefaults?
+    private let key: String
+    init(preferences: UserDefaults? = nil, owner: String = "") {
+        self.preferences = preferences
+        key = "orbis.replyCompletionReceipts." + owner
+        let stored = preferences?.data(forKey: key).flatMap { try? JSONDecoder().decode([Identity].self, from: $0) } ?? []
+        receipts = Array(stored.suffix(512)); seen = Set(receipts)
+    }
+    func resetActive() { active = [:]; positions = [:] }
+    func consume(_ event: [String: Any], sessionId: String) -> Bool {
+        guard let type = event["type"] as? String, ["session.snapshot", "session.patch"].contains(type), !sessionId.isEmpty,
+              let source = event["source"] as? [String: Any], source["ready"] as? Bool == true,
+              let epoch = source["epoch"] as? String, !epoch.isEmpty,
+              let sequence = source["seq"] as? NSNumber, sequence.int64Value >= 0,
+              let live = event["live"] as? [String: Any], live["complete"] as? Bool == true else { return false }
+        let previous = positions[sessionId]
+        if previous?.epoch != epoch { active[sessionId] = nil }
+        else if sequence.int64Value <= previous!.seq { return false }
+        positions[sessionId] = (epoch, sequence.int64Value)
+        guard let turn = live["turn"] as? [String: Any],
+              let turnId = turn["turnId"] as? String, !turnId.isEmpty, turnId.utf16.count <= 256,
+              let startedAt = turn["startedAt"] as? NSNumber, startedAt.int64Value >= 0 else { active[sessionId] = nil; return false }
+        let identity = Identity(session: sessionId, epoch: epoch, turn: turnId, startedAt: startedAt.int64Value)
+        if turn["durationMs"] == nil && turn["outcome"] == nil { active[sessionId] = identity; return false }
+        let observed = active.removeValue(forKey: sessionId)
+        guard turn["outcome"] as? String == "completed", let duration = turn["durationMs"] as? NSNumber, duration.doubleValue >= 0 else { return false }
+        let shouldNotify = type == "session.patch" && previous?.epoch == epoch && observed == identity && !seen.contains(identity)
+        remember(identity)
+        return shouldNotify
+    }
+    private func remember(_ identity: Identity) {
+        guard seen.insert(identity).inserted else { return }
+        receipts.append(identity)
+        if receipts.count > 512 { seen.remove(receipts.removeFirst()) }
+        if let data = try? JSONEncoder().encode(receipts) { preferences?.set(data, forKey: key) }
+    }
+}
+
+#if canImport(UIKit) && canImport(UserNotifications)
+import UIKit
+import UserNotifications
+
+/// Defaults to notifications after the system grants permission. iOS suspension still
+/// stops live reception; no background connection or remote-push capability is implied.
+@MainActor
+final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = ReplyCompletionNotifications()
+    private var requesting = false
+    func prepare() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        guard !requesting else { return }
+        requesting = true
+        Task {
+            let settings = await center.notificationSettings()
+            if settings.authorizationStatus == .notDetermined {
+                _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+            }
+            requesting = false
+        }
+    }
+    func post(hostId: String, sessionId: String, epoch: String, turnId: String, title: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = L10n.tr("回复完成")
+        content.sound = .default
+        content.userInfo = ["hostId": hostId, "sessionId": sessionId]
+        // Use an identity key so repeated delivery replaces the same OS notification.
+        let identifier = Data((hostId + "\u{0}" + sessionId + "\u{0}" + epoch + "\u{0}" + turnId).utf8).base64EncodedString()
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
+    }
+}
+#endif

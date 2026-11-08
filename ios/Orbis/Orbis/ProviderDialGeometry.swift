@@ -1,6 +1,6 @@
 import Foundation
 
-/// DS-02: the two handles are separated by a 24pt inactive moat. Hit testing is
+/// SC57: the two handles are separated by a 24pt inactive moat. Hit testing is
 /// based on the initial point so a drag cannot change its owner halfway through.
 enum ProviderDialGeometry {
     enum Handle: Equatable { case agent, profile }
@@ -36,6 +36,7 @@ enum ProviderDialGeometry {
             return .profile
         }
     }
+    static func settleDuration(distance: Double) -> Double { min(0.46, 0.22 + abs(distance) * 0.06) }
     static func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> Double { min(max(value, lower), upper) }
     static func softened(_ value: Double, count: Int) -> Double {
         if value < 0 { return value * 0.3 }

@@ -1,4 +1,4 @@
-// Orbis 测试用途：DS-02 双圈供应商盘的边缘保护、空心/护城河分区和吸附。
+// Orbis 测试用途：SC57 双圈供应商盘的边缘保护、空心/护城河分区和吸附。
 // 防止手势跨圈以及换 Agent 时被速度带过多个 Agent；配置盘保留速度投射。
 import Foundation
 import Testing
@@ -29,4 +29,12 @@ struct ProviderDialGeometryTests {
         #expect(ProviderDialGeometry.settled(0, translation: 900, predictedTranslation: 900, handle: .profile, count: 4, pointsPerStep: 96) == 0)
         #expect(ProviderDialGeometry.settled(0, translation: -900, predictedTranslation: -900, handle: .profile, count: 0, pointsPerStep: 96) == 0)
     }
+    // Outer-disc landing has a distance-dependent, bounded 220–460ms duration.
+    @Test func settlingDurationGrowsAndRemainsBounded() {
+        #expect(ProviderDialGeometry.settleDuration(distance: 0) == 0.22)
+        #expect(ProviderDialGeometry.settleDuration(distance: 2) > 0.22)
+        #expect(ProviderDialGeometry.settleDuration(distance: -2) == ProviderDialGeometry.settleDuration(distance: 2))
+        #expect(ProviderDialGeometry.settleDuration(distance: 100) == 0.46)
+    }
+
 }

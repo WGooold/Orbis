@@ -33,4 +33,18 @@ struct SharedSessionContentTests {
         #expect(throws: (any Error).self) { try SharedSessionContent().expand(wire, epoch: nil, seq: nil) }
         #expect(try json(f["wireInitial"]!)["event"]["live"]["messages"].array[0]["message"]["content"].array[0]["text"] == .string(""))
     }
+    // Optional outcome is preserved by generic live projection, and an older
+    // complete checkpoint without it continues to decode unchanged.
+    @Test func optionalTurnOutcomeSurvivesSharedLiveRehydration() throws {
+        let f = try fixture(), codec = SharedSessionContent()
+        var wire = try #require(f["wireInitial"] as? [String: Any])
+        var event = try #require(wire["event"] as? [String: Any])
+        var live = try #require(event["live"] as? [String: Any])
+        live["turn"] = ["turnId": "t1", "startedAt": 1, "durationMs": 10, "outcome": "completed"]
+        event["live"] = live; wire["event"] = event
+        let expanded = try codec.expand(wire, epoch: nil, seq: nil)
+        #expect(try json(expanded)["event"]["live"]["turn"]["outcome"] == .string("completed"))
+        #expect(try json(codec.expand(try #require(f["wireInitial"] as? [String: Any]), epoch: nil, seq: nil)) == json(f["initial"]!))
+    }
+
 }

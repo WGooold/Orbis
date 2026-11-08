@@ -63,6 +63,43 @@ struct LaunchLedgerTests {
         return fixture
     }
 
+    // S35 / SC55: no computer session before first send, then one launch and one
+    // waiting message under the same placeholder; retrying the gesture cannot duplicate it.
+    @Test func firstSentenceStartsOneNamedSessionAndQueuesOneMessage() async throws {
+        let fixture = await setup(); let host = fixture.host
+        #expect(!host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "  "))
+        #expect(fixture.transport.activations.isEmpty)
+        #expect(host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "帮我核对首页交互"))
+        #expect(fixture.transport.activations.count == 1)
+        #expect(host.launching?.title == "帮我核对首页交互")
+        #expect(host.pendingSends.items.count == 1)
+        #expect(fixture.transport.userMessages.isEmpty)
+        #expect(!host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "重复点击"))
+        #expect(fixture.transport.activations.count == 1)
+        try await fixture.transport.activated("draft-first")
+        await fixture.transport.online("draft-first")
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == "rt-draft-first")
+    }
+
+    // First-sentence validation must run before a remote activation. Invalid
+    // text stays in the owner draft, and correcting it still creates just one session.
+    @Test func invalidFirstSentencePreservesDraftWithoutActivating() async throws {
+        let fixture = await setup(); let host = fixture.host
+        let draft = RuntimeSummary(runtimeId: "local-draft", name: "Draft", cwd: "/repo/app", status: "idle")
+        for text in [" /model", String(repeating: "字", count: 100_001)] {
+            host.saveDraft(text, for: draft)
+            #expect(!host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: text))
+            #expect(fixture.transport.activations.isEmpty)
+            #expect(host.launching == nil)
+            #expect(host.pendingSends.items.isEmpty)
+            #expect(host.draft(for: draft) == text)
+        }
+        #expect(host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "正常首句"))
+        #expect(fixture.transport.activations.count == 1)
+        #expect(host.pendingSends.items.count == 1)
+    }
+
     @Test func resumeEntersTheChatAtOnceShowingStartingAndSwitchesWhenOnline() async throws {
         let fixture = await setup(); let host = fixture.host
         let session = SessionSummary(sessionId: "s1", name: "旧会话", cwd: "/repo/app", firstMessage: nil, createdAt: 1, modifiedAt: 1, messageCount: 3, agentKind: "codex", archived: false)

@@ -33,6 +33,7 @@ final class HostConnection: ObservableObject {
     let hostState = HostState()
     let agentState = AgentState()
     let notifications = RuntimeNotifications()
+    private let replyCompletions: ReplyCompletionTracker
     @Published private(set) var pairings: [HostPairing] = []
     @Published private(set) var selectedHostId: String?
     @Published private(set) var runtimes: [RuntimeSummary] = [] { didSet { markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
@@ -447,6 +448,7 @@ final class HostConnection: ObservableObject {
         self.secure = secure
         self.transport = transport ?? RelayTransport()
         self.preferences = preferences
+        replyCompletions = ReplyCompletionTracker(preferences: preferences, owner: initialPairing.map(FileTransfers.pairingKey) ?? "unpaired")
         let root = transferRoot ?? (preferences == nil ? FileManager.default.temporaryDirectory.appendingPathComponent("orbis-preview-" + UUID().uuidString) :
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Orbis"))
         transfers = FileTransfers(root: root, pairing: initialPairing)
@@ -719,7 +721,7 @@ final class HostConnection: ObservableObject {
             guard let self, self.connectionGeneration == generation else { return }
             self.setHistoryConnection(state == .secured)
             // 断线时已写入的操作结果未知，列表类保持叠加（L4）；新连接的首个 device.ready 再核对。
-            if state != .secured { self.pendingSends.connectionLost(); self.ledgerCloseConnection() }
+            if state != .secured { self.pendingSends.connectionLost(); self.ledgerCloseConnection(); self.replyCompletions.resetActive() }
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
@@ -1284,6 +1286,19 @@ final class HostConnection: ObservableObject {
         guard !cwd.isEmpty else { return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
+    /// S35 / SC55: the local draft starts both existing ledgers in one user action.
+    /// Empty or duplicate submissions cannot create an empty computer session.
+    func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
+        guard let text = validatedMessageBody(firstMessage), !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
+        // A first sentence needs one launch operation and one waiting send. Reject
+        // capacity exhaustion before writing session.activate to the computer.
+        guard ledger.operations.filter({ !$0.phase.isSettled }).count + 2 <= ledger.capacity else {
+            errorMessage = L10n.tr("待发送的消息过多，请稍后重试。"); return false
+        }
+        activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new", displayTitle: String(text.prefix(22)))
+        guard let launch = launching, selectedRuntimeId == launch.placeholder else { return false }
+        return sendMessage(text)
+    }
     #if DEBUG
     func createCaptureSession(agentKind: String, cwd: String) {
         guard !cwd.isEmpty else { return }
@@ -1291,7 +1306,7 @@ final class HostConnection: ObservableObject {
     }
     #endif
 
-    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui") {
+    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui", displayTitle: String? = nil) {
         guard connection == .secured, activationRequestId == nil else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
@@ -1309,7 +1324,7 @@ final class HostConnection: ObservableObject {
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”；恢复已有会话时先显示缓存历史（V13）。
         let resumed = target["type"] as? String == "resume" ? sessionId : nil
         let cwd = target["cwd"] as? String ?? resumed.flatMap { sessionIndex[$0]?.cwd } ?? ""
-        let title = resumed.flatMap { id in sessionIndex[id].map { displayName($0) } }
+        let title = displayTitle ?? resumed.flatMap { id in sessionIndex[id].map { displayName($0) } }
             ?? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话"))
         launching = LaunchState(requestId: requestId, placeholder: placeholder,
                                 target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
@@ -1326,7 +1341,7 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = launch.target
         if let kind = launch.agentKind { target["agentKind"] = kind }
         launching = nil
-        activateTarget(target, sessionId: launch.resumed ?? "new")
+        activateTarget(target, sessionId: launch.resumed ?? "new", displayTitle: launch.title)
     }
 
     /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
@@ -1807,17 +1822,23 @@ final class HostConnection: ObservableObject {
         } else { errorMessage = message ?? L10n.tr("{0} 未完成，请重试。", action.name) }
     }
 
+    /// Validate before either a normal send or first-sentence activation, so a
+    /// rejected slash command/oversized message never starts an empty session.
+    private func validatedMessageBody(_ text: String, attachmentCount: Int = 0) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = trimmed.isEmpty && attachmentCount > 0 ? L10n.tr("已发送 {0} 个附件", attachmentCount) : trimmed
+        guard !body.isEmpty else { return nil }
+        guard body.utf16.count <= 100_000 else { errorMessage = L10n.tr("消息不能超过 100,000 个字符。"); return nil }
+        guard !trimmed.hasPrefix("/") else {
+            errorMessage = L10n.tr("请从命令菜单选择斜杠命令。"); return nil
+        }
+        return body
+    }
+
     @discardableResult
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool {
         guard canSend, let runtime = selectedRuntime, delivery == nil || ["followUp", "steer"].contains(delivery!) else { return false }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = trimmed.isEmpty && !attachmentIds.isEmpty ? L10n.tr("已发送 {0} 个附件", attachmentIds.count) : trimmed
-        guard !body.isEmpty else { return false }
-        guard body.utf16.count <= 100_000 else { errorMessage = L10n.tr("消息不能超过 100,000 个字符。"); return false }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else {
-            errorMessage = L10n.tr("请从命令菜单选择斜杠命令。")
-            return false
-        }
+        guard let body = validatedMessageBody(text, attachmentCount: attachmentIds.count) else { return false }
         let attachments = transfers.currentTasks.filter { attachmentIds.contains($0.id) && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.direction == "upload" }
         guard attachments.count == attachmentIds.count, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }) else { return false }
         // ADR-0049 §6.2：附件没传完或同会话还有等待中的前一条，就先在本机创建、排在后面，轮到时再写入通道。
@@ -2924,6 +2945,16 @@ final class HostConnection: ObservableObject {
                 if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
             } else if prepared.hasLive { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
             sharedSessionContent.remember(event, runtime: runtimeId)
+            if replyCompletions.consume(event, sessionId: session) {
+                #if canImport(UIKit) && canImport(UserNotifications)
+                if preferences != nil, let hostId = selectedHostId,
+                   let turnId = ((event["live"] as? [String: Any])?["turn"] as? [String: Any])?["turnId"] as? String,
+                   let epoch = (event["source"] as? [String: Any])?["epoch"] as? String,
+                   let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) {
+                    ReplyCompletionNotifications.shared.post(hostId: hostId, sessionId: session, epoch: epoch, turnId: turnId, title: displayName(runtime))
+                }
+                #endif
+            }
             return true
         }
         return false

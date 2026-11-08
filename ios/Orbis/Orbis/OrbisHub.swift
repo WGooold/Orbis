@@ -296,6 +296,7 @@ final class OrbisStore: ObservableObject {
     func noteComposerFocus(_ focused: Bool) { activeConnection.noteComposerFocus(focused) }
     func takeComposerFocus(_ runtimeId: String) -> Bool { activeConnection.takeComposerFocus(runtimeId) }
     func createSession(agentKind: String, cwd: String) { activeConnection.createSession(agentKind: agentKind, cwd: cwd) }
+    func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool { activeConnection.createSession(agentKind: agentKind, cwd: cwd, firstMessage: firstMessage) }
     #if DEBUG
     func createCaptureSession(agentKind: String, cwd: String) { activeConnection.createCaptureSession(agentKind: agentKind, cwd: cwd) }
     #endif
