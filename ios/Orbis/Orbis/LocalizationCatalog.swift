@@ -381,6 +381,7 @@ enum LocalizationCatalog {
         "切换会让正在进行的回复短暂停顿，连上后自动继续。": "The current response may pause briefly and resume after reconnection.",
         "切换到 {0}": "Switch to {0}",
         "切换到此文件后读取差异": "Switch to this file to load its diff",
+        "切换后，电脑会重新加载 Agent。已有会话需要重新打开。": "Switching reloads the Agent on the computer. Existing sessions must be reopened.",
         "切换未完成：": "Switch did not complete: ",
         "切换模型": "Switch model",
         "切换模型（当前 {0}）": "Switch model (current: {0})",

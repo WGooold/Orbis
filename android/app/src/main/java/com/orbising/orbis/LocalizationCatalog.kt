@@ -400,6 +400,7 @@ internal object LocalizationCatalog {
         "切换会让正在进行的回复短暂停顿，连上后自动继续。" to "The current response may pause briefly and resume after reconnection.",
         "切换到 {0}" to "Switch to {0}",
         "切换到此文件后读取差异" to "Switch to this file to load its diff",
+        "切换后，电脑会重新加载 Agent。已有会话需要重新打开。" to "Switching reloads the Agent on the computer. Existing sessions must be reopened.",
         "切换未完成：" to "Switch did not complete: ",
         "切换模型" to "Switch model",
         "切换模型（当前 {0}）" to "Switch model (current: {0})",
@@ -469,9 +470,9 @@ internal object LocalizationCatalog {
         "历史读取失败，请重试。" to "History read failed. Try again.",
         "历史读取暂未完成，请重试。" to "History read is incomplete. Try again.",
         "历史读取请求未送达。" to "History request was not delivered.",
-        "历史读取队列繁忙，正在重新同步。" to "History read queue is busy. Syncing again.",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "历史读取队列繁忙，正在重新同步。" to "History read queue is busy. Syncing again.",
         "历史页不能替换来源" to "History page cannot replace the source",
         "历史页仍在等待响应" to "History page is still awaiting a response",
         "历史页条目超限" to "History page entry limit exceeded",
@@ -621,9 +622,9 @@ internal object LocalizationCatalog {
         "审批：never：不会请求额外审批，受限操作会直接失败；这不代表自动批准所有操作。" to "Approval: never. No additional approval is requested; restricted operations fail directly. This does not automatically approve all operations.",
         "审批：不可信操作先询问。可信的读取操作直接执行，其他操作先申请审批。" to "Approval: Ask before untrusted operations. Trusted read operations run directly. Other operations request approval first.",
         "审批：不申请审批。受限操作直接失败；这不代表自动批准所有操作。" to "Approval: Never request approval. Restricted operations fail directly. This does not automatically approve all operations.",
-        "审批：按需询问。由 Codex 判断何时申请额外授权。" to "Approval: Ask when needed. Codex decides when to request additional authorization.",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "审批：按需询问。由 Codex 判断何时申请额外授权。" to "Approval: Ask when needed. Codex decides when to request additional authorization.",
         "审批：未知（{0}）；当前审批行为尚未确认。" to "Approval: unknown ({0}). The current approval behavior has not been confirmed.",
         "审批：未知；当前审批行为尚未确认。" to "Approval: unknown. The current approval behavior has not been confirmed.",
         "密文短于认证标签长度" to "Ciphertext is shorter than the authentication tag",
@@ -773,9 +774,9 @@ internal object LocalizationCatalog {
         "归档未完成：" to "Archive did not complete: ",
         "归档选中会话" to "Archive selected sessions",
         "当前 Agent 版本无法按队列项取消，消息仍会保留" to "This Agent version cannot cancel individual queued messages. The message is still queued.",
-        "当前 Git 工作分支" to "Current Git branch",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "当前 Git 工作分支" to "Current Git branch",
         "当前 provider" to "Current provider",
         "当前 provider 筛选" to "Current provider filter",
         "当前 provider（尚未获取）" to "Current provider (not loaded)",
@@ -925,9 +926,9 @@ internal object LocalizationCatalog {
         "文件范围未知" to "File access unknown",
         "文件范围：不受原生文件沙箱限制，仍受电脑账户权限限制。" to "File access: unrestricted by the native file sandbox, but still limited by the computer account permissions.",
         "文件范围：只读；写入需要额外授权，是否能申请授权取决于审批策略。" to "File access: read-only. Writes require additional authorization; whether it can be requested depends on the approval policy.",
-        "文件范围：当前工作区及原生沙箱允许的临时目录可写；工作区外操作仍受权限限制。" to "File access: writes are allowed in the current workspace and temporary directories permitted by the native sandbox. Operations outside the workspace remain restricted.",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "文件范围：当前工作区及原生沙箱允许的临时目录可写；工作区外操作仍受权限限制。" to "File access: writes are allowed in the current workspace and temporary directories permitted by the native sandbox. Operations outside the workspace remain restricted.",
         "文件范围：未知（{0}）；不能据此判断可读写范围。" to "File access: unknown ({0}). Readable and writable locations cannot be determined.",
         "文件范围：未知；不能据此判断可读写范围。" to "File access: unknown. Readable and writable locations cannot be determined.",
         "文件范围：由外部沙箱管理；当前信息不能确定具体可读写范围。" to "File access is managed by an external sandbox. The available information does not establish its readable or writable locations.",
@@ -1077,9 +1078,9 @@ internal object LocalizationCatalog {
         "查看全部 {0} 个工作目录" to "View all {0} working directories",
         "查看全部 {0} 条" to "View all {0} entries",
         "查看只读历史" to "View read-only history",
-        "查看完整内容" to "View full content",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "查看完整内容" to "View full content",
         "查看已归档会话" to "View archived sessions",
         "查看或设置 Codex 会话显示名称" to "Show or set the Codex session display name",
         "查看未归档会话" to "View active sessions",
@@ -1229,9 +1230,9 @@ internal object LocalizationCatalog {
         "电脑上的会话与历史不受影响，之后可以重新扫码配对。" to "Sessions and history on your computer stay intact. You can scan again to pair later.",
         "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。" to "The session is still running on the computer. Try again later or close it on the computer.",
         "电脑上的会话目录仍是原状态" to "The computer's session catalog is unchanged",
-        "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
         "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
         "电脑尚未核对" to "Not yet checked by computer",
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
@@ -1381,9 +1382,9 @@ internal object LocalizationCatalog {
         "计划模式" to "Plan mode",
         "认证" to "Authentication",
         "让 {0} 做什么？" to "What should {0} do?",
-        "记录" to "Record",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "记录" to "Record",
         "记录不是对象" to "Record is not an object",
         "记录缺少字段" to "Record is missing fields",
         "记录范围未确认" to "Record range unconfirmed",
@@ -1533,9 +1534,9 @@ internal object LocalizationCatalog {
         "连接电脑后可操作" to "Connect to the computer to use this action",
         "连接电脑后继续" to "Connect to the computer to continue",
         "连接电脑并打开会话后，可把历史保存在本机。" to "Connect to the computer and open a session to save history locally.",
-        "连接电脑并继续此会话后可取回完整内容。" to "Connect to the computer and continue this session to retrieve the full content.",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "连接电脑并继续此会话后可取回完整内容。" to "Connect to the computer and continue this session to retrieve the full content.",
         "连接错误" to "Connection error",
         "连接：{0}" to "Connection: {0}",
         "退出 Codex（关闭电脑上的 TUI 窗口）" to "Quit Codex (close the TUI window on the computer)",

@@ -368,6 +368,7 @@
   "分支会移到这条消息之前，原文回到输入框": "The branch will move before this message and its text will return to the composer",
   "分支信息待同步": "Branch info awaiting sync",
   "切换": "Switch",
+  "切换后，电脑会重新加载 Agent。已有会话需要重新打开。": "Switching reloads the Agent on the computer. Existing sessions must be reopened.",
   "切换 {0} 供应商": "Switch {0} provider",
   "切换中": "Switching",
   "切换到此文件后读取差异": "Switch to this file to load its diff",
