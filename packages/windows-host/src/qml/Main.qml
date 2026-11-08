@@ -20,7 +20,19 @@ ApplicationWindow {
     palette.highlight: Theme.accentSoft
     palette.highlightedText: Theme.ink
     readonly property bool motionEnabled: typeof orbisMotionEnabled === "undefined" || orbisMotionEnabled
-    onMotionEnabledChanged: if (!motionEnabled) { pageArrival.stop(); pageContent.entryProgress = 1 }
+    onMotionEnabledChanged: if (!motionEnabled) { pageArrival.stop(); pageContent.entryProgress = 1; themeFade.stop(); themeOverlay.visible = false; themeSnapshot = null }
+    readonly property string appearanceThemeId: Theme.themeId
+    property var themeSnapshot
+    function applyAppearance(material, mode) {
+        if (!motionEnabled || !window.visible) { Theme.preferences.material = material; Theme.preferences.mode = mode; return }
+        themeFade.stop(); themeOverlay.visible = false
+        mainLayout.grabToImage(function(result) {
+            themeSnapshot = result; themeOverlay.source = result.url
+            themeOverlay.opacity = 1; themeOverlay.visible = true
+            Theme.preferences.material = material; Theme.preferences.mode = mode
+            themeFade.restart()
+        })
+    }
     property int page: 0
     property var pageNames: ["概览", "设备", "Agent", "设置", "诊断"]
     property string revokeId: ""
@@ -524,7 +536,17 @@ ApplicationWindow {
             focused: softTool.activeFocus; disabled: !softTool.enabled; hovered: softTool.hovered
         }
     }
+    Image {
+        id: themeOverlay
+        anchors.fill: parent; z: 1000; visible: false
+    }
+    SequentialAnimation {
+        id: themeFade
+        NumberAnimation { target: themeOverlay; property: "opacity"; from: 1; to: 0; duration: Theme.durState; easing.type: Easing.OutCubic }
+        ScriptAction { script: { themeOverlay.visible = false; themeOverlay.source = ""; themeSnapshot = null } }
+    }
     RowLayout {
+        id: mainLayout
         anchors.fill: parent
         spacing: 0
         Rectangle {
@@ -928,7 +950,7 @@ ApplicationWindow {
                                         Layout.fillWidth: true; implicitHeight: 168
                                         Accessible.name: previewDark ? "深色" : "浅色"
                                         Accessible.selected: chosen
-                                        onClicked: Theme.preferences.mode = modelData
+                                        onClicked: window.applyAppearance(Theme.preferences.material, modelData)
                                         contentItem: ColumnLayout {
                                             spacing: 12
                                             ThemePreview { dark: appearanceOption.previewDark; Layout.fillWidth: true; Layout.preferredHeight: 112 }
@@ -945,7 +967,7 @@ ApplicationWindow {
                             }
                             SoftSwitch {
                                 objectName: "appearanceSystem"; text: "跟随系统"; checked: Theme.preferences.mode === "system"
-                                onToggled: Theme.preferences.mode = checked ? "system" : Theme.dark ? "dark" : "light"
+                                onToggled: window.applyAppearance(Theme.preferences.material, checked ? "system" : Theme.dark ? "dark" : "light")
                             }
                             Hint { text: "随电脑的浅色与深色自动切换" }
                             RowLayout {
@@ -960,7 +982,7 @@ ApplicationWindow {
                                         implicitHeight: Theme.controlHeight; implicitWidth: 112
                                         Accessible.name: modelData === "sage" ? "灰绿" : "雾蓝"
                                         Accessible.selected: chosen
-                                        onClicked: Theme.preferences.material = modelData
+                                        onClicked: window.applyAppearance(modelData, Theme.preferences.mode)
                                         contentItem: RowLayout {
                                             spacing: 8
                                             Rectangle { width: 28; height: 28; radius: 14; color: Theme.colorFor("surface-base", materialOption.modelData === "sage", Theme.dark); border.width: 0; SymbolIcon { anchors.centerIn: parent; width: 16; height: 16; visible: materialOption.chosen; name: "check"; color: Theme.colorFor("accent", materialOption.modelData === "sage", Theme.dark) } }
@@ -970,12 +992,14 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                            Heading { text: "登录启动"; Layout.topMargin: 24 }
+                            SoftSwitch { id: startupSwitch; enabled: !host.busy; marksProviderDirty: false; checked: host.autoStart; onToggled: { host.setAutoStart(checked); checked = host.autoStart } text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
+                            Hint { text: "立即应用，下次登录时自动打开 Orbis。" }
                             Heading { text: "常规"; Layout.topMargin: 24 }
                             Hint { text: "暂停连接后修改，保存后生效。"; Layout.fillWidth: true }
 
                             Label { text: "电脑名称"; color: Theme.inkMuted }
                             Field { id: nameField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
-                            SoftSwitch { id: startupSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
                             SoftSwitch { id: codexSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
                             SoftSwitch { id: dshSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
                             SoftSwitch { id: piIntegrationSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
@@ -1005,7 +1029,7 @@ ApplicationWindow {
                             Field { id: relayField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: Theme.inkMuted }
                             Field { id: dshWebUrlField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "应用设置"; primary: true; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, startupSwitch.checked, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
+                            ActionButton { text: "应用设置"; primary: true; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }

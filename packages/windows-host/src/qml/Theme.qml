@@ -7,6 +7,7 @@ QtObject {
     // The same four semantic palettes as the approved design reference.
     property var preferences: Settings {
         category: "Appearance"
+        location: typeof orbisAppearanceSettings === "undefined" ? "" : orbisAppearanceSettings
         property string material: "mist"
         property string mode: "system"
     }

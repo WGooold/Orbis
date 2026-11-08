@@ -1,5 +1,6 @@
 #include "HostController.h"
 #include "CredentialStore.h"
+#include "StartupSettings.h"
 #include <QCoreApplication>
 #include <QApplication>
 #include <QClipboard>
@@ -489,6 +490,24 @@ void HostController::openAgentTui(const QString &kind) {
         setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : kind == "claude" ? "Claude Code" : "Codex"));
     });
 }
+void HostController::setAutoStart(bool enabled) {
+    if (enabled == autoStart()) return;
+#if defined(Q_OS_WIN)
+    QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
+    if (enabled) startupRegistry.setValue("OrbisHost", '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray");
+    else startupRegistry.remove("OrbisHost");
+    startupRegistry.sync();
+    if (startupRegistry.status() != QSettings::NoError) { setMessage("无法保存 Windows 登录启动设置"); return; }
+#elif defined(Q_OS_MACOS)
+    const auto plist = QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/Library/LaunchAgents/com.orbis.host.plist";
+    QString error;
+    if (!writeLoginAgent(plist, QCoreApplication::applicationFilePath(), enabled, &error)) { setMessage(error); return; }
+#endif
+    m_settings.setValue("autoStart", enabled); m_settings.sync();
+    emit changed();
+    setMessage(enabled ? "已开启登录启动" : "已关闭登录启动");
+}
+
 void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration) {
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
@@ -503,24 +522,11 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         }
     }
     // Agent 入口由 Orbis 自己维护（安装、激活、共享记录），设置里不再提供路径字段。
-#if defined(Q_OS_WIN)
-    QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
-    if (startup) startupRegistry.setValue("OrbisHost", '"' + QDir::toNativeSeparators(QCoreApplication::applicationFilePath()) + "\" --tray");
-    else startupRegistry.remove("OrbisHost");
-#elif defined(Q_OS_MACOS)
-    const auto launchDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation) + "/Library/LaunchAgents";
-    const auto plist = launchDir + "/com.orbis.host.plist";
-    if (startup) {
-        if (!QDir().mkpath(launchDir)) { setMessage("无法创建 macOS 登录启动目录，设置未保存"); return; }
-        const auto program = QCoreApplication::applicationFilePath();
-        const auto xml = QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>com.orbis.host</string><key>ProgramArguments</key><array><string>%1</string><string>--tray</string></array><key>RunAtLoad</key><true/></dict></plist>").arg(program.toHtmlEscaped());
-        const auto bytes = xml.toUtf8();
-        QSaveFile file(plist);
-        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) { setMessage("无法保存 macOS 登录启动设置：" + file.errorString()); return; }
-    } else if (QFile::exists(plist) && !QFile::remove(plist)) { setMessage("无法关闭 macOS 登录启动，设置未保存"); return; }
-#endif
+    // Kept in the desktop API for older QML callers; the current switch applies independently.
+    if (startup != autoStart()) { setAutoStart(startup); if (startup != autoStart()) return; }
+
     if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
-    m_settings.setValue("relayUrl", normalized); m_settings.setValue("autoStart", startup); m_settings.setValue("codexEnabled", codex);
+    m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS
     // 立即生效，不等下次启动 Host：用户关掉它往往是为了接着删除应用。

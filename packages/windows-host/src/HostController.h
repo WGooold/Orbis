@@ -146,6 +146,7 @@ public:
     Q_INVOKABLE void restartDshServer();
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
+    Q_INVOKABLE void setAutoStart(bool enabled);
     Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true, bool claudeIntegration = true);
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();

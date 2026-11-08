@@ -66,6 +66,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"tray", "Start in the system tray"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
     parser.addOption({"smoke-motion", "Check intermediate sidebar and metric motion in the isolated smoke window"});
+    parser.addOption({"smoke-appearance", "Check all four appearance palettes in isolated settings"});
     parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
@@ -101,6 +102,7 @@ int main(int argc, char *argv[]) {
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
+    engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
     auto motionEnabled = [] { return systemMotionEnabled() && !qEnvironmentVariableIsSet("ORBIS_REDUCE_MOTION"); };
     bool previousMotionEnabled = motionEnabled();
     engine.rootContext()->setContextProperty("orbisMotionEnabled", previousMotionEnabled);
@@ -458,6 +460,21 @@ int main(int argc, char *argv[]) {
                         app.exit(0);
                     });
                 });
+            } else if (parser.isSet("smoke-appearance")) {
+                // Preference writes and screenshots stay under the smoke data directory.
+                const QStringList themes{"light", "dark", "sage-light", "sage-dark"};
+                for (int index = 0; index < themes.size(); ++index) {
+                    QTimer::singleShot(2600 + index * 650, &app, [&, themes, index] {
+                        const auto theme = themes[index];
+                        QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 3));
+                        QMetaObject::invokeMethod(window, "applyAppearance", Q_ARG(QVariant, theme.startsWith("sage") ? "sage" : "mist"), Q_ARG(QVariant, theme.endsWith("dark") ? "dark" : "light"));
+                        QTimer::singleShot(450, &app, [&, theme, index, themes] {
+                            if (window->property("appearanceThemeId").toString() != theme) { app.exit(53); return; }
+                            if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + "." + theme + ".png")) { app.exit(7); return; }
+                            if (index == themes.size() - 1) app.exit(0);
+                        });
+                    });
+                }
             } else if (parser.isSet("smoke-agents")) {
                 QTimer::singleShot(1800, &app, [&] { QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)); });
                 QTimer::singleShot(2500, &app, [&] {
