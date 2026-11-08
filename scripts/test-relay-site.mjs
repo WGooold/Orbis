@@ -215,37 +215,107 @@ try {
   check("both downloaded files are saved",await page.locator('[data-download-file]:visible').count()===2 && await opacity(page,'#s4-d0b')===1);
   await screenshot(page,"desktop-download","#feature-demo");
 
+  // X11: the approved directory and draft replace the former sheet/empty-session flow.
   await scene(page,"sessions");
-  await page.locator('#s4-c1').click();await finished(page);await page.locator('#s4-closeall').click();await finished(page);
-  check("batch close affects only selected session",await page.locator('#s4-c1').getAttribute('aria-hidden')==='true' && await page.locator('#s4-c0').getAttribute('aria-hidden')==='false' && await page.locator('#s4-c2').getAttribute('aria-hidden')==='false');
-  check("toolbar returns after closing selection",(await page.locator('#s4-menu').getAttribute('aria-label'))==='打开会话目录');
+  const initialSessions=await page.locator('#design-demo [data-session]').count();
+  await page.locator('[data-demo-action="select-session"][data-id="2"]').click();
+  await page.locator('[data-demo-action="close-selected"]').click();
+  check("batch close affects only selected session",await page.locator('#design-demo [data-session="2"]').count()===0 && await page.locator('#design-demo [data-session="1"]').count()===1 && await page.locator('#design-demo [data-session="3"]').count()===1);
+  check("toolbar returns after closing selection",await page.locator('[data-demo-action="drawer-open"]').isVisible() && await page.locator('.demo-batch').count()===0);
+  check("batch close removes one row",await page.locator('#design-demo [data-session]').count()===initialSessions-1);
   await screenshot(page,"desktop-sessions","#feature-demo");
-  await page.locator('#s4-dlhome').click();await finished(page);
-  await foreground(page,"home-download",'#s4-home');
-  await page.locator('[data-action="back-download"]').click();await finished(page);
-  check("downloads returns to its home origin",await page.locator('#feature-demo').getAttribute('data-page')==='home');
-  await page.locator('#s4-gearbtn').click();await finished(page);
-  await foreground(page,"manual-settings",'#s4-home');
-  await page.locator('#s4-set > [data-action="home"]').click();await finished(page);
+  await page.locator('[data-demo-action="downloads"]').click();
+  check("downloads opens an empty page from home",await page.locator('#design-demo').getAttribute('data-page')==='downloads' && (await page.locator('.demo-empty').textContent())==='暂无下载');
+  await page.locator('[data-demo-action="back-home"]').click();
+  await page.locator('[data-demo-action="tab"][data-page="settings"]').click();
+  await page.locator('[data-demo-action="protocol"]').click();
+  await page.locator('[data-demo-action="protocol-choice"][data-value="ws"]').click();
+  check("protocol browse does not apply before confirmation",(await page.locator('.demo-setting-group').first().textContent()).includes('自动'));
+  await page.locator('[data-demo-action="protocol-apply"]').click();
+  check("protocol applies the explicit choice",(await page.locator('.demo-setting-group').first().textContent()).includes('WebSocket'));
+  await page.locator('[data-demo-action="notice-close"]').click();
+  await page.locator('[data-demo-action="appearance-mode"][data-value="dark"]').click();await page.waitForTimeout(250);
+  check("in-app appearance selects dark with real light and dark previews",await page.locator('html').getAttribute('data-ob')==='dark' && await page.locator('.demo-theme-preview[data-ob="light"]').evaluate(el=>globalThis.getComputedStyle(el).backgroundColor)!==await page.locator('.demo-theme-preview[data-ob="dark"]').evaluate(el=>globalThis.getComputedStyle(el).backgroundColor));
+  await page.locator('[data-demo-action="appearance-material"][data-value="sage"]').click();await page.waitForTimeout(250);
+  check("in-app material updates the shared preference",await page.locator('html').getAttribute('data-ob')==='sage-dark');
+  await page.locator('[data-demo-action="appearance-follow"]').click();await page.waitForTimeout(250);
+  check("in-app follow system restores live automatic appearance",await page.locator('[data-demo-action="appearance-follow"]').getAttribute('aria-checked')==='true' && await page.locator('html').getAttribute('data-ob')==='sage-light');
+  await page.locator('[data-demo-action="appearance-material"][data-value="mist"]').click();await page.waitForTimeout(250);
+  await page.locator('[data-demo-action="language"]').click();await page.locator('[data-demo-action="language-choice"][data-value="en"]').click();
+  await page.locator('button[data-demo-action="language-cancel"]').click();
+  check("language cancellation preserves the current setting",(await page.locator('[data-demo-action="language"]').textContent()).includes('跟随手机'));
+  await page.locator('[data-demo-action="language"]').click();await page.locator('[data-demo-action="language-choice"][data-value="zh-Hans"]').click();await page.locator('[data-demo-action="language-apply"]').click();
+  check("language applies only the confirmed selection",!(await page.locator('[data-demo-action="language"]').textContent()).includes('跟随手机') && await page.locator('[data-demo-action="language"]').isVisible());
+  await screenshot(page,"manual-settings","#film-viewport");
 
   await scene(page,"create");
-  await page.locator('#s4-menu').click();await finished(page);await page.locator('#s4-newbtn').click();await finished(page);
-  await page.locator('[data-action="choose-agent"][data-agent="codex"]').click();await page.locator('#s4-nc-pi').click();await finished(page);
-  check("new session keeps chosen Agent",await page.locator('#s4-cn .card-agent').textContent()==='Codex');
-  await page.waitForFunction(()=>{const card=globalThis.document.querySelector('#s4-cn'),rect=card.getBoundingClientRect(),screen=globalThis.document.querySelector('#s4-scr').getBoundingClientRect();return globalThis.getComputedStyle(card).opacity==='1' && rect.left>=screen.left-10 && rect.right<=screen.right+10;});
-  check("new session is painted inside phone",true);
-  check("closed sheet cannot keep keyboard focus",await page.locator('#s4-new').getAttribute('inert')!==null && await page.evaluate(()=>!globalThis.document.activeElement.closest('[inert]')));
+  await page.locator('[data-demo-action="drawer-open"]').click();
+  check("drawer is a single-line navigation tree",await page.locator('.demo-tree-heading').count()===2 && await page.locator('.demo-tree .scard').count()===0);
+  await page.locator('[data-demo-action="directory-toggle"][data-directory="/Projects/website"]').click();
+  await page.locator('[data-demo-action="directory-new"][data-directory="/Projects/website"]').click();
+  await page.locator('#demo-first-message').waitFor();
+  check("new draft inherits the selected directory",(await page.locator('#demo-draft-directory').textContent()).includes('/Projects/website'));
+  check("empty first message cannot create a session",await page.locator('[data-demo-action="draft-send"]').isDisabled() && await page.locator('#design-demo [data-session]').count()===5);
+  await page.locator('[data-demo-action="draft-agent"][data-index="1"]').click();
+  await page.locator('#demo-first-message').fill('检查首页回弹并补齐测试');
+  await page.locator('[data-demo-action="draft-toggle"]').click();await page.waitForTimeout(300);await page.locator('[data-demo-action="draft-toggle"]').click();
+  check("closing and reopening the draft preserves its first message",await page.locator('#demo-first-message').inputValue()==='检查首页回弹并补齐测试');
+  await page.locator('[data-demo-action="draft-directory"]').click();await page.locator('[data-demo-action="directory-pick"][data-directory="/Projects/orbis"]').click();
+  check("directory selection changes the draft without creating a session",(await page.locator('#demo-draft-directory').textContent()).includes('/Projects/orbis') && await page.locator('#design-demo [data-session]').count()===5);
+  check("draft Agent order matches the approved reference",await page.locator('[data-demo-action="draft-agent"]').evaluateAll(elements=>elements.map(el=>el.getAttribute('aria-label')).join(','))==='Codex,Claude Code,DeepSeek,Pi');
+  await screenshot(page,"desktop-draft","#film-viewport");
+  await page.locator('[data-demo-action="draft-send"]').click();
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.page==='chat');
+  check("first message starts a session with the chosen Agent",(await page.locator('.demo-message-user').textContent())==='检查首页回弹并补齐测试' && (await page.locator('.demo-message-assistant strong').textContent()).includes('Codex'));
+  check("closed draft cannot keep keyboard focus",await page.locator('#demo-first-message').count()===0 && await page.evaluate(()=>!globalThis.document.activeElement.closest('[inert]')));
+  await page.locator('[data-demo-action="back-home"]').click();
+  check("draft becomes a real session card after send",await page.locator('#design-demo [data-session]').count()===6 && (await page.locator('#design-demo [data-session]').first().textContent()).includes('检查首页回弹并补齐测试'));
   await screenshot(page,"desktop-create","#feature-demo");
 
   await scene(page,"quota");
-  await page.locator('#s4-ccw').click();await finished(page);
-  check("quota query reveals five-hour reading",await opacity(page,'#s4-v72')===1);
-  await page.locator('#s4-ccw').click();await page.waitForTimeout(220);
-  await screenshot(page,"quota-edge-mid","#film-viewport");await finished(page);
-  check("coin flips to weekly quota",await opacity(page,'#s4-v41')===1 && await page.locator('#s4-coinrot .rimd').count()===13);
-  await screenshot(page,"desktop-quota-week","#feature-demo");
-  await page.locator('#s4-ccw').click();await finished(page);
-  check("coin flips back to five-hour quota",await opacity(page,'#s4-v72')===1 && await opacity(page,'#s4-v41')===0);
+  check("both quota periods are visible at the same time",await page.locator('.demo-quota-window').count()===2 && (await page.locator('.demo-quota').textContent()).includes('5 小时') && (await page.locator('.demo-quota').textContent()).includes('7 天'));
+  const dialGeometry=await page.locator('.demo-dial').evaluate(el=>{const g=globalThis.OrbisDemoPolicy.dialGeometry(el.clientWidth,el.clientHeight),box=el.getBoundingClientRect(),scale=box.width/el.clientWidth;return {...g,left:box.left,top:box.top,scale};});
+  const dialPoint=(x,y)=>({x:dialGeometry.left+x*dialGeometry.scale,y:dialGeometry.top+y*dialGeometry.scale});
+  async function dragDial(point,distance){await page.mouse.move(point.x,point.y);await page.mouse.down();await page.mouse.move(point.x,point.y-distance*dialGeometry.scale,{steps:10});}
+  for(const [region,radius] of [['hollow',dialGeometry.hole-4],['moat',dialGeometry.hub+12]]){
+    await dragDial(dialPoint(dialGeometry.cx+radius,dialGeometry.cy),90);await page.mouse.up();
+    check(`dial ${region} ignores a drag without changing either selection`,await page.locator('#design-demo').getAttribute('data-agent')==='codex' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
+  }
+  const agentPoint=dialPoint(dialGeometry.cx+(dialGeometry.hole+dialGeometry.hub)/2,dialGeometry.cy+32);
+  await dragDial(agentPoint,9);await page.mouse.up();
+  check("Agent dial keeps its ten-point drag threshold",await page.locator('#design-demo').getAttribute('data-agent')==='codex');
+  await dragDial(agentPoint,100);
+  check("Agent drag locks its region and disables apply",await page.locator('.demo-dial').getAttribute('data-grab')==='agent' && await page.locator('.demo-apply').isDisabled());
+  await screenshot(page,'provider-agent-drag-mid','#film-viewport');await page.waitForTimeout(100);await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  check("Agent release settles to the adjacent mark without coasting",await page.locator('#design-demo').getAttribute('data-agent')==='claude' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
+  await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('Home');await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  const profilePoint=dialPoint(dialGeometry.rim-20,dialGeometry.cy);
+  await dragDial(profilePoint,80);
+  check("profile drag cannot apply before settling",await page.locator('.demo-apply').isDisabled() && await page.locator('.demo-dial').getAttribute('data-grab')==='profile');
+  await page.waitForTimeout(100);await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  check("profile drag browses the adjacent config without applying it",await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='1' && await page.locator('.demo-apply').isEnabled());
+  await page.evaluate(()=>globalThis.document.querySelector('#design-demo').addEventListener('pointerdown',event=>{globalThis.dialPointer=event.pointerId;},{once:true}));
+  await dragDial(profilePoint,-100);await page.locator('#design-demo').dispatchEvent('pointercancel',{pointerId:await page.evaluate(()=>globalThis.dialPointer)});await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  check("profile pointer cancellation restores its starting position",await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='1');
+  await page.locator('[data-dial-layer="profile"]').focus();await page.keyboard.press('Home');await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  await page.locator('[data-demo-action="dial-agent"][data-index="3"]').click();
+  check("low quota keeps explicit warning text",(await page.locator('.demo-quota-window.danger').textContent()).includes('即将用完'));
+  await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('Home');
+  await page.locator('[data-dial-layer="profile"]').focus();await page.keyboard.press('ArrowDown');
+  check("profile apply stays disabled during snap",await page.locator('.demo-apply').isDisabled());
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  check("profile browsing leaves the active choice unchanged",await page.locator('.demo-apply').isEnabled() && (await page.locator('.demo-apply').textContent()).includes('切换到 relay-b'));
+  await page.locator('.demo-apply').click();
+  check("confirmation names both Agent and profile",(await page.locator('#demo-confirm-title').textContent()).includes('Codex 到 relay-b'));
+  await page.locator('[data-demo-action="provider-cancel"]').click();
+  check("cancelling profile apply keeps it unapplied",await page.locator('.demo-apply').isEnabled());
+  await page.locator('.demo-apply').click();await page.locator('[data-demo-action="provider-confirm"]').click();
+  check("confirmed profile becomes active",await page.locator('.demo-apply').isDisabled() && (await page.locator('.demo-apply').textContent()).includes('正在使用 relay-b'));
+  await page.locator('[data-demo-action="notice-close"]').click();
+  await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('End');
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  check("switching Agent restores its active profile",(await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuetext'))==='本机配置' && (await page.locator('.demo-apply').textContent()).includes('移出'));
+  await screenshot(page,"desktop-quota-both","#feature-demo");
 
   await scene(page,"pair");await page.locator('[data-action="scan"]').click();await finished(page);
   check("pairing remains explicitly a demonstration",(await page.locator('#s2-ptxt').textContent()).includes('演示配对完成') && (await page.locator('.film-pair-note').textContent()).includes('不连接真实电脑'));
@@ -254,62 +324,43 @@ try {
   await page.locator('#tab-pair').focus();await page.keyboard.press('Home');
   check("chapter Home key selects first scene",await page.locator('#tab-chat').getAttribute('aria-selected')==='true');
 
+  // SC01 / SC02: the new 40% distance threshold replaces the former whole-phone shake.
   await scene(page,"sessions");
-  const card=await page.locator('#s4-c2').boundingBox();
-  await page.mouse.move(card.x+card.width*.6,card.y+card.height*.5);await page.mouse.down();await page.waitForTimeout(550);await page.mouse.up();await finished(page);
-  check("long press selects from the held card",await page.locator('#s4-c2').getAttribute('aria-pressed')==='true');
-  await page.locator('#s4-menu').click();await finished(page);
-  check("selection cancellation restores toolbar",await page.locator('#s4-c2').getAttribute('aria-pressed')==='false' && await opacity(page,'#s4-closeall')===0);
-  const swipe=await page.locator('#s4-c1').boundingBox();
-  await page.evaluate(()=>{
-    globalThis.swipeVibrations=[];globalThis.swipeFrames=[];globalThis.swipeSamples=[];globalThis.swipeMoves=[];globalThis.recordShake=true;
-    globalThis.document.addEventListener("pointermove", event => { if(event.buttons)globalThis.swipeMoves.push(globalThis.performance.now()); });
-    Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:duration=>{globalThis.swipeVibrations.push(duration);return false;}});
-    const sample=now=>{const x=Number(globalThis.gsap.getProperty('#s4-shake','x'));globalThis.swipeFrames.push(x);globalThis.swipeSamples.push({at:now,x});if(globalThis.recordShake)globalThis.requestAnimationFrame(sample);};
-    globalThis.requestAnimationFrame(sample);
-  });
+  const card=await page.locator('#design-demo [data-session="3"]').boundingBox();
+  await page.mouse.move(card.x+card.width*.5,card.y+card.height*.5);await page.mouse.down();await page.waitForTimeout(550);await page.mouse.up();
+  check("long press selects from the held card",await page.locator('#design-demo [data-session="3"]').getAttribute('aria-pressed')==='true');
+  await page.locator('[data-demo-action="selection-cancel"]').click();
+  check("selection cancellation restores toolbar",await page.locator('#design-demo [data-session="3"]').getAttribute('aria-pressed')==='false' && await page.locator('.demo-batch').count()===0);
+  const swipe=await page.locator('#design-demo [data-session="2"]').boundingBox();
+  await page.evaluate(()=>{globalThis.swipeVibrations=[];Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:duration=>{globalThis.swipeVibrations.push(duration);return false;}});});
   const startX=swipe.x+swipe.width*.8,startY=swipe.y+swipe.height*.5;
-  await page.mouse.move(startX,startY);await page.mouse.down();await page.mouse.move(startX-65,startY,{steps:8});await page.waitForTimeout(80);
-  check("sampled below-threshold drag stays still, silent and preserves the session", await page.evaluate(() => {
-    const frames = globalThis.swipeSamples, moves = globalThis.swipeMoves;
-    return moves.length > 0 && frames.length >= 3 && frames[0].at <= moves[0] + 50
-      && frames.at(-1).at >= moves.at(-1) && frames.at(-1).at - frames[0].at >= 60
-      && frames.every(frame => frame.x === 0) && globalThis.swipeVibrations.length === 0
-      && globalThis.document.querySelector("#s4-c1").getAttribute("aria-hidden") === "false";
-  }));
-  await page.mouse.move(startX-190,startY,{steps:6});
+  await page.mouse.move(startX,startY);await page.mouse.down();await page.mouse.move(startX-swipe.width*.2,startY,{steps:8});
+  check("below-threshold drag preserves session without feedback",await page.locator('#design-demo [data-session="2"]').count()===1 && await page.evaluate(()=>globalThis.swipeVibrations.length===0));
+  await page.mouse.move(startX-swipe.width*.5,startY,{steps:8});
+  check("forty-percent threshold exposes armed label",await page.locator('.demo-swipe-feedback[data-armed="true"]').count()===1 && (await page.locator('.demo-swipe-feedback[data-armed="true"]').textContent()).includes('松手关闭'));
   await screenshot(page,"swipe-threshold-mid",'#film-viewport');
-  await finished(page);
-  const shakeFrames=await page.evaluate(()=>{globalThis.recordShake=false;return globalThis.swipeFrames;});
-  await writeFile(`${output}/swipe-shake-frames.json`,JSON.stringify(shakeFrames));
-  check("swipe threshold shakes both ways and settles",Math.max(...shakeFrames)>1&&Math.min(...shakeFrames)<-1&&await page.locator('#s4-shake').evaluate(el=>Number(globalThis.gsap.getProperty(el,'x'))===0));
-  check("swipe threshold requests one short optional vibration",await page.evaluate(()=>JSON.stringify(globalThis.swipeVibrations)==='[12]'));
-  await page.mouse.move(startX-65,startY,{steps:6});await page.mouse.move(startX-190,startY,{steps:6});await page.waitForTimeout(80);
-  check("crossing again during the same swipe does not repeat feedback",await page.evaluate(()=>globalThis.swipeVibrations.length===1));
-  await page.mouse.move(startX-65,startY,{steps:6});await page.mouse.up();await finished(page);
-  check("retreat after feedback cancels close and restores the phone",await page.locator('#s4-c1').getAttribute('aria-hidden')==='false'&&await page.locator('#s4-shake').evaluate(el=>Number(globalThis.gsap.getProperty(el,'x'))===0));
+  check("swipe threshold requests one optional confirmation feedback",await page.evaluate(()=>JSON.stringify(globalThis.swipeVibrations)==='[12]'));
+  await page.mouse.move(startX-swipe.width*.2,startY,{steps:6});await page.mouse.move(startX-swipe.width*.5,startY,{steps:6});
+  check("repeated crossings in one gesture do not repeat feedback",await page.evaluate(()=>globalThis.swipeVibrations.length===1));
+  await page.mouse.move(startX-swipe.width*.2,startY,{steps:6});await page.mouse.up();await page.waitForTimeout(500);
+  check("retreat before release cancels close",await page.locator('#design-demo [data-session="2"]').count()===1 && await page.locator('.demo-swipe-feedback[data-armed="true"]').count()===0);
   await page.evaluate(()=>Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:()=>{throw new Error('Vibration unavailable');}}));
-  for(const [distance,closed] of [[65,false],[190,true]]) {
-    await page.mouse.move(swipe.x+swipe.width*.8,swipe.y+swipe.height*.5);await page.mouse.down();await page.mouse.move(swipe.x+swipe.width*.8-distance,swipe.y+swipe.height*.5,{steps:12});await page.mouse.up();await finished(page);
-    check(`swipe ${closed?'commits past':'cancels below'} threshold`,(await page.locator('#s4-c1').getAttribute('aria-hidden')==='true')===closed);
-  }
-  check("release during feedback restores the phone even if vibration fails",await page.locator('#s4-shake').evaluate(el=>Number(globalThis.gsap.getProperty(el,'x'))===0));
+  await page.mouse.move(startX,startY);await page.mouse.down();await page.mouse.move(startX-swipe.width*.5,startY,{steps:10});await page.mouse.up();
+  await page.waitForFunction(()=>!globalThis.document.querySelector('#design-demo [data-session="2"]'));
+  check("armed release closes only the targeted session",await page.locator('#design-demo [data-session="1"]').count()===1 && await page.locator('#design-demo [data-session="3"]').count()===1);
   await scene(page,"sessions");
-  await page.evaluate(()=>{
-    Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:undefined});
-    globalThis.document.querySelector('#film-canvas').addEventListener('pointerdown',event=>{globalThis.swipePointer=event.pointerId;},{once:true});
-  });
-  const cancelCard=await page.locator('#s4-c1').boundingBox();
-  await page.mouse.move(cancelCard.x+cancelCard.width*.8,cancelCard.y+cancelCard.height*.5);await page.mouse.down();await page.mouse.move(cancelCard.x+cancelCard.width*.8-190,cancelCard.y+cancelCard.height*.5,{steps:10});
-  await page.locator('#s4-c1').dispatchEvent('pointercancel',{pointerId:await page.evaluate(()=>globalThis.swipePointer)});await page.mouse.up();await finished(page);
-  check("pointer cancellation with no vibration API preserves the session",await page.locator('#s4-c1').getAttribute('aria-hidden')==='false'&&await page.locator('#s4-shake').evaluate(el=>Number(globalThis.gsap.getProperty(el,'x'))===0));
+  await page.evaluate(()=>{globalThis.document.querySelector('#design-demo').addEventListener('pointerdown',event=>{globalThis.swipePointer=event.pointerId;},{once:true});});
+  const cancelCard=await page.locator('#design-demo [data-session="2"]').boundingBox();
+  await page.mouse.move(cancelCard.x+cancelCard.width*.8,cancelCard.y+cancelCard.height*.5);await page.mouse.down();await page.mouse.move(cancelCard.x+cancelCard.width*.3,cancelCard.y+cancelCard.height*.5,{steps:10});
+  await page.locator('#design-demo').dispatchEvent('pointercancel',{pointerId:await page.evaluate(()=>globalThis.swipePointer)});await page.mouse.up();await page.waitForTimeout(500);
+  check("pointer cancellation preserves the session",await page.locator('#design-demo [data-session="2"]').count()===1);
   await scene(page,"diff");
   const screen=await page.locator('#s4-scr').boundingBox();
   await page.mouse.move(screen.x+8,screen.y+screen.height*.5);await page.mouse.down();await page.mouse.move(screen.x+160,screen.y+screen.height*.5,{steps:14});await page.mouse.up();await finished(page);
   check("edge-back gesture hands control to chat",await page.locator('#feature-demo').getAttribute('data-page')==='chat');
 
   // Original playback and manual-mode handoff, including intermediate source frames.
-  for(const [id,mid] of [['chat',3.34],['diff',13.5],['download',15.2],['sessions',22.65],['create',29.9],['quota',35.65],['pair',6.3]]) {
+  for(const [id,mid] of [['chat',3.34],['diff',13.5],['download',15.2],['pair',6.3]]) {
     await scene(page,id);await page.locator('#demo-play').click();
     await page.waitForFunction(t=>{const d=globalThis.document.querySelector('#feature-demo').dataset;return d.mode==='film'&&Number(d.time)>=t;},mid,{timeout:18000});
     await page.locator('#demo-play').click();
@@ -338,7 +389,21 @@ try {
   check("no inline-script/style CSP violations", (await page.evaluate(() => globalThis.sitePolicyViolations)).length === 0);
   check("no JavaScript errors", errors.length === 0);
 
-  // A1 / A2 / A3 / A4: fixed light material, browser dark preference, narrow / zoom,
+  // X12: appearance persists, follows system live, and changes every public surface.
+  await page.locator('.appearance-menu > summary').click();
+  await page.locator('[data-mode="dark"]').click();await page.waitForTimeout(250);
+  check("explicit dark appearance applies",await page.locator('html').getAttribute('data-ob')==='dark');
+  await page.locator('[data-material="sage"]').click();await page.waitForTimeout(250);
+  check("material selection preserves dark mode",await page.locator('html').getAttribute('data-ob')==='sage-dark');
+  await page.reload();await page.waitForSelector('.agent-pick');
+  check("appearance persists across reload",await page.locator('html').getAttribute('data-ob')==='sage-dark');
+  await page.locator('.appearance-menu > summary').click();await page.locator('#appearance-follow').check();
+  await page.emulateMedia({colorScheme:'light'});await page.waitForTimeout(250);
+  check("system appearance follows a live light scheme",await page.locator('html').getAttribute('data-ob')==='sage-light');
+  await page.keyboard.press('Escape');
+  check("Escape closes appearance and restores its trigger focus",await page.locator('#appearance-menu').getAttribute('open')===null && await page.locator('.appearance-menu > summary').evaluate(el=>el===globalThis.document.activeElement));
+
+  // A1 / A2 / A3 / A4: system appearance, narrow / zoom,
   // and actual prefers-reduced-motion. This does not assert native-device acceptance.
   for (const width of [320,390,768,1920]) {
     const small = await browser.newContext({ viewport:{width,height:width<500?844:1000}, reducedMotion:"reduce", colorScheme:width===390?"dark":"light", deviceScaleFactor:1 });
@@ -347,16 +412,17 @@ try {
     check(`reduced motion starts both stages paused at ${width}px`, await narrow.locator("#agents").getAttribute("data-playing") === "false" && await narrow.locator("#feature-demo").getAttribute("data-playing") === "false");
     await screenshot(narrow,`viewport-${width}-hero`);
     await scene(narrow,"quota");
-    await narrow.locator('[data-action="coin"]').click();
-    await narrow.locator('[data-action="coin"]').click();
-    check(`reduced-motion coin remains operable at ${width}px`, await opacity(narrow,"#s4-v41")===1);
+    await narrow.locator('[data-dial-layer="profile"]').focus();await narrow.keyboard.press('ArrowDown');
+    await narrow.locator('.demo-apply').click();await narrow.locator('[data-demo-action="provider-confirm"]').click();
+    check(`reduced-motion provider apply remains operable at ${width}px`,await narrow.locator('.demo-apply').isDisabled());
     await screenshot(narrow,`viewport-${width}-quota`,"#feature-demo");
     if(width===390){
       await scene(narrow,"sessions");
       await narrow.evaluate(()=>{globalThis.swipeVibrations=[];Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:duration=>{globalThis.swipeVibrations.push(duration);return true;}});});
-      const card=await narrow.locator('#s4-c1').boundingBox();
-      await narrow.mouse.move(card.x+card.width*.8,card.y+card.height*.5);await narrow.mouse.down();await narrow.mouse.move(card.x+card.width*.8-160,card.y+card.height*.5,{steps:12});await narrow.mouse.up();await finished(narrow);
-      check("reduced-motion swipe closes without shake or vibration",await narrow.locator('#s4-c1').getAttribute('aria-hidden')==='true'&&await narrow.evaluate(()=>Number(globalThis.gsap.getProperty('#s4-shake','x'))===0&&globalThis.swipeVibrations.length===0));
+      const card=await narrow.locator('#design-demo [data-session="2"]').boundingBox();
+      await narrow.mouse.move(card.x+card.width*.8,card.y+card.height*.5);await narrow.mouse.down();await narrow.mouse.move(card.x+card.width*.3,card.y+card.height*.5,{steps:12});await narrow.mouse.up();
+      await narrow.waitForFunction(()=>!globalThis.document.querySelector('#design-demo [data-session="2"]'));
+      check("reduced-motion swipe closes without vibration",await narrow.evaluate(()=>globalThis.swipeVibrations.length===0));
     }
     await narrow.locator("#download").scrollIntoViewIfNeeded();
     check(`downloads fit at ${width}px`, await narrow.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth));

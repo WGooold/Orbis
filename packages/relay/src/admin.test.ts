@@ -236,6 +236,9 @@ describe("Relay web console", () => {
     expect(homepage).not.toContain("feature-tour");
     for (const [path, type] of [
       ["cinema.js", "javascript"], ["cinema.css", "text/css"],
+      ["tokens.css", "text/css"], ["design-system.css", "text/css"],
+      ["design-demo.js", "javascript"], ["design-demo.css", "text/css"],
+      ["promo/icons/material-palette.svg", "image/svg+xml"],
       ["phone3d.js", "javascript"], ["phone3d.css", "text/css"],
       ["promo/agents/lobe-claudecode-color.svg", "image/svg+xml"],
       ["promo/agents/NOTICES.txt", "text/plain"],

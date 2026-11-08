@@ -11,10 +11,14 @@
   <link rel="stylesheet" href="assets/phone3d.css">
   <link rel="stylesheet" href="assets/film-source.css">
   <link rel="stylesheet" href="assets/film.css">
+  <link rel="stylesheet" href="assets/tokens.css">
+  <link rel="stylesheet" href="assets/design-system.css">
+  <link rel="stylesheet" href="assets/design-demo.css">
   <script src="assets/vendor/gsap.min.js" defer></script>
   <script src="assets/phone3d.js" defer></script>
   <script src="assets/film-markup.js" defer></script>
   <script src="assets/film-timeline.js" defer></script>
+  <script src="assets/design-demo.js" defer></script>
   <script src="assets/film.js" defer></script>
   <script src="assets/cinema.js" defer></script>
   <script src="assets/site.js" defer></script>
@@ -23,8 +27,24 @@
   <a class="skip-link" href="#main">跳到内容</a>
   <header class="site-header shell">
     <a class="brand" href="./" aria-label="Orbis 首页"><img src="assets/promo/orbis-symbol-2048.png" width="44" height="44" alt=""><span>Orbis</span></a>
-    <nav aria-label="主导航"><a href="#experience">体验交互</a><a href="https://github.com/WGooold/Orbis" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></nav>
-    <a class="button small" href="#download">即刻开始 <span aria-hidden="true">↗</span></a>
+    <nav aria-label="主导航"><a href="#experience">体验交互</a><a href="https://github.com/WGooold/Orbis" target="_blank" rel="noopener noreferrer">GitHub <i class="ico i-arrow-right" aria-hidden="true"></i></a></nav>
+    <details class="appearance-menu" id="appearance-menu">
+      <summary aria-label="外观"><i class="ico i-palette" aria-hidden="true"></i></summary>
+      <div class="appearance-popover" role="group" aria-label="外观设置">
+        <h2>外观</h2>
+        <div class="appearance-previews">
+          <button class="appearance-option" type="button" data-mode="light" aria-pressed="true"><span class="theme-preview" data-ob="light" aria-hidden="true"><i></i><i></i><i></i></span><span>浅色</span></button>
+          <button class="appearance-option" type="button" data-mode="dark" aria-pressed="false"><span class="theme-preview" data-ob="dark" aria-hidden="true"><i></i><i></i><i></i></span><span>深色</span></button>
+        </div>
+        <label class="appearance-follow"><input id="appearance-follow" type="checkbox" checked><span>跟随系统</span></label>
+        <p class="appearance-system" id="appearance-system">随系统的浅色与深色自动切换</p>
+        <div class="appearance-materials" aria-label="材质">
+          <button class="material-option" type="button" data-material="mist" aria-pressed="true"><i class="theme-preview" data-ob="light" aria-hidden="true"></i><span>雾蓝</span></button>
+          <button class="material-option" type="button" data-material="sage" aria-pressed="false"><i class="theme-preview" data-ob="sage-light" aria-hidden="true"></i><span>灰绿</span></button>
+        </div>
+      </div>
+    </details>
+    <a class="button small" href="#download">即刻开始 <i class="ico i-arrow-right" aria-hidden="true"></i></a>
   </header>
   <main id="main">
     <section class="agent-section" id="agents" aria-labelledby="hero-title">
@@ -42,12 +62,12 @@
       </div>
       <div class="agent-controls shell">
         <div class="agent-current"><span class="status-dot" aria-hidden="true"></span><span id="agent-name">Claude Code</span><span class="agent-availability" id="agent-availability">已接入</span></div>
-        <div class="orbit-navigation"><button class="icon-button" type="button" id="agent-prev" aria-label="上一个 Agent">←</button><p>转一转，找到你的 Agent</p><button class="icon-button" type="button" id="agent-next" aria-label="下一个 Agent">→</button></div>
+        <div class="orbit-navigation"><button class="icon-button" type="button" id="agent-prev" aria-label="上一个 Agent"><i class="ico i-arrow-left" aria-hidden="true"></i></button><p>转一转，找到你的 Agent</p><button class="icon-button" type="button" id="agent-next" aria-label="下一个 Agent"><i class="ico i-arrow-right" aria-hidden="true"></i></button></div>
         <div class="agent-picks" id="agent-picks" role="group" aria-label="选择 Agent"></div>
         <button class="playback subtle" type="button" id="orbit-play" aria-label="暂停 Agent 自动旋转"><span class="play-icon" aria-hidden="true">Ⅱ</span><span class="play-label">暂停旋转</span></button>
         <p class="sr-only" id="agent-announcement" role="status"></p>
       </div>
-      <a class="scroll-cue" href="#experience"><span>往下，亲手感受</span><span aria-hidden="true">↓</span></a>
+      <a class="scroll-cue" href="#experience"><span>往下，亲手感受</span><i class="ico i-arrow-down" aria-hidden="true"></i></a>
     </section>
     <section class="experience-section" id="experience" aria-labelledby="experience-title">
       <div class="experience-heading shell"><p class="eyebrow">MADE TO BE FELT.</p><h2 id="experience-title">这可能是你用过<br>最有<span class="accent">交互感</span>的<br class="mobile-break"> Agent 远控。</h2></div>
@@ -67,7 +87,7 @@
         </div>
         <div class="film-controls">
           <button class="playback" id="demo-play" type="button" aria-label="播放功能演示"><span class="play-icon" aria-hidden="true">▶</span><span class="play-label">播放</span></button>
-          <button class="playback" id="demo-replay" type="button"><span aria-hidden="true">↻</span> 重置</button>
+          <button class="playback" id="demo-replay" type="button"><i class="ico i-refresh" aria-hidden="true"></i> 重置</button>
           <span class="demo-disclaimer">交互演示</span>
         </div>
         <p id="demo-announcement" class="sr-only" role="status"></p>
@@ -81,21 +101,21 @@
           <label class="platform-select"><span>平台</span><select id="host-platform"><option value="windows">Windows</option><option value="macos-arm64">macOS · Apple Silicon</option><option value="macos-x64">macOS · Intel</option></select></label>
           <p id="host-requirement">Windows 10 / 11 · x64</p><span class="version-tag" id="host-version">正在读取版本…</span>
           <p class="download-detail" id="host-detail">安装后，添加你的手机。</p>
-          <div class="platform-downloads" id="host-downloads" role="status">正在读取下载信息…</div><small id="host-note"></small>
+          <div class="platform-downloads" id="host-downloads" role="status" aria-busy="true">正在读取下载信息…</div><small id="host-note"></small>
         </article>
         <article class="download-card" aria-labelledby="app-title">
           <div class="download-heading"><div><p class="download-kind">在手机上</p><h3 id="app-title">Orbis App</h3></div><span class="download-symbol" aria-hidden="true"><i class="ico i-iphone"></i></span></div>
           <label class="platform-select"><span>平台</span><select id="app-platform"><option value="android">Android</option><option value="ios">iOS</option></select></label>
           <p id="app-requirement">Android 手机 · APK</p><span class="version-tag" id="app-version">正在读取版本…</span>
           <p class="download-detail" id="app-detail">扫码，让 Agent 来到手边。</p>
-          <div class="platform-downloads" id="app-downloads" role="status">正在读取下载信息…</div><small id="app-note"></small>
+          <div class="platform-downloads" id="app-downloads" role="status" aria-busy="true">正在读取下载信息…</div><small id="app-note"></small>
         </article>
       </div>
       <p class="registration-status" id="registration-status" role="status">正在读取激活状态…</p>
-      <a class="release-link" href="https://github.com/WGooold/Orbis/releases" target="_blank" rel="noopener noreferrer">所有版本 <span aria-hidden="true">↗</span></a>
+      <a class="release-link" href="https://github.com/WGooold/Orbis/releases" target="_blank" rel="noopener noreferrer">所有版本 <i class="ico i-arrow-right" aria-hidden="true"></i></a>
       <noscript><p class="noscript-note">开启 JavaScript 可体验转盘和功能演示。也可以直接前往 <a href="https://github.com/WGooold/Orbis/releases">GitHub 版本页</a>。</p></noscript>
     </section>
   </main>
-  <footer class="site-footer shell"><a class="brand" href="./"><span>Orbis</span></a><p>Easy Agents Everywhere</p><div><a href="assets/promo/agents/NOTICES.txt">图标许可</a><a href="https://github.com/WGooold/Orbis" target="_blank" rel="noopener noreferrer">GitHub ↗</a><span>© 2026 Orbis</span></div></footer>
+  <footer class="site-footer shell"><a class="brand" href="./"><span>Orbis</span></a><p>Easy Agents Everywhere</p><div><a href="assets/promo/agents/NOTICES.txt">图标许可</a><a href="https://github.com/WGooold/Orbis" target="_blank" rel="noopener noreferrer">GitHub <i class="ico i-arrow-right" aria-hidden="true"></i></a><span>© 2026 Orbis</span></div></footer>
 </body>
 </html>

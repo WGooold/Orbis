@@ -60,6 +60,7 @@ function renderHost(platform) {
   document.getElementById("host-detail").textContent = spec.detail;
   document.getElementById("host-note").textContent = spec.note;
   container.replaceChildren();
+  container.setAttribute("aria-busy", "false");
   if (!siteData) {
     version.textContent = "版本信息暂不可用";
     container.textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
@@ -79,8 +80,8 @@ function renderHost(platform) {
     link.href = release.url;
     const size = Number.isFinite(release.bytes) && release.bytes > 0 ? ` · ${(release.bytes / 1048576).toFixed(0)} MB` : "";
     link.textContent = portable
-      ? "下载免安装版 ZIP ↗"
-      : `下载 ${platform === "windows" ? "Windows 安装版" : "macOS 版"}${size} ↓`;
+      ? "下载免安装版 ZIP"
+      : `下载 ${platform === "windows" ? "Windows 安装版" : "macOS 版"}${size}`;
     const checksum = document.createElement("a");
     checksum.className = "checksum-link";
     checksum.href = release.checksumUrl;
@@ -97,6 +98,7 @@ function renderApp(platform) {
   document.getElementById("app-detail").textContent = spec.detail;
   document.getElementById("app-note").textContent = spec.note;
   container.replaceChildren();
+  container.setAttribute("aria-busy", "false");
   if (!siteData) {
     version.textContent = "版本信息暂不可用";
     container.textContent = "暂时无法读取下载信息，请刷新重试或前往 GitHub 版本页。";
@@ -112,7 +114,7 @@ function renderApp(platform) {
     const link = document.createElement("a");
     link.className = "button primary";
     link.href = url;
-    link.textContent = "获取 iOS 版 ↗";
+    link.textContent = "获取 iOS 版";
     container.append(link);
     return;
   }
@@ -126,7 +128,7 @@ function renderApp(platform) {
   const link = document.createElement("a");
   link.className = "button primary";
   link.href = url;
-  link.textContent = "下载 Android 版 ↓";
+  link.textContent = "下载 Android 版";
   const checksum = document.createElement("a");
   checksum.className = "checksum-link";
   checksum.href = `${url}.sha256`;
@@ -165,3 +167,57 @@ async function loadRegistration() {
 
 void loadDownloads();
 void loadRegistration();
+
+// Preferences are local to this device; the system scheme remains live while selected.
+function initAppearance() {
+  const root = document.documentElement;
+  const menu = document.getElementById("appearance-menu");
+  if (!menu) return;
+  const system = window.matchMedia("(prefers-color-scheme: dark)");
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const follow = document.getElementById("appearance-follow");
+  const listeners = new Set();
+  let preference = { material: "mist", mode: "system" };
+  try {
+    const stored = JSON.parse(window.localStorage.getItem("orbis.appearance") || "null");
+    if (stored && ["mist", "sage"].includes(stored.material) && ["system", "light", "dark"].includes(stored.mode)) preference = stored;
+  } catch { /* A storage-disabled browser still supports appearance for this visit. */ }
+  function apply() {
+    const dark = preference.mode === "dark" || preference.mode === "system" && system.matches;
+    root.dataset.ob = `${preference.material === "sage" ? "sage-" : ""}${dark ? "dark" : "light"}`;
+    follow.checked = preference.mode === "system";
+    for (const button of menu.querySelectorAll("button[data-mode]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.mode === (dark ? "dark" : "light")));
+      button.querySelector(".theme-preview").dataset.ob = `${preference.material === "sage" ? "sage-" : ""}${button.dataset.mode}`;
+    }
+    for (const button of menu.querySelectorAll("button[data-material]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.material === preference.material));
+      button.querySelector(".theme-preview").dataset.ob = `${button.dataset.material === "sage" ? "sage-" : ""}${dark ? "dark" : "light"}`;
+    }
+    document.getElementById("appearance-system").textContent = follow.checked ? `跟随系统 · ${dark ? "深色" : "浅色"}` : "随系统的浅色与深色自动切换";
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = window.getComputedStyle(root).getPropertyValue("--surface-base").trim();
+    for (const listener of listeners) listener();
+  }
+  function update(patch) {
+    preference = { ...preference, ...patch };
+    try { window.localStorage.setItem("orbis.appearance", JSON.stringify(preference)); } catch { /* Session preference is sufficient without storage. */ }
+    if (!reduced.matches && document.startViewTransition) document.startViewTransition(apply);
+    else apply();
+  }
+  window.orbisAppearance = { current: () => ({ ...preference, dark: preference.mode === "dark" || preference.mode === "system" && system.matches }), update, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+  menu.addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (button?.dataset.mode) update({ mode: button.dataset.mode });
+    if (button?.dataset.material) update({ material: button.dataset.material });
+  });
+  follow.addEventListener("change", () => update({ mode: follow.checked ? "system" : system.matches ? "dark" : "light" }));
+  system.addEventListener("change", () => { if (preference.mode === "system") apply(); });
+  menu.addEventListener("keydown", event => {
+    if (event.key === "Escape") { menu.open = false; menu.querySelector("summary").focus(); }
+  });
+  document.addEventListener("pointerdown", event => { if (!menu.contains(event.target)) menu.open = false; });
+  apply();
+}
+
+initAppearance();

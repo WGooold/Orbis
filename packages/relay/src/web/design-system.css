@@ -1,0 +1,114 @@
+/* Public-site components share native material, interaction and accessibility tokens. */
+:root {
+  --surface: var(--surface-base); --well: var(--surface-base); --lift: var(--surface-lift); --top: var(--surface-top);
+  --muted: var(--ink-muted); --green: var(--success); --line: var(--hairline);
+  --raised: var(--raised-md); --pressed: var(--inset-md); --primary: var(--accent); --orbis-accent: var(--accent);
+  --arrive: var(--ease-out); --move: var(--ease-page);
+  font-family: var(--font-sans); font-size: 15px; line-height: 24px;
+  font-variant-numeric: tabular-nums; background: var(--surface-base); color: var(--ink);
+}
+.cinema-site { background: var(--surface-base); color: var(--ink); }
+.cinema-site :is(button, a, select, summary) { touch-action: manipulation; }
+.cinema-site :is(button, select, summary) { min-height: var(--touch-target); }
+.cinema-site :is(button, a, select, summary, [tabindex]):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.cinema-site button:disabled { opacity: 1; cursor: default; color: var(--ink-faint); border: 1px solid var(--hairline); box-shadow: none; }
+.cinema-site :is(.button,.icon-button,.agent-pick,.playback,.chapter-tabs button,.appearance-option,.material-option) {
+  transition: background-color var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out), box-shadow var(--dur-release) var(--ease-emphasized), transform var(--dur-release) var(--ease-emphasized);
+}
+.cinema-site .button { min-height: var(--control-height); border-radius: var(--radius-md); padding: 12px 16px; gap: var(--space-8); font: 600 15px/24px var(--font-sans); color: var(--ink); background: var(--surface-base); box-shadow: var(--raised-md); }
+.cinema-site .button.primary { color: var(--accent); background: var(--surface-base); box-shadow: var(--raised-md); }
+.cinema-site .button.small { min-height: var(--control-height); font: 600 13px/20px var(--font-sans); }
+.cinema-site :is(.button,.icon-button,.agent-pick):hover { transform: none; background-color: var(--surface-lift); }
+.cinema-site :is(.button,.icon-button,.agent-pick):active { box-shadow: var(--inset-md); transform: none; transition-duration: var(--dur-press); }
+.cinema-site :is(.button,.icon-button,.agent-pick,.playback):active > :is(span,img,i) { transform: scale(var(--scale-press)); opacity: var(--opacity-glyph-pressed); }
+.cinema-site :is(.icon-button,.agent-pick) { width: var(--touch-target); height: var(--touch-target); min-height: var(--touch-target); }
+.cinema-site .icon-button { display: inline-grid; place-items: center; border-radius: var(--radius-full); }
+.cinema-site .agent-pick { border-radius: var(--radius-md); }
+.cinema-site .agent-pick[aria-pressed=true] { color: var(--accent); background: var(--surface-base); box-shadow: var(--inset-sm); }
+.cinema-site :is(.eyebrow,.card-heading small,.card-prompt,.card-tool,.card-composer,.preview-label,.agent-availability,.orbit-navigation p,.playback.subtle,.scroll-cue,.demo-disclaimer,.download-kind,.platform-select,.version-tag,.checksum-link,.download-card>small,.registration-status,.site-footer>p,.site-footer>div) { font-size: 12px; line-height: 18px; font-weight: 400; }
+.cinema-site :is(.card-heading h2,.agent-face>h2,.download-heading h3) { font: 600 15px/24px var(--font-sans); }
+.cinema-site :is(.brand,.agent-current,.agent-face.is-preview h2,.outro-tagline) { font: 600 20px/28px var(--font-sans); }
+.cinema-site .site-header nav { font-size: 13px; }
+.cinema-site .hero-heading h1 { font: 600 28px/34px var(--font-sans); letter-spacing: 0; }
+.cinema-site :is(.experience-heading h2,.download-intro h2) { font: 600 20px/28px var(--font-sans); letter-spacing: 0; }
+.cinema-site .hero-heading h1>.hero-tail { color: var(--accent); }
+.cinema-site .agent-face,.cinema-site .agent-back { border-radius: var(--radius-lg); background: var(--surface-base); box-shadow: var(--raised-md); }
+.cinema-site .agent-card:not(.is-front) :is(.agent-face,.agent-back) { color: var(--ink-muted); background: var(--surface-base); }
+.cinema-site .card-prompt { background: var(--surface-base); box-shadow: var(--inset-md); border-radius: var(--radius-sm); }
+.cinema-site .card-answer { color: var(--ink); font-size: 13px; line-height: 20px; }
+.cinema-site .card-composer { border-radius: var(--radius-md); background: var(--surface-base); box-shadow: var(--inset-md); }
+.cinema-site .card-tool { border: 0; }
+.cinema-site :is(.status-dot,.card-status) { width: var(--dot); height: var(--dot); background: var(--success); box-shadow: none; }
+.cinema-site .agent-current.is-preview .status-dot { background: transparent; border: 1.5px solid var(--ink-faint); }
+.cinema-site .agent-availability { border-radius: var(--radius-full); background: var(--surface-base); box-shadow: none; }
+.cinema-site .download-card { padding: var(--space-16); border-radius: var(--radius-lg); box-shadow: var(--raised-md); }
+.cinema-site .download-grid { max-width: 880px; gap: var(--space-12); }
+.cinema-site .download-symbol { width: 44px; height: 44px; border-radius: var(--radius-md); color: var(--ink-muted); box-shadow: var(--inset-sm); }
+.cinema-site .download-symbol .ico { width: var(--icon-md); height: var(--icon-md); }
+.cinema-site .platform-select select { min-height: var(--field-height); background: var(--surface-base); color: var(--ink); border-radius: var(--radius-md); padding: 12px 16px; box-shadow: var(--inset-md); font: 400 15px/24px var(--font-sans); }
+.cinema-site .download-card .button { background: var(--surface-lift); box-shadow: none; }
+.cinema-site .download-card .button:active { background: var(--surface-base); box-shadow: var(--inset-md); }
+.cinema-site .platform-downloads { min-height: 96px; }
+.cinema-site .platform-downloads[aria-busy=true] { color: var(--ink-muted); }
+.cinema-site :is(.checksum-link,.portable-link,.release-link,.site-footer a,.site-header nav a) { display: inline-flex; align-items: center; min-height: var(--touch-target); }
+.cinema-site .site-header .brand { color: var(--ink); }
+.cinema-site .site-footer { border: 0; gap: var(--space-20); }
+.cinema-site .site-footer .brand { font: 600 20px/28px var(--font-sans); }
+.cinema-site .outro-tagline span { font-size: 13px; line-height: 20px; }
+.cinema-site .shell { width: min(960px,100%); padding-inline: var(--space-40); }
+.cinema-site .experience-section,.cinema-site .download-section { padding-top: var(--space-64); }
+.cinema-site .orbit-shadow { background: none; }
+.cinema-site .hero-heading .eyebrow { font-weight: 400; }
+.cinema-site .scroll-cue { letter-spacing: 0; }
+.cinema-site .scroll-cue>span:last-child { color: var(--ink-muted); }
+.cinema-site .ico { width: var(--icon-md); height: var(--icon-md); }
+.cinema-site .i-arrow-right { --i: url(promo/icons/material-arrow-right.svg); }
+.cinema-site .i-arrow-left { --i: url(promo/icons/material-arrow-left.svg); }
+.cinema-site .i-arrow-up { --i: url(promo/icons/material-arrow-up.svg); }
+.cinema-site .i-arrow-down { --i: url(promo/icons/material-arrow-down.svg); }
+.cinema-site .i-refresh { --i: url(promo/icons/material-refresh.svg); }
+.cinema-site .i-desktop { --i: url(promo/icons/material-desktop.svg); }
+.cinema-site .i-download { --i: url(promo/icons/material-download.svg); }
+.cinema-site .i-palette { --i: url(promo/icons/material-palette.svg); }
+.cinema-site .button .ico,.cinema-site .playback .ico { width: var(--icon-sm); height: var(--icon-sm); }
+/* Appearance options stay within a single anchored material container. */
+.appearance-menu { position: relative; }
+.appearance-menu>summary { display: grid; place-items: center; cursor: pointer; list-style: none; width: 48px; color: var(--ink-muted); border-radius: var(--radius-full); }
+.appearance-menu>summary::-webkit-details-marker { display: none; }
+.appearance-menu[open]>summary { box-shadow: var(--inset-sm); color: var(--accent); }
+.appearance-popover { position: absolute; right: 0; top: 56px; z-index: var(--z-menu); width: 296px; padding: 16px; border-radius: var(--radius-lg); background: var(--surface-base); box-shadow: var(--raised-lg); animation: appearance-enter var(--dur-panel) var(--ease-out); }
+.appearance-popover h2 { font: 600 20px/28px var(--font-sans); margin-bottom: 16px; }
+.appearance-previews { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.appearance-option { padding: 8px; border-radius: var(--radius-sm); background: var(--surface-lift); color: var(--ink-muted); display: grid; gap: 8px; font-size: 13px; }
+.appearance-option[aria-pressed=true] { background: var(--surface-base); color: var(--accent); font-weight: 600; box-shadow: var(--inset-sm); }
+.theme-preview { background: var(--surface-base); padding: 12px; border-radius: 8px; height: 108px; display: grid; gap: 10px; }
+.theme-preview>i { display: block; border-radius: 8px; height: 20px; box-shadow: var(--raised-sm); }
+.theme-preview>i:last-child { box-shadow: var(--inset-sm); height: 16px; }
+.appearance-follow { display: flex; gap: 12px; align-items: center; min-height: 56px; font-size: 13px; color: var(--ink); }
+.appearance-follow input { accent-color: var(--accent); width: 24px; height: 24px; }
+.appearance-materials { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.material-option { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px; border-radius: 12px; background: var(--surface-lift); color: var(--ink-muted); font-size: 13px; }
+.material-option[aria-pressed=true] { box-shadow: var(--inset-sm); background: var(--surface-base); color: var(--accent); font-weight: 600; }
+.material-option>i { width: 28px; height: 28px; border-radius: 50%; background: var(--surface-base); box-shadow: var(--raised-sm); }
+.appearance-system { font: 400 12px/18px var(--font-sans); color: var(--ink-muted); }
+@keyframes appearance-enter { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: none; } }
+::view-transition-old(root) { animation-duration: var(--dur-state); }
+::view-transition-new(root) { animation-duration: var(--dur-state); }
+/* The embedded film retains its authored scenes, while its material follows the site. */
+.cinema-site .film-source .ui { --base: var(--surface-base); --well: var(--surface-base); --lift: var(--surface-lift); --top: var(--surface-top); --light: var(--highlight); --shadow: var(--shade); --text: var(--ink); --secondary: var(--ink-muted); --accent: var(--orbis-accent); --error: var(--danger); --outline: var(--hairline); --claude: var(--agent-claude); --codex: var(--agent-codex); --dsh: var(--agent-deepseek); --pi: var(--agent-pi); }
+@media(max-width:700px) {
+  .cinema-site .shell { padding-inline: var(--space-20); }
+  .cinema-site .site-header { height: auto; min-height: 80px; gap: 8px; flex-wrap: wrap; }
+  .cinema-site .site-header nav { margin-left: auto; }
+  .cinema-site .site-header .button.small { font-size: 12px; padding-inline: 12px; }
+  .cinema-site .download-grid { gap: var(--space-12); }
+  .cinema-site .agent-picks { gap: 0; max-width: 336px; }
+  .appearance-popover { right: -48px; }
+  .cinema-site .film-demo .chapter-tabs button { min-height: 48px; font-size: 13px; border-radius: 16px; }
+  .cinema-site .film-controls .playback { min-height: 48px; font-size: 13px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  :root { scroll-behavior: auto; }
+  .cinema-site *,.cinema-site *::before,.cinema-site *::after { transition-duration: 0s!important; animation-duration: 0s!important; }
+  ::view-transition-old(root),::view-transition-new(root) { animation-duration: 0s; }
+}

@@ -11,7 +11,8 @@ window.setupFilmDemo = function () {
   const $ = selector => canvas.querySelector(selector);
   const $$ = selector => [...canvas.querySelectorAll(selector)];
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const swipeCloseThreshold = 150;
+  const swipeCloseThreshold = (393 - 32) * 0.4;
+  let designDemo;
   let film, scene = "chat", page = "chat", action, raf, last;
   let visible = true, paused = true, watching = false;
   let selected = new Set(), closed = new Set(), chosen = "claude", downloaded = new Set();
@@ -104,6 +105,7 @@ window.setupFilmDemo = function () {
     canvas.style.setProperty("--film-scale", String(scale));
   }
   function accessible() {
+    if(designDemo){for(const el of $$(".pg")){el.inert=true;el.setAttribute("aria-hidden","true");}state();return;}
     if (scene === "pair") {
       for (const [selector, enabled] of [["#s2-sheet",page==="scanner"],["#s2-chat",page==="connected"]]) {
         const el = $(selector); el.inert = !enabled; el.setAttribute("aria-hidden",String(!enabled));
@@ -195,6 +197,7 @@ window.setupFilmDemo = function () {
     const home=document.createElement("div");home.className="film-home-indicator";$("#s4-scr").append(home);
   }
   function mount(id, replaying = false) {
+    designDemo?.destroy();designDemo=undefined;
     halt(); gesture=undefined; selected=new Set(); closed=new Set(); downloaded=new Set();
     delete root.dataset.closed; delete root.dataset.lastClosed;
     chosen="claude"; queried=false; weekly=false; diffIndex=0; pairingDone=false; watching=replaying;
@@ -227,9 +230,15 @@ window.setupFilmDemo = function () {
     }
     tabs.forEach(tab=>{const on=tab.dataset.scene===id;tab.setAttribute("aria-selected",String(on));tab.tabIndex=on?0:-1;});
     viewport.setAttribute("aria-labelledby",`tab-${id}`);
+    if(["create","quota","sessions"].includes(id)) {
+      gsap.set("#s4-home",{x:0});
+      designDemo=window.createOrbisDesignDemo({screen:$("#s4-scr"),scene:id,reduced,onPlayback:playing=>{play.setAttribute("aria-label",playing?"暂停功能演示":"播放功能演示");play.querySelector(".play-label").textContent=playing?"暂停":"播放";root.dataset.playing=String(playing);}});
+      accessible();
+    }
     root.dataset.time=start.toFixed(3); state(); size();
   }
   function replay() {
+    if(designDemo){designDemo.togglePlayback();return;}
     const id=scene; mount(id,true);
     const m=film.marks;
     const bounds=id==="pair"?[0,8.05]:{
@@ -404,6 +413,7 @@ window.setupFilmDemo = function () {
     watching=false;segment(4.3,8.05,()=>{pairingDone=true;page="connected";accessible();});
   }
   function click(event) {
+    if(event.target.closest("#design-demo"))return;
     if(suppressClick){suppressClick=false;return;}
     const target=event.target.closest("[data-action]");if(!target||target.closest("[inert]"))return;
     if(watching){mount(scene);return;}
@@ -465,11 +475,13 @@ window.setupFilmDemo = function () {
   canvas.addEventListener("touchend",()=>{touchScroll=undefined;},{passive:true});
   canvas.addEventListener("click",click);
   canvas.addEventListener("keydown",event=>{
+    if(event.target.closest("#design-demo"))return;
     if(event.key==="Escape") {if(page==="drawer")drawer(false);else if(page==="create")newSheet(false);else if(page==="diff"||page==="downloads")pageTo(page==="downloads"?downloadOrigin:"chat");else if(scene==="pair")mount("pair");return;}
     if(page==="diff"&&(event.key==="ArrowLeft"||event.key==="ArrowRight")){event.preventDefault();changeFile(event.key==="ArrowRight"?1:-1);return;}
     if((event.key==="Enter"||event.key===" ")&&event.target.matches('[role="button"]')){event.preventDefault();event.target.click();}
   });
   canvas.addEventListener("pointerdown",event=>{
+    if(event.target.closest("#design-demo"))return;
     suppressClick=false;
     if(event.button!==0||watching)return;
     const card=event.target.closest(".scard"), diff=event.target.closest(".film-diff-hit");
@@ -517,7 +529,7 @@ window.setupFilmDemo = function () {
     if(event.key==="ArrowRight")i=(i+1)%tabs.length;else if(event.key==="ArrowLeft")i=(i+tabs.length-1)%tabs.length;else if(event.key==="Home")i=0;else if(event.key==="End")i=tabs.length-1;else return;
     event.preventDefault();tabs[i].focus();mount(tabs[i].dataset.scene);
   });
-  play.addEventListener("click",()=>{if(action){paused=!paused;schedule();}else replay();});
+  play.addEventListener("click",()=>{if(designDemo){designDemo.togglePlayback();return;}if(action){paused=!paused;schedule();}else replay();});
   document.getElementById("demo-replay").addEventListener("click",()=>mount(scene));
   document.addEventListener("visibilitychange",schedule);
   if("IntersectionObserver" in window)new window.IntersectionObserver(entries=>{visible=entries[0].isIntersecting;schedule();},{threshold:.08}).observe(viewport);
