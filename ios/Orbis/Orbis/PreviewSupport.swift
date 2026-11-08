@@ -301,7 +301,7 @@ private final class PreviewTransport: OrbisTransport {
             let launchableDshOnly = ProcessInfo.processInfo.arguments.contains("--preview-launchable-dsh")
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
                      "agents": launchableDshOnly ? ["pi"] : ["pi", "codex", "dsh"],
-                     "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : ["pi", "codex", "dsh"]], "ctl")
+                     "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"]], "ctl")
             var path: [String: Any] = ["type": "device.path", "path": "relay"]
             if !ProcessInfo.processInfo.arguments.contains("--preview-no-rtt") { path["rttMs"] = 42 }
             receive(path, "ctl")
@@ -516,7 +516,9 @@ private final class PreviewTransport: OrbisTransport {
             let titles = ["preview-codex": "对齐移动端的使用体验", "preview-pi": "梳理项目中的页面结构",
                           "preview-dsh": "检查服务端连接状态", "home-pi": "整理家庭照片脚本"]
             let cwd = variant == 1 ? "/Users/home/scripts" : runtime == "preview-pi" ? "/Projects/website" : "/Projects/orbis"
-            let domains = ["identity", "interactions", "execution", "model", "context"].map { name -> [String: Any] in
+            let supported = ["identity", "interactions", "execution", "model", "context"]
+            let requested = object["domains"] as? [String] ?? supported
+            let domains = supported.filter { requested.contains($0) }.map { name -> [String: Any] in
                 var value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
@@ -530,7 +532,10 @@ private final class PreviewTransport: OrbisTransport {
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
                         "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1], "checkedAt": 1793232000000, "value": value]
             }
-            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": kind, "modelEpoch": epoch, "domains": domains, "missing": [], "truncated": false], "ctl")
+            // SC54–59 fixtures obey the same bounded domain/format contract as a Host.
+            var snapshot: [String: Any] = ["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "agent", "runtimeId": runtime, "sessionId": session, "agentKind": kind, "modelEpoch": epoch, "domains": domains, "missing": requested.filter { !supported.contains($0) }.map { ["domain": $0, "reason": "no_state"] }, "truncated": false]
+            if let format = object["stateFormat"] { snapshot["stateFormat"] = format }
+            receive?(snapshot, "ctl")
             if ProcessInfo.processInfo.arguments.contains("--preview-home-staged"), runtime == "preview-dsh", !homeReplayScheduled {
                 homeReplayScheduled = true
                 Task { @MainActor [weak self] in
@@ -554,6 +559,9 @@ private final class PreviewTransport: OrbisTransport {
                     self.receive?(["type": "device.path", "path": "lan", "rttMs": 8], "ctl")
                 }
             }
+        } else if object["type"] as? String == "agent.state.request", object["scope"] as? String == "device" {
+            let names = object["domains"] as? [String] ?? []
+            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "device", "modelEpoch": "preview-model", "domains": [], "missing": names.map { ["domain": $0, "reason": "no_state"] }, "truncated": false], "ctl")
         } else if object["type"] as? String == "agent.state.request" {
             let requested = object["domains"] as? [String] ?? HostState.domainNames
             let domains = requested.map { name -> [String: Any] in
@@ -562,8 +570,9 @@ private final class PreviewTransport: OrbisTransport {
                  "source": ["producer": "host", "sourceId": "preview-host", "sourceEpoch": "preview-source", "sourceRevision": 1],
                  "checkedAt": 1793232000000, "value": domainValue(name)]
             }
-            receive?(["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "host", "modelEpoch": "preview-model",
-                      "domains": domains, "missing": [], "truncated": false], "ctl")
+            var snapshot: [String: Any] = ["type": "agent.state.snapshot", "requestId": object["requestId"]!, "scope": "host", "modelEpoch": "preview-model", "domains": domains, "missing": [], "truncated": false]
+            if let format = object["stateFormat"] { snapshot["stateFormat"] = format }
+            receive?(snapshot, "ctl")
         } else if object["type"] as? String == "provider.subscription", let kind = object["kind"] as? String {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(900))
@@ -741,7 +750,7 @@ private final class PreviewTransport: OrbisTransport {
         case "catalog": return ["totalSessions": 7, "truncated": false, "nextCursor": NSNull(),
                                 "backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true, "complete": true] }]
         case "backends": return ["backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true] },
-                                 "agents": ["pi", "codex", "dsh"], "launchableAgents": ["pi", "codex", "dsh"],
+                                 "agents": ["pi", "codex", "dsh"], "launchableAgents": ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"],
                                  "codexDesktop": ["state": "closed", "reason": "Codex 桌面版未打开"]]
         case "management": return ["lifecycle": "running", "platform": "darwin", "nodeVersion": "v24"]
         default: return [:]

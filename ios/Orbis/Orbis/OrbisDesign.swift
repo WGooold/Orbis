@@ -75,6 +75,19 @@ extension Color {
     }
 }
 
+private struct OrbisKeyboardNavigationKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var orbisKeyboardNavigation: Bool { get { self[OrbisKeyboardNavigationKey.self] } set { self[OrbisKeyboardNavigationKey.self] = newValue } }
+}
+struct OrbisInputModality: ViewModifier {
+    @State private var keyboard = false
+    func body(content: Content) -> some View {
+        content.environment(\.orbisKeyboardNavigation, keyboard)
+            .onKeyPress(.tab) { keyboard = true; return .ignored }
+            .simultaneousGesture(SpatialTapGesture().onEnded { _ in keyboard = false })
+    }
+}
+
 // MARK: - Type, radius, motion
 
 /// The whole interface uses four sizes; weight, color and spacing carry the rest of the hierarchy.
@@ -168,6 +181,11 @@ private func surfaceIntensity(_ value: CGFloat) -> CGFloat {
     value <= 0 ? 0 : value <= 0.42 ? 0.4 : value < 1 ? 0.65 : 1
 }
 
+private struct OrbisVisibleKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var orbisVisible: Bool { get { self[OrbisVisibleKey.self] } set { self[OrbisVisibleKey.self] = newValue } }
+}
+
 private struct NeuSurface: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
     let inset: Bool
@@ -175,10 +193,11 @@ private struct NeuSurface: ViewModifier {
     let intensity: CGFloat
     let padding: CGFloat
     let concentric: Bool
+    let press: Bool?
     func body(content: Content) -> some View {
         content.modifier(NeuDepthSurface(depth: (inset ? -1 : 1) * surfaceIntensity(intensity),
                                         radius: radius, padding: padding, concentric: concentric))
-            .animation(reduced ? nil : InteractionMotion.selection, value: inset)
+            .animation(reduced ? nil : press.map { $0 ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease } ?? InteractionMotion.selection, value: inset)
     }
 }
 
@@ -205,12 +224,13 @@ private struct NeuDepthSurface: AnimatableModifier {
             .environment(\.orbisSurface, OrbisSurfaceContext(layer: layer, depth: (parent?.depth ?? 0) + 1,
                 innerRadius: padding > 0 ? max(r - padding, 0) : nil))
             .background {
-                shape.fill(fill
-                    .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity * inner), radius: 4 * inner,
-                                   x: 4 * inner, y: 4 * inner))
-                    .shadow(.inner(color: p.light.opacity(p.highlightOpacity * inner), radius: 4 * inner,
-                                   x: -4 * inner, y: -4 * inner)))
-                    .shadow(color: p.shadow.opacity(p.shadeOpacity * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
+                Group {
+                    if inner > 0 {
+                        shape.fill(fill
+                            .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity * inner), radius: 4 * inner, x: 4 * inner, y: 4 * inner))
+                            .shadow(.inner(color: p.light.opacity(p.highlightOpacity * inner), radius: 4 * inner, x: -4 * inner, y: -4 * inner)))
+                    } else { shape.fill(fill) }
+                }.shadow(color: p.shadow.opacity(p.shadeOpacity * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
                     .shadow(color: p.light.opacity(p.highlightOpacity * outer), radius: 4 * outer, x: -4 * outer, y: -4 * outer)
             }
     }
@@ -220,8 +240,8 @@ extension View {
     /// `padding` is applied inside the surface; nested surfaces then use `radius - padding`.
     /// Circles and capsules pass `concentric: false` to keep their own shape.
     func neuSurface(inset: Bool = false, radius: CGFloat = 20, intensity: CGFloat = 0.65,
-                    padding: CGFloat = 0, concentric: Bool = true) -> some View {
-        modifier(NeuSurface(inset: inset, radius: radius, intensity: intensity, padding: padding, concentric: concentric))
+                    padding: CGFloat = 0, concentric: Bool = true, press: Bool? = nil) -> some View {
+        modifier(NeuSurface(inset: inset, radius: radius, intensity: intensity, padding: padding, concentric: concentric, press: press))
     }
 
     /// For views layered over a surface from outside its content (overlays, panels drawn by hand).
@@ -241,6 +261,9 @@ extension View {
 }
 
 private struct OrbisField: ViewModifier {
+    @Environment(\.orbisKeyboardNavigation) private var keyboard
+    @Environment(\.orbisAccent) private var accent
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisSurface) private var parent
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let focused: Bool
@@ -254,6 +277,7 @@ private struct OrbisField: ViewModifier {
             // Outer halo: only the half outside the field shows; the field covers the rest.
             .background { shape.stroke(.tint.opacity(focused ? 0.12 : 0), lineWidth: 8) }
             .overlay { shape.stroke(.tint.opacity(focused ? 0.28 : 0), lineWidth: 1) }
+            .overlay { if focused && keyboard { shape.stroke(accent ?? OrbisPalette(scheme).accent, lineWidth: 2).padding(-4) } }
             .animation(.orbisFade, value: focused)
     }
 }
@@ -401,6 +425,8 @@ enum OrbisHaptics {
 }
 
 struct NeuButtonStyle: ButtonStyle {
+    @Environment(\.isFocused) private var keyboardFocused
+    @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
@@ -413,9 +439,10 @@ struct NeuButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: enabled ? 0.65 : 0, padding: padding)
+            .neuSurface(inset: selected || configuration.isPressed, radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
             .overlay { if !enabled { RoundedRectangle(cornerRadius: radius).strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
             .contentShape(RoundedRectangle(cornerRadius: radius))
+            .overlay { if keyboardFocused && enabled { RoundedRectangle(cornerRadius: radius).stroke(accent ?? OrbisPalette(scheme).accent, lineWidth: 2).padding(-4) } }
             .animation(reduced ? nil : configuration.isPressed ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease, value: configuration.isPressed)
     }
 }
@@ -438,7 +465,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
         let accent = OrbisPalette(scheme).accent
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding)
+            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
             .background(OrbisTouchOrigin { touchOrigin = $0 })
             .overlay {
                 OrbisSelectionFill(selected: selected, origin: touchOrigin,
@@ -501,6 +528,8 @@ struct OrbisIconButton: View {
 }
 
 struct NeuIconButtonStyle: ButtonStyle {
+    @Environment(\.isFocused) private var keyboardFocused
+    @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
@@ -512,8 +541,9 @@ struct NeuIconButtonStyle: ButtonStyle {
         return configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
             .neuSurface(inset: selected || configuration.isPressed, radius: size / 2,
-                        intensity: enabled ? (size <= 36 ? 0.4 : 0.65) : 0, concentric: false)
+                        intensity: enabled ? (size <= 36 ? 0.4 : 0.65) : 0, concentric: false, press: configuration.isPressed)
             .overlay { if !enabled { Circle().strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
+            .overlay { if keyboardFocused && enabled { Circle().stroke(accent ?? OrbisPalette(scheme).accent, lineWidth: 2).padding(-4) } }
             .frame(width: target, height: target).contentShape(Rectangle())
             .animation(reduced ? nil : configuration.isPressed ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease, value: configuration.isPressed)
     }
@@ -633,23 +663,119 @@ private struct OrbisSheetChrome: ViewModifier {
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let detents: Set<PresentationDetent>
     func body(content: Content) -> some View {
-        content
-            .environment(\.orbisSurface, nil)
-            .overlay(alignment: .top) {
-                Capsule().fill(.clear).frame(width: 36, height: 6)
-                    .neuSurface(inset: true, radius: 3, intensity: 0.35, concentric: false)
-                    .padding(.top, 8).allowsHitTesting(false).accessibilityHidden(true)
-            }
-            .presentationDetents(detents)
-            .presentationDragIndicator(.hidden)
-            .presentationCornerRadius(OrbisRadius.sheet)
-            .presentationBackground(OrbisPalette(scheme).base)
+        content.environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
+
     }
 }
 
 extension View {
     func orbisSheet(_ detents: Set<PresentationDetent> = [.large]) -> some View {
         modifier(OrbisSheetChrome(detents: detents))
+    }
+}
+
+private struct OrbisDismissKey: EnvironmentKey { static let defaultValue: (() -> Void)? = nil }
+extension EnvironmentValues {
+    var orbisDismiss: (() -> Void)? { get { self[OrbisDismissKey.self] } set { self[OrbisDismissKey.self] = newValue } }
+}
+
+/// Native sheets and custom sheets expose one dismissal action to their content.
+@propertyWrapper struct OrbisDismiss: DynamicProperty {
+    @Environment(\.dismiss) private var system
+    @Environment(\.orbisDismiss) private var custom
+    var wrappedValue: () -> Void { custom ?? { system() } }
+}
+
+/// The overlay owns presentation, while the presenter continues to own state. A live
+/// source republishes a fresh builder after parent changes without remounting the sheet.
+@MainActor
+private final class OrbisLiveSheetSource: ObservableObject {
+    var content: () -> AnyView = { AnyView(EmptyView()) }
+    private var scheduled = false
+    func update(_ builder: @escaping () -> AnyView) {
+        content = builder
+        guard !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.objectWillChange.send()
+        }
+    }
+}
+
+private struct OrbisLiveSheetContent: View {
+    @ObservedObject var source: OrbisLiveSheetSource
+    var body: some View { source.content() }
+}
+
+private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
+    @EnvironmentObject private var overlay: OrbisOverlay
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.orbisAccent) private var accent
+    @Environment(\.colorScheme) private var scheme
+    @Binding var presented: Bool
+    var onDismiss: (() -> Void)?
+    let sheet: () -> Sheet
+    @State private var owner = UUID()
+    // @State retains the source without subscribing the presenter to its publications.
+    @State private var liveSheet = OrbisLiveSheetSource()
+    func body(content: Content) -> some View {
+        let _ = liveSheet.update {
+            AnyView(sheet().environmentObject(store).environmentObject(store.hostState)
+                .environmentObject(store.transfers).environmentObject(store.toolInventories)
+                .environmentObject(store.notifications).environmentObject(store.agentState)
+                .environment(\.orbisAccent, accent).tint(accent ?? OrbisPalette(scheme).accent))
+        }
+        return content.onChange(of: presented, initial: true) { _, open in
+            if open {
+                overlay.showSheet(owner: owner, content: { AnyView(OrbisLiveSheetContent(source: liveSheet)) },
+                                  onDismiss: { presented = false; onDismiss?() })
+            } else { overlay.dismissSheet(owner: owner) }
+        }.onDisappear { overlay.dismissSheet(owner: owner) }
+    }
+}
+
+extension View {
+    /// S37 / M29: app-owned sheets use the same 220ms arrival and 180ms exit,
+    /// with a dedicated handle so content scrolling never dismisses the panel.
+    func orbisBottomSheet<Sheet: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping () -> Sheet) -> some View {
+        modifier(OrbisBottomSheetPresenter(presented: isPresented, onDismiss: onDismiss, sheet: content))
+    }
+}
+
+private struct OrbisSheetContent: View {
+    let content: () -> AnyView
+    var body: some View { content() }
+}
+
+private struct OrbisBottomPanel: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
+    let request: OrbisOverlay.SheetRequest
+    let availableHeight: CGFloat
+    let dismiss: () -> Void
+    @State private var drag: CGFloat = 0
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(.clear).frame(width: 36, height: 6)
+                .neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
+                .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 4).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
+                    if drag > 100 || value.predictedEndTranslation.height > 180 { dismiss() }
+                    else { withAnimation(reduced ? nil : .orbisDrag) { drag = 0 } }
+                })
+            OrbisSheetContent(content: request.content)
+                .environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
+                .environment(\.orbisDismiss, dismiss)
+        }.frame(maxWidth: 720).frame(height: availableHeight * 0.88)
+            .background(OrbisPalette(scheme).base)
+            .neuSurface(radius: 32, intensity: 1, concentric: false)
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 32, topTrailingRadius: 32))
+            .offset(y: drag).frame(maxWidth: .infinity)
+            .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal)
+            .accessibilityAction(.escape, dismiss)
+            .accessibilityIdentifier("orbis-bottom-sheet")
     }
 }
 
@@ -699,9 +825,25 @@ final class OrbisOverlay: ObservableObject {
         let message: String?
         let actions: [OrbisDialogAction]
     }
+    struct SheetRequest: Identifiable {
+        let id: UUID
+        let content: () -> AnyView
+        let onDismiss: () -> Void
+    }
+    @Published private(set) var sheets: [SheetRequest] = []
+    func showSheet(owner: UUID, content: @escaping () -> AnyView, onDismiss: @escaping () -> Void) {
+        guard !sheets.contains(where: { $0.id == owner }) else { return }
+        menu = nil
+        sheets.append(SheetRequest(id: owner, content: content, onDismiss: onDismiss))
+    }
+    func dismissSheet(owner: UUID) {
+        guard let index = sheets.firstIndex(where: { $0.id == owner }) else { return }
+        let removed = Array(sheets[index...]); sheets.removeSubrange(index...)
+        removed.reversed().forEach { $0.onDismiss() }
+    }
     @Published private(set) var menu: MenuRequest?
     @Published private(set) var dialog: DialogRequest?
-    var isPresenting: Bool { menu != nil || dialog != nil }
+    var isPresenting: Bool { menu != nil || dialog != nil || !sheets.isEmpty }
 
     /// `anchor` is in global coordinates.
     func showMenu(_ items: [OrbisMenuItem], from anchor: CGRect, horizontal: Bool = false, preferAbove: Bool = false, owner: String? = nil) {
@@ -813,16 +955,8 @@ private struct OrbisPanel: ViewModifier {
     let radius: CGFloat
     let padding: CGFloat
     func body(content: Content) -> some View {
-        let p = OrbisPalette(scheme)
-        content
-            .padding(padding)
-            .orbisNested(layer: 1, innerRadius: radius - padding)
-            .background {
-                RoundedRectangle(cornerRadius: radius, style: .continuous).fill(p.base)
-                    .shadow(color: p.shadow.opacity(0.42), radius: 8, x: 6, y: 6)
-                    .shadow(color: p.light.opacity(0.75), radius: 8, x: -5, y: -5)
-                    .shadow(color: p.scrim.opacity(scheme == .dark ? 0.35 : 0.1), radius: 22, y: 10)
-            }
+        content.neuSurface(radius: radius, intensity: 1, padding: padding, concentric: false)
+
     }
 }
 
@@ -834,12 +968,6 @@ private struct OrbisOverlayLayer: View {
 
     var body: some View {
         ZStack {
-            if overlay.dialog != nil {
-                OrbisPalette(scheme).scrim.opacity(0.32).ignoresSafeArea()
-                    .onTapGesture { overlay.cancelDialog() }
-                    .accessibilityHidden(true)
-                    .transition(.opacity)
-            }
             GeometryReader { proxy in
                 let origin = proxy.frame(in: .global).origin
                 let insets = proxy.safeAreaInsets
@@ -848,6 +976,19 @@ private struct OrbisOverlayLayer: View {
                                     width: max(0, proxy.size.width - insets.leading - insets.trailing),
                                     height: max(0, proxy.size.height - insets.top - insets.bottom))
                 ZStack(alignment: .topLeading) {
+                    if !overlay.sheets.isEmpty {
+                        OrbisPalette(scheme).scrim.opacity(0.34).ignoresSafeArea()
+                            .onTapGesture { if let top = overlay.sheets.last { overlay.dismissSheet(owner: top.id) } }
+                            .transition(.opacity)
+                        ForEach(overlay.sheets) { sheet in
+                            VStack { Spacer(minLength: 0); OrbisBottomPanel(request: sheet, availableHeight: proxy.size.height, dismiss: { overlay.dismissSheet(owner: sheet.id) }) }
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .id(sheet.id).accessibilityHidden(overlay.sheets.last?.id != sheet.id)
+                                .transition(reduceMotion ? .identity : .asymmetric(
+                                    insertion: .offset(y: 24).combined(with: .opacity).animation(InteractionMotion.panel),
+                                    removal: .offset(y: 24).combined(with: .opacity).animation(InteractionMotion.dismiss)))
+                        }
+                    }
                     if let menu = overlay.menu {
                         Color.clear.contentShape(Rectangle())
                             .onTapGesture { overlay.dismissMenu() }
@@ -864,17 +1005,22 @@ private struct OrbisOverlayLayer: View {
                                                    identity: OrbisPanelEntrance(progress: 1, anchor: menuTransitionAnchor(anchor, in: bounds))).combined(with: .opacity).animation(InteractionMotion.exit)))
                     }
                     if let dialog = overlay.dialog {
+                        OrbisPalette(scheme).scrim.opacity(0.34).ignoresSafeArea()
+                            .onTapGesture { overlay.cancelDialog() }.transition(.opacity)
                         OrbisDialogPanel(request: dialog, onAction: overlay.perform, onCancel: overlay.cancelDialog)
                             .id(dialog.id)
                             .frame(width: proxy.size.width, height: proxy.size.height)
-                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                            .transition(reduceMotion ? .identity : .asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.96)).animation(InteractionMotion.panel),
+                                removal: .opacity.combined(with: .scale(scale: 0.96)).animation(InteractionMotion.exit)))
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
         }
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.sheets.map(\.id))
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.menu?.id)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: overlay.dialog?.id)
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.dialog?.id)
         .allowsHitTesting(overlay.isPresenting)
     }
 
@@ -895,9 +1041,7 @@ private struct OrbisPanelEntrance: AnimatableModifier {
     let anchor: UnitPoint
     var animatableData: CGFloat { get { progress } set { progress = newValue } }
     func body(content: Content) -> some View {
-        content.scaleEffect(0.86 + 0.14 * progress, anchor: anchor)
-            .rotation3DEffect(.degrees(Double((anchor.y - 0.5) * 12 * (1 - progress))), axis: (x: 1, y: 0, z: 0), anchor: anchor)
-            .offset(x: (anchor.x - 0.5) * 24 * (1 - progress), y: (anchor.y - 0.5) * 16 * (1 - progress))
+        content.scaleEffect(0.96 + 0.04 * progress, anchor: anchor)
     }
 }
 
@@ -1087,11 +1231,10 @@ private struct MenuRowStyle: ButtonStyle {
         let p = OrbisPalette(scheme)
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .background {
-                RoundedRectangle(cornerRadius: parent?.innerRadius ?? OrbisRadius.control, style: .continuous)
-                    .fill(selected || configuration.isPressed ? p.well : .clear)
-            }
-            .opacity(enabled ? 1 : 0.4)
+            .neuSurface(inset: selected || configuration.isPressed, radius: parent?.innerRadius ?? OrbisRadius.control,
+                        intensity: enabled && (selected || configuration.isPressed) ? 0.4 : 0, press: configuration.isPressed)
+            .overlay { if !enabled { RoundedRectangle(cornerRadius: 16).strokeBorder(p.outline, lineWidth: 1) } }
+
     }
 }
 
@@ -1303,13 +1446,13 @@ struct OrbisNotice: View {
     let text: String
     var error = false
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 9) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: error ? "exclamationmark.circle" : "info.circle")
-                .orbisIconBaseline(OrbisTextSize.label)
-            OrbisMotionText(text).frame(maxWidth: .infinity, alignment: .leading)
-        }.font(.orbisLabel())
-            .foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
-            .neuSurface(inset: true, radius: OrbisRadius.control, intensity: 0.45, padding: 14)
+                .foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
+                .orbisIconBaseline(OrbisTextSize.body)
+            OrbisMotionText(text).foregroundStyle(OrbisPalette(scheme).text).frame(maxWidth: .infinity, alignment: .leading)
+        }.font(.orbisBody()).frame(minHeight: 16)
+            .neuSurface(radius: OrbisRadius.control, intensity: 1, padding: 16)
     }
 }
 
@@ -1481,4 +1624,30 @@ extension View {
     func downloadFlightHost(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightHost(flight: flight)) }
     /// The page's download button: where flights land and what pops when they arrive.
     func downloadFlightTarget(_ flight: DownloadFlight) -> some View { modifier(DownloadFlightTarget(flight: flight)) }
+}
+
+
+/// M28 loading material: the same base as the page, inset depth and one 1100ms
+/// highlight. Reduced motion and hidden root pages keep a static placeholder.
+struct OrbisSkeleton: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisVisible) private var visible
+    var width: CGFloat? = nil
+    let height: CGFloat
+    var radius: CGFloat = 8
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduced || !visible)) { context in
+            Color.clear.neuSurface(inset: true, radius: radius, intensity: 0.4, concentric: false)
+                .overlay {
+                    if !reduced && visible {
+                        GeometryReader { bounds in
+                            LinearGradient(colors: [.clear, OrbisPalette(scheme).light.opacity(0.32), .clear], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: bounds.size.width * 0.5)
+                                .offset(x: bounds.size.width * (CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1) * 1.5 - 0.5))
+                        }.clipShape(RoundedRectangle(cornerRadius: radius))
+                    }
+                }
+        }.frame(width: width, height: height)
+    }
 }

@@ -127,8 +127,8 @@ struct OrbisActionPulse: ViewModifier {
 enum InteractionMotion {
     static let glyphPress = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphPressDuration)
     static let glyphRelease = Animation.timingCurve(0.2, 0, 0, 1, duration: MotionGeometry.glyphReleaseDuration)
-    static let copyTransition = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.22)
-    static let selection = Animation.easeOut(duration: 0.26)
+    static let copyTransition = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.16)
+    static let selection = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.26)
     static let state = Animation.easeOut(duration: 0.16)
     static let panel = Animation.easeOut(duration: 0.22)
     static let exit = Animation.easeIn(duration: 0.16)
@@ -137,10 +137,13 @@ enum InteractionMotion {
     static let pageReturn = Animation.easeOut(duration: 0.18)
     static let send = Animation.linear(duration: MotionGeometry.sendDuration)
     static let toolbar = Animation.easeInOut(duration: 0.26)
+    static func dialSettle(distance: Double) -> Animation {
+        .timingCurve(0.215, 0.61, 0.355, 1, duration: ProviderDialGeometry.settleDuration(distance: distance))
+    }
 
     static var notice: AnyTransition {
-        .asymmetric(insertion: .offset(x: 32, y: -12).combined(with: .opacity).animation(panel),
-                    removal: .offset(x: 32, y: -12).combined(with: .opacity).animation(exit))
+        .asymmetric(insertion: .offset(y: 12).combined(with: .opacity).animation(panel),
+                    removal: .opacity.animation(exit))
     }
 }
 
@@ -191,7 +194,7 @@ struct OrbisReplyCard: ViewModifier {
             })
             .frame(height: reduced ? nil : (height.value(at: now) ?? (appearance.entering ? 0 : nil)), alignment: .top)
             .clipped()
-            .neuSurface(radius: OrbisRadius.card, intensity: 0.4, padding: OrbisRadius.cardPadding + 2)
+            .neuSurface(radius: OrbisRadius.card, intensity: 0.65, padding: 16)
             .opacity(reduced ? 1 : Double(opacity.value(at: now) ?? (appearance.entering ? 0 : 1)))
             .transaction { transaction in
                 if reduced { transaction.animation = nil; transaction.disablesAnimations = true }
@@ -439,7 +442,7 @@ struct OrbisMessageActions: ViewModifier {
                     anchor.frame = new
                     overlay.moveMenu(owner: owner, to: new)
                 }
-                .sheet(isPresented: $selectingText) {
+                .orbisBottomSheet(isPresented: $selectingText) {
                     OrbisMessageTextSelection(text: text).orbisSheet()
                 }
                 .onDisappear { dismiss() }
@@ -469,7 +472,7 @@ struct OrbisMessageActions: ViewModifier {
 }
 
 private struct OrbisMessageTextSelection: View {
-    @Environment(\.dismiss) private var dismiss
+    @OrbisDismiss private var dismiss
     let text: String
     var body: some View {
         VStack(spacing: 0) {
@@ -844,28 +847,20 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
 }
 
 
-struct OrbisNewSessionCard: View {
+
+/// A dial crossing gives one small state-duration pulse, cancelled on reuse.
+struct OrbisDialPulse: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
-    let title: String
-    let kind: String?
-    let requestId: String
-    let onPresented: () -> Void
-    @State private var entered = false
-    var body: some View {
-        HStack(spacing: 14) {
-            AgentEmblem(kind: kind)
-            VStack(alignment: .leading, spacing: 8) {
-                OrbisMotionText(title).font(.orbisBody(.semibold)).lineLimit(2)
-                RuntimeStatusLabel(status: "starting")
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding + 4)
-            .offset(y: reduced || entered ? 0 : 32).opacity(reduced || entered ? 1 : 0)
-            .accessibilityIdentifier("new-session-card")
-            .task(id: requestId) {
-                withAnimation(reduced ? nil : InteractionMotion.panel) { entered = true }
-                if !reduced { try? await Task.sleep(for: .milliseconds(220)) }
-                guard !Task.isCancelled else { return }
-                onPresented()
-            }
+    let trigger: Int
+    let peak: CGFloat
+    @State private var scale: CGFloat = 1
+    func body(content: Content) -> some View {
+        content.scaleEffect(reduced ? 1 : scale).task(id: trigger) {
+            guard trigger > 0, !reduced else { scale = 1; return }
+            withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.08)) { scale = peak }
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.08)) { scale = 1 }
+        }
     }
 }

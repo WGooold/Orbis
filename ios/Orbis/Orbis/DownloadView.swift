@@ -43,7 +43,7 @@ struct DownloadsView: View {
             .orbisBackPriority("download-selection", active: !selected.isEmpty) { selected = [] }
             .onChange(of: store.selectedHostId) { _, _ in selected = [] }
             .onChange(of: downloads.map(\.id)) { _, ids in selected.formIntersection(ids) }
-            .sheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
+            .orbisBottomSheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
                 DownloadBrowserView { browserOpen = false }.orbisSheet([.large])
             }
     }

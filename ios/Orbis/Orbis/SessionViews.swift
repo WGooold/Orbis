@@ -185,49 +185,35 @@ struct SessionDrawerView: View, Equatable {
         let _ = viewport.scrolling ? () : viewport.remember(incoming, identity: "\(store.selectedHostId ?? "")|\(state.query)|\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.expandedPath ?? "")|\(state.showAllSessions)")
         let selectedSessions = (shown?.sessions ?? []).filter { selectedSessionIds.contains($0.sessionId) }
         VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                OrbisMotionText(selecting ? L10n.tr("已选择 {0} 项", selectedSessions.count) : L10n.tr("会话目录")).font(.orbisTitle()).accessibilityAddTraits(.isHeader)
-                Spacer()
-                OrbisIconButton(symbol: "xmark", label: selecting ? L10n.tr("退出多选") : L10n.tr("关闭会话目录")) {
-                    if selecting { selectedSessionIds = [] } else { onClose() }
+            if selecting {
+                HStack(spacing: 8) {
+                    Text(L10n.tr("已选择 {0} 项", selectedSessions.count)).font(.orbisTitle())
+                    Spacer()
+                    OrbisIconButton(symbol: "xmark", label: L10n.tr("退出多选")) { selectedSessionIds = [] }
                 }
-            }.padding(.top, 8)
-            HStack(spacing: 12) {
-                OrbisSelectionToolbar(selecting: selecting) { progress in
-                    HStack(spacing: 12) {
-                        OrbisActionButton(title: L10n.tr("新会话"), symbol: "plus") { onNewSession(nil) }
-                            .disabled(store.connection != .secured || store.activatingSessionId != nil)
-                            .offset(x: 12 * progress)
-                        OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新会话目录"), action: store.refresh)
-                            .disabled(store.selectedHost == nil).offset(x: -12 * progress)
-                    }
-                } selected: {
-                    HStack(spacing: 12) {
-                        OrbisActionButton(title: state.archived ? L10n.tr("恢复选中会话") : L10n.tr("归档选中会话"),
-                                          symbol: state.archived ? "tray.and.arrow.up" : "archivebox", action: archiveSelection)
-                            .disabled(selectedSessions.contains { archiveUnavailableReason($0) != nil })
-                        if selectedSessions.count == 1, let session = selectedSessions.first, !state.archived {
-                            OrbisIconButton(symbol: "play", label: L10n.tr("在电脑继续会话")) {
-                                if let problem = store.providerMismatch(session) { showMismatch(problem) }
-                                else { store.activate(session) }
-                            }.disabled(store.connection != .secured || store.activatingSessionId != nil)
-                        }
-                    }
+                OrbisActionButton(title: state.archived ? L10n.tr("恢复选中会话") : L10n.tr("归档选中会话"),
+                    symbol: state.archived ? "tray.and.arrow.up" : "archivebox", action: archiveSelection)
+                    .disabled(selectedSessions.contains { archiveUnavailableReason($0) != nil })
+                if selectedSessions.count == 1, let session = selectedSessions.first, !state.archived {
+                    OrbisTextButton(title: L10n.tr("在电脑继续会话"), symbol: "play") {
+                        if let problem = store.providerMismatch(session) { showMismatch(problem) }
+                        else { store.activate(session) }
+                    }.disabled(store.connection != .secured || store.activatingSessionId != nil)
                 }
-                OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: L10n.tr("筛选会话：{0}", state.kind.map(filterTitle) ?? L10n.tr("全部")),
-                                    tint: state.kind == nil ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).accent,
-                                    selected: state.kind != nil) { filterMenuItems }
             }
             HStack(spacing: 8) {
-                OrbisActionSymbol(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
-                TextField(L10n.tr("搜索会话或目录"), text: $state.query).font(.orbisBody())
-                    .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                // The clear button keeps its slot so the field never changes width while typing.
-                OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { state.query = "" }
-                    .opacity(state.query.isEmpty ? 0 : 1).disabled(state.query.isEmpty)
-                    .accessibilityHidden(state.query.isEmpty)
-            }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused)
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
+                    TextField(L10n.tr("搜索目录或会话"), text: $state.query).font(.orbisBody())
+                        .focused($searchFocused).submitLabel(.search).onSubmit { searchFocused = false }
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { state.query = "" }
+                        .opacity(state.query.isEmpty ? 0 : 1).disabled(state.query.isEmpty).accessibilityHidden(state.query.isEmpty)
+                }.padding(.leading, 16).frame(minHeight: 56).orbisField(focused: searchFocused)
+                OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: L10n.tr("筛选会话：{0}", state.kind.map(filterTitle) ?? L10n.tr("全部")),
+                    tint: state.kind == nil ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).accent,
+                    selected: state.kind != nil, compact: true) { filterMenuItems }
+            }.padding(.top, 16)
             // One fixed row carries the title, the active filter and the counts; filtering never inserts a row.
             HStack(spacing: 8) {
                 OrbisMotionText(searching ? L10n.tr("搜索结果") : state.archived ? L10n.tr("已归档") : L10n.tr("工作目录"))
@@ -245,10 +231,11 @@ struct SessionDrawerView: View, Equatable {
             ScrollView {
                 // A directory can shrink by several screens while its header is offscreen.
                 // Measure every group so the scroll extent never retains an old lazy estimate.
-                VStack(spacing: 14) {
+                VStack(spacing: 2) {
                     if directories.isEmpty {
                         OrbisEmptyState(symbol: state.query.isEmpty ? "folder" : "magnifyingglass", title: emptyTitle)
                             .padding(.top, 40)
+                        if state.query.isEmpty { OrbisTextButton(title: L10n.tr("新建会话"), symbol: "plus") { onNewSession(nil) } }
                     }
                     ForEach(directories) { directory in
                         directoryGroup(directory).transition(.opacity.combined(with: .offset(y: 4)))
@@ -262,9 +249,8 @@ struct SessionDrawerView: View, Equatable {
             .defaultScrollAnchor(.top)
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("drawer-session-list")
-            OrbisPalette(scheme).well.frame(height: 2).clipShape(Capsule()).accessibilityHidden(true)
             hostSelector
-        }.padding(.horizontal, 18)
+        }.padding(.horizontal, 16)
             .onAppear(perform: resolveExpansion)
             .onChange(of: directories.map(\.path)) { _, _ in resolveExpansion() }
             .onChange(of: store.selectedHostId) { _, _ in state.providerKey = "current"; restartExpansion() }
@@ -386,67 +372,57 @@ struct SessionDrawerView: View, Equatable {
         let expanded = state.expandedPath == directory.path
         let hidden = directory.sessions.count - directorySessionPreviewLimit
         let visible = expanded && (state.showAllSessions || searching || hidden <= 0) ? directory.sessions : Array(directory.sessions.prefix(directorySessionPreviewLimit))
+        let running = directory.sessions.contains { catalog.runtimeBySession[$0.sessionId].map { ["running", "compacting", "starting", "background"].contains($0.presentationStatus) } == true }
         return VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                OrbisMotionButton { toggle(directory.path) } label: {
-                    HStack(spacing: 9) {
-                        OrbisActionSymbol(systemName: expanded ? "folder.fill" : "folder").foregroundStyle(OrbisPalette(scheme).accent)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(directoryTitle(directory.path)).font(.orbisBody(.semibold)).lineLimit(1)
-                            Text(directory.path).font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                        Text("\(directory.sessions.count)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
-                            .rotationEffect(.degrees(expanded ? 90 : 0)).animation(.orbisCollapse, value: expanded)
-                    }.padding(12).frame(minHeight: 60).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
-                    .accessibilityIdentifier("drawer-directory-" + directory.path)
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
-                        viewport.record("directory:" + directory.path, frame: $0)
-                    }
-                OrbisIconButton(symbol: "plus", label: L10n.tr("在此目录新建会话"), compact: true) { onNewSession(directory.path) }
-                    .disabled(store.connection != .secured || store.activatingSessionId != nil)
-            }
+            OrbisMotionButton { toggle(directory.path) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "folder.fill" : "folder").font(.system(size: 18))
+                        .foregroundStyle(expanded ? OrbisPalette(scheme).text : OrbisPalette(scheme).secondary)
+                    Text(directoryTitle(directory.path)).font(.orbisLabel(.semibold)).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if running && !expanded { OrbisStatusDot(tone: OrbisPalette(scheme).success, working: true) }
+                    Text("\(directory.sessions.count)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    Image(systemName: "chevron.right").font(.system(size: 16))
+                        .rotationEffect(.degrees(expanded ? 90 : 0)).animation(reduceMotion ? nil : .orbisCollapse, value: expanded)
+                }.padding(.horizontal, 8).frame(minHeight: 48).contentShape(Rectangle())
+            }.buttonStyle(DirectoryRowStyle())
+                .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
+                .accessibilityIdentifier("drawer-directory-" + directory.path)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: { viewport.record("directory:" + directory.path, frame: $0) }
             OrbisCollapse(expanded: expanded) {
-                VStack(spacing: 10) {
+                VStack(spacing: 0) {
                     ForEach(visible) { session in
-                        sessionRow(session)
-                            // Rebind only the leaf after search changes; keep group/list identity for motion.
-                            // SwiftUI otherwise retains obsolete hit bounds after a collapsed group is searched.
-                            .id(session.sessionId + "|" + state.query)
+                        sessionRow(session).id(session.sessionId + "|" + state.query)
                             .transition(.opacity.combined(with: .offset(y: 4)))
-                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: {
-                                viewport.record("session:" + session.sessionId, frame: $0)
-                            }
+                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: { viewport.record("session:" + session.sessionId, frame: $0) }
                     }
-                    if hidden > 0 && !searching {
-                        OrbisTextButton(title: state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("再显示 {0} 个会话", hidden),
-                                        symbol: state.showAllSessions ? "chevron.up" : "chevron.down", fill: true) {
-                            state.showAllSessions.toggle()
+                    HStack(spacing: 4) {
+                        OrbisMotionButton { onNewSession(directory.path) } label: {
+                            Label(L10n.tr("新建会话"), systemImage: "plus").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).accent).frame(minHeight: 48)
+                        }.buttonStyle(DirectoryRowStyle()).disabled(store.connection != .secured || store.activatingSessionId != nil)
+                        Spacer(minLength: 4)
+                        if hidden > 0 && !searching {
+                            OrbisMotionButton { state.showAllSessions.toggle() } label: {
+                                HStack(spacing: 4) {
+                                    Text(state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("全部 {0} 个", directory.sessions.count))
+                                    Image(systemName: state.showAllSessions ? "chevron.up" : "chevron.right")
+                                }.font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).frame(minHeight: 48)
+                            }.buttonStyle(DirectoryRowStyle())
                         }
                     }
-                }
-                .padding(6)
-                .environment(\.orbisSurface, OrbisSurfaceContext(layer: 0, depth: 2, innerRadius: 12))
-                .background {
-                    // The list owns one recess; leaf controls inherit a flat nested material.
-                    Color.clear.neuSurface(inset: true, radius: 18, intensity: 1)
-                        .environment(\.orbisSurface, nil)
-                }
-                .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, 2)
+                }.padding(.leading, 34).padding(.bottom, 8)
+                    .overlay(alignment: .leading) {
+                        OrbisPalette(scheme).outline.frame(width: 1).padding(.leading, 17).padding(.bottom, 16).allowsHitTesting(false)
+                    }
             }
-        }
-        .background {
-            // Scope the raised frame to this directory, leaving the drawer material unchanged.
-            Color.clear.neuSurface(radius: OrbisRadius.card, intensity: 0.8)
-                .environment(\.orbisSurface, nil)
         }
     }
 
     private func sessionRow(_ session: SessionSummary) -> some View {
         let runtime = catalog.runtimeBySession[session.sessionId]
         let selected = selectedSessionIds.contains(session.sessionId)
+        let current = store.selectedRuntime?.sessionId == session.sessionId
+        let unavailable = selecting ? archiveUnavailableReason(session) : nil
         return OrbisMotionButton {
             searchFocused = false
             if selecting { toggleSelection(session.sessionId) }
@@ -454,43 +430,28 @@ struct SessionDrawerView: View, Equatable {
             else { onOpenSession(session) }
         } label: {
             HStack(spacing: 8) {
-                // Activation swaps the emblem for a spinner in the same slot; the title never reflows.
                 ZStack {
-                    AgentEmblem(kind: session.agentKind, size: 24, recessed: false)
-                        .opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
-                    if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.small) }
-                }.frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: 4) {
-                    // Reserve both title lines so short and wrapped titles keep the same card height.
-                    Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisBody()).lineLimit(2, reservesSpace: true)
-                    ZStack(alignment: .leading) {
-                        HStack(spacing: 8) {
-                            if let runtime { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }
-                            else { Text(L10n.tr("缓存历史")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
-                            Text(sessionTimeTitle(session.modifiedAt))
-                                .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                            if session.agentKind == "codexDesktop" {
-                                Text(L10n.tr("桌面版")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).agent(session.agentKind))
-                            }
-                            if let provider = sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) {
-                                Text(provider).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).warning)
-                            }
-                        }.lineLimit(1)
-                            .opacity(selecting && archiveUnavailableReason(session) != nil ? 0 : 1)
-                            .accessibilityHidden(selecting && archiveUnavailableReason(session) != nil)
-                        if selecting, let reason = archiveUnavailableReason(session) {
-                            Text(reason).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                OrbisSelectionIndicator(selected: selected, selecting: selecting)
-            }.padding(12).contentShape(Rectangle())
-        }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, radius: 16,
-                                               recessed: store.selectedRuntime?.sessionId == session.sessionId))
+                    AgentEmblem(kind: session.agentKind, size: 14, recessed: false).opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
+                    if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.mini) }
+                }.frame(width: 14, height: 16)
+                Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisLabel(current ? .semibold : .regular))
+                    .foregroundStyle(current ? OrbisPalette(scheme).accent : OrbisPalette(scheme).text)
+                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if let unavailable {
+                    Image(systemName: "exclamationmark.circle").font(.system(size: 14)).foregroundStyle(OrbisPalette(scheme).warning).accessibilityLabel(unavailable)
+                } else if let runtime, runtime.presentationStatus != "idle" {
+                    RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle)
+                } else {
+                    Text(sessionTimeTitle(session.modifiedAt)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                }
+                if selecting { OrbisSelectionIndicator(selected: selected, selecting: true) }
+            }.padding(.horizontal, 8).frame(minHeight: 48).contentShape(Rectangle())
+        }.buttonStyle(DirectoryRowStyle(current: current, selected: selected))
             .disabled(store.activatingSessionId != nil && !selecting)
             .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(session.sessionId) })
             .accessibilityIdentifier("drawer-session-" + session.sessionId)
             .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityHint(sessionOtherProvider(session, current: store.currentProvider(for: session.agentKind ?? "")) ?? "")
             .accessibilityAction(named: L10n.tr("选择会话")) { beginSelection(session.sessionId) }
     }
 
@@ -520,6 +481,18 @@ struct SessionDrawerView: View, Equatable {
     }
 }
 
+private struct DirectoryRowStyle: ButtonStyle {
+    @Environment(\.colorScheme) private var scheme
+    var current = false
+    var selected = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.environment(\.orbisGlyphPressed, configuration.isPressed)
+            .neuSurface(inset: current || configuration.isPressed, radius: 12,
+                        intensity: current || configuration.isPressed ? 0.4 : 0, press: configuration.isPressed)
+            .overlay { OrbisSelectionFill(selected: selected, origin: nil, radius: 12, color: OrbisPalette(scheme).accent) }
+    }
+}
+
 private func filterTitle(_ kind: String) -> String {
     switch kind {
     case "codex": return L10n.tr("Codex 终端")
@@ -536,21 +509,30 @@ struct SessionDraftView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisVisible) private var visible
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var overlay: OrbisOverlay
     @AppStorage("orbis.appearance") private var appearance = "mist"
     @AppStorage("orbis.lastDraftAgent") private var agent = "codex"
-    @AppStorage private var text: String
+    @State private var text = ""
+    let owner: HostConnection
     let presetCwd: String?
-    let onSubmitted: (HostConnection.LaunchState) -> Void
-    let onCancel: () -> Void
+    let closeRequest: Int
+    let onSubmitted: (HostConnection.LaunchState, CGRect) -> Void
+    let onCancel: (Bool) -> Void
     @State private var path: String?
     @State private var choosingDirectory = false
+    @State private var cancelling = false
     @State private var risen = false
-    @FocusState private var focused: Bool
-    init(presetCwd: String?, onSubmitted: @escaping (HostConnection.LaunchState) -> Void, onCancel: @escaping () -> Void) {
-        self.presetCwd = presetCwd; self.onSubmitted = onSubmitted; self.onCancel = onCancel
-        _text = AppStorage(wrappedValue: "", "orbis.newSessionDraft")
+    @State private var frame: CGRect = .zero
+    @State private var codexFrame: CGRect = .zero
+    @State private var focused = false
+    init(owner: HostConnection, presetCwd: String?, closeRequest: Int, onSubmitted: @escaping (HostConnection.LaunchState, CGRect) -> Void, onCancel: @escaping (Bool) -> Void) {
+        self.owner = owner; self.presetCwd = presetCwd; self.closeRequest = closeRequest; self.onSubmitted = onSubmitted; self.onCancel = onCancel
         _path = State(initialValue: presetCwd)
     }
+    private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
+    private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
     private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
     private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
     private var canSend: Bool {
@@ -561,17 +543,22 @@ struct SessionDraftView: View {
         let p = OrbisPalette(scheme)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 4) {
-                ForEach(["pi", "codex", "dsh", "claude"], id: \.self) { kind in
-                    OrbisMotionButton { agent = kind } label: {
-                        AgentEmblem(kind: kind, size: 36, recessed: false)
-                            .saturation(agent == kind ? 1 : 0).opacity(agent == kind ? 1 : 0.4)
-                            .neuSurface(inset: agent == kind, radius: 18, intensity: 0.4, concentric: false)
-                            .frame(width: 48, height: 48)
-                    }.buttonStyle(.plain).disabled(!allowed.contains(kind))
-                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind ? .isSelected : [])
+                ForEach(["codex", "claude", "dsh", "pi"], id: \.self) { kind in
+                    OrbisMotionButton { agent = kind == "codex" && !allowed.contains("codex") && allowed.contains("codexDesktop") ? "codexDesktop" : kind } label: {
+                        AgentEmblem(kind: kind, size: 20, recessed: false)
+                            .saturation(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0).opacity(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0.4)
+                            .frame(width: 36, height: 36)
+                            .neuSurface(inset: agent == kind || kind == "codex" && agent == "codexDesktop", radius: 18,
+                                intensity: agent == kind || kind == "codex" && agent == "codexDesktop" ? 0.4 : 0, concentric: false)
+                            .frame(width: 48, height: 48).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!allowed.contains(kind) && !(kind == "codex" && allowed.contains("codexDesktop")))
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if kind == "codex" { codexFrame = $0 } }
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in if kind == "codex" { showCodexChoices() } })
+                        .accessibilityAction(named: L10n.tr("Codex 桌面版")) { if kind == "codex", allowed.contains("codexDesktop") { agent = "codexDesktop" } }
+                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind || kind == "codex" && agent == "codexDesktop" ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
+                Text(agent == "codexDesktop" ? L10n.tr("Codex 桌面版") : agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
             }
             OrbisMotionButton { focused = false; choosingDirectory = true } label: {
                 HStack(spacing: 8) {
@@ -581,11 +568,11 @@ struct SessionDraftView: View {
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(L10n.tr("让 {0} 做什么？", agentTitle(agent)), text: $text, axis: .vertical)
-                    .font(.orbisBody()).lineLimit(1...6).focused($focused)
-                    .submitLabel(.send).onSubmit(submit)
-                    .padding(.horizontal, 16).padding(.vertical, 12).frame(minHeight: 56)
-                    .orbisField(focused: focused).accessibilityIdentifier("draft-message")
+                OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
+                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" ? L10n.tr("Codex 桌面版") : agentTitle(agent)),
+                    ink: UIColor(p.text), placeholderInk: UIColor(p.secondary), onSubmit: submit, onCancel: cancel)
+                    .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 56)
+                    .orbisField(focused: focused)
                 OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送"), tint: p.agent(agent), action: submit)
                     .disabled(!canSend).accessibilityIdentifier("draft-send").padding(.bottom, 4)
             }
@@ -593,20 +580,31 @@ struct SessionDraftView: View {
         }.opacity(risen ? 1 : 0).offset(y: risen ? 0 : 4)
             .neuSurface(inset: !risen, radius: 24, intensity: 0.65, padding: 16)
             .environment(\.orbisAccent, p.agent(agent)).tint(p.agent(agent))
-            .accessibilityIdentifier("session-draft")
+            .accessibilityElement(children: .contain).accessibilityIdentifier("session-draft")
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
             .onAppear {
+                text = owner.draft(for: draftRuntime)
+                let rememberedPath = owner.draft(for: pathRuntime)
+                if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
+                if currentPath == nil { path = store.selectedRuntime?.cwd ?? store.sessions.first?.cwd }
                 if !allowed.contains(agent), let first = allowed.first { agent = first }
                 if currentPath == nil { store.browseDirectory() }
             }
             .task {
                 if !reduced { try? await Task.sleep(for: .milliseconds(200)) }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !cancelling else { return }
                 withAnimation(reduced ? nil : InteractionMotion.selection) { risen = true }
                 if !reduced { try? await Task.sleep(for: .milliseconds(120)) }
-                focused = true
+                if !cancelling && visible && scenePhase == .active { focused = true }
             }
-            .onKeyPress(.escape) { onCancel(); return .handled }
-            .sheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
+            .onChange(of: text) { _, value in owner.saveDraft(value, for: draftRuntime) }
+            .onChange(of: presetCwd) { _, value in if let value { path = value } }
+            .onChange(of: path) { _, value in owner.saveDraft(value ?? "", for: pathRuntime) }
+            .onChange(of: closeRequest) { _, _ in cancel() }
+            .onChange(of: visible) { _, active in if !active { focused = false } }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { focused = false } }
+            .onKeyPress(.escape) { cancel(); return .handled }
+            .orbisBottomSheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
     }
     private var directorySheet: some View {
         VStack(spacing: 16) {
@@ -618,74 +616,28 @@ struct SessionDraftView: View {
         }.padding(16).onAppear { store.browseDirectory(currentPath) }
             .onDisappear { store.dismissBrowse() }
     }
+    /// Preserve the existing desktop backend without adding a fifth primary Agent.
+    private func showCodexChoices() {
+        focused = false
+        var choices: [OrbisMenuItem] = []
+        if allowed.contains("codex") { choices.append(OrbisMenuItem(title: "Codex", checked: agent == "codex") { agent = "codex" }) }
+        if allowed.contains("codexDesktop") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 桌面版"), checked: agent == "codexDesktop") { agent = "codexDesktop" }) }
+        if !choices.isEmpty { overlay.showMenu(choices, from: codexFrame) }
+    }
+    private func cancel() {
+        cancelling = true
+        focused = false
+        let retained = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        withAnimation(reduced ? nil : InteractionMotion.selection) { risen = false }
+        if reduced { onCancel(retained) }
+        else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { onCancel(retained) } }
+    }
     private func submit() {
-        guard canSend, let cwd = currentPath else { return }
+        guard owner === store.activeConnection, canSend, let cwd = currentPath else { return }
         let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.createSession(agentKind: agent, cwd: cwd)
-        guard let launch = store.launching, store.sendMessage(sentence) else { return }
-        text = ""; focused = false; OrbisHaptics.commit(); onSubmitted(launch)
-    }
-}
-
-struct NewSessionView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
-    let presetCwd: String?
-    var onCreated: ((HostConnection.LaunchState) -> Void)? = nil
-    let onDismiss: () -> Void
-    @State private var kind = "pi"
-
-    private var allowedAgents: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
-    private var canCreate: Bool {
-        let path = presetCwd ?? store.browse?.path
-        return store.connection == .secured && store.activatingSessionId == nil && allowedAgents.contains(kind) &&
-            path?.isEmpty == false && (presetCwd != nil || (store.browse?.loading == false && store.browse?.error == nil))
-    }
-
-    var body: some View {
-        VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr("新建会话"), closes: true, back: onDismiss) {
-                Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "desktopcomputer").font(.orbisCaption())
-                    .foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(["pi", "codex", "codexDesktop", "dsh", "claude"], id: \.self) { agent in
-                            OrbisMotionButton { kind = agent } label: {
-                                HStack(spacing: 8) {
-                                    AgentEmblem(kind: agent, size: 22, recessed: false)
-                                    Text(filterTitle(agent)).lineLimit(2)
-                                    // Reserved even when unchecked so the label does not shift on selection.
-                                    OrbisActionSymbol(systemName: "checkmark").opacity(kind == agent ? 1 : 0)
-                                }.font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).agent(agent)).frame(maxWidth: .infinity, minHeight: 60).padding(.horizontal, 10)
-                            }.buttonStyle(NeuButtonStyle(selected: kind == agent)).disabled(!allowedAgents.contains(agent))
-                                .accessibilityAddTraits(kind == agent ? .isSelected : [])
-                        }
-                    }
-                    if let presetCwd {
-                        Label(presetCwd, systemImage: "folder").font(.orbisLabel(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
-                            .neuSurface(inset: true, radius: 16, intensity: 0.45, padding: 16)
-                    } else { RemoteDirectoryView() }
-                    if store.connection != .secured { OrbisNotice(text: L10n.tr("未连接到电脑")) }
-                }.padding(.horizontal, 24).padding(.vertical, 8)
-            }
-            OrbisActionButton(title: L10n.tr("在这里新建 {0} 会话", agentTitle(kind)), symbol: "plus", tint: OrbisPalette(scheme).agent(kind)) {
-                if let cwd = presetCwd ?? store.browse?.path {
-                    store.createSession(agentKind: kind, cwd: cwd)
-                    if store.activatingSessionId != nil {
-                        if let launch = store.launching { onCreated?(launch) }
-                        OrbisHaptics.commit(); onDismiss()
-                    }
-                }
-            }.disabled(!canCreate).padding(.horizontal, 24).padding(.bottom, 24)
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onAppear {
-                if !allowedAgents.contains(kind), let first = allowedAgents.first { kind = first }
-                if presetCwd == nil { store.browseDirectory() }
-            }
-            .onChange(of: store.selectedHostId) { _, _ in onDismiss() }
+        guard store.createSession(agentKind: agent, cwd: cwd, firstMessage: sentence), let launch = store.launching else { return }
+        owner.saveDraft("", for: draftRuntime)
+        text = ""; focused = false; OrbisHaptics.commit(); onSubmitted(launch, frame)
     }
 }
 
@@ -728,5 +680,98 @@ struct RemoteDirectoryView: View {
                 }
             }
         }
+    }
+}
+
+
+/// Native marked-text editing keeps IME confirmation distinct from first-sentence
+/// submission. Hardware Shift+Return inserts a line break; Return submits once.
+private struct OrbisDraftEditor: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var focused: Bool
+    let placeholder: String
+    let ink: UIColor
+    let placeholderInk: UIColor
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> Editor {
+        let view = Editor()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear; view.font = .systemFont(ofSize: 15)
+        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 4
+        view.returnKeyType = .send
+        view.accessibilityIdentifier = "draft-message"
+        return view
+    }
+    func updateUIView(_ view: Editor, context: Context) {
+        context.coordinator.parent = self
+        view.submit = onSubmit; view.cancel = onCancel
+        view.placeholder.text = placeholder; view.placeholder.textColor = placeholderInk
+        view.placeholder.isHidden = !text.isEmpty
+        view.accessibilityLabel = placeholder
+        if view.markedTextRange == nil && view.text != text {
+            let selected = view.selectedRange; view.text = text
+            view.selectedRange = NSRange(location: min(selected.location, text.utf16.count), length: 0)
+        }
+        view.textColor = ink
+        if focused && !view.isFirstResponder { view.becomeFirstResponder() }
+        else if !focused && view.isFirstResponder { view.resignFirstResponder() }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: Editor, context: Context) -> CGSize? {
+        let width = proposal.width ?? 240
+        let height = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        return CGSize(width: width, height: min(6 * (uiView.font?.lineHeight ?? 18), max(uiView.font?.lineHeight ?? 18, height)))
+    }
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: OrbisDraftEditor
+        init(_ parent: OrbisDraftEditor) { self.parent = parent }
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text; (textView as? Editor)?.placeholder.isHidden = !textView.text.isEmpty
+            textView.invalidateIntrinsicContentSize()
+        }
+        func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
+        func textViewDidEndEditing(_ textView: UITextView) { parent.focused = false }
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            if text == "\n", textView.markedTextRange == nil, (textView as? Editor)?.insertingLineBreak != true { parent.onSubmit(); return false }
+            return true
+        }
+    }
+    final class Editor: UITextView {
+        var submit: () -> Void = {}
+        var cancel: () -> Void = {}
+        let placeholder = UILabel()
+        var insertingLineBreak = false
+        override init(frame: CGRect, textContainer: NSTextContainer?) {
+            super.init(frame: frame, textContainer: textContainer)
+            placeholder.font = .systemFont(ofSize: 15); placeholder.isUserInteractionEnabled = false; addSubview(placeholder)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func layoutSubviews() {
+            super.layoutSubviews(); placeholder.frame = CGRect(x: 4, y: 0, width: bounds.width - 8, height: 22)
+        }
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            guard markedTextRange == nil else { super.pressesBegan(presses, with: event); return }
+            if let key = presses.compactMap(\.key).first(where: { $0.keyCode == .keyboardReturnOrEnter }) {
+                let shift = key.modifierFlags.contains(.shift) || presses.compactMap(\.key).contains { [.keyboardLeftShift, .keyboardRightShift].contains($0.keyCode) }
+                if shift { lineBreak() } else { send() }
+                return
+            }
+            super.pressesBegan(presses, with: event)
+        }
+        override var keyCommands: [UIKeyCommand]? {
+            guard markedTextRange == nil else { return super.keyCommands }
+            return [UIKeyCommand(input: "\r", modifierFlags: .shift, action: #selector(lineBreak)),
+             UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(send)),
+             UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(close))].map { command in
+                 command.wantsPriorityOverSystemBehavior = true; return command
+             }
+        }
+        @objc private func lineBreak() {
+            guard markedTextRange == nil else { return }
+            insertingLineBreak = true; insertText("\n"); insertingLineBreak = false
+        }
+        @objc private func send() { if markedTextRange == nil { submit() } }
+        @objc private func close() { if markedTextRange == nil { cancel() } }
     }
 }

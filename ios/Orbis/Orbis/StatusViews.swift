@@ -7,6 +7,8 @@ struct ConnectionStatusView: View {
     @AppStorage("orbis.appearance") private var appearance = "mist"
     @AppStorage("orbis.colorMode") private var colorMode = "system"
     @EnvironmentObject private var overlay: OrbisOverlay
+    @State private var connectionOpen = false
+    @State private var languageOpen = false
     @State private var protocolOpen = false
     @State private var proposedProtocol: RelayTransportMode = .auto
     var root = false
@@ -18,14 +20,18 @@ struct ConnectionStatusView: View {
             } title: { Text(L10n.tr("设置")).font(.orbisTitle()) } trailing: { EmptyView() }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    StatusSection(title: L10n.tr("外观")) { appearancePicker }
                     StatusSection(title: L10n.tr("连接")) {
-                        HStack {
-                            Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
-                            Spacer()
-                            ConnectionPill(connection: store.connection, path: store.activePath)
-                        }.frame(minHeight: 48)
-                        StatusRow(label: L10n.tr("端到端加密"), value: store.connection == .secured ? L10n.tr("已启用") : L10n.tr("未建立"), tone: OrbisPalette(scheme).secondary)
+                        OrbisMotionButton { connectionOpen = true } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "laptopcomputer").font(.system(size: 18)).foregroundStyle(OrbisPalette(scheme).secondary)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(store.selectedHost?.hostName ?? L10n.tr("电脑")).font(.orbisBody(.semibold)).lineLimit(1)
+                                    Text(pathTitle(store.activePath) + " · " + connectionProtocolText(store.relayTransportKind, path: store.activePath, connected: store.connection == .secured))
+                                        .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                ConnectionPill(connection: store.connection, path: store.activePath, stateLabel: true)
+                            }.frame(minHeight: 56).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings-connection")
                         OrbisMotionButton {
                             proposedProtocol = store.relayTransportMode; protocolOpen = true
                         } label: {
@@ -37,31 +43,49 @@ struct ConnectionStatusView: View {
                                 }
                                 Spacer(); Image(systemName: "chevron.right").font(.orbisLabel())
                             }.frame(minHeight: 56).contentShape(Rectangle())
-                        }.buttonStyle(NeuButtonStyle()).accessibilityIdentifier("settings-protocol")
-                        StatusRow(label: L10n.tr("连接延迟"), value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured))
-                        ForEach(store.pairings, id: \.hostId) { pairing in
-                            OrbisMotionButton { store.connect(hostId: pairing.hostId) } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "laptopcomputer")
-                                    Text(pairing.hostName).font(.orbisLabel()).lineLimit(1)
-                                    Spacer()
-                                    Image(systemName: pairing.hostId == store.selectedHostId ? "checkmark" : "arrow.left.arrow.right")
-                                }.foregroundStyle(pairing.hostId == store.selectedHostId ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
-                                    .frame(minHeight: 48)
-                            }.buttonStyle(NeuButtonStyle(selected: pairing.hostId == store.selectedHostId))
-                        }
-                        OrbisTextButton(title: L10n.tr("重新连接"), symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
-                            .disabled(store.selectedHost == nil || store.connection == .connecting)
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings-protocol")
                     }
+                    StatusSection(title: L10n.tr("外观")) { appearancePicker.padding(.vertical, 12) }
                     StatusSection(title: L10n.tr("语言")) {
-                        ForEach(AppLanguage.allCases, id: \.rawValue) { choice in languageChoice(choice) }
+                        OrbisMotionButton { languageOpen = true } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(AppLocalization.shared.preference == .system ? L10n.tr("跟随系统") : AppLocalization.shared.preference == .chinese ? "简体中文" : "English").font(.orbisBody(.semibold))
+                                    Text(AppLocalization.shared.language == .chinese ? "简体中文" : "English").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                }
+                                Spacer(); Image(systemName: "chevron.right").font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            }.frame(minHeight: 56).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings-language")
                     }
-                    Text("Orbis · Easy Agents Everywhere").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }.accessibilityIdentifier("settings-page")
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .sheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
+            .orbisBottomSheet(isPresented: $connectionOpen) { connectionSheet.orbisSheet([.medium, .large]) }
+            .orbisBottomSheet(isPresented: $languageOpen) {
+                VStack(spacing: 16) {
+                    OrbisPageHeader(title: L10n.tr("语言"), closes: true, back: { languageOpen = false }) { EmptyView() }
+                    ForEach(AppLanguage.allCases, id: \.rawValue) { choice in languageChoice(choice) }
+                    Spacer(minLength: 0)
+                }.padding(16).orbisSheet([.medium])
+            }
+            .orbisBottomSheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
+    }
+    private var connectionSheet: some View {
+        VStack(spacing: 16) {
+            OrbisPageHeader(title: L10n.tr("当前连接"), closes: true, back: { connectionOpen = false }) { EmptyView() }
+            ScrollView {
+                VStack(spacing: 16) {
+                    StatusRow(label: L10n.tr("连接状态"), value: connectionTitle(store.connection))
+                    StatusRow(label: L10n.tr("连接延迟"), value: connectionLatencyText(store.pathRTT, connected: store.connection == .secured))
+                    StatusRow(label: L10n.tr("端到端加密"), value: store.connection == .secured ? L10n.tr("已启用") : L10n.tr("未建立"))
+                    ForEach(store.pairings, id: \.hostId) { pairing in
+                        OrbisChoiceRow(title: pairing.hostName, subtitle: "", selected: pairing.hostId == store.selectedHostId) { store.connect(hostId: pairing.hostId) }
+                    }
+                    OrbisActionButton(title: L10n.tr("重新连接"), symbol: "arrow.clockwise", action: store.reconnectSelectedHost)
+                        .disabled(store.selectedHost == nil || store.connection == .connecting)
+                }
+            }
+        }.padding(16)
     }
     private var appearancePicker: some View {
         VStack(spacing: 16) {
@@ -98,24 +122,33 @@ struct ConnectionStatusView: View {
         let p = OrbisPalette(dark ? .dark : .light)
         return OrbisMotionButton { colorMode = dark ? "dark" : "light" } label: {
             VStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack { RoundedRectangle(cornerRadius: 2).fill(p.secondary).frame(width: 32, height: 4); Spacer(); Circle().fill(p.accent).frame(width: 8, height: 8) }
+                VStack(alignment: .leading, spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2).fill(p.secondary).frame(width: 44, height: 4)
                     ForEach(0..<2) { index in
-                        HStack(spacing: 8) {
-                            Circle().fill(index == 0 ? p.success : p.faint).frame(width: 6, height: 6)
-                            RoundedRectangle(cornerRadius: 2).fill(p.secondary).frame(height: 4)
-                        }.padding(8).frame(height: 28).background(p.base, in: RoundedRectangle(cornerRadius: 8))
-                            .shadow(color: p.shadow.opacity(p.shadeOpacity), radius: 2, x: 2, y: 2)
-                            .shadow(color: p.light.opacity(p.highlightOpacity), radius: 2, x: -2, y: -2)
+                        HStack(alignment: .top, spacing: 6) {
+                            Circle().fill(index == 0 ? p.success : p.faint).frame(width: 6, height: 6).padding(.top, 2)
+                            VStack(alignment: .leading, spacing: 3) {
+                                RoundedRectangle(cornerRadius: 2).fill(p.secondary).frame(width: index == 0 ? 54 : 62, height: 4)
+                                RoundedRectangle(cornerRadius: 2).fill(p.secondary.opacity(0.65)).frame(width: 38, height: 3)
+                            }
+                            Spacer(minLength: 0)
+                        }.padding(6).frame(height: 26).background(p.lift, in: RoundedRectangle(cornerRadius: 8))
                     }
-                    RoundedRectangle(cornerRadius: 6).fill(p.base.shadow(.inner(color: p.shadow.opacity(p.shadeOpacity), radius: 2, x: 2, y: 2))).frame(height: 20)
-                }.padding(12).background(p.base, in: RoundedRectangle(cornerRadius: 12))
+                    HStack { Spacer(); Circle().fill(p.accent).frame(width: 10, height: 10) }
+                        .padding(5).frame(height: 20)
+                        .background {
+                            RoundedRectangle(cornerRadius: 10).fill(p.base
+                                .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity), radius: 2, x: 2, y: 2))
+                                .shadow(.inner(color: p.light.opacity(p.highlightOpacity), radius: 2, x: -2, y: -2)))
+                        }
+                }.padding(10).frame(maxWidth: .infinity).frame(height: 120).background(p.base, in: RoundedRectangle(cornerRadius: 12))
                     .neuSurface(inset: selected, radius: 16, intensity: 0.4, padding: 4, concentric: false)
+                    .environment(\.colorScheme, dark ? .dark : .light)
                 HStack(spacing: 6) {
                     Image(systemName: selected ? "smallcircle.filled.circle" : "circle")
                     Text(dark ? L10n.tr("深色") : L10n.tr("浅色"))
                     if selected && colorMode == "system" { Text(L10n.tr("跟随系统")).font(.orbisCaption()) }
-                }.font(.orbisLabel(selected ? .semibold : .regular))
+                }.font(.orbisBody(selected ? .semibold : .regular))
                     .foregroundStyle(selected ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
             }.frame(maxWidth: .infinity)
         }.buttonStyle(.plain).accessibilityIdentifier(dark ? "appearance-dark" : "appearance-light")
@@ -167,121 +200,6 @@ struct OrbisChoiceRow: View {
     }
 }
 
-private struct AgentStatusProviderCard: View {
-    @EnvironmentObject private var host: HostState
-    @EnvironmentObject private var overlay: OrbisOverlay
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
-    @State private var switchAnchor = OrbisAnchor()
-    let kind: String
-    private var providers: [AgentProvider] { host.providers(for: kind) }
-    private var current: AgentProvider? { host.currentProvider(for: kind) }
-    private var quotaSnapshot: ProviderQuotaSnapshot? { host.subscriptionQuota(for: kind) }
-    private var quota: SubscriptionQuota? { quotaSnapshot?.quota }
-    private var loading: Bool { current?.id == host.quotaProviderId && host.quotaKind == kind && host.queryingQuota }
-    private var quotaAccessibilityValue: String {
-        if loading { return L10n.tr("正在查询配额") }
-        guard let quota else { return "" }
-        return quota.windows.map { window in
-            let remaining = window.remainingPercent.map { String(format: "%.0f%%", $0) } ?? L10n.tr("暂不可用")
-            return window.title + " " + remaining
-        }.joined(separator: L10n.tr("，"))
-    }
-    var body: some View {
-        let palette = OrbisPalette(scheme)
-        let expectedHost = host.hostKey
-        ZStack(alignment: .topTrailing) {
-            quotaButton(palette: palette, expectedHost: expectedHost)
-            if let current, current.subscriptionSupported {
-                HStack {
-                    SubscriptionQuotaCoin(kind: kind, quota: quota, loading: loading,
-                                          enabled: host.canChangeProvider(for: kind), tint: palette.agent(kind)) {
-                        if let expectedHost { host.querySubscription(current, expectedHostKey: expectedHost) }
-                    }.id("\(expectedHost ?? "")-\(kind)-\(current.id)")
-                    Spacer(minLength: 0)
-                }.padding(16)
-            }
-            OrbisMotionButton {
-                let items = providers.map { provider in
-                    OrbisMenuItem(title: provider.name, symbol: provider.official ? "checkmark.seal" : "server.rack",
-                                  checked: provider.enabled, disabled: provider.enabled && !provider.additive) {
-                        if !provider.enabled || provider.additive, let expectedHost { host.changeProvider(provider, expectedHostKey: expectedHost) }
-                    }
-                }
-                overlay.showMenu(items, from: switchAnchor.frame)
-            } label: {
-                Label { Text(L10n.tr("切换")) } icon: { OrbisActionSymbol(systemName: "arrow.triangle.2.circlepath") }
-                    .font(.orbisLabel(.semibold)).foregroundStyle(palette.secondary)
-                    .frame(minWidth: 64, minHeight: 48).contentShape(Rectangle())
-            }.buttonStyle(ProviderInlineButtonStyle()).orbisAnchor(switchAnchor)
-                .disabled(!host.canChangeProvider(for: kind) || providers.isEmpty)
-                .accessibilityIdentifier("provider-switch-\(kind)")
-                .padding(.trailing, 12).padding(.top, 16).id(expectedHost)
-        }
-        .onChange(of: host.hostKey) { _, _ in overlay.dismissMenu() }
-        .onChange(of: providers) { _, _ in overlay.dismissMenu() }
-        .onChange(of: host.canChangeProvider(for: kind)) { _, available in
-            if !available { overlay.dismissMenu() }
-        }
-        .onDisappear { overlay.dismissMenu() }
-    }
-
-    private func quotaButton(palette: OrbisPalette, expectedHost: String?) -> some View {
-        Button {
-            if let current, let expectedHost { host.querySubscription(current, expectedHostKey: expectedHost) }
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    if current?.subscriptionSupported == true {
-                        Color.clear.frame(width: 64, height: 56)
-                    } else {
-                        AgentEmblem(kind: kind, size: 32, recessed: false)
-                            .background { AgentIconRecess().frame(width: 48, height: 48) }
-                            .accessibilityHidden(true)
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(agentTitle(kind)).font(.orbisLabel(.semibold)).foregroundStyle(palette.text)
-                            if current?.subscriptionSupported == true {
-                                SubscriptionRefreshGlyph(loading: loading, pending: quota == nil, tint: palette.agent(kind), size: 16)
-                            }
-                        }
-                        HStack(spacing: 5) {
-                            Text(host.providerName(for: kind)).font(.orbisBody(.medium))
-                                .foregroundStyle(palette.secondary).lineLimit(2)
-                            if current?.official == true {
-                                Image(systemName: "checkmark.seal.fill").font(.orbisCaption(.semibold))
-                                    .foregroundStyle(palette.agent(kind)).accessibilityLabel(L10n.tr("官方供应商"))
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.padding(.trailing, 72).frame(minHeight: 48)
-                if current?.subscriptionSupported == true {
-                    if let error = quotaSnapshot?.error {
-                        Text(error).font(.orbisCaption()).foregroundStyle(palette.error).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                if host.providerKind == kind, let error = host.providerError {
-                    Text(error).font(.orbisCaption()).foregroundStyle(palette.error)
-                }
-                if host.providerKind == kind, let notice = host.providerNotice {
-                    Text(notice).font(.orbisCaption()).foregroundStyle(palette.secondary)
-                }
-            }.padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(ProviderQuotaCardButtonStyle())
-            .disabled(current?.subscriptionSupported != true || !host.canChangeProvider(for: kind) || loading)
-            .accessibilityIdentifier("provider-quota-\(kind)")
-            .accessibilityHint(current?.subscriptionSupported == true ? L10n.tr("查询或刷新订阅剩余配额") : "")
-            .accessibilityValue(quotaAccessibilityValue)
-    }
-}
-
-private struct ProviderQuotaCardButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.72 : 1)
-    }
-}
-
 struct AgentProvidersView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var host: HostState
@@ -292,7 +210,7 @@ struct AgentProvidersView: View {
     @State private var moving = false
     var root = false
     let onBack: () -> Void
-    private let kinds = ["pi", "codex", "dsh", "claude"]
+    private let kinds = ["codex", "claude", "dsh", "pi"]
     private var selectedIndex: Int { host.providers.firstIndex { $0.id == selectedId } ?? host.providers.firstIndex(where: \.enabled) ?? 0 }
     private var provider: AgentProvider? { host.providers.indices.contains(selectedIndex) ? host.providers[selectedIndex] : nil }
     private var palette: OrbisPalette { OrbisPalette(scheme) }
@@ -304,10 +222,11 @@ struct AgentProvidersView: View {
                 OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新供应商")) { host.loadProviders(host.providerKind) }
                     .disabled(host.providersLoading || host.changingProvider || !host.connected)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
+                Spacer(minLength: 8)
                 Text(host.providerKind == "pi" ? L10n.tr("Pi 可以同时启用多个配置") : L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentTitle(host.providerKind), host.providers.count))
-                    .font(.orbisCaption()).foregroundStyle(palette.secondary)
+                    .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
             ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
                 onKind: { kind in selectedId = nil; overlay.dismissDialog(); host.loadProviders(kind) },
@@ -409,12 +328,17 @@ private struct ProviderQuotaCell: View {
             } else { Text(L10n.tr("轻点刷新查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("provider-quota-" + name)
     }
 }
 
 private struct ProviderDialView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.orbisVisible) private var visible
+    @State private var keyboardHandle: ProviderDialGeometry.Handle?
+    @GestureState private var dragging = false
     let kinds: [String]
     let kind: String
     let providers: [AgentProvider]
@@ -428,16 +352,40 @@ private struct ProviderDialView: View {
     @State private var gestureStarted = false
     @State private var initialPosition = 0.0
     @State private var moved = false
+    @State private var agentPulse = 0
+    @State private var profilePulse = 0
     private var groupIndex: Int { kinds.firstIndex(of: kind) ?? 1 }
     private var palette: OrbisPalette { OrbisPalette(scheme) }
     var body: some View {
         GeometryReader { proxy in
             let g = ProviderDialGeometry.Layout(width: proxy.size.width, height: proxy.size.height)
             ZStack(alignment: .topLeading) {
-                disc(radius: g.radius, intensity: 1).position(x: g.centerX, y: g.centerY)
+                disc(radius: g.radius, intensity: 1)
+                    .overlay { if keyboardHandle == .profile { Circle().stroke(palette.agent(kind), lineWidth: 2).padding(4) } }
+                    .focusEffectDisabled()
+                    .onKeyPress(keys: [.upArrow, .downArrow, .home, .end]) { key in keyboardBrowse(.profile, key: key.key) }
+                    .onKeyPress(.tab, phases: .down) { key in
+                        if key.modifiers.contains(.shift) { return .ignored }
+                        keyboardHandle = .agent; return .handled
+                    }
+                    .accessibilityElement().accessibilityLabel(L10n.tr("供应商圆盘"))
+                    .accessibilityValue(providers.indices.contains(selected) ? providers[selected].name : L10n.tr("还没有供应商"))
+                    .accessibilityIdentifier("provider-profile-keyboard")
+                    .position(x: g.centerX, y: g.centerY)
                 profileScale(g)
                 disc(radius: g.hubRadius + 24, inset: true, intensity: 0.4).position(x: g.centerX, y: g.centerY)
-                disc(radius: g.hubRadius, intensity: handle == .agent ? 1 : 0.4).position(x: g.centerX, y: g.centerY)
+                let hubIntensity: CGFloat = handle == .agent ? 1 : 0.4
+                disc(radius: g.hubRadius, intensity: hubIntensity)
+                    .overlay { if keyboardHandle == .agent { Circle().stroke(palette.agent(kind), lineWidth: 2).padding(4) } }
+                    .focusEffectDisabled()
+                    .onKeyPress(keys: [.upArrow, .downArrow, .home, .end]) { key in keyboardBrowse(.agent, key: key.key) }
+                    .onKeyPress(.tab, phases: .down) { key in
+                        if key.modifiers.contains(.shift) { keyboardHandle = .profile; return .handled }
+                        return .ignored
+                    }
+                    .accessibilityElement().accessibilityLabel("Agent").accessibilityValue(agentTitle(kind))
+                    .accessibilityIdentifier("provider-agent-keyboard")
+                    .position(x: g.centerX, y: g.centerY)
                 ForEach(0..<45, id: \.self) { tick in
                     let angle = Double(tick * 8) * .pi / 180
                     Circle().fill(palette.faint.opacity(0.5)).frame(width: 3, height: 3)
@@ -445,9 +393,16 @@ private struct ProviderDialView: View {
                 }
                 agentScale(g).opacity(handle == .profile ? 0.4 : 1)
                 disc(radius: g.holeRadius, inset: true, intensity: 0.65).position(x: g.centerX, y: g.centerY)
-                Circle().fill(palette.agent(kind)).frame(width: 8, height: 8).position(x: g.centerX + g.radius + 12, y: g.centerY)
+                Circle().fill(palette.agent(kind)).frame(width: 8, height: 8)
+                    .modifier(OrbisDialPulse(trigger: profilePulse, peak: 1.5))
+                    .position(x: g.centerX + g.radius + 12, y: g.centerY)
             }.frame(width: proxy.size.width, height: proxy.size.height).clipped()
                 .contentShape(Rectangle()).gesture(gesture(g))
+                .background {
+                    OrbisDialKeyboardBridge(active: visible && scenePhase == .active,
+                        focus: Binding(get: { keyboardHandle }, set: { keyboardHandle = $0 }),
+                        browse: { owner, key in _ = keyboardBrowse(owner, key: key) })
+                }
                 .accessibilityElement(children: .contain)
                 .overlay(alignment: .leading) {
                     Color.clear.frame(width: max(48, g.centerX + g.hubRadius), height: 48)
@@ -460,8 +415,23 @@ private struct ProviderDialView: View {
                     let next = max(0, min(providers.count - 1, selected + (direction == .increment ? 1 : -1)))
                     settleProfile(next)
                 }
-        }.onAppear { groupPosition = Double(groupIndex); profilePosition = Double(selected) }
-            .onChange(of: kind) { _, _ in groupPosition = Double(groupIndex); profilePosition = Double(selected) }
+        }.onAppear {
+            groupPosition = Double(groupIndex); profilePosition = Double(selected)
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--preview-provider-keyboard") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { keyboardHandle = .profile }
+            }
+            #endif
+        }
+            .onChange(of: dragging) { old, active in if old && !active { resetGesture() } }
+            .onChange(of: visible) { _, active in if !active { keyboardHandle = nil; resetGesture() } }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { keyboardHandle = nil; resetGesture() } }
+            .onDisappear { keyboardHandle = nil; resetGesture() }
+            .onChange(of: kind) { _, _ in
+                agentPulse += 1
+                if handle == nil { groupPosition = Double(groupIndex) }
+                withAnimation(reduced ? nil : InteractionMotion.state) { profilePosition = Double(selected) }
+            }
             .onChange(of: selected) { _, index in if handle == nil { profilePosition = Double(index) } }
     }
     private func disc(radius: Double, inset: Bool = false, intensity: CGFloat) -> some View {
@@ -472,6 +442,7 @@ private struct ProviderDialView: View {
     private func agentScale(_ g: ProviderDialGeometry.Layout) -> some View {
         ZStack {
             Color.clear.frame(width: 36, height: 36).neuSurface(inset: true, radius: 18, intensity: 0.4, concentric: false)
+                .modifier(OrbisDialPulse(trigger: agentPulse, peak: 1.08))
                 .position(x: g.centerX + g.agentRadius, y: g.centerY)
             ForEach(Array(kinds.enumerated()), id: \.offset) { index, agent in
                 let angle = (Double(index) - groupPosition) * g.agentStep * .pi / 180
@@ -522,7 +493,7 @@ private struct ProviderDialView: View {
         }.opacity(handle == .agent ? 0.4 : 1)
     }
     private func gesture(_ g: ProviderDialGeometry.Layout) -> some Gesture {
-        DragGesture(minimumDistance: 0).onChanged { value in
+        DragGesture(minimumDistance: 0).updating($dragging) { _, active, _ in active = true }.onChanged { value in
             if !gestureStarted {
                 gestureStarted = true; handle = g.handle(x: value.startLocation.x, y: value.startLocation.y)
                 initialPosition = handle == .agent ? Double(groupIndex) : profilePosition
@@ -541,12 +512,18 @@ private struct ProviderDialView: View {
             } else {
                 let next = ProviderDialGeometry.softened(initialPosition - dy / ((g.radius + 28) * g.profileStep * .pi / 180), count: providers.count)
                 let index = Int(ProviderDialGeometry.clamp(next.rounded(), 0, Double(max(0, providers.count - 1))))
-                if index != Int(profilePosition.rounded()) { OrbisHaptics.selectionChanged() }
+                if index != Int(profilePosition.rounded()) { OrbisHaptics.selectionChanged(); profilePulse += 1 }
                 profilePosition = next
             }
         }.onEnded { value in
             let captured = handle; handle = nil; gestureStarted = false
             guard let captured else { onMoving(false); return }
+            if !moved {
+                let angle = atan2(value.startLocation.y - g.centerY, value.startLocation.x - g.centerX) * 180 / .pi
+                if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp((groupPosition + angle / g.agentStep).rounded(), 0, Double(kinds.count - 1)))) }
+                else { settleProfile(Int(ProviderDialGeometry.clamp((profilePosition + angle / g.profileStep).rounded(), 0, Double(max(0, providers.count - 1))))) }
+                return
+            }
             if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp(groupPosition.rounded(), 0, Double(kinds.count - 1)))) }
             else {
                 let target = ProviderDialGeometry.settled(initialPosition, translation: value.translation.height,
@@ -555,328 +532,37 @@ private struct ProviderDialView: View {
             }
         }
     }
+    private func resetGesture() {
+        guard handle != nil || gestureStarted else { return }
+        handle = nil; gestureStarted = false; moved = false
+        groupPosition = Double(groupIndex); profilePosition = Double(selected); onMoving(false)
+    }
+    private func keyboardBrowse(_ owner: ProviderDialGeometry.Handle, key: KeyEquivalent) -> KeyPress.Result {
+        let count = owner == .agent ? kinds.count : providers.count
+        guard count > 0 else { return .handled }
+        let current = owner == .agent ? groupIndex : selected
+        let next = key == .home ? 0 : key == .end ? count - 1 : max(0, min(count - 1, current + (key == .downArrow ? 1 : -1)))
+        if owner == .agent { settleAgent(next) } else { settleProfile(next) }
+        return .handled
+    }
     private func settleAgent(_ index: Int) {
         guard kinds.indices.contains(index) else { onMoving(false); return }
         onMoving(true)
         if kinds[index] != kind { OrbisHaptics.commit(); onKind(kinds[index]) }
-        withAnimation(reduced ? nil : .timingCurve(0, 0, 0.2, 1, duration: 0.26)) { groupPosition = Double(index) } completion: { onMoving(false) }
+        withAnimation(reduced ? nil : InteractionMotion.state) { groupPosition = Double(index) } completion: { onMoving(false) }
     }
     private func settleProfile(_ index: Int) {
         guard providers.indices.contains(index) else { onMoving(false); return }
         onMoving(true)
-        withAnimation(reduced ? nil : .timingCurve(0, 0, 0.2, 1, duration: 0.26)) { profilePosition = Double(index) } completion: { onSelect(index); onMoving(false) }
+        let distance = Double(index) - profilePosition
+        if Int(profilePosition.rounded()) != index { OrbisHaptics.selectionChanged(); profilePulse += 1 }
+        withAnimation(reduced ? nil : InteractionMotion.dialSettle(distance: distance)) { profilePosition = Double(index) } completion: { onSelect(index); onMoving(false) }
     }
     private func adjustAgent(_ direction: AccessibilityAdjustmentDirection) {
         settleAgent(max(0, min(kinds.count - 1, groupIndex + (direction == .increment ? 1 : -1))))
     }
 }
 
-
-/// One coin, two quota windows. Card refresh and coin flip remain separate actions.
-private struct SubscriptionQuotaCoin: View {
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var weekly = false
-    @State private var angle: Double = 0
-    @State private var demonstrated = false
-    @State private var flipTask: Task<Void, Never>?
-    @State private var fiveHourProgress: CGFloat = 0
-    @State private var weeklyProgress: CGFloat = 0
-    let kind: String
-    let quota: SubscriptionQuota?
-    let loading: Bool
-    let enabled: Bool
-    let tint: Color
-    let refresh: () -> Void
-    private var window: SubscriptionQuota.Window? { quota?.windows.first { $0.name == (weekly ? "seven_day" : "five_hour") } }
-    private var remaining: Double? { window?.remainingPercent }
-    private var hasReadings: Bool { quota?.windows.contains { $0.remainingPercent != nil } == true }
-
-    private var spokenValue: String {
-        let title = weekly ? L10n.tr("周配额") : L10n.tr("5 小时配额")
-        let status: String
-        if let remaining { status = L10n.tr("剩余 ") + String(format: "%.0f%%", remaining) }
-        else { status = loading ? L10n.tr("查询中") : hasReadings ? L10n.tr("暂不可用") : L10n.tr("待查询") }
-        return title + L10n.tr("，") + status
-    }
-    private var spokenHint: String {
-        let action = hasReadings ? L10n.tr("轻点翻面查看") + (weekly ? L10n.tr("5 小时配额") : L10n.tr("周配额")) : L10n.tr("查询订阅配额")
-        guard let reset = window?.resetsAt else { return action }
-        return action + L10n.tr("，重置 ") + Date(timeIntervalSince1970: Double(reset) / 1000).formatted(.dateTime.locale(L10n.locale).month(.abbreviated).day().hour().minute())
-    }
-    private var coinButton: some View {
-        Button(action: tapCoin) { coinFace }
-            .buttonStyle(ProviderInlineButtonStyle()).disabled(!enabled || loading)
-            .accessibilityLabel(L10n.tr("{0} 配额", agentTitle(kind)))
-            .accessibilityValue(spokenValue)
-            .accessibilityHint(spokenHint)
-            .accessibilityIdentifier("quota-coin-\(kind)")
-    }
-    var body: some View {
-        coinButton
-            .onAppear { demonstrated = quota != nil }
-            .onDisappear { cancelFlip() }
-            .onChange(of: loading) { _, value in if value { cancelFlip() } }
-            .onChange(of: reduceMotion) { _, _ in cancelFlip() }
-            .onChange(of: quota?.checkedAt) { _, _ in demonstrate() }
-            .task(id: "\(loading)-\(reduceMotion)-\(quota?.windows.map { $0.remainingPercent ?? -1 } ?? [])") { updateProgress() }
-    }
-    private var coinFace: some View {
-        let palette = OrbisPalette(scheme)
-        let color = (remaining ?? 100) <= 20 ? palette.error : tint
-        return ZStack {
-                ZStack {
-                    SubscriptionQuotaArc(progress: 1)
-                        .stroke(palette.secondary.opacity(0.16), style: StrokeStyle(lineWidth: 2.5, lineCap: .round,
-                            dash: hasReadings ? [] : [1, 4]))
-                    if loading {
-                        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
-                            Circle().trim(from: 0, to: 0.22)
-                                .stroke(color.gradient, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                                .rotationEffect(.degrees(reduceMotion ? -90 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360))
-                        }
-                    } else {
-                        SubscriptionQuotaArc(progress: weekly ? weeklyProgress : fiveHourProgress)
-                            .stroke(LinearGradient(colors: [color.opacity(0.4), color], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    }
-                    AgentEmblem(kind: kind, size: 26, recessed: false)
-                }.frame(width: 44, height: 44)
-                    .modifier(QuotaCoinTilt(angle: angle, palette: palette, tint: tint))
-                    .background { AgentIconRecess().frame(width: 56, height: 56) }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .trailing) {
-                    Text(weekly ? L10n.tr("周") : "5h").foregroundStyle(palette.secondary)
-                    Spacer(minLength: 0)
-                    Text(remaining.map { String(format: "%.0f%%", $0) } ?? "—")
-                        .foregroundStyle(remaining == nil ? palette.secondary : color).monospacedDigit()
-                }.font(.orbisCaption(.medium)).frame(maxWidth: .infinity, alignment: .trailing)
-                    .modifier(QuotaCoinLabelFade(phase: angle))
-            }.frame(width: 64, height: 56)
-                .contentShape(Rectangle())
-    }
-    private func tapCoin() {
-        guard hasReadings else { refresh(); return }
-        demonstrated = true
-        cancelFlip()
-        flipTask = Task { await flip() }
-    }
-    private func updateProgress() {
-        guard !loading else { return }
-        func fraction(_ name: String) -> CGFloat {
-            CGFloat(min(1, max(0, (quota?.windows.first { $0.name == name }?.remainingPercent ?? 0) / 100)))
-        }
-        let animation: Animation? = reduceMotion ? nil : .easeOut(duration: 0.7)
-        withAnimation(animation) {
-            fiveHourProgress = fraction("five_hour")
-            weeklyProgress = fraction("seven_day")
-        }
-    }
-    private func demonstrate() {
-        guard !demonstrated, !loading, quota?.windows.filter({ $0.remainingPercent != nil }).count == 2 else { return }
-        demonstrated = true
-        guard !reduceMotion else { return }
-        flipTask = Task {
-            do {
-                try await Task.sleep(for: .milliseconds(800))
-                await flip()
-                try await Task.sleep(for: .milliseconds(900))
-                await flip()
-            } catch { return }
-        }
-    }
-    private func cancelFlip() {
-        flipTask?.cancel(); flipTask = nil
-        var transaction = Transaction(); transaction.disablesAnimations = true
-        withTransaction(transaction) { angle = 0 }
-    }
-    @MainActor private func flip() async {
-        guard !Task.isCancelled else { return }
-        guard !reduceMotion else { weekly.toggle(); return }
-        // A linear phase clock lets the native renderer reproduce the film's exact eases.
-        withAnimation(.linear(duration: QuotaCoinGeometry.outgoingDuration)) { angle = 90 }
-        do { try await Task.sleep(for: .milliseconds(220)) } catch { return }
-        guard !Task.isCancelled else { return }
-        var transaction = Transaction(); transaction.disablesAnimations = true
-        withTransaction(transaction) { weekly.toggle() }
-        withAnimation(.linear(duration: QuotaCoinGeometry.incomingDuration)) { angle = 180 }
-        do { try await Task.sleep(for: .milliseconds(340)) } catch { return }
-        guard !Task.isCancelled else { return }
-        withTransaction(transaction) { angle = 0 }
-    }
-}
-
-/// Only the coin transforms. Its corner labels and hit geometry stay still.
-/// The body is a closed cylinder, including at the exact side-on frame.
-private struct QuotaCoinTilt: AnimatableModifier {
-    var angle: Double // linear phase, eased once by QuotaCoinGeometry
-    let palette: OrbisPalette
-    let tint: Color
-    var animatableData: Double { get { angle } set { angle = newValue } }
-    private var turn: Double { QuotaCoinGeometry.angle(phase: angle) }
-    private var lift: Double { abs(sin(turn * .pi / 180)) }
-    private var highlight: Color { palette.dark ? palette.text : palette.light }
-
-    func body(content: Content) -> some View {
-        let shadow = QuotaCoinGeometry.shadow(angle: turn)
-        ZStack {
-            Circle().fill(RadialGradient(colors: [palette.scrim.opacity(palette.dark ? 0.52 : 0.32), .clear],
-                                        center: .center, startRadius: 0, endRadius: QuotaCoinGeometry.shadowDiameter / 2))
-                .frame(width: QuotaCoinGeometry.shadowDiameter, height: QuotaCoinGeometry.shadowDiameter)
-                .scaleEffect(x: shadow.widthScale, y: QuotaCoinGeometry.shadowHeight / QuotaCoinGeometry.shadowDiameter)
-                .offset(y: QuotaCoinGeometry.shadowOffsetY).opacity(shadow.opacityScale)
-                .allowsHitTesting(false).accessibilityHidden(true)
-            Canvas { context, _ in
-                guard lift > 0.0001 else { return }
-                for band in QuotaCoinGeometry.bands(angle: turn) {
-                    var path = Path()
-                    path.addLines(band.points); path.closeSubpath()
-                    let colors = [0xF3D3C3, 0xC97A55, 0x8A4426].map { hex in
-                        Color(red: min(1, Double((hex >> 16) & 255) / 255 * band.brightness),
-                              green: min(1, Double((hex >> 8) & 255) / 255 * band.brightness),
-                              blue: min(1, Double(hex & 255) / 255 * band.brightness))
-                    }
-                    context.fill(path, with: .linearGradient(Gradient(colors: colors),
-                        startPoint: .zero, endPoint: CGPoint(x: 44, y: 44)))
-                }
-            }.accessibilityHidden(true)
-            content
-                .background(Circle().fill(RadialGradient(colors: [palette.top, palette.base, palette.well],
-                    center: UnitPoint(x: 0.34, y: 0.28), startRadius: 0, endRadius: 32)))
-                .overlay {
-                    Circle().strokeBorder(LinearGradient(colors: [highlight.opacity(0.9), .clear, tint.opacity(0.25)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)
-                    Circle().fill(LinearGradient(stops: [
-                        .init(color: .clear, location: 0.30),
-                        .init(color: highlight.opacity(0.55), location: 0.46),
-                        .init(color: .clear, location: 0.60)],
-                        startPoint: UnitPoint(x: -1.4 + turn / 180 * 2.8, y: 0),
-                        endPoint: UnitPoint(x: -0.4 + turn / 180 * 2.8, y: 1)))
-                        .opacity(lift)
-                }
-                .projectionEffect(faceTransform)
-                // The cylindrical edge owns the seam; never rasterize a singular face.
-                .opacity(QuotaCoinGeometry.faceVisible(angle: turn) ? 1 : 0)
-        }.frame(width: 44, height: 44)
-    }
-
-    private var faceTransform: ProjectionTransform {
-        let m = QuotaCoinGeometry.faceProjection(angle: turn)
-        var result = ProjectionTransform()
-        result.m11 = m[0]; result.m21 = m[1]; result.m31 = m[2]
-        result.m12 = m[3]; result.m22 = m[4]; result.m32 = m[5]
-        result.m13 = m[6]; result.m23 = m[7]; result.m33 = m[8]
-        return result
-    }
-}
-
-private struct QuotaCoinLabelFade: AnimatableModifier {
-    var phase: Double
-    var animatableData: Double { get { phase } set { phase = newValue } }
-    func body(content: Content) -> some View {
-        content.opacity(1 - 0.55 * abs(sin(QuotaCoinGeometry.angle(phase: phase) * .pi / 180)))
-    }
-}
-
-private struct SubscriptionQuotaRing: View {
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var progress: CGFloat = 0
-    let name: String
-    let window: SubscriptionQuota.Window?
-    let loading: Bool
-    let tint: Color
-    private var title: String { name == "five_hour" ? L10n.tr("5 小时配额") : L10n.tr("周配额") }
-    private var remaining: Double? { window?.remainingPercent }
-    var body: some View {
-        let palette = OrbisPalette(scheme)
-        let color = (remaining ?? 100) <= 20 ? palette.error : tint
-        ZStack(alignment: .topTrailing) {
-            ZStack {
-                SubscriptionQuotaArc(progress: 1)
-                    .stroke(palette.secondary.opacity(0.12), style: StrokeStyle(lineWidth: 3.5, lineCap: .round,
-                        dash: window == nil ? [2, 4] : []))
-                if loading {
-                    TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
-                        Circle().trim(from: 0, to: 0.22)
-                            .stroke(color.gradient, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
-                            .rotationEffect(.degrees(reduceMotion ? -90 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360))
-                    }
-                } else {
-                    SubscriptionQuotaArc(progress: progress)
-                        .stroke(LinearGradient(colors: [color.opacity(0.45), color], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
-                }
-                Text(remaining.map { String(format: "%.0f", $0) + "%" } ?? "—")
-                    .font(.orbisTitle()).foregroundStyle(remaining == nil ? palette.secondary : palette.text)
-                    .contentTransition(.numericText()).minimumScaleFactor(0.7).lineLimit(1).padding(.horizontal, 3)
-            }.frame(width: 64, height: 64).frame(width: 76, height: 76)
-            Text(name == "five_hour" ? "5h" : L10n.tr("周"))
-                .font(.orbisCaption(.medium)).foregroundStyle(palette.secondary)
-        }
-        .task(id: "\(loading)-\(remaining ?? -1)") {
-            guard !loading else { progress = 0; return }
-            progress = 0
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.7)) {
-                progress = min(max((remaining ?? 0) / 100, 0), 1)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue(remaining.map { L10n.tr("剩余 ") + String(format: "%.1f", $0) + "%" } ?? (loading ? L10n.tr("查询中") : window == nil ? L10n.tr("待查询") : L10n.tr("暂不可用")))
-        .accessibilityHint(window?.resetsAt.map { L10n.tr("重置 ") + Date(timeIntervalSince1970: Double($0) / 1000).formatted(.dateTime.locale(L10n.locale).month(.abbreviated).day().hour().minute()) } ?? "")
-        .accessibilityIdentifier("quota-ring-\(name)")
-    }
-}
-
-private struct SubscriptionQuotaArc: Shape {
-    var progress: CGFloat
-    var animatableData: CGFloat { get { progress } set { progress = newValue } }
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        guard progress > 0 else { return path }
-        path.addArc(center: CGPoint(x: rect.midX, y: rect.midY), radius: min(rect.width, rect.height) / 2 - 2,
-                    startAngle: .degrees(-45), endAngle: .degrees(-45 + 315 * Double(progress)), clockwise: false)
-        return path
-    }
-}
-
-private struct SubscriptionRefreshGlyph: View {
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var invitation = false
-    let loading: Bool
-    let pending: Bool
-    let tint: Color
-    var size: CGFloat = 48
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: !loading || reduceMotion)) { context in
-            Image(systemName: "arrow.clockwise")
-                .font(.orbisCaption(.semibold)).foregroundStyle(tint)
-                .rotationEffect(.degrees(loading && !reduceMotion ? context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.1) / 1.1 * 360 : invitation ? -35 : 0))
-                .frame(width: size, height: size)
-        }.accessibilityHidden(true)
-            .task(id: pending) {
-                guard pending, !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.28)) { invitation = true }
-                do { try await Task.sleep(for: .milliseconds(280)) } catch { return }
-                withAnimation(.easeOut(duration: 0.42)) { invitation = false }
-            }
-    }
-}
-
-/// Transparent inline actions share the card's material and keep their full hit area.
-private struct ProviderInlineButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var enabled
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(enabled ? (configuration.isPressed ? 0.55 : 1) : 0.4)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: configuration.isPressed)
-    }
-}
 
 struct StatusSection<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
@@ -885,11 +571,12 @@ struct StatusSection<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).secondary)
+            Text(title).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
                 .padding(.horizontal, 4).accessibilityAddTraits(.isHeader)
-            VStack(alignment: .leading, spacing: 14) { content }
+            VStack(alignment: .leading, spacing: 0) { content }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .neuSurface(radius: OrbisRadius.card, padding: 16)
+                .padding(.horizontal, 16).padding(.vertical, 4)
+                .neuSurface(radius: OrbisRadius.card)
         }
     }
 }
@@ -950,4 +637,73 @@ struct StatusRow: View {
 
 func pathTitle(_ path: String?) -> String {
     switch path { case "lan": return L10n.tr("局域网"); case "relay": return L10n.tr("中继"); default: return L10n.tr("尚未确认") }
+}
+
+
+/// UIKeyCommand reaches physical keyboards consistently on iOS 17+ even when
+/// SwiftUI's decorative dial circles do not become native first responders.
+private struct OrbisDialKeyboardBridge: UIViewRepresentable {
+    let active: Bool
+    @Binding var focus: ProviderDialGeometry.Handle?
+    let browse: (ProviderDialGeometry.Handle, KeyEquivalent) -> Void
+    func makeUIView(context: Context) -> Receiver { Receiver() }
+    func updateUIView(_ view: Receiver, context: Context) {
+        view.active = active; view.owner = focus; view.browse = browse
+        view.changeFocus = { focus = $0 }
+        if active && focus != nil { if !view.isFirstResponder { view.becomeFirstResponder() } }
+        else if view.isFirstResponder { view.resignFirstResponder() }
+    }
+    final class Receiver: UIView {
+        var owner: ProviderDialGeometry.Handle?
+        var active = false
+        override func didMoveToWindow() { super.didMoveToWindow(); if window != nil && active && owner != nil { becomeFirstResponder() } }
+        var browse: (ProviderDialGeometry.Handle, KeyEquivalent) -> Void = { _, _ in }
+        var changeFocus: (ProviderDialGeometry.Handle?) -> Void = { _ in }
+        override var canBecomeFirstResponder: Bool { true }
+        override var canBecomeFocused: Bool { active }
+        override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+            super.didUpdateFocus(in: context, with: coordinator)
+            if context.nextFocusedView === self { if owner == nil { owner = .profile; changeFocus(.profile) }; becomeFirstResponder() }
+        }
+        override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            guard let key = presses.compactMap(\.key).first(where: { $0.keyCode != .keyboardLeftShift && $0.keyCode != .keyboardRightShift }), owner != nil else { super.pressesBegan(presses, with: event); return }
+            switch key.keyCode {
+            case .keyboardUpArrow: up()
+            case .keyboardDownArrow: down()
+            case .keyboardHome: home()
+            case .keyboardEnd: end()
+            case .keyboardTab:
+                let shift = key.modifierFlags.contains(.shift) || presses.compactMap(\.key).contains { [.keyboardLeftShift, .keyboardRightShift].contains($0.keyCode) }
+                if shift, owner == .agent { previous() }
+                else if !shift, owner == .profile { nextHandle() }
+                else { super.pressesBegan(presses, with: event) }
+            default: super.pressesBegan(presses, with: event)
+            }
+        }
+        override var keyCommands: [UIKeyCommand]? {
+            var commands = [UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(up)),
+             UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(down)),
+             UIKeyCommand(input: UIKeyCommand.inputHome, modifierFlags: [], action: #selector(home)),
+             UIKeyCommand(input: UIKeyCommand.inputEnd, modifierFlags: [], action: #selector(end))]
+            if owner == .profile { commands.append(UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(nextHandle))) }
+            if owner == .agent { commands.append(UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(previous))) }
+            return commands.map { command in
+                command.wantsPriorityOverSystemBehavior = true; return command
+             }
+        }
+        @objc private func up() { if let owner { browse(owner, .upArrow) } }
+        @objc private func down() { if let owner { browse(owner, .downArrow) } }
+        @objc private func home() { if let owner { browse(owner, .home) } }
+        @objc private func end() {
+            if let owner { browse(owner, .end) }
+        }
+        @objc private func nextHandle() {
+            if owner == .profile { owner = .agent; changeFocus(.agent) }
+            else { owner = nil; changeFocus(nil); resignFirstResponder() }
+        }
+        @objc private func previous() {
+            if owner == .agent { owner = .profile; changeFocus(.profile) }
+            else { owner = nil; changeFocus(nil); resignFirstResponder() }
+        }
+    }
 }

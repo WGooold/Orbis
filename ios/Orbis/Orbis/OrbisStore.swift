@@ -1757,11 +1757,16 @@ final class HostConnection: ObservableObject {
         ledgerRead()
     }
 
-    func updatePermission(settingId: String, value: String) {
+    func canUpdatePermission(settingId: String, value: String) -> Bool {
         guard canSend, let runtime = selectedRuntime, runtime.status == "idle", (interactions[runtime.runtimeId] ?? []).isEmpty, pendingActionIds.isEmpty,
               let setting = runtime.permissionManagement?.settings.first(where: { $0.id == settingId }),
-              setting.disabledReason == nil, setting.options.contains(where: { $0.value == value }) else { return }
-        _ = performAction(runtimeId: runtime.runtimeId, name: L10n.tr("权限"), command: ["type": "permissions.update", "settingId": settingId, "value": value])
+              setting.disabledReason == nil, setting.options.contains(where: { $0.value == value }) else { return false }
+        return true
+    }
+
+    @discardableResult func updatePermission(settingId: String, value: String) -> Bool {
+        guard canUpdatePermission(settingId: settingId, value: value), let runtime = selectedRuntime else { return false }
+        return performAction(runtimeId: runtime.runtimeId, name: L10n.tr("权限"), command: ["type": "permissions.update", "settingId": settingId, "value": value])
     }
 
     private func performAction(runtimeId: String, name: String, command: [String: Any]) -> Bool {

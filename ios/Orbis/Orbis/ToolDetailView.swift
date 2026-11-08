@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct ToolDetailView: View {
-    @Environment(\.dismiss) private var dismiss
+    @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @Environment(\.scenePhase) private var scenePhase

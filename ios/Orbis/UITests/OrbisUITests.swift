@@ -72,6 +72,168 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // S34–38 / SC54–59: exercise the production root controls and local-only
+    // choices in a synthetic computer fixture. A selection alone must not apply a protocol.
+    func testDesignAlignmentRootDraftAndExplicitProtocolChoice() {
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let newSession = app.buttons["home-new-session"]
+        XCTAssertTrue(newSession.waitForExistence(timeout: 8))
+        capture("design-home-mist", app: app)
+        for tab in ["chat", "providers", "settings"] {
+            XCTAssertGreaterThanOrEqual(app.buttons["root-tab-" + tab].frame.height, 48)
+        }
+        newSession.tap()
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        draft.tap(); draft.typeText("核对设计草稿")
+        capture("design-local-draft", app: app)
+        // Mounted dial/settings roots must not push the home header out of the
+        // keyboard-reduced viewport while a local draft is being edited.
+        XCTAssertTrue(newSession.isHittable)
+        XCTAssertGreaterThanOrEqual(newSession.frame.minY, 0)
+        newSession.tap()
+        XCTAssertTrue(draft.waitForNonExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["草稿已保留，下次新建时还在"].waitForExistence(timeout: 3))
+        newSession.tap()
+        XCTAssertTrue(draft.waitForExistence(timeout: 3))
+        XCTAssertEqual(draft.value as? String, "核对设计草稿")
+        newSession.tap()
+        XCTAssertTrue(draft.waitForNonExistence(timeout: 3))
+        app.buttons["root-tab-providers"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "provider-action-")).firstMatch.waitForExistence(timeout: 5))
+        capture("design-provider-dial", app: app)
+        app.buttons["root-tab-settings"].tap()
+        let protocolRow = app.buttons["settings-protocol"]
+        XCTAssertTrue(protocolRow.waitForExistence(timeout: 4))
+        let original = protocolRow.label
+        protocolRow.tap()
+        XCTAssertTrue(app.buttons["relay-mode-quic"].waitForExistence(timeout: 3))
+        app.buttons["relay-mode-quic"].tap()
+        XCTAssertTrue(app.buttons["relay-mode-apply"].isEnabled)
+        capture("design-protocol-staged-choice", app: app)
+        app.buttons["关闭"].tap()
+        XCTAssertTrue(protocolRow.waitForExistence(timeout: 3))
+        XCTAssertEqual(protocolRow.label, original)
+        capture("design-settings-connection", app: app)
+        let settings = app.descendants(matching: .any)["settings-page"].firstMatch
+        let sage = app.buttons["appearance-sage"]
+        for _ in 0..<6 where !sage.isHittable { settings.swipeUp() }
+        XCTAssertTrue(sage.isHittable); sage.tap()
+        let dark = app.buttons["appearance-dark"]
+        XCTAssertTrue(dark.isHittable); dark.tap()
+        XCTAssertTrue(dark.isSelected)
+        capture("design-settings-sage-dark", app: app)
+        app.buttons["root-tab-chat"].tap()
+        XCTAssertTrue(newSession.waitForExistence(timeout: 3))
+        capture("design-home-sage-dark", app: app)
+        app.buttons["打开会话目录"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["drawer-session-list"].waitForExistence(timeout: 3))
+        capture("design-directory-tree-sage-dark", app: app)
+    }
+
+    // SC54 / SC59: tablet keeps a 320pt directory and limits the reading surface
+    // to 720pt in a wide window; the same roots remain usable with a draft keyboard.
+    func testDesignAlignmentTabletPersistentDirectoryAndReadingWidth() {
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter().wait(for: [landscape], timeout: 5), .completed)
+        let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
+        XCTAssertTrue(directory.waitForExistence(timeout: 8))
+        XCTAssertEqual(directory.frame.width, 320, accuracy: 1)
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(list.frame.width, 720.5)
+        capture("design-tablet-home-landscape", app: app)
+        let newSession = app.buttons["home-new-session"]
+        newSession.tap()
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        draft.tap(); draft.typeText("平板草稿")
+        XCTAssertTrue(newSession.isHittable)
+        XCTAssertTrue(directory.exists)
+        capture("design-tablet-draft-keyboard", app: app)
+        newSession.tap()
+        XCTAssertTrue(draft.waitForNonExistence(timeout: 4))
+        app.buttons["root-tab-settings"].tap()
+        XCTAssertTrue(app.buttons["settings-protocol"].waitForExistence(timeout: 4))
+        XCTAssertTrue(directory.exists)
+        capture("design-tablet-settings-landscape", app: app)
+        app.buttons["root-tab-chat"].tap()
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 3)); card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 4))
+        directory.buttons["新建会话"].firstMatch.tap()
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        XCTAssertTrue(newSession.isHittable)
+        XCTAssertTrue(app.buttons["draft-directory"].label.contains("/Projects/orbis"))
+        newSession.tap()
+        XCTAssertTrue(draft.waitForNonExistence(timeout: 3)); card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 4))
+        directory.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "筛选会话：")).firstMatch.tap()
+        app.buttons["设置"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.buttons["root-tab-providers"].isSelected)
+        capture("design-tablet-detail-to-provider-root", app: app)
+    }
+
+    // The desktop Codex backend remains reachable from the four-Agent draft.
+    func testDraftCodexLongPressRetainsDesktopBackend() {
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop"])
+        let newSession = app.buttons["home-new-session"]
+        XCTAssertTrue(newSession.waitForExistence(timeout: 8)); newSession.tap()
+        let codex = app.buttons["draft-agent-codex"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 4)); codex.press(forDuration: 1)
+        let desktop = app.buttons["Codex 桌面版"]
+        XCTAssertTrue(desktop.waitForExistence(timeout: 3)); desktop.tap()
+        XCTAssertTrue(app.staticTexts["Codex 桌面版"].waitForExistence(timeout: 3))
+        capture("design-draft-codex-desktop", app: app)
+    }
+
+    // SC57: each circle receives physical keys independently; browsing never applies.
+    func testProviderDialHardwareKeysOnlyBrowse() {
+        let app = launch("providers", arguments: ["--preview-reduce-motion", "--preview-provider-keyboard", "--preview-reset-design"])
+        let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
+        XCTAssertTrue(profile.waitForExistence(timeout: 6))
+        profile.typeKey(.end, modifierFlags: [])
+        let selectedTeam = NSPredicate(format: "value == %@", "团队供应商")
+        XCTAssertTrue(profile.waitForExistence(timeout: 3))
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selectedTeam, object: profile)], timeout: 3), .completed)
+        XCTAssertTrue(app.buttons["provider-action-team"].isEnabled)
+        profile.typeKey(.home, modifierFlags: [])
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "官方服务"), object: profile)], timeout: 3), .completed)
+        XCTAssertFalse(app.buttons["provider-action-official"].isEnabled)
+        profile.typeKey(.tab, modifierFlags: [])
+        let agent = app.descendants(matching: .any)["provider-agent-keyboard"].firstMatch
+        agent.typeKey(.end, modifierFlags: [])
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Pi"), object: agent)], timeout: 3), .completed)
+        agent.typeKey(.home, modifierFlags: [])
+        capture("design-provider-keyboard-focus", app: app)
+    }
+    // SC55: native text submission must preserve Shift+Return as a newline.
+    func testDraftHardwareReturnAndDesktopOnlySelection() {
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop-only"])
+        let newSession = app.buttons["home-new-session"]
+        XCTAssertTrue(newSession.waitForExistence(timeout: 8)); newSession.tap()
+        let codex = app.buttons["draft-agent-codex"]
+        XCTAssertTrue(codex.waitForExistence(timeout: 4)); codex.tap()
+        XCTAssertTrue(app.staticTexts["Codex 桌面版"].waitForExistence(timeout: 3))
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        draft.tap(); draft.typeText("first ")
+        // Commit the current Pinyin candidate before exercising editing commands.
+        draft.typeText(XCUIKeyboardKey.delete.rawValue)
+        draft.typeKey(.return, modifierFlags: .shift)
+        draft.typeText("second")
+        XCTAssertEqual(draft.value as? String, "first\nsecond")
+        draft.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 4))
+    }
+
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--preview-screen=" + screen] + arguments
@@ -96,7 +258,8 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(element.frame.minY, y, accuracy: 1, operation)
     }
     private func capture(_ name: String, app: XCUIApplication) {
-        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        // App-cropped screenshots use portrait bounds for a landscape iPad.
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = name; screenshot.lifetime = .keepAlways
         add(screenshot)
     }
@@ -544,15 +707,15 @@ final class OrbisUITests: XCTestCase {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
         app.buttons["打开会话目录"].tap()
-        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
-        let search = app.textFields["搜索会话或目录"]
-        search.tap(); search.typeText("no-matching-session")
+        let search = app.textFields["搜索目录或会话"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3)); search.tap(); search.typeText("no-matching-session")
         XCTAssertTrue(app.staticTexts["没有匹配的会话"].waitForExistence(timeout: 3))
         app.buttons["清除搜索"].tap()
-        app.buttons["新会话"].tap()
-        XCTAssertTrue(app.staticTexts["新建会话"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["在这里新建 Pi 会话"].exists)
-        capture("new-session", app: app)
+        app.buttons["新建会话"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["session-draft"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["draft-send"].exists)
+        XCTAssertFalse(app.buttons["draft-send"].isEnabled)
+        capture("new-session-local-draft", app: app)
     }
 
     /// V12 r27 / ADR-0049 §6.7：选择模型后立即显示所选值并带“切换中”，确认前不声称已生效；顶栏不位移（V05）。
@@ -702,13 +865,14 @@ final class OrbisUITests: XCTestCase {
     // Shared navigation for launch failure, appearance and startup-message regressions.
     private func openNewPiSession(dark: Bool = false, arguments: [String]) -> XCUIApplication {
         let app = launch("home", dark: dark, arguments: arguments)
-        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
-        app.buttons["打开会话目录"].tap()
-        XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
-        app.buttons["新会话"].tap()
-        let create = app.buttons["在这里新建 Pi 会话"]
-        XCTAssertTrue(create.waitForExistence(timeout: 3))
-        create.tap()
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        app.buttons["home-new-session"].tap()
+        let pi = app.buttons["draft-agent-pi"]
+        XCTAssertTrue(pi.waitForExistence(timeout: 3)); pi.tap()
+        let input = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 3)); input.tap(); input.typeText("开始测试会话")
+        let send = app.buttons["draft-send"]
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 3)); send.tap()
         return app
     }
 
@@ -729,7 +893,7 @@ final class OrbisUITests: XCTestCase {
         let starting = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动中")).firstMatch
         XCTAssertTrue(starting.waitForExistence(timeout: 1))
         let title = app.descendants(matching: .any)["chat-title"].firstMatch
-        XCTAssertTrue(title.label.contains("Projects"), title.label)
+        XCTAssertTrue(title.label.contains("开始测试会话"), title.label)
         XCTAssertFalse(title.label.contains("launch:"), title.label)
         capture("launch-starting", app: app)
         let failure = waitForSessionLaunchFailure(app)
@@ -787,15 +951,14 @@ final class OrbisUITests: XCTestCase {
         ]
         for (name, dark, options) in appearances {
             let app = launch("home", dark: dark, arguments: ["--preview-launchable-dsh"] + options)
-            XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8), name)
-            app.buttons["打开会话目录"].tap()
-            XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3), name)
-            app.buttons["新会话"].tap()
-            let deepSeek = app.buttons.matching(NSPredicate(format: "label == %@", "DeepSeek、DeepSeek")).firstMatch
+            XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8), name)
+            app.buttons["home-new-session"].tap()
+            let deepSeek = app.buttons["draft-agent-dsh"]
             XCTAssertTrue(deepSeek.waitForExistence(timeout: 3), name)
             XCTAssertTrue(deepSeek.isEnabled, name)
             deepSeek.tap()
-            XCTAssertTrue(app.buttons["在这里新建 DeepSeek 会话"].waitForExistence(timeout: 3), name)
+            XCTAssertTrue(deepSeek.isSelected)
+            XCTAssertTrue(app.descendants(matching: .any)["draft-message"].exists, name)
             capture("new-session-launchable-deepseek-\(name)", app: app)
             app.terminate()
         }
@@ -817,7 +980,7 @@ final class OrbisUITests: XCTestCase {
     }
     func testHomePublishesCompleteSnapshotsWithoutReturningToLoading() {
         let app = launch("home", arguments: ["--preview-home-staged"])
-        let preparing = app.staticTexts["正在加载会话…"]
+        let preparing = app.descendants(matching: .any)["home-loading-skeleton"].firstMatch
         let syncing = app.descendants(matching: .any).matching(identifier: "home-connection-indicator")
             .matching(NSPredicate(format: "value == %@", "正在同步")).firstMatch
         let pill = app.descendants(matching: .any)["home-connection-pill"].firstMatch
@@ -1047,7 +1210,7 @@ final class OrbisUITests: XCTestCase {
         let originalFrame = codex.frame
         capture("home-neumorphic-cards", app: app)
         let start = codex.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.45, dy: 0)))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.30, dy: 0)))
         XCTAssertTrue(codex.exists)
         let rebounded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             abs(codex.frame.minX - originalFrame.minX) <= 1
@@ -1240,11 +1403,11 @@ final class OrbisUITests: XCTestCase {
         capture("history-download-flight-midway", app: app)
     }
 
-    // ADR-0046 §5 / S22: the header keeps only downloads and settings, the capsule only reports state,
+    // ADR-0070 / S37: the header keeps downloads and local draft creation; settings is a root,
     // and computers are added or unpaired only from the drawer's computer menu.
     func testSettingsPageOrderAndSingleHostMenu() {
         let app = launch("home", arguments: ["--preview-hosts=2"])
-        let settings = app.buttons["home-settings"]
+        let settings = app.buttons["root-tab-settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["home-downloads"].exists)
         XCTAssertFalse(app.buttons["更多操作"].exists)
@@ -1265,10 +1428,9 @@ final class OrbisUITests: XCTestCase {
         for dark in [false, true] {
             let page = launch("status", dark: dark, arguments: ["--preview-hosts=2"])
             XCTAssertTrue(page.descendants(matching: .any)["settings-page"].waitForExistence(timeout: 8))
-            let providers = page.staticTexts["Agent 供应商"], connection = page.staticTexts["当前连接"], pairing = page.staticTexts["配对信息"]
-            XCTAssertTrue(providers.exists && connection.exists && pairing.exists)
-            XCTAssertLessThan(providers.frame.minY, connection.frame.minY)
-            XCTAssertLessThan(connection.frame.minY, pairing.frame.minY)
+            let connection = page.staticTexts["连接"], appearance = page.staticTexts["外观"]
+            XCTAssertTrue(connection.exists && appearance.exists)
+            XCTAssertLessThan(connection.frame.minY, appearance.frame.minY)
             XCTAssertFalse(page.staticTexts["已配对电脑"].exists)
             XCTAssertFalse(page.buttons["添加电脑"].exists)
             capture("settings-order" + (dark ? "-dark" : "-light"), app: page)
@@ -1289,6 +1451,7 @@ final class OrbisUITests: XCTestCase {
         let app = launch("status")
         let page = app.descendants(matching: .any)["settings-page"].firstMatch
         XCTAssertTrue(page.waitForExistence(timeout: 8))
+        app.buttons["settings-language"].tap()
         let english = app.buttons["language-en"]
         for _ in 0..<10 where !english.isHittable { page.swipeUp() }
         XCTAssertTrue(english.isHittable)
@@ -1298,8 +1461,8 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["language-system"].label.contains("Follow system"))
         capture("language-settings-english", app: app)
         app.buttons["Back"].tap()
-        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.buttons["home-settings"].label, "Settings")
+        XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["root-tab-settings"].label, "Settings")
         app.terminate()
 
         let reopened = launch("status", arguments: ["--preview-language=preserve"])
@@ -1346,34 +1509,34 @@ final class OrbisUITests: XCTestCase {
         capture("language-history-english-full-title", app: history)
     }
 
-    func testInsetFocusAppearanceSwitchPersistsAcrossLaunches() {
+    func testMaterialAppearanceSwitchPersistsAcrossLaunches() {
         let app = launch("status")
         let page = app.descendants(matching: .any)["settings-page"].firstMatch
-        let focus = app.buttons["appearance-insetFocus"]
+        let focus = app.buttons["appearance-sage"]
         XCTAssertTrue(page.waitForExistence(timeout: 8))
         for _ in 0..<8 where !focus.isHittable { page.swipeUp() }
         XCTAssertTrue(focus.isHittable)
-        XCTAssertTrue(focus.label.contains("雾蓝"))
+        XCTAssertTrue(focus.label.contains("灰绿"))
         focus.tap()
         XCTAssertTrue(focus.isSelected)
-        capture("inset-focus-settings-light", app: app)
+        capture("sage-settings-light", app: app)
         app.terminate()
 
         let dark = launch("status", dark: true)
         let darkPage = dark.descendants(matching: .any)["settings-page"].firstMatch
-        let darkChoice = dark.buttons["appearance-insetFocus"]
+        let darkChoice = dark.buttons["appearance-sage"]
         for _ in 0..<8 where !darkChoice.isHittable { darkPage.swipeUp() }
         XCTAssertTrue(darkChoice.isSelected)
-        capture("inset-focus-settings-dark", app: dark)
+        capture("sage-settings-dark", app: dark)
         dark.terminate()
 
         let reopened = launch("status")
         let reopenedPage = reopened.descendants(matching: .any)["settings-page"].firstMatch
-        let selected = reopened.buttons["appearance-insetFocus"]
+        let selected = reopened.buttons["appearance-sage"]
         for _ in 0..<8 where !selected.isHittable { reopenedPage.swipeUp() }
         XCTAssertTrue(selected.isSelected)
-        reopened.buttons["appearance-classic"].tap()
-        XCTAssertTrue(reopened.buttons["appearance-classic"].isSelected)
+        reopened.buttons["appearance-mist"].tap()
+        XCTAssertTrue(reopened.buttons["appearance-mist"].isSelected)
         reopened.terminate()
     }
 
@@ -1408,7 +1571,7 @@ final class OrbisUITests: XCTestCase {
                 XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
             }
             // A different destination must also accept the very next action.
-            app.buttons["home-settings"].tap()
+            app.buttons["root-tab-settings"].tap()
             XCTAssertTrue(app.descendants(matching: .any)["settings-page"].firstMatch.waitForExistence(timeout: 3))
             capture("immediate-return-" + name, app: app)
             app.terminate()
@@ -1417,8 +1580,8 @@ final class OrbisUITests: XCTestCase {
 
     func testFullPageReturnBudgetAndNestedSourceReentry() {
         let app = launch("home", arguments: ["--measure-page-return"])
-        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 8))
-        for (index, entry) in ["home-settings", "home-downloads"].enumerated() {
+        XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
+        for (index, entry) in ["root-tab-settings", "home-downloads"].enumerated() {
             app.buttons[entry].tap()
             returnWithoutSettling(app, count: index + 1)
             XCTAssertTrue(app.buttons[entry].isHittable)
@@ -1476,7 +1639,7 @@ final class OrbisUITests: XCTestCase {
                         withVelocity: .slow, thenHoldForDuration: 0.1)
             XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
             XCTAssertFalse(app.buttons["取消添加电脑"].exists)
-            XCTAssertTrue(app.buttons["home-settings"].isHittable)
+            XCTAssertTrue(app.buttons["root-tab-settings"].isHittable)
             capture("pairing-returned-home-" + (dark ? "dark-reduced" : "light"), app: app)
             app.terminate()
         }
@@ -1514,8 +1677,8 @@ final class OrbisUITests: XCTestCase {
     func testSettingsAndDownloadsSwipeBack() {
         let app = launch("home")
         let directory = app.buttons["打开会话目录"]
-        XCTAssertTrue(app.buttons["home-settings"].waitForExistence(timeout: 8))
-        for (entry, page) in [("home-settings", "settings-page"), ("home-downloads", "")] {
+        XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
+        for (entry, page) in [("home-downloads", "")] {
             app.buttons[entry].tap()
             let opened = page.isEmpty ? app.staticTexts["下载"] : app.descendants(matching: .any)[page].firstMatch
             XCTAssertTrue(opened.waitForExistence(timeout: 3))
@@ -1541,9 +1704,9 @@ final class OrbisUITests: XCTestCase {
     func testOptionalEdgeBackKeepsExistingIOSNavigation() {
         for reduced in [false, true] {
             let app = launch("home", arguments: reduced ? ["--preview-reduce-motion"] : [])
-            let entry = app.buttons["home-settings"]
+            let entry = app.buttons["home-downloads"]
             XCTAssertTrue(entry.waitForExistence(timeout: 8)); entry.tap()
-            let page = app.descendants(matching: .any)["settings-page"].firstMatch
+            let page = app.staticTexts["下载"].firstMatch
             XCTAssertTrue(page.waitForExistence(timeout: 3))
             let before = page.frame
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.6))
@@ -2282,116 +2445,37 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         capture("approval-rejected-restored", app: app)
     }
-    func testQuotaCoinReducedMotionKeepsBothReadingsAndTheTouchTarget() {
-        let app = launch("status", dark: true, arguments: ["--preview-reduce-motion",
-            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
-        let coin = app.buttons["quota-coin-codex"]
-        XCTAssertTrue(coin.waitForExistence(timeout: 8))
-        let before = coin.frame
-        coin.tap()
-        let loaded = NSPredicate(format: "value CONTAINS %@", "82%")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: coin)], timeout: 8), .completed)
-        settle()
-        XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true)
-        coin.tap()
-        XCTAssertTrue((coin.value as? String)?.contains("周配额，剩余 35%") == true)
-        XCTAssertEqual(coin.frame, before)
-        capture("quota-reduced-dark-large-weekly", app: app)
-        app.buttons["provider-quota-codex"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(waitUntilEnabled(coin, timeout: 8))
-        XCTAssertTrue((coin.value as? String)?.contains("周配额，剩余 35%") == true)
-        coin.tap()
-        XCTAssertTrue((coin.value as? String)?.contains("5 小时配额，剩余 82%") == true)
-        XCTAssertEqual(coin.frame, before)
-        capture("quota-reduced-dark-large-five-hour", app: app)
-        app.terminate()
+    // S36 / SC57: both subscription windows stay visible together, refreshing
+    // quota does not change the browsed profile or apply a configuration.
+    func testProviderQuotaShowsBothWindowsAndRefreshIsIndependent() {
+        let app = launch("providers", dark: true, arguments: ["--preview-reduce-motion"])
+        let refresh = app.buttons["provider-quota-refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        let action = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "provider-action-")).firstMatch
+        let before = action.label
+        refresh.tap()
+        XCTAssertTrue(app.staticTexts["82"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["35"].exists)
+        XCTAssertEqual(action.label, before)
+        XCTAssertTrue(app.descendants(matching: .any)["provider-quota-five_hour"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["provider-quota-seven_day"].exists)
+        capture("provider-two-quota-windows-dark", app: app)
     }
 
-    func testCompactQuotaCardsAndTransparentSwitch() {
-        for (dark, style) in [(false, "classic"), (true, "classic"), (false, "insetFocus"), (true, "insetFocus")] {
-            let app = launch("status", dark: dark, arguments: ["-orbis.visualStyle", style])
-            let codex = app.buttons["provider-quota-codex"]
-            XCTAssertTrue(codex.waitForExistence(timeout: 8))
-            let drag = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-            drag.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)))
-            let before = codex.frame
-            XCTAssertLessThan(before.height, 130)
-            // Before data exists, the icon also queries. Afterwards it only flips.
-            let coin = app.buttons["quota-coin-codex"]
-            coin.tap()
-            let loaded = NSPredicate(format: "value CONTAINS %@", "82%")
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
-            XCTAssertEqual(codex.frame.height, before.height, accuracy: 1)
-            RunLoop.current.run(until: Date().addingTimeInterval(3))
-            XCTAssertTrue((coin.value as? String)?.contains("5 小时配额") == true, "After first demonstration: \(String(describing: coin.value))")
-            coin.tap()
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "35%"), object: coin)], timeout: 4), .completed)
-            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
-            XCTAssertGreaterThanOrEqual(coin.frame.height, 48)
-            XCTAssertLessThanOrEqual(coin.frame.width, 64)
-            // Refreshing the rest of the card retains the weekly face.
-            codex.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: codex)], timeout: 8), .completed)
-            XCTAssertTrue((coin.value as? String)?.contains("周配额") == true)
-            let claude = app.buttons["provider-quota-claude"]
-            app.buttons["quota-coin-claude"].tap()
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "64%"), object: claude)], timeout: 8), .completed)
-            XCTAssertTrue((codex.value as? String)?.contains("82%") == true)
-            XCTAssertFalse(app.staticTexts["轻点卡片查询配额"].exists)
-            RunLoop.current.run(until: Date().addingTimeInterval(3))
-            app.buttons["quota-coin-claude"].tap()
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "18%"), object: app.buttons["quota-coin-claude"])], timeout: 4), .completed)
-            capture("compact-quota-\(style)-" + (dark ? "dark" : "light"), app: app)
-            app.buttons["provider-switch-codex"].tap()
-            let team = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
-            XCTAssertTrue(team.waitForExistence(timeout: 3))
-            XCTAssertTrue(team.isHittable)
-            team.tap()
-            XCTAssertTrue(app.staticTexts["团队供应商"].waitForExistence(timeout: 3))
-            app.terminate()
-        }
-    }
-
-    func testFixedRoutingAndStatusProviderSwitch() {
-        let status = launch("status")
-        XCTAssertFalse(status.buttons["设置"].exists)
-        XCTAssertFalse(status.staticTexts["连接优先级"].exists)
-        XCTAssertFalse(status.buttons["上移中继"].exists)
-        let switchButton = status.buttons["provider-switch-codex"]
-        XCTAssertTrue(switchButton.waitForExistence(timeout: 8))
-        switchButton.tap()
-        let team = status.buttons.matching(NSPredicate(format: "label CONTAINS %@", "团队供应商")).firstMatch
-        XCTAssertTrue(team.waitForExistence(timeout: 3))
-        team.tap()
-        XCTAssertTrue(status.staticTexts["团队供应商"].waitForExistence(timeout: 5))
-        XCTAssertTrue(status.buttons["provider-switch-claude"].exists)
-        capture("status-provider-switch", app: status)
-    }
     // S28 / SC48 and S29 / SC49: verify active protocol reporting and all three saved modes.
     func testCurrentConnectionProtocol() {
         for (dark, value, arguments) in [(false, "WS", [String]()), (true, "QUIC", ["--preview-relay-quic"])] {
             let app = launch("status", dark: dark, arguments: arguments)
-            let page = app.descendants(matching: .any)["settings-page"].firstMatch
-            XCTAssertTrue(page.waitForExistence(timeout: 8))
-            let label = app.staticTexts["连接协议"].firstMatch
-            for _ in 0..<8 where !label.isHittable {
-                let upwards = label.frame.midY > page.frame.midY
-                page.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upwards ? 0.65 : 0.35))
-                    .press(forDuration: 0.05, thenDragTo: page.coordinate(withNormalizedOffset:
-                        CGVector(dx: 0.5, dy: upwards ? 0.35 : 0.65)))
-            }
-            XCTAssertTrue(label.isHittable)
-            XCTAssertTrue(app.staticTexts[value].firstMatch.isHittable)
-            let automatic = app.buttons["relay-mode-auto"]
-            let ws = app.buttons["relay-mode-ws"]
-            let quic = app.buttons["relay-mode-quic"]
-            XCTAssertTrue(automatic.waitForExistence(timeout: 3))
-            XCTAssertTrue(ws.exists); XCTAssertTrue(quic.exists)
-            XCTAssertTrue(ws.isSelected)
+            let row = app.buttons["settings-protocol"]
+            XCTAssertTrue(row.waitForExistence(timeout: 8))
+            XCTAssertTrue(row.label.contains(value))
+            row.tap()
+            let automatic = app.buttons["relay-mode-auto"], ws = app.buttons["relay-mode-ws"], quic = app.buttons["relay-mode-quic"]
+            XCTAssertTrue(automatic.waitForExistence(timeout: 3)); XCTAssertTrue(ws.exists); XCTAssertTrue(quic.exists)
             automatic.tap(); XCTAssertTrue(automatic.isSelected)
             quic.tap(); XCTAssertTrue(quic.isSelected)
-            ws.tap(); XCTAssertTrue(ws.isSelected)
-            capture("status-protocol-\(value)-" + (dark ? "dark" : "light"), app: app)
+            XCTAssertTrue(app.buttons["relay-mode-apply"].isEnabled)
+            capture("status-protocol-staged-" + value, app: app)
             app.terminate()
         }
     }

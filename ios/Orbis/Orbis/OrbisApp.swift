@@ -9,6 +9,11 @@ struct OrbisApp: App {
         OrbisAppearance.migrate()
         AppLocalization.shared.configure()
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-reset-design") {
+            UserDefaults.standard.set("mist", forKey: "orbis.appearance")
+            UserDefaults.standard.set("light", forKey: "orbis.colorMode")
+            UserDefaults.standard.set("codex", forKey: "orbis.lastDraftAgent")
+        }
         if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }),
            let defaults = UserDefaults(suiteName: "orbis.preview.language") {
             AppLocalization.shared.configure(defaults: defaults)
@@ -46,17 +51,28 @@ struct OrbisApp: App {
     }
     private var appContent: some View {
         ContentView().environmentObject(store)
-            .preferredColorScheme(colorMode == "light" ? .light : colorMode == "dark" ? .dark : nil)
+            .preferredColorScheme(preferredScheme)
             .environment(\.locale, AppLocalization.shared.locale)
             .environment(\.layoutDirection, .leftToRight)
+            .task { prepareReplyNotifications() }
+            .onChange(of: store.pairings.isEmpty) { _, _ in prepareReplyNotifications() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { AppLocalization.shared.refreshSystemLanguage() }
+                if phase == .active { AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications() }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
                 AppLocalization.shared.refreshSystemLanguage()
             }
-            #if DEBUG
-            .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : nil)
-            #endif
+    }
+    private func prepareReplyNotifications() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) { return }
+        #endif
+        if !store.pairings.isEmpty { ReplyCompletionNotifications.shared.prepare() }
+    }
+    private var preferredScheme: ColorScheme? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
+        #endif
+        return colorMode == "light" ? .light : colorMode == "dark" ? .dark : nil
     }
 }

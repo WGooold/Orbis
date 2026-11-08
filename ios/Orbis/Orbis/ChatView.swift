@@ -141,7 +141,7 @@ struct ChatView: View {
                 }
             }
             if store.isViewingCachedSession { cachedComposer } else { composer }
-        }
+        }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
             #if DEBUG
             // Headless Device Hub can attach a hardware keyboard. The explicit fixture also
             // exercises the same viewport squeeze deterministically without changing release UI.
@@ -164,10 +164,10 @@ struct ChatView: View {
                 case .failure(let error): transfers.error = error.localizedDescription
                 }
             }
-            .sheet(isPresented: $permissionsOpen) {
+            .orbisBottomSheet(isPresented: $permissionsOpen) {
                 PermissionsView(runtime: runtime).orbisSheet([.medium, .large])
             }
-            .sheet(isPresented: $runtimeInfoOpen) {
+            .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
                 RuntimeInfoView(runtime: runtime).orbisSheet([.large])
             }
             .modifier(TurnFileReviewPresenter(changes: store.turnFileChanges))
@@ -521,7 +521,16 @@ struct ChatView: View {
                 TextField(L10n.tr("发给 {0}，/ 命令", agentTitle(kind)), text: draft, axis: .vertical)
                     .accessibilityIdentifier("chat-composer")
                     .font(.orbisBody()).lineLimit(1...6).focused($composerFocused)
-                    .padding(.horizontal, 14).padding(.vertical, 15).frame(minHeight: 56)
+                    .onKeyPress(keys: [.return], phases: .down) { key in
+                        if key.modifiers.contains(.shift) { return .ignored }
+                        guard canSubmit else { return .handled }
+                        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
+                        else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
+                        else { submit() }
+                        return .handled
+                    }
+                    .onKeyPress(.escape) { composerFocused = false; return .handled }
+                    .padding(.horizontal, 16).padding(.vertical, 16).frame(minHeight: 56)
                     .orbisField(focused: composerFocused).orbisAnchor(sendFlight.composer)
                 if runtime.status == "running" && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
@@ -799,7 +808,7 @@ struct ChatMessageRow: View, Equatable {
                             Text(agentTitle(kind)).font(.orbisCaption(.semibold)).foregroundStyle(OrbisPalette(scheme).agent(kind))
                             Spacer(minLength: 8)
                             // 复制整轮回复。不用长按手势：它挂在每条消息上会和滚动、文本选择抢触摸。
-                            OrbisCopyButton(label: L10n.tr("复制回复"), size: 26) { copyText }
+                            OrbisCopyButton(label: L10n.tr("复制回复"), size: 28) { copyText }
                                 .padding(.vertical, -10)
                         }
                     }
@@ -851,7 +860,7 @@ private struct ChatMessageSurface: ViewModifier {
     let arrivals: ReplyCardArrivals?
     func body(content: Content) -> some View {
         if row.isUser {
-            content.neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: OrbisRadius.cardPadding + 2)
+            content.neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.65, padding: 16)
         } else {
             content.modifier(OrbisReplyCard(id: row.id, parts: row.messages.flatMap { message in
                 message.content.enumerated().map { index, block in
@@ -936,32 +945,32 @@ private struct PendingSendStatus: View {
         HStack(spacing: 2) {
             switch state {
             case .sending, .accepted:
-                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 26, height: 26)
+                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 28, height: 28)
                 Text(L10n.tr("发送中")).font(.orbisCaption()).foregroundStyle(palette.secondary)
             case .queued:
-                OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
+                OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 28, height: 28)
                 Text(L10n.tr("已排队")).font(.orbisCaption()).foregroundStyle(palette.secondary)
-                OrbisIconButton(symbol: "xmark", label: L10n.tr("撤回排队消息"), size: 26) { onAction(.cancel) }
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("撤回排队消息"), size: 28) { onAction(.cancel) }
                     .disabled(!canResend).accessibilityIdentifier("pending-cancel-" + rowId)
             case .waiting(let label):
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
-                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 26, height: 26)
+                ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 28, height: 28)
                 Text(label).font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(2)
             case .unconfirmed:
-                OrbisActionSymbol(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 26, height: 26)
+                OrbisActionSymbol(systemName: "questionmark.circle").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 28, height: 28)
                 Text(L10n.tr("未确认是否送达")).font(.orbisCaption()).foregroundStyle(palette.secondary)
-                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对送达状态"), size: 26) { onAction(.check) }
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对送达状态"), size: 28) { onAction(.check) }
                     .accessibilityIdentifier("pending-check-" + rowId)
-                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 26) { onAction(.discard) }
+                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 28) { onAction(.discard) }
                     .accessibilityIdentifier("pending-discard-" + rowId)
             case .failed(let reason):
                 OrbisActionSymbol(systemName: "exclamationmark.circle").foregroundStyle(palette.error).font(.orbisCaption())
                 Text(reason).font(.orbisCaption()).foregroundStyle(palette.error).lineLimit(2)
-                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重新发送"), size: 26) { onAction(.resend) }
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重新发送"), size: 28) { onAction(.resend) }
                     .disabled(!canResend).accessibilityIdentifier("pending-resend-" + rowId)
-                OrbisIconButton(symbol: "arrow.uturn.backward", label: L10n.tr("放回输入框"), size: 26) { onAction(.restore) }
+                OrbisIconButton(symbol: "pencil", label: L10n.tr("放回输入框"), size: 28) { onAction(.restore) }
                     .accessibilityIdentifier("pending-restore-" + rowId)
-                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 26) { onAction(.discard) }
+                OrbisIconButton(symbol: "trash", label: L10n.tr("删除"), size: 28) { onAction(.discard) }
                     .accessibilityIdentifier("pending-discard-" + rowId)
             }
         }.accessibilityElement(children: .contain).accessibilityIdentifier("pending-status-" + rowId)
@@ -1073,13 +1082,13 @@ private struct TruncatedMessageContent: View {
                 }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
                 if !store.canSend { Text(L10n.tr("连接电脑并继续此会话后可取回完整内容。")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }
-        }.sheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
+        }.orbisBottomSheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
     }
 }
 
 private struct FullMessageView: View {
     @EnvironmentObject private var store: OrbisStore
-    @Environment(\.dismiss) private var dismiss
+    @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let entryId: String
@@ -1152,7 +1161,7 @@ struct CompactDisclosure<Content: View>: View {
             OrbisCollapse(expanded: expanded) {
                 content().frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 10)
             }
-        }.padding(.horizontal, 12).padding(.vertical, 4).neuSurface(inset: true, radius: 14, intensity: 0.35)
+        }.padding(.horizontal, 12).padding(.vertical, 4).neuSurface(inset: true, radius: 12, intensity: 0.4)
     }
 }
 
@@ -1188,7 +1197,7 @@ struct ToolSummaryView: View {
                     }
                 }
             }
-        }.sheet(isPresented: $detailOpen, onDismiss: { store.toolContent.close() }) {
+        }.orbisBottomSheet(isPresented: $detailOpen, onDismiss: { store.toolContent.close() }) {
             ToolDetailView(reader: store.toolContent, title: summary.toolName).orbisSheet([.large])
         }
     }
@@ -1376,7 +1385,7 @@ private struct CodeBlockView: View {
                 Text(text).reveal(clock, base: base, now: now)
                     .font(.orbisLabel(mono: true)).fixedSize(horizontal: true, vertical: false).textSelection(.enabled).padding(.bottom, 4)
             }
-        }.neuSurface(inset: true, radius: 14, intensity: 0.35, padding: 12)
+        }.neuSurface(inset: true, radius: 12, intensity: 0.4, padding: 12)
     }
 }
 
@@ -1436,14 +1445,16 @@ private struct SlashPickerView: View {
 
 struct PermissionsView: View {
     @EnvironmentObject private var store: OrbisStore
-    @Environment(\.dismiss) private var dismiss
+    @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     let runtime: RuntimeSummary
+    @State private var proposedSetting: String?
+    @State private var proposedValue: String?
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr("会话权限"), closes: true, back: { dismiss() }) { EmptyView() }
+            OrbisPageHeader(title: L10n.tr("当前会话权限"), closes: true, back: { dismiss() }) { EmptyView() }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let permissions = store.selectedRuntime?.permissionManagement {
@@ -1453,24 +1464,36 @@ struct PermissionsView: View {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(L10n.hostText(setting.label)).font(.orbisBody(.semibold)).padding(.horizontal, 4)
                                 ForEach(setting.options) { option in
-                                    OrbisMotionButton { store.updatePermission(settingId: setting.id, value: option.value) } label: {
-                                        HStack {
-                                            Text(L10n.hostText(option.label)).font(.orbisLabel()).frame(maxWidth: .infinity, alignment: .leading)
-                                            if option.value == setting.currentValue { OrbisActionSymbol(systemName: "checkmark").font(.orbisLabel(.semibold)) }
-                                        }.padding(.horizontal, 14).frame(minHeight: 48)
-                                    }.buttonStyle(NeuButtonStyle(selected: option.value == setting.currentValue))
-                                        .disabled(!store.canSend || store.selectedRuntime?.status != "idle" || setting.disabledReason != nil || !store.pendingActionIds.isEmpty)
+                                    permissionOption(option, setting: setting)
                                 }
                                 if let reason = setting.disabledReason { Text(L10n.hostText(reason)).font(.orbisCaption()).foregroundStyle(p.secondary).padding(.horizontal, 4) }
                             }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding)
                         }
-                        if runtime.status != "idle" { OrbisNotice(text: L10n.tr("会话空闲时可调整权限。")) }
+                        if store.selectedRuntime?.status != "idle" { OrbisNotice(text: L10n.tr("会话空闲时可调整权限。")) }
                     }
-                }.padding(24)
+                }.padding(16)
             }
+            OrbisActionButton(title: L10n.tr("应用到当前会话")) {
+                guard let setting = proposedSetting, let value = proposedValue else { return }
+                if store.updatePermission(settingId: setting, value: value) { dismiss() }
+            }.disabled(!canApply)
+                .padding(.horizontal, 16).padding(.bottom, 16).accessibilityIdentifier("permissions-apply")
         }.background(p.base.ignoresSafeArea())
             .onChange(of: store.selectedRuntimeId) { _, _ in dismiss() }
     }
+    private var canApply: Bool {
+        guard let id = proposedSetting, let value = proposedValue,
+              let setting = store.selectedRuntime?.permissionManagement?.settings.first(where: { $0.id == id }) else { return false }
+        return value != setting.currentValue && store.canUpdatePermission(settingId: id, value: value)
+    }
+    private func permissionOption(_ option: RuntimeOption, setting: PermissionManagement.Setting) -> some View {
+        let current = proposedSetting == setting.id ? proposedValue : setting.currentValue
+        let disabled = !store.canUpdatePermission(settingId: setting.id, value: option.value)
+        return OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: L10n.hostText(option.description ?? ""), selected: option.value == current) {
+            proposedSetting = setting.id; proposedValue = option.value
+        }.disabled(disabled)
+    }
+
 }
 
 private struct MarkdownTableView: View {
@@ -1491,7 +1514,7 @@ private struct MarkdownTableView: View {
                     }
                 }
             }
-        }.neuSurface(inset: true, radius: 14, intensity: 0.35).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous)).textSelection(.enabled)
+        }.neuSurface(inset: true, radius: 12, intensity: 0.4).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).textSelection(.enabled)
     }
     private func alignment(_ column: Int) -> Alignment {
         let markers = section.text.components(separatedBy: "|")
@@ -1515,7 +1538,7 @@ private struct MarkdownImageView: View {
                 else { ProgressView().frame(maxWidth: .infinity, minHeight: 80) }
             }
             Link(alt.isEmpty ? L10n.tr("打开图片") : alt, destination: url).font(.orbisCaption())
-        }.neuSurface(inset: true, radius: 14, intensity: 0.35, padding: 12)
+        }.neuSurface(inset: true, radius: 12, intensity: 0.4, padding: 12)
     }
 }
 
@@ -1552,7 +1575,7 @@ struct QueuedMessagesView: View {
             }
             Text(item.text).font(.orbisCaption()).lineLimit(3).textSelection(.enabled)
             if let error = item.error { Text(error).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error) }
-        }.padding(12).neuSurface(inset: true, radius: 14, intensity: 0.35)
+        }.padding(12).neuSurface(inset: true, radius: 12, intensity: 0.4)
     }
 }
 
@@ -1613,7 +1636,7 @@ struct RuntimeNoticesView: View {
 private struct RuntimeInfoView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var agent: AgentState
-    @Environment(\.dismiss) private var dismiss
+    @OrbisDismiss private var dismiss
     let runtime: RuntimeSummary
     private var snapshot: AgentSnapshot? { agent.snapshots[runtime.runtimeId] }
     private func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }

@@ -309,7 +309,8 @@ final class OrbisStore: ObservableObject {
     func closeRuntimes(hostId: String, runtimeIds: Set<String>) -> Set<String> {
         connections[hostId]?.closeRuntimes(runtimeIds) ?? []
     }
-    func updatePermission(settingId: String, value: String) { activeConnection.updatePermission(settingId: settingId, value: value) }
+    func canUpdatePermission(settingId: String, value: String) -> Bool { activeConnection.canUpdatePermission(settingId: settingId, value: value) }
+    @discardableResult func updatePermission(settingId: String, value: String) -> Bool { activeConnection.updatePermission(settingId: settingId, value: value) }
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool { activeConnection.sendMessage(text, delivery: delivery, attachmentIds: attachmentIds) }
     func cancelQueuedMessage(_ queueId: String) -> Bool { activeConnection.cancelQueuedMessage(queueId) }
     func dismissNotification(runtimeId: String, notificationId: String) { activeConnection.dismissNotification(runtimeId: runtimeId, notificationId: notificationId) }

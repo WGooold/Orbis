@@ -42,7 +42,7 @@ struct InteractionWorkspaceView: View {
                     .transition(.opacity)
             }
         }
-        .sheet(isPresented: $open) {
+        .orbisBottomSheet(isPresented: $open) {
             VStack(spacing: 14) {
                 OrbisPageHeader(title: L10n.tr("远程交互"), closes: true, back: { open = false }) { Text(L10n.tr("{0} 项", requests.count)).font(.orbisCaption()) }
                 if requests.count > 1 {

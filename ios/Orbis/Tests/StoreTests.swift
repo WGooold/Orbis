@@ -155,6 +155,47 @@ struct StoreTests {
         return (store, transport)
     }
 
+    /// A staged permission choice must stay local if current facts invalidate it;
+    /// only a command accepted by the transport may dismiss the editing sheet.
+    @Test func stagedPermissionSubmissionRechecksLiveFactsAndReportsAcceptance() async {
+        func facts(disabled: Bool = false, includesProposed: Bool = true) -> [String: Any] {
+            var setting: [String: Any] = ["id": "sandbox", "label": "文件范围", "currentValue": "read-only",
+                "options": (includesProposed ? ["read-only", "workspace-write"] : ["read-only"]).map { ["value": $0, "label": $0] }]
+            if disabled { setting["disabledReason"] = "当前权限不可调整" }
+            return ["summary": "只读", "details": "当前会话的权限", "tone": "restricted", "settings": [setting]]
+        }
+        let (store, transport) = setup()
+        var current = runtime("a"); current["permissionManagement"] = facts()
+        await transport.ready([current])
+        #expect(store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.canUpdatePermission(settingId: "missing", value: "workspace-write"))
+
+        await transport.event(["type": "runtime.metadata", "metadata": ["permissionManagement": facts(disabled: true)]], sequence: 1, channel: "ctl")
+        #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        await transport.event(["type": "runtime.metadata", "metadata": ["permissionManagement": facts(includesProposed: false)]], sequence: 2, channel: "ctl")
+        #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        await transport.event(["type": "runtime.metadata", "metadata": ["permissionManagement": facts(), "status": "running"]], sequence: 3, channel: "ctl")
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        await transport.event(["type": "runtime.metadata", "metadata": ["status": "idle"]], sequence: 4, channel: "ctl")
+        let request: [String: Any] = ["runtimeId": "a", "requestId": "approval", "extensionId": "test", "kind": "confirm",
+            "title": "允许操作？", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 60000]
+        await transport.event(["type": "interaction.requested", "request": request], sequence: 5, channel: "ctl")
+        #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        await transport.event(["type": "interaction.resolved", "requestId": "approval", "source": "remote"], sequence: 6, channel: "ctl")
+        #expect(store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        transport.acceptsSends = false
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(store.pendingActionIds.isEmpty)
+        transport.acceptsSends = true
+        #expect(store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(transport.sent.compactMap { $0["command"] as? [String: Any] }.filter { $0["type"] as? String == "permissions.update" }.count == 1)
+    }
+
     @Test func switchingRuntimesKeepsTheirOwnMessagesAndLoadsSelectedPreview() async throws {
         let (store, transport) = setup()
         await transport.ready([runtime("a"), runtime("b")])

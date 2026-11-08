@@ -3,7 +3,7 @@ import Foundation
 /// SC57: the two handles are separated by a 24pt inactive moat. Hit testing is
 /// based on the initial point so a drag cannot change its owner halfway through.
 enum ProviderDialGeometry {
-    enum Handle: Equatable { case agent, profile }
+    enum Handle: Hashable { case agent, profile }
     struct Layout {
         let width: Double
         let height: Double
