@@ -330,6 +330,102 @@ describe("Codex recoverable source checkpoints", () => {
     h.server.onExit?.(0);
   });
 
+  // CODEX-COMPACTION-01: Codex 0.167.0 emits the live start before turns/list includes
+  // the compaction item. A reconnect/native check must preserve both the Host fact and
+  // item identity, including completion received while that stale read is in flight.
+  it.each([false, true].flatMap(desktop => ["notification", "buffered", "completed", "interrupted", "failed", "revert"].map(completion => ({ desktop, completion }))))(
+    "keeps compaction when active native history omits its item (desktop=$desktop, completion=$completion)", async ({ desktop, completion }) => {
+    const h = makeHarness({ desktop });
+    const registry = new AgentStateRegistry({ modelEpoch: "epoch" });
+    const facts = new AgentStateFacts({ registry, hostId: "host", kindOf: () => desktop ? "codexDesktop" : "codex" });
+    h.runtime.setEventSink((event, id) => {
+      h.events.push(event);
+      if (id) facts.observe(h.runtime.runtimeIdFor(id), event);
+    });
+    await activate(h); startCompaction(h);
+    const scope = { kind: "agent" as const, key: { hostId: "host", agentKind: desktop ? "codexDesktop" as const : "codex" as const,
+      sessionId: desktop ? "codex-desktop:th-1" : "th-1" } };
+    const execution = () => registry.read<AgentExecutionState>(scope, "execution")?.value;
+    const complete = () => h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    if (completion === "buffered") complete();
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", items: [] }] });
+    await vi.waitFor(() => expect(execution()?.compaction).toEqual({ phase: completion === "buffered" ? "idle" : "running", turnId: "t" }));
+    // Flush the native-read continuation; the pre-read running fact alone cannot satisfy this regression.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(execution()).toMatchObject({ phase: "running", compaction: { phase: completion === "buffered" ? "idle" : "running", turnId: "t" } });
+    if (completion === "notification") complete();
+    if (!["notification", "buffered"].includes(completion)) {
+      if (completion === "revert") h.notify("thread/reverted", { threadId: "th-1" });
+      else h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(2));
+      h.resolveNext({ data: completion === "revert" ? [] : [{ id: "t", status: completion, items: [] }] });
+    }
+    await vi.waitFor(() => expect(execution()?.compaction).toEqual({ phase: completion === "failed" ? "failed" : "idle", turnId: "t" }));
+    h.server.onExit?.(0);
+  });
+
+  it.each([false, true])("retains compaction when resuming its active turn before the item is persisted (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop }); await activate(h); startCompaction(h);
+    const resuming = h.runtime.activate({ type: "resume", sessionId: desktop ? "codex-desktop:th-1" : "th-1" });
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [{ id: "t", status: "inProgress", items: [] }] } });
+    await resuming;
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "compact", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
+  // CODEX-COMPACTION-02: drop all item/turn completion notifications. The production
+  // 15-second watcher must retain genuinely unfinished snapshots, then use native facts
+  // to exit compaction without a refresh, reconnect, next turn, or arbitrary timeout.
+  it.each(["completed", "interrupted", "failed", "progressed", "timestamp", "read-failure"])(
+    "automatically repairs lost compaction completion after repeated lagging reads (%s)", async recovery => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const h = makeHarness();
+    try {
+      h.runtime.markStarted(); await activate(h); startCompaction(h);
+      const poll = async (readNumber: number, result?: unknown) => {
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(h.historyReads).toHaveBeenCalledTimes(readNumber);
+        if (result === undefined) h.rejectNext(new Error("native unavailable"));
+        else h.resolveNext({ data: result });
+        await new Promise<void>(resolve => setImmediate(resolve));
+      };
+      const active = (items: unknown[]) => [{ id: "t", status: "inProgress", items }];
+      await poll(1, active([]));
+      expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+      await poll(2, active([]));
+      expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+      // A stored item with no completion evidence must still remain running.
+      const unfinished = { id: "compact", type: "contextCompaction", startedAtMs: 1000, completedAtMs: null };
+      await poll(3, active([unfinished]));
+      expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+      if (recovery === "read-failure") await poll(4);
+      else if (recovery === "timestamp") await poll(4, active([{ ...unfinished, completedAtMs: 2000 }]));
+      else if (recovery === "progressed") await poll(4, active([unfinished, { id: "answer", type: "agentMessage", text: "continued" }]));
+      else await poll(4, [{ id: "t", status: recovery, items: [unfinished] }]);
+      expect(compaction(h)).toEqual(recovery === "read-failure" ? "unavailable" : { phase: recovery === "failed" ? "failed" : "idle", turnId: "t" });
+      expect(h.historyReads).toHaveBeenCalledTimes(4);
+    } finally {
+      h.server.onExit?.(0);
+      await h.runtime.stop();
+      vi.clearAllTimers(); vi.useRealTimers();
+    }
+  });
+
+  it.each([undefined, null, -1, "2000", Number.NaN, Number.POSITIVE_INFINITY])(
+    "does not treat an invalid compaction completion timestamp as completion (%s)", async completedAtMs => {
+    const h = makeHarness(); await activate(h); startCompaction(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction", completedAtMs }] }] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.server.onExit?.(0);
+  });
+
   it("does not infer a running compaction from stored items on initial attachment", async () => {
     const h = makeHarness({ initialTurns: [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }] }] });
     await activate(h); h.runtime.announce("th-1");
@@ -348,14 +444,19 @@ describe("Codex recoverable source checkpoints", () => {
     h.server.onExit?.(0);
   });
 
-  it("clears a stale compaction even when the verified native history signature is unchanged", async () => {
+  // CODEX-COMPACTION-01: an unchanged active snapshot predates this newly observed
+  // compaction. Its older answer cannot prove that the new compaction has finished.
+  it("preserves a newly observed compaction when the active native history signature is unchanged", async () => {
     const turns = [{ id: "t", status: "inProgress", items: [{ id: "compact", type: "contextCompaction" }, { id: "answer", type: "agentMessage", text: "continued" }] }];
     const h = makeHarness({ initialTurns: turns }); await activate(h);
     h.notify("item/started", { threadId: "th-1", turnId: "t", item: { id: "unobserved", type: "contextCompaction" } });
     h.runtime.announce("th-1");
     await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
     h.resolveNext({ data: turns });
-    await vi.waitFor(() => expect(compaction(h)).toBe("unavailable"));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(compaction(h)).toEqual({ phase: "running", turnId: "t" });
+    h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "unobserved", type: "contextCompaction" } });
+    expect(compaction(h)).toEqual({ phase: "idle", turnId: "t" });
     h.server.onExit?.(0);
   });
 

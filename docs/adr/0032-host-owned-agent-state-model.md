@@ -161,6 +161,12 @@ Host 服务按领域管理配置、回执与诊断；凭据保留在 Host，客�
 
 本次故障是模型读取把公共 Session ID 直接传给 `announce`，调用静默未命中，`interactions` 持续为 unknown；两端首页按完整快照契约报告同步失败。重新打开 App 会在握手恢复路径用原生 ID 重播，因而暂时恢复。修复覆盖首次读取与重试，iOS / Android 共用该 Host 路径。自动用例、手动 R25 与未完成门禁见 [测试规则](../../AGENTS.md#测试)，证据目录 `.artifacts/ui-regression/20261101-new-session-sync/`；设备与真实桌面 App 仍待验收。
 
+## 2026-11-06 Codex 压缩期间的历史快照滞后
+
+沿用 execution 压缩领域与现有状态槽，新增回归场景 `CODEX-COMPACTION-01`。Codex 0.167.0 在发出 `contextCompaction` 的 `item/started` 后，同一进行中回合的 `thread/turns/list` 仍可能暂缺该条目。普通历史核对及同会话恢复保留已观察的压缩活动与条目身份；完成事件、终态快照及明确回退按既有生命周期结算。
+
+实现与回归：[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)。自动验证 220 项、ESLint、完整 TypeScript 检查通过；本机 Codex 0.167.0 配合隔离模拟服务及 Host 模型验证核对前后保持 running、完成后 idle。原始首次失败、旧断言及验证记录保留于 [.artifacts/20261106-codex-compaction/](../../.artifacts/20261106-codex-compaction/)。当前运行 Host 未替换，手机显示待用户验证。
+
 ## Consequences
 
 远端领域有一个 Host 管理入口，新增后端的工作集中在适配事实和能力，App 不再扩展原生业务分支。队列、交互、供应商与记录能与聊天和通知一样查询、核对和恢复。

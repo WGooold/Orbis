@@ -2605,13 +2605,19 @@ export class CodexRuntime implements AgentBackend {
     });
   }
 
-  /** A running turn's persisted view can temporarily omit its observed agent message. */
+  /** A running turn's persisted view can lag observed message and compaction starts. */
   #nativeReadLagsStream(thread: ThreadState, turns: unknown[]): boolean {
+    if (!thread.sourceReady) return false;
     const activeTurn = turns.map(object).find(turn => turn.id === thread.turnId);
+    if ((activeTurn?.status !== "inProgress" && activeTurn?.status !== "in_progress") || !Array.isArray(activeTurn.items)) return false;
+    const items = activeTurn.items.map(object);
     const streamingId = thread.streamingMessageId;
-    return thread.sourceReady && streamingId !== undefined && thread.liveMessages.has(streamingId)
-      && (activeTurn?.status === "inProgress" || activeTurn?.status === "in_progress")
-      && Array.isArray(activeTurn.items) && !activeTurn.items.some(item => object(item).id === streamingId);
+    if (streamingId !== undefined && thread.liveMessages.has(streamingId) && !items.some(item => item.id === streamingId)) return true;
+    // Codex 0.167 emits item/started for contextCompaction before persisting it. Replaying
+    // that active snapshot would clear its running fact and retire its id, dropping the
+    // eventual completion too. A terminal turn or explicit revert still replaces it.
+    const owner = thread.compactionOwner;
+    return owner?.turnId === activeTurn.id && owner?.itemId !== undefined && !items.some(item => item.id === owner.itemId);
   }
 
   /** One native read per thread repairs notifications missing before the Host transport. */
@@ -2634,8 +2640,8 @@ export class CodexRuntime implements AgentBackend {
         if (!this.#isCurrentReconcile(thread, generation)) return;
         if (this.#nativeReadLagsStream(thread, turns)) {
           // turns/list can lag the notification stream while this same turn is running.
-          // Its missing agent item is not a deletion: replay would erase the visible prefix
-          // and retire the id, dropping subsequent deltas. Defer this incomplete read and
+          // A missing live item is not a deletion: replay would erase its observed state
+          // and retire the id, dropping subsequent deltas or completion. Defer this read and
           // consume buffered notifications against the verified source. A terminal/new turn
           // or an explicit revert still replaces it through the normal authoritative replay.
           await this.#drainReconcileNotifications(thread);
@@ -3955,9 +3961,9 @@ export class CodexRuntime implements AgentBackend {
     }
   }
 
-  /** A stored ContextCompaction has no status. Its presence alone never means it is running.
-   * Only a live start can establish that; a terminal/removed turn or subsequent model item
-   * in a verified full snapshot repairs a lost completion. Ordinary idle is not evidence. */
+  /** A stored ContextCompaction's presence alone never means it is running. Only a live
+   * start can establish that; native completedAtMs, a terminal/removed turn or subsequent
+   * model item in a verified full snapshot repairs a lost completion. Idle is not evidence. */
   #reconcileCompaction(thread: ThreadState, turns: unknown[]): void {
     const nativeTurns = turns.map(object);
     for (const turn of nativeTurns) {
@@ -3987,8 +3993,10 @@ export class CodexRuntime implements AgentBackend {
     const item = items[index];
     if (index < 0) this.#setCompaction(thread, "unavailable");
     else if (item?.status === "failed") this.#setCompaction(thread, "failed", owner.turnId);
-    else if (item?.status === "completed" || index >= 0 && items.slice(index + 1).some(item =>
-      ["agentMessage", "reasoning"].includes(String(item.type)))) this.#setCompaction(thread, "idle", owner.turnId);
+    else if (item?.status === "completed"
+      || typeof item?.completedAtMs === "number" && Number.isFinite(item.completedAtMs) && item.completedAtMs >= 0
+      || index >= 0 && items.slice(index + 1).some(item =>
+        ["agentMessage", "reasoning"].includes(String(item.type)))) this.#setCompaction(thread, "idle", owner.turnId);
   }
 
   #reportError(thread: ThreadState, error: unknown, willRetry = false, turnId?: string): void {
