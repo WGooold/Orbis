@@ -542,7 +542,7 @@ ApplicationWindow {
     }
     SequentialAnimation {
         id: themeFade
-        NumberAnimation { target: themeOverlay; property: "opacity"; from: 1; to: 0; duration: Theme.durState; easing.type: Easing.OutCubic }
+        NumberAnimation { target: themeOverlay; property: "opacity"; from: 1; to: 0; duration: Theme.durPanel; easing.type: Easing.OutCubic }
         ScriptAction { script: { themeOverlay.visible = false; themeOverlay.source = ""; themeSnapshot = null } }
     }
     RowLayout {
