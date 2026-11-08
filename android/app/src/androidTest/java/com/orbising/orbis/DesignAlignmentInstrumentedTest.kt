@@ -212,6 +212,14 @@ class DesignAlignmentInstrumentedTest {
                 assertNull(connection.sendFirstSessionMessage("codex","/Projects/orbis","x".repeat(100_001),"design-host"))
                 assertTrue(connection.state.value.sessionActivateRequests.isEmpty())
                 assertTrue(connection.state.value.error.orEmpty().contains("100000"))
+                // Isolated in-memory ledger fixture: one free slot cannot own both activate and first send.
+                val mutable = HostConnection::class.java.getDeclaredField("mutableState").apply { isAccessible = true }
+                    .get(connection) as kotlinx.coroutines.flow.MutableStateFlow<RemoteState>
+                mutable.value = ready().copy(ledger=OperationLedger(capacity=1))
+                assertNull(connection.sendFirstSessionMessage("codex","/Projects/orbis","valid first message","design-host"))
+                assertTrue(connection.state.value.sessionActivateRequests.isEmpty())
+                assertNull(connection.state.value.launchPage)
+                assertEquals("待发送的消息过多，请稍后重试",connection.state.value.error)
             }
         } finally { scope.coroutineContext[kotlinx.coroutines.Job]?.cancel(); app.dispose() }
     }

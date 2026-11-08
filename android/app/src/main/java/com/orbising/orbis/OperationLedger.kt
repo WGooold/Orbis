@@ -132,6 +132,9 @@ data class OperationLedger<P>(
     val readCounter: Int = 0,
     val capacity: Int = 256,
 ) {
+    fun hasCapacity(additional: Int = 1): Boolean = additional >= 0 &&
+        operations.count { !it.phase.isSettled } + additional <= capacity
+
     fun operation(opId: String): LedgerOperation<P>? = operations.firstOrNull { it.opId == opId }
     fun active(target: String): LedgerOperation<P>? = operations.firstOrNull { it.target == target && !it.phase.isSettled }
     fun operations(kind: String): List<LedgerOperation<P>> = operations.filter { it.kind == kind }
@@ -163,7 +166,7 @@ data class OperationLedger<P>(
         if (operation(opId) != null) return this to LedgerCreation.Duplicate()
         if (conflicts) operations.firstOrNull { it.conflicts && it.target == target && !it.phase.isSettled }
             ?.let { return this to LedgerCreation.Conflict(it) }
-        if (operations.count { !it.phase.isSettled } >= capacity) return this to LedgerCreation.Full()
+        if (!hasCapacity()) return this to LedgerCreation.Full()
         var op = LedgerOperation(opId, kind, target, group, conflicts, policy, basis, now, payload, prerequisites, LedgerPhase.Waiting)
         if (written) op = op.written(connection, readCounter, now)
         return copy(operations = operations + op) to LedgerCreation.Created()

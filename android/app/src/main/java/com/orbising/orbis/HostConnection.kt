@@ -1323,10 +1323,17 @@ internal class HostConnection(
         return text.isNotBlank() && failure == null
     }
 
-    internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? {
-        if (!validateMessageInput(text) || !createSession(kind, cwd, expectedHost)) return null
-        return FirstSessionSubmission(sendMessage(text))
-    }
+    internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
+        synchronized(stateWriterLock) {
+            if (!validateMessageInput(text)) return@synchronized null
+            // One local transaction owns both slots; another state writer cannot consume the send slot after launch.
+            if (!mutableState.value.ledger.hasCapacity(2)) {
+                updateState { it.copy(error = L10n.tr("待发送的消息过多，请稍后重试")) }
+                return@synchronized null
+            }
+            if (!createSession(kind, cwd, expectedHost)) return@synchronized null
+            FirstSessionSubmission(sendMessage(text))
+        }
 
     fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null

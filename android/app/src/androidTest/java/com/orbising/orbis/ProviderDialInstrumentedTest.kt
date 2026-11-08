@@ -40,6 +40,11 @@ class ProviderDialInstrumentedTest {
     }
     @Test fun browsingAndCancelledConfirmationNeverWriteAndApplyingNamesBothAgentAndProfile() {
         show(mutableStateOf(ready()))
+        compose.onNodeWithText("供应商").assertIsDisplayed()
+        val computer = compose.onNodeWithText("workstation").fetchSemanticsNode().boundsInRoot
+        val summary = compose.onNodeWithTag("provider-summary").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals(computer.center.y,summary.center.y,1f)
+        assertTrue(computer.right < summary.left)
         compose.onNodeWithTag("provider-apply").assertIsNotEnabled()
         progress("provider-arc",1f)
         compose.runOnIdle { assertTrue(changes.isEmpty()) }

@@ -63,22 +63,20 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
     }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding()
         .then(if (showBack) Modifier.navigationBarsPadding() else Modifier)) {
-        if (showBack) RemoteTopAppBar(title = { Text(L10n.tr("供应商")) }, navigationIcon = {
-            val dispatcher = LocalOnBackPressedDispatcherOwner.current
-            NeumorphIconButton({ dispatcher?.onBackPressedDispatcher?.onBackPressed() }, OrbisSymbols.ArrowBack, L10n.tr("返回"))
+        RemoteTopAppBar(title = { Text(L10n.tr("供应商")) }, navigationIcon = {
+            if (showBack) {
+                val dispatcher = LocalOnBackPressedDispatcherOwner.current
+                NeumorphIconButton({ dispatcher?.onBackPressedDispatcher?.onBackPressed() }, OrbisSymbols.ArrowBack, L10n.tr("返回"))
+            }
         })
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box {
+            Box(Modifier.widthIn(max = 140.dp)) {
                 Row(Modifier.heightIn(min = 48.dp).orbisKeyboardFocus().clickable(enabled = active && hosts.size > 1) { hostMenu = true },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(OrbisSymbols.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Column {
-                        Text(state.hostName ?: hosts.firstOrNull { it.hostId == hostId }?.name ?: L10n.tr("电脑"),
-                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if (kind == "pi") L10n.tr("Pi 可以同时启用多个配置") else L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentBrand(kind).title, providers.size),
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    Text(state.hostName ?: hosts.firstOrNull { it.hostId == hostId }?.name ?: L10n.tr("电脑"),
+                        style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (hosts.size > 1) Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp))
                 }
                 NeumorphMenu(hostMenu, { hostMenu = false }) {
@@ -86,6 +84,9 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                         onClick = { hostMenu = false; onSelectHost(host.hostId) }) }
                 }
             }
+            Text(if (kind == "pi") L10n.tr("Pi 可以同时启用多个配置") else L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentBrand(kind).title, providers.size),
+                modifier = Modifier.weight(1f).testTag("provider-summary"), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         DualProviderDial(kind, providers, currentIndex, hostId, active,
             onKind = { next -> if (kind != next) { kind = next; previewId = "" } },
@@ -131,7 +132,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             state.providersForKind(selected.kind).any { it == selected }
         NeumorphDialog(onDismissRequest = { pending = null },
             title = { Text(L10n.tr("切换 {0} 到 {1}？", agentBrand(selected.kind).title, selected.name)) },
-            text = { Text(L10n.tr("将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。")) },
+            text = { Text(L10n.tr("切换后，电脑会重新加载 Agent。已有会话需要重新打开。")) },
             confirmButton = { NeumorphTextButton(L10n.tr("切换"), {
                 if (fresh) { pending = null; haptic(); onEnable(selected, expectedHost) }
             }, enabled = fresh) }, dismissButton = { NeumorphTextButton(L10n.tr("取消"), { pending = null }) })

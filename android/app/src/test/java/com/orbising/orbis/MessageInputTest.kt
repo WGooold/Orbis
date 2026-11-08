@@ -11,4 +11,13 @@ class MessageInputTest {
         assertNull(userMessageInputError("x".repeat(100_000)))
         assertNull(userMessageInputError("  你好 /help  "))
     }
+    @Test fun firstSessionNeedsTwoFreeLedgerSlotsAndSettledRowsDoNotConsumeCapacity() {
+        val ledger = OperationLedger<String>(capacity=2)
+        assertTrue(ledger.hasCapacity(2))
+        val occupied = ledger.create("old","send","old",policy=LedgerPolicy(),basis=emptyMap(),payload="old",written=false,now=0).first
+        assertTrue(occupied.hasCapacity())
+        assertFalse(occupied.hasCapacity(2))
+        val rejected = occupied.writeFailed("old","failed").ledger
+        assertTrue(rejected.hasCapacity(2))
+    }
 }
