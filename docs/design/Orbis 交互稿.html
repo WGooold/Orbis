@@ -693,6 +693,7 @@ button { font: inherit; color: inherit; }
 .ob-listrow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ob-listrow-sub { font-size: 13px; line-height: 20px; color: var(--ink-muted); }
 .ob-listrow-trail { display: flex; align-items: center; gap: var(--space-6); color: var(--ink-muted); font-size: 13px; line-height: 20px; }
+.ob-listrow-protocol { display: flex; align-items: center; gap: var(--space-6); color: var(--ink-muted); font-size: 13px; line-height: 20px; }
 .ob-listrow-action { display: inline-flex; align-items: center; gap: var(--space-6); color: var(--accent); font-size: 13px; line-height: 20px; font-weight: 600; background: none; border: 0; min-height: var(--touch-target); padding: 0 var(--space-4); cursor: pointer; }
 
 /* directory group (drawer) */
@@ -873,6 +874,8 @@ button { font: inherit; color: inherit; }
 .ob-draft-agent.is-on { box-shadow: var(--inset-sm); opacity: 1; filter: none; }
 .ob-draft-agent:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .ob-draft-name { font-size: 13px; line-height: 20px; font-weight: 600; color: var(--agent, var(--ink)); }
+.ob-draft-variant-trigger { display: inline-flex; align-items: center; gap: 4px; min-height: 32px; margin-left: auto; padding: 0 4px; border: 0; background: transparent; color: var(--agent, var(--ink)); font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.ob-draft-variant-trigger:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-xs); }
 .ob-draft-dir { display: inline-flex; align-items: center; gap: var(--space-6); align-self: flex-start; max-width: 100%; min-height: 32px; position: relative;
   padding: 0 var(--space-8); margin-left: calc(var(--space-8) * -1); border: 0; border-radius: var(--radius-xs); background: none; cursor: pointer;
   color: var(--ink-muted); font: inherit; font-size: 12px; line-height: 18px; }
@@ -897,8 +900,11 @@ button { font: inherit; color: inherit; }
 .ob-radio::after { content: ""; width: 10px; height: 10px; border-radius: var(--radius-full); background: var(--accent); transform: scale(0); transition: transform var(--dur-selection) var(--ease-pop); }
 .ob-radio.is-on::after { transform: scale(1); }
 
-/* ---------- choice list: one pick, each option explained ---------- */
+/* ---------- choice list: short choices with optional info ---------- */
 .ob-choices { display: flex; flex-direction: column; gap: var(--space-4); }
+.ob-choice-container { display: flex; flex-direction: column; min-width: 0; }
+.ob-choice-row { display: flex; align-items: center; gap: var(--space-4); }
+.ob-choice-row .ob-choice { flex: 1; }
 .ob-choice {
   display: flex; align-items: flex-start; gap: var(--space-12); width: 100%; min-height: var(--control-height); padding: var(--space-12);
   border: 0; border-radius: var(--radius-md); background: transparent; text-align: left; color: var(--ink); font: inherit; cursor: pointer;
@@ -939,7 +945,14 @@ button { font: inherit; color: inherit; }
 .ob-appear-tile:focus-visible .ob-appear-frame { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
 .ob-appear-name { display: flex; align-items: center; gap: var(--space-8); font-size: 15px; line-height: 24px; padding-left: var(--space-4); }
 .ob-appear-tile.is-on .ob-appear-name { color: var(--accent); font-weight: 600; }
-.ob-appear-note { font-size: 12px; line-height: 18px; font-weight: 400; color: var(--ink-muted); }
+.ob-appear-follow {
+  display: flex; align-items: center; gap: var(--space-12); width: 100%; min-height: var(--control-height); padding: 10px 14px;
+  border: 0; border-radius: var(--radius-md); background: var(--surface-base); box-shadow: var(--raised-sm); color: var(--ink); font: inherit; text-align: left;
+  cursor: pointer; transition: box-shadow var(--dur-selection) var(--ease-emphasized), color var(--dur-state) var(--ease-out);
+}
+.ob-appear-follow.is-on { box-shadow: var(--inset-sm); color: var(--accent); font-weight: 600; }
+.ob-appear-follow:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.ob-appear-follow-label { flex: 1; }
 .ob-appear-mat { display: flex; align-items: center; justify-content: space-between; gap: var(--space-12); min-height: var(--control-height); }
 .ob-appear-label { font-size: 15px; line-height: 24px; color: var(--ink); }
 .ob-appear-swatches { display: flex; gap: var(--space-16); }
@@ -1079,7 +1092,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
 .quota-cell.is-low .quota-num, .quota-cell.is-low .quota-unit { color: var(--danger); }
 .quota-cell.is-low .ob-progress-fill { background: var(--danger); }
 .quota-none { display: flex; align-items: center; gap: var(--space-6); justify-content: center; min-height: 112px; font-size: 13px; line-height: 20px; color: var(--ink-muted); }
-.prov-hint { display: flex; justify-content: space-between; font-size: 12px; line-height: 18px; color: var(--ink-muted); padding: 0 var(--space-4); }
+.prov-position { display: flex; justify-content: flex-end; font-size: 12px; line-height: 18px; color: var(--ink-muted); padding: 0 var(--space-4); }
 .tnum { font-variant-numeric: tabular-nums; }
 
 /* settings */
@@ -1466,16 +1479,20 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
     return h('div', { className: cx('ob-appear', p.className) },
       h('div', { className: 'ob-appear-tiles', role: 'radiogroup', 'aria-label': '浅色与深色' },
         [false, true].map(function (d) {
-          var on = dark === d;
+          var on = !follow && p.mode === (d ? 'dark' : 'light');
           return h('button', {
             key: String(d), type: 'button', role: 'radio', 'aria-checked': String(on), className: cx('ob-appear-tile', on ? 'is-on' : null),
             onClick: function () { setMode(d ? 'dark' : 'light'); }
           },
             h('span', { className: 'ob-appear-frame' }, h(ThemePreview, { theme: themeOf(p.material, d) })),
             h('span', { className: 'ob-appear-name' }, h('span', { className: cx('ob-radio', on ? 'is-on' : null), 'aria-hidden': 'true' }),
-              d ? '深色' : '浅色', on && follow ? h('span', { className: 'ob-appear-note' }, '跟随系统') : null));
+              d ? '深色' : '浅色'));
         })),
-      h(Switch, { row: true, label: '跟随系统', sub: '随手机的浅色与深色自动切换', checked: follow, onChange: function (v) { setMode(v ? 'system' : (dark ? 'dark' : 'light')); } }),
+      h('button', { type: 'button', role: 'radio', 'aria-checked': String(follow),
+        className: cx('ob-appear-follow', follow ? 'is-on' : null), onClick: function () { setMode('system'); } },
+        h(O.Icon, { name: 'settings', size: 'sm' }),
+        h('span', { className: 'ob-appear-follow-label' }, '跟随系统'),
+        follow ? h(O.Icon, { name: 'check', size: 'sm', label: '当前选择' }) : null),
       h('div', { className: 'ob-appear-mat' },
         h('span', { className: 'ob-appear-label' }, '材质'),
         h('span', { className: 'ob-appear-swatches', role: 'radiogroup', 'aria-label': '材质' },
@@ -1490,20 +1507,26 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
           }))));
   }
 
-  /* ---------- single choice with explanations ---------- */
+  /* ---------- single choice with optional, on-demand information ---------- */
   function ChoiceList(p) {
-    return h('div', { className: cx('ob-choices', p.className), role: 'radiogroup', 'aria-label': p.label },
-      p.options.map(function (o) {
-        var on = o.value === p.value;
-        return h('button', {
-          key: o.value, type: 'button', role: 'radio', 'aria-checked': String(on), className: cx('ob-choice', on ? 'is-on' : null),
-          onClick: function () { if (p.onChange) p.onChange(o.value); }
-        },
-          h('span', { className: cx('ob-radio', on ? 'is-on' : null), 'aria-hidden': 'true' }),
-          h('span', { className: 'ob-choice-main' },
-            h('span', { className: 'ob-choice-title' }, o.title, o.tag ? h('span', { className: 'ob-choice-tag' }, o.tag) : null),
-            o.sub ? h('span', { className: 'ob-choice-sub' }, o.sub) : null));
-      }));
+    var info = useState(null);
+    return h('div', { className: 'ob-choice-container' },
+      h('div', { className: cx('ob-choices', p.className), role: 'radiogroup', 'aria-label': p.label },
+        p.options.map(function (o) {
+          var on = o.value === p.value;
+          return h('div', { key: o.value, className: 'ob-choice-row' },
+            h('button', {
+              type: 'button', role: 'radio', 'aria-checked': String(on), className: cx('ob-choice', on ? 'is-on' : null),
+              onClick: function () { if (p.onChange) p.onChange(o.value); }
+            },
+              h('span', { className: cx('ob-radio', on ? 'is-on' : null), 'aria-hidden': 'true' }),
+              h('span', { className: 'ob-choice-main' },
+                h('span', { className: 'ob-choice-title' }, o.title, o.tag ? h('span', { className: 'ob-choice-tag' }, o.tag) : null),
+                o.sub ? h('span', { className: 'ob-choice-sub' }, o.sub) : null)),
+            o.info ? h(IconButton, { icon: 'info', size: 'xs', label: '查看说明', onClick: function () { info[1](o.info); } }) : null);
+        })),
+      info[0] ? h(Dialog, { title: info[0].title, children: info[0].message,
+        actions: h(Button, { variant: 'primary', onClick: function () { info[1](null); } }, '知道了') }) : null);
   }
 
   function ListGroup(p) {
@@ -1579,7 +1602,10 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
             return h('button', { key: a, type: 'button', role: 'radio', 'aria-checked': String(on), 'aria-label': AGENT_NAMES[a],
               className: cx('ob-draft-agent', on ? 'is-on' : null), onClick: function () { if (p.onAgent) p.onAgent(a); } }, h(AgentMark, { agent: a }));
           })),
-        h('span', { className: 'ob-draft-name' }, AGENT_NAMES[p.agent])),
+        p.agent === 'codex' ? h('button', { type: 'button', className: 'ob-draft-variant-trigger', 'aria-label': '选择 Codex 版本',
+          onClick: function (e) { if (p.onCodexMenu) p.onCodexMenu(e); } },
+          p.codexVariant === 'desktop' ? 'Codex 桌面版' : 'Codex 终端版', h(Icon, { name: 'keyboard_arrow_down', size: 'inline' }))
+          : h('span', { className: 'ob-draft-name' }, AGENT_NAMES[p.agent])),
       h('button', { type: 'button', className: 'ob-draft-dir', onClick: p.onDir, 'aria-label': '工作目录：' + (p.path || '') },
         h(Icon, { name: 'folder', size: 'inline' }), h('span', { className: 'ob-draft-path' }, p.path), h(Icon, { name: 'keyboard_arrow_down', size: 'inline' })),
       h('div', { className: 'ob-draft-row' },
@@ -1885,7 +1911,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
   var O = window.Orbis, h = React.createElement;
   var useState = React.useState, useEffect = React.useEffect, useRef = React.useRef;
   var NAMES = { pi: 'Pi', codex: 'Codex', deepseek: 'DeepSeek', claude: 'Claude Code' };
-  var MODELS = { pi: 'claude-sonnet · linkbus', codex: 'GPT-5.4 high', deepseek: 'DeepSeek-V4', claude: 'Opus · 官方订阅' };
+  var MODELS = { pi: 'claude-sonnet, linkbus', codex: 'GPT-5.4 high', deepseek: 'DeepSeek-V4', claude: 'Opus, 官方订阅' };
   var uid = 100;
 
   var SEED = [
@@ -1897,10 +1923,10 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
   ];
 
   var PROFILES = {
-    codex: [{ name: '本机配置', sub: 'ChatGPT 登录 · 官方', quota: [{ label: '5 小时', pct: 0.86, reset: '2 小时 14 分后重置' }, { label: '7 天', pct: 0.41, reset: '11 月 12 日 09:00 重置' }] }, { name: 'relay-b', sub: 'API Key · 自建中转' }, { name: 'openrouter', sub: 'API Key · OpenRouter' }, { name: 'azure', sub: 'Azure OpenAI · 团队' }],
+    codex: [{ name: '本机配置', sub: 'ChatGPT 登录，官方', quota: [{ label: '5 小时', pct: 0.86, reset: '2 小时 14 分后重置' }, { label: '7 天', pct: 0.41, reset: '11 月 12 日 09:00 重置' }] }, { name: 'relay-b', sub: 'API Key，自建中转' }, { name: 'openrouter', sub: 'API Key，OpenRouter' }, { name: 'azure', sub: 'Azure OpenAI，团队' }],
     claude: [{ name: '官方订阅', sub: 'Claude Max', quota: [{ label: '5 小时', pct: 0.63, reset: '3 小时 5 分后重置' }, { label: '7 天', pct: 0.18, reset: '11 月 10 日 21:00 重置' }] }, { name: 'bedrock', sub: 'AWS Bedrock' }, { name: 'vertex', sub: 'Google Vertex AI' }],
-    deepseek: [{ name: '官方 Web', sub: '浏览器会话 · 与桌面共享' }, { name: '开放平台', sub: 'API Key' }],
-    pi: [{ name: 'linkbus', sub: '多供应商 · 叠加启用' }, { name: 'anthropic', sub: 'API Key' }, { name: '本地 Ollama', sub: 'localhost:11434' }]
+    deepseek: [{ name: '官方 Web', sub: '浏览器会话，与桌面共享' }, { name: '开放平台', sub: 'API Key' }],
+    pi: [{ name: 'linkbus', sub: '多供应商，叠加启用' }, { name: 'anthropic', sub: 'API Key' }, { name: '本地 Ollama', sub: 'localhost:11434' }]
   };
 
   /* ---------- helpers ---------- */
@@ -1996,7 +2022,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
         h('span', { className: 'ob-sessioncard-main' },
           h('span', { className: 'ob-sessioncard-title' }, s.title),
           h('span', { className: 'ob-sessioncard-path' }, s.path),
-          h('span', { className: 'ob-sessioncard-meta' }, h(O.AgentLabel, { agent: s.agent, mark: false, status: s.status, statusTone: s.tone, syncing: s.syncing }))),
+          h('span', { className: 'ob-sessioncard-meta' }, h(O.AgentLabel, { agent: s.agent, name: s.agentLabel, mark: false, status: s.status, statusTone: s.tone, syncing: s.syncing }))),
         h(O.SelectionIndicator, { selected: !!p.selected, visible: !!p.selecting })));
   }
 
@@ -2013,14 +2039,14 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
         h(O.StatusPill, { tone: 'success', icon: 'lock' }, '局域网')),
       h('div', { className: 'list', 'data-drafting': p.draft ? 'true' : undefined },
         p.draft ? h('div', { key: 'draft', className: 'ob-draft-wrap', 'data-open': String(p.draft.open), ref: p.draftRef },
-          h('div', null, h(O.SessionDraft, { agent: p.draft.agent, path: p.draft.path, text: p.draft.text, phase: p.draft.phase, autoFocus: true,
-            onAgent: p.onDraftAgent, onText: p.onDraftText, onDir: p.onDraftDir, onSend: p.onDraftSend, onCancel: p.onDraftCancel }))) : null,
+          h('div', null, h(O.SessionDraft, { agent: p.draft.agent, codexVariant: p.draft.codexVariant, path: p.draft.path, text: p.draft.text, phase: p.draft.phase, autoFocus: true,
+            onAgent: p.onDraftAgent, onCodexMenu: p.onDraftCodexMenu, onText: p.onDraftText, onDir: p.onDraftDir, onSend: p.onDraftSend, onCancel: p.onDraftCancel }))) : null,
         p.sessions.map(function (s) {
           return h(Collapsible, { key: s.id, state: s.state || 'open' },
             h(SessionRow, { session: s, selecting: p.selecting, selected: p.selected.indexOf(s.id) >= 0,
               onOpen: p.onOpen, onLongPress: p.onLongPress, onSwipeClose: p.onSwipeClose }));
         })),
-      p.sessions.length ? h('p', { className: 'hint' }, '长按卡片多选 · 向左滑动关闭') :
+      p.sessions.length ? h('p', { className: 'hint' }, '长按卡片多选，向左滑动关闭') :
         h('div', { className: 'empty' }, h(O.Icon, { name: 'chat_bubble' }), h('div', { className: 'body-strong' }, '这台电脑上没有会话'), h('div', { className: 'ob-label' }, '点右上角 +，写下第一句话就开始')));
   }
 
@@ -2048,7 +2074,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
       h('div', { className: 'prov-top' },
         h('div', { className: 'prov-host' },
           h('span', { className: 'host-name' }, h(O.Icon, { name: 'computer', size: 'sm' }), 'workstation'),
-          h('span', { className: 'caption muted' }, additive ? 'Pi 可以同时启用多个配置' : NAMES[a] + ' · 电脑上保存的 ' + list.length + ' 个配置'))),
+          h('span', { className: 'caption muted' }, additive ? 'Pi 可以同时启用多个配置' : NAMES[a] + '，电脑上保存的 ' + list.length + ' 个配置'))),
       h(O.ProviderDial, { className: 'prov-dial', zoom: p.zoom, groups: groups, defaultGroup: DIAL_AGENTS.indexOf(a), defaultValue: browse, label: '供应商',
         onMoving: busy[1],
         onGroupChange: function (g, i) { p.onAgent(DIAL_AGENTS[g]); p.onBrowse(DIAL_AGENTS[g], i); },
@@ -2066,14 +2092,14 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
               }))
             : h('div', { className: 'quota-none' }, h(O.Icon, { name: 'info', size: 'inline' }), '这个配置不提供配额查询')),
         action,
-        h('div', { className: 'prov-hint' }, h('span', null, '里圈选 Agent，外圈选配置'), h('span', { className: 'tnum' }, (browse + 1) + ' / ' + list.length))));
+        h('div', { className: 'prov-position tnum' }, (browse + 1) + ' / ' + list.length)));
   }
 
   /* ---------- settings ---------- */
   var PROTOS = [
-    { value: 'auto', title: '自动', tag: '推荐', sub: '先用 QUIC；网络拦截 UDP 时自动换成 WebSocket。' },
-    { value: 'quic', title: 'QUIC', sub: '切换 Wi-Fi 与蜂窝、信号弱时恢复最快。部分公司网络会拦截。' },
-    { value: 'ws', title: 'WebSocket', sub: '兼容性最好，能穿过代理和大多数公司网络，切网时要重连。' }
+    { value: 'auto', title: '自动', tag: '推荐' },
+    { value: 'quic', title: 'QUIC', info: { title: 'QUIC', message: '当前网络不支持 QUIC 时无法连接' } },
+    { value: 'ws', title: 'WebSocket' }
   ];
   var PROTO_NAME = { auto: '自动', quic: 'QUIC', ws: 'WebSocket' };
   function Settings(p) {
@@ -2082,10 +2108,10 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
     return h('div', { className: 'page-pad stack-24' },
       h(O.ListGroup, { title: '连接' },
         h(O.ListRow, { leading: h('span', { className: 'conn-lead' }, h(O.Icon, { name: 'computer', size: 'sm' })),
-          title: 'workstation', sub: live ? '正在重新连接…' : '局域网 · ' + via + ' · 12 ms',
+          title: 'workstation', sub: live ? '正在重新连接…' : '局域网，' + via + '，12 ms',
           trailing: h(O.StatusPill, { tone: live ? 'accent' : 'success', syncing: live }, live ? '连接中' : '已连接') }),
-        h(O.ListRow, { title: '连接协议', sub: p.proto === 'auto' ? '自动 · 现在走 QUIC' : PROTO_NAME[p.proto], onClick: p.onOpenProto,
-          trailing: h(O.Icon, { name: 'chevron_right', size: 'sm' }) })),
+        h(O.ListRow, { title: '连接协议', onClick: p.onOpenProto,
+          trailing: h('span', { className: 'ob-listrow-protocol' }, PROTO_NAME[p.proto], h(O.Icon, { name: 'chevron_right', size: 'sm' })) })),
       h(O.ListGroup, { title: '外观' },
         h(O.AppearancePicker, { material: p.appearance, mode: p.mode, systemDark: p.systemDark, onMaterial: p.onAppearance, onMode: p.onMode })),
       h(O.ListGroup, { title: '语言' }, h(O.ListRow, { title: '跟随手机', sub: '简体中文', trailing: h(O.Icon, { name: 'chevron_right', size: 'sm' }) })));
@@ -2096,8 +2122,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
     return h(O.Sheet, { title: '连接协议' },
       h(O.ChoiceList, { label: '连接协议', value: v[0], options: PROTOS, onChange: v[1] }),
       h(O.Button, { size: 'block', variant: 'primary', disabled: same, icon: same ? 'check' : 'sync', onClick: function () { p.onApply(v[0]); } },
-        same ? '正在使用' : '改用 ' + PROTO_NAME[v[0]] + ' 并重新连接'),
-      h('p', { className: 'sheet-note' }, '切换会让正在进行的回复短暂停顿，连上后自动继续。'));
+        same ? '当前使用' : '切换到 ' + PROTO_NAME[v[0]] + ' 并重连'));
   }
 
   /* ---------- drawer ---------- */
@@ -2155,7 +2180,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
         h('p', { key: 1 }, '阅读旧消息时会保留当前位置，点击右下角按钮可以跳回最新消息。'),
         h(O.CodeBlock, { key: 2, lang: 'swift', code: 'let followsLatest = isNearBottom\nif followsLatest {\n    scrollToLatest()\n}' }),
         h(O.ToolGroup, { key: 3, duration: '8 秒', tools: [{ name: 'read', arg: 'ios/Orbis/Orbis/ChatView.swift' }, { name: 'edit', arg: 'ChatView.swift +12 −4' }, { name: 'bash', arg: 'swift test --filter Chat' }] })
-      ], footer: '用时 42 秒 · 改动 1 个文件' },
+      ], footer: '用时 42 秒，改动 1 个文件' },
       { id: 'u2', role: 'user', text: '草稿也按会话隔离吗？' },
       { id: 'a2', role: 'assistant', agent: agent, blocks: [h('p', { key: 1 }, '是的。草稿按电脑和会话隔离，返回目录后仍会保留；切换到别的会话再回来，输入框里的内容和光标位置都还在。')], footer: '用时 6 秒' }
     ];
@@ -2245,7 +2270,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
       h('div', { className: 'edge', onPointerDown: edgeDown, onPointerMove: edgeMove, onPointerUp: edgeUp, onPointerCancel: edgeUp, 'aria-hidden': 'true' }),
       h('div', { className: 'phone-top' }),
       h(O.TopBar, { onBack: p.onBack, agent: agent, titleNode: h('h1', null, s.title),
-        subtitle: [h(O.AgentLabel, { key: 'a', agent: agent, status: running[0] ? '运行中' : '空闲', statusTone: running[0] ? 'success' : 'idle', syncing: running[0] }), h('span', { key: 'm', className: 'ob-mono model' }, MODELS[agent])],
+        subtitle: [h(O.AgentLabel, { key: 'a', agent: agent, name: s.agentLabel, status: running[0] ? '运行中' : '空闲', statusTone: running[0] ? 'success' : 'idle', syncing: running[0] }), h('span', { key: 'm', className: 'ob-mono model' }, MODELS[agent])],
         actions: [h(O.IconButton, { key: 'h', icon: 'history', label: '历史与分支', onClick: p.onHistory }), h(O.IconButton, { key: 'd', icon: 'download', label: '下载', onClick: function () { p.toast({ tone: 'neutral', text: '这个会话还没有可下载的文件' }); } })] }),
       h('div', { className: 'chat-scroll', ref: scroller, onScroll: onScroll },
         h('div', { className: 'ob-chat chat-list' },
@@ -2330,7 +2355,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
     var menu = useState(null), toast = useState(null), sheet = useState(null), dialog = useState(null);
     var permission = useState('工作区写入');
     var proto = useState('auto'), conn = useState('connected');
-    var draft = useState(null), draftRef = useRef(null), lastDraft = useRef({ agent: 'codex', dir: 'orbis', text: '' });
+    var draft = useState(null), draftRef = useRef(null), lastDraft = useRef({ agent: 'codex', codexVariant: 'terminal', dir: 'orbis', text: '' });
     var chatMode = useState('push'), expandFrom = useState(null);
     var dialZoom = useState('1.6'), pAgent = useState('codex'), pCurrent = useState({ codex: 0, claude: 0, deepseek: 0, pi: [0] }), pBrowse = useState({ codex: 0, claude: 0, deepseek: 0, pi: 0 });
     var phoneRef = useRef(null), first = useRef(true);
@@ -2397,14 +2422,14 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
       if (tab[0] !== 'chat') tab[1]('chat');
       if (draft[0]) { if (dir) setDraft({ dir: dir, path: dirPath(dir) }); return; }
       var L = lastDraft.current, d = dir || L.dir;
-      draft[1]({ agent: L.agent, dir: d, path: dirPath(d), text: L.text, phase: 'slot', open: false });
+      draft[1]({ agent: L.agent, codexVariant: L.codexVariant || 'terminal', dir: d, path: dirPath(d), text: L.text, phase: 'slot', open: false });
       var still = reduced();
       nextFrame(function () { setDraft({ open: true }); });
       setTimeout(function () { setDraft({ phase: 'risen' }); }, still ? 0 : 200);
     }
     function cancelDraft() {
       var d = draft[0]; if (!d) return;
-      lastDraft.current = { agent: d.agent, dir: d.dir, text: d.text };     // half-written words are kept for next time
+      lastDraft.current = { agent: d.agent, codexVariant: d.codexVariant || 'terminal', dir: d.dir, text: d.text };     // half-written words are kept for next time
       setDraft({ phase: 'sink' });
       var still = reduced();
       setTimeout(function () { setDraft({ open: false }); }, still ? 0 : 200);
@@ -2417,8 +2442,9 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
       var r = el && ph ? (function () { var a = el.getBoundingClientRect(), b = ph.getBoundingClientRect(); return { t: a.top - b.top, l: a.left - b.left, r: b.right - a.right, b: b.bottom - a.bottom }; })() : null;
       var text = d.text.trim(), id = ++uid;
       var title = text.length > 22 ? text.slice(0, 22) + '…' : text;
-      var sess = { id: id, order: -id, agent: d.agent, title: title, path: d.path, status: '运行中', tone: 'success', syncing: true, state: 'open', firstText: text };
-      lastDraft.current = { agent: d.agent, dir: d.dir, text: '' };
+      var sess = { id: id, order: -id, agent: d.agent, agentLabel: d.agent === 'codex' ? (d.codexVariant === 'desktop' ? 'Codex 桌面版' : 'Codex 终端版') : undefined,
+        title: title, path: d.path, status: '运行中', tone: 'success', syncing: true, state: 'open', firstText: text };
+      lastDraft.current = { agent: d.agent, codexVariant: d.codexVariant || 'terminal', dir: d.dir, text: '' };
       expandFrom[1](r); chatMode[1](r && !reduced() ? 'expand' : 'push');
       toast[1](null); chat[1](sess); chatClosing[1](false); chatProg[1](0);
       nextFrame(function () { chatProg[1](1); });
@@ -2466,7 +2492,15 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
 
     var content = tab[0] === 'chat'
       ? h(Home, { sessions: sessions[0], selecting: selecting[0], selected: selected[0], onOpen: openChat, onLongPress: longPress, onSwipeClose: swipeClose,
-          draft: draft[0], draftRef: draftRef, onDraftAgent: function (a) { setDraft({ agent: a }); }, onDraftText: function (t) { setDraft({ text: t }); },
+          draft: draft[0], draftRef: draftRef, onDraftAgent: function (a) { setDraft({ agent: a }); },
+          onDraftCodexMenu: function (event) {
+            var variant = draft[0] ? draft[0].codexVariant || 'terminal' : 'terminal';
+            menu[1]({ rect: event.currentTarget.getBoundingClientRect(), items: [
+              { label: 'Codex 终端版', icon: variant === 'terminal' ? 'check' : null, onSelect: function () { setDraft({ codexVariant: 'terminal' }); } },
+              { label: 'Codex 桌面版', icon: variant === 'desktop' ? 'check' : null, onSelect: function () { setDraft({ codexVariant: 'desktop' }); } }
+            ] });
+          },
+          onDraftText: function (t) { setDraft({ text: t }); },
           onDraftDir: function () { sheet[1]('dir'); }, onDraftSend: sendDraft, onDraftCancel: cancelDraft, onNew: function () { openDraft(); } })
       : tab[0] === 'providers'
         ? h(Providers, { zoom: +(new URLSearchParams(location.search).get('zoom')) || parseFloat(dialZoom[0]), agent: pAgent[0], current: pCurrent[0], browse: pBrowse[0], onAgent: pAgent[1],
@@ -2542,7 +2576,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
   function tryItem(a, b) { return h('li', { key: a }, h('span', { className: 'body-strong' }, a), h('span', { className: 'ob-label' }, b)); }
 
   function DirSheet(p) {
-    var opts = DIRS.map(function (d) { return { value: d.name, title: d.name, sub: (d.name === 'wgooold' ? '/Users/wgooold' : '/Volumes/WD1TB/Orbis/' + d.name) + ' · ' + d.total + ' 个会话' }; });
+    var opts = DIRS.map(function (d) { return { value: d.name, title: d.name, sub: (d.name === 'wgooold' ? '/Users/wgooold' : '/Volumes/WD1TB/Orbis/' + d.name) + '，' + d.total + ' 个会话' }; });
     return h(O.Sheet, { title: '在哪个目录里开始' },
       h(O.ChoiceList, { label: '工作目录', value: p.value, options: opts, onChange: p.onPick }));
   }
@@ -2559,7 +2593,7 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
     var turns = [['第 3 轮', '草稿也按会话隔离吗？'], ['第 2 轮', '聊天输入和滚动也要保持一致。'], ['第 1 轮', '对齐移动端的使用体验']];
     return h(O.Sheet, { title: '历史与分支' },
       h(O.ListGroup, null, turns.map(function (t, i) {
-        return h(O.ListRow, { key: t[0], title: t[1], sub: t[0] + (i === 0 ? ' · 当前' : ''), trailing: i === 0 ? null : h(O.RowAction, { icon: 'history', onClick: p.onPick }, '回退') });
+        return h(O.ListRow, { key: t[0], title: t[1], sub: t[0] + (i === 0 ? '，当前' : ''), trailing: i === 0 ? null : h(O.RowAction, { icon: 'history', onClick: p.onPick }, '回退') });
       })));
   }
 
