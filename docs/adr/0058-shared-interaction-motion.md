@@ -4,13 +4,13 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC53、MOT-01–MOT-28 保留历史身份；本轮新增 SC54–SC60、M25–M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
+当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC67 复用 M03、M09 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
 
 复制反馈（M05 / SC23 / MOT-08）在复制图标与成功勾号之间双向淡入淡出并缩放，图标按钮、文字按钮及消息菜单复用固定图标槽；减少动画设置下直接切换，成功反馈生命周期沿用现有计时。实现见 [CopyFeedback.kt](../../android/app/src/main/java/com/orbising/orbis/CopyFeedback.kt) 与 [InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)，双向中间帧与尺寸回归见 [CopyFeedbackInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/CopyFeedbackInstrumentedTest.kt)。本次构建及自动验证证据保存在 `.artifacts/ui-regression/copy-glyph-transition/`；视觉效果待用户验证。
 
-下载反馈（M16 / UI-06）表示本地任务受理，复用共用视觉与生命周期，保持命中、布局和阅读稳定。返回来源见 [ADR-0054](0054-shared-full-page-navigation.md)；实现见 [DownloadFlight.kt](../../android/app/src/main/java/com/orbising/orbis/DownloadFlight.kt) 与 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)，回归见 [DownloadFlightInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFlightInstrumentedTest.kt) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
+下载反馈（M16 / UI-06）表示本地任务受理，复用共用视觉与生命周期，保持命中、布局和阅读稳定。返回来源见 [ADR-0054](0054-shared-full-page-navigation.md)；Android 聊天页及 iOS 聊天 / 历史页使用下载飞入，Android 历史页不再放置下载管理入口；实现见 [DownloadFlight.kt](../../android/app/src/main/java/com/orbising/orbis/DownloadFlight.kt) 与 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)，回归见 [DownloadFlightInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFlightInstrumentedTest.kt) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
 
 | 场景 | 作用 |
 | --- | --- |
@@ -74,6 +74,13 @@
 | SC58 | 单行目录树、状态 / 时间槽、目录末新建与阅读保持 |
 | SC59 | 40% 关闭上膛、回拖解除、未上膛快甩回弹 |
 | SC60 | 回复完成通知只由来源明确终态驱动，跨来源代次与重连保持去重 |
+| SC61 | 首页会话卡片固定行数，Codex 同时有终端版和桌面版时可明确选择 |
+| SC62 | 根级抽屉覆盖底部标签栏；供应商和设置的系统返回直接离开根页面 |
+| SC63 | 供应商双圈拖动保持独立，取消后恢复状态且点击无额外光晕 |
+| SC64 | 选择弹层适配可用高度、长内容可滚动、提交和取消均播放完整退场 |
+| SC65 | 设置文案保持简短，必要说明按 info 展开，跟随系统状态清晰可辨 |
+| SC66 | 历史与分支不提供下载管理入口，历史文件仍可下载 |
+| SC67 | 文件差异视图显示当前位置与已读总数或完整差异总数 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 
