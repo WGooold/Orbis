@@ -48,7 +48,8 @@ describe("device bandwidth console", () => {
     node("bandwidth-period").onchange!();
     expect(node("view-content").innerHTML).toContain("8.00 Mbps");
     runInContext('bandwidthDevice = "phone"; drawBandwidthTable();', context);
-    expect(node("bandwidth-history").innerHTML).toContain("回归手机 · 每日明细");
+    expect(node("bandwidth-history").innerHTML).toContain("回归手机 每日明细");
+    expect(node("bandwidth-history").innerHTML).not.toContain("·");
     expect(node("bandwidth-history").innerHTML).toContain("2026-11-04");
     expect(node("bandwidth-history").innerHTML).toContain("2026-11-05");
     node("search").oninput!({ target: { value: "tablet" } });

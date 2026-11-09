@@ -60,7 +60,7 @@ class LocalizationTest {
     }
 
     @Test fun hostUiCopyPreservesUnknownTextAndOpaqueValues() {
-        assertEquals("Workspace write · Ask when needed", L10n.hostSummary("工作区可写 · 按需询问", AppLanguage.English))
+        assertEquals("Workspace write, Ask when needed", L10n.hostSummary("工作区可写 · 按需询问", AppLanguage.English))
         assertEquals("选择此 Codex 会话的模型", L10n.hostText("Select the model for this Codex session", AppLanguage.Chinese))
         val path = "/工作区可写/设置 {1}/file.swift 100% 🧪"
         assertEquals("Native readable directories: $path.", L10n.hostText("原生报告的可读目录：$path。", AppLanguage.English))

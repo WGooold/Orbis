@@ -160,7 +160,7 @@ window.setupFilmDemo = function () {
       control($("#s2-sheet .round-btn"),"pair-reset","关闭扫码");
       control($("#s2-feed"),"scan-confirm","识别演示二维码");
       const note=document.createElement("p");note.className="film-pair-note";
-      note.textContent="演示二维码 · 不连接真实电脑";$("#s2-sheet").append(note);
+      note.textContent="演示二维码，不连接真实电脑";$("#s2-sheet").append(note);
       const reset=document.createElement("button");reset.type="button";reset.className="film-pair-reset raised";
       reset.textContent="重新配对";reset.dataset.action="pair-reset";$("#s2-chat").append(reset);
       $("#s2-ptxt").textContent="演示配对完成";

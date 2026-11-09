@@ -273,6 +273,7 @@ internal fun FileChangeViewerSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), dragHandle = null,
         modifier = Modifier.fillMaxHeight(0.96f).testTag("file-change-viewer"),
         containerColor = MaterialTheme.colorScheme.background, tonalElevation = 0.dp) {
+        val closeSheet = sheetCloseAction(onClose)
         Column(Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().padding(bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.fillMaxWidth().testTag("file-change-header")) {
@@ -280,7 +281,7 @@ internal fun FileChangeViewerSheet(
                     .background(MaterialTheme.colorScheme.outlineVariant, CircleShape))
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    NeumorphIconButton(onClick = onClose, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭文件差异"))
+                    NeumorphIconButton(onClick = closeSheet, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭文件差异"))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(L10n.tr("本轮文件差异"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                         Text(changeScopeLabel(viewer.summary.scope), style = MaterialTheme.typography.bodySmall,
@@ -356,6 +357,13 @@ private fun FileDiffPage(file: FileChangeMetadata, cache: FileDiffCache?, select
     val gutterDigits = projection.gutterDigits
     val gutterWidth = with(LocalDensity.current) { MaterialTheme.typography.bodySmall.fontSize.toDp() * (gutterDigits * 0.62f) }
     val state = remember(file.fileId) { LazyListState(cache?.scrollIndex ?: 0, cache?.scrollOffset ?: 0) }
+    val diffRows = remember(rows) { rows.indices.filter { rows[it].kind in setOf("addition", "deletion", "context") } }
+    val visibleDiffPosition by remember(state, diffRows) {
+        derivedStateOf {
+            val visibleIndex = state.layoutInfo.visibleItemsInfo.firstOrNull { diffRows.binarySearch(it.index) >= 0 }?.index
+            visibleIndex?.let { diffRows.binarySearch(it).let { position -> if (position >= 0) position + 1 else null } }
+        }
+    }
     val currentOnPosition by rememberUpdatedState(onPosition)
     DisposableEffect(state, file.fileId) { onDispose { currentOnPosition(state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset) } }
     LaunchedEffect(state, file.fileId) {
@@ -372,6 +380,12 @@ private fun FileDiffPage(file: FileChangeMetadata, cache: FileDiffCache?, select
     }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         DiffFileHeader(file)
+        if (visibleDiffPosition != null && diffRows.isNotEmpty()) {
+            val position = L10n.tr("差异行 {0} / {1}", visibleDiffPosition, diffRows.size)
+            Text(if (cache?.eof == false) L10n.tr("{0}（已读取）", position) else position,
+                Modifier.fillMaxWidth().testTag("file-diff-position"), style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End, maxLines = 1)
+        }
         NeumorphSurface(Modifier.fillMaxWidth().weight(1f), style = NeumorphStyle.Pressed,
             shape = RemoteUi.ControlShape, shadowScale = 0.4f) {
             if (rows.isEmpty()) Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {

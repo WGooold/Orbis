@@ -103,8 +103,8 @@ class OptimisticPresentationInstrumentedTest {
     @Test fun switchingShowsTheChosenModelWithItsMarkInTheSameSlot() {
         var label by mutableStateOf("默认模型")
         compose.setContent { OrbisTheme { ChatRuntimeStatus("idle", isChatSyncing = false, modelLabel = label, thinkingLevel = "high") } }
-        compose.runOnIdle { label = "快速模型 · 切换中" }
-        val node = compose.onNodeWithText("快速模型 · 切换中").assertIsDisplayed().fetchSemanticsNode()
+        compose.runOnIdle { label = "快速模型，切换中" }
+        val node = compose.onNodeWithText("快速模型，切换中").assertIsDisplayed().fetchSemanticsNode()
         // V05：沿用原槽位与省略规则（模型标签最宽 132dp）。
         val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
         assertTrue(node.boundsInRoot.width <= 132.dp.value * density + 1f)

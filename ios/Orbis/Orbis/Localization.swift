@@ -79,7 +79,8 @@ enum L10n {
         return value.components(separatedBy: "\n").map { line($0) ?? $0 }.joined(separator: "\n")
     }
     static func hostSummary(_ value: String, language: AppLanguage = AppLocalization.shared.language) -> String {
-        value.components(separatedBy: " · ").map { hostText($0, language: language) }.joined(separator: " · ")
+        value.components(separatedBy: " · ").map { hostText($0, language: language) }
+            .joined(separator: language == .english ? ", " : "，")
     }
     static func matches(_ value: String, source: String) -> Bool {
         value == source || value == LocalizationCatalog.english[source]

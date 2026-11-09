@@ -143,7 +143,7 @@ struct AgentStateTests {
         #expect(h.runtime.backgroundTasks?.items.first?.title == "检查完成")
         #expect(h.runtime.backgroundTasks?.items.last?.status == "waiting")
         #expect(h.runtime.backgroundTasks?.items.last?.parentId == "child")
-        #expect(h.runtime.backgroundTasks?.panelTitle == "子代理 · 3 项 · 清单不完整")
+        #expect(h.runtime.backgroundTasks?.panelTitle == "子代理 3 项，清单不完整")
         #expect(h.runtime.backgroundTasks?.allowsQuit == false)
         h.receive([domain("execution", NSNull(), revision: 3, availability: "unknown")])
         #expect(h.runtime.backgroundTasks?.truncated == false)

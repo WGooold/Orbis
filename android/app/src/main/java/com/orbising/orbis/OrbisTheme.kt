@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import android.app.Activity
+import android.graphics.drawable.ColorDrawable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +42,7 @@ internal fun OrbisSystemBars(surface: Color, darkTheme: Boolean) {
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
+            window.setBackgroundDrawable(ColorDrawable(surface.toArgb()))
             window.statusBarColor = surface.toArgb()
             window.navigationBarColor = surface.toArgb()
             WindowCompat.getInsetsController(window, view).apply {

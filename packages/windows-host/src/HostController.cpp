@@ -391,7 +391,7 @@ void HostController::checkProvider(const QString &id) {
         if (kind != m_providerKind) return;
         const auto result = value.toObject();
         const bool failed = result.value("status").toString() == "failed";
-        emit providerInfoReady("端点连通性", failed ? "端点无法连接或请求超时" : QString("端点可达 · %1 ms · HTTP %2\n此检查不验证 API Key 或模型权限。").arg(result.value("latencyMs").toInt()).arg(result.value("httpStatus").toInt()));
+        emit providerInfoReady("端点连通性", failed ? "端点无法连接或请求超时" : QString("端点可达，%1 ms，HTTP %2\n此检查不验证 API Key 或模型权限。").arg(result.value("latencyMs").toInt()).arg(result.value("httpStatus").toInt()));
     });
 }
 void HostController::querySubscription(const QString &id) {

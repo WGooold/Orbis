@@ -185,6 +185,25 @@ class DesignAlignmentInstrumentedTest {
         compose.runOnIdle { assertEquals("codexDesktop",submitted) }
     }
 
+    /** S40 / SC61: choosing Codex with both targets available asks which one to launch. */
+    @Test fun tappingCodexOpensAnExplicitTerminalOrDesktopChoice() {
+        var submitted: String? = null
+        val agents = setOf("codex", "codexDesktop", "claude", "dsh", "pi")
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(ready().copy(supportedAgents = agents, launchableAgents = agents), true,
+                "/Projects/orbis", {}, {}, {}) { kind, _, _, _, _ -> submitted = kind; true }
+        } }
+        compose.onNodeWithText("Codex 终端版").assertIsDisplayed()
+        compose.onNodeWithTag("draft-codex-version").performClick()
+        compose.onAllNodesWithText("Codex 终端版").onLast().assertIsDisplayed()
+        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
+        compose.onNodeWithText("Codex 桌面版").performClick()
+        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
+        compose.onNode(hasSetTextAction()).performTextInput("首句")
+        compose.onNodeWithTag("draft-send").performClick()
+        compose.runOnIdle { assertEquals("codexDesktop", submitted) }
+    }
+
     /** S35: the inline card and flat directory remain usable on the smallest supported phone. */
     @Test fun narrowDraftKeepsThePathAgentTargetsAndSendInsideItsCard() {
         compose.setContent { OrbisTheme {
@@ -283,6 +302,7 @@ class DesignAlignmentInstrumentedTest {
             compose.onNodeWithTag("protocol-apply").assertIsNotEnabled()
             androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
             compose.waitForIdle()
+            compose.waitUntil(2_000) { compose.onAllNodesWithTag("orbis-choice-sheet").fetchSemanticsNodes().isEmpty() }
             capture("settings-density-$value")
         }
     }

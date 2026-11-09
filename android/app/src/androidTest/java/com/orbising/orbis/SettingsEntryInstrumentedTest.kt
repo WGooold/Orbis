@@ -27,7 +27,8 @@ class SettingsEntryInstrumentedTest {
     private fun pairing(id: String, name: String) = HostPairing(id, name, "test-public", "test-root",
         relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
 
-    @Test fun headerKeepsOnlyRightAlignedDownloadAndTheCapsuleIsNotAnEntry() {
+    /** Home keeps its download and new-session actions; history-specific download access is covered separately. */
+    @Test fun homeKeepsDownloadAndNewSessionActionsAndTheCapsuleIsNotAnEntry() {
         val state = RemoteState(hostId = "host", e2eReady = true, connection = RelayConnection.ONLINE,
             runtimes = mapOf("one" to RuntimeSummary("one", "one", "/repo", "idle", sessionId = "one", agentKind = "pi",
                 domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready"))))
@@ -47,11 +48,12 @@ class SettingsEntryInstrumentedTest {
         compose.onNodeWithTag("home-settings").assertDoesNotExist()
         compose.onNodeWithContentDescription("设置").assertDoesNotExist()
         val download = compose.onNodeWithContentDescription("打开下载").assertIsDisplayed()
-        val rootBounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
         val downloadBounds = download.fetchSemanticsNode().boundsInRoot
+        val newSessionBounds = compose.onNodeWithTag("home-new-session").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val rootBounds = compose.onRoot().fetchSemanticsNode().boundsInRoot
         val maximumInset = with(compose.density) { 16.dp.toPx() }
-        assertTrue("Download must occupy the trailing header action, without a settings-sized gap",
-            rootBounds.right - downloadBounds.right in 0f..maximumInset)
+        assertTrue("Download precedes the trailing new-session action", downloadBounds.left < newSessionBounds.left)
+        assertTrue("New session occupies the trailing header action", rootBounds.right - newSessionBounds.right in 0f..maximumInset)
         download.performClick()
         assertEquals(1, downloads)
         // The capsule reports the connection as one status and takes no clicks.
@@ -68,8 +70,8 @@ class SettingsEntryInstrumentedTest {
     @Test fun rootSettingsPutConnectionFirstAndHaveNoProviderOrComputerEntries() = settingsOrder(dark = false)
     @Test fun darkRootSettingsKeepConnectionFirstAndHaveNoProviderEntry() = settingsOrder(dark = true)
 
-    @Test fun lightSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = false)
-    @Test fun darkSettingsRemoveThemeChoicesAndUseUnifiedMaterial() = noAppearanceSwitch(dark = true)
+    @Test fun lightSettingsShowTheThreeAppearanceModes() = appearanceChoices(dark = false)
+    @Test fun darkSettingsShowTheThreeAppearanceModes() = appearanceChoices(dark = true)
 
     @Test fun languageSwitchUpdatesSettingsAndPersistsWithoutReplacingThePage() {
         val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
@@ -84,7 +86,10 @@ class SettingsEntryInstrumentedTest {
                 OrbisTheme { StatusScreen(RemoteState(hostId = "host", hostName = "设置 / 原文"), model,
                     model.pairingStatus(), onBack = { back++ }) }
             }
-            compose.onNodeWithTag("language-en").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithTag("settings-language").performScrollTo().performClick()
+            listOf("system", "zh-Hans", "en").forEach { compose.onNodeWithTag("language-$it").assertIsDisplayed() }
+            compose.onNodeWithTag("language-en").performClick()
+            compose.waitUntil(2_000) { compose.onAllNodesWithTag("orbis-choice-sheet").fetchSemanticsNodes().isEmpty() }
             compose.onNodeWithText("Settings").assertIsDisplayed()
             compose.onNodeWithText("Follow system").assertIsDisplayed()
             assertEquals(0, back)
@@ -96,7 +101,9 @@ class SettingsEntryInstrumentedTest {
             }
             capture("language-settings-english")
             compose.onNodeWithText("设置 / 原文").performScrollTo().assertIsDisplayed()
-            compose.onNodeWithTag("language-zh-Hans").performScrollTo().performClick().assertIsSelected()
+            compose.onNodeWithTag("settings-language").performScrollTo().performClick()
+            compose.onNodeWithTag("language-zh-Hans").assertIsDisplayed().performClick()
+            compose.waitUntil(2_000) { compose.onAllNodesWithTag("orbis-choice-sheet").fetchSemanticsNodes().isEmpty() }
             compose.onNodeWithText("设置").assertIsDisplayed()
             compose.onNodeWithText("跟随系统").assertIsDisplayed()
             capture("language-settings-chinese")
@@ -128,13 +135,19 @@ class SettingsEntryInstrumentedTest {
                     }
                 }
             }
-            compose.onNodeWithText("End-to-end encryption").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("settings-protocol").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("settings-language").performScrollTo().performClick()
             for (key in listOf("system", "zh-Hans", "en")) {
-                val choice = compose.onNodeWithTag("language-$key").performScrollTo()
+                val choice = compose.onNodeWithTag("language-$key")
                 choice.assertIsDisplayed()
                 assertTrue(choice.fetchSemanticsNode().boundsInRoot.height >= 48)
             }
-            capture("language-english-dark-large-type")
+            val sheet = compose.onNodeWithTag("orbis-choice-sheet").fetchSemanticsNode().boundsInRoot
+            val lastChoice = compose.onNodeWithTag("language-en").fetchSemanticsNode().boundsInRoot
+            assertTrue("Last language choice must stay inside the visible sheet", lastChoice.bottom <= sheet.bottom)
+            capture("language-english-dark-large-type", wholeWindow = true)
+            compose.onNodeWithTag("language-en").performClick()
+            compose.waitUntil(2_000) { compose.onAllNodesWithTag("orbis-choice-sheet").fetchSemanticsNodes().isEmpty() }
         } finally {
             AppLocalization.select(AppLanguage.Chinese)
             owner.clear()
@@ -159,10 +172,11 @@ class SettingsEntryInstrumentedTest {
                     "isolated-command"
                 }) }
             }
-            compose.onNodeWithText("Workspace write · Ask when needed").performClick()
+            compose.onNodeWithText("Workspace write, Ask when needed").performClick()
+            compose.onNodeWithTag("session-control-sheet").assertIsDisplayed()
             compose.onNodeWithText("File access scope").assertIsDisplayed()
             compose.onNodeWithText("Network: access allowed.\nVendor-only detail").assertIsDisplayed()
-            compose.onNodeWithText("○ Workspace write").performClick()
+            compose.onNodeWithText("Workspace write").performScrollTo().performClick()
             compose.onNodeWithText(L10n.tr("应用到当前会话")).performClick()
             compose.runOnIdle { assertEquals("vendor-scope" to "opaque-B", applied) }
             compose.onNodeWithText("Current session permissions").assertIsDisplayed()
@@ -188,7 +202,8 @@ class SettingsEntryInstrumentedTest {
         }
     }
 
-    private fun noAppearanceSwitch(dark: Boolean) {
+    /** S44 / SC65: appearance states stay explicit and the system choice has no helper copy. */
+    private fun appearanceChoices(dark: Boolean) {
         val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "settings")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
@@ -201,10 +216,11 @@ class SettingsEntryInstrumentedTest {
                     StatusScreen(RemoteState(hostId = "host", hostName = "Work"), model, model.pairingStatus(), onBack = {})
                 }
             }
-            compose.onNodeWithText("外观").assertDoesNotExist()
-            compose.onNodeWithText("经典").assertDoesNotExist()
-            compose.onNodeWithText("雾蓝").assertDoesNotExist()
-            compose.onNodeWithText("语言").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("外观").assertIsDisplayed()
+            compose.onNodeWithTag("appearance-light").assertIsDisplayed()
+            compose.onNodeWithTag("appearance-dark").assertIsDisplayed()
+            compose.onNodeWithTag("appearance-system").assertIsDisplayed()
+            compose.onNodeWithTag("settings-language").performScrollTo().assertIsDisplayed()
             assertEquals(orbisMaterialColors(dark).base, surface)
             capture(if (dark) "settings-unified-dark" else "settings-unified-light")
         } finally {
@@ -229,8 +245,10 @@ class SettingsEntryInstrumentedTest {
             compose.onNodeWithContentDescription("返回").assertDoesNotExist()
             compose.onNodeWithText("Agent 供应商").assertDoesNotExist()
             capture(if (dark) "settings-dark" else "settings-light")
-            compose.onNodeWithText("当前连接").assertIsDisplayed()
+            compose.onNodeWithText("连接").assertIsDisplayed()
             compose.onNodeWithText("连接协议").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("settings-protocol").assertTextContains("自动")
+            compose.onNodeWithTag("settings-protocol").performClick()
             compose.onNodeWithTag("relay-mode-WS").assertIsDisplayed()
             compose.onNodeWithTag("relay-mode-AUTO").performScrollTo().assertIsSelected()
             compose.onNodeWithTag("relay-mode-WS").assertIsNotSelected()
@@ -240,23 +258,13 @@ class SettingsEntryInstrumentedTest {
             compose.runOnIdle { state.value = state.value.copy(relayTransportMode = RelayTransportMode.QUIC) }
             compose.onNodeWithTag("relay-mode-QUIC").assertIsSelected()
             compose.runOnIdle { state.value = state.value.copy(relayTransportMode = RelayTransportMode.AUTO) }
-            compose.onNodeWithText("连接延迟").performScrollTo().assertIsDisplayed()
-            compose.onNodeWithText("42 ms").assertIsDisplayed()
-            val latencyTop = compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top
-            capture(if (dark) "settings-latency-dark" else "settings-latency-light")
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().uiAutomation
+                .performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+            compose.waitForIdle()
+            compose.onNodeWithText("自动").assertIsDisplayed()
             compose.runOnIdle { state.value = state.value.copy(path = "relay", pathRttMs = 137L) }
-            compose.onNodeWithTag("relay-mode-QUIC").assertIsDisplayed()
-            compose.onNodeWithText("137 ms").assertIsDisplayed()
-            assertEquals(latencyTop, compose.onNodeWithText("连接延迟").fetchSemanticsNode().boundsInRoot.top, 1f)
-            compose.runOnIdle { state.value = state.value.copy(pathRttMs = null) }
-            compose.onNodeWithText("暂不可用").assertIsDisplayed()
-            compose.runOnIdle { state.value = state.value.copy(e2eReady = false, pathRttMs = 137L) }
-            compose.onAllNodesWithText("暂不可用").assertCountEquals(2)
-            compose.runOnIdle { state.value = state.value.copy(e2eReady = true, pathRttMs = 42L) }
-            compose.onNodeWithText("配对信息").performScrollTo()
-            val pairing = compose.onNodeWithText("配对信息").fetchSemanticsNode().positionInRoot.y
+            compose.onNodeWithText("中继").assertIsDisplayed()
             compose.onNodeWithText("Agent 供应商").assertDoesNotExist()
-            assertTrue(compose.onNodeWithText("当前连接").fetchSemanticsNode().positionInRoot.y < pairing)
             compose.onAllNodesWithText("已配对电脑").assertCountEquals(0)
             compose.onAllNodesWithText("添加电脑").assertCountEquals(0)
             // Advice may name where to unpair; there is no unpair action on this page.

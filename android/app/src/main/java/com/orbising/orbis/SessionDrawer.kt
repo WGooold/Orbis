@@ -725,7 +725,7 @@ private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runt
     otherProvider: String?, onOpenSession: () -> Unit, onOpenHistory: () -> Unit, selecting: Boolean,
     selected: Boolean, archiveUnavailableReason: String?, onToggleSelection: () -> Unit, onBeginSelection: () -> Unit) {
     NeumorphSurface(Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
-        .semantics(mergeDescendants = true) { this.selected = selected; if (otherProvider != null) contentDescription = "${row.title} · $otherProvider" },
+        .semantics(mergeDescendants = true) { this.selected = selected; if (otherProvider != null) contentDescription = L10n.tr("{0}，{1}", row.title, otherProvider) },
         selectionSelected = selected, selectionMode = selecting, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
         shadowScale = 0.4f, flat = true, onClick = {
             if (selecting) onToggleSelection() else if (!row.isArchived) onOpenSession()

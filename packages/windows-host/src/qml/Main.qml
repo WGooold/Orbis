@@ -593,7 +593,7 @@ ApplicationWindow {
                     StatusDot { color: host.state === "connected" ? Theme.success : (host.state === "connecting" || host.state === "reconnecting") ? Theme.warning : Theme.inkFaint; idle: host.state === "stopped"; syncing: host.state === "connecting" || host.state === "reconnecting" }
                     Label { text: stateText(); color: Theme.inkMuted; font.pixelSize: Theme.caption }
                 }
-                Label { text: Qt.platform.os === "osx" ? "macOS · v" + host.version : "Windows · v" + host.version; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.bottomMargin: 10 }
+                Label { text: Qt.platform.os === "osx" ? "macOS v" + host.version : "Windows v" + host.version; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.bottomMargin: 10 }
             }
         }
         ColumnLayout {
@@ -791,7 +791,7 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 20
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 8
-                                        Heading { text: modelData.label || "手机 · " + modelData.deviceId.slice(0, 8); font.pixelSize: Theme.body }
+                                        Heading { text: modelData.label || "手机（" + modelData.deviceId.slice(0, 8) + "）"; font.pixelSize: Theme.body }
                                         Hint { text: "连接方式：" + (({lan: "局域网直连", relay: "中继", offline: "离线"})[modelData.path || "offline"]) }
                                         Hint { text: modelData.lastSeen ? "最近连接：" + new Date(modelData.lastSeen).toLocaleString(Qt.locale(), "MM-dd hh:mm") : "配对时间：" + new Date(modelData.createdAt * 1000).toLocaleDateString(); font.pixelSize: Theme.caption }
                                         Hint { visible: modelData.androidUpdateAvailable; text: "Android " + modelData.appVersion + " → " + modelData.latestAndroidVersion; color: Theme.warning }
@@ -812,10 +812,10 @@ ApplicationWindow {
                         }
                         RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
                             BusyIndicator { running: visible; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
-                            Hint { text: window.agentName(host.agentInstallKind) + " · " + window.installationStage() + " · " + host.agentInstallVersion; Layout.fillWidth: true }
+                            Hint { text: window.agentName(host.agentInstallKind) + "，" + window.installationStage() + "，" + host.agentInstallVersion; Layout.fillWidth: true }
                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                         }
-                        DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " · 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
+                        DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         Repeater {
                             model: host.agents
                             delegate: Card {
@@ -827,9 +827,9 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         Heading { text: window.agentName(modelData.kind); color: Theme.agent(modelData.kind) }
                                         Item { Layout.fillWidth: true }
-                                        Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装 · 需要修复" : "尚未安装"; color: modelData.installed ? Theme.success : Theme.inkMuted }
+                                        Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装（需要修复）" : "尚未安装"; color: modelData.installed ? Theme.success : Theme.inkMuted }
                                     }
-                                    Hint { text: "当前 " + (modelData.version || "—") + " · 最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? " · 有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? Theme.warning : Theme.inkMuted }
+                                    Hint { text: "当前 " + (modelData.version || "—") + "，最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? Theme.warning : Theme.inkMuted }
                                     Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: Theme.warning }
                                     Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
                                     RowLayout {
@@ -863,7 +863,7 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true
                             ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
-                            Heading { text: ({pi: "Pi", codex: "Codex", claude: "Claude Code", dsh: "DeepSeek Harness"})[host.providerKind] + " · 供应商" }
+                            Heading { text: ({pi: "Pi", codex: "Codex", claude: "Claude Code", dsh: "DeepSeek Harness"})[host.providerKind] + " 供应商" }
                             Item { Layout.fillWidth: true }
                         }
                         Flow {
@@ -910,7 +910,7 @@ ApplicationWindow {
                                     }
                                     ColumnLayout { Layout.fillWidth: true
                                         Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? " · Pi 全局默认" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
+                                        Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? "（Pi 全局默认）" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
                                         Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
                                     }
                                     ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { if (modelData.enabled) { window.removeProviderId = modelData.id; removeProviderDialog.open() } else host.switchProvider(modelData.id, true) } }
@@ -957,7 +957,7 @@ ApplicationWindow {
                                             RowLayout {
                                                 Layout.alignment: Qt.AlignHCenter; spacing: 8
                                                 Rectangle { width: 18; height: 18; radius: 9; color: "transparent"; border.width: 1.5; border.color: appearanceOption.chosen ? Theme.accent : Theme.inkMuted; Rectangle { anchors.centerIn: parent; width: 8; height: 8; radius: 4; visible: appearanceOption.chosen; color: Theme.accent } }
-                                                Label { text: (appearanceOption.previewDark ? "深色" : "浅色") + (appearanceOption.chosen && Theme.preferences.mode === "system" ? " · 跟随系统" : ""); color: appearanceOption.chosen ? Theme.accent : Theme.inkMuted; font.pixelSize: Theme.label; font.weight: appearanceOption.chosen ? Font.DemiBold : Font.Normal }
+                                                Label { text: (appearanceOption.previewDark ? "深色" : "浅色") + (appearanceOption.chosen && Theme.preferences.mode === "system" ? "（跟随系统）" : ""); color: appearanceOption.chosen ? Theme.accent : Theme.inkMuted; font.pixelSize: Theme.label; font.weight: appearanceOption.chosen ? Font.DemiBold : Font.Normal }
                                             }
                                         }
                                         padding: 12
@@ -1133,7 +1133,7 @@ ApplicationWindow {
         id: installDialog; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: window.installAgentData.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canInstallAgents && !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + " · 最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
+            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
         }
@@ -1144,7 +1144,7 @@ ApplicationWindow {
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
-            DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " · 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
+            DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
             Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.installAllAgents("update")
@@ -1399,7 +1399,7 @@ ApplicationWindow {
         onDiscarded: { discardProviderDialog.close(); window.closeProviderEditor() }
     }
     SoftDialog {
-        id: oauthDialog; title: "Codex · ChatGPT 账号"; anchors.centerIn: parent; modal: true; width: 700; height: 560
+        id: oauthDialog; title: "Codex（ChatGPT 账号）"; anchors.centerIn: parent; modal: true; width: 700; height: 560
         contentItem: ScrollView { clip: true; contentWidth: availableWidth
             ColumnLayout { width: oauthDialog.width - 44; spacing: 12
                 RowLayout {
@@ -1416,7 +1416,7 @@ ApplicationWindow {
                 }
                 Repeater { model: window.oauthAccounts
                     delegate: ColumnLayout { required property var modelData; Layout.fillWidth: true
-                        Label { text: (modelData.email || modelData.workspace) + (modelData.isDefault ? " · 默认账号" : ""); color: Theme.ink; font.bold: true }
+                        Label { text: (modelData.email || modelData.workspace) + (modelData.isDefault ? "（默认账号）" : ""); color: Theme.ink; font.bold: true }
                         Hint { text: modelData.workspace; Layout.fillWidth: true }
                         RowLayout {
                             ActionButton { text: "设为默认"; enabled: !host.busy && !modelData.isDefault; onClicked: host.oauthAccount("default", modelData.id) }
@@ -1470,7 +1470,7 @@ ApplicationWindow {
                     SoftCheckBox {
                         required property var modelData; required property int index
                         objectName: "discoveredModel-" + modelData.id; marksProviderDirty: false
-                        text: modelData.name === modelData.id ? modelData.id : modelData.name + " · " + modelData.id
+                        text: modelData.name === modelData.id ? modelData.id : modelData.name + "（" + modelData.id + "）"
                         checked: modelData.selected; ButtonGroup.group: window.singleModelSelection ? discoveredModelGroup : null
                         onToggled: {
                             if (checked && window.singleModelSelection) window.fetchedModels.forEach(function(model, position) { model.selected = position === index })

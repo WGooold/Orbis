@@ -24,9 +24,12 @@ class HomeMaterialInstrumentedTest {
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         val kinds = listOf("pi", "codex", "dsh", "claude")
         val state = RemoteState(hostId = "home-material", connection = RelayConnection.ONLINE, e2eReady = true,
-            runtimes = kinds.associateWith { kind ->
-                RuntimeSummary(kind, "Review $kind", "/repo/workspace", "idle", sessionId = kind, agentKind = kind,
-                    domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready"))
+            runtimes = kinds.withIndex().associate { (index, kind) ->
+                val title = if (index == 0) "Short title" else "A very long session title that must wrap and then ellipsize consistently across every home card"
+                kind to RuntimeSummary(kind, title, if (index == 1) "/a/very/long/project/path/that/keeps/its/final/directory" else "/repo/workspace",
+                    if (index == 2) "running" else "idle", sessionId = kind, sessionName = title,
+                    model = RuntimeModelInfo("test", "model-$index", "A model name that is deliberately much longer than the available card width"),
+                    agentKind = kind, domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready"))
             }).withReadyHomeFixture()
         val hosts = listOf(HostSnapshot(pairing, state),
             HostSnapshot(pairing.copy(hostId = "backup-material", hostName = "Backup Host"), RemoteState(hostId = "backup-material")))
@@ -43,9 +46,11 @@ class HomeMaterialInstrumentedTest {
         val image = compose.onRoot().captureToImage().asAndroidBitmap()
         // The uninterrupted left gutter must use the same base as the approved drawer.
         assertEquals(expected, image.getPixel(2, image.height / 2))
+        // S40 / SC61: title, path, model, and status reserve the same rows across all home cards.
         val bounds = kinds.associateWith { compose.onNodeWithTag("home-runtime-$it").fetchSemanticsNode().boundsInRoot }
+        assertEquals("Home cards reserve the same title, path, model, and status rows", 1, bounds.values.map { it.height }.toSet().size)
         capture(dark, "resting")
-        for (brand in listOf("Pi", "Codex", "DeepSeek", "Claude Code")) compose.onNodeWithText(brand).assertIsDisplayed()
+        for (kind in kinds) compose.onNodeWithTag("home-runtime-$kind").assertIsDisplayed()
         // The retained closed drawer has the same host name offscreen; target the home control.
         compose.onNode(hasText("Test Host") and hasAnyAncestor(hasTestTag("drawer-panel")).not()).performClick()
         compose.onNodeWithText("Backup Host").assertIsDisplayed()

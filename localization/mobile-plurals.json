@@ -6,7 +6,7 @@
   "{0} 个会话（部分）": "{0} session (partial)",
   "{0} 个匹配节点": "{0} matching node",
   "{0} 个子任务{1}": "{0} subtask{1}",
-  "{0} 个子代理{1}": "{0} subagent · {1}",
+  "{0} 个子代理{1}": "{0} subagent, {1}",
   "子代理 · {0} 项": "Subagent · {0}",
   "子代理 · {0} 项 · 清单不完整": "Subagent · {0} · Incomplete list",
   "子代理 · {0} 项 · 状态待核对": "Subagent · {0} · Status unconfirmed",
@@ -34,5 +34,10 @@
   "耗时 {0} 秒": "Duration {0} second",
   "运行中 · {0} 个子任务": "Running · {0} subtask",
   "还有 {0} 个文件": "{0} more file",
-  "{0} 次工具调用": "{0} tool call"
+  "{0} 次工具调用": "{0} tool call",
+  "子代理 {0} 项": "{0} subagent",
+  "子代理 {0} 项，清单不完整": "{0} subagent, incomplete list",
+  "子代理 {0} 项，状态待核对": "{0} subagent, status unconfirmed",
+  "运行中，{0} 个子任务": "Running, {0} subtask",
+  "{0} 个配置": "{0} profile"
 }

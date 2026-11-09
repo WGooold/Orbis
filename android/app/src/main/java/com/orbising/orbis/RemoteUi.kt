@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
@@ -45,6 +47,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 
 /** 页面、控件与内容共用的尺寸规范；阴影不参与这些尺寸的计算。 */
@@ -126,16 +129,19 @@ internal fun NeumorphDialog(
     val entrance = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { entrance.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Panel))) }
+    val maxDialogHeight = (LocalConfiguration.current.screenHeightDp.dp - 48.dp).coerceAtLeast(160.dp)
     BasicAlertDialog(onDismissRequest = { scope.launch {
         entrance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Exit))); onDismissRequest()
-    } }, properties = properties, modifier = Modifier.padding(vertical = 12.dp).graphicsLayer {
+    } }, properties = properties, modifier = Modifier.padding(vertical = 12.dp).heightIn(max = maxDialogHeight).graphicsLayer {
         alpha = entrance.value; scaleX = 0.96f + 0.04f * entrance.value; scaleY = scaleX
     }) {
         CompositionLocalProvider(LocalOrbisSurface provides null) {
             NeumorphSurface(shape = shape, shadowScale = 1.1f, contentPadding = 16.dp) {
-                Column(Modifier, verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                Column(Modifier.heightIn(max = maxDialogHeight), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                     ProvideTextStyle(MaterialTheme.typography.titleLarge, title)
-                    Box(Modifier.weight(1f, fill = false)) { ProvideTextStyle(MaterialTheme.typography.bodyMedium, text) }
+                    Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                        ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
+                    }
                     FlowRow(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),

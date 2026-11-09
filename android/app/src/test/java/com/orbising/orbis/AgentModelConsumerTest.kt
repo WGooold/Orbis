@@ -57,7 +57,7 @@ class AgentModelConsumerTest {
         assertEquals("检查完成", tasks.items.first().title)
         assertEquals("waiting", tasks.items.last().status)
         assertEquals("child", tasks.items.last().parentId)
-        assertEquals("子代理 · 3 项 · 清单不完整", tasks.panelTitle)
+        assertEquals("子代理 3 项（清单不完整）", tasks.panelTitle)
         assertFalse(tasks.allowsQuit)
         state = receive(state, domain("execution", "null", 3, availability = "unknown"))
         val stale = state.runtimes.getValue("runtime").backgroundTasks!!

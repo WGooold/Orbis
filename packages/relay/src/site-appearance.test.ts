@@ -51,18 +51,22 @@ function harness(stored: string | null = null, storageDenied = false, reducedMot
       getComputedStyle: () => ({ getPropertyValue: () => "#e6ebf4" }),
     },
   });
-  return { root, menu, summary, follow, modes, materials, scheme, documentEvents, stored: () => stored, transitions: () => transitions };
+  return { root, menu, summary, follow, modes, materials, scheme, systemLabel, documentEvents, stored: () => stored, transitions: () => transitions };
 }
 
 describe("public site appearance", () => {
   it("follows live system changes until an explicit preview is selected", () => {
     const app = harness();
     expect(app.root.dataset.ob).toBe("light");
+    expect(app.systemLabel.textContent).toBe("浅色");
+    expect(app.systemLabel.textContent).not.toContain("·");
     app.scheme.matches = true; app.scheme.changed();
     expect(app.root.dataset.ob).toBe("dark");
+    expect(app.systemLabel.textContent).toBe("深色");
     expect(app.modes[1]!.attributes["aria-pressed"]).toBe("true");
     app.menu.events.click!({ target: app.modes[0] });
     expect(app.follow.checked).toBe(false);
+    expect(app.systemLabel.textContent).toBe("浅色");
     app.scheme.changed();
     expect(app.root.dataset.ob).toBe("light");
     app.menu.events.click!({ target: app.materials[1] });

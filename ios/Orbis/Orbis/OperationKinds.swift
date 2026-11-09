@@ -148,7 +148,7 @@ enum OperationKinds {
             guard case .respond(let owner, _, let summary) = op.payload, owner == runtimeId else { continue }
             switch op.phase {
             case .waiting, .sent, .accepted: return (summary, true)
-            case .unknown, .unconfirmed: return (summary + L10n.tr(" · 未确认"), false)
+            case .unknown, .unconfirmed: return (summary + L10n.tr("，未确认"), false)
             case .rejected: continue
             }
         }

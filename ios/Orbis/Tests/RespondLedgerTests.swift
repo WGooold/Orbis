@@ -137,7 +137,7 @@ struct RespondLedgerTests {
         let (host, transport, fixture) = await setup(); defer { withExtendedLifetime(fixture) {} }
         _ = host.respond(try request(host, "approval"), response: ["kind": "confirm", "value": true])
         transport.state?(.offline, nil)
-        #expect(host.interactionStatus("a")?.text == "已允许 · 未确认")
+        #expect(host.interactionStatus("a")?.text == "已允许，未确认")
         #expect(visible(host) == ["pick"])
     }
 
@@ -174,7 +174,7 @@ struct RespondLedgerTests {
         _ = host.respond(try request(host, "approval"), response: ["kind": "confirm", "value": true])
         let reads = transport.reads.count
         host.advanceLedgerClock(to: Date().addingTimeInterval(61))
-        #expect(host.interactionStatus("a")?.text == "已允许 · 未确认")
+        #expect(host.interactionStatus("a")?.text == "已允许，未确认")
         #expect(transport.reads.count == reads + 1)
     }
 }

@@ -80,7 +80,7 @@ struct LocalizationTests {
     }
 
     @Test func hostUiCopyIsLocalizedWithoutInterpretingPermissionsOrDynamicValues() {
-        #expect(L10n.hostSummary("工作区可写 · 按需询问", language: .english) == "Workspace write · Ask when needed")
+        #expect(L10n.hostSummary("工作区可写 · 按需询问", language: .english) == "Workspace write, Ask when needed")
         #expect(L10n.hostText("Select the model for this Codex session", language: .chinese) == "选择此 Codex 会话的模型")
         let path = "/工作区可写/设置 {1}/file.swift 100% 🧪"
         #expect(L10n.hostText("原生报告的可读目录：\(path)。", language: .english) == "Native readable directories: \(path).")

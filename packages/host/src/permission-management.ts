@@ -55,7 +55,7 @@ export function codexPermissionManagement(permissions: RuntimePermissions | unde
     ...(permissions?.problem ? [`权限问题：${permissions.problem}`] : []),
   ];
   return {
-    summary: permissions?.problem ? "权限配置存在问题" : `${fileScope.label} · ${approval?.label ?? "审批策略未知"}`,
+    summary: permissions?.problem ? "权限配置存在问题" : `${fileScope.label}，${approval?.label ?? "审批策略未知"}`,
     details: details.join("\n"),
     tone: permissions?.problem ? "problem" : !approval ? "unknown" : fileScope.tone,
     settings: CODEX_PERMISSION_COMMANDS.map(command => {
@@ -93,7 +93,7 @@ export function dshPermissionManagement(permissions: RuntimePermissions | undefi
     ...(permissions?.problem ? [`权限问题：${permissions.problem}`] : []),
   ];
   return {
-    summary: permissions?.problem ? "权限配置存在问题" : `${profileLabel ? `${profileLabel} · ` : ""}${fileScope.label} · ${approval?.label ?? "审批策略未知"}`,
+    summary: permissions?.problem ? "权限配置存在问题" : `${profileLabel ? `${profileLabel}，` : ""}${fileScope.label}，${approval?.label ?? "审批策略未知"}`,
     details: details.join("\n"),
     tone: permissions?.problem ? "problem" : !approval ? "unknown" : fileScope.tone,
     settings: [{ id: "permission-preset", label: "会话权限预设", options: options.map(option => ({ ...option })),

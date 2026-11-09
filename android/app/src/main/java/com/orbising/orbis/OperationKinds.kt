@@ -150,7 +150,7 @@ object OperationKinds {
             if (payload.runtimeId != runtimeId) continue
             when (op.phase) {
                 LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.summary to true
-                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return L10n.tr("{0} · 未确认", payload.summary) to false
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return L10n.tr("{0}，未确认", payload.summary) to false
                 is LedgerPhase.Rejected -> continue
             }
         }

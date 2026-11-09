@@ -91,9 +91,6 @@ internal fun HistoryTreePage(
     onEditAndRestart: (HistoryNode) -> Unit,
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
-    activeDownloadCount: Int = 0,
-    onOpenDownloads: (() -> Unit)? = null,
-    downloadFlight: DownloadFlight? = null,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -169,14 +166,6 @@ internal fun HistoryTreePage(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                    }
-                },
-                // 与聊天页同款的下载入口：历史里的文件下载有落点，下载页返回这里（ADR-0054 / ADR-0058 M16）。
-                actions = {
-                    onOpenDownloads?.let { open ->
-                        DownloadStatusButton(activeCount = activeDownloadCount, enabled = state.hostId != null, onClick = open,
-                            modifier = Modifier.testTag("history-downloads")
-                                .then(downloadFlight?.let { Modifier.downloadFlightTarget(it) } ?: Modifier))
                     }
                 },
             )

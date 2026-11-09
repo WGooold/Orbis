@@ -3,6 +3,7 @@ package com.orbising.orbis
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -48,7 +49,7 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                     Icon(OrbisSymbols.Computer, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                     Column(Modifier.weight(1f)) {
                         Text(state.hostName ?: L10n.tr("电脑"), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(listOf(connectionMethodText(state), connectionProtocolText(state), connectionLatencyText(state)).joinToString(" · "),
+                        Text(connectionMethodText(state),
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -59,14 +60,14 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                             style = MaterialTheme.typography.labelMedium, color = color)
                     }
                 }
-                SettingsRow(L10n.tr("连接协议"), L10n.tr("{0} · 现在走 {1}", protocolName(state.relayTransportMode), connectionProtocolText(state)),
-                    "settings-protocol", minHeight = 56.dp) { protocolOpen = true }
+                SettingsRow(L10n.tr("连接协议"), "", "settings-protocol", value = protocolName(state.relayTransportMode),
+                    minHeight = 56.dp, onClick = { protocolOpen = true })
                 }
             }
             SettingsGroup(L10n.tr("外观")) { AppearancePicker() }
             SettingsGroup(L10n.tr("语言"), padding = 8.dp, tag = "settings-language-group") {
-                SettingsRow(when (AppLocalization.preference) { AppLanguage.System -> L10n.tr("跟随手机"); AppLanguage.Chinese -> "简体中文"; AppLanguage.English -> "English" },
-                    if (AppLocalization.language == AppLanguage.Chinese) "简体中文" else "English", "settings-language") { languageOpen = true }
+                SettingsRow(L10n.tr("语言"), if (AppLocalization.language == AppLanguage.Chinese) "简体中文" else "English",
+                    "settings-language", onClick = { languageOpen = true })
             }
         }
     }
@@ -76,7 +77,9 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
     if (languageOpen) OrbisChoiceSheet(title = L10n.tr("语言"), onDismiss = { languageOpen = false }) {
         AppLanguage.entries.forEach { choice ->
             val label = when (choice) { AppLanguage.System -> L10n.tr("跟随手机"); AppLanguage.Chinese -> "简体中文"; AppLanguage.English -> "English" }
-            ChoiceRow(label, "", AppLocalization.preference == choice, "language-${choice.key}") { AppLocalization.select(choice); languageOpen = false }
+            ChoiceRow(label, "", AppLocalization.preference == choice, "language-${choice.key}", dismissOnSelect = true) {
+                AppLocalization.select(choice); languageOpen = false
+            }
         }
     }
 }
@@ -93,13 +96,17 @@ private fun SettingsGroup(title: String, padding: androidx.compose.ui.unit.Dp = 
 }
 
 @Composable
-private fun SettingsRow(title: String, sub: String, tag: String, minHeight: androidx.compose.ui.unit.Dp = 48.dp, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = minHeight).testTag(tag).orbisKeyboardFocus().clickable(role = Role.Button, onClick = onClick),
+private fun SettingsRow(title: String, sub: String, tag: String, value: String? = null,
+    minHeight: androidx.compose.ui.unit.Dp = 48.dp, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = minHeight).testTag(tag).orbisKeyboardFocus().clickable(
+        interactionSource = remember { MutableInteractionSource() }, indication = null, role = Role.Button, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        value?.let { Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, softWrap = false) }
         Icon(OrbisSymbols.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
     }
 }
@@ -116,38 +123,48 @@ internal fun ProtocolChoiceSheet(current: RelayTransportMode, enabled: Boolean, 
     var selected by remember(current) { mutableStateOf(current) }
     OrbisChoiceSheet(L10n.tr("连接协议"), onDismiss) {
         listOf(RelayTransportMode.AUTO, RelayTransportMode.QUIC, RelayTransportMode.WS).forEach { mode ->
-            ChoiceRow(protocolName(mode), when (mode) {
-                RelayTransportMode.AUTO -> L10n.tr("推荐。自动模式使用 WebSocket")
-                RelayTransportMode.QUIC -> L10n.tr("只使用 QUIC；网络不支持时无法连接")
-                RelayTransportMode.WS -> L10n.tr("使用 WebSocket，适合限制较多的网络")
-            }, selected == mode, "relay-mode-${mode.name}") { selected = mode }
+            ChoiceRow(protocolName(mode), "", selected == mode, "relay-mode-${mode.name}",
+                trailingContent = if (mode == RelayTransportMode.QUIC) {
+                    { InlineInfoButton(L10n.tr("当前网络不支持 QUIC 时无法连接")) }
+                } else null) { selected = mode }
         }
-        NeumorphActionButton(text = if (selected == current) L10n.tr("正在使用") else L10n.tr("改用 {0} 并重新连接", protocolName(selected)),
+        NeumorphActionButton(text = if (selected == current) L10n.tr("当前使用") else L10n.tr("切换到 {0} 并重连", protocolName(selected)),
             enabled = enabled && selected != current, modifier = Modifier.fillMaxWidth().testTag("protocol-apply"),
             onClick = { onApply(selected) })
-        Text(L10n.tr("切换会让正在进行的回复短暂停顿，连上后自动继续。"), style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-internal fun ChoiceRow(title: String, sub: String, selected: Boolean, tag: String, onClick: () -> Unit) {
+internal fun ChoiceRow(title: String, sub: String, selected: Boolean, tag: String,
+    dismissOnSelect: Boolean = false, trailingContent: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
+    val commit = LocalModalCommit.current
     NeumorphSurface(Modifier.fillMaxWidth().testTag(tag).semantics { this.selected = selected },
         style = if (selected) NeumorphStyle.Pressed else NeumorphStyle.Raised, shape = RoundedCornerShape(16.dp),
-        shadowScale = 0.4f, onClick = onClick) {
+        shadowScale = 0.4f, onClick = { if (dismissOnSelect && commit != null) commit(onClick) else onClick() }) {
         Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(12.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
                 AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
                 if (selected) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
             }
-            Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium,
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                 if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            trailingContent?.invoke()
         }
     }
+}
+
+@Composable
+private fun InlineInfoButton(message: String) {
+    var open by rememberSaveable(message) { mutableStateOf(false) }
+    NeumorphIconButton(onClick = { open = true }, icon = OrbisSymbols.Info,
+        contentDescription = L10n.tr("查看说明"), size = 28.dp, compact = true)
+    if (open) NeumorphDialog(onDismissRequest = { open = false },
+        title = { Text(L10n.tr("QUIC")) }, text = { Text(message) },
+        confirmButton = { NeumorphTextButton(L10n.tr("知道了"), { open = false }) })
 }
 
 @Composable
@@ -157,10 +174,11 @@ internal fun AppearancePicker() {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             listOf(false, true).forEach { dark ->
-                val selected = actualDark == dark
+                val selected = AppAppearance.mode == if (dark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light
                 val preview = orbisPalette(dark, AppAppearance.material)
                 Column(Modifier.weight(1f).testTag("appearance-${if (dark) "dark" else "light"}")
-                    .orbisKeyboardFocus().clickable(role = Role.RadioButton) { AppAppearance.selectMode(if (dark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light) }
+                    .orbisKeyboardFocus().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                        role = Role.RadioButton) { AppAppearance.selectMode(if (dark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light) }
                     .semantics { this.selected = selected }, horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     NeumorphSurface(Modifier.fillMaxWidth().height(120.dp), shape = RoundedCornerShape(16.dp),
@@ -194,22 +212,22 @@ internal fun AppearancePicker() {
                         Text(if (dark) L10n.tr("深色") else L10n.tr("浅色"),
                             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal, style = MaterialTheme.typography.labelMedium)
-                        if (selected && AppAppearance.mode == OrbisAppearanceMode.System) Text(L10n.tr("跟随系统"),
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("appearance-system")
-            .orbisKeyboardFocus().clickable(role = Role.Switch) { AppAppearance.selectMode(if (AppAppearance.mode == OrbisAppearanceMode.System) {
-                if (systemDark) OrbisAppearanceMode.Dark else OrbisAppearanceMode.Light
-            } else OrbisAppearanceMode.System) }, verticalAlignment = Alignment.CenterVertically,
+        val systemSelected = AppAppearance.mode == OrbisAppearanceMode.System
+        NeumorphSurface(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("appearance-system")
+            .orbisKeyboardFocus().semantics { this.selected = systemSelected; role = Role.RadioButton },
+            shape = RoundedCornerShape(16.dp), style = if (systemSelected) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+            shadowScale = 0.4f, onClick = { AppAppearance.selectMode(OrbisAppearanceMode.System) }) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.weight(1f)) {
-                Text(L10n.tr("跟随系统"), style = MaterialTheme.typography.titleMedium)
-                Text(L10n.tr("随手机的浅色与深色自动切换"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            OrbisSwitch(AppAppearance.mode == OrbisAppearanceMode.System)
+            Icon(OrbisSymbols.Settings, null, Modifier.size(20.dp), tint = if (systemSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(L10n.tr("跟随系统"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                color = if (systemSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            if (systemSelected) Icon(OrbisSymbols.Check, L10n.tr("当前选择"), Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+        }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(L10n.tr("材质"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -217,7 +235,8 @@ internal fun AppearancePicker() {
                 val selected = AppAppearance.material == material
                 val p = orbisPalette(actualDark, material)
                 Row(Modifier.widthIn(min = 48.dp).heightIn(min = 48.dp).testTag("appearance-material-${material.name.lowercase()}")
-                    .orbisKeyboardFocus().clickable(role = Role.RadioButton) { AppAppearance.selectMaterial(material) }
+                    .orbisKeyboardFocus().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                        role = Role.RadioButton) { AppAppearance.selectMaterial(material) }
                     .semantics { this.selected = selected }, verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CompositionLocalProvider(LocalNeumorphColors provides p.material, LocalOrbisSurface provides null) {
@@ -233,18 +252,6 @@ internal fun AppearancePicker() {
                         color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun OrbisSwitch(checked: Boolean) {
-    val offset by androidx.compose.animation.core.animateDpAsState(if (checked) 24.dp else 0.dp,
-        androidx.compose.animation.core.tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "switch")
-    NeumorphSurface(Modifier.size(56.dp, 32.dp), shape = RoundedCornerShape(12.dp), style = NeumorphStyle.Pressed, shadowScale = 0.4f) {
-        Box(Modifier.padding(4.dp).offset(x = offset).size(24.dp).background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center) {
-            Box(Modifier.size(4.dp).background(if (checked) MaterialTheme.colorScheme.primary else LocalOrbisPalette.current.faint, CircleShape))
         }
     }
 }

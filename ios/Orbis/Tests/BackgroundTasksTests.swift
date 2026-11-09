@@ -16,7 +16,7 @@ struct BackgroundTasksTests {
         #expect(runtime.presentationStatus == "background")
         #expect(!runtime.allowsRemoteClose([quit]))
         runtime.status = "running"
-        #expect(runtime.presentationTitle == "运行中 · 1 个子任务")
+        #expect(runtime.presentationTitle == "运行中，1 个子任务")
         runtime.status = "waiting_local_interaction"
         #expect(runtime.presentationTitle == "等待确认")
         runtime.status = "idle"
@@ -59,7 +59,7 @@ struct BackgroundTasksTests {
         #expect(partial.items.map(\.id) == ["child", "retained", "next"])
         #expect(partial.items.map(\.statusTitle) == ["完成", "工作中", "等待"])
         #expect(partial.items.last?.parentId == "child")
-        #expect(partial.panelTitle == "子代理 · 3 项 · 清单不完整")
+        #expect(partial.panelTitle == "子代理 3 项，清单不完整")
         #expect(partial.inventoryNotice == "清单不完整，显示已知任务")
         #expect(!partial.confirmed)
         #expect(!partial.allowsQuit)
@@ -67,18 +67,18 @@ struct BackgroundTasksTests {
             let runtime = RuntimeSummary(runtimeId: "r", name: "Agent", cwd: "/repo", status: "idle", agentKind: kind, backgroundTasks: partial)
             #expect(runtime.status == "idle")
             #expect(runtime.presentationStatus == "background")
-            #expect(runtime.presentationTitle == "1 个子代理工作中 · 1 个子代理等待 · 清单不完整")
+            #expect(runtime.presentationTitle == "1 个子代理工作中，1 个子代理等待，清单不完整")
             var mainRunning = runtime; mainRunning.status = "running"
-            #expect(mainRunning.presentationTitle == "运行中 · 1 个子代理工作中 · 1 个子代理等待 · 清单不完整")
+            #expect(mainRunning.presentationTitle == "运行中，1 个子代理工作中，1 个子代理等待，清单不完整")
             #expect(!runtime.allowsRemoteClose([quit]))
         }
         let stale = tasks("failed", availability: "unknown").reconciled(previous: partial)
         #expect(stale.items == partial.items)
         #expect(!stale.truncated)
         #expect(stale.activityTitle == "子任务状态待核对")
-        #expect(stale.panelTitle == "子代理 · 3 项 · 状态待核对")
+        #expect(stale.panelTitle == "子代理 3 项，状态待核对")
         #expect(stale.inventoryNotice == "状态待核对，显示最后已知信息")
-        #expect(tasks("completed").panelTitle == "子代理 · 1 项")
+        #expect(tasks("completed").panelTitle == "子代理 1 项")
         #expect(tasks("completed").inventoryNotice == nil)
         #expect(tasks("completed").reconciled(previous: partial).confirmed)
     }

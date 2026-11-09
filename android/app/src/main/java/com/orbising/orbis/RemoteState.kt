@@ -103,9 +103,9 @@ data class RuntimeSummary(
             val tasks = backgroundTasks
             val summary = tasks?.activityTitle
             if (status !in setOf("idle", "running") || summary == null) return runtimeStatusText(presentationStatus)
-            if (presentationStatus == "compacting") return L10n.tr("压缩中 · {0}", summary)
-            if (status == "running" && tasks.truncated) return L10n.tr("运行中 · {0}", summary)
-            if (status == "running") return if (tasks.confirmed) L10n.tr("运行中 · {0} 个子任务", tasks.activeCount) else L10n.tr("运行中 · 子任务待核对")
+            if (presentationStatus == "compacting") return L10n.tr("压缩中 {0}", summary)
+            if (status == "running" && tasks.truncated) return L10n.tr("运行中 {0}", summary)
+            if (status == "running") return if (tasks.confirmed) L10n.tr("运行中 {0} 个子任务", tasks.activeCount) else L10n.tr("运行中，子任务待核对")
             return summary
         }
     fun allowsRemoteClose(commands: List<RuntimeSlashCommand>): Boolean =
@@ -139,9 +139,9 @@ data class BackgroundTaskInventory(val availability: String, val items: List<Bac
     val allowsQuit: Boolean get() = confirmed && activeCount == 0
     val visible: Boolean get() = items.isNotEmpty() || truncated
     val panelTitle: String get() = when {
-        truncated -> L10n.tr("子代理 · {0} 项 · 清单不完整", items.size)
-        !confirmed -> L10n.tr("子代理 · {0} 项 · 状态待核对", items.size)
-        else -> L10n.tr("子代理 · {0} 项", items.size)
+        truncated -> L10n.tr("子代理 {0} 项（清单不完整）", items.size)
+        !confirmed -> L10n.tr("子代理 {0} 项（状态待核对）", items.size)
+        else -> L10n.tr("子代理 {0} 项", items.size)
     }
     val inventoryNotice: String? get() = when {
         truncated -> L10n.tr("清单不完整，显示已知任务")
@@ -163,13 +163,13 @@ data class BackgroundTaskInventory(val availability: String, val items: List<Bac
         if (truncated) {
             val known = listOf("running" to L10n.tr("工作中"), "pending" to L10n.tr("启动中"), "waiting" to L10n.tr("等待")).mapNotNull { (state, title) ->
                 items.count { it.status == state }.takeIf { it > 0 }?.let { L10n.tr("{0} 个子代理{1}", it, title) }
-            }.joinToString(" · ")
-            return if (known.isEmpty()) panelTitle else L10n.tr("{0} · 清单不完整", known)
+            }.joinToString("、")
+            return if (known.isEmpty()) panelTitle else L10n.tr("{0}（清单不完整）", known)
         }
         if (!confirmed) return L10n.tr("子任务状态待核对")
         return listOf("running" to L10n.tr("运行中"), "pending" to L10n.tr("启动中"), "waiting" to L10n.tr("等待中")).mapNotNull { (state, title) ->
             items.count { it.status == state }.takeIf { it > 0 }?.let { L10n.tr("{0} 个子任务{1}", it, title) }
-        }.joinToString(" · ").takeIf { it.isNotEmpty() }
+        }.joinToString("、").takeIf { it.isNotEmpty() }
     }
 }
 

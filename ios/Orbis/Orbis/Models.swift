@@ -113,9 +113,9 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         guard ["idle", "running"].contains(status), let tasks = backgroundTasks, let summary = tasks.activityTitle else {
             return runtimeStatusTitle(presentationStatus)
         }
-        if presentationStatus == "compacting" { return L10n.tr("压缩中 · {0}", summary) }
-        if status == "running" && tasks.truncated { return L10n.tr("运行中 · {0}", summary) }
-        if status == "running" { return tasks.confirmed ? L10n.tr("运行中 · {0} 个子任务", tasks.activeCount) : L10n.tr("运行中 · 子任务待核对") }
+        if presentationStatus == "compacting" { return L10n.tr("压缩中，{0}", summary) }
+        if status == "running" && tasks.truncated { return L10n.tr("运行中，{0}", summary) }
+        if status == "running" { return tasks.confirmed ? L10n.tr("运行中，{0} 个子任务", tasks.activeCount) : L10n.tr("运行中，子任务待核对") }
         return summary
     }
     func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
@@ -152,9 +152,9 @@ struct BackgroundTaskInventory: Codable, Hashable {
     var allowsQuit: Bool { confirmed && activeCount == 0 }
     var visible: Bool { !items.isEmpty || truncated }
     var panelTitle: String {
-        if truncated { return L10n.tr("子代理 · {0} 项 · 清单不完整", items.count) }
-        if !confirmed { return L10n.tr("子代理 · {0} 项 · 状态待核对", items.count) }
-        return L10n.tr("子代理 · {0} 项", items.count)
+        if truncated { return L10n.tr("子代理 {0} 项，清单不完整", items.count) }
+        if !confirmed { return L10n.tr("子代理 {0} 项，状态待核对", items.count) }
+        return L10n.tr("子代理 {0} 项", items.count)
     }
     var inventoryNotice: String? {
         if truncated { return L10n.tr("清单不完整，显示已知任务") }
@@ -179,15 +179,15 @@ struct BackgroundTaskInventory: Codable, Hashable {
             let known = [("running", L10n.tr("工作中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待"))].compactMap { state, title -> String? in
                 let count = items.filter { $0.status == state }.count
                 return count > 0 ? L10n.tr("{0} 个子代理{1}", count, title) : nil
-            }.joined(separator: " · ")
-            return known.isEmpty ? panelTitle : L10n.tr("{0} · 清单不完整", known)
+            }.joined(separator: AppLocalization.shared.language == .english ? ", " : "，")
+            return known.isEmpty ? panelTitle : L10n.tr("{0}，清单不完整", known)
         }
         guard confirmed else { return L10n.tr("子任务状态待核对") }
         let labels = [("running", L10n.tr("运行中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待中"))].compactMap { state, title -> String? in
             let count = items.filter { $0.status == state }.count
             return count > 0 ? L10n.tr("{0} 个子任务{1}", count, title) : nil
         }
-        return labels.isEmpty ? nil : labels.joined(separator: " · ")
+        return labels.isEmpty ? nil : labels.joined(separator: AppLocalization.shared.language == .english ? ", " : "，")
     }
 }
 

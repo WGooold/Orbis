@@ -130,6 +130,7 @@ internal fun ToolDetailSheet(
         modifier = Modifier.fillMaxHeight(0.94f).testTag("tool-detail-sheet"), dragHandle = null,
         containerColor = MaterialTheme.colorScheme.background, tonalElevation = 0.dp,
     ) {
+        val closeSheet = sheetCloseAction(onClose)
         val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().coerceAtLeast(24.dp)
         Column(
             Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().padding(top = topInset, bottom = 16.dp),
@@ -137,7 +138,7 @@ internal fun ToolDetailSheet(
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphIconButton(onClick = onClose, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭"))
+                NeumorphIconButton(onClick = closeSheet, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭"))
                 Text(detail.summary.toolName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 CopyIconButton(L10n.tr("复制已读取内容"), size = 40.dp, enabled = detail.text.isNotEmpty()) { detail.text }

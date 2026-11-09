@@ -6,8 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,6 +19,8 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.unit.Dp
@@ -27,6 +31,13 @@ import kotlinx.coroutines.launch
 
 internal val LocalSheetCommit = staticCompositionLocalOf<((() -> Unit) -> Unit)?> { null }
 internal val LocalModalCommit = staticCompositionLocalOf<((() -> Unit) -> Unit)?> { null }
+
+/** Explicit close actions wait for the sheet's exit; ordinary controls keep their own behavior. */
+@Composable
+internal fun sheetCloseAction(onClose: () -> Unit): () -> Unit {
+    val commit = LocalSheetCommit.current
+    return { if (commit != null) commit(onClose) else onClose() }
+}
 
 /** Shared sheet: one material frame, 24dp arrival, a draggable grip and semantic dismissal timing. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,13 +70,14 @@ internal fun OrbisBottomSheet(
             (view.parent as? DialogWindowProvider)?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             onDispose { }
         }
-        Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val availableHeight = (maxHeight - 32.dp).coerceAtLeast(160.dp)
             Box(Modifier.matchParentSize().graphicsLayer { alpha = appearance.value }
                 .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.34f))
                 .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null, onClick = ::dismiss))
             CompositionLocalProvider(LocalOrbisSurface provides null) {
-                NeumorphSurface(modifier.align(Alignment.BottomCenter).widthIn(max = 720.dp).fillMaxWidth()
-                    .statusBarsPadding().imePadding().graphicsLayer {
+                NeumorphSurface(modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = 720.dp).fillMaxWidth()
+                    .heightIn(max = availableHeight).then(modifier).statusBarsPadding().imePadding().graphicsLayer {
                         alpha = appearance.value
                         translationY = with(density) { 24.dp.toPx() } * (1 - appearance.value) + drag.value
                     }, shape = RoundedCornerShape(32.dp), shadowScale = 1f, contentInset = 16.dp) {
@@ -100,11 +112,14 @@ private fun DefaultSheetGrip() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun OrbisChoiceSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    OrbisBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val maxChoiceHeight = (LocalConfiguration.current.screenHeightDp.dp * 0.88f).coerceAtLeast(240.dp)
+    OrbisBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.heightIn(max = maxChoiceHeight)) {
+        Column(Modifier.fillMaxWidth().heightIn(max = maxChoiceHeight).testTag("orbis-choice-sheet").navigationBarsPadding()
+            .padding(start = 16.dp, end = 16.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge)
-            CompositionLocalProvider(LocalModalCommit provides LocalSheetCommit.current) { content() }
+            Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                CompositionLocalProvider(LocalModalCommit provides LocalSheetCommit.current) { content() }
+            }
         }
     }
 }

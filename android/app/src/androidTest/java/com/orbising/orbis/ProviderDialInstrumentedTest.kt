@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.*
@@ -41,6 +42,7 @@ class ProviderDialInstrumentedTest {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)
         }
     }
+    /** S42 / SC63: browsing stays local until the exact selection is explicitly confirmed. */
     @Test fun browsingAndCancelledConfirmationNeverWriteAndApplyingNamesBothAgentAndProfile() {
         show(mutableStateOf(ready()))
         compose.onNodeWithText("供应商").assertIsDisplayed()
@@ -56,7 +58,7 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithText("取消").performClick()
         compose.runOnIdle { assertTrue(changes.isEmpty()) }
         compose.onNodeWithTag("provider-apply").performClick()
-        compose.onNodeWithText("切换",useUnmergedTree=true).performClick()
+        compose.onNodeWithText("切换并重载 Agent", useUnmergedTree = true).performClick()
         compose.runOnIdle { assertEquals(listOf(profiles("codex")[1] to "dial-host"),changes) }
         capture("light")
     }
@@ -81,6 +83,52 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithTag("provider-apply").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(listOf(profiles("pi")[0] to "dial-host"),changes) }
         capture("dark")
+    }
+
+    /** S42 / SC63: rotating the inner ring does not cancel the outer ring's next drag. */
+    @Test fun outerRingRemainsDraggableAfterTurningTheAgentRing() {
+        show(mutableStateOf(ready()))
+        // Use the real touch path: a child label tap must not be replaced by the parent's release.
+        compose.onNodeWithTag("provider-agent-claude").performTouchInput { click() }
+        compose.onNodeWithTag("provider-agent-reel")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Claude Code"))
+
+        val node = compose.onNodeWithTag("provider-dual-dial")
+        val bounds = node.fetchSemanticsNode().boundsInRoot
+        val width = with(compose.density) { bounds.width.toDp().value }
+        val height = with(compose.density) { bounds.height.toDp().value }
+        val geometry = DualDialGeometry.measure(width, height)
+        val x = with(compose.density) { (geometry.cx + geometry.agentRadius).dp.toPx() }
+        val y = with(compose.density) { geometry.cy.dp.toPx() }
+        val travel = with(compose.density) { 84.dp.toPx() }
+        node.performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(x, y))
+            moveTo(androidx.compose.ui.geometry.Offset(x, y - travel), 700)
+            up()
+        }
+        compose.onNodeWithTag("provider-agent-reel")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "DeepSeek"))
+        dragOuterRingToSecondProfile()
+        compose.runOnIdle { assertTrue(changes.isEmpty()) }
+    }
+
+    private fun dragOuterRingToSecondProfile() {
+        val node = compose.onNodeWithTag("provider-dual-dial")
+        val bounds = node.fetchSemanticsNode().boundsInRoot
+        val width = with(compose.density) { bounds.width.toDp().value }
+        val height = with(compose.density) { bounds.height.toDp().value }
+        val geometry = DualDialGeometry.measure(width, height)
+        val x = with(compose.density) { (geometry.cx + geometry.radius - 16f).dp.toPx() }
+        val y = with(compose.density) { geometry.cy.dp.toPx() }
+        val travel = with(compose.density) { 110.dp.toPx() }
+        node.performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(x, y))
+            moveTo(androidx.compose.ui.geometry.Offset(x, y - travel), 500)
+            up()
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("provider-arc")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "relay-b"))
     }
     /** SC57: each ring independently owns arrows/Home/End; keys never apply a configuration. */
     @Test fun keyboardBrowsesEachRingWithItsOwnFocusAndNeverApplies() {
@@ -112,9 +160,8 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithText("80%").assertIsDisplayed()
         compose.onNodeWithText("15%").assertIsDisplayed()
         compose.onNodeWithText("即将用完").assertIsDisplayed()
-        val footerLayout = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
-        compose.onNodeWithText("里圈选 Agent，外圈选配置").performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(footerLayout) }
-        assertEquals(orbisPalette(false,AppAppearance.material).muted,footerLayout.single().layoutInput.style.color)
+        compose.onNodeWithText("里圈选 Agent，外圈选配置").assertDoesNotExist()
+        compose.onNodeWithTag("provider-summary").assertIsDisplayed()
         compose.runOnIdle { assertTrue(changes.isEmpty());assertTrue(queries.isEmpty()) }
         capture("quota-pair")
     }

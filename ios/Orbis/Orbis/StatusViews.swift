@@ -26,7 +26,7 @@ struct ConnectionStatusView: View {
                                 Image(systemName: "laptopcomputer").font(.system(size: 18)).foregroundStyle(OrbisPalette(scheme).secondary)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(store.selectedHost?.hostName ?? L10n.tr("电脑")).font(.orbisBody(.semibold)).lineLimit(1)
-                                    Text(pathTitle(store.activePath) + " · " + connectionProtocolText(store.relayTransportKind, path: store.activePath, connected: store.connection == .secured))
+                                    Text(pathTitle(store.activePath))
                                         .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 ConnectionPill(connection: store.connection, path: store.activePath, stateLabel: true)
@@ -36,12 +36,10 @@ struct ConnectionStatusView: View {
                             proposedProtocol = store.relayTransportMode; protocolOpen = true
                         } label: {
                             HStack(spacing: 8) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(L10n.tr("连接协议")).font(.orbisBody(.semibold))
-                                    Text(protocolTitle(store.relayTransportMode) + " · " + connectionProtocolText(store.relayTransportKind, path: store.activePath, connected: store.connection == .secured))
-                                        .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
-                                }
-                                Spacer(); Image(systemName: "chevron.right").font(.orbisLabel())
+                                Text(L10n.tr("连接协议")).font(.orbisBody(.semibold))
+                                Spacer()
+                                Text(protocolTitle(store.relayTransportMode)).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+                                Image(systemName: "chevron.right").font(.orbisLabel())
                             }.frame(minHeight: 56).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("settings-protocol")
                     }
@@ -94,10 +92,7 @@ struct ConnectionStatusView: View {
                 themePreview(dark: true)
             }
             Toggle(isOn: Binding(get: { colorMode == "system" }, set: { colorMode = $0 ? "system" : scheme == .dark ? "dark" : "light" })) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n.tr("跟随系统")).font(.orbisBody(.semibold))
-                    Text(L10n.tr("随手机的浅色与深色自动切换")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
-                }
+                Text(L10n.tr("跟随系统")).font(.orbisBody(.semibold))
             }.toggleStyle(NeuToggleStyle()).accessibilityIdentifier("appearance-system")
             HStack {
                 Text(L10n.tr("材质")).font(.orbisBody(.semibold)); Spacer()
@@ -225,7 +220,7 @@ struct AgentProvidersView: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
                 Spacer(minLength: 8)
-                Text(host.providerKind == "pi" ? L10n.tr("Pi 可以同时启用多个配置") : L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentTitle(host.providerKind), host.providers.count))
+                Text(host.providerKind == "pi" ? L10n.tr("Pi 可以同时启用多个配置") : L10n.tr("{0} 个配置", host.providers.count))
                     .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
             ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
@@ -247,8 +242,9 @@ struct AgentProvidersView: View {
                         .accessibilityIdentifier("provider-action-" + provider.id)
                 } else { OrbisActionButton(title: L10n.tr("正在使用")) {}.disabled(true) }
                 HStack {
-                    Text(L10n.tr("里圈选 Agent，外圈选配置"))
-                    Spacer(); Text("\(host.providers.isEmpty ? 0 : selectedIndex + 1) / \(host.providers.count)")
+                    Spacer()
+                    Text("\(host.providers.isEmpty ? 0 : selectedIndex + 1) / \(host.providers.count)")
+                        .accessibilityLabel(L10n.tr("配置 {0} / {1}", host.providers.isEmpty ? 0 : selectedIndex + 1, host.providers.count))
                 }.font(.orbisCaption()).foregroundStyle(palette.secondary)
                 if let notice = host.providerNotice { OrbisNotice(text: notice) }
             }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)

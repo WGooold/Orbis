@@ -78,6 +78,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         if (text.isNotBlank() && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
     val supported = state.launchableAgents ?: state.supportedAgents
+    val codexVersionsAvailable = supported?.contains("codex") == true && supported.contains("codexDesktop")
     val kinds = listOf("codex", "claude", "dsh", "pi")
     LaunchedEffect(open) {
         if (open) {
@@ -114,11 +115,19 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         val brand = agentBrand(agent)
                         val selected = agent == kind || agent == "codex" && kind == "codexDesktop"
                         val enabled = supported == null || agent in supported || agent == "codex" && "codexDesktop" in supported
+                        val chooseCodexVersion = agent == "codex" && codexVersionsAvailable
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
                             enabled = enabled,
-                            role = Role.RadioButton, onClick = { kind = if (agent == "codex" && supported?.contains("codex") == false) "codexDesktop" else agent },
-                            onLongClick = if (agent == "codex" && supported?.contains("codexDesktop") == true) ({ agentMenu = true }) else null,
-                        ).semantics { this.selected = selected }) {
+                            role = if (chooseCodexVersion) Role.Button else Role.RadioButton,
+                            onClick = {
+                                if (chooseCodexVersion) agentMenu = true
+                                else kind = if (agent == "codex" && supported?.contains("codex") == false) "codexDesktop" else agent
+                            },
+                            onLongClick = if (chooseCodexVersion) ({ agentMenu = true }) else null,
+                        ).semantics {
+                            this.selected = selected
+                            if (chooseCodexVersion) stateDescription = L10n.tr("选择 Codex 终端版或桌面版")
+                        }) {
                             Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
                                 if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
                                 AgentIcon(brand, Modifier.size(20.dp).graphicsLayer { alpha = if (selected) 1f else 0.4f }, brand.title,
@@ -126,14 +135,24 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             }
                             if (agent == "codex") NeumorphMenu(agentMenu, { agentMenu = false }) {
                                 listOf("codex", "codexDesktop").forEach { value ->
-                                    NeumorphMenuItem(text = { Text(if (value == "codex") L10n.tr("Codex 终端") else L10n.tr("Codex 桌面版")) },
+                                    NeumorphMenuItem(text = { Text(if (value == "codex") L10n.tr("Codex 终端版") else L10n.tr("Codex 桌面版")) },
                                         onClick = { kind = value; agentMenu = false }, enabled = supported?.contains(value) != false)
                                 }
                             }
                         }
                     }
-                    Text(if (kind == "codexDesktop") L10n.tr("Codex 桌面版") else agentBrand(kind).title,
-                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val versionChoice = codexVersionsAvailable && kind in setOf("codex", "codexDesktop")
+                    Row(Modifier.weight(1f).heightIn(min = 48.dp).then(if (versionChoice)
+                        Modifier.testTag("draft-codex-version").clickable(role = Role.Button) { agentMenu = true }
+                        else Modifier), verticalAlignment = Alignment.CenterVertically) {
+                        Text(when (kind) {
+                            "codex" -> L10n.tr("Codex 终端版")
+                            "codexDesktop" -> L10n.tr("Codex 桌面版")
+                            else -> agentBrand(kind).title
+                        }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (versionChoice) Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
                 }
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("draft-directory")
                     .orbisKeyboardFocus().clickable(role = Role.Button) { directoryOpen = true; onBrowse(cwd.takeIf(String::isNotBlank)) },

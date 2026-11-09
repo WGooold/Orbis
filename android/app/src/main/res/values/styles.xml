@@ -3,8 +3,9 @@
     <style name="Theme.Orbis" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#2459D3</item>
-        <item name="android:navigationBarColor">#FCFCFF</item>
-        <item name="android:statusBarColor">#FCFCFF</item>
+        <item name="android:windowBackground">#E6EBF4</item>
+        <item name="android:navigationBarColor">#E6EBF4</item>
+        <item name="android:statusBarColor">#E6EBF4</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

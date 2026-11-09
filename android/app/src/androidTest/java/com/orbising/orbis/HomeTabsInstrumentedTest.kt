@@ -103,6 +103,16 @@ class HomeTabsInstrumentedTest {
             val anchorTag = "home-runtime-${ids[5]}"
             val anchorTop = compose.onNodeWithTag(anchorTag).assertIsDisplayed().fetchSemanticsNode().boundsInRoot.top
 
+            // S41 / SC62: the root drawer covers the tab bar; dimmed tabs cannot switch pages through it.
+            compose.onNodeWithContentDescription("打开会话目录").performClick()
+            val drawer = compose.onNodeWithTag("drawer-panel").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val tabs = compose.onNodeWithTag("home-tabs").fetchSemanticsNode().boundsInRoot
+            assertTrue("The modal directory must cover the tab bar", drawer.top <= tabs.top && drawer.bottom >= tabs.bottom)
+            // A tap in the dimmed tab area dismisses the drawer instead of switching root tabs.
+            compose.onNodeWithTag("home-tab-settings").performTouchInput { click() }
+            compose.onNodeWithTag("home-tab-chat").assertIsSelected()
+            compose.onNodeWithTag("home-session-list").assertIsDisplayed()
+
             compose.onNodeWithTag("home-tab-settings").performClick().assertIsSelected()
             compose.onNodeWithText("连接").assertIsDisplayed()
             compose.onNodeWithText("Agent 供应商").assertDoesNotExist()

@@ -58,13 +58,13 @@ class ConfigLedgerTest {
         return next
     }
 
-    private fun status(state: RemoteState) = state.configStatus("a", "model")?.let { "${it.first}·${it.second}" }
+    private fun status(state: RemoteState) = state.configStatus("a", "model")?.let { "${it.first} / ${it.second}" }
 
     @Test fun choosingShowsTheChoiceAtOnceAndLandsOnConfirmation() {
         var (state, id) = choose(setup(), "model-b", "快速模型")
-        assertEquals("快速模型·切换中", status(state))
+        assertEquals("快速模型 / 切换中", status(state))
         state = result(state, id, ok = true)
-        assertEquals("快速模型·切换中", status(state))
+        assertEquals("快速模型 / 切换中", status(state))
         state = model(state, "model-b")
         assertNull(status(state))
         assertTrue(state.ledger.operations.isEmpty())
@@ -111,7 +111,7 @@ class ConfigLedgerTest {
         val (first, id) = choose(setup(), "model-b", "快速模型")
         val (second, again) = choose(first, "model-c", "深度模型")
         assertEquals("", again)
-        assertEquals("深度模型·切换中", status(second))
+        assertEquals("深度模型 / 切换中", status(second))
         val settled = model(result(second, id, ok = true), "model-b")
         // HostConnection.resubmitConfigSelections：前一次已结算，最新一次与确认值不同，需再提交。
         assertTrue(settled.ledger.active(OperationKinds.configTarget("a", "model")) == null)
@@ -120,7 +120,7 @@ class ConfigLedgerTest {
 
     @Test fun disconnectShowsUnconfirmedAndAnUnchangedConfigFailsAfterReconnect() {
         var state = choose(setup(), "model-b", "快速模型").first.markReconnecting()
-        assertEquals("快速模型·未确认", status(state))
+        assertEquals("快速模型 / 未确认", status(state))
         state = model(ready(state).copy(e2eReady = true).ledgerOpenConnection(), "model-a")
         val readId = OperationKinds.VERIFY_REQUEST_PREFIX + "1"
         state = reduce(state.beginLedgerRead(readId), """{"type":"agent.state.snapshot","requestId":"$readId","scope":"device","modelEpoch":"epoch",

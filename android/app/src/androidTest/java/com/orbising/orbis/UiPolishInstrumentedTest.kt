@@ -46,6 +46,56 @@ class UiPolishInstrumentedTest {
         assertTrue(!schedule.isAnimating(1_700))
     }
 
+    /** M03 / SC62: directory rows animate their natural height on first expansion. */
+    @Test fun firstDirectoryExpansionAnimatesItsNewlyComposedRows() {
+        val expanded = mutableStateOf(false)
+        compose.setContent {
+            OrbisTheme {
+                Box(Modifier.testTag("collapse-viewport")) {
+                    OrbisCollapse(expanded.value) { Box(Modifier.fillMaxWidth().height(80.dp)) }
+                }
+            }
+        }
+        compose.mainClock.autoAdvance = false
+        val initialHeight = compose.onNodeWithTag("collapse-viewport").fetchSemanticsNode().boundsInRoot.height
+        compose.runOnIdle { expanded.value = true }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80)
+        compose.waitForIdle()
+        val partialHeight = compose.onNodeWithTag("collapse-viewport").fetchSemanticsNode().boundsInRoot.height
+        val fullHeight = with(compose.density) { 80.dp.toPx() }
+        assertEquals(0f, initialHeight, 1f)
+        assertTrue("Newly composed drawer rows expand through an intermediate height", partialHeight > 1f && partialHeight < fullHeight)
+        compose.mainClock.advanceTimeBy(400)
+        compose.waitForIdle()
+        assertEquals(fullHeight, compose.onNodeWithTag("collapse-viewport").fetchSemanticsNode().boundsInRoot.height, 1f)
+    }
+
+    /** M14 / SC62: close buttons retain the sheet through exit without delaying in-sheet actions. */
+    @Test fun sessionControlCloseWaitsForExitWhileOrdinaryActionsStayImmediate() {
+        val open = mutableStateOf(true)
+        var closes = 0
+        var refreshes = 0
+        compose.setContent { OrbisTheme {
+            if (open.value) SessionControlDialog("权限", onClose = { closes++; open.value = false }) {
+                NeumorphTextButton("刷新配置", onClick = { refreshes++ })
+            }
+        } }
+        compose.onNodeWithText("刷新配置").performClick()
+        compose.runOnIdle { assertEquals(1, refreshes); assertEquals(0, closes) }
+        compose.onNodeWithTag("session-control-sheet").assertIsDisplayed()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("收起").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(64)
+        compose.runOnIdle { assertEquals(0, closes) }
+        compose.onNodeWithTag("session-control-sheet").assertIsDisplayed()
+        compose.mainClock.advanceTimeBy(300)
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(1, closes) }
+        compose.onNodeWithTag("session-control-sheet").assertDoesNotExist()
+    }
+
     private fun exercise(dark: Boolean) {
         var value by mutableStateOf("")
         var stream by mutableStateOf("正在检查界面")

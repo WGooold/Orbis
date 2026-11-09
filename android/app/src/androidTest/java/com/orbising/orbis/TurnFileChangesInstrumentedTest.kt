@@ -107,6 +107,8 @@ class TurnFileChangesInstrumentedTest {
         compose.mainClock.autoAdvance = true
         compose.onNodeWithTag("file-change-viewer").assertIsDisplayed()
         compose.onNodeWithTag("file-diff-lines-file-3").assertIsDisplayed()
+        // S46 / SC67: pair the visible diff row with the currently available row total.
+        compose.onNodeWithTag("file-diff-position").assertTextContains("差异行 1 /", substring = true)
         compose.onNodeWithTag("file-change-page").assertTextEquals("3 / 5")
         compose.onNodeWithTag("file-diff-lines-file-3").performScrollToIndex(60)
         repeat(2) { compose.onNodeWithContentDescription("下一个文件").performClick() }
@@ -146,6 +148,8 @@ class TurnFileChangesInstrumentedTest {
         assertTrue("Neighbor composition must not select or read it", requested.isEmpty())
         compose.onNodeWithTag("file-diff-lines-file-1").performScrollToIndex(60)
         compose.waitForIdle()
+        compose.onNodeWithTag("file-diff-position").assertIsDisplayed().assertTextContains("差异行", substring = true)
+        compose.onNodeWithTag("file-diff-position").assertTextContains("差异行 57 /", substring = true)
         val position = viewer.value.current!!.scrollIndex
         assertTrue(position >= 55)
         // An incomplete gesture must not select another file; the page springs back.

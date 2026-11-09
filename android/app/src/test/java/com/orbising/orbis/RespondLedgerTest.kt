@@ -152,7 +152,7 @@ class RespondLedgerTest {
 
     @Test fun disconnectShowsUnconfirmed() {
         val state = respond(setup(), "approval", "已允许").first.markReconnecting()
-        assertEquals("已允许 · 未确认", status(state)?.first)
+        assertEquals("已允许，未确认", status(state)?.first)
         assertEquals(listOf("pick"), visible(state))
     }
 
@@ -178,7 +178,7 @@ class RespondLedgerTest {
 
     @Test fun noReceiptWithinTheBudgetShowsUnconfirmedAndReads() {
         val state = respond(setup(), "approval", "已允许").first.ledgerTick(System.currentTimeMillis() + 61_000)
-        assertEquals("已允许 · 未确认", status(state)?.first)
+        assertEquals("已允许，未确认", status(state)?.first)
         assertTrue(state.ledgerVerifyWanted)
     }
 }

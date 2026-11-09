@@ -171,6 +171,9 @@ internal fun DownloadFileSheet(
                 shape = CircleShape, style = NeumorphStyle.Pressed, shadowScale = 0.25f) {}
         },
     ) {
+        val confirmDownload = sheetCloseAction {
+            selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }
+        }
         Column(Modifier.fillMaxWidth().navigationBarsPadding()
             .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -185,9 +188,7 @@ internal fun DownloadFileSheet(
             NeumorphActionButton(
                 text = L10n.tr("下载到手机"), icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
                 enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
-                onClick = {
-                    selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }
-                },
+                onClick = confirmDownload,
             )
         }
     }

@@ -88,7 +88,7 @@ internal object L10n {
     }
 
     fun hostSummary(value: String, language: AppLanguage = AppLocalization.language): String =
-        value.split(" · ").joinToString(" · ") { hostText(it, language) }
+        value.split(" · ").joinToString(", ") { hostText(it, language) }
 
     @PublishedApi
     internal fun tr(source: String, vararg arguments: Any?): String =

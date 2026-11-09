@@ -26,7 +26,8 @@ class HistorySwipeBackInstrumentedTest {
         }
     }
 
-    @Test fun historyReboundsThenReturnsToTheSameChatAndDownloadsReturnOneLevel() {
+    /** S45 / SC66: history has no downloads entry, preserves drag-back, and returns to the same chat. */
+    @Test fun historyReboundsThenReturnsToTheSameChatWithoutAHeaderDownloadButton() {
         val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), prefix = "history-swipe")
         val owner = ViewModelStore()
         val model = RemoteViewModel(app)
@@ -42,12 +43,9 @@ class HistorySwipeBackInstrumentedTest {
             val index = scroll.firstVisibleItemIndex
             val offset = scroll.firstVisibleItemScrollOffset
             compose.onNodeWithContentDescription("历史与分支").performClick()
-            compose.onNodeWithTag("history-downloads").performClick()
-            compose.onRoot().performTouchInput {
-                swipeRight(startX = width * 0.15f, endX = width * 0.9f, durationMillis = 600)
-            }
+            compose.onNodeWithTag("history-downloads").assertDoesNotExist()
             compose.onNodeWithText("历史与分支").assertIsDisplayed()
-            capture("history-after-downloads")
+            capture("history-without-download-action")
             // A short drag with no release velocity must rebound on history.
             val originalX = compose.onNodeWithText("历史与分支").fetchSemanticsNode().boundsInRoot.left
             compose.onRoot().performTouchInput {

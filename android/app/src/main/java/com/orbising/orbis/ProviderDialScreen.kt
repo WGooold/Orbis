@@ -7,6 +7,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.input.key.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -74,7 +75,10 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.widthIn(max = 140.dp)) {
-                Row(Modifier.heightIn(min = 48.dp).orbisKeyboardFocus().clickable(enabled = active && hosts.size > 1) { hostMenu = true },
+                Row(Modifier.heightIn(min = 48.dp).orbisKeyboardFocus().clickable(
+                    enabled = active && hosts.size > 1,
+                    interactionSource = remember { MutableInteractionSource() }, indication = null,
+                ) { hostMenu = true },
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(OrbisSymbols.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(state.hostName ?: hosts.firstOrNull { it.hostId == hostId }?.name ?: L10n.tr("电脑"),
@@ -86,7 +90,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                         onClick = { hostMenu = false; onSelectHost(host.hostId) }) }
                 }
             }
-            Text(if (kind == "pi") L10n.tr("Pi 可以同时启用多个配置") else L10n.tr("{0} · 电脑上保存的 {1} 个配置", agentBrand(kind).title, providers.size),
+            Text(L10n.tr("{0} 个配置", providers.size),
                 modifier = Modifier.weight(1f).testTag("provider-summary"), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -120,8 +124,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                             else pending = hostId to fresh
                         }
                     })
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(L10n.tr("里圈选 Agent，外圈选配置"), style = MaterialTheme.typography.labelSmall, color = LocalOrbisPalette.current.muted)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Text(if (providers.isEmpty()) "0 / 0" else "${currentIndex + 1} / ${providers.size}",
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -134,8 +137,8 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             state.providersForKind(selected.kind).any { it == selected }
         NeumorphDialog(onDismissRequest = { pending = null },
             title = { Text(L10n.tr("切换 {0} 到 {1}？", agentBrand(selected.kind).title, selected.name)) },
-            text = { Text(L10n.tr("切换后，电脑会重新加载 Agent。已有会话需要重新打开。")) },
-            confirmButton = { NeumorphTextButton(L10n.tr("切换"), {
+            text = { Text(L10n.tr("已有会话需要重新打开。")) },
+            confirmButton = { NeumorphTextButton(L10n.tr("切换并重载 Agent"), {
                 if (fresh) { pending = null; haptic(); onEnable(selected, expectedHost) }
             }, enabled = fresh) }, dismissButton = { NeumorphTextButton(L10n.tr("取消"), { pending = null }) })
     }
@@ -200,47 +203,62 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
         val height = maxHeight.value
         val width = maxWidth.value
         val g = DualDialGeometry.measure(width, height)
+        val latestGeometry = rememberUpdatedState(g)
         val px = density.density
-        Box(Modifier.fillMaxSize().pointerInput(g, hostId, active) {
+        Box(Modifier.fillMaxSize().pointerInput(hostId, active) {
             if (!active) return@pointerInput
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
-                val ring = g.ringAt(down.position.x / px, down.position.y / px) ?: return@awaitEachGesture
+                val gestureGeometry = latestGeometry.value
+                val ring = gestureGeometry.ringAt(down.position.x / px, down.position.y / px) ?: return@awaitEachGesture
                 settleJob?.cancel()
-                grabbed = ring
+                currentOnMoving(false)
                 val start = if (ring == ProviderDialRing.Agent) agentPosition.roundToInt().toFloat() else itemPosition
                 val velocity = VelocityTracker()
                 velocity.addPosition(down.uptimeMillis, down.position)
                 var moved = false
                 var cancelled = false
-                currentOnMoving(true)
-                while (true) {
-                    val event = awaitPointerEvent()
-                    val change = event.changes.firstOrNull { it.id == down.id }
-                    if (change == null) { cancelled = true; break }
-                    velocity.addPosition(change.uptimeMillis, change.position)
-                    if (!change.pressed) break
-                    val dy = (change.position.y - down.position.y) / px
-                    if (!moved && abs(dy) > if (ring == ProviderDialRing.Agent) 10f else 4f) moved = true
-                    if (moved) {
-                        if (ring == ProviderDialRing.Agent) {
-                            val raw = DualDialGeometry.soften(start - dy / 84f, DIAL_AGENTS.size)
-                            val next = raw.roundToInt().coerceIn(0, DIAL_AGENTS.lastIndex)
-                            if (DIAL_AGENTS[next] != currentKind) { tick(); currentOnKind(DIAL_AGENTS[next]) }
-                            agentPosition = DualDialGeometry.sticky(raw)
-                        } else {
-                            val raw = start - dy / g.profilePitch
-                            val next = DualDialGeometry.soften(raw, currentProviders.size)
-                            if (next.roundToInt() != itemPosition.roundToInt()) tick()
-                            itemPosition = next
-                            currentOnBrowse(next.roundToInt().coerceIn(0, currentProviders.lastIndex.coerceAtLeast(0)))
+                var released = false
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null) { cancelled = true; break }
+                        velocity.addPosition(change.uptimeMillis, change.position)
+                        if (!change.pressed) { released = !change.isConsumed || moved; break }
+                        val dy = (change.position.y - down.position.y) / px
+                        if (!moved && abs(dy) > if (ring == ProviderDialRing.Agent) 10f else 4f) {
+                            moved = true
+                            grabbed = ring
+                            currentOnMoving(true)
                         }
-                        change.consume()
-                    } else if (change.isConsumed) { cancelled = true; break }
+                        if (moved) {
+                            if (ring == ProviderDialRing.Agent) {
+                                val raw = DualDialGeometry.soften(start - dy / 84f, DIAL_AGENTS.size)
+                                val next = raw.roundToInt().coerceIn(0, DIAL_AGENTS.lastIndex)
+                                if (DIAL_AGENTS[next] != currentKind) { tick(); currentOnKind(DIAL_AGENTS[next]) }
+                                agentPosition = DualDialGeometry.sticky(raw)
+                            } else {
+                                val raw = start - dy / gestureGeometry.profilePitch
+                                val next = DualDialGeometry.soften(raw, currentProviders.size)
+                                if (next.roundToInt() != itemPosition.roundToInt()) tick()
+                                itemPosition = next
+                                currentOnBrowse(next.roundToInt().coerceIn(0, currentProviders.lastIndex.coerceAtLeast(0)))
+                            }
+                            change.consume()
+                        }
+                    }
+                } finally {
+                    if (moved) {
+                        grabbed = null
+                        currentOnMoving(false)
+                    }
                 }
-                grabbed = null
-                if (ring == ProviderDialRing.Agent) settle(ring, agentPosition.roundToInt())
-                else settle(ring, (itemPosition - if (moved && !cancelled) velocity.calculateVelocity().y / px / g.profilePitch * 0.14f else 0f).roundToInt())
+                // Child labels own taps. Only a drag may cancel their click and settle the ring.
+                if (moved && released && !cancelled) {
+                    if (ring == ProviderDialRing.Agent) settle(ring, agentPosition.roundToInt())
+                    else settle(ring, (itemPosition - if (moved) velocity.calculateVelocity().y / px / gestureGeometry.profilePitch * 0.14f else 0f).roundToInt())
+                }
             }
         }) {
             fun Modifier.disc(radius: Float) = wrapContentSize(Alignment.TopStart, unbounded = true)
@@ -280,8 +298,10 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 val x = g.cx + g.agentRadius * cos(angle).toFloat()
                 val y = g.cy + g.agentRadius * sin(angle).toFloat()
                 if (x >= 12 && y in 20f..(height - 20)) Box(Modifier.offset(x = (x-24).dp, y = (y-24).dp).size(48.dp)
+                    .testTag("provider-agent-$agent")
                     .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile || agent != kind) 0.4f else 1f }
-                    .orbisKeyboardFocus().clickable(enabled = active) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
+                    .orbisKeyboardFocus().clickable(enabled = active,
+                        interactionSource = remember { MutableInteractionSource() }, indication = null) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
                     AgentIcon(agentBrand(agent), Modifier.size(20.dp))
                 }
             }
@@ -293,7 +313,8 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                     val selected = index == itemPosition.roundToInt().coerceIn(0, providers.lastIndex)
                     Column(Modifier.offset(x = x.dp, y = (y - if (selected) 44 else 16).dp).width((width - x - 16).coerceIn(64f,136f).dp).heightIn(min = 48.dp)
                         .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Agent) 0.4f else if (selected) 1f else 0.6f }
-                        .orbisKeyboardFocus().clickable(enabled = active) { settle(ProviderDialRing.Profile, index) },
+                        .orbisKeyboardFocus().clickable(enabled = active,
+                            interactionSource = remember { MutableInteractionSource() }, indication = null) { settle(ProviderDialRing.Profile, index) },
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (selected) Text(agentBrand(kind).title, style = MaterialTheme.typography.labelSmall, color = accent)
                         Text(provider.name, style = if (selected) MaterialTheme.typography.titleLarge else MaterialTheme.typography.labelMedium,

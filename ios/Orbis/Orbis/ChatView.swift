@@ -262,7 +262,7 @@ struct ChatView: View {
                     }
                     // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
                     if let pending = store.configStatus(runtime.runtimeId, setting: "model") {
-                        OrbisMotionText(pending.label + " · " + pending.mark).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                        OrbisMotionText(L10n.tr("{0}，{1}", pending.label, pending.mark)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("chat-model-switching")
                     } else if let model = runtime.model, domainReady("model") {
                         OrbisMotionText(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)

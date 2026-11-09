@@ -1,5 +1,6 @@
 package com.orbising.orbis
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,9 +49,12 @@ internal object OrbisMotion {
 /** Mount on first expansion; retain content identity for later clipping animations (ADR-0048). */
 @Composable
 internal fun OrbisCollapse(expanded: Boolean, clipExpanded: Boolean = true, content: @Composable () -> Unit) {
-    var hasExpanded by remember { mutableStateOf(expanded) }
+    var hasExpanded by remember { mutableStateOf(false) }
     if (expanded) SideEffect { hasExpanded = true }
-    val fraction = animateFloatAsState(if (expanded) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.Collapse)), label = "collapse")
+    val fraction = remember { Animatable(0f) }
+    LaunchedEffect(expanded) {
+        fraction.animateTo(if (expanded) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.Collapse)))
+    }
     // A zero-height Layout still composes and measures its children. Do not create them
     // until requested, especially long thinking/tool text in an otherwise visible turn.
     if (!expanded && !hasExpanded) return

@@ -294,6 +294,7 @@ internal fun MotionText(
     color: Color = Color.Unspecified,
     style: androidx.compose.ui.text.TextStyle = androidx.compose.material3.LocalTextStyle.current,
     fontWeight: androidx.compose.ui.text.font.FontWeight? = null,
+    minLines: Int = 1,
     maxLines: Int = Int.MAX_VALUE,
     overflow: androidx.compose.ui.text.style.TextOverflow = androidx.compose.ui.text.style.TextOverflow.Clip,
 ) {
@@ -310,7 +311,7 @@ internal fun MotionText(
                 .using(null)
         }, label = "discrete-label") { displayed ->
         androidx.compose.material3.Text(displayed, Modifier.clearAndSetSemantics { }, color = color,
-            style = style, fontWeight = fontWeight, maxLines = maxLines, overflow = overflow,
+            style = style, fontWeight = fontWeight, minLines = minLines, maxLines = maxLines, overflow = overflow,
             onTextLayout = { if (displayed == text) layoutResult.value = it })
     }
 }

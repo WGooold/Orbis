@@ -62,3 +62,129 @@ describe("approved public demo interaction policy", () => {
     expect(policy.profileAction(1, false, true).disabled).toBe(true);
   });
 });
+
+// Exercise the shipped handlers and rendered output: variants must survive draft collapse and
+// creation, and opening optional protocol help must not silently change the selected protocol.
+function demoHarness() {
+  let mode = "system", material = "mist";
+  class Node {
+    innerHTML = "";
+    className = "";
+    id = "";
+    value = "";
+    dataset: Record<string, string> = {};
+    children: Node[] = [];
+    events: Record<string, (event: any) => void> = {};
+    classList = { add() {} };
+    offsetHeight = 200;
+    focused = false;
+    querySelector(selector: string): Node | null { return selector === ".demo-dial" ? null : new Node(); }
+    querySelectorAll() { return []; }
+    getBoundingClientRect() { return { left: 0, top: 0, bottom: 200, width: 393, height: 200 }; }
+    addEventListener(name: string, handler: (event: any) => void) { this.events[name] = handler; }
+    append() {}
+    focus() { this.focused = true; }
+    cloneNode() { return new Node(); }
+    remove() {}
+  }
+  const root = new Node(), screen = new Node();
+  const runtime = {
+    document: { createElement: () => root, activeElement: null },
+    window: {
+      createOrbisDesignDemo: null as unknown as (options: { screen: Node; scene: string; reduced: () => boolean; onPlayback: () => void }) => { destroy(): void },
+      orbisAppearance: {
+        current: () => ({ mode, material, dark: mode === "dark" }),
+        update: (patch: { mode?: string; material?: string }) => { mode = patch.mode || mode; material = patch.material || material; },
+        subscribe: () => () => {},
+      },
+      getComputedStyle: () => ({ getPropertyValue: () => "none" }),
+      cancelAnimationFrame() {},
+      clearTimeout() {},
+    },
+  };
+  runInNewContext(source, runtime);
+  runtime.window.createOrbisDesignDemo({ screen, scene: "create", reduced: () => true, onPlayback: () => {} });
+  const action = (demoAction: string, fields: Record<string, string> = {}) => {
+    const target = new Node();
+    target.dataset = { demoAction, ...fields };
+    Object.assign(target, { closest: (selector: string) => selector === "[data-demo-action]" ? target : null });
+    root.events.click!({ target });
+  };
+  const text = (value: string) => root.events.input!({ target: { id: "demo-first-message", value } });
+  const flush = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+  return { root, action, text, flush, mode: () => mode };
+}
+
+describe("public demo refined controls", () => {
+  it("keeps the selected Codex variant through collapse, creation, and later draft changes", async () => {
+    const app = demoHarness();
+    app.action("draft-toggle"); await app.flush();
+    app.action("codex-menu");
+    expect(app.root.innerHTML).toContain('role="menu" aria-label="Codex 版本"');
+    expect(app.root.innerHTML).toContain('data-value="terminal"');
+    expect(app.root.innerHTML).toContain('data-value="desktop"');
+    app.action("codex-variant", { value: "desktop" });
+    app.text("检查版本选择");
+    app.action("draft-toggle"); await app.flush();
+    app.action("draft-toggle"); await app.flush();
+    expect(app.root.innerHTML).toContain('>Codex 桌面版<i');
+    app.action("draft-send"); await app.flush();
+    expect(app.root.dataset.page).toBe("chat");
+    expect(app.root.innerHTML).toContain('Codex 桌面版</strong>');
+    app.action("back-home");
+    app.action("draft-toggle"); await app.flush();
+    app.action("codex-variant", { value: "terminal" });
+    // Changing a later draft must never rewrite the version of an existing session.
+    expect(app.root.innerHTML).toContain('>Codex 终端版<i');
+    expect(app.root.innerHTML).toContain('>Codex 桌面版</b>');
+  });
+
+  it("shows protocol state on the right and opens QUIC consequences only on request", () => {
+    const app = demoHarness();
+    app.action("tab", { page: "settings" });
+    return app.flush().then(() => {
+      expect(app.root.innerHTML).toContain('<strong>连接协议</strong><span class="demo-protocol-value">自动');
+      app.action("protocol");
+      expect(app.root.innerHTML).not.toContain("当前网络不支持 QUIC 时无法连接");
+      app.action("protocol-info");
+      expect(app.root.innerHTML).toContain("当前网络不支持 QUIC 时无法连接");
+      app.action("protocol-info-close");
+      expect(app.root.innerHTML).toContain('aria-checked="true" data-demo-action="protocol-choice" data-value="auto"');
+      app.action("protocol-choice", { value: "quic" });
+      expect(app.root.innerHTML).toContain("切换到 QUIC 并重连");
+      app.action("protocol-cancel");
+      expect(app.root.innerHTML).toContain('<span class="demo-protocol-value">自动');
+    });
+  });
+
+  it("states the provider reload effect in the confirmation action", async () => {
+    const app = demoHarness();
+    app.action("tab", { page: "providers" }); await app.flush();
+    app.action("provider-apply");
+    expect(app.root.innerHTML).toContain("已有会话需要重新打开");
+    expect(app.root.innerHTML).toContain("切换并重载 Agent");
+    expect(app.root.innerHTML).not.toContain("正在运行的会话不受影响");
+  });
+
+  it("makes follow system an explicit idempotent choice without an explanatory subtitle", async () => {
+    const app = demoHarness();
+    app.action("tab", { page: "settings" }); await app.flush();
+    expect(app.root.innerHTML).not.toContain("随手机的浅色与深色自动切换");
+    expect(app.root.innerHTML).toContain('data-demo-action="appearance-follow" role="radio" aria-checked="true"');
+    app.action("appearance-follow");
+    expect(app.mode()).toBe("system");
+    app.action("appearance-mode", { value: "dark" });
+    expect(app.mode()).toBe("dark");
+    expect(app.root.innerHTML).toContain('data-demo-action="appearance-follow" role="radio" aria-checked="false"');
+    app.action("appearance-follow");
+    expect(app.mode()).toBe("system");
+    expect(app.root.innerHTML).not.toContain("·");
+  });
+});
+
+// Product copy uses layout or natural punctuation rather than middle-dot separators.
+it("keeps middle-dot separators out of first-party public UI sources", () => {
+  for (const file of ["design-demo.js", "film-markup.js", "film.js", "site.js", "admin.js", "index.html", "admin.html"]) {
+    expect(readFileSync(new URL(`./web/${file}`, import.meta.url), "utf8"), file).not.toContain("·");
+  }
+});

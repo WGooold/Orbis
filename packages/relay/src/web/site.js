@@ -1,20 +1,20 @@
 const hostPlatforms = {
   windows: {
-    requirement: "Windows 10 / 11 · x64",
+    requirement: "Windows 10 / 11 (x64)",
     detail: "安装后，在电脑端添加手机。",
     note: "当前为预览版，安装时 Windows 可能提示发布者未验证。",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/,
     files: data => data.windows,
   },
   "macos-arm64": {
-    requirement: "macOS · Apple Silicon",
+    requirement: "macOS (Apple Silicon)",
     detail: "打开 DMG，将 Orbis Host 拖入「应用程序」。",
     note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/,
     files: data => data.macos,
   },
   "macos-x64": {
-    requirement: "macOS · Intel",
+    requirement: "macOS (Intel)",
     detail: "打开 DMG，将 Orbis Host 拖入「应用程序」。",
     note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-x64\.dmg$/,
@@ -23,12 +23,12 @@ const hostPlatforms = {
 };
 const appPlatforms = {
   android: {
-    requirement: "Android 手机 · APK",
+    requirement: "Android 手机（APK）",
     detail: "安装后，扫描电脑端的配对二维码。",
     note: "安装后扫描电脑端的配对二维码。",
   },
   ios: {
-    requirement: "iPhone · iOS",
+    requirement: "iPhone（iOS）",
     detail: "扫码，让 Agent 来到手边。",
     note: "安装入口以当前发布信息为准。",
   },
@@ -68,7 +68,7 @@ function renderHost(platform) {
   }
   const releases = hostReleases(platform);
   const latest = releases[0]?.version;
-  version.textContent = latest ? `预览版 · ${latest}` : "预览包准备中";
+  version.textContent = latest ? `预览版 ${latest}` : "预览包准备中";
   if (!latest) {
     container.textContent = "该平台的预览包正在准备，发布后即可在这里下载。";
     return;
@@ -78,7 +78,7 @@ function renderHost(platform) {
     const link = document.createElement("a");
     link.className = portable ? "text-link portable-link" : "button primary";
     link.href = release.url;
-    const size = Number.isFinite(release.bytes) && release.bytes > 0 ? ` · ${(release.bytes / 1048576).toFixed(0)} MB` : "";
+    const size = Number.isFinite(release.bytes) && release.bytes > 0 ? `（${(release.bytes / 1048576).toFixed(0)} MB）` : "";
     link.textContent = portable
       ? "下载免安装版 ZIP"
       : `下载 ${platform === "windows" ? "Windows 安装版" : "macOS 版"}${size}`;
@@ -123,7 +123,7 @@ function renderApp(platform) {
     container.textContent = "当前发布信息未提供 Android 安装链接。";
     return;
   }
-  version.textContent = typeof siteData.androidVersion === "string" ? `预览版 · ${siteData.androidVersion}` : "预览版";
+  version.textContent = typeof siteData.androidVersion === "string" ? `预览版 ${siteData.androidVersion}` : "预览版";
   const url = siteData.android;
   const link = document.createElement("a");
   link.className = "button primary";
@@ -158,7 +158,7 @@ async function loadRegistration() {
     const response = await fetch("v1/registration/status", { cache: "no-store" });
     if (!response.ok) throw new Error("unavailable");
     const data = await response.json();
-    notice.textContent = data.enabled ? data.qqEmailVerificationRequired ? "激活已开放 · 在电脑端使用 QQ 邮箱接收验证码。" : "激活已开放 · 在电脑端按提示开始。" : "新用户激活暂未开放，请稍后再试。";
+    notice.textContent = data.enabled ? data.qqEmailVerificationRequired ? "激活已开放，在电脑端使用 QQ 邮箱接收验证码。" : "激活已开放，在电脑端按提示开始。" : "新用户激活暂未开放，请稍后再试。";
     notice.classList.toggle("positive", data.enabled);
   } catch {
     notice.textContent = "暂时无法确认是否可以注册，请稍后重试。";
@@ -194,7 +194,7 @@ function initAppearance() {
       button.setAttribute("aria-pressed", String(button.dataset.material === preference.material));
       button.querySelector(".theme-preview").dataset.ob = `${button.dataset.material === "sage" ? "sage-" : ""}${dark ? "dark" : "light"}`;
     }
-    document.getElementById("appearance-system").textContent = follow.checked ? `跟随系统 · ${dark ? "深色" : "浅色"}` : "随系统的浅色与深色自动切换";
+    document.getElementById("appearance-system").textContent = dark ? "深色" : "浅色";
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.content = window.getComputedStyle(root).getPropertyValue("--surface-base").trim();
     for (const listener of listeners) listener();

@@ -119,6 +119,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import com.orbising.orbis.NeumorphMenu as DropdownMenu
 import com.orbising.orbis.NeumorphMenuItem as DropdownMenuItem
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DrawerState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
@@ -333,6 +334,9 @@ internal fun RemoteApp(
     var draftOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var firstDraftSend by remember { mutableStateOf<FirstDraftSend?>(null) }
     val sessionDrafts = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
+    val compactDrawerState = rememberDrawerState(DrawerValue.Closed)
+    var runtimeSelecting by remember { mutableStateOf(false) }
+    val rootScope = rememberCoroutineScope()
     LaunchedEffect(state.hostId) {
         if (newSessionOpen && state.hostId != newSessionHostId) {
             newSessionOpen = false
@@ -353,6 +357,8 @@ internal fun RemoteApp(
     val runtimeList: @Composable () -> Unit = {
         runtimeListStateHolder.SaveableStateProvider("runtime-list") {
             RuntimeListScreen(
+                providedDrawerState = compactDrawerState,
+                onSelectingChanged = { runtimeSelecting = it },
                 permanentDirectory = permanentDirectory,
                 draftOpen = newSessionOpen && state.hostId == newSessionHostId,
                 onToggleDraft = {
@@ -385,38 +391,14 @@ internal fun RemoteApp(
                 },
                 onCloseRuntimes = model::closeRuntimesOn,
                 onOpenDownloads = { cancelLaunchIntro(); allDownloadsOpen = true },
-                onUnpairHost = { hostId -> model.unpair(hostId) },
-                onOpenSession = { hostId, sessionId ->
-                    cancelLaunchIntro()
-                    allDownloadsOpen = false
-                    model.openSession(hostId, sessionId)
-                },
-                onOpenHistory = { hostId, sessionId ->
-                    cancelLaunchIntro()
-                    allDownloadsOpen = false
-                    model.openOfflineSession(hostId, sessionId)
-                },
-                onNewSession = { hostId, cwd ->
-                    cancelLaunchIntro()
-                    model.selectHost(hostId)
-                    newSessionHostId = hostId
-                    newSessionCwd = cwd
-                    newSessionOpen = true
-                },
-                onSetArchived = { hostId, sessionId, archived ->
-                    model.setSessionArchivedOn(hostId, sessionId, archived)
-                },
                 onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
-                onAddHost = { cancelLaunchIntro(); addingHost = true },
-                onRequestProviders = model::refreshProviderFacts,
-                onOpenStatus = { cancelLaunchIntro(); homeTab = HomeTab.Settings },
                 onRetryHome = model::refreshHome,
             )
         }
     }
     // S32 / SC51: peer tabs share the root; only chats, downloads and management are pushed pages.
     val rootStateHolder = rememberSaveableStateHolder()
-    val rootHome: @Composable () -> Unit = {
+    val rootHomeContent: @Composable () -> Unit = {
         Column(Modifier.fillMaxSize()) {
             // The sibling tab bar owns the bottom system inset; root Scaffolds must not add it again.
             Box(Modifier.weight(1f).fillMaxWidth()
@@ -447,11 +429,36 @@ internal fun RemoteApp(
             if (!permanentDirectory) HomeTabBar(homeTab, onSelect = { tab -> cancelLaunchIntro(); homeTab = tab })
         }
     }
-    // Returning from a chat exposes the same source root. Back on a peer root returns to Chats.
-    BackHandler(enabled = LocalPageActive.current && homeTab != HomeTab.Chat &&
-        !addingHost && !allDownloadsOpen && !newSessionOpen &&
-        state.selectedRuntimeId == null && state.selectedOfflineSessionId == null) {
-        homeTab = HomeTab.Chat
+    val rootHome: @Composable () -> Unit = {
+        if (permanentDirectory) rootHomeContent()
+        else ModalNavigationDrawer(
+            drawerState = compactDrawerState,
+            gesturesEnabled = !runtimeSelecting && homeTab == HomeTab.Chat,
+            drawerContent = {
+                SessionDrawer(
+                    state = homeState, hosts = hosts, isOpen = compactDrawerState.isOpen,
+                    preparedCatalog = homeUi?.catalog,
+                    onSelectHost = { id -> cancelLaunchIntro(); model.selectHost(id) },
+                    onUnpairHost = model::unpair,
+                    onAddHost = { rootScope.launch { compactDrawerState.close() }; cancelLaunchIntro(); addingHost = true },
+                    onOpenSession = { host, session ->
+                        rootScope.launch { compactDrawerState.close() }
+                        cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session)
+                    },
+                    onOpenHistory = { host, session ->
+                        cancelLaunchIntro(); allDownloadsOpen = false; model.openOfflineSession(host, session)
+                    },
+                    onNewSession = { host, cwd ->
+                        rootScope.launch { compactDrawerState.close() }
+                        cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
+                        homeTab = HomeTab.Chat; model.selectHost(host); newSessionHostId = host
+                        newSessionCwd = cwd; newSessionOpen = true
+                    },
+                    onSetArchived = model::setSessionArchivedOn,
+                    onRequestProviders = model::refreshProviderFacts,
+                )
+            },
+        ) { rootHomeContent() }
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     // session.activated（spec §8）：只证明进程已拉起；会话真正上线后 runtime.online 会接管 UI。
@@ -716,15 +723,15 @@ internal fun RuntimeListScreen(
     onOpenRuntime: (String, String) -> Unit,
     onCloseRuntimes: (String, Set<String>) -> Set<String>,
     onOpenDownloads: () -> Unit,
-    onUnpairHost: (String) -> Unit,
-    onOpenSession: (String, String) -> Unit,
-    onOpenHistory: (String, String) -> Unit,
-    onNewSession: (String, String?) -> Unit,
-    onSetArchived: (String, String, Boolean) -> Unit,
+    onUnpairHost: (String) -> Unit = {},
+    onOpenSession: (String, String) -> Unit = { _, _ -> },
+    onOpenHistory: (String, String) -> Unit = { _, _ -> },
+    onNewSession: (String, String?) -> Unit = { _, _ -> },
+    onSetArchived: (String, String, Boolean) -> Unit = { _, _, _ -> },
     onSelectHost: (String) -> Unit,
-    onAddHost: () -> Unit,
-    onOpenStatus: () -> Unit,
-    onRequestProviders: () -> Unit,
+    onAddHost: () -> Unit = {},
+    onOpenStatus: () -> Unit = {},
+    onRequestProviders: () -> Unit = {},
     onRetryHome: () -> Unit = {},
     launchIntro: LaunchState? = null,
     onLaunchPresented: (String) -> Unit = {},
@@ -736,7 +743,10 @@ internal fun RuntimeListScreen(
     draftOpen: Boolean = false,
     onToggleDraft: () -> Unit = {},
     draftContent: @Composable (Boolean) -> Unit = {},
+    providedDrawerState: DrawerState? = null,
+    onSelectingChanged: (Boolean) -> Unit = {},
 ) = OrbisMaterialTheme {
+    val drawerState = providedDrawerState ?: rememberDrawerState(DrawerValue.Closed)
     val homeListState = rememberLazyListState()
     var retainDraft by remember { mutableStateOf(false) }
     var draftSlotOpen by remember { mutableStateOf(draftOpen) }
@@ -757,7 +767,6 @@ internal fun RuntimeListScreen(
     }
     val pullRefreshState = remember { HomePullRefreshState() }
     var pullRefreshing by remember { mutableStateOf(false) }
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
     LaunchedEffect(drawerState.targetValue) {
         if (drawerState.targetValue == DrawerValue.Open) onDirectoryOpened()
     }
@@ -794,6 +803,7 @@ internal fun RuntimeListScreen(
     }
     val selectedIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds)
     val selecting = selectedIds.isNotEmpty()
+    LaunchedEffect(selecting) { onSelectingChanged(selecting) }
     LaunchedEffect(visibleIds, closableIds) { selectedRuntimeIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds) }
     fun toggleSelection(id: String) {
         if (id !in closableIds) return
@@ -801,41 +811,14 @@ internal fun RuntimeListScreen(
         selectedRuntimeIds = if (id in selectedIds) selectedIds - id else selectedIds + id
     }
     BackHandler(enabled = LocalPageActive.current && selecting && drawerState.isClosed) { selectedRuntimeIds = emptySet() }
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = !selecting && !permanentDirectory,
-        drawerContent = {
-            if (!permanentDirectory) SessionDrawer(
-                state = state,
-                hosts = hosts,
-                isOpen = drawerState.isOpen,
-                preparedCatalog = preparedCatalog,
-                onSelectHost = onSelectHost,
-                onUnpairHost = onUnpairHost,
-                onAddHost = onAddHost,
-                onSetArchived = onSetArchived,
-                onRequestProviders = onRequestProviders,
-                // 打开别的电脑的会话前先切过去：交互命令永远只发给当前电脑。
-                onOpenSession = { hostId, sessionId ->
-                    scope.launch { drawerState.close() }
-                    onOpenSession(hostId, sessionId)
-                },
-                // History temporarily replaces this page; return to the still-open drawer.
-                onOpenHistory = onOpenHistory,
-                onNewSession = { hostId, cwd ->
-                    scope.launch { drawerState.close() }
-                    onNewSession(hostId, cwd)
-                },
-            )
-        },
-    ) {
+    val screenContent: @Composable () -> Unit = {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
                     navigationIcon = {
                         NeumorphIconButton(
-                            onClick = { if (selecting) selectedRuntimeIds = emptySet() else scope.launch { drawerState.open() } },
+                            onClick = { if (selecting) selectedRuntimeIds = emptySet() else if (!permanentDirectory) scope.launch { drawerState.open() } },
                             icon = if (selecting) OrbisSymbols.Close else OrbisSymbols.Menu,
                             menuMorph = selecting,
                             contentDescription = if (selecting) L10n.tr("退出多选") else L10n.tr("打开会话目录"),
@@ -1154,18 +1137,23 @@ internal fun RuntimeListScreen(
                                             AgentEmblem(agentBrand(runtime.agentKind), 40.dp)
                                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                                 MotionText(row.card.title, style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                                    fontWeight = FontWeight.SemiBold, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                                 MiddleEllipsizedText(runtime.cwd,
                                                     MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                                     MaterialTheme.colorScheme.onSurfaceVariant)
-                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                                    Text(agentBrand(runtime.agentKind).title, color = agentBrand(runtime.agentKind).accent(), style = MaterialTheme.typography.labelMedium)
+                                                Text(runtime.model?.let(::modelLabel)?.takeIf(String::isNotBlank)
+                                                    ?: agentBrand(runtime.agentKind).title,
+                                                    style = MaterialTheme.typography.labelSmall, color = agentBrand(runtime.agentKind).accent(),
+                                                    maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                                Row(Modifier.fillMaxWidth().heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                     if (row.card.hasPendingInteraction) {
                                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                                             Icon(OrbisSymbols.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
-                                                            Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                                            Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                                         }
-                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
+                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle, modifier = Modifier.weight(1f))
                                                 }
                                             }
                                             OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting && canClose)
@@ -1189,6 +1177,22 @@ internal fun RuntimeListScreen(
             }
         }
     }
+    if (providedDrawerState == null) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = !selecting && !permanentDirectory,
+            drawerContent = {
+                if (!permanentDirectory) SessionDrawer(
+                    state = state, hosts = hosts, isOpen = drawerState.isOpen, preparedCatalog = preparedCatalog,
+                    onSelectHost = onSelectHost, onUnpairHost = onUnpairHost, onAddHost = onAddHost,
+                    onSetArchived = onSetArchived, onRequestProviders = onRequestProviders,
+                    onOpenSession = { host, session -> scope.launch { drawerState.close() }; onOpenSession(host, session) },
+                    onOpenHistory = onOpenHistory,
+                    onNewSession = { host, cwd -> scope.launch { drawerState.close() }; onNewSession(host, cwd) },
+                )
+            },
+        ) { screenContent() }
+    } else screenContent()
 }
 
 /** Before the first complete snapshot the list is empty, so its own area says why: loading or a retryable failure. */
@@ -1614,12 +1618,8 @@ internal fun ChatScreen(
         model.setMenuOptionInterest(originHost, runtimeId, optionCommand)
         onDispose { model.setMenuOptionInterest(originHost, runtimeId, null) }
     }
-    // 历史页顶栏的下载入口：下载页滑入后返回历史页（ADR-0054）。
-    var historyDownloadsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    LaunchedEffect(historyOpen) { if (!historyOpen) historyDownloadsOpen = false }
-    // M16：聊天页与历史页各自的下载飞入层，文件飞向本页右上角的下载按钮。
+    // M16：聊天页下载飞入层。
     val chatFlight = rememberDownloadFlight(runtimeId, sessionId)
-    val historyFlight = rememberDownloadFlight(runtimeId, sessionId)
     var historyAction by remember(runtimeId, sessionId) { mutableStateOf<HistoryTreeAction?>(null) }
     var historyActionCommandId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     var historyActionError by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
@@ -1819,10 +1819,6 @@ internal fun ChatScreen(
     }
 
     val historyPage: @Composable () -> Unit = {
-        OrbisPageHost(
-            onBack = { historyDownloadsOpen = false },
-            open = historyDownloadsOpen,
-            underlay = { DownloadFlightHost(historyFlight) {
         HistoryTreePage(
             state = state,
             runtimeId = runtimeId,
@@ -1833,9 +1829,6 @@ internal fun ChatScreen(
                 historyOpen = false
                 historyActionError = null
             },
-            activeDownloadCount = activeDownloadCount,
-            onOpenDownloads = { historyDownloadsOpen = true },
-            downloadFlight = historyFlight,
             onContinueFrom = { node -> runHistoryAction(HistoryTreeAction.ContinueFrom(node.nodeId)) },
             onEditAndRestart = { node ->
                 runHistoryAction(
@@ -1845,11 +1838,9 @@ internal fun ChatScreen(
                     ),
                 )
             },
-            downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) historyFlight.launch() },
-            downloadFile = { path -> if (model.downloadFile(path)) historyFlight.launch() },
+            downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
+            downloadFile = { path -> model.downloadFile(path) },
         )
-            } },
-        ) { HostDownloadsScreen(state, model, onBack = { historyDownloadsOpen = false }) }
     }
 
     LaunchedEffect(runtimeId, sessionId, displayReadPending, projection, chatHeaderCount, orphanTools.size,
@@ -1985,9 +1976,9 @@ internal fun ChatScreen(
                             title = runtime?.presentationTitle,
                             isChatSyncing = displayReadPending,
                             // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
-                            modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} · ${it.second}" }
+                            modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} / ${it.second}" }
                                 ?: runtime?.model?.let(::modelLabel),
-                            thinkingLevel = state.configStatus(runtimeId, "thinking")?.let { "${it.first} · ${it.second}" }
+                            thinkingLevel = state.configStatus(runtimeId, "thinking")?.let { "${it.first} / ${it.second}" }
                                 ?: runtime?.thinkingLevel,
                         )
                     }
@@ -2906,7 +2897,7 @@ private fun DownloadTaskCard(
                     // Keep the normal caption's measured height while hiding its action hint.
                     Box {
                         Text(
-                            listOfNotNull(downloadStatusText(task), actionHint).joinToString(" · "),
+                            listOfNotNull(downloadStatusText(task), actionHint).joinToString(", "),
                             modifier = Modifier.alpha(if (selectionMode) 0f else 1f)
                                 .then(if (selectionMode) Modifier.clearAndSetSemantics {} else Modifier),
                             style = MaterialTheme.typography.bodySmall, color = statusColor,
@@ -3566,7 +3557,8 @@ private fun RuntimeStatus(
 internal fun RuntimeStatusIndicator(status: String, title: String? = null, syncing: Boolean = false) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         RuntimeStatusDot(status, syncing)
-        MotionText(title ?: runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall)
+        MotionText(title ?: runtimeStatusText(status), color = runtimeStatusColor(status), style = MaterialTheme.typography.labelSmall,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -3764,7 +3756,7 @@ private fun ChatToolGroup(
     }
     if (calls.size == 1) { callView(calls.first()); return }
     Column(Modifier.fillMaxWidth()) {
-        NeumorphTextButton(text = L10n.tr("{0} 次工具调用", calls.size) + " · " + status,
+        NeumorphTextButton(text = L10n.tr("{0} 次工具调用，{1}", calls.size, status),
             icon = if (expanded) Icons.Rounded.ExpandLess else OrbisSymbols.KeyboardArrowDown,
             onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().testTag("chat-tool-group"))
         OrbisCollapse(expanded) {

@@ -17,7 +17,7 @@ describe("Codex permission management projection", () => {
     approvalPolicy: "on-request", approvalsReviewer: "auto_review" });
     const result = codexPermissionManagement(raw);
     expect(result.tone).toBe("restricted");
-    expect(result.summary).toBe("工作区可写 · 按需询问");
+    expect(result.summary).toBe("工作区可写，按需询问");
     expect(result.settings.map(setting => [setting.id, setting.currentValue])).toEqual([
       ["sandbox", "workspaceWrite"], ["network", "restricted"], ["approvals", "on-request"], ["approval-reviewer", "auto_review"],
     ]);
@@ -76,7 +76,7 @@ describe("DSH permission management projection", () => {
 
   it("describes custom configuration from facts and retains an unknown profile", () => {
     const custom = dshPermissionManagement({ sandbox: "workspace-write", approvalPolicy: "ask", profile: "custom", networkAccess: false }, nativeOptions)!;
-    expect(custom.summary).toBe("自定义 · 工作区可写 · 需要时询问");
+    expect(custom.summary).toBe("自定义，工作区可写，需要时询问");
     expect(custom.tone).toBe("restricted");
     expect(custom.settings[0]?.currentValue).toBe("custom");
     expect(custom.settings[0]?.options.some(option => option.value === "custom")).toBe(false);
