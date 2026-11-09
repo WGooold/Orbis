@@ -326,8 +326,11 @@ final class OrbisStore: ObservableObject {
     func waitForPendingEvents() async {
         for connection in Array(connections.values) { await connection.waitForPendingEvents() }
         await activeConnection.waitForScreenPublications()
-        refreshScreenPublications()
+        // Let observed Host changes publish their whole menu snapshot before this
+        // explicit refresh consumes the same menu diff. Otherwise a fast test-side
+        // refresh can clear the diff while the scheduled objectWillChange is pending.
         while publicationScheduled { await Task.yield() }
+        refreshScreenPublications()
         while !cleanupTasks.isEmpty { for task in Array(cleanupTasks.values) { await task.value } }
     }
 }
