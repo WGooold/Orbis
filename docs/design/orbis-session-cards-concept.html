@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-scene="normal" data-mobile-view="layered">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Orbis 会话卡片 / 呈现探索</title>
+<style>
+/* Standalone concept. Palette and SVG assets are reused from Orbis 交互稿.html.
+   Samples are synthetic; all interactions are local to this page. */
+:root {
+  --base:#e6ebf4; --lift:#edf1f8; --top:#f3f6fb; --ink:#232a36; --muted:#4a5364; --faint:#737d90;
+  --accent:#2f5287; --selected:#d0d9e7; --hairline:#c9d1de;
+  --success:#1a6a4d; --warning:#845000; --danger:#ad241c;
+  --codex:#00655d; --claude:#9a4521; --deepseek:#3550cf; --pi:#8c3870;
+  --shadow:4px 4px 10px #a6b2c675,-4px -4px 10px #ffffffe0;
+  --small-shadow:2px 2px 5px #a6b2c675,-2px -2px 5px #ffffffe0;
+  --inset:inset 2px 2px 4px #a6b2c68c,inset -2px -2px 4px #ffffffe6;
+  --device-shadow:12px 18px 42px #a6b2c64d,-8px -8px 28px #ffffffb3;
+  --phone-width:390px; color-scheme:light;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+:root[data-theme="dark"] {
+  --base:#23262e; --lift:#292d36; --top:#2f333d; --ink:#dde1e9; --muted:#b8c0ce; --faint:#858d9c;
+  --accent:#afc6e6; --selected:#343944; --hairline:#3a4150;
+  --success:#84d6b3; --warning:#f2c26b; --danger:#ffb4ab;
+  --codex:#77d6c7; --claude:#f0b48c; --deepseek:#a9bbff; --pi:#f0a9d3;
+  --shadow:4px 4px 10px #0a0c1180,-4px -4px 10px #343946bb;
+  --small-shadow:2px 2px 5px #0a0c1180,-2px -2px 5px #343946bb;
+  --inset:inset 2px 2px 4px #0a0c11b3,inset -2px -2px 4px #343946cc;
+  --device-shadow:12px 18px 42px #0a0c114d,-8px -8px 28px #34394655;
+  color-scheme:dark;
+}
+*{box-sizing:border-box} [hidden]{display:none!important}
+body{margin:0;background:var(--base);color:var(--ink);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;-webkit-tap-highlight-color:transparent}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+button:disabled{cursor:default;opacity:.5}
+button,a{-webkit-touch-callout:none}
+svg{display:block;fill:currentColor;flex-shrink:0}
+.icon{width:20px;height:20px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.topbar{max-width:1152px;margin:auto;padding:27px 32px 0;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.wordmark{display:flex;align-items:baseline;gap:14px}.wordmark strong{font-size:23px;letter-spacing:-1.1px;font-weight:650}
+.eyebrow{font-size:10px;letter-spacing:2px;font-weight:600;color:var(--muted)}
+.top-actions{display:flex;gap:16px;align-items:center}
+.theme-switch,.segmented{display:flex;gap:3px;padding:4px;border-radius:14px;box-shadow:var(--inset)}
+.theme-switch button{width:36px;height:32px;display:grid;place-items:center;border-radius:10px}
+.theme-switch button[aria-pressed="true"],.segmented button[aria-pressed="true"]{background:var(--lift);box-shadow:var(--small-shadow);color:var(--ink)}
+.text-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;color:var(--muted);font-size:12px;min-height:40px}
+.text-button .icon{width:17px;height:17px}
+main{max-width:1152px;margin:auto;padding:38px 32px 30px}
+.intro{display:flex;justify-content:space-between;align-items:end;gap:32px;margin-bottom:26px}
+h1{font-size:29px;line-height:1.4;letter-spacing:-.9px;font-weight:600;margin:0 0 9px}
+.intro p{margin:0;color:var(--muted);font-size:13px}.intro .edition{text-align:right;font-size:11px;color:var(--faint);white-space:nowrap;line-height:1.8}
+.controlbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;padding:0 0 30px}
+.control-group{display:flex;align-items:center;gap:10px}.control-label{font-size:11px;color:var(--muted)}
+.segmented button{padding:7px 12px;border-radius:10px;color:var(--muted);font-size:12px;white-space:nowrap;min-height:34px}
+.state-cycle{padding:8px 13px;background:var(--base);box-shadow:var(--small-shadow);border-radius:12px;display:flex;align-items:center;gap:7px;color:var(--accent);font-size:12px;min-height:42px}
+.state-cycle .icon{width:17px;height:17px}.state-cycle:active{box-shadow:var(--inset)}
+.mobile-tabs{display:none}
+.comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:58px;max-width:920px;margin:auto;align-items:start}
+.variant{min-width:0}.variant-heading{width:min(100%,var(--phone-width));margin:0 auto 17px;display:flex;align-items:center;justify-content:space-between}
+.variant-name{display:flex;align-items:center;gap:10px}.variant-letter{width:28px;height:28px;border-radius:9px;background:var(--lift);display:grid;place-items:center;font-size:12px;color:var(--accent);font-weight:600}
+.variant-name h2{font-size:14px;font-weight:600;margin:0}.variant-sub{color:var(--muted);font-size:11px}.recommendation{color:var(--accent);font-size:10px;letter-spacing:1px}
+.phone{width:min(100%,var(--phone-width));height:834px;margin:auto;background:var(--base);border-radius:38px;padding:5px;box-shadow:var(--device-shadow);position:relative}
+.screen{height:100%;border-radius:33px;overflow:hidden;position:relative;display:flex;flex-direction:column;background:var(--base)}
+.statusbar{height:37px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:0 24px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.statusbar .right{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:10px}.statusbar .icon{width:14px;height:14px}
+.app-header{padding:14px 20px 13px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.app-brand strong{font-size:23px;font-weight:650;letter-spacing:-.8px}.app-brand span{display:block;font-size:9px;letter-spacing:.45px;color:var(--muted);margin-top:1px}
+.header-buttons{display:flex;gap:10px}.round-button{width:40px;height:40px;display:grid;place-items:center;border-radius:50%;box-shadow:var(--small-shadow);color:var(--muted);flex-shrink:0}
+.round-button:active{box-shadow:var(--inset)}.round-button .icon{width:21px;height:21px}
+.host-line{display:flex;align-items:center;justify-content:space-between;padding:0 22px 18px;font-size:12px;gap:16px}
+.computer{display:flex;gap:6px;align-items:center;color:var(--muted)}.computer .icon{width:17px;height:17px}
+.connection{color:var(--success);font-size:11px;display:flex;align-items:center;gap:5px}.connection .icon{width:13px;height:13px}
+.list-toolbar{display:flex;align-items:center;justify-content:space-between;min-height:34px;padding:0 22px;margin-bottom:10px}
+.list-caption{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}.count{font-variant-numeric:tabular-nums;color:var(--faint);font-size:11px}
+.select-toggle{font-size:11px;color:var(--accent);padding:8px 0 8px 12px;min-width:44px;min-height:34px}
+.scroll-content{overflow:auto;scrollbar-width:none;overscroll-behavior:contain;flex:1;min-height:0;padding-bottom:16px}.scroll-content::-webkit-scrollbar{display:none}
+.session-list{display:grid;gap:16px;padding:0 18px 12px}.session{min-width:0;position:relative}
+.session-card{display:block;width:100%;text-align:left;border-radius:24px;background:var(--base);box-shadow:var(--shadow);position:relative;padding:16px;transition:box-shadow .18s ease,background .18s ease;touch-action:pan-y}
+.session-card:active{box-shadow:var(--inset)}
+.session-card[aria-pressed="true"]{background:var(--selected);box-shadow:var(--inset),0 0 0 1px var(--accent)}
+.identity{display:flex;align-items:center;justify-content:space-between;gap:10px;height:26px;margin-bottom:11px}
+.agent-name{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:500;min-width:0;color:var(--agent)}
+.agent-mark{width:22px;height:22px;flex-shrink:0;display:block;color:var(--agent)}
+.identity-trailing{display:flex;align-items:center;gap:8px;color:var(--faint);font-size:10px;white-space:nowrap}
+.selection-slot{display:grid;place-items:center;width:19px;height:19px;color:var(--accent);flex-shrink:0}
+.selection-circle{display:none;width:18px;height:18px;border:1.5px solid var(--faint);border-radius:50%;place-items:center}.selection-circle .icon{width:14px;height:14px}
+.selecting .selection-circle{display:grid}.selecting .timestamp{display:none}
+.session-card[aria-pressed="true"] .selection-circle{border-color:var(--accent);background:var(--accent);color:var(--base)}
+.session-card h3{font-size:16px;line-height:25px;font-weight:600;letter-spacing:.05px;min-height:50px;margin:0 0 8px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.directory{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;line-height:18px;min-width:0;margin-bottom:14px}
+.directory .icon{width:15px;height:15px;color:var(--faint)}
+.path{display:flex;align-items:baseline;min-width:0;white-space:nowrap;overflow:hidden}.path-parent{overflow:hidden;text-overflow:ellipsis;color:var(--faint)}.path-leaf{flex-shrink:0;color:var(--muted)}
+.metadata{display:flex;align-items:center;gap:12px;justify-content:space-between;min-height:36px;background:var(--lift);border-radius:11px;padding:8px 10px}
+.model{font-size:11px;font-weight:500;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.status{display:flex;align-items:center;justify-content:flex-end;gap:5px;font-size:11px;font-weight:500;white-space:nowrap;flex-shrink:0;min-width:63px;height:20px;color:var(--faint)}
+.status .icon{width:15px;height:15px}.status[data-status="running"]{color:var(--success)}.status[data-status="waiting"]{color:var(--warning)}
+.dot-wrap{width:16px;height:16px;display:grid;place-items:center;position:relative;flex-shrink:0}.dot{width:6px;height:6px;border:1.5px solid currentColor;border-radius:50%}
+.status[data-status="running"] .dot{background:currentColor;border:0}
+.status[data-status="running"] .dot-wrap:after{content:"";position:absolute;inset:2px;border:1px solid transparent;border-top-color:currentColor;border-right-color:currentColor;border-radius:50%;animation:orbit 1.6s linear infinite}
+@keyframes orbit{to{transform:rotate(360deg)}}
+.variant-compact .session-list{gap:14px}
+.variant-compact .session-card{padding:16px}.compact-main{display:flex;gap:12px;align-items:flex-start;min-width:0}
+.emblem{width:38px;height:38px;border-radius:14px;box-shadow:var(--inset);display:grid;place-items:center;flex-shrink:0;margin-top:1px}.emblem .agent-mark{width:23px;height:23px}
+.compact-copy{flex:1;min-width:0}.variant-compact .session-card h3{font-size:15px;line-height:24px;min-height:48px;margin-bottom:5px;padding-right:12px}
+.variant-compact .directory{margin-bottom:0;font-size:10px;gap:4px}.variant-compact .directory .icon{display:none}
+.variant-compact .selection-slot{position:absolute;right:13px;top:15px;width:16px;height:16px}
+.variant-compact .metadata{margin-top:13px;background:transparent;border-radius:0;padding:0;min-height:24px;gap:10px}
+.variant-compact .model{display:flex;align-items:center;gap:7px;font-size:10px}.model-agent{font-size:10px;color:var(--agent);flex-shrink:0}.model-text{overflow:hidden;text-overflow:ellipsis}
+.variant-compact .status{font-size:10px;min-width:59px}
+.variant-compact .session-card[aria-pressed="true"] .metadata{background:transparent}
+.list-end{font-size:10px;text-align:center;color:var(--faint);padding:13px 0 5px;letter-spacing:.2px}
+.bottom-nav{flex-shrink:0;display:flex;align-items:center;justify-content:space-around;min-height:66px;padding:8px 20px 12px;background:var(--base);box-shadow:0 -1px 0 color-mix(in srgb,var(--hairline) 40%,transparent)}
+.nav-item{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;width:82px;height:45px;color:var(--faint);font-size:9px;border-radius:14px}
+.nav-item.active{color:var(--accent);box-shadow:var(--inset)}.nav-item .icon{width:20px;height:20px}
+.phone-notice{position:absolute;bottom:79px;left:20px;right:20px;padding:12px 14px;border-radius:16px;background:var(--top);box-shadow:var(--shadow);font-size:12px;z-index:5;transform:translateY(10px);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+.phone-notice.visible{opacity:1;transform:translateY(0)}
+.variant-notes{width:min(100%,var(--phone-width));margin:22px auto 0;display:grid;gap:10px;padding:0 4px}
+.note{display:flex;gap:11px;align-items:baseline;font-size:12px;color:var(--muted)}.note span{font-family:ui-monospace,monospace;color:var(--faint);font-size:10px}.note strong{font-weight:500;color:var(--ink)}
+.page-footer{text-align:center;font-size:11px;color:var(--faint);padding-top:36px;line-height:1.8}
+.sheet-backdrop{position:absolute;inset:0;background:color-mix(in srgb,var(--ink) 15%,transparent);z-index:9;display:flex;align-items:end}
+.detail-sheet{width:100%;padding:12px 22px 24px;background:var(--base);border-radius:28px 28px 0 0;box-shadow:0 -5px 22px color-mix(in srgb,var(--ink) 12%,transparent);animation:sheet-in .24s ease-out;max-height:87%;overflow:auto}
+@keyframes sheet-in{from{transform:translateY(50px);opacity:0}to{transform:translateY(0);opacity:1}}
+.handle{width:32px;height:3px;margin:0 auto 17px;border-radius:3px;background:var(--hairline)}
+.sheet-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.sheet-heading .round-button{box-shadow:none;background:var(--lift);width:32px;height:32px}
+.sheet-title{font-size:19px;line-height:1.5;margin:18px 0 20px;font-weight:600;overflow-wrap:anywhere}
+.fact{display:flex;justify-content:space-between;gap:16px;font-size:12px;padding:10px 0;color:var(--muted)}.fact-label{color:var(--faint);white-space:nowrap}.fact-value{text-align:right;overflow-wrap:anywhere;min-width:0}
+.sheet-caption{font-size:10px;color:var(--faint);margin:20px 0 0;text-align:center}
+@media(min-width:1100px){.comparison{gap:88px}}
+@media(max-width:820px){.topbar{padding:20px 22px 0}.top-actions{gap:10px}.download-label{display:none}main{padding:28px 22px}.intro{align-items:start}.intro .edition{display:none}h1{font-size:26px}.comparison{gap:26px}.controlbar{align-items:start}.width-controls{display:none}.phone{border-radius:30px;padding:4px}.screen{border-radius:26px}}
+@media(max-width:650px){.wordmark .eyebrow{font-size:9px;letter-spacing:1px}.topbar{padding:15px 18px 0}.top-actions{gap:8px}.theme-switch button{width:31px;height:30px}main{padding:23px 18px}.intro{margin-bottom:21px}h1{font-size:24px}.intro p{font-size:12px;max-width:300px;line-height:1.8}.controlbar{gap:12px;padding-bottom:20px}.control-group{gap:7px}.control-label{display:none}.segmented button{padding:6px 10px;font-size:11px}.state-cycle{padding:8px 10px;font-size:11px;min-height:42px}.mobile-tabs{display:flex;max-width:390px;margin:0 auto 24px}.mobile-tabs button{flex:1}.comparison{display:block}.variant{display:none}:root[data-mobile-view="layered"] .variant-layered,:root[data-mobile-view="compact"] .variant-compact{display:block}.phone{height:800px}.variant-heading{padding:0 4px}.app-header{padding:14px 18px 12px}.session-list{padding-left:15px;padding-right:15px}.session-card{padding:14px}.session-card h3{font-size:15px}.metadata{gap:8px;padding:7px 9px}.host-line{padding:0 20px 16px}.variant-notes{margin-top:22px}.page-footer{padding-top:26px}}
+@media(max-width:360px){.topbar,main{padding-left:12px;padding-right:12px}.wordmark{gap:8px}.wordmark strong{font-size:21px}.wordmark .eyebrow{letter-spacing:.6px}.top-actions{gap:4px}.controlbar{gap:8px}.segmented button{padding:6px 8px}.state-cycle{padding:8px}.session-card{padding:13px}.identity-trailing{gap:4px}.variant-compact .session-card{padding:14px}.variant-compact .compact-main{gap:10px}.emblem{width:32px;height:32px;border-radius:12px}.variant-compact .model-agent{display:none}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="wordmark"><strong>Orbis</strong><span class="eyebrow">DESIGN STUDY / 01</span></div>
+  <div class="top-actions">
+    <div class="theme-switch" role="group" aria-label="主题"><button type="button" data-theme-choice="light" aria-label="浅色" aria-pressed="true"><span data-icon="light_mode"></span></button><button type="button" data-theme-choice="dark" aria-label="深色" aria-pressed="false"><span data-icon="dark_mode"></span></button></div>
+    <button type="button" class="text-button" id="download" aria-label="下载单文件 HTML"><span data-icon="download"></span><span class="download-label">保存 HTML</span></button>
+  </div>
+</header>
+<main>
+  <div class="intro"><div><h1>让会话内容，成为第一眼。</h1><p>同样的信息，两种层次。模型与运行状态始终在同一行。</p></div><div class="edition">首页会话卡片<br>交互演示 / 合成数据</div></div>
+  <div class="controlbar" aria-label="演示控制">
+    <div class="control-group"><span class="control-label">内容</span><div class="segmented" role="group" aria-label="内容场景"><button type="button" data-scene-choice="normal" aria-pressed="true">常规内容</button><button type="button" data-scene-choice="long" aria-pressed="false">长标题 / 模型</button><button type="button" data-scene-choice="selection" aria-pressed="false">多选状态</button></div></div>
+    <div class="control-group width-controls"><span class="control-label">宽度</span><div class="segmented" role="group" aria-label="手机宽度"><button type="button" data-width="360" aria-pressed="false">360</button><button type="button" data-width="390" aria-pressed="true">390</button></div></div>
+    <button type="button" class="state-cycle" id="cycle-status"><span data-icon="sync"></span>切换首张状态</button>
+  </div>
+  <div class="mobile-tabs segmented" role="group" aria-label="排版方案"><button type="button" data-view="layered" aria-pressed="true">A 分层卡片</button><button type="button" data-view="compact" aria-pressed="false">B 紧凑卡片</button></div>
+  <div class="comparison">
+    <section class="variant variant-layered" data-variant="layered" aria-labelledby="heading-layered">
+      <div class="variant-heading"><div class="variant-name"><span class="variant-letter">A</span><div><h2 id="heading-layered">分层卡片</h2><span class="variant-sub">内容优先，信息各有位置</span></div></div><span class="recommendation">推荐方向</span></div>
+      <div class="phone"><div class="screen" id="screen-layered"></div></div>
+      <div class="variant-notes"><div class="note"><span>01</span><div><strong>标题占满内容宽度</strong>，长会话名更易读。</div></div><div class="note"><span>02</span><div><strong>身份轻，内容重</strong>，Agent 标记收进顶行。</div></div><div class="note"><span>03</span><div><strong>底部明度分层</strong>，模型与状态清楚成组。</div></div></div>
+    </section>
+    <section class="variant variant-compact" data-variant="compact" aria-labelledby="heading-compact">
+      <div class="variant-heading"><div class="variant-name"><span class="variant-letter">B</span><div><h2 id="heading-compact">紧凑卡片</h2><span class="variant-sub">标记在左，浏览更轻快</span></div></div><span class="variant-sub">更多首屏内容</span></div>
+      <div class="phone"><div class="screen" id="screen-compact"></div></div>
+      <div class="variant-notes"><div class="note"><span>01</span><div><strong>保留左侧标记</strong>，延续熟悉的识别方式。</div></div><div class="note"><span>02</span><div><strong>缩短纵向距离</strong>，同屏能看到更多会话。</div></div><div class="note"><span>03</span><div><strong>底部信息轻量化</strong>，用留白而非色块分层。</div></div></div>
+    </section>
+  </div>
+  <footer class="page-footer">点卡片查看完整信息，长按或点「选择」体验多选。<br>所有操作仅影响演示数据。</footer>
+</main>
+<script id="orbis-source-assets" type="application/json">{"icons": {"light_mode": "M579-380.76q41-40.77 41-99Q620-538 579.24-579q-40.77-41-99-41Q422-620 381-579.24q-41 40.77-41 99Q340-422 380.76-381q40.77 41 99 41Q538-340 579-380.76ZM338.5-338.5Q280-397 280-480t58.5-141.5Q397-680 480-680t141.5 58.5Q680-563 680-480t-58.5 141.5Q563-280 480-280t-141.5-58.5ZM70-450q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32Q57.25-510 70-510h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H70Zm720 0q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H790ZM458.5-768.63Q450-777.25 450-790v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63Zm0 720Q450-57.25 450-70v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM240-678l-57-56q-9-9-8.63-21.6.37-12.61 8.53-21.5 8.89-8.9 21.5-8.9 12.6 0 21.6 9l56 57q8 9 8 21t-8 20.5q-8 8.5-20.5 8.5t-21.5-8Zm494 495-56-57q-8-9-8-21.38 0-12.37 8.5-20.62 8.5-9 20.5-9t21 9l57 56q9 9 8.63 21.6-.37 12.61-8.53 21.5-8.89 8.9-21.5 8.9-12.6 0-21.6-9Zm-56-495q-9-9-9-21t9-21l56-57q9-9 21.6-8.63 12.61.37 21.5 8.53 8.9 8.89 8.9 21.5 0 12.6-9 21.6l-57 56q-8 8-20.36 8-12.37 0-21.64-8ZM182.9-182.9q-8.9-8.89-8.9-21.5 0-12.6 9-21.6l57-56q8.8-9 20.9-9 12.1 0 20.71 9 9.39 9 9.39 21t-9 21l-56 57q-9 9-21.6 8.63-12.61-.37-21.5-8.53ZM480-480Z", "dark_mode": "M480-120q-150 0-255-105T120-480q0-135 79.5-229T408-830q20-5 34-1t22 15q8 10 7.5 25t-8.5 35q-9 23-14 47t-5 49q0 90 63 153t153 63q25 0 48.5-4.5T754-461q22-8 38-7t26 9q10 8 13 23t-2 36q-27 121-121 200.5T480-120Zm0-60q109 0 190-67.5T771-406q-25 11-53.5 16.5T660-384q-115 0-195.5-80.5T384-660q0-24 5-51.5t18-62.5q-98 27-162.5 109.5T180-480q0 125 87.5 212.5T480-180Zm-4-297Z", "download": "M469-327q-5-2-10-7L308-485q-9-9.27-8.5-21.64.5-12.36 9.11-21.36 9.39-9 21.89-9t21.5 9l98 99v-341q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v341l99-99q8.8-9 20.9-8.5 12.1.5 21.49 9.5 8.61 9 8.61 21.5t-9 21.5L501-334q-5 5-10.13 7-5.14 2-11 2-5.87 0-10.87-2ZM220-160q-24 0-42-18t-18-42v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113h520v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113q0 24-18 42t-42 18H220Z", "sync": "M220-477q0 63 23.5 109.5T307-287l30 21v-94q0-13 8.5-21.5T367-390q13 0 21.5 8.5T397-360v170q0 13-8.5 21.5T367-160H197q-13 0-21.5-8.5T167-190q0-13 8.5-21.5T197-220h100l-15-12q-64-51-93-111t-29-134q0-94 49.5-171.5T342-766q11-5 21 0t14 16q5 11 0 22.5T361-710q-64 34-102.5 96.5T220-477Zm520-6q0-48-23.5-97.5T655-668l-29-26v94q0 13-8.5 21.5T596-570q-13 0-21.5-8.5T566-600v-170q0-13 8.5-21.5T596-800h170q13 0 21.5 8.5T796-770q0 13-8.5 21.5T766-740H665l15 14q60 56 90 120t30 123q0 93-48 169.5T623-195q-11 6-22.5 1.5T584-210q-5-11 0-22.5t16-17.5q65-33 102.5-96T740-483Z", "folder": "M140-160q-24 0-42-18.5T80-220v-520q0-23 18-41.5t42-18.5h256q12.44 0 23.72 5t19.37 13.09L481-740h339q23 0 41.5 18.5T880-680v460q0 23-18.5 41.5T820-160H140Zm0-60h680v-460H456l-60-60H140v520Zm0 0v-520 520Z", "error": "M503.5-289.48q9.5-9.48 9.5-23.5t-9.48-23.52q-9.48-9.5-23.5-9.5t-23.52 9.48q-9.5 9.48-9.5 23.5t9.48 23.52q9.48 9.5 23.5 9.5t23.52-9.48Zm1-152.15q8.5-8.62 8.5-21.37v-193q0-12.75-8.68-21.38-8.67-8.62-21.5-8.62-12.82 0-21.32 8.62-8.5 8.63-8.5 21.38v193q0 12.75 8.68 21.37 8.67 8.63 21.5 8.63 12.82 0 21.32-8.63ZM480.27-80q-82.74 0-155.5-31.5Q252-143 197.5-197.5t-86-127.34Q80-397.68 80-480.5t31.5-155.66Q143-709 197.5-763t127.34-85.5Q397.68-880 480.5-880t155.66 31.5Q709-817 763-763t85.5 127Q880-563 880-480.27q0 82.74-31.5 155.5Q817-252 763-197.68q-54 54.31-127 86Q563-80 480.27-80Zm.23-60Q622-140 721-239.5t99-241Q820-622 721.19-721T480-820q-141 0-240.5 98.81T140-480q0 141 99.5 240.5t241 99.5Zm-.5-340Z", "check": "m378-332 363-363q9-9 21.5-9t21.5 9q9 9 9 21.5t-9 21.5L399-267q-9 9-21 9t-21-9L175-449q-9-9-8.5-21.5T176-492q9-9 21.5-9t21.5 9l159 160Z", "lan": "M120-140v-150q0-24.75 17.63-42.38Q155.25-350 180-350h60v-100q0-24.75 17.63-42.38Q275.25-510 300-510h150v-100h-60q-24.75 0-42.37-17.63Q330-645.25 330-670v-150q0-24.75 17.63-42.38Q365.25-880 390-880h180q24.75 0 42.38 17.62Q630-844.75 630-820v150q0 24.75-17.62 42.37Q594.75-610 570-610h-60v100h150q24.75 0 42.38 17.62Q720-474.75 720-450v100h60q24.75 0 42.38 17.62Q840-314.75 840-290v150q0 24.75-17.62 42.37Q804.75-80 780-80H600q-24.75 0-42.37-17.63Q540-115.25 540-140v-150q0-24.75 17.63-42.38Q575.25-350 600-350h60v-100H300v100h60q24.75 0 42.38 17.62Q420-314.75 420-290v150q0 24.75-17.62 42.37Q384.75-80 360-80H180q-24.75 0-42.37-17.63Q120-115.25 120-140Zm270-530h180v-150H390v150ZM180-140h180v-150H180v150Zm420 0h180v-150H600v150ZM480-670ZM360-290Zm240 0Z", "add": "M450-450H230q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h220v-220q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v220h220q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H510v220q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63-8.5-8.62-8.5-21.37v-220Z", "computer": "M70-120q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32Q57.25-180 70-180h820q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H70Zm70-120q-24 0-42-18t-18-42v-480q0-24 18-42t42-18h680q24 0 42 18t18 42v480q0 24-18 42t-42 18H140Zm0-60h680v-480H140v480Zm0 0v-480 480Z", "keyboard_arrow_down": "M469-358q-5-2-10-7L261-563q-9-9-8.5-21.5T262-606q9-9 21.5-9t21.5 9l175 176 176-176q9-9 21-8.5t21 9.5q9 9 9 21.5t-9 21.5L501-365q-5 5-10 7t-11 2q-6 0-11-2Z", "lock": "M220-80q-24.75 0-42.37-17.63Q160-115.25 160-140v-434q0-24.75 17.63-42.38Q195.25-634 220-634h70v-96q0-78.85 55.61-134.42Q401.21-920 480.11-920q78.89 0 134.39 55.58Q670-808.85 670-730v96h70q24.75 0 42.38 17.62Q800-598.75 800-574v434q0 24.75-17.62 42.37Q764.75-80 740-80H220Zm0-60h520v-434H220v434Zm314.5-162.03Q557-324.06 557-355q0-30-22.67-54.5t-54.5-24.5q-31.83 0-54.33 24.5t-22.5 55q0 30.5 22.67 52.5t54.5 22q31.83 0 54.33-22.03ZM350-634h260v-96q0-54.17-37.88-92.08-37.88-37.92-92-37.92T388-822.08q-38 37.91-38 92.08v96ZM220-140v-434 434Z", "chat_bubble.fill": "M240-240 131-131q-14 14-32.5 6.5T80-152v-668q0-24 18-42t42-18h680q24 0 42 18t18 42v520q0 24-18 42t-42 18H240Z", "tune": "M435.5-128.63Q427-137.25 427-150v-165q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v53h323q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H487v52q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM150-202q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h187q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H150Zm165.5-174.63Q307-385.25 307-398v-52H150q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h157v-54q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v166q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM457-450q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h353q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H457Zm144.5-173.63Q593-632.25 593-645v-165q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v52h157q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H653v53q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM150-698q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h353q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H150Z", "settings": "M421-80q-14 0-25-9t-13-23l-15-94q-19-7-40-19t-37-25l-86 40q-14 6-28 1.5T155-226L97-330q-8-13-4.5-27t15.5-23l80-59q-2-9-2.5-20.5T185-480q0-9 .5-20.5T188-521l-80-59q-12-9-15.5-23t4.5-27l58-104q8-13 22-17.5t28 1.5l86 40q16-13 37-25t40-18l15-95q2-14 13-23t25-9h118q14 0 25 9t13 23l15 94q19 7 40.5 18.5T669-710l86-40q14-6 27.5-1.5T804-734l59 104q8 13 4.5 27.5T852-580l-80 57q2 10 2.5 21.5t.5 21.5q0 10-.5 21t-2.5 21l80 58q12 8 15.5 22.5T863-330l-58 104q-8 13-22 17.5t-28-1.5l-86-40q-16 13-36.5 25.5T592-206l-15 94q-2 14-13 23t-25 9H421Zm15-60h88l14-112q33-8 62.5-25t53.5-41l106 46 40-72-94-69q4-17 6.5-33.5T715-480q0-17-2-33.5t-7-33.5l94-69-40-72-106 46q-23-26-52-43.5T538-708l-14-112h-88l-14 112q-34 7-63.5 24T306-642l-106-46-40 72 94 69q-4 17-6.5 33.5T245-480q0 17 2.5 33.5T254-413l-94 69 40 72 106-46q24 24 53.5 41t62.5 25l14 112Zm44-210q54 0 92-38t38-92q0-54-38-92t-92-38q-54 0-92 38t-38 92q0 54 38 92t92 38Zm0-130Z", "close": "M480-438 270-228q-9 9-21 9t-21-9q-9-9-9-21t9-21l210-210-210-210q-9-9-9-21t9-21q9-9 21-9t21 9l210 210 210-210q9-9 21-9t21 9q9 9 9 21t-9 21L522-480l210 210q9 9 9 21t-9 21q-9 9-21 9t-21-9L480-438Z", "info": "M504.5-288.63q8.5-8.62 8.5-21.37v-180q0-12.75-8.68-21.38-8.67-8.62-21.5-8.62-12.82 0-21.32 8.62-8.5 8.63-8.5 21.38v180q0 12.75 8.68 21.37 8.67 8.63 21.5 8.63 12.82 0 21.32-8.63Zm-1-314.57q9.5-9.2 9.5-22.8 0-14.45-9.48-24.22-9.48-9.78-23.5-9.78t-23.52 9.78Q447-640.45 447-626q0 13.6 9.48 22.8 9.48 9.2 23.5 9.2t23.52-9.2ZM480.27-80q-82.74 0-155.5-31.5Q252-143 197.5-197.5t-86-127.34Q80-397.68 80-480.5t31.5-155.66Q143-709 197.5-763t127.34-85.5Q397.68-880 480.5-880t155.66 31.5Q709-817 763-763t85.5 127Q880-563 880-480.27q0 82.74-31.5 155.5Q817-252 763-197.68q-54 54.31-127 86Q563-80 480.27-80Zm.23-60Q622-140 721-239.5t99-241Q820-622 721.19-721T480-820q-141 0-240.5 98.81T140-480q0 141 99.5 240.5t241 99.5Zm-.5-340Z"}, "agents": {"pi": {"vb": "0 0 470 470", "inner": "<g transform=\"translate(-105.246 -105.246) scale(0.85 0.85) translate(-0 -0)\"><path fill=\"#F09082\" fill-rule=\"nonzero\" d=\"M165.29,165.29H517.36V400H400V282.65H165.29Z\"/><path fill=\"#4D9ABF\" fill-rule=\"nonzero\" d=\"M165.29,282.65H282.65V400H400V517.36H282.65V634.72H165.29Z\"/><path fill=\"#F1BE58\" fill-rule=\"nonzero\" d=\"M517.36,400H634.72V634.72H517.36Z\"/><\/g>"}, "codex": {"vb": "0 0 24 24", "inner": "<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M 8.086 .457 a 6.105 6.105 0 0 1 3.046 -.415 c 1.333 .153 2.521 .72 3.564 1.7 a .117 .117 0 0 0 .107 .029 c 1.408 -.346 2.762 -.224 4.061 .366 l .063 .03 l .154 .076 c 1.357 .703 2.33 1.77 2.918 3.198 c .278 .679 .418 1.388 .421 2.126 a 5.655 5.655 0 0 1 -.18 1.631 a .167 .167 0 0 0 .04 .155 a 5.982 5.982 0 0 1 1.578 2.891 c .385 1.901 -.01 3.615 -1.183 5.14 l -.182 .22 a 6.063 6.063 0 0 1 -2.934 1.851 a .162 .162 0 0 0 -.108 .102 c -.255 .736 -.511 1.364 -.987 1.992 c -1.199 1.582 -2.962 2.462 -4.948 2.451 c -1.583 -.008 -2.986 -.587 -4.21 -1.736 a .145 .145 0 0 0 -.14 -.032 c -.518 .167 -1.04 .191 -1.604 .185 a 5.924 5.924 0 0 1 -2.595 -.622 a 6.058 6.058 0 0 1 -2.146 -1.781 c -.203 -.269 -.404 -.522 -.551 -.821 a 7.74 7.74 0 0 1 -.495 -1.283 a 6.11 6.11 0 0 1 -.017 -3.064 a .166 .166 0 0 0 .008 -.074 a .115 .115 0 0 0 -.037 -.064 a 5.958 5.958 0 0 1 -1.38 -2.202 a 5.196 5.196 0 0 1 -.333 -1.589 a 6.915 6.915 0 0 1 .188 -2.132 c .45 -1.484 1.309 -2.648 2.577 -3.493 c .282 -.188 .55 -.334 .802 -.438 c .286 -.12 .573 -.22 .861 -.304 a .129 .129 0 0 0 .087 -.087 A 6.016 6.016 0 0 1 5.635 2.31 C 6.315 1.464 7.132 .846 8.086 .457 z m -.804 7.85 a .848 .848 0 0 0 -1.473 .842 l 1.694 2.965 l -1.688 2.848 a .849 .849 0 0 0 1.46 .864 l 1.94 -3.272 a .849 .849 0 0 0 .007 -.854 l -1.94 -3.393 z m 5.446 6.24 a .849 .849 0 0 0 0 1.695 h 4.848 a .849 .849 0 0 0 0 -1.696 h -4.848 z\"/>"}, "claude": {"vb": "0 0 24 24", "inner": "<path fill=\"#D97757\" fill-rule=\"nonzero\" d=\"M 4.709 15.955 l 4.72 -2.647 .08 -.23 -.08 -.128 H 9.2 l -.79 -.048 -2.698 -.073 -2.339 -.097 -2.266 -.122 -.571 -.121 L 0 11.784 l .055 -.352 .48 -.321 .686 .06 1.52 .103 2.278 .158 1.652 .097 2.449 .255 h .389 l .055 -.157 -.134 -.098 -.103 -.097 -2.358 -1.596 -2.552 -1.688 -1.336 -.972 -.724 -.491 -.364 -.462 -.158 -1.008 .656 -.722 .881 .06 .225 .061 .893 .686 1.908 1.476 2.491 1.833 .365 .304 .145 -.103 .019 -.073 -.164 -.274 -1.355 -2.446 -1.446 -2.49 -.644 -1.032 -.17 -.619 a 2.97 2.97 0 0 1 -.104 -.729 L 6.283 .134 6.696 0 l .996 .134 .42 .364 .62 1.414 1.002 2.229 1.555 3.03 .456 .898 .243 .832 .091 .255 h .158 V 9.01 l .128 -1.706 .237 -2.095 .23 -2.695 .08 -.76 .376 -.91 .747 -.492 .584 .28 .48 .685 -.067 .444 -.286 1.851 -.559 2.903 -.364 1.942 h .212 l .243 -.242 .985 -1.306 1.652 -2.064 .73 -.82 .85 -.904 .547 -.431 h 1.033 l .76 1.129 -.34 1.166 -1.064 1.347 -.881 1.142 -1.264 1.7 -.79 1.36 .073 .11 .188 -.02 2.856 -.606 1.543 -.28 1.841 -.315 .833 .388 .091 .395 -.328 .807 -1.969 .486 -2.309 .462 -3.439 .813 -.042 .03 .049 .061 1.549 .146 .662 .036 h 1.622 l 3.02 .225 .79 .522 .474 .638 -.079 .485 -1.215 .62 -1.64 -.389 -3.829 -.91 -1.312 -.329 h -.182 v .11 l 1.093 1.068 2.006 1.81 2.509 2.33 .127 .578 -.322 .455 -.34 -.049 -2.205 -1.657 -.851 -.747 -1.926 -1.62 h -.128 v .17 l .444 .649 2.345 3.521 .122 1.08 -.17 .353 -.608 .213 -.668 -.122 -1.374 -1.925 -1.415 -2.167 -1.143 -1.943 -.14 .08 -.674 7.254 -.316 .37 -.729 .28 -.607 -.461 -.322 -.747 .322 -1.476 .389 -1.924 .315 -1.53 .286 -1.9 .17 -.632 -.012 -.042 -.14 .018 -1.434 1.967 -2.18 2.945 -1.726 1.845 -.414 .164 -.717 -.37 .067 -.662 .401 -.589 2.388 -3.036 1.44 -1.882 .93 -1.086 -.006 -.158 h -.055 L 4.132 18.56 l -1.13 .146 -.487 -.456 .061 -.746 .231 -.243 1.908 -1.312 -.006 .006 z\"/>"}, "deepseek": {"vb": "0 0 48.34 48.34", "inner": "<g transform=\"translate(-1 -0.99) scale(1 1) translate(-0 -0)\"><path fill=\"currentColor\" fill-rule=\"nonzero\" d=\"M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z\"/><\/g>"}}}</script>
+<script>
+'use strict';
+const assets=JSON.parse(document.querySelector('#orbis-source-assets').textContent);
+const icon=name=>`<svg class="icon" viewBox="0 -960 960 960" aria-hidden="true"><path d="${assets.icons[name]||assets.icons.info}"/></svg>`;
+const mark=kind=>`<svg class="agent-mark" viewBox="${assets.agents[kind].vb}" aria-hidden="true">${assets.agents[kind].inner}</svg>`;
+const escapeHTML=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const sessionData=[
+  {id:'codex',agent:'Codex',kind:'codex',title:'把首页的每一次交互打磨好',parent:'~/Projects/',folder:'orbis',model:'GPT-5.4',status:'running',time:'刚刚'},
+  {id:'claude',agent:'Claude Code',kind:'claude',title:'整理设计规范与组件边界',parent:'~/Projects/',folder:'design-system',model:'Claude Sonnet 4.5',status:'waiting',time:'2 分钟前'},
+  {id:'deepseek',agent:'DeepSeek',kind:'deepseek',title:'检查服务端的连接状态',parent:'~/Projects/',folder:'relay-service',model:'DeepSeek V3.2',status:'idle',time:'18 分钟前'},
+  {id:'pi',agent:'Pi',kind:'pi',title:'整理照片',parent:'~/Personal/',folder:'photo-tools',model:'Gemini 2.5 Pro',status:'idle',time:'1 小时前'}
+];
+const state={theme:document.documentElement.dataset.theme||'light',scene:'normal',mobileView:document.documentElement.dataset.mobileView||'layered',width:390,firstStatus:'running',selecting:false,selected:new Set(),openSheet:null};
+const statusLabels={running:'运行中',waiting:'待确认',idle:'空闲'};
+let focusBeforeSheet=null;
+let suppressCardClickUntil=0;
+const noticeTimers=new Map();
+function sessionAt(index){
+  const session={...sessionData[index]};
+  if(index===0){session.status=state.firstStatus;if(state.scene==='long'){session.title='重新梳理首页会话列表的信息呈现与视觉层次，并统一所有运行状态下的卡片布局';session.model='GPT-5.4 / Custom research provider with a very long model name';session.parent='~/Workspace/client-platform/experiments/';session.folder='orbis-mobile';}}
+  return session;
+}
+function statusMarkup(status){return `<span class="status" data-status="${status}">${status==='waiting'?icon('error'):'<span class="dot-wrap"><span class="dot"></span></span>'}<span>${statusLabels[status]}</span></span>`;}
+function selectionMarkup(id){return `<span class="selection-slot" aria-hidden="true"><span class="selection-circle">${state.selected.has(id)?icon('check'):''}</span></span>`;}
+function pathMarkup(s){return `<div class="directory" title="${escapeHTML(s.parent+s.folder)}">${icon('folder')}<span class="path mono"><span class="path-parent">${escapeHTML(s.parent)}</span><span class="path-leaf">${escapeHTML(s.folder)}</span></span></div>`;}
+function cardMarkup(s,variant){
+  const title=`<h3>${escapeHTML(s.title)}</h3>`;
+  const metadata=`<div class="metadata"><span class="model" title="${escapeHTML(s.model)}">${variant==='compact'?`<span class="model-agent">${s.agent==='Claude Code'?'Claude':s.agent}</span><span class="model-text">${escapeHTML(s.model)}</span>`:escapeHTML(s.model)}</span>${statusMarkup(s.status)}</div>`;
+  const body=variant==='layered'?`<div class="identity"><span class="agent-name">${mark(s.kind)}${s.agent}</span><span class="identity-trailing"><span class="timestamp">${s.time}</span>${selectionMarkup(s.id)}</span></div>${title}${pathMarkup(s)}${metadata}`:`${selectionMarkup(s.id)}<div class="compact-main"><span class="emblem">${mark(s.kind)}</span><div class="compact-copy">${title}${pathMarkup(s)}</div></div>${metadata}`;
+  return `<article class="session" style="--agent:var(--${s.kind})"><button type="button" class="session-card" data-session="${s.id}" data-variant="${variant}" ${state.selecting?`aria-pressed="${state.selected.has(s.id)}"`:''} aria-label="${escapeHTML(s.title)}，${s.agent}，${escapeHTML(s.model)}，${statusLabels[s.status]}">${body}</button></article>`;
+}
+function screenMarkup(variant){return `<div class="statusbar"><span>9:41</span><span class="right">5G ${icon('lan')} 100%</span></div>
+  <header class="app-header"><div class="app-brand"><strong>Orbis</strong><span>Easy Agents Everywhere</span></div><div class="header-buttons"><button type="button" class="round-button" data-demo="目录" aria-label="会话目录">${icon('folder')}</button><button type="button" class="round-button" data-demo="新建会话" aria-label="新建会话">${icon('add')}</button></div></header>
+  <div class="host-line"><span class="computer">${icon('computer')} MacBook Pro ${icon('keyboard_arrow_down')}</span><span class="connection">${icon('lock')}局域网</span></div>
+  <div class="list-toolbar"><div class="list-caption"><span data-list-label>${state.selecting?`已选择 ${state.selected.size} 项`:'会话'}</span><span class="count" ${state.selecting?'hidden':''}>4</span></div><button type="button" class="select-toggle" data-select-toggle>${state.selecting?'完成':'选择'}</button></div>
+  <div class="scroll-content"><div class="session-list ${state.selecting?'selecting':''}">${sessionData.map((_,i)=>cardMarkup(sessionAt(i),variant)).join('')}</div><div class="list-end">所有会话已同步</div></div>
+  <nav class="bottom-nav" aria-label="应用导航"><span class="nav-item active" aria-current="page">${icon('chat_bubble.fill')}聊天</span><button type="button" class="nav-item" data-demo="供应商">${icon('tune')}供应商</button><button type="button" class="nav-item" data-demo="设置">${icon('settings')}设置</button></nav>
+  <div class="phone-notice" role="status" aria-live="polite"></div>`;}
+function renderScreens(){
+  for(const variant of ['layered','compact']){
+    const screen=document.querySelector(`#screen-${variant}`);const scrollTop=screen.querySelector('.scroll-content')?.scrollTop||0;
+    screen.innerHTML=screenMarkup(variant);screen.querySelector('.scroll-content').scrollTop=scrollTop;
+  }
+  state.openSheet=null;
+}
+function renderCards(){
+  for(const variant of ['layered','compact']){
+    const screen=document.querySelector(`#screen-${variant}`);const list=screen.querySelector('.session-list');
+    list.classList.toggle('selecting',state.selecting);list.innerHTML=sessionData.map((_,i)=>cardMarkup(sessionAt(i),variant)).join('');
+    screen.querySelector('[data-list-label]').textContent=state.selecting?`已选择 ${state.selected.size} 项`:'会话';
+    screen.querySelector('.count').hidden=state.selecting;screen.querySelector('[data-select-toggle]').textContent=state.selecting?'完成':'选择';
+  }
+}
+function setChoice(selector,attribute,value){document.querySelectorAll(selector).forEach(button=>button.setAttribute('aria-pressed',String(button.getAttribute(attribute)===value)));}
+function setSelection(enabled){state.selecting=enabled;if(!enabled)state.selected.clear();renderCards();}
+function notify(screen,message){const toast=screen.querySelector('.phone-notice');clearTimeout(noticeTimers.get(screen.id));toast.textContent=message;toast.classList.add('visible');noticeTimers.set(screen.id,setTimeout(()=>toast.classList.remove('visible'),2600));}
+function closeSheet(){
+  document.querySelectorAll('.sheet-backdrop').forEach(node=>node.remove());
+  document.querySelectorAll('.screen > [inert]').forEach(node=>node.inert=false);
+  state.openSheet=null;if(focusBeforeSheet?.isConnected)focusBeforeSheet.focus();focusBeforeSheet=null;
+}
+function openDetails(id,variant){
+  closeSheet();focusBeforeSheet=document.activeElement;
+  const s=sessionAt(sessionData.findIndex(item=>item.id===id));const screen=document.querySelector(`#screen-${variant}`);
+  [...screen.children].forEach(child=>child.inert=true);
+  const backdrop=document.createElement('div');backdrop.className='sheet-backdrop';
+  backdrop.innerHTML=`<section class="detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title-${variant}" style="--agent:var(--${s.kind})"><div class="handle"></div><div class="sheet-heading"><span class="agent-name">${mark(s.kind)}${s.agent}</span><button type="button" class="round-button" data-close-sheet aria-label="关闭会话信息">${icon('close')}</button></div><h2 class="sheet-title" id="detail-title-${variant}">${escapeHTML(s.title)}</h2><div class="fact"><span class="fact-label">工作目录</span><span class="fact-value mono">${escapeHTML(s.parent+s.folder)}</span></div><div class="fact"><span class="fact-label">模型</span><span class="fact-value">${escapeHTML(s.model)}</span></div><div class="fact"><span class="fact-label">运行状态</span>${statusMarkup(s.status)}</div><p class="sheet-caption">卡片信息预览</p></section>`;
+  screen.append(backdrop);state.openSheet=variant;backdrop.querySelector('[data-close-sheet]').focus();
+}
+document.querySelectorAll('[data-icon]').forEach(node=>node.innerHTML=icon(node.dataset.icon));
+renderScreens();
+document.addEventListener('click',event=>{
+  const button=event.target.closest('button');
+  if(event.target.classList.contains('sheet-backdrop')){closeSheet();return;}
+  if(!button)return;
+  if(button.hasAttribute('data-close-sheet')){closeSheet();return;}
+  if(button.dataset.themeChoice){state.theme=button.dataset.themeChoice;document.documentElement.dataset.theme=state.theme;setChoice('[data-theme-choice]','data-theme-choice',state.theme);return;}
+  if(button.dataset.sceneChoice){closeSheet();state.scene=button.dataset.sceneChoice;document.documentElement.dataset.scene=state.scene;setChoice('[data-scene-choice]','data-scene-choice',state.scene);state.selecting=state.scene==='selection';state.selected=new Set(state.selecting?['codex']:[]);renderCards();return;}
+  if(button.dataset.width){state.width=Number(button.dataset.width);document.documentElement.style.setProperty('--phone-width',`${state.width}px`);setChoice('[data-width]','data-width',String(state.width));return;}
+  if(button.dataset.view){closeSheet();state.mobileView=button.dataset.view;document.documentElement.dataset.mobileView=state.mobileView;setChoice('[data-view]','data-view',state.mobileView);return;}
+  if(button.id==='cycle-status'){closeSheet();const sequence=['running','waiting','idle'];state.firstStatus=sequence[(sequence.indexOf(state.firstStatus)+1)%sequence.length];renderCards();return;}
+  if(button.hasAttribute('data-select-toggle')){setSelection(!state.selecting);return;}
+  if(button.dataset.session){
+    if(Date.now()<suppressCardClickUntil)return;
+    if(state.selecting){const id=button.dataset.session;state.selected.has(id)?state.selected.delete(id):state.selected.add(id);renderCards();}
+    else openDetails(button.dataset.session,button.dataset.variant);
+    return;
+  }
+  if(button.dataset.demo){notify(button.closest('.screen'),`${button.dataset.demo}：本页聚焦会话卡片的呈现。`);return;}
+  if(button.id==='download'){
+    // Reset transient UI before saving so the file always opens in a useful state.
+    closeSheet();state.scene='normal';state.selecting=false;state.selected.clear();state.firstStatus='running';renderCards();
+    document.documentElement.dataset.scene='normal';setChoice('[data-scene-choice]','data-scene-choice','normal');
+    const content='<!doctype html>\n'+document.documentElement.outerHTML;
+    const url=URL.createObjectURL(new Blob([content],{type:'text/html;charset=utf-8'}));
+    const link=document.createElement('a');link.href=url;link.download='Orbis-会话卡片演示.html';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
+});
+let pressTimer=null,pressStart=null;
+function cancelPress(){clearTimeout(pressTimer);pressTimer=null;pressStart=null;}
+document.addEventListener('pointerdown',event=>{
+  const card=event.target.closest('.session-card');if(!card||event.button!==0)return;
+  pressStart={x:event.clientX,y:event.clientY};
+  pressTimer=setTimeout(()=>{state.selecting=true;state.selected.add(card.dataset.session);suppressCardClickUntil=Date.now()+800;renderCards();pressTimer=null;},550);
+});
+document.addEventListener('pointermove',event=>{if(pressStart&&Math.hypot(event.clientX-pressStart.x,event.clientY-pressStart.y)>8)cancelPress();});
+document.addEventListener('pointerup',cancelPress);document.addEventListener('pointercancel',cancelPress);
+document.addEventListener('contextmenu',event=>{if(event.target.closest('.session-card'))event.preventDefault();});
+document.addEventListener('keydown',event=>{
+  if(!state.openSheet)return;
+  if(event.key==='Escape'){event.preventDefault();closeSheet();}
+  if(event.key==='Tab'){event.preventDefault();document.querySelector(`#screen-${state.openSheet} [data-close-sheet]`)?.focus();}
+});
+</script>
+</body>
+</html>
