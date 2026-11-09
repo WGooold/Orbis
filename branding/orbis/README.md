@@ -2,7 +2,7 @@
 
 品牌名：Orbis。Slogan：Easy Agents Everywhere。
 
-开口方环象征稳定的基地，右上小方块象征可以独立出发的能力。当前 B 版图标采用瓷白主体与中等深度雾蓝底面（#617FA3），以柔和边缘光影表现轻微凸起的平面 UI 质感；底色通过合成直接调整。
+开口方环象征稳定的基地，右上小方块象征可以独立出发的能力。当前 B 版图标采用瓷白主体与高饱和宝蓝底面（#2D6EC8），以柔和边缘光影表现轻微凸起的平面 UI 质感；底色通过合成直接调整。
 
 ## 文件与用途
 
@@ -14,7 +14,7 @@
 | `store/google-play-512.png` | Google Play 图标，512×512 PNG、不透明、无文字/圆角 |
 | `store/app-store-1024.png` | iOS 商店图标，1024×1024、不透明；与 iOS 工程内 AppIcon 相同 |
 | `android/adaptive-foreground-1080.png` | Android 自适应前景，透明背景，108dp 画布的 10× 素材 |
-| `android/adaptive-background-1080.png` | Android 自适应背景，纯色 #617FA3 |
+| `android/adaptive-background-1080.png` | Android 自适应背景，纯色 #2D6EC8 |
 | `android/res/` | 可直接放入 Android 项目的完整资源目录 |
 | `preview.png` | 真实母稿缩放的裁切、尺寸与单色预览 |
 | `geometry.json` | 间隙、安全区域等实际导出参数 |

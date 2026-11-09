@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
 RES = REPO / 'android/app/src/main/res'
-BG = (97, 127, 163)
+BG = (45, 110, 200)
 LANCZOS = Image.Resampling.LANCZOS
 
 

@@ -107,7 +107,7 @@
 | V20 | 运行中工具呈现连续（Android Pi 路径 r17 已修复；Android Codex r19 真实输出通过；iOS 按显示行增量合并、不做截断重建（代码核对）；**iOS 与 Claude 真实输出待验证**，UI-02） |
 | V21 | 首页 / 目录列表视口稳定（Android 首页 r16 已实施；iOS 首页 r18 验证上方移除场景无此问题；r19 两端目录与首页自动用例定向通过，**全量与手动回归待完成**，UI-03） |
 | V22 | 其他乐观操作可恢复（r27 新增，**r32 已实施、验证中**，未验收） |
-| X01 | Orbis 品牌母版（瓷白雾蓝 B 版；底色直接调深至 #617FA3，资源已更新；安装效果待用户验证；见[品牌资源](../../branding/orbis/README.md)和[本次校验证据](../../.artifacts/2026-11-08-icon-background/checks.json)） |
+| X01 | Orbis 品牌母版（瓷白宝蓝 B 版；底色调整为 #2D6EC8，跨平台资源已更新；安装效果待用户验证；见[品牌资源](../../branding/orbis/README.md)和[本次校验证据](../../.artifacts/2026-11-09-icon-cobalt/checks.json)） |
 | X02 | Agent 视觉身份 |
 | X03 | Host 桌面材质与控件 |
 | X04 | Host 阴影缓存 |
