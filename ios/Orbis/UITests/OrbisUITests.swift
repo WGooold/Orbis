@@ -205,16 +205,6 @@ final class OrbisUITests: XCTestCase {
         capture("design-draft-codex-desktop", app: app)
     }
 
-    // SC57: each circle receives physical keys independently; browsing never applies.
-    func testProviderDialHardwareKeysOnlyBrowse() {
-        let app = launch("providers", arguments: ["--preview-reduce-motion", "--preview-provider-keyboard", "--preview-reset-design"])
-        let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
-        XCTAssertTrue(profile.waitForExistence(timeout: 6))
-        profile.typeKey(.end, modifierFlags: [])
-        let selectedTeam = NSPredicate(format: "value == %@", "团队供应商")
-        XCTAssertTrue(profile.waitForExistence(timeout: 3))
-        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selectedTeam, object: profile)], timeout: 3), .completed)
-        XCTAssertTrue(app.buttons["provider-action-team"].isEnabled)
     // S42 / SC63: a real inner-ring drag must leave the outer ring movable across
     // repeated Agent changes. Check label positions as well as the selected value
     // so a stale rendering state cannot pass merely by updating the selection.
@@ -262,6 +252,16 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // SC57: each circle receives physical keys independently; browsing never applies.
+    func testProviderDialHardwareKeysOnlyBrowse() {
+        let app = launch("providers", arguments: ["--preview-reduce-motion", "--preview-provider-keyboard", "--preview-reset-design"])
+        let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
+        XCTAssertTrue(profile.waitForExistence(timeout: 6))
+        profile.typeKey(.end, modifierFlags: [])
+        let selectedTeam = NSPredicate(format: "value == %@", "团队供应商")
+        XCTAssertTrue(profile.waitForExistence(timeout: 3))
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selectedTeam, object: profile)], timeout: 3), .completed)
+        XCTAssertTrue(app.buttons["provider-action-team"].isEnabled)
         profile.typeKey(.home, modifierFlags: [])
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "官方服务"), object: profile)], timeout: 3), .completed)
         XCTAssertFalse(app.buttons["provider-action-official"].isEnabled)
@@ -2630,12 +2630,17 @@ final class OrbisUITests: XCTestCase {
         }
     }
     func testDrawerLongPressArchivesAndRestoresOnlyCheckedSessions() {
+        // S47 / SC68: archive visibility has its own selected button left of the Agent filter.
         // Keep both target rows visible so XCTest does not scroll while synthesizing long press.
         let app = launch("drawer", arguments: ["--preview-drawer-layout"])
         let first = app.buttons["drawer-session-session-4"]
         let second = app.buttons["drawer-session-session-5"]
         XCTAssertTrue(first.waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["会话操作"].exists)
+        let archiveToggle = app.buttons["drawer-archive-toggle"]
+        XCTAssertTrue(archiveToggle.isHittable)
+        XCTAssertFalse(archiveToggle.isSelected)
+        XCTAssertLessThanOrEqual(archiveToggle.frame.maxX, app.buttons["筛选会话：全部"].frame.minX)
         let selectionFrame = first.frame
         first.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
@@ -2643,21 +2648,17 @@ final class OrbisUITests: XCTestCase {
         second.tap()
         XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
         first.tap()
-        // S47 / SC68: archive visibility has its own selected button left of the Agent filter.
         XCTAssertTrue(app.staticTexts["已选择 1 项"].exists)
         first.tap()
         capture("drawer-multiselect", app: app)
         app.buttons["归档选中会话"].tap()
         XCTAssertTrue(app.staticTexts["会话目录"].waitForExistence(timeout: 3))
         XCTAssertFalse(first.exists)
-        let archiveToggle = app.buttons["drawer-archive-toggle"]
-        XCTAssertTrue(archiveToggle.isHittable)
-        XCTAssertFalse(archiveToggle.isSelected)
-        XCTAssertLessThanOrEqual(archiveToggle.frame.maxX, app.buttons["筛选会话：全部"].frame.minX)
         XCTAssertFalse(second.exists)
         XCTAssertTrue(app.buttons["drawer-session-session-1"].exists)
 
         app.buttons["查看已归档会话"].tap()
+        XCTAssertTrue(archiveToggle.isSelected)
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         first.press(forDuration: 0.8)
         second.tap()
@@ -2665,12 +2666,12 @@ final class OrbisUITests: XCTestCase {
         app.buttons["恢复选中会话"].tap()
         XCTAssertTrue(app.staticTexts["没有已归档的会话"].waitForExistence(timeout: 3))
         app.buttons["查看未归档会话"].tap()
+        XCTAssertFalse(archiveToggle.isSelected)
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         XCTAssertTrue(second.exists)
     }
 
     func testDrawerSelectionClearsOnCancelSearchAndClose() {
-        XCTAssertTrue(archiveToggle.isSelected)
         let app = launch("drawer", dark: true)
         let session = app.buttons["drawer-session-session-4"]
         XCTAssertTrue(session.waitForExistence(timeout: 8))
@@ -2679,7 +2680,6 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["会话目录"].exists)
         session.press(forDuration: 0.8)
         let search = app.textFields["搜索会话或目录"]
-        XCTAssertFalse(archiveToggle.isSelected)
         search.tap(); search.typeText("优化")
         XCTAssertFalse(app.buttons["归档选中会话"].exists)
         app.buttons["清除搜索"].tap()
