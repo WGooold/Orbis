@@ -46,9 +46,9 @@ class HomeMaterialInstrumentedTest {
         val image = compose.onRoot().captureToImage().asAndroidBitmap()
         // The uninterrupted left gutter must use the same base as the approved drawer.
         assertEquals(expected, image.getPixel(2, image.height / 2))
-        // S40 / SC61: title, path, model, and status reserve the same rows across all home cards.
+        // S40 / SC61: title, path, and the shared model/status row keep home card heights consistent.
         val bounds = kinds.associateWith { compose.onNodeWithTag("home-runtime-$it").fetchSemanticsNode().boundsInRoot }
-        assertEquals("Home cards reserve the same title, path, model, and status rows", 1, bounds.values.map { it.height }.toSet().size)
+        assertEquals("Home cards reserve the same title, path, and shared model/status rows", 1, bounds.values.map { it.height }.toSet().size)
         capture(dark, "resting")
         for (kind in kinds) compose.onNodeWithTag("home-runtime-$kind").assertIsDisplayed()
         // The retained closed drawer has the same host name offscreen; target the home control.

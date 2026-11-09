@@ -71,6 +71,16 @@ class HomeSwipeCloseInstrumentedTest {
         compose.onRoot().performTouchInput { click(Offset(width - 8f, center.y)) }
         compose.onNodeWithText("搜索目录或会话").assertIsNotDisplayed()
 
+        // The progress circle is anchored at the exposed edge, so a small pull reveals it before arming.
+        card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.05f, 0f)) }
+        compose.waitForIdle()
+        val progress = compose.onNodeWithTag("home-close-progress-one", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val shiftedCard = card.fetchSemanticsNode().boundsInRoot
+        assertTrue("The close progress circle must enter the exposed area immediately",
+            progress.right - shiftedCard.right > density)
+        card.performTouchInput { up() }
+        compose.waitForIdle()
+
         // A release below the 40% threshold returns without a write or haptic.
         card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.3f, 0f)) }
         compose.onNodeWithText("关闭").assertIsDisplayed()
@@ -83,6 +93,11 @@ class HomeSwipeCloseInstrumentedTest {
         card.performTouchInput { down(Offset(width * 0.85f, center.y)); moveBy(Offset(-cardWidth * 0.6f, 0f)) }
         compose.onNodeWithText("松手关闭").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, haptics.size); assertTrue(closed.isEmpty()) }
+        // A slight retreat below the 40% arming point stays latched in a narrow hysteresis band.
+        card.performTouchInput { moveBy(Offset(cardWidth * 0.21f, 0f)) }
+        compose.onNodeWithText("松手关闭").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(1, haptics.size); assertTrue(closed.isEmpty()) }
+        card.performTouchInput { moveBy(Offset(-cardWidth * 0.05f, 0f)) }
         repeat(3) { index ->
             card.performTouchInput { moveBy(Offset(cardWidth * 0.3f, 0f)) }
             compose.onNodeWithText("关闭").assertIsDisplayed()

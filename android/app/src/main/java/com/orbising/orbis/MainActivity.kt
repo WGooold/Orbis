@@ -1022,12 +1022,13 @@ internal fun RuntimeListScreen(
                                                 MaterialTheme.colorScheme.surface,
                                                 RoundedCornerShape(24.dp),
                                             ).neumorphInsetOverlay(RoundedCornerShape(24.dp))
-                                                .padding(end = 20.dp),
+                                                .padding(end = 12.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.End,
                                         ) {
                                             AnimatedVisibility(
-                                                visible = swipeOffset > 4f,
+                                                visible = swipeOffset > 0f,
+                                                modifier = Modifier.then(if (swipeOffset <= 0f) Modifier.clearAndSetSemantics {} else Modifier),
                                                 enter = slideInHorizontally(
                                                     initialOffsetX = { it / 3 },
                                                     animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -1044,30 +1045,34 @@ internal fun RuntimeListScreen(
                                                 ),
                                             ) {
                                                 Row(
-                                                    Modifier.width(156.dp),
-                                                    horizontalArrangement = Arrangement.Center,
+                                                    Modifier.width(168.dp),
+                                                    horizontalArrangement = Arrangement.End,
                                                     verticalAlignment = Alignment.CenterVertically,
                                                 ) {
-                                                    androidx.compose.animation.Crossfade(targetState = closeArmed || departure != null,
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold") { armed ->
-                                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center,
-                                                            verticalAlignment = Alignment.CenterVertically) {
-                                                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                                    androidx.compose.animation.Crossfade(
+                                                        targetState = closeArmed || departure != null,
+                                                        modifier = Modifier.weight(1f),
+                                                        animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)),
+                                                        label = "close-threshold",
+                                                    ) { armed ->
+                                                        Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"),
+                                                            modifier = Modifier.fillMaxWidth(), color = closeColor,
+                                                            style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
+                                                            maxLines = 1, softWrap = false, overflow = TextOverflow.Clip, textAlign = TextAlign.End)
+                                                    }
+                                                    Spacer(Modifier.width(12.dp))
+                                                    Box(Modifier.size(40.dp).testTag("home-close-progress-${runtime.runtimeId}"), contentAlignment = Alignment.Center) {
                                                         androidx.compose.foundation.Canvas(Modifier.size(36.dp)) {
+                                                            drawCircle(closeColor.copy(alpha = 0.2f),
+                                                                style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                                                             drawArc(closeColor, -90f, 360f * (swipeOffset / closeThreshold.coerceAtLeast(1f)).coerceIn(0f, 1f),
                                                                 false, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
                                                         }
                                                         NeumorphSurface(Modifier.size(28.dp), shape = CircleShape,
-                                                            style = if (armed) NeumorphStyle.Raised else NeumorphStyle.Pressed, shadowScale = 0.4f) {
+                                                            style = if (closeArmed || departure != null) NeumorphStyle.Raised else NeumorphStyle.Pressed, shadowScale = 0.4f) {
                                                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                                                 Icon(OrbisSymbols.Close, null, tint = closeColor, modifier = Modifier.size(16.dp))
                                                             }
-                                                        }
-                                                    }
-                                                    Spacer(Modifier.width(8.dp))
-                                                    Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"), color = closeColor,
-                                                        style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                                         }
                                                     }
                                                 }
@@ -1084,7 +1089,7 @@ internal fun RuntimeListScreen(
                                                 if (!selecting && canClose) {
                                                     detectHomeCloseDragGestures(
                                                         onDragEnd = {
-                                                            val shouldClose = closeThreshold > 0f && swipeOffset >= closeThreshold
+                                                            val shouldClose = closeThreshold > 0f && closeArmed && swipeOffset >= closeThreshold * 0.96f
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
                                                             val closing = shouldClose && currentCanClose && submitClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
                                                             if (!closing) {
@@ -1099,7 +1104,8 @@ internal fun RuntimeListScreen(
                                                         onHorizontalDrag = { change, dragAmount ->
                                                             val next = (swipeOffset - dragAmount * if (swipeOffset >= closeThreshold && dragAmount < 0f) 0.4f else 1f).coerceIn(0f, cardWidth)
                                                             swipeOffset = next
-                                                            val armed = closeThreshold > 0f && next >= closeThreshold
+                                                            // A tiny reverse wobble near the threshold must not restart the label crossfade.
+                                                            val armed = closeThreshold > 0f && next >= if (closeArmed) closeThreshold * 0.96f else closeThreshold
                                                             if (armed && !closeArmed) {
                                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                             }
@@ -1141,19 +1147,20 @@ internal fun RuntimeListScreen(
                                                 MiddleEllipsizedText(runtime.cwd,
                                                     MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                                                     MaterialTheme.colorScheme.onSurfaceVariant)
-                                                Text(runtime.model?.let(::modelLabel)?.takeIf(String::isNotBlank)
-                                                    ?: agentBrand(runtime.agentKind).title,
-                                                    style = MaterialTheme.typography.labelSmall, color = agentBrand(runtime.agentKind).accent(),
-                                                    maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                                 Row(Modifier.fillMaxWidth().heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically,
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(runtime.model?.let(::modelLabel)?.takeIf(String::isNotBlank)
+                                                        ?: agentBrand(runtime.agentKind).title,
+                                                        modifier = Modifier.weight(1f),
+                                                        style = MaterialTheme.typography.labelSmall, color = agentBrand(runtime.agentKind).accent(),
+                                                        maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                                     if (row.card.hasPendingInteraction) {
                                                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                                             Icon(OrbisSymbols.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                                                             Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium,
                                                                 fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                                         }
-                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle, modifier = Modifier.weight(1f))
+                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
                                                 }
                                             }
                                             OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting && canClose)

@@ -899,7 +899,9 @@ struct HomeView: View, Equatable {
                 let threshold = width * 0.4
                 let horizontal = value.translation.width
                 swipingRuntimeIds.insert(id)
-                let armed = threshold > 0 && horizontal <= -threshold
+                let wasArmed = armedCloseRuntimeIds.contains(id)
+                let disarmThreshold = threshold * 0.96
+                let armed = threshold > 0 && (wasArmed ? horizontal <= -disarmThreshold : horizontal <= -threshold)
                 if armed && !armedCloseRuntimeIds.contains(id) { OrbisHaptics.commit() }
                 swipeTranslations[id] = min(0, max(-width, horizontal < -threshold ? -threshold + (horizontal + threshold) * 0.4 : horizontal))
                 if armed { armedCloseRuntimeIds.insert(id) }
@@ -917,7 +919,7 @@ struct HomeView: View, Equatable {
                 if let host = currentHost,
                    let card = host.homeCards.first(where: { $0.id == id }),
                    host.connection.homeCardIsCurrent(card), threshold > 0,
-                   armedCloseRuntimeIds.contains(id), value.translation.width <= -threshold {
+                   armedCloseRuntimeIds.contains(id), value.translation.width <= -(threshold * 0.96) {
                     closing = !beginClose([id], host: host).isEmpty
                 }
                 if !closing { armedCloseRuntimeIds.remove(id) }
@@ -1010,21 +1012,25 @@ struct HomeView: View, Equatable {
         return HStack(spacing: 0) {
             ZStack(alignment: .trailing) {
                 if !selecting {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 12) {
+                        OrbisMotionText(armed ? L10n.tr("松手关闭") : L10n.tr("关闭"))
+                            .font(.orbisLabel(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                            .frame(width: 100, alignment: .trailing)
                         ZStack {
                             Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
                                 .frame(width: 28, height: 28)
                                 .neuSurface(inset: !armed, radius: 14, intensity: 0.4, concentric: false)
+                            Circle().stroke(OrbisPalette(scheme).secondary.opacity(0.2), lineWidth: 2)
+                                .frame(width: 34, height: 34)
                             Circle().trim(from: 0, to: min(1, reveal / max(1, cardWidth * 0.4)))
                                 .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
                                 .frame(width: 34, height: 34).rotationEffect(.degrees(-90))
                         }.scaleEffect(armed ? 1.12 : 1)
-                        OrbisMotionText(armed ? L10n.tr("松手关闭") : L10n.tr("关闭")).font(.orbisLabel(.semibold))
+                            .animation(reduceMotion ? nil : .orbisPop, value: armed)
                     }.foregroundStyle(armed ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
-                        .frame(width: 120).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                        .padding(.trailing, 16)
+                        .frame(width: 164, alignment: .trailing).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                        .padding(.trailing, 12)
                         .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.65)
-                        .animation(reduceMotion ? nil : .orbisPop, value: armed)
                         .opacity(reveal > 0 ? 1 : 0)
                         .accessibilityHidden(true)
                 }
