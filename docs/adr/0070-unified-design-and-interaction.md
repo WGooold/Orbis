@@ -26,8 +26,6 @@ Status: accepted（实施与自动验证分别记录；待用户安装验收）
 | M10 修订 | 左滑按卡片宽度 40% 上膛，进度环、危险色与“松手关闭”反馈；回拖解除，未达门槛的快甩回弹 | SC59 |
 | S39 / V12 | 回复完成默认系统通知：仅来源明确 completed、同回合活动证据和来源代次推进后提示；按 Host / 会话 / 回合去重，取消、失败、未知、重连不补发 | SC60 |
 | S40 | 首页卡片为标题两行、路径一行、模型与运行状态共用一行；长模型名省略，待确认复用状态槽位；Codex 同时可用终端版与桌面版时先选版本 | SC61 |
-
-2026-11-09 S40 / SC61：Android 首页模型与运行状态合并为一行，长模型名省略，待确认占用同一状态槽位；[HomeMaterialInstrumentedTest](../../android/app/src/androidTest/java/com/orbising/orbis/HomeMaterialInstrumentedTest.kt) 的浅深色两项回归通过，截图核对行内显示与多选几何。构建、Release 包与校验见[本次证据](../../.artifacts/home-model-status-row-20261109/verification.json)；待用户安装验证。
 | S41 / M09 | 根级目录抽屉覆盖标签栏；聊天、供应商、设置保持平级，系统返回在供应商和设置直接离开应用 | SC62 |
 | S42 | 双圈拖动分别锁定初触环；布局更新不重启手势，Agent 切换后拖动、吸附与绘制共用当前外圈位置；取消时清理拖动态；圆盘按钮不显示点击光晕 | SC63 |
 | S43 / M29 | 选择面板尊重可用视口高度，内容滚动；选中后完成退场动画再提交，取消沿用共用关闭生命周期 | SC64 |
@@ -58,11 +56,17 @@ Host 共用四主题、连续深度、原生 SVG 图标、焦点、禁用与加�
 
 ## 验证与交付
 
+2026-11-09 S48 / SC69：Android、iOS 与交互稿同步新建卡片的短名称、右侧版本图标及右对齐。Android 4 项定向设备回归通过，覆盖 320dp 完整名称、四个 Agent 按住无光晕、版本选择与实际提交目标；iOS 构建及版本菜单回归通过，桌面版单独可用断言通过，后续 Shift+Return 用例复现原有失败，原断言保留。截图、首次及既有失败指针、Release 安装包与签名校验见[本次证据](../../.artifacts/2026-11-09-codex-compact-draft/verification.json)；待用户安装验证。
+
+2026-11-09 S47 / SC68：Android 与 iOS 的归档显示改为筛选左侧独立按钮，使用共用图标按钮的选中深度与图标状态。Android 的归档选择、provider 筛选和电脑归属 9 项设备回归通过，选中与未选中截图已核对；iOS 测试构建通过，设备回归未执行。实现、Release 包、签名与资源清理见[本次证据](../../.artifacts/drawer-archive-toggle-20261109/verification.json)；待用户安装验证。
+
+2026-11-09 S40 / SC61：Android 首页模型与运行状态合并为一行，长模型名省略，待确认占用同一状态槽位；[HomeMaterialInstrumentedTest](../../android/app/src/androidTest/java/com/orbising/orbis/HomeMaterialInstrumentedTest.kt) 的浅深色两项回归通过，截图核对行内显示与多选几何。构建、Release 包与校验见[本次证据](../../.artifacts/home-model-status-row-20261109/verification.json)；待用户安装验证。
+
+遵循[根部测试规则](../../AGENTS.md#测试)。本轮原始基线证据保存在 [.artifacts/design-alignment-20261108](../../.artifacts/design-alignment-20261108/)；Android 细节修订的构建、单元与设备验证、初次失败、视觉对照、未确定项及包信息保存在 [.artifacts/orbis-android-refinements-20261109](../../.artifacts/orbis-android-refinements-20261109/)。各平台自动验证、交付包、安装和用户验收各自记录；本记录的 accepted 表示采用该决策。
+
 2026-11-09 S42 / SC63：Android 切换 Agent 后外圈仍引用旧位置状态的问题已修复；[ProviderDialInstrumentedTest](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) 同时检查配置选择、绘制位置与拖动中间态。修复前同一位置断言失败，修复后 7 项供应商设备测试通过；[构建、首次失败与回归证据](../../.artifacts/provider-dial-state-20261109/)分别保留。安装与手动回归待用户验证。
 
 同日 iOS S42 / SC63 核对：iPhone 17 与 iPad Air 模拟器上的连续内圈切换、外圈正反拖动、配置文字位置回归均通过，覆盖普通与减少动画；未修改圆盘实现。用例见 [OrbisUITests.testProviderOuterRingMovesAfterRepeatedAgentDrags](../../ios/Orbis/UITests/OrbisUITests.swift)，[本轮证据](../../.artifacts/provider-dial-ios-20261109/verification.json)同时保留既有键盘浏览用例的失败及历史证据；真机待用户验证。
-
-遵循[根部测试规则](../../AGENTS.md#测试)。本轮原始基线证据保存在 [.artifacts/design-alignment-20261108](../../.artifacts/design-alignment-20261108/)；Android 细节修订的构建、单元与设备验证、初次失败、视觉对照、未确定项及包信息保存在 [.artifacts/orbis-android-refinements-20261109](../../.artifacts/orbis-android-refinements-20261109/)。各平台自动验证、交付包、安装和用户验收各自记录；本记录的 accepted 表示采用该决策。
 
 共享 source 恢复与原生结果映射见 [执行记录](../../.artifacts/design-alignment-20261108/source-outcome-recovery-tests.log)，旧 Host / 新 Pi 能力门禁见 [兼容证据](../../.artifacts/design-alignment-20261108/source-outcome-gate/)。官网 [视觉比对](../../.artifacts/design-alignment-20261108/site/visual-qa.json)、[浏览器回归](../../.artifacts/design-alignment-20261108/site/run-final-dial/)及[编译静态资产](../../.artifacts/design-alignment-20261108/site/compiled-assets-check.json)分别保留。Host 独立本地包与签名、实际打包 runtime 核验见 [delivery.json](../../.artifacts/design-alignment-20261108/host/delivery-source-final/delivery.json)。本轮未部署 Relay、未替换正在运行的 Host；手机安装验收待完成。
 
