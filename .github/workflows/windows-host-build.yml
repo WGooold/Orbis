@@ -107,3 +107,11 @@ jobs:
             .artifacts/host/**/preview.png
             .artifacts/host/**/smoke-result.json
             .artifacts/host/**/qml.log
+      - name: Preserve native test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbisHost-windows-native-tests
+          path: |
+            .artifacts/windows-host-build/diagnostic-log.txt
+            .artifacts/windows-host-build/Testing/Temporary/LastTest.log

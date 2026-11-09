@@ -41,7 +41,10 @@ try {
         cmake --build $buildDir --parallel 2
         if ($LASTEXITCODE -ne 0) { throw 'Qt build failed' }
         ctest --test-dir $buildDir --output-on-failure
-        if ($LASTEXITCODE -ne 0) { throw 'Native tests failed' }
+        $nativeTestExit = $LASTEXITCODE
+        $diagnosticLog = Join-Path $buildDir 'diagnostic-log.txt'
+        if (Test-Path -LiteralPath $diagnosticLog) { Get-Content -LiteralPath $diagnosticLog }
+        if ($nativeTestExit -ne 0) { throw 'Native tests failed' }
         if ($Package) {
             # Fresh directory per packaging run: no stale dependency can silently survive an upgrade.
             $releaseRoot = $artifactRoot

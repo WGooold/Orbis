@@ -20,8 +20,11 @@ class ChatListItemReuseTest {
         assertTrue(separated.size == 2)
         val unchanged = buildChatListItems(assistants, mapOf("a" to "turn-1"), separated)
         assertSame(separated[0], unchanged[0]); assertSame(separated[1], unchanged[1])
-        val merged = buildChatListItems(assistants, previous = separated)
-        assertTrue(merged.size == 1 && (merged.single() as ChatListItem.AssistantTurn).messages == assistants)
+        // S31 / SC50: native timing anchors do not change content-step boundaries or row reuse.
+        val withoutAnchors = buildChatListItems(assistants, previous = separated)
+        assertTrue(withoutAnchors.size == 2)
+        assertSame(separated[0], withoutAnchors[0]); assertSame(separated[1], withoutAnchors[1])
+        assertTrue(withoutAnchors.filterIsInstance<ChatListItem.AssistantTurn>().flatMap { it.messages } == assistants)
     }
 
     private fun message(id: String, role: String, text: String) =
