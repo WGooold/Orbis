@@ -681,9 +681,12 @@ button { font: inherit; color: inherit; }
 .ob-card { padding: var(--space-16); border-radius: var(--radius-lg); }
 .ob-sessioncard { display: flex; gap: var(--space-12); align-items: flex-start; width: 100%; text-align: left; border: 0; }
 .ob-sessioncard-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
-.ob-sessioncard-title { font-size: 15px; line-height: 24px; font-weight: 600; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ob-sessioncard-title { min-height: 48px; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ob-sessioncard-path { font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ob-sessioncard-meta { margin-top: var(--space-4); }
+.ob-sessioncard-meta { margin-top: var(--space-4); min-height: 44px; }
+.ob-sessioncard-meta .ob-agentlabel { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-4); min-width: 0; }
+.ob-sessioncard-meta .ob-agentlabel > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.ob-sessioncard-meta .ob-agentlabel-status { margin-left: 0; min-height: 20px; }
 .ob-sessioncard[data-selected="true"] { background: var(--accent-soft); outline: 1px solid var(--accent); outline-offset: -1px; }
 .ob-sessioncard .ob-select-dot { align-self: center; }
 .ob-group { border-radius: var(--radius-lg); padding: var(--space-4) var(--space-16); }
@@ -1490,9 +1493,9 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
         })),
       h('button', { type: 'button', role: 'radio', 'aria-checked': String(follow),
         className: cx('ob-appear-follow', follow ? 'is-on' : null), onClick: function () { setMode('system'); } },
-        h(O.Icon, { name: 'settings', size: 'sm' }),
+        h(Icon, { name: 'settings', size: 'sm' }),
         h('span', { className: 'ob-appear-follow-label' }, '跟随系统'),
-        follow ? h(O.Icon, { name: 'check', size: 'sm', label: '当前选择' }) : null),
+        follow ? h(Icon, { name: 'check', size: 'sm', label: '当前选择' }) : null),
       h('div', { className: 'ob-appear-mat' },
         h('span', { className: 'ob-appear-label' }, '材质'),
         h('span', { className: 'ob-appear-swatches', role: 'radiogroup', 'aria-label': '材质' },
@@ -2558,8 +2561,8 @@ body { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: m
           tryItem('长按自己的消息', '锚点菜单从角落展开'),
           tryItem('切换底部标签', '标签深度交接，内容淡出再上浮淡入'),
           tryItem('供应商页拨动圆盘', '左边 Agent 带换 Agent，中间凹槽不响应，右边配置盘换配置；切换要点按钮确认'),
-          tryItem('设置 › 连接协议', '每个选项有说明，点「改用…并重新连接」才生效，状态点绕行弧'),
-          tryItem('设置 › 外观', '点缩略屏选浅色 / 深色，开关跟随系统，色块换材质'),
+          tryItem('设置 › 连接协议', '协议值显示在行尾；必要说明从 info 展开，点「切换到…并重连」才生效'),
+          tryItem('设置 › 外观', '点缩略屏选浅色 / 深色，独立选项跟随系统，色块换材质'),
           tryItem('右上角 + 新建会话', '列表里先开出一道槽，草稿卡片从材料里升起；写下第一句话发出，卡片直接长成会话页'),
           tryItem('侧栏目录下的「+ 新建会话」', '草稿卡片带着那个目录升起'))),
       h('section', { className: 'stack-12' },
