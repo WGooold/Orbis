@@ -24,12 +24,15 @@ jobs:
         with:
           go-version: '1.27.3'
           cache-dependency-path: native/relayquic/go.sum
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
       - name: Install pinned native toolchain
         run: sdkmanager 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
         working-directory: android
-        run: sh ./gradlew --no-daemon :app:testDebugUnitTest
+        run: sh ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 :app:testDebugUnitTest
       - name: Build signed release APK
         working-directory: android
         env:
@@ -44,7 +47,7 @@ jobs:
           keystore="$RUNNER_TEMP/orbis-release.jks"
           trap 'rm -f "$keystore"' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$keystore"
-          ORG_GRADLE_PROJECT_ORBIS_RELEASE_STORE_FILE="$keystore" sh ./gradlew --no-daemon :app:assembleRelease
+          ORG_GRADLE_PROJECT_ORBIS_RELEASE_STORE_FILE="$keystore" sh ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 :app:assembleRelease
       - name: Verify signature and stage artifact
         run: |
           set -euo pipefail
@@ -74,3 +77,8 @@ jobs:
           path: |
             .artifacts/android/orbis.apk
             .artifacts/android/orbis.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Orbis-android-symbols
+          if-no-files-found: error
+          path: android/app/build/outputs/mapping/release/
