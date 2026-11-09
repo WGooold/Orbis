@@ -23,7 +23,7 @@ struct ScreenPublicationTests {
 
     // Cached readiness must not pin a generated failure label to the previous app language.
     @Test @MainActor func cachedHomeSyncFollowsLanguageWithoutAnotherNetworkEvent() {
-        let localization = AppLocalization.shared, previous = AppLocalization.shared.preference
+        let localization = AppLocalization.shared, previous = AppLocalization.shared.language
         defer { localization.select(previous) }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-screen-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

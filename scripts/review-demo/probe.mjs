@@ -39,7 +39,9 @@ try {
           if (text.trim()) answers.set(entry.entryId, text);
         }
       }
-      if (event.live?.complete && event.live.turn === null && answers.size && tools.size) { outcome = "completed"; break; }
+      const turnOutcome = event.live?.turn?.outcome;
+      if (turnOutcome === "failed" || turnOutcome === "cancelled") throw new Error(`Review turn ${turnOutcome}`);
+      if (event.live?.complete && (turnOutcome === "completed" || event.live.turn === null) && answers.size && tools.size) { outcome = "completed"; break; }
     }
     if (outcome !== "completed") {
       throw new Error(`Real model/tool verification failed: outcome=${outcome}, answers=${answers.size}, tools=${tools.size}`);

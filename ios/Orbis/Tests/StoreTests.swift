@@ -680,6 +680,7 @@ struct StoreTests {
             let request = try #require(transport.sent.last { $0["type"] as? String == "agent.state.request" && $0["runtimeId"] as? String == id })
             await transport.emit(["type": "agent.state.snapshot", "scope": "agent", "requestId": request["requestId"]!,
                 "runtimeId": id, "sessionId": "session-" + id, "agentKind": "claude", "modelEpoch": "epoch",
+                "stateFormat": request["stateFormat"] ?? NSNull(),
                 "domains": [["domain": name, "modelEpoch": "epoch", "revision": 1, "availability": "ready",
                     "completeness": "complete", "checkedAt": 100, "value": value,
                     "source": ["producer": "host", "sourceId": "host-1", "sourceEpoch": "native", "sourceRevision": 1]]],

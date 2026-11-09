@@ -2999,6 +2999,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         }
         const id = (args.request as { address: { sessionId: string } }).address.sessionId;
         follows.set(id, frame);
+        // Native follow opens with a verified tail before delivering new events.
+        queueMicrotask(() => frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [], assistantStream: { revision: 0 } }));
         return () => { follows.delete(id); };
       },
     };
@@ -3014,6 +3016,10 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       client.onDiagnostic?.({ event: "socket.closed", code: "1001", reason: "peer left" });
       client.onDiagnostic?.({ event: "socket.error", code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH", reason: "Max payload size exceeded", maxFrameBytes: 104857600 });
       client.onDiagnostic?.({ event: "reconnected" });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      client.onReconnect?.();
+      workspace!({ type: "baseline", value: { archivedSessionIds: [] } });
+      await new Promise(resolve => setTimeout(resolve, 20));
       const transport = host.readDiagnostics({ category: "backend.transport" }).records;
       expect(transport).toEqual(expect.arrayContaining([
         expect.objectContaining({ agentKind: "dsh", message: "DSH Web socket.closed", detail: { code: "1001", reason: "peer left" } }),
@@ -3037,15 +3043,23 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         .toMatchObject({ runtime: { sessionId: "dsh:browser", status: "running" } });
       follows.get("browser")!({ type: "event", event: { seq: 0, time: 1000, type: "user/message",
         data: { role: "user", source: { kind: "user", rpcId: "web-1" }, content: [{ type: "text", text: "browser message" }] } } });
-      expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "session.patch"))
+      expect(await until(message => message.runtimeId === "dsh:browser" && (message.event as RuntimeEvent)?.type === "session.patch" &&
+        ((message.event as Extract<RuntimeEvent, { type: "session.patch" }>).entries ?? []).some(entry => JSON.stringify(entry).includes("browser message"))))
         .toMatchObject({ event: { entries: [expect.objectContaining({ data: { message: expect.objectContaining({ content: [{ type: "text", text: "browser message" }] }) } })], live: { messages: [] } } });
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh:browser", commandId: "app-send",
         command: { type: "user_message", text: "phone message", messageId: "app-1" } });
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "phone message" }] }) }));
       workspace!({ type: "archived", archivedSessionIds: ["browser"] });
-      expect(await until(message => message.type === "runtime.offline" && message.runtimeId === "dsh:browser")).toMatchObject({ runtimeId: "dsh:browser" });
-      expect(await until(message => message.type === "session.archive.changed" && message.sessionId === "dsh:browser"))
-        .toMatchObject({ archived: true, agentKind: "dsh" });
+      // Native archive notification and live-directory removal are independent events.
+      // Keep both observations instead of discarding the first while waiting for the other.
+      const archived: Record<string, unknown>[] = [];
+      while (archived.length < 2) archived.push(await until(message =>
+        message.type === "runtime.offline" && message.runtimeId === "dsh:browser" ||
+        message.type === "session.archive.changed" && message.sessionId === "dsh:browser"));
+      expect(archived).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "runtime.offline", runtimeId: "dsh:browser" }),
+        expect.objectContaining({ type: "session.archive.changed", sessionId: "dsh:browser", archived: true, agentKind: "dsh" }),
+      ]));
       expect(request.mock.calls.some(([method]) => method === "session/create")).toBe(false);
       expect(ensureDshRuntime).not.toHaveBeenCalled();
       expect(recoverDshRuntime).toHaveBeenCalledTimes(mode === "recovered" ? 1 : 0);

@@ -55,7 +55,8 @@ struct HomeRuntimeLoadingTests {
             $0["type"] as? String == "agent.state.request" && $0["runtimeId"] as? String == id
         })
         let session = try #require(request["sessionId"] as? String)
-        let domains: [[String: Any]] = names.map { name in
+        let requested = request["domains"] as? [String] ?? AgentState.domainNames
+        let domains: [[String: Any]] = names.filter(requested.contains).map { name in
             let value: Any
             switch name {
             case "identity": value = ["runtimeId": id, "sessionId": session, "name": "Claude Code",
@@ -71,6 +72,7 @@ struct HomeRuntimeLoadingTests {
         }
         await transport.emit(["type": "agent.state.snapshot", "scope": "agent", "requestId": request["requestId"]!,
             "runtimeId": id, "sessionId": session, "agentKind": agentKind, "modelEpoch": epoch,
+            "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": domains, "missing": [], "truncated": false])
     }
 
