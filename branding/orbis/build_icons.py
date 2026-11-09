@@ -1,7 +1,9 @@
 """Rebuild the selected Orbis B icon kit. Requires Pillow, NumPy and SciPy.
 
-The B artwork supplies the foreground and contact shadow. The square master
-composites them on BG, which can be changed directly without image generation.
+The B artwork supplies the mark shape and contact shadow. The app icon redraws
+the mark in the MARK ink colour on the porcelain SURFACE gradient;
+in-app, web and tray marks keep the porcelain-white mark so they stay visible in
+light and dark wells. Both are tuned here without image generation.
 """
 from pathlib import Path
 import json
@@ -13,8 +15,80 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
 RES = REPO / 'android/app/src/main/res'
-BG = (45, 110, 200)
+# Warm porcelain surface lit from the top-left, matching the mark's contact
+# shadow. Colours are blended in OKLab; lift/settle values are OKLab lightness
+# offsets.
+SURFACE = {
+    'top_left': '#FBFBF9',
+    'bottom_right': '#E4E6EA',
+    'angle_deg': 20,
+    'sheen': 0.0,
+    'halo': 0.0,
+    'vignette': 0.01,
+}
+# App-icon mark: ring and small square both in ink. light_falloff darkens the
+# ink towards the bottom-right, following the surface light. Each shadow is
+# (offset_x, offset_y, blur_sigma, opacity) in master pixels, cast in the ink
+# colour away from the top-left light.
+MARK = {
+    'ink': '#151E33',
+    'light_falloff': 0.10,
+    'edge_smooth_px': 2.0,
+    'shadows': [(2, 3, 3.5, 0.14), (8, 14, 18, 0.10)],
+}
+# Share of the porcelain mark's contact-shadow alpha kept; the full shadow reads
+# as a thick plastic emboss, so it is softened rather than removed.
+SHADOW_KEEP = 0.45
 LANCZOS = Image.Resampling.LANCZOS
+
+
+def _hex(value):
+    return np.array([int(value[i:i+2], 16) for i in (1, 3, 5)], float)
+
+
+def _to_oklab(rgb):
+    c = rgb/255
+    lin = np.where(c <= .04045, c/12.92, ((c+.055)/1.055)**2.4)
+    m1 = np.array([[.4122214708, .5363325363, .0514459929],
+                   [.2119034982, .6806995451, .1073969566],
+                   [.0883024619, .2817188376, .6299787005]])
+    m2 = np.array([[.2104542553, .7936177850, -.0040720468],
+                   [1.9779984951, -2.4285922050, .4505937099],
+                   [.0259040371, .7827717662, -.8086757660]])
+    return np.cbrt(lin @ m1.T) @ m2.T
+
+
+def _from_oklab(lab):
+    m2 = np.array([[1, .3963377774, .2158037573],
+                   [1, -.1055613458, -.0638541728],
+                   [1, -.0894841775, -1.2914855480]])
+    m1 = np.array([[4.0767416621, -3.3077115913, .2309699292],
+                   [-1.2684380046, 2.6097574011, -.3413193965],
+                   [-.0041960863, -.7034186147, 1.7076147010]])
+    lin = np.clip(((lab @ m2.T)**3) @ m1.T, 0, 1)
+    return np.where(lin <= .0031308, lin*12.92, 1.055*lin**(1/2.4)-.055)*255
+
+
+def surface(size, span=(0.0, 1.0)):
+    """Render the icon surface; span maps the square master onto (0, 1)."""
+    s = SURFACE
+    t = (np.arange(size)+.5)/size*(span[1]-span[0]) + span[0]
+    u, v = np.meshgrid(t, t)
+    angle = np.radians(s['angle_deg'])
+    dx, dy = np.sin(angle), np.cos(angle)
+    k = np.clip(((u-.5)*dx + (v-.5)*dy)/(dx+dy) + .5, 0, 1)
+    k = k*k*(3-2*k)*.35 + k*.65
+    lab = _to_oklab(_hex(s['top_left']))*(1-k[..., None]) + _to_oklab(_hex(s['bottom_right']))*k[..., None]
+    # Soft key light at the top-left, a faint lift behind the mark, and
+    # slightly settled corners give the tile depth without a visible effect.
+    lab[..., 0] += s['sheen']*np.exp(-2.2*(np.hypot(u-.22, v-.05)/.85)**2)
+    lab[..., 0] += s['halo']*np.exp(-2.0*(np.hypot(u-.5, v-.52)/.42)**2)
+    lab[..., 0] -= s['vignette']*np.clip(np.hypot(u-.5, v-.45)/.75, 0, 1.4)**2.2
+    rgb = _from_oklab(lab)
+    # Fixed-seed triangular dither keeps the 8-bit gradient free of banding.
+    rng = np.random.default_rng(7)
+    rgb += rng.random(rgb.shape) - rng.random(rgb.shape)
+    return Image.fromarray(np.clip(np.round(rgb), 0, 255).astype('uint8'), 'RGB')
 
 
 def save(im, path):
@@ -45,6 +119,52 @@ def extract_symbol(rgb, mask):
     shade_alpha[mask] = 0
     shadow = Image.fromarray(np.dstack((np.zeros_like(rgb), shade_alpha*255)).astype('uint8'))
     return Image.alpha_composite(shadow, body)
+
+
+def soften_shadow(symbol):
+    # Pure-black pixels with alpha are the contact shadow written by
+    # extract_symbol; the white body keeps its colour and full alpha.
+    arr = np.array(symbol)
+    shadow = (arr[..., :3].sum(axis=2) == 0) & (arr[..., 3] > 0)
+    arr[shadow, 3] = (arr[shadow, 3]*SHADOW_KEEP).astype('uint8')
+    return Image.fromarray(arr, 'RGBA')
+
+
+def ink_symbol(mask):
+    # Redraw the mark from its mask: the porcelain body's bright rim and the
+    # source shadow would leave a light gap around a dark mark, and the binary
+    # mask alone shows stair steps at 1024px.
+    height, width = mask.shape
+    sigma = MARK['edge_smooth_px']
+    # Blurring the mask and re-ramping its 0.5 level gives a smooth contour
+    # with a one-pixel anti-aliased edge (Gaussian slope at the edge).
+    slope = 1/(np.sqrt(2*np.pi)*sigma)
+    alpha = np.clip((ndimage.gaussian_filter(mask.astype(float), sigma)-.5)/slope+.5, 0, 1)
+    yy, xx = np.mgrid[:height, :width]
+    light = 1 - MARK['light_falloff']*(xx+yy)/(width+height-2)
+    ink = _hex(MARK['ink'])
+    clear = np.ones((height, width))
+    for dx, dy, blur, opacity in MARK['shadows']:
+        cast = ndimage.gaussian_filter(ndimage.shift(alpha, (dy, dx), order=1), blur)
+        clear *= 1 - cast*opacity
+    shadow = np.dstack((np.broadcast_to(ink, (height, width, 3)), (1-clear)*255))
+    body = np.dstack((ink*light[..., None], alpha*255))
+    out = Image.fromarray(np.clip(np.round(shadow), 0, 255).astype('uint8'), 'RGBA')
+    out.alpha_composite(Image.fromarray(np.clip(np.round(body), 0, 255).astype('uint8'), 'RGBA'))
+    return out
+
+
+def place_adaptive(symbol, cx, cy, scale):
+    # 108dp adaptive canvas at 10x; the shadow fades at the guaranteed 33dp
+    # safe circle while the solid mark stays within its 31.5dp radius.
+    full = Image.new('RGBA', (1080, 1080))
+    resized = symbol.resize((round(symbol.width*scale), round(symbol.height*scale)), LANCZOS)
+    px, py = round(540-cx*scale), round(540-cy*scale)
+    full.alpha_composite(resized, (px, py))
+    fy, fx = np.mgrid[:1080, :1080]
+    safe_fade = np.clip((330-np.hypot(fx-540, fy-540))/5, 0, 1)
+    full.putalpha(Image.fromarray((np.array(full.getchannel('A'))*safe_fade).astype('uint8')))
+    return full, resized.size, (px, py)
 
 
 def simplify(points, eps=0.7):
@@ -103,11 +223,13 @@ def main():
     combined = np.isin(labels, selected)
     combined = ndimage.binary_fill_holes(combined)
     assert int(combined.sum()) > 100_000
-    symbol = extract_symbol(rgb.astype(float), combined)
+    extracted = extract_symbol(rgb.astype(float), combined)
+    symbol = soften_shadow(extracted)
+    icon_symbol = ink_symbol(combined)
 
-    # Keep the approved mark and shallow shadow; recolor only the surface.
-    master = Image.new('RGBA', symbol.size, BG+(255,))
-    master.alpha_composite(symbol)
+    # The app icon uses the ink mark on the porcelain surface.
+    master = surface(symbol.width).convert('RGBA')
+    master.alpha_composite(icon_symbol)
     master = master.convert('RGB')
     save(master, ROOT/'master/orbis-app-1024.png')
     save(master.resize((512,512), LANCZOS), ROOT/'store/google-play-512.png')
@@ -118,17 +240,15 @@ def main():
     radius = float(np.sqrt((xs-cx)**2+(ys-cy)**2).max())
     # 31.5dp radius, inside Android's guaranteed 33dp safe circle.
     scale = 315/radius
-    full = Image.new('RGBA', (1080, 1080))
-    resized = symbol.resize((round(symbol.width*scale), round(symbol.height*scale)), LANCZOS)
-    px, py = round(540-cx*scale), round(540-cy*scale)
-    full.alpha_composite(resized, (px, py))
-    # Fade only the shadow at the guaranteed safe circle; the solid mark is
-    # contained within its original 31.5dp radius.
-    fy, fx = np.mgrid[:1080, :1080]
-    safe_fade = np.clip((330-np.hypot(fx-540, fy-540))/5, 0, 1)
-    full.putalpha(Image.fromarray((np.array(full.getchannel('A'))*safe_fade).astype('uint8')))
+    # Launcher foreground carries the ink mark; in-app wells use the porcelain
+    # mark, which reads in both light and dark themes.
+    full, resized_size, (px, py) = place_adaptive(icon_symbol, cx, cy, scale)
+    in_app, _, _ = place_adaptive(symbol, cx, cy, scale)
     save(full, ROOT/'android/adaptive-foreground-1080.png')
-    save(Image.new('RGB', (1080,1080), BG), ROOT/'android/adaptive-background-1080.png')
+    # The master spans the visible 72dp; the 108dp layer extends it by 18dp
+    # per side so launcher masks and parallax see the same lighting.
+    adaptive_background = surface(1080, span=(-.25, 1.25))
+    save(adaptive_background, ROOT/'android/adaptive-background-1080.png')
     # Visible launcher region is the central 72dp of a 108dp adaptive canvas.
     visible = full.crop((180,180,900,900))
     save(symbol.resize((2048,2048), LANCZOS), ROOT/'master/orbis-symbol-transparent-2048.png')
@@ -156,15 +276,18 @@ def main():
         p = export/f'drawable/{name}.xml'; p.parent.mkdir(parents=True,exist_ok=True)
         p.write_text(vector(dp,notification),encoding='utf-8')
     save(full.resize((432,432),LANCZOS), export/'drawable-nodpi/orbis_launcher_foreground.png')
-    colors = export/'values/orbis_icon_colors.xml'; colors.parent.mkdir(parents=True,exist_ok=True)
-    colors.write_text(f'<?xml version="1.0" encoding="utf-8"?>\n<resources><color name="orbis_icon_background">#{BG[0]:02X}{BG[1]:02X}{BG[2]:02X}</color></resources>\n',encoding='utf-8')
+    save(adaptive_background.resize((432,432),LANCZOS), export/'drawable-nodpi/orbis_launcher_background.png')
+    save(in_app.resize((432,432),LANCZOS), export/'drawable-nodpi/orbis_mark.png')
+    # The gradient drawable replaces the former solid colour resource.
+    for base in (export, RES):
+        (base/'values/orbis_icon_colors.xml').unlink(missing_ok=True)
     for version in [26,33]:
         for name in ['ic_launcher','ic_launcher_round']:
             p=export/f'mipmap-anydpi-v{version}/{name}.xml'; p.parent.mkdir(parents=True,exist_ok=True)
             mono='\n    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />' if version==33 else ''
             p.write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/orbis_icon_background" />
+    <background android:drawable="@drawable/orbis_launcher_background" />
     <foreground android:drawable="@drawable/orbis_launcher_foreground" />{mono}
 </adaptive-icon>
 ''',encoding='utf-8')
@@ -185,14 +308,14 @@ def main():
     # transparent mark, depending on the platform's expected format.
     ios = REPO/'ios/Orbis/Orbis/Assets.xcassets'
     save(master, ios/'AppIcon.appiconset/AppIcon-1024.png')
-    save(full.resize((432,432), LANCZOS), ios/'OrbisMark.imageset/OrbisMark.png')
+    save(in_app.resize((432,432), LANCZOS), ios/'OrbisMark.imageset/OrbisMark.png')
     host_assets = REPO/'packages/windows-host/src/assets'
     save(symbol.resize((2048,2048), LANCZOS), host_assets/'orbis.png')
     master.save(host_assets/'orbis.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
     relay = REPO/'packages/relay/src/web'
     save(symbol.resize((2048,2048), LANCZOS), relay/'orbis.png')
     save(symbol.resize((512,512), LANCZOS), relay/'promo/orbis-symbol-2048.png')
-    save(full.resize((432,432), LANCZOS), relay/'promo/orbis-mark-ios.png')
+    save(in_app.resize((432,432), LANCZOS), relay/'promo/orbis-mark-ios.png')
 
     # A real downsampling contact sheet, not an independently generated mockup.
     sheet=Image.new('RGB',(1400,940),(236,239,243)); d=ImageDraw.Draw(sheet)
@@ -206,7 +329,7 @@ def main():
     else:
         font=ImageFont.load_default(); title=ImageFont.load_default()
     ink = (16, 33, 61)
-    d.text((48,30),'Orbis / final B',font=title,fill=ink)
+    d.text((48,30),'Orbis / porcelain',font=title,fill=ink)
     d.text((48,88),'Easy Agents Everywhere',font=font,fill=ink)
     for i, shape in enumerate(['rounded','circle','squircle']):
         tile=master.resize((320,320),LANCZOS)
@@ -226,13 +349,13 @@ def main():
         x+=size+45
     monochrome = Image.new('L', (1080,1080))
     source_mask = Image.fromarray((combined*255).astype('uint8'))
-    monochrome.paste(source_mask.resize(resized.size, LANCZOS), (px,py))
+    monochrome.paste(source_mask.resize(resized_size, LANCZOS), (px,py))
     mono=Image.new('RGBA',visible.size,(197,218,255,255)); mono.putalpha(monochrome.crop((180,180,900,900)))
     theme=Image.new('RGBA',visible.size,(41,57,80,255));theme.alpha_composite(mono)
     sheet.paste(theme.resize((160,160),LANCZOS),(1175,600))
     d.text((1170,810),'themed',font=font,fill=ink)
     save(sheet,ROOT/'preview.png')
-    metrics={'background':f'#{BG[0]:02X}{BG[1]:02X}{BG[2]:02X}','source_mask_threshold_mean_rgb':threshold,'source_foreground_bbox_px':[int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)],'adaptive_safe_radius_dp':31.5,'adaptive_canvas_dp':108,'launcher_visible_dp':72,'foreground_count':len(selected)}
+    metrics={'background':{'type':'oklab-gradient',**SURFACE},'app_icon_mark':MARK,'source_mask_threshold_mean_rgb':threshold,'source_foreground_bbox_px':[int(xs.min()),int(ys.min()),int(xs.max()+1),int(ys.max()+1)],'adaptive_safe_radius_dp':31.5,'adaptive_canvas_dp':108,'launcher_visible_dp':72,'foreground_count':len(selected)}
     (ROOT/'geometry.json').write_text(json.dumps(metrics,indent=2),encoding='utf-8')
     assert full.getchannel('A').getbbox()
     print(json.dumps(metrics,indent=2))

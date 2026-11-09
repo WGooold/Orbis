@@ -1,5 +1,32 @@
 {
-  "background": "#2D6EC8",
+  "background": {
+    "type": "oklab-gradient",
+    "top_left": "#FBFBF9",
+    "bottom_right": "#E4E6EA",
+    "angle_deg": 20,
+    "sheen": 0.0,
+    "halo": 0.0,
+    "vignette": 0.01
+  },
+  "app_icon_mark": {
+    "ink": "#151E33",
+    "light_falloff": 0.1,
+    "edge_smooth_px": 2.0,
+    "shadows": [
+      [
+        2,
+        3,
+        3.5,
+        0.14
+      ],
+      [
+        8,
+        14,
+        18,
+        0.1
+      ]
+    ]
+  },
   "source_mask_threshold_mean_rgb": 233.16666666666666,
   "source_foreground_bbox_px": [
     199,

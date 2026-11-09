@@ -22,7 +22,19 @@ func render(size: Int) -> Data {
     context.imageInterpolation = .high
     let scale = CGFloat(size) / 1024
     let tile = NSRect(x: 100 * scale, y: 100 * scale, width: 824 * scale, height: 824 * scale)
-    NSBezierPath(roundedRect: tile, xRadius: 185 * scale, yRadius: 185 * scale).addClip()
+    let plate = NSBezierPath(roundedRect: tile, xRadius: 185 * scale, yRadius: 185 * scale)
+    // The porcelain plate needs a soft drop shadow to separate from light
+    // Finder and Dock backgrounds; it stays within the 100pt template margin.
+    NSGraphicsContext.saveGraphicsState()
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+    shadow.shadowOffset = NSSize(width: 0, height: -10 * scale)
+    shadow.shadowBlurRadius = 20 * scale
+    shadow.set()
+    NSColor.white.setFill()
+    plate.fill()
+    NSGraphicsContext.restoreGraphicsState()
+    plate.addClip()
     master.draw(in: tile, from: .zero, operation: .copy, fraction: 1)
     context.flushGraphics()
     NSGraphicsContext.restoreGraphicsState()

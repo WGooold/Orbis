@@ -109,7 +109,7 @@
 | V20 | 运行中工具呈现连续（Android Pi 路径 r17 已修复；Android Codex r19 真实输出通过；iOS 按显示行增量合并、不做截断重建（代码核对）；**iOS 与 Claude 真实输出待验证**，UI-02） |
 | V21 | 首页 / 目录列表视口稳定（Android 首页 r16 已实施；iOS 首页 r18 验证上方移除场景无此问题；r19 两端目录与首页自动用例定向通过，**全量与手动回归待完成**，UI-03） |
 | V22 | 其他乐观操作可恢复（r27 新增，**r32 已实施、验证中**，未验收） |
-| X01 | Orbis 品牌母版（瓷白宝蓝 B 版；底色调整为 #2D6EC8，跨平台资源已更新；安装效果待用户验证；见[品牌资源](../../branding/orbis/README.md)和[本次校验证据](../../.artifacts/2026-11-09-icon-cobalt/checks.json)） |
+| X01 | Orbis 品牌母版（应用图标改为瓷白反色：暖瓷白渐变底 #FBFBF9→#E4E6EA，方环与小方块均为墨蓝 #151E33（钴蓝小方块经安装查看后取消），标志按遮罩重绘、平滑轮廓并带墨色柔和投影；应用内配对页、网站与托盘保留瓷白标记，Android 配对页改用独立 `orbis_mark`；macOS 底板加柔和投影；跨平台资源已更新，像素与资源一致性已自动验证；Android Release 已构建并通过包审计（[审计](../../.artifacts/2026-11-09-icon-porcelain/release-build-ink/orbis-release-phone.audit.json)），已保留数据覆盖安装到 Android 真机（[安装记录](../../.artifacts/2026-11-09-icon-porcelain/release-build-ink/phone-upgrade/install-result.json)）；安装效果待用户验证；见[品牌资源](../../branding/orbis/README.md)和[本次校验证据](../../.artifacts/2026-11-09-icon-porcelain/checks.json)） |
 | X02 | Agent 视觉身份 |
 | X03 | Host 桌面材质与控件 |
 | X04 | Host 阴影缓存 |

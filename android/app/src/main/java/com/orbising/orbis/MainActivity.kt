@@ -636,7 +636,7 @@ private fun PairingScreen(
             NeumorphSurface(Modifier.size(76.dp), style = NeumorphStyle.Pressed) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Image(
-                        painter = painterResource(R.drawable.orbis_launcher_foreground),
+                        painter = painterResource(R.drawable.orbis_mark),
                         contentDescription = "Orbis",
                         modifier = Modifier.size(52.dp),
                     )
