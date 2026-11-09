@@ -60,6 +60,8 @@ if(BUILD_TESTING)
   add_test(NAME neu-surface COMMAND neu-surface-test)
   qt_add_executable(diagnostic-log-test src/tests/DiagnosticLogTest.cpp src/DiagnosticLogModel.cpp src/DiagnosticLogModel.h src/NeuSurface.cpp src/NeuSurface.h)
   target_link_libraries(diagnostic-log-test PRIVATE Qt6::QuickControls2 Qt6::Test)
+  # The production module's qmldir resolves its singleton from this resource URL.
+  qt_add_resources(diagnostic-log-test diagnostic_log_theme PREFIX "/qt/qml/Orbis/Host" FILES src/qml/Theme.qml)
   target_compile_definitions(diagnostic-log-test PRIVATE ORBIS_LOG_VIEW="${CMAKE_CURRENT_SOURCE_DIR}/src/qml/DiagnosticLogView.qml")
   add_test(NAME diagnostic-log COMMAND diagnostic-log-test -o diagnostic-log.txt,txt)
   qt_add_executable(motion-text-test src/tests/MotionTextTest.cpp)
