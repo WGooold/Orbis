@@ -3,9 +3,13 @@ set -euo pipefail
 task_dir=/opt/orbis-review
 release_dir=${1:?release directory required}
 image=${2:?image tag required}
+commit=${3:?source commit required}
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+base_image="orbis-review-base:$commit"
 test -s "$task_dir/private/host.json"
 test -s "$task_dir/private/deepseek.key"
-docker build -f "$release_dir/scripts/review-demo/Dockerfile" -t "$image" "$release_dir"
+docker build --build-arg "ORBIS_RELEASE_COMMIT=$commit" -t "$base_image" "$release_dir"
+docker build --build-arg "BASE_IMAGE=$base_image" -f "$release_dir/scripts/review-demo/Dockerfile" -t "$image" "$release_dir"
 mkdir -p "$task_dir/data/home" "$task_dir/data/workspace" "$task_dir/data/host"
 chown -R 1000:1000 "$task_dir/data"
 chmod 700 "$task_dir/data"

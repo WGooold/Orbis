@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=orbis-relay:fd7a96335476
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \

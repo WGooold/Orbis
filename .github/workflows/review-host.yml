@@ -49,9 +49,9 @@ jobs:
           chmod 600 ~/.ssh/review-deploy
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           trap 'rm -f ~/.ssh/review-deploy' EXIT
-          git archive --format=tar HEAD scripts/review-demo | gzip > /tmp/review-source.tar.gz
+          git archive --format=tar HEAD | gzip > /tmp/review-source.tar.gz
           remote_dir="/opt/orbis-review/releases/$GITHUB_SHA"
           ssh -p "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" "mkdir -p '$remote_dir'"
           scp -P "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes /tmp/review-source.tar.gz "$TARGET:$remote_dir/source.tar.gz"
           ssh -p "$PORT" -i ~/.ssh/review-deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" \
-            "tar -xzf '$remote_dir/source.tar.gz' -C '$remote_dir' && bash '$remote_dir/scripts/review-demo/deploy.sh' '$remote_dir' 'orbis-review:$GITHUB_SHA'"
+            "tar -xzf '$remote_dir/source.tar.gz' -C '$remote_dir' && bash '$remote_dir/scripts/review-demo/deploy.sh' '$remote_dir' 'orbis-review:$GITHUB_SHA' '$GITHUB_SHA'"

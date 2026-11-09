@@ -21,8 +21,8 @@ Provision these private files on the existing server, outside the repository:
   `wss://orbising.com/review-relay`.
 - `/opt/orbis-review/private/deepseek.key`, UID 1000, mode 600.
 
-Dispatch **Review Host deploy** on `main`. It builds against the published
-`fd7a96335476` Relay image already on the server, runs the portal/E2E tests, deploys
+Dispatch **Review Host deploy** on `main`. It builds Host, Relay and the Pi extension
+from that exact source commit, runs the portal/E2E tests, deploys
 only `orbis-review-host`, and adds a separate Nginx location to both existing TLS
 listeners. Production `orbis-relay` is not restarted. Application deployments use
 GitHub Actions. Persistent review data is in `/opt/orbis-review/data`.
