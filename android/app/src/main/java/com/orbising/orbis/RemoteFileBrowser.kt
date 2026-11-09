@@ -1,17 +1,19 @@
 package com.orbising.orbis
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -37,6 +39,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -174,22 +177,27 @@ internal fun DownloadFileSheet(
         val confirmDownload = sheetCloseAction {
             selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }
         }
-        Column(Modifier.fillMaxWidth().navigationBarsPadding()
-            .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            RemoteDirectoryBrowser(
-                browse, connected, onBrowse, onBrowseInto, onBrowseUp,
-                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                showFiles = true, selectedFile = selectedFile, onSelectFile = { selectedFile = it },
-            )
-            FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
-                style = MaterialTheme.typography.labelSmall)
-            NeumorphActionButton(
-                text = L10n.tr("下载到手机"), icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
-                enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
-                onClick = confirmDownload,
-            )
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+            // A compact window cannot fit browser chrome plus a fixed footer. Keep them in one
+            // scroll range and retain the browser's bounded lazy list within it.
+            val scrollAll = maxHeight < 400.dp * LocalDensity.current.fontScale
+            Column(Modifier.fillMaxWidth().then(if (scrollAll) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                RemoteDirectoryBrowser(
+                    browse, connected, onBrowse, onBrowseInto, onBrowseUp,
+                    modifier = Modifier.fillMaxWidth().then(if (scrollAll) Modifier.heightIn(max = 320.dp) else Modifier.weight(1f, fill = false)),
+                    showFiles = true, selectedFile = selectedFile, onSelectFile = { selectedFile = it },
+                )
+                FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
+                    style = MaterialTheme.typography.labelSmall)
+                NeumorphActionButton(
+                    text = L10n.tr("下载到手机"), icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
+                    enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
+                    onClick = confirmDownload,
+                )
+            }
         }
     }
 }

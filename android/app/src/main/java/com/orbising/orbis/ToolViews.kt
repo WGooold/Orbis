@@ -131,12 +131,11 @@ internal fun ToolDetailSheet(
         containerColor = MaterialTheme.colorScheme.background, tonalElevation = 0.dp,
     ) {
         val closeSheet = sheetCloseAction(onClose)
-        val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().coerceAtLeast(24.dp)
         Column(
-            Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().padding(top = topInset, bottom = 16.dp),
+            Modifier.fillMaxWidth().weight(1f).padding(top = 16.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
+            Row(Modifier.fillMaxWidth().then(sheetDragHandleModifier()).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 NeumorphIconButton(onClick = closeSheet, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭"))
                 Text(detail.summary.toolName, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge,
@@ -189,7 +188,7 @@ internal fun ToolDetailSheet(
                     CircularProgressIndicator(Modifier.size(20.dp).testTag("tool-export-progress"), strokeWidth = 2.dp)
                     SummaryCaption(L10n.tr("正在导出，{0}", formatByteCount(detail.exportedBytes)))
                     Spacer(Modifier.weight(1f))
-                    NeumorphTextButton(L10n.tr("取消导出"), onClick = onClose)
+                    NeumorphTextButton(L10n.tr("取消导出"), onClick = closeSheet)
                 }
             } else {
                 NeumorphActionButton(text = L10n.tr("导出当前部分"), icon = OrbisSymbols.Download, onClick = onExport,

@@ -29,11 +29,8 @@ internal fun SessionControlDialog(title: String, onClose: () -> Unit, content: @
         containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp,
     ) {
         val closeSheet = sheetCloseAction(onClose)
-        // The sheet consumes its top inset for positioning. Reserve the raw status-bar
-        // height as well so an edge-to-edge window cannot place the title under the clock.
-        val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding().coerceAtLeast(24.dp)
-        Column(Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().imePadding().padding(top = topInset, bottom = 12.dp)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.fillMaxWidth().weight(1f).padding(bottom = 12.dp)) {
+            Row(Modifier.fillMaxWidth().then(sheetDragHandleModifier()).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                 NeumorphTextButton(L10n.tr("收起"), onClick = closeSheet)
             }

@@ -2,6 +2,7 @@ package com.orbising.orbis
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -83,16 +85,20 @@ internal fun QuestionnairePanel(
     val answers = questions.mapNotNull { (drafts[it.id] ?: emptyQuestionDraft(it)).answer(it) }
     val update: (QuestionnaireDraft) -> Unit = { form.value = form.value.copy(answers = drafts + (question.id to it)) }
 
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        // Fixed headers/footers can leave less than one option's height on a short screen or
+        // above the keyboard. In that case the whole form shares one reachable scroll range.
+        val scrollAll = maxHeight < 400.dp * LocalDensity.current.fontScale
         NeumorphSurface(
             modifier = Modifier.fillMaxSize(),
             shape = RemoteUi.CardShape,
             contentInset = 12.dp,
         ) {
-            Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.fillMaxSize().then(if (scrollAll) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                .padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text(request.title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                     NeumorphTextButton(L10n.tr("取消回答"), enabled = enabled, onClick = onCancel)
@@ -117,10 +123,9 @@ internal fun QuestionnairePanel(
                 key(question.id) {
                     Column(
                         Modifier
-                            .weight(1f)
+                            .then(if (scrollAll) Modifier else Modifier.weight(1f).verticalScroll(rememberScrollState()))
                             .fillMaxWidth()
                             .heightIn(min = 0.dp)
-                        .verticalScroll(rememberScrollState())
                         .padding(4.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {

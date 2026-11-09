@@ -274,9 +274,9 @@ internal fun FileChangeViewerSheet(
         modifier = Modifier.fillMaxHeight(0.96f).testTag("file-change-viewer"),
         containerColor = MaterialTheme.colorScheme.background, tonalElevation = 0.dp) {
         val closeSheet = sheetCloseAction(onClose)
-        Column(Modifier.fillMaxWidth().weight(1f).navigationBarsPadding().padding(bottom = 8.dp),
+        Column(Modifier.fillMaxWidth().weight(1f).padding(bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Column(Modifier.fillMaxWidth().testTag("file-change-header")) {
+            Column(Modifier.fillMaxWidth().testTag("file-change-header").then(sheetDragHandleModifier())) {
                 Box(Modifier.align(Alignment.CenterHorizontally).padding(top = 10.dp).size(40.dp, 5.dp)
                     .background(MaterialTheme.colorScheme.outlineVariant, CircleShape))
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
