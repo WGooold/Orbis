@@ -528,6 +528,7 @@ struct SessionDraftView: View {
     @State private var risen = false
     @State private var frame: CGRect = .zero
     @State private var codexFrame: CGRect = .zero
+    @State private var codexLabelFrame: CGRect = .zero
     @State private var focused = false
     init(owner: HostConnection, presetCwd: String?, closeRequest: Int, onSubmitted: @escaping (HostConnection.LaunchState, CGRect) -> Void, onCancel: @escaping (Bool) -> Void) {
         self.owner = owner; self.presetCwd = presetCwd; self.closeRequest = closeRequest; self.onSubmitted = onSubmitted; self.onCancel = onCancel
@@ -536,6 +537,8 @@ struct SessionDraftView: View {
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
     private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
+    private var isCodex: Bool { agent == "codex" || agent == "codexDesktop" }
+    private var codexVersionTitle: String { L10n.tr(agent == "codexDesktop" ? "Codex 桌面版" : "Codex 终端版") }
     private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && currentPath?.isEmpty == false &&
@@ -560,7 +563,22 @@ struct SessionDraftView: View {
                         .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind || kind == "codex" && agent == "codexDesktop" ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                Text(agent == "codexDesktop" ? L10n.tr("Codex 桌面版") : agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
+                if isCodex {
+                    OrbisMotionButton { showCodexChoices(from: codexLabelFrame) } label: {
+                        HStack(spacing: 6) {
+                            Text("Codex").font(.orbisLabel(.semibold)).lineLimit(1)
+                            Image(systemName: agent == "codexDesktop" ? "desktopcomputer" : "terminal")
+                                .font(.system(size: 18)).accessibilityHidden(true)
+                        }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!allowed.contains("codex") || !allowed.contains("codexDesktop"))
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
+                        .accessibilityLabel("Codex").accessibilityValue(codexVersionTitle)
+                        .accessibilityIdentifier("draft-codex-version")
+                } else {
+                    Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
             OrbisMotionButton { focused = false; choosingDirectory = true } label: {
                 HStack(spacing: 8) {
@@ -619,12 +637,12 @@ struct SessionDraftView: View {
             .onDisappear { store.dismissBrowse() }
     }
     /// Preserve the existing desktop backend without adding a fifth primary Agent.
-    private func showCodexChoices() {
+    private func showCodexChoices(from anchor: CGRect? = nil) {
         focused = false
         var choices: [OrbisMenuItem] = []
-        if allowed.contains("codex") { choices.append(OrbisMenuItem(title: "Codex", checked: agent == "codex") { agent = "codex" }) }
+        if allowed.contains("codex") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 终端版"), checked: agent == "codex") { agent = "codex" }) }
         if allowed.contains("codexDesktop") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 桌面版"), checked: agent == "codexDesktop") { agent = "codexDesktop" }) }
-        if !choices.isEmpty { overlay.showMenu(choices, from: codexFrame) }
+        if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? codexFrame) }
     }
     private func cancel() {
         cancelling = true

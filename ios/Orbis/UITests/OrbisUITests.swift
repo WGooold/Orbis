@@ -191,7 +191,17 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(codex.waitForExistence(timeout: 4)); codex.press(forDuration: 1)
         let desktop = app.buttons["Codex 桌面版"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 3)); desktop.tap()
-        XCTAssertTrue(app.staticTexts["Codex 桌面版"].waitForExistence(timeout: 3))
+        let version = app.buttons["draft-codex-version"]
+        XCTAssertTrue(version.waitForExistence(timeout: 3))
+        XCTAssertEqual(version.label, "Codex")
+        XCTAssertEqual(version.value as? String, "Codex 桌面版")
+        // S48 / SC69: the compact trailing label opens the same version menu.
+        version.tap()
+        let terminal = app.buttons["Codex 终端版"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 3)); terminal.tap()
+        XCTAssertEqual(version.value as? String, "Codex 终端版")
+        version.tap(); desktop.tap()
+        XCTAssertEqual(version.value as? String, "Codex 桌面版")
         capture("design-draft-codex-desktop", app: app)
     }
 
@@ -269,7 +279,10 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(newSession.waitForExistence(timeout: 8)); newSession.tap()
         let codex = app.buttons["draft-agent-codex"]
         XCTAssertTrue(codex.waitForExistence(timeout: 4)); codex.tap()
-        XCTAssertTrue(app.staticTexts["Codex 桌面版"].waitForExistence(timeout: 3))
+        let version = app.buttons["draft-codex-version"]
+        XCTAssertTrue(version.waitForExistence(timeout: 3))
+        XCTAssertEqual(version.label, "Codex")
+        XCTAssertEqual(version.value as? String, "Codex 桌面版")
         let draft = app.descendants(matching: .any)["draft-message"].firstMatch
         draft.tap(); draft.typeText("first ")
         // Commit the current Pinyin candidate before exercising editing commands.

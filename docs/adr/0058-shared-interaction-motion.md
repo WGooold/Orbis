@@ -4,7 +4,7 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC68 复用 M03、M09、M25 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
+当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC69 复用 M03、M09、M25 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
 
 2026-11-09 M10 / SC59：左滑露出关闭区时，进度环靠近卡片右缘并保留 12dp 留白及浅色底轨，拖动初段即可辨认进度；恢复关闭区弹性滑入、淡入缩放和文字交叉渐变，固定文字槽保持排版稳定。超过 40% 后保留 4% 回差，轻微回拖不重启文案动画，松手触发与可见上膛状态一致。实现见 [iOS 首页](../../ios/Orbis/Orbis/ContentView.swift) 与 [Android 首页](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)，回归见 [iOS UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift) 与 [Android 设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/HomeSwipeCloseInstrumentedTest.kt)。初版回归、动画修订构建与手机安装证据见 [.artifacts/home-swipe-close-20261109](../../.artifacts/home-swipe-close-20261109/)；最终手势观感待用户验证。
 

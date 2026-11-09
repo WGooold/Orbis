@@ -179,13 +179,15 @@ class DesignAlignmentInstrumentedTest {
                 true,"/Projects/orbis",{},{},{}) { kind,_,_,_,_ -> submitted=kind;true }
         } }
         compose.onNodeWithTag("draft-agent-codex").assertIsEnabled().performClick()
-        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
+        compose.onNodeWithText("Codex").assertIsDisplayed()
+        compose.onNodeWithTag("draft-codex-version").assert(SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Codex 桌面版"))
         compose.onNode(hasSetTextAction()).performTextInput("首句")
         compose.onNodeWithTag("draft-send").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("codexDesktop",submitted) }
     }
 
-    /** S40 / SC61: choosing Codex with both targets available asks which one to launch. */
+    /** S40/SC61, S48/SC69: compact labels preserve version choices and the submitted backend. */
     @Test fun tappingCodexOpensAnExplicitTerminalOrDesktopChoice() {
         var submitted: String? = null
         val agents = setOf("codex", "codexDesktop", "claude", "dsh", "pi")
@@ -193,22 +195,29 @@ class DesignAlignmentInstrumentedTest {
             SessionDraftCard(ready().copy(supportedAgents = agents, launchableAgents = agents), true,
                 "/Projects/orbis", {}, {}, {}) { kind, _, _, _, _ -> submitted = kind; true }
         } }
-        compose.onNodeWithText("Codex 终端版").assertIsDisplayed()
+        compose.onNodeWithText("Codex").assertIsDisplayed()
+        compose.onNodeWithTag("draft-codex-mode-icon", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("draft-codex-version").assert(SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Codex 终端版"))
         compose.onNodeWithTag("draft-codex-version").performClick()
         compose.onAllNodesWithText("Codex 终端版").onLast().assertIsDisplayed()
-        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
-        compose.onNodeWithText("Codex 桌面版").performClick()
-        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed()
+        compose.onNodeWithText("Codex 桌面版").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Codex").assertIsDisplayed()
+        compose.onNodeWithTag("draft-codex-version").assert(SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Codex 桌面版"))
+        capture("draft-codex-desktop-compact")
         compose.onNode(hasSetTextAction()).performTextInput("首句")
         compose.onNodeWithTag("draft-send").performClick()
         compose.runOnIdle { assertEquals("codexDesktop", submitted) }
     }
 
-    /** S35: the inline card and flat directory remain usable on the smallest supported phone. */
+    /** S35/S48, SC69: a 320dp card fits the complete name plus mode icon; Agent presses add no rectangular ripple. */
     @Test fun narrowDraftKeepsThePathAgentTargetsAndSendInsideItsCard() {
         compose.setContent { OrbisTheme {
             CompositionLocalProvider(androidx.compose.ui.platform.LocalInputModeManager provides touchInput) {
-                Box(Modifier.width(320.dp)) { SessionDraftCard(visualReady(), true, "/Volumes/WD1TB/Orbis/orbis", {}, {}, {}) { _,_,_,_,_ -> true } }
+                val state = visualReady().copy(supportedAgents = ready().supportedAgents!! + "codexDesktop",
+                    launchableAgents = ready().launchableAgents!! + "codexDesktop")
+                Box(Modifier.width(320.dp)) { SessionDraftCard(state, true, "/Volumes/WD1TB/Orbis/orbis", {}, {}, {}) { _,_,_,_,_ -> true } }
             }
         } }
         val card = compose.onNodeWithTag("session-draft").fetchSemanticsNode().boundsInRoot
@@ -220,6 +229,28 @@ class DesignAlignmentInstrumentedTest {
             compose.onAllNodes(isFocused()).fetchSemanticsNodes().any { it.config.contains(androidx.compose.ui.semantics.SemanticsProperties.EditableText) }
         }
         capture("draft-narrow-touch")
+        val label = compose.onNodeWithTag("draft-agent-name", useUnmergedTree = true)
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        label.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        assertFalse("The full Codex label must fit", layouts.single().isLineEllipsized(0))
+        assertEquals(androidx.compose.ui.text.style.TextAlign.End, layouts.single().layoutInput.style.textAlign)
+        val labelBounds = label.fetchSemanticsNode().boundsInRoot
+        val iconBounds = compose.onNodeWithTag("draft-codex-mode-icon", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue("The mode icon follows the label", labelBounds.right < iconBounds.left)
+        assertTrue("The icon remains inside the card", iconBounds.right <= card.right)
+        // Freeze frame time so held-press comparisons exclude unrelated cursor/entrance animation.
+        compose.mainClock.autoAdvance = false
+        try {
+            for (kind in listOf("codex", "claude", "dsh", "pi")) {
+                val button = compose.onNodeWithTag("draft-agent-$kind")
+                val before = button.captureToImage().asAndroidBitmap()
+                button.performTouchInput { down(center); advanceEventTime(120) }
+                compose.mainClock.advanceTimeBy(120)
+                val held = button.captureToImage().asAndroidBitmap()
+                button.performTouchInput { cancel() }
+                assertTrue("$kind must not paint a press ripple", before.sameAs(held))
+            }
+        } finally { compose.mainClock.autoAdvance = true }
     }
 
     /** Rejected input leaves the draft and never registers a session.activate operation. */

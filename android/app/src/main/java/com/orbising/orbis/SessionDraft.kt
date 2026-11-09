@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
@@ -29,6 +30,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -117,6 +119,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         val enabled = supported == null || agent in supported || agent == "codex" && "codexDesktop" in supported
                         val chooseCodexVersion = agent == "codex" && codexVersionsAvailable
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
+                            interactionSource = remember { MutableInteractionSource() }, indication = null,
                             enabled = enabled,
                             role = if (chooseCodexVersion) Role.Button else Role.RadioButton,
                             onClick = {
@@ -141,17 +144,24 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             }
                         }
                     }
-                    val versionChoice = codexVersionsAvailable && kind in setOf("codex", "codexDesktop")
-                    Row(Modifier.weight(1f).heightIn(min = 48.dp).then(if (versionChoice)
-                        Modifier.testTag("draft-codex-version").clickable(role = Role.Button) { agentMenu = true }
-                        else Modifier), verticalAlignment = Alignment.CenterVertically) {
-                        Text(when (kind) {
-                            "codex" -> L10n.tr("Codex 终端版")
-                            "codexDesktop" -> L10n.tr("Codex 桌面版")
-                            else -> agentBrand(kind).title
-                        }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (versionChoice) Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                    val isCodex = kind == "codex" || kind == "codexDesktop"
+                    val versionChoice = codexVersionsAvailable && isCodex
+                    Row(Modifier.weight(1f).heightIn(min = 48.dp)
+                        .testTag(if (isCodex) "draft-codex-version" else "draft-agent-label")
+                        .then(if (versionChoice) Modifier.orbisKeyboardFocus().clickable(
+                            interactionSource = remember { MutableInteractionSource() }, indication = null,
+                            role = Role.Button,
+                        ) { agentMenu = true } else Modifier)
+                        .semantics {
+                            if (isCodex) stateDescription = L10n.tr(if (kind == "codexDesktop") "Codex 桌面版" else "Codex 终端版")
+                        }, verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
+                        Text(if (isCodex) "Codex" else agentBrand(kind).title,
+                            modifier = Modifier.weight(1f).testTag("draft-agent-name"), style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (isCodex) Icon(if (kind == "codexDesktop") OrbisSymbols.Computer else Icons.Rounded.Terminal,
+                            null, Modifier.size(18.dp).testTag("draft-codex-mode-icon"), tint = MaterialTheme.colorScheme.primary)
                     }
                 }
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("draft-directory")
