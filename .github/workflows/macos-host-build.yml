@@ -102,11 +102,20 @@ jobs:
           smoke = root / 'smoke'
           smoke.mkdir()
           env = dict(os.environ, PATH='/usr/bin:/bin:/usr/sbin:/sbin')
-          with (smoke / 'qml.log').open('w') as log:
-              subprocess.run([str(root / 'OrbisHost.app/Contents/MacOS/Orbis Host'),
-                              '--smoke-test', '--data-dir', str(smoke),
-                              '--screenshot', str(smoke / 'preview.png')],
-                             env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+          try:
+              with (smoke / 'qml.log').open('w') as log:
+                  subprocess.run([str(root / 'OrbisHost.app/Contents/MacOS/Orbis Host'),
+                                  '--smoke-test', '--data-dir', str(smoke),
+                                  '--screenshot', str(smoke / 'preview.png')],
+                                 env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=90)
+          except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+              import shutil
+              shutil.copytree(smoke, pathlib.Path('.artifacts/host-diagnostics'), dirs_exist_ok=True)
+              for name in ('qml.log', 'smoke-result.json'):
+                  diagnostic = smoke / name
+                  if diagnostic.is_file():
+                      print(diagnostic.read_text(), flush=True)
+              raise
           PY
           ORBIS_COMPATIBLE_RUNTIME="$GITHUB_WORKSPACE/.artifacts/host/OrbisHost.app/Contents/Resources/runtime" \
             npx vitest run packages/host/src/host-protocol-compatibility.test.ts --maxWorkers=1 --testTimeout=30000
@@ -143,3 +152,9 @@ jobs:
             .artifacts/host/*.sha256
             .artifacts/host/smoke/*.log
             .artifacts/host/smoke/*.png
+      - name: Preserve failed macOS smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrbisHost-${{ matrix.artifact }}-diagnostics
+          path: .artifacts/host-diagnostics/
