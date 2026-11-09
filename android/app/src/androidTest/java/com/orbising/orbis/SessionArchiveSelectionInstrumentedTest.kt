@@ -1,5 +1,6 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - 目录（S15、S19、M06、M09、V17）
+// - 独立归档开关（S47 / SC68）：位于筛选左侧，选中语义随列表切换，往返不改变按钮布局。
 package com.orbising.orbis
 
 import androidx.activity.OnBackPressedDispatcher
@@ -41,6 +42,11 @@ class SessionArchiveSelectionInstrumentedTest {
                 })
         } }
         compose.onNodeWithContentDescription("会话操作").assertDoesNotExist()
+        val archiveToggle = compose.onNodeWithTag("drawer-archive-toggle")
+        archiveToggle.assertIsDisplayed().assertIsNotSelected()
+        val toggleBounds = archiveToggle.fetchSemanticsNode().boundsInRoot
+        val filterBounds = compose.onNodeWithContentDescription("筛选会话：全部").fetchSemanticsNode().boundsInRoot
+        assertTrue(toggleBounds.right <= filterBounds.left)
         val originalBounds = compose.onNodeWithTag("drawer-session-one").fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("drawer-session-one").performTouchInput { longClick() }
         compose.waitForIdle()
@@ -59,8 +65,9 @@ class SessionArchiveSelectionInstrumentedTest {
             assertTrue(opened.isEmpty())
             assertEquals(setOf(Triple("host", "one", true), Triple("host", "two", true)), archived.toSet())
         }
-        compose.onNodeWithContentDescription("筛选会话：全部").performClick()
-        compose.onNodeWithText("查看已归档会话").performClick()
+        compose.onNodeWithContentDescription("查看已归档会话").performClick()
+        archiveToggle.assertIsSelected()
+        assertEquals(toggleBounds, archiveToggle.fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithTag("drawer-session-one").performTouchInput { longClick() }
         compose.onNodeWithTag("drawer-session-two").performClick()
         compose.onNodeWithContentDescription("恢复选中会话").performClick()
@@ -69,6 +76,10 @@ class SessionArchiveSelectionInstrumentedTest {
             assertEquals(4, archived.size)
             assertTrue(state.sessions.values.all { it.archived == false })
         }
+        compose.onNodeWithContentDescription("查看未归档会话").performClick()
+        archiveToggle.assertIsNotSelected()
+        compose.onNodeWithTag("drawer-session-one").assertIsDisplayed()
+        compose.onNodeWithTag("drawer-session-two").assertIsDisplayed()
     }
 
     @Test fun busyPendingAndDisconnectedSelectionsCannotBeArchived() {
@@ -93,8 +104,7 @@ class SessionArchiveSelectionInstrumentedTest {
         compose.onNodeWithTag("drawer-session-two").assertDoesNotExist()
         compose.onNodeWithText("已选择 1 项").assertIsDisplayed()
         compose.onNodeWithContentDescription("退出多选").performClick()
-        compose.onNodeWithContentDescription("筛选会话：全部").performClick()
-        compose.onNodeWithText("查看已归档会话").performClick()
+        compose.onNodeWithContentDescription("查看已归档会话").performClick()
         compose.onNodeWithTag("drawer-session-two").performTouchInput { longClick() }
         compose.onNodeWithText("处理中…").assertIsDisplayed()
         compose.onNodeWithContentDescription("恢复选中会话").assertIsNotEnabled()

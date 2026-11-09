@@ -210,6 +210,12 @@ struct SessionDrawerView: View, Equatable {
                     OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { state.query = "" }
                         .opacity(state.query.isEmpty ? 0 : 1).disabled(state.query.isEmpty).accessibilityHidden(state.query.isEmpty)
                 }.padding(.leading, 16).frame(minHeight: 56).orbisField(focused: searchFocused)
+                OrbisIconButton(symbol: state.archived ? "archivebox.fill" : "archivebox",
+                    label: state.archived ? L10n.tr("查看未归档会话") : L10n.tr("查看已归档会话"),
+                    tint: state.archived ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary,
+                    selected: state.archived, compact: true) { state.archived.toggle() }
+                    .accessibilityIdentifier("drawer-archive-toggle")
+                    .accessibilityAddTraits(state.archived ? [.isSelected] : [])
                 OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: L10n.tr("筛选会话：{0}", state.kind.map(filterTitle) ?? L10n.tr("全部")),
                     tint: state.kind == nil ? OrbisPalette(scheme).secondary : OrbisPalette(scheme).accent,
                     selected: state.kind != nil, compact: true) { filterMenuItems }
@@ -311,18 +317,14 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         var items: [OrbisMenuItem] = []
-        if state.kind != nil || state.archived {
-            items.append(OrbisMenuItem(title: L10n.tr("清除筛选"), symbol: "arrow.uturn.backward") { state.kind = nil; state.archived = false; state.providerKey = "current" })
+        if state.kind != nil {
+            items.append(OrbisMenuItem(title: L10n.tr("清除筛选"), symbol: "arrow.uturn.backward") { state.kind = nil; state.providerKey = "current" })
             items.append(.divider)
         }
         items.append(OrbisMenuItem(title: L10n.tr("全部"), checked: state.kind == nil) { state.kind = nil })
         items += ["pi", "codex", "codexDesktop", "dsh", "claude"].map { kind in
             OrbisMenuItem(title: filterTitle(kind), checked: state.kind == kind) { state.kind = kind }
         }
-        items.append(.divider)
-        items.append(OrbisMenuItem(title: state.archived ? L10n.tr("查看未归档会话") : L10n.tr("查看已归档会话"), symbol: state.archived ? "tray.full" : "archivebox") {
-            state.archived.toggle()
-        })
         if hasProviderFilter {
             items.append(.divider)
             items += providerOptions.map { option in

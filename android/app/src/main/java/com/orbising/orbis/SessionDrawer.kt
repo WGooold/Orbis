@@ -107,8 +107,6 @@ internal fun drawerAgentFilter(key: String): DrawerAgentFilter =
 private fun DrawerAgentFilterMenu(
     selected: DrawerAgentFilter,
     onSelect: (DrawerAgentFilter) -> Unit,
-    showArchived: Boolean,
-    onToggleArchived: () -> Unit,
     providerOptions: List<CodexProviderOption>,
     providerFilterKey: String,
     onSelectProvider: (String) -> Unit,
@@ -171,12 +169,6 @@ private fun DrawerAgentFilterMenu(
                     },
                 )
             }
-            HorizontalDivider()
-            NeumorphMenuItem(
-                text = { Text(if (showArchived) L10n.tr("查看未归档会话") else L10n.tr("查看已归档会话")) },
-                onClick = { onToggleArchived(); expanded = false },
-                leadingIcon = { Icon(OrbisSymbols.Archive, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            )
             }
         }
     }
@@ -352,11 +344,17 @@ internal fun SessionDrawer(
                         colors = neumorphFieldColors(),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                     )
+                    NeumorphIconButton(
+                        onClick = { showArchived = !showArchived },
+                        icon = if (showArchived) Icons.Rounded.Archive else OrbisSymbols.Archive,
+                        contentDescription = if (showArchived) L10n.tr("查看未归档会话") else L10n.tr("查看已归档会话"),
+                        modifier = Modifier.testTag("drawer-archive-toggle").semantics { selected = showArchived },
+                        tint = if (showArchived) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = if (showArchived) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                    )
                     DrawerAgentFilterMenu(
                         selected = agentFilter,
                         onSelect = { agentFilterKey = it.key },
-                        showArchived = showArchived,
-                        onToggleArchived = { showArchived = !showArchived },
                         providerOptions = providerOptions,
                         providerFilterKey = providerKey,
                         onSelectProvider = { requestedProviderKey = it },

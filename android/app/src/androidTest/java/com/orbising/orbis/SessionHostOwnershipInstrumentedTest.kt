@@ -70,8 +70,7 @@ class SessionHostOwnershipInstrumentedTest {
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
         compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
         capture("paired-empty")
-        compose.onNode(hasContentDescription("筛选会话：", substring = true)).performClick()
-        compose.onNodeWithText("查看已归档会话").performClick()
+        compose.onNodeWithContentDescription("查看已归档会话").performClick()
         compose.onNodeWithText("Paired Desktop").assertIsDisplayed()
         compose.onNodeWithContentDescription("新建会话").assertDoesNotExist()
     }

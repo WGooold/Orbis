@@ -76,10 +76,13 @@ class SessionProviderFilterInstrumentedTest {
         compose.onNodeWithContentDescription("清除搜索").performClick()
         compose.onNodeWithText("Other session").assertIsDisplayed()
         compose.runOnIdle { state.value = state.value.copy(currentProviders = mapOf("codex" to "custom")) }
-        openFilter()
-        compose.onNodeWithText("查看已归档会话").performClick()
+        compose.onNodeWithContentDescription("查看已归档会话").performClick()
         compose.onNodeWithText("Archived session").assertIsDisplayed()
         compose.onNodeWithText("Custom session").assertDoesNotExist()
+        capture("archive-toggle-selected")
+        compose.onNodeWithContentDescription("查看未归档会话").performClick()
+        compose.onNodeWithText("Custom session").assertIsDisplayed()
+        capture("archive-toggle-unselected")
     }
 
     @Test fun missingConfigurationNeverClaimsUnknownSessionsAreCurrent() {
