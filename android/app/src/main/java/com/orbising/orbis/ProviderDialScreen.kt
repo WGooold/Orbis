@@ -151,7 +151,11 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     var agentPosition by remember(hostId) { mutableFloatStateOf(DIAL_AGENTS.indexOf(kind).toFloat()) }
-    var itemPosition by remember(hostId, kind) { mutableFloatStateOf(selectedIndex.toFloat()) }
+    // The pointer coroutine survives Agent changes; it must follow the replacement state
+    // used by drawing and settling rather than keep the first Agent's position.
+    val itemPosition by rememberUpdatedState(
+        remember(hostId, kind) { mutableFloatStateOf(selectedIndex.toFloat()) }
+    )
     var grabbed by remember { mutableStateOf<ProviderDialRing?>(null) }
     var settleJob by remember { mutableStateOf<Job?>(null) }
     val currentKind by rememberUpdatedState(kind)
@@ -162,7 +166,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
     val tick = rememberActionHaptic()
     val pointerPop = remember { Animatable(1f) }
     val agentPop = remember { Animatable(1f) }
-    LaunchedEffect(itemPosition.roundToInt()) {
+    LaunchedEffect(itemPosition.floatValue.roundToInt()) {
         if (ValueAnimator.areAnimatorsEnabled()) {
             pointerPop.snapTo(1.5f)
             pointerPop.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.State)))
@@ -180,7 +184,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
     LaunchedEffect(hostId, kind, selectedIndex) {
         if (grabbed == null && settleJob?.isActive != true) {
             agentPosition = DIAL_AGENTS.indexOf(kind).coerceAtLeast(0).toFloat()
-            itemPosition = selectedIndex.toFloat()
+            itemPosition.floatValue = selectedIndex.toFloat()
         }
     }
     DisposableEffect(hostId, active) { onDispose { settleJob?.cancel(); currentOnMoving(false) } }
@@ -188,12 +192,12 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
         settleJob?.cancel()
         val maxIndex = if (ring == ProviderDialRing.Agent) DIAL_AGENTS.lastIndex else currentProviders.lastIndex.coerceAtLeast(0)
         val end = target.coerceIn(0, maxIndex)
-        val from = if (ring == ProviderDialRing.Agent) agentPosition else itemPosition
+        val from = if (ring == ProviderDialRing.Agent) agentPosition else itemPosition.floatValue
         currentOnMoving(true)
         settleJob = scope.launch {
             animate(from, end.toFloat(), animationSpec = tween(InteractionMotion.duration(
                 InteractionMotion.Panel + min(240, (abs(end - from) * 90).roundToInt())), easing = Easing { 1 - (1-it).pow(3) })) { value, _ ->
-                if (ring == ProviderDialRing.Agent) agentPosition = value else itemPosition = value
+                if (ring == ProviderDialRing.Agent) agentPosition = value else itemPosition.floatValue = value
             }
             if (ring == ProviderDialRing.Agent) currentOnKind(DIAL_AGENTS[end]) else currentOnBrowse(end)
             currentOnMoving(false)
@@ -213,7 +217,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 val ring = gestureGeometry.ringAt(down.position.x / px, down.position.y / px) ?: return@awaitEachGesture
                 settleJob?.cancel()
                 currentOnMoving(false)
-                val start = if (ring == ProviderDialRing.Agent) agentPosition.roundToInt().toFloat() else itemPosition
+                val start = if (ring == ProviderDialRing.Agent) agentPosition.roundToInt().toFloat() else itemPosition.floatValue
                 val velocity = VelocityTracker()
                 velocity.addPosition(down.uptimeMillis, down.position)
                 var moved = false
@@ -241,8 +245,8 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                             } else {
                                 val raw = start - dy / gestureGeometry.profilePitch
                                 val next = DualDialGeometry.soften(raw, currentProviders.size)
-                                if (next.roundToInt() != itemPosition.roundToInt()) tick()
-                                itemPosition = next
+                                if (next.roundToInt() != itemPosition.floatValue.roundToInt()) tick()
+                                itemPosition.floatValue = next
                                 currentOnBrowse(next.roundToInt().coerceIn(0, currentProviders.lastIndex.coerceAtLeast(0)))
                             }
                             change.consume()
@@ -257,7 +261,7 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 // Child labels own taps. Only a drag may cancel their click and settle the ring.
                 if (moved && released && !cancelled) {
                     if (ring == ProviderDialRing.Agent) settle(ring, agentPosition.roundToInt())
-                    else settle(ring, (itemPosition - if (moved) velocity.calculateVelocity().y / px / gestureGeometry.profilePitch * 0.14f else 0f).roundToInt())
+                    else settle(ring, (itemPosition.floatValue - if (moved) velocity.calculateVelocity().y / px / gestureGeometry.profilePitch * 0.14f else 0f).roundToInt())
                 }
             }
         }) {
@@ -279,12 +283,12 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 fun point(r: Float, angle: Float) = centre + Offset(cos(angle) * r * px, sin(angle) * r * px)
                 val itemStep = Math.toRadians(g.profileStep.toDouble()).toFloat()
                 for (i in 0 until 120) {
-                    val a = Math.toRadians((i * 3 - itemPosition * g.profileStep).toDouble()).toFloat()
+                    val a = Math.toRadians((i * 3 - itemPosition.floatValue * g.profileStep).toDouble()).toFloat()
                     val length = if (i % 8 == 0) 18 else if (i % 4 == 0) 12 else 8
                     drawLine(palette.faint, point(g.radius - length, a), point(g.radius - 6, a), strokeWidth = 1.dp.toPx())
                 }
                 providers.forEachIndexed { index, provider ->
-                    val a = (index - itemPosition) * itemStep
+                    val a = (index - itemPosition.floatValue) * itemStep
                     drawCircle(if (provider.enabled) palette.success else palette.faint, 3.dp.toPx(), point(g.radius - 32, a))
                 }
                 repeat(100) { index ->
@@ -306,11 +310,11 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                 }
             }
             providers.forEachIndexed { index, provider ->
-                val angle = Math.toRadians(((index - itemPosition) * g.profileStep).toDouble())
+                val angle = Math.toRadians(((index - itemPosition.floatValue) * g.profileStep).toDouble())
                 val x = g.cx + (g.radius + 28) * cos(angle).toFloat()
                 val y = g.cy + (g.radius + 28) * sin(angle).toFloat()
                 if (y in -40f..(height + 40)) {
-                    val selected = index == itemPosition.roundToInt().coerceIn(0, providers.lastIndex)
+                    val selected = index == itemPosition.floatValue.roundToInt().coerceIn(0, providers.lastIndex)
                     Column(Modifier.offset(x = x.dp, y = (y - if (selected) 44 else 16).dp).width((width - x - 16).coerceIn(64f,136f).dp).heightIn(min = 48.dp)
                         .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Agent) 0.4f else if (selected) 1f else 0.6f }
                         .orbisKeyboardFocus().clickable(enabled = active,
@@ -349,10 +353,10 @@ private fun DualProviderDial(kind: String, providers: List<AgentProvider>, selec
                     progressBarRangeInfo = ProgressBarRangeInfo(agentPosition.coerceIn(0f, 3f), 0f..3f, 2)
                     setProgress { target -> if (!active) false else { settle(ProviderDialRing.Agent, target.roundToInt()); true } }
                 })
-            Box(Modifier.offset(x = (g.cx + g.seamRadius).dp).fillMaxSize().testTag("provider-arc").keyboardRing(ProviderDialRing.Profile,itemPosition,providers.lastIndex).semantics {
+            Box(Modifier.offset(x = (g.cx + g.seamRadius).dp).fillMaxSize().testTag("provider-arc").keyboardRing(ProviderDialRing.Profile,itemPosition.floatValue,providers.lastIndex).semantics {
                 contentDescription = L10n.tr("{0} 的配置", agentBrand(kind).title)
                 stateDescription = providers.getOrNull(selectedIndex)?.name ?: L10n.tr("当前没有可用供应商")
-                progressBarRangeInfo = ProgressBarRangeInfo(itemPosition.coerceIn(0f, providers.lastIndex.coerceAtLeast(0).toFloat()),
+                progressBarRangeInfo = ProgressBarRangeInfo(itemPosition.floatValue.coerceIn(0f, providers.lastIndex.coerceAtLeast(0).toFloat()),
                     0f..providers.lastIndex.coerceAtLeast(0).toFloat(), (providers.size - 2).coerceAtLeast(0))
                 setProgress { target -> if (!active || providers.isEmpty()) false else { settle(ProviderDialRing.Profile, target.roundToInt()); true } }
             })

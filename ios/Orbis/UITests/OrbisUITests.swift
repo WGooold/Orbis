@@ -205,6 +205,53 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(profile.waitForExistence(timeout: 3))
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: selectedTeam, object: profile)], timeout: 3), .completed)
         XCTAssertTrue(app.buttons["provider-action-team"].isEnabled)
+    // S42 / SC63: a real inner-ring drag must leave the outer ring movable across
+    // repeated Agent changes. Check label positions as well as the selected value
+    // so a stale rendering state cannot pass merely by updating the selection.
+    func testProviderOuterRingMovesAfterRepeatedAgentDrags() {
+        for reduced in [false, true] {
+            let arguments = ["--preview-reset-design"] + (reduced ? ["--preview-reduce-motion"] : [])
+            let app = launch("providers", arguments: arguments)
+            let agent = app.descendants(matching: .any)["provider-agent-keyboard"].firstMatch
+            let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
+            XCTAssertTrue(agent.waitForExistence(timeout: 8))
+            XCTAssertTrue(profile.waitForExistence(timeout: 4))
+            func waitValue(_ element: XCUIElement, _ value: String) {
+                let expected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+                XCTAssertEqual(XCTWaiter().wait(for: [expected], timeout: 4), .completed)
+            }
+            func drag(_ ring: XCUIElement, inset: CGFloat, dy: CGFloat) {
+                let frame = ring.frame
+                let start = app.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: frame.maxX - inset, dy: frame.midY))
+                start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: dy)),
+                    withVelocity: .slow, thenHoldForDuration: 0.15)
+            }
+            for (name, travel) in [("Claude Code", CGFloat(-84)), ("DeepSeek", -84), ("Pi", -84), ("Codex", 252)] {
+                drag(agent, inset: 30, dy: travel)
+                waitValue(agent, name)
+                waitValue(profile, "官方服务")
+                let official = app.staticTexts["官方服务"].firstMatch
+                let team = app.staticTexts["团队供应商"].firstMatch
+                XCTAssertTrue(official.waitForExistence(timeout: 3))
+                XCTAssertTrue(team.waitForExistence(timeout: 3))
+                let officialY = official.frame.midY, teamY = team.frame.midY
+                drag(profile, inset: 16, dy: -110)
+                waitValue(profile, "团队供应商")
+                XCTAssertLessThan(team.frame.midY, teamY - 40, "The drawn outer ring must rotate after changing Agent")
+                XCTAssertLessThan(official.frame.midY, officialY - 40)
+                XCTAssertTrue(waitUntilEnabled(app.buttons["provider-action-team"], timeout: 3))
+                capture("provider-outer-after-\(name)-\(reduced ? "reduced" : "normal")", app: app)
+                drag(profile, inset: 16, dy: 110)
+                waitValue(profile, "官方服务")
+                XCTAssertEqual(official.frame.midY, officialY, accuracy: 2)
+                XCTAssertEqual(team.frame.midY, teamY, accuracy: 2)
+                if name != "Pi" { XCTAssertFalse(app.buttons["provider-action-official"].isEnabled) }
+            }
+            app.terminate()
+        }
+    }
+
         profile.typeKey(.home, modifierFlags: [])
         XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "官方服务"), object: profile)], timeout: 3), .completed)
         XCTAssertFalse(app.buttons["provider-action-official"].isEnabled)

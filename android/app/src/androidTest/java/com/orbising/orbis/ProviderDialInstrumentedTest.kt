@@ -112,6 +112,53 @@ class ProviderDialInstrumentedTest {
         compose.runOnIdle { assertTrue(changes.isEmpty()) }
     }
 
+    /** SC63: every Agent's ring follows the finger before release, then supports a reverse drag. */
+    @Test fun outerRingTracksBothDirectionsAcrossRepeatedAgentChanges() {
+        show(mutableStateOf(ready()))
+        for (agentIndex in listOf(1, 2, 3, 0, 1)) {
+            progress("provider-agent-reel", agentIndex.toFloat())
+            assertOuterPosition(0f)
+            val node = compose.onNodeWithTag("provider-dual-dial")
+            val bounds = node.fetchSemanticsNode().boundsInRoot
+            val geometry = with(compose.density) {
+                DualDialGeometry.measure(bounds.width.toDp().value, bounds.height.toDp().value)
+            }
+            val start = with(compose.density) {
+                androidx.compose.ui.geometry.Offset((geometry.cx + geometry.radius - 16f).dp.toPx(), geometry.cy.dp.toPx())
+            }
+            val travel = with(compose.density) { geometry.profilePitch.dp.toPx() }
+            node.performTouchInput {
+                down(start)
+                moveTo(start.copy(y = start.y - travel * 0.65f), 300)
+            }
+            // Let recomposition happen while the finger is still down: the physical position
+            // must follow the drag, even when browsing updates the selected configuration.
+            assertOuterPosition(0.65f)
+            compose.onNodeWithTag("provider-apply").assertIsNotEnabled()
+            node.performTouchInput {
+                moveTo(start.copy(y = start.y - travel), 300)
+                up()
+            }
+            assertOuterPosition(1f)
+            node.performTouchInput {
+                down(start)
+                moveTo(start.copy(y = start.y + travel), 600)
+                up()
+            }
+            assertOuterPosition(0f)
+            compose.onNodeWithTag("provider-arc")
+                .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "本机配置"))
+        }
+        compose.runOnIdle { assertTrue(changes.isEmpty()) }
+        capture("ring-after-agent-changes")
+    }
+
+    private fun assertOuterPosition(expected: Float) {
+        compose.onNodeWithTag("provider-arc").assert(SemanticsMatcher("outer ring position is $expected") {
+            kotlin.math.abs(it.config[androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo].current - expected) < 0.01f
+        })
+    }
+
     private fun dragOuterRingToSecondProfile() {
         val node = compose.onNodeWithTag("provider-dual-dial")
         val bounds = node.fetchSemanticsNode().boundsInRoot
@@ -129,6 +176,10 @@ class ProviderDialInstrumentedTest {
         compose.waitForIdle()
         compose.onNodeWithTag("provider-arc")
             .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "relay-b"))
+        // SC63: the selection callback can succeed while a stale drag state leaves the drawn ring frozen.
+        compose.onNodeWithTag("provider-arc").assert(SemanticsMatcher("outer ring reaches the selected detent") {
+            kotlin.math.abs(it.config[androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo].current - 1f) < 0.01f
+        })
     }
     /** SC57: each ring independently owns arrows/Home/End; keys never apply a configuration. */
     @Test fun keyboardBrowsesEachRingWithItsOwnFocusAndNeverApplies() {
