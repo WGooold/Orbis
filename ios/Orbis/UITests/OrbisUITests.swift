@@ -323,6 +323,24 @@ final class OrbisUITests: XCTestCase {
         screenshot.name = name; screenshot.lifetime = .keepAlways
         add(screenshot)
     }
+    private func changedPixels(_ first: UIImage, _ second: UIImage) -> Int {
+        guard let left = first.cgImage, let right = second.cgImage,
+              left.width == right.width, left.height == right.height else { return -1 }
+        let width = left.width, height = left.height
+        var firstPixels = [UInt8](repeating: 0, count: width * height * 4)
+        var secondPixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let firstContext = CGContext(data: &firstPixels, width: width, height: height, bitsPerComponent: 8,
+                                           bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let secondContext = CGContext(data: &secondPixels, width: width, height: height, bitsPerComponent: 8,
+                                            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return -1 }
+        firstContext.draw(left, in: CGRect(x: 0, y: 0, width: width, height: height))
+        secondContext.draw(right, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return stride(from: 0, to: firstPixels.count, by: 4).filter { offset in
+            (0..<3).contains { abs(Int(firstPixels[offset + $0]) - Int(secondPixels[offset + $0])) > 2 }
+        }.count
+    }
     private func inkPixels(_ element: XCUIElement) -> Int {
         guard let image = element.screenshot().image.cgImage else { return -1 }
         let width = image.width, height = image.height
@@ -1593,6 +1611,30 @@ final class OrbisUITests: XCTestCase {
         reopened.buttons["appearance-mist"].tap()
         XCTAssertTrue(reopened.buttons["appearance-mist"].isSelected)
         reopened.terminate()
+    }
+
+    func testMaterialAppearanceRefreshesMountedHomeCard() {
+        let app = launch("home", arguments: ["--preview-reset-design", "--preview-reduce-motion"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        let mistImage = card.screenshot().image
+
+        app.buttons["root-tab-settings"].tap()
+        let settings = app.descendants(matching: .any)["settings-page"].firstMatch
+        let sage = app.buttons["appearance-sage"]
+        for _ in 0..<8 where !sage.isHittable { settings.swipeUp() }
+        XCTAssertTrue(sage.isHittable)
+        sage.tap()
+        XCTAssertTrue(sage.isSelected)
+
+        // Home remains mounted behind Settings; its Equatable views must include
+        // the material preference so theme-dependent text is rebuilt on return.
+        app.buttons["root-tab-chat"].tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 4))
+        let sageImage = card.screenshot().image
+        XCTAssertGreaterThan(changedPixels(mistImage, sageImage), 0,
+                             "The mounted home card must repaint its material-dependent text after switching themes")
+        capture("material-home-card-updated", app: app)
     }
 
     private func returnWithoutSettling(_ app: XCUIApplication, count: Int, reduced: Bool = false) {

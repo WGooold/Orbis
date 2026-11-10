@@ -142,7 +142,9 @@ struct SessionDrawerView: View, Equatable {
     let store: OrbisStore
     @ObservedObject var updates: ScreenPublication
     let renderedState: SessionDirectoryState
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.renderedState == rhs.renderedState }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.renderedState == rhs.renderedState && lhs.visualStyle == rhs.visualStyle
+    }
 
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme

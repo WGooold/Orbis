@@ -60,6 +60,8 @@ Host 共用四主题、连续深度、原生 SVG 图标、焦点、禁用与加�
 
 2026-11-10 S50 / SC71：iOS 侧边栏按 Android 对齐三项预览、分级筛选、固定多选栏、目录树间距及电脑连接状态。选择集合显式传入行内容，选中填充在文字后方并裁切到行内；关闭目标限定于露出的遮罩区域，保持抽屉按钮可命中。实现见 [SessionViews.swift](../../ios/Orbis/Orbis/SessionViews.swift) 与 [ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)；30 项展示逻辑测试和 6 项紧凑 iPhone 模拟器 UI 回归通过，首次失败、最终截图、关闭重开验证及资源恢复分别保留在[本次证据](../../.artifacts/ios-drawer-alignment-20261110/verification.json)。真机与 iPad 待用户验证；用 Xcode 打开 `ios/Orbis/Orbis.xcodeproj`，选择设备运行。
 
+2026-11-10 iOS 材质即时刷新：根首页、目录抽屉和聊天消息行的 `Equatable` 比较纳入材质偏好，避免跳过主题变化后的重绘。实现见 [ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)、[SessionViews.swift](../../ios/Orbis/Orbis/SessionViews.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)；[OrbisUITests.testMaterialAppearanceRefreshesMountedHomeCard](../../ios/Orbis/UITests/OrbisUITests.swift) 模拟器回归通过（1 项，0 失败），证据见 [.artifacts/material-refresh-ios-20261110](../../.artifacts/material-refresh-ios-20261110/verification.json)。
+
 2026-11-10 S49 / SC70：空输入启动复用 Android `db3204b^` 与 iOS `8e5cccb^` 中的新建调用路径，`session.activate` 继续使用 `spawnMode: tui`。实现见两端 `SessionDraft`、`HostConnection` / `OrbisStore`；回归见 `DesignAlignmentInstrumentedTest`、`LaunchLedgerTests`、`OrbisUITests` 与 `design-demo-policy.test.ts`。构建、自动验证和交付状态见[本次证据](../../.artifacts/empty-draft-start-20261110/verification.json)；待用户验证。
 
 2026-11-09 S48 / SC69：Android、iOS 与交互稿同步新建卡片的短名称、右侧版本图标及右对齐。Android 4 项定向设备回归通过，覆盖 320dp 完整名称、四个 Agent 按住无光晕、版本选择与实际提交目标；iOS 构建及版本菜单回归通过，桌面版单独可用断言通过，后续 Shift+Return 用例复现原有失败，原断言保留。截图、首次及既有失败指针、Release 安装包与签名校验见[本次证据](../../.artifacts/2026-11-09-codex-compact-draft/verification.json)；待用户安装验证。

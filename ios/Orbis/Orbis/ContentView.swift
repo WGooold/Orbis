@@ -671,7 +671,10 @@ private struct TransferErrorBanner: View {
 struct HomeView: View, Equatable {
     let store: OrbisStore
     @ObservedObject var updates: ScreenPublication
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.draftOpen == rhs.draftOpen && lhs.draftCwd == rhs.draftCwd && lhs.draftCloseRequest == rhs.draftCloseRequest }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.draftOpen == rhs.draftOpen && lhs.draftCwd == rhs.draftCwd &&
+            lhs.draftCloseRequest == rhs.draftCloseRequest && lhs.visualStyle == rhs.visualStyle
+    }
 
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
@@ -1090,8 +1093,10 @@ private struct HomeCardContent: View, Equatable {
     let selected: Bool
     let selecting: Bool
     @Environment(\.colorScheme) private var scheme
+    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.card == rhs.card && lhs.selected == rhs.selected && lhs.selecting == rhs.selecting
+        lhs.card == rhs.card && lhs.selected == rhs.selected && lhs.selecting == rhs.selecting &&
+            lhs.visualStyle == rhs.visualStyle
     }
     var body: some View {
         let runtime = card.runtime, kind = card.agentKind, pending = card.hasPendingInteraction

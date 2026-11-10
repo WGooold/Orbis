@@ -793,7 +793,11 @@ struct ChatMessageRow: View, Equatable {
     var onRewind: (RuntimeOption) -> Void = { _ in }
     var onPending: (PendingSendAction) -> Void = { _ in }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row.contentRevision == rhs.row.contentRevision && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults && lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes && lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption && lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads && lhs.canResend == rhs.canResend
+        lhs.row.contentRevision == rhs.row.contentRevision && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults &&
+            lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes &&
+            lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption &&
+            lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads &&
+            lhs.canResend == rhs.canResend && lhs.visualStyle == rhs.visualStyle
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
