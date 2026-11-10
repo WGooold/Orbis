@@ -2579,6 +2579,11 @@ export class HostService {
       this.#recordAgentDiagnostic(runtimeId, "interaction", "Interaction requested");
       const ids = this.#interactionIds.get(runtimeId) ?? new Set<string>();
       if (ids.size < 64) ids.add(event.request.requestId); this.#interactionIds.set(runtimeId, ids);
+      this.#wakeOfflineDevices("approval-requested", createHash("sha256").update(`approval:${runtimeId}:${event.request.requestId}`).digest("hex"));
+    }
+    if (event.type === "session.patch" && event.live?.turn?.outcome === "completed") {
+      const turnId = event.live.turn.turnId;
+      if (turnId) this.#wakeOfflineDevices("task-completed", createHash("sha256").update(`completed:${runtimeId}:${event.sessionId}:${turnId}`).digest("hex"));
     }
     if (event.type === "interaction.snapshot") this.#interactionIds.set(runtimeId, new Set(event.requests.map(item => item.requestId)));
     if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
@@ -2619,6 +2624,21 @@ export class HostService {
     // All current remote notices have one authority. Uncorrelated legacy errors cannot revive them.
     if (event.type === "runtime.error") { this.#options.log?.(`未关联 runtime.error (${runtimeId}): ${event.message}`); return; }
     this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, event));
+  }
+
+  #wakeOfflineDevices(category: "task-completed" | "approval-requested", eventId: string): void {
+    const deviceIds = this.#store.devices.filter(device => !device.revoked && this.#links.get(device.deviceId)?.active === undefined)
+      .map(device => device.deviceId);
+    if (deviceIds.length === 0 || this.#relay?.state !== "connected") return;
+    const url = `${relayHttpBase(this.#options.relayUrl)}/v1/push/wake`;
+    if (!url.startsWith("https://")) return;
+    void fetch(url, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(5_000),
+      headers: { authorization: `Bearer ${this.#options.credential}`, "content-type": "application/json" },
+      body: JSON.stringify({ hostId: this.#identity.hostId, deviceIds, category, eventId }),
+    }).then(async response => {
+      if (!response.ok) this.#options.log?.(`APNs wake request rejected (${response.status})`);
+    }).catch(error => this.#options.log?.(`APNs wake request failed: ${describeError(error)}`));
   }
 
   #sendNotificationSnapshot(deviceId: string, runtimeId: string): void {

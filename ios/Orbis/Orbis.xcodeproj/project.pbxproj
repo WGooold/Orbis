@@ -263,6 +263,7 @@
 				TargetAttributes = {
 					A00130010000000000000001 = {
 						CreatedOnToolsVersion = 16.0;
+						SystemCapabilities = { com.apple.Push = { enabled = 1; }; };
 					};
 				};
 			};
@@ -381,6 +382,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Orbis/Orbis.Debug.entitlements;
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = Z5KBY7SP63;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -405,6 +407,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Orbis/Orbis.Release.entitlements;
 				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = Z5KBY7SP63;
 				GENERATE_INFOPLIST_FILE = NO;

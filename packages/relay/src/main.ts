@@ -2,12 +2,21 @@ import { createRelayServer } from "./index.js";
 import { RegistrationAuthority } from "./registration.js";
 import { verificationMailer } from "./verification-mail.js";
 import { orbisEnvironment } from "@orbis/protocol";
+import { readFile } from "node:fs/promises";
 
 const port = Number(process.env.PORT ?? 8787);
 const runtimeCredential = orbisEnvironment(process.env, "RUNTIME_CREDENTIAL");
 const adminToken = orbisEnvironment(process.env, "ADMIN_TOKEN");
 const stateFile = orbisEnvironment(process.env, "STATE_FILE") ?? process.env.ORBIS_DEFAULT_STATE_FILE ?? "./data/relay-state.json";
 const sendMail = verificationMailer();
+const apnsKeyPath = orbisEnvironment(process.env, "APNS_PRIVATE_KEY_FILE");
+const apns = apnsKeyPath ? {
+  keyId: orbisEnvironment(process.env, "APNS_KEY_ID") ?? "",
+  teamId: orbisEnvironment(process.env, "APNS_TEAM_ID") ?? "",
+  bundleId: orbisEnvironment(process.env, "APNS_BUNDLE_ID") ?? "",
+  privateKey: await readFile(apnsKeyPath, "utf8"),
+  environment: (orbisEnvironment(process.env, "APNS_ENVIRONMENT") ?? "production") as "sandbox" | "production",
+} : undefined;
 const registration = await RegistrationAuthority.create({
   stateFile: process.env.ORBIS_REGISTRATION_STATE_FILE ?? `${stateFile}.registration.json`,
   ...(sendMail === undefined ? {} : { sendMail }),

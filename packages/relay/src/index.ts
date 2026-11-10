@@ -23,6 +23,7 @@ import { HttpError, jsonResponse, readJson, requestSource } from "./http-utils.j
 import { createWebHandler } from "./web.js";
 import { RelayBandwidth } from "./bandwidth.js";
 import { BulkSendBudget, DEFAULT_BULK_BYTES_PER_SECOND } from "./bulk-send-budget.js";
+import { APNsSender, type APNsConfig } from "./apns.js";
 
 export interface RelayDeviceCredential {
   deviceId: string;
@@ -40,6 +41,7 @@ export interface RelayServerOptions {
   pairingTtlMs?: number;
   heartbeatIntervalMs?: number;
   stateFile?: string;
+  apns?: APNsConfig;
   registration?: RegistrationAuthority;
   adminStateFile?: string;
   /** X11: defaults to a separate file beside stateFile; counts only the device edge. */
@@ -69,6 +71,7 @@ type RuntimeConnection = {
   socket: WebSocket;
   name: string;
   connectedAt: number;
+  credentialHash: string;
 };
 
 type DeviceConnection = {
@@ -247,6 +250,34 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       { deviceId: device.deviceId, name: device.name, ...(device.hostId === undefined ? {} : { hostId: device.hostId }) },
     ]),
   );
+  const pushTokens = new Map<string, { deviceId: string; hostId: string; token: string }>();
+  const pushStateFile = options.stateFile ? `${options.stateFile}.push.json` : undefined;
+  if (pushStateFile) {
+    try {
+      const state = JSON.parse(await readFile(pushStateFile, "utf8")) as { version?: unknown; tokens?: unknown };
+      if (state.version !== 1 || !Array.isArray(state.tokens)) throw new Error("Invalid Relay push state file");
+      for (const item of state.tokens) {
+        if (item && typeof item === "object" && typeof item.deviceId === "string" && typeof item.hostId === "string" &&
+          typeof item.token === "string" && /^[a-fA-F0-9]{64,200}$/u.test(item.token)) {
+          pushTokens.set(item.deviceId, { deviceId: item.deviceId, hostId: item.hostId, token: item.token });
+        }
+      }
+    } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+  }
+  let pushPersistence = Promise.resolve();
+  const persistPushTokens = (): Promise<void> => {
+    if (!pushStateFile) return Promise.resolve();
+    const data = JSON.stringify({ version: 1, tokens: [...pushTokens.values()] }, null, 2);
+    const pending = pushPersistence.then(async () => {
+      const temporary = `${pushStateFile}.${process.pid}.tmp`;
+      await mkdir(dirname(pushStateFile), { recursive: true });
+      await writeFile(temporary, data, { mode: 0o600 });
+      await rename(temporary, pushStateFile);
+    });
+    pushPersistence = pending.catch(() => {});
+    return pending;
+  };
+  const apns = options.apns ? new APNsSender(options.apns) : undefined;
   if (options.stateFile) {
     try {
       const persisted = JSON.parse(await readFile(options.stateFile, "utf8")) as {
@@ -314,11 +345,18 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
   };
   const revokeDevice = async (deviceId: string): Promise<void> => {
     const removed = [...devicesByCredential].filter(([, device]) => device.deviceId === deviceId);
+    const previousPush = pushTokens.get(deviceId);
     for (const [hash, device] of devicesByCredential) {
       if (device.deviceId === deviceId) devicesByCredential.delete(hash);
     }
-    try { await persistDevices(); }
-    catch (error) { for (const [hash, device] of removed) devicesByCredential.set(hash, device); throw error; }
+    pushTokens.delete(deviceId);
+    try { await persistPushTokens(); await persistDevices(); }
+    catch (error) {
+      for (const [hash, device] of removed) devicesByCredential.set(hash, device);
+      if (previousPush) pushTokens.set(deviceId, previousPush);
+      await Promise.allSettled([persistDevices(), persistPushTokens()]);
+      throw error;
+    }
     for (const device of devices) {
       if (device.deviceId === deviceId) device.socket.close(4003, "device revoked");
     }
@@ -328,6 +366,58 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     void (async () => {
       const path = new URL(request.url ?? "/", "http://relay.invalid").pathname;
       if (await serveWeb(request, response, path)) return;
+      const pushBearer = (): string | undefined => {
+        const value = request.headers.authorization;
+        return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : undefined;
+      };
+      if (request.method === "POST" && path === "/v1/push/register") {
+        if (!apns) throw new HttpError(503, "push_unavailable");
+        const bearer = pushBearer();
+        const device = bearer ? devicesByCredential.get(hashCredential(bearer).toString("hex")) : undefined;
+        if (!device?.hostId) throw new HttpError(401, "unauthorized");
+        const body = await readJson(request) as { token?: unknown };
+        if (!body || (body.token !== null && (typeof body.token !== "string" || !/^[a-fA-F0-9]{64,200}$/u.test(body.token)))) throw new HttpError(400, "invalid_token");
+        const previous = pushTokens.get(device.deviceId);
+        if (body.token === null) pushTokens.delete(device.deviceId);
+        else pushTokens.set(device.deviceId, { deviceId: device.deviceId, hostId: device.hostId, token: body.token as string });
+        try { await persistPushTokens(); }
+        catch (error) {
+          if (previous) pushTokens.set(device.deviceId, previous); else pushTokens.delete(device.deviceId);
+          await persistPushTokens().catch(() => {});
+          throw error;
+        }
+        jsonResponse(response, 204); return;
+      }
+      if (request.method === "POST" && path === "/v1/push/wake") {
+        if (!apns) throw new HttpError(503, "push_unavailable");
+        const body = await readJson(request) as { hostId?: unknown; deviceIds?: unknown; category?: unknown; eventId?: unknown };
+        if (!body || typeof body.hostId !== "string" || body.hostId.length === 0 || body.hostId.length > 128 || !Array.isArray(body.deviceIds) || body.deviceIds.length > 128 ||
+          !body.deviceIds.every(id => typeof id === "string" && id.length > 0 && id.length <= 128) ||
+          !["task-completed", "approval-requested"].includes(String(body.category)) ||
+          typeof body.eventId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/u.test(body.eventId)) throw new HttpError(400, "invalid_request");
+        const bearer = pushBearer();
+        const authenticatedHost = runtimes.get(body.hostId);
+        const registeredHost = bearer ? options.registration?.hostForCredential(bearer) : undefined;
+        if (!bearer || authenticatedHost?.credentialHash !== hashCredential(bearer).toString("hex") || registeredHost !== undefined && registeredHost !== body.hostId) throw new HttpError(401, "unauthorized");
+        if (!authenticatedHost || authenticatedHost.socket.readyState !== WebSocket.OPEN) throw new HttpError(409, "host_not_connected");
+        const hint = { category: body.category as "task-completed" | "approval-requested", eventId: body.eventId, hostId: body.hostId };
+        const sent: string[] = [];
+        const failed: string[] = [];
+        let removedStaleToken = false;
+        await Promise.all([...new Set(body.deviceIds as string[])].map(async deviceId => {
+          const target = pushTokens.get(deviceId);
+          if (!target || target.hostId !== body.hostId) return;
+          try {
+            const result = await apns.send(target.token, hint);
+            if (result === "invalid-token") { pushTokens.delete(deviceId); removedStaleToken = true; }
+            else sent.push(deviceId);
+          } catch {
+            failed.push(deviceId);
+          }
+        }));
+        if (removedStaleToken) await persistPushTokens();
+        jsonResponse(response, failed.length === 0 ? 200 : 502, { sent, failed }); return;
+      }
       if (request.method === "POST" && path === "/v1/admin/login") {
         const body = await readJson(request) as { token?: unknown };
         const session = admin.login(request, response, body && typeof body === "object" ? body.token : undefined);
@@ -412,6 +502,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           runtimes.get(hostId)?.socket.close(4003, "host disabled");
           for (const device of devices) if (device.hostId === hostId) device.socket.close(4003, "host disabled");
           for (const [key, pairing] of pairingCodes) if (pairing.hostId === hostId) pairingCodes.delete(key);
+          for (const [deviceId, token] of pushTokens) if (token.hostId === hostId) pushTokens.delete(deviceId);
+          await persistPushTokens();
         }
         jsonResponse(response, 204);
         return;
@@ -643,7 +735,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           stopMux(previous.socket);
           previous.socket.close(4001, "replaced");
         }
-        runtimes.set(runtimeId, { socket, name: message.runtime.name.slice(0, 128), connectedAt: Date.now() });
+        runtimes.set(runtimeId, { socket, name: message.runtime.name.slice(0, 128), connectedAt: Date.now(), credentialHash: hashCredential(message.credential).toString("hex") });
         markAuthenticated(socket);
         send(socket, {
           type: "runtime.ready",
@@ -869,10 +961,12 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     async close(): Promise<void> {
       clearInterval(heartbeatTimer);
       clearInterval(bandwidthTimer);
+      apns?.close();
       for (const runtime of runtimes.values()) { stopMux(runtime.socket); runtime.socket.close(1001, "relay shutdown"); }
       for (const device of devices) { stopMux(device.socket); device.socket.close(1001, "relay shutdown"); }
       await Promise.all([
         persistence,
+        pushPersistence,
         admin.close(),
         options.registration?.close() ?? Promise.resolve(),
         new Promise<void>((resolve) => runtimeWss.close(() => resolve())),

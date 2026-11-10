@@ -262,11 +262,67 @@ final class ReplyCompletionTracker {
 import UIKit
 import UserNotifications
 
+@MainActor
+final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
+    private static var pairings: [HostPairing] = []
+    private static var currentToken: String?
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = ReplyCompletionNotifications.shared
+        return true
+    }
+    static func updatePairings(_ value: [HostPairing]) {
+        let nextIds = Set(value.map { $0.hostId })
+        if let currentToken {
+            for old in pairings where !nextIds.contains(old.hostId) { register(nil, pairing: old) }
+            for pairing in value { register(currentToken, pairing: pairing) }
+        }
+        pairings = value
+    }
+    static func registerForPushIfAllowed() {
+        Task {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+    nonisolated func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in
+            Self.currentToken = token
+            for pairing in Self.pairings { Self.register(token, pairing: pairing) }
+        }
+    }
+    nonisolated func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // APNs may be unavailable in simulator or misconfigured signing; local notifications remain independent.
+    }
+    private static func register(_ token: String?, pairing: HostPairing) {
+        guard var components = URLComponents(string: pairing.relay.relayUrl), components.scheme == "wss" else { return }
+        components.scheme = "https"
+        components.path = "/v1/push/register"
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(pairing.relay.credential)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token as Any? ?? NSNull()])
+        Task {
+            for attempt in 0..<3 {
+                do {
+                    let (_, response) = try await URLSession.shared.data(for: request)
+                    if let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) { return }
+                } catch { }
+                if attempt < 2 { try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 4)) }
+            }
+        }
+    }
+}
+
 /// Defaults to notifications after the system grants permission. iOS suspension still
-/// stops live reception; no background connection or remote-push capability is implied.
+/// stops live reception; remote alerts use APNs and never carry conversation content.
 @MainActor
 final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = ReplyCompletionNotifications()
+    static let remoteWake = Notification.Name("orbis.remoteWake")
     private var requesting = false
     func prepare() {
         let center = UNUserNotificationCenter.current()
@@ -274,9 +330,13 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
         guard !requesting else { return }
         requesting = true
         Task {
-            let settings = await center.notificationSettings()
-            if settings.authorizationStatus == .notDetermined {
+            var status = await center.notificationSettings()
+            if status.authorizationStatus == .notDetermined {
                 _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+                status = await center.notificationSettings()
+            }
+            if status.authorizationStatus == .authorized || status.authorizationStatus == .provisional {
+                OrbisAppDelegate.registerForPushIfAllowed()
             }
             requesting = false
         }
@@ -290,6 +350,18 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
         // Use an identity key so repeated delivery replaces the same OS notification.
         let identifier = Data((hostId + "\u{0}" + sessionId + "\u{0}" + epoch + "\u{0}" + turnId).utf8).base64EncodedString()
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        let payload = info["orbis"] as? [String: Any]
+        let hostId = payload?["hostId"] as? String
+        guard let hostId, !hostId.isEmpty, hostId.count <= 128,
+              ["task-completed", "approval-requested"].contains(payload?["category"] as? String ?? "") else { completionHandler(); return }
+        Task { @MainActor in
+            NotificationCenter.default.post(name: Self.remoteWake, object: nil, userInfo: ["hostId": hostId])
+            completionHandler()
+        }
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
         willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

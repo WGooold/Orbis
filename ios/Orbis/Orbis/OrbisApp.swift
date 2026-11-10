@@ -1,7 +1,11 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @main
 struct OrbisApp: App {
+    @UIApplicationDelegateAdaptor(OrbisAppDelegate.self) private var appDelegate
     @StateObject private var store = OrbisStore()
     @AppStorage("orbis.colorMode") private var colorMode = "system"
     @Environment(\.scenePhase) private var scenePhase

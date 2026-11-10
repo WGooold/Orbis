@@ -386,6 +386,39 @@ describe("relay v2 frame routing", () => {
     await expect(forged).resolves.toMatchObject({ type: "protocol.error", code: "device_mismatch" });
   });
 
+  it("binds APNs tokens only to authenticated paired device credentials and supports removal", async () => {
+    const stateDir = await testDirectory(join(tmpdir(), "orbis-relay-push-"));
+    relay = await createRelayServer({ port: 0, stateFile: join(stateDir, "relay.json"),
+      deviceCredentials: [{ deviceId: "phone-1", credential: "device-secret", name: "phone", hostId: "host-1" }],
+      apns: { keyId: "ABCDEFGHIJ", teamId: "KLMNOPQRST", bundleId: "com.example.app", privateKey: "not-used", environment: "sandbox" } });
+    const base = relay.url.replace("ws://", "http://");
+    const token = "a".repeat(64);
+    const denied = await fetch(`${base}/v1/push/register`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer wrong" }, body: JSON.stringify({ token }) });
+    expect(denied.status).toBe(401);
+    const registered = await fetch(`${base}/v1/push/register`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer device-secret" }, body: JSON.stringify({ token }) });
+    expect(registered.status).toBe(204);
+    const removed = await fetch(`${base}/v1/push/register`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer device-secret" }, body: JSON.stringify({ token: null }) });
+    expect(removed.status).toBe(204);
+  });
+
+  it("authenticates push wake requests against the live Host credential and rejects mismatched identity", async () => {
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["host-secret"],
+      apns: { keyId: "ABCDEFGHIJ", teamId: "KLMNOPQRST", bundleId: "com.example.app", privateKey: "not-used", environment: "sandbox" } });
+    const runtime = await openSocket(`${relay.url}/v1/runtime`); sockets.push(runtime);
+    runtime.send(JSON.stringify({ type: "runtime.authenticate", role: "host", protocolVersion: PROTOCOL_VERSION,
+      credential: "host-secret", runtime: { runtimeId: "host-1", name: "host", cwd: "/work", status: "idle" } }));
+    await nextMessage(runtime);
+    const base = relay.url.replace("ws://", "http://");
+    const payload = { hostId: "host-2", deviceIds: ["phone-1"], category: "approval-requested", eventId: "a".repeat(64) };
+    const denied = await fetch(`${base}/v1/push/wake`, { method: "POST", headers: { authorization: "Bearer host-secret", "content-type": "application/json" }, body: JSON.stringify(payload) });
+    expect(denied.status).toBe(401);
+    const wrongCredential = await fetch(`${base}/v1/push/wake`, { method: "POST", headers: { authorization: "Bearer wrong", "content-type": "application/json" }, body: JSON.stringify({ ...payload, hostId: "host-1" }) });
+    expect(wrongCredential.status).toBe(401);
+    const accepted = await fetch(`${base}/v1/push/wake`, { method: "POST", headers: { authorization: "Bearer host-secret", "content-type": "application/json" }, body: JSON.stringify({ ...payload, hostId: "host-1", deviceIds: [] }) });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toEqual({ sent: [], failed: [] });
+  });
+
   it("tells the runtime when the destination device is offline", async () => {
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"] });
     const runtime = await openSocket(`${relay.url}/v1/runtime`);
