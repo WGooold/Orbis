@@ -786,6 +786,7 @@ struct OrbisMenuItem: Identifiable {
     let id = UUID()
     let title: String
     var symbol: String? = nil
+    var agentKind: String? = nil
     var checked = false
     var destructive = false
     var disabled = false
@@ -997,6 +998,7 @@ private struct OrbisOverlayLayer: View {
                         let anchor = menu.anchor.offsetBy(dx: -origin.x, dy: -origin.y)
                         OrbisMenuPanel(request: menu, anchor: anchor, bounds: bounds,
                                        onSelect: overlay.select, onDismiss: overlay.dismissMenu)
+                            .accessibilityIdentifier("orbis-menu-panel")
                             .id(menu.id)
                             .transition(reduceMotion ? .identity : .asymmetric(
                                 insertion: .modifier(active: OrbisPanelEntrance(progress: 0, anchor: menuTransitionAnchor(anchor, in: bounds)),
@@ -1195,7 +1197,9 @@ private struct OrbisMenuRow: View {
             } else { action() }
         } label: {
             HStack(spacing: 12) {
-                if let symbol = item.symbol {
+                if let kind = item.agentKind {
+                    AgentEmblem(kind: kind, size: 18, recessed: false)
+                } else if let symbol = item.symbol {
                     if item.keepsOpen {
                         OrbisCopyGlyph(copied: copied, size: 20, symbol: symbol, activation: activation,
                             normalColor: p.text, successColor: p.text)
@@ -1205,8 +1209,8 @@ private struct OrbisMenuRow: View {
                 }
                 Text(copied ? L10n.tr("已复制") : item.title).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if item.checked { Image(systemName: "checkmark").fontWeight(.bold) }
                 if !item.children.isEmpty { Image(systemName: "chevron.right") }
-                else if item.checked { Image(systemName: "checkmark").fontWeight(.bold) }
             }.font(.orbisBody(.medium))
                 .foregroundStyle(item.destructive ? p.error : item.checked ? p.accent : p.text)
                 .padding(.horizontal, 14).frame(minHeight: 48).contentShape(Rectangle())

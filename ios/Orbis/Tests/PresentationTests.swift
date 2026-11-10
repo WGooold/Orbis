@@ -150,7 +150,8 @@ struct PresentationTests {
         #expect(defaultExpandedDirectory(directories, preferred: "/gone") == "/b")
         #expect(defaultExpandedDirectory(directories, preferred: nil) == "/b")
         #expect(defaultExpandedDirectory([], preferred: "/a") == nil)
-        #expect(directorySessionPreviewLimit == 5)
+        // S50 / SC71: match Android's three-session preview before expanding older rows.
+        #expect(directorySessionPreviewLimit == 3)
     }
 
     /// Host 的 runtime 元数据不带 agentKind：Codex 不能因为缺字段被显示成 Pi。

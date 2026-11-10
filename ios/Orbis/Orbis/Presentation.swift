@@ -168,7 +168,7 @@ struct SessionDirectory: Identifiable {
 }
 
 /// 展开的目录默认只列出最近的几条会话，其余由「再显示 N 个会话」展开（与 Android 侧栏一致）。
-let directorySessionPreviewLimit = 5
+let directorySessionPreviewLimit = 3
 
 /// 目录按最近使用排序：最新会话越新越靠前，同一时间再按路径；目录内会话按修改时间倒序。
 func sessionDirectories(_ sessions: [SessionSummary], query: String, kind: String?, archived: Bool,

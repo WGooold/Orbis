@@ -56,6 +56,7 @@ struct ContentView: View {
                     PairingEntryView(onCancel: nil, onCode: store.pair)
                 } else {
                     rootPages
+                        .accessibilityHidden(drawerOpen && surfaceWidth < 600)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -92,7 +93,6 @@ struct ContentView: View {
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: visualStyle)
-        .accessibilityHidden(drawerOpen && surfaceWidth < 600)
         .modifier(SessionDrawerModifier(isOpen: $drawerOpen, hasHost: !store.pairings.isEmpty, edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !store.pairings.isEmpty && !store.isPairing) {
             drawer
         })
@@ -248,11 +248,14 @@ struct ContentView: View {
     private var drawer: some View {
         SessionDrawerView(store: store, updates: store.directoryUpdates, renderedState: directoryState, state: $directoryState, onClose: { setDrawer(false) },
                           onOpenSession: { session in
-                              if let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
+                              if session.archived != true, let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
                               else if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                               else {
                                   overlay.showDialog(L10n.tr("本机尚无缓存"), message: L10n.tr("连接电脑并打开会话后，可把历史保存在本机。"), actions: [OrbisDialogAction(title: L10n.tr("返回"), role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: L10n.tr("在电脑继续会话")) { store.activate(session) }] : []))
                               }
+                          },
+                          onOpenHistory: { session in
+                              if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                           },
                           onNewSession: { cwd in
                               navigation.replace(with: [])
@@ -301,7 +304,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @State private var suppressTaps = false
     @State private var containerWidth: CGFloat = 390
 
-    private var width: CGFloat { min(320, containerWidth * 0.9) }
+    private var width: CGFloat { min(320, containerWidth * 0.85) }
     private var persistent: Bool { hasHost && containerWidth >= 600 }
 
     func body(content: Content) -> some View {
@@ -321,10 +324,15 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 ZStack(alignment: .leading) {
                     if visible {
                         OrbisPalette(scheme).scrim.opacity(0.34 * progress).ignoresSafeArea()
-                            .contentShape(Rectangle())
-                            .onTapGesture { close() }
-                            .accessibilityLabel(L10n.tr("关闭会话目录")).accessibilityAddTraits(.isButton)
+                            .allowsHitTesting(false).accessibilityHidden(true)
                             .transition(.opacity)
+                        // The close target occupies only the exposed scrim. A full-window
+                        // accessibility button would cover the drawer's own hit targets.
+                        HStack(spacing: 0) {
+                            Color.clear.frame(width: max(0, width + (offset ?? 0))).allowsHitTesting(false)
+                            Button(action: close) { Color.clear.contentShape(Rectangle()) }
+                                .buttonStyle(.plain).accessibilityLabel(L10n.tr("关闭会话目录"))
+                        }.ignoresSafeArea()
                         drawer
                             .disabled(suppressTaps)
                             .frame(width: width)
@@ -342,7 +350,6 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                             .offset(x: offset ?? 0)
                             .transition(.move(edge: .leading))
                             .accessibilityElement(children: .contain)
-                            .accessibilityAddTraits(.isModal)
                     }
                     // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
                     // 拉出过程中这条窄带必须一直存在，否则手势会随视图移除而被取消。
@@ -354,6 +361,9 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .accessibilityElement(children: .contain)
+                .accessibilityAddTraits(visible ? [.isModal] : [])
+                .accessibilityHidden(!visible)
                 .simultaneousGesture(isOpen && !persistent ? closeGesture : nil)
             }
     }

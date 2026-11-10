@@ -35,6 +35,7 @@ Status: accepted（实施与自动验证分别记录；待用户安装验收）
 | S47 / M25 | 侧边栏归档显示位于筛选按钮左侧，未选中为凸起轮廓图标，选中为凹陷高亮实心图标；筛选菜单只管理 Agent / provider，搜索与筛选在切换时保留 | SC68 |
 | S48 | 新建卡片 Agent 名称右对齐，Codex 以短名称和右侧版本图标呈现，点击展开原版本列表；保留版本的完整辅助功能名称及圆形选中凹陷，移除 Agent 按钮的方形点击光晕 | SC69 |
 | S49 / M27 | 新建卡片空输入时显示可点击的启动三角，有内容时切换发送箭头；点击或回车沿原 `createSession` 开窗路径启动，空输入不创建消息；移除输入框下方首句要求提示，保留卡片开合与形变 | SC70 |
+| S50 / M06 / M09 | iOS 侧边栏采用 Android 的 85% 宽度（上限 320）、三目录 / 三会话预览、搜索完整结果、Agent → provider 两级筛选、固定多选工具栏与底部电脑连接状态；查看全部与目录新建分行，归档条目进入只读历史 | SC71 |
 
 触觉用于发送、配置应用、根标签选择、多选变化、危险确认，以及双圈盘越格选择（外圈轻、里圈较重）。共用时长和曲线由两端 `InteractionMotion`、Host `Theme` 与官网 token 管理；菜单、选择面板、对话框、短反馈与减少动画沿用共用生命周期。功能文案保持直白，行为后果放在操作上；确有必要的补充说明由 info 控件按需展开。界面文案不以 `·` 分隔信息。阅读锚点、稳定身份、乐观对账与协议兼容继续由 ADR-0046 / 0049 / 0055 / 0064 维护。
 
@@ -56,6 +57,8 @@ Host 共用四主题、连续深度、原生 SVG 图标、焦点、禁用与加�
 - 回复通知：[共享 source](../../packages/protocol/src/session-source.ts)、[Android 完成事实](../../android/app/src/main/java/com/orbising/orbis/ReplyCompletion.kt)、[iOS 完成事实与系统通知](../../ios/Orbis/Orbis/Notifications.swift)；首句校验沿用两端 `HostConnection`。
 
 ## 验证与交付
+
+2026-11-10 S50 / SC71：iOS 侧边栏按 Android 对齐三项预览、分级筛选、固定多选栏、目录树间距及电脑连接状态。选择集合显式传入行内容，选中填充在文字后方并裁切到行内；关闭目标限定于露出的遮罩区域，保持抽屉按钮可命中。实现见 [SessionViews.swift](../../ios/Orbis/Orbis/SessionViews.swift) 与 [ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)；30 项展示逻辑测试和 6 项紧凑 iPhone 模拟器 UI 回归通过，首次失败、最终截图、关闭重开验证及资源恢复分别保留在[本次证据](../../.artifacts/ios-drawer-alignment-20261110/verification.json)。真机与 iPad 待用户验证；用 Xcode 打开 `ios/Orbis/Orbis.xcodeproj`，选择设备运行。
 
 2026-11-10 S49 / SC70：空输入启动复用 Android `db3204b^` 与 iOS `8e5cccb^` 中的新建调用路径，`session.activate` 继续使用 `spawnMode: tui`。实现见两端 `SessionDraft`、`HostConnection` / `OrbisStore`；回归见 `DesignAlignmentInstrumentedTest`、`LaunchLedgerTests`、`OrbisUITests` 与 `design-demo-policy.test.ts`。构建、自动验证和交付状态见[本次证据](../../.artifacts/empty-draft-start-20261110/verification.json)；待用户验证。
 

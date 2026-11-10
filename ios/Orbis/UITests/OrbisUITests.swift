@@ -2597,6 +2597,149 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(drawer.descendants(matching: .any)["settings-page"].waitForExistence(timeout: 3))
         XCTAssertTrue(drawer.buttons["provider-switch-codex"].exists)
     }
+    // S50 / SC71: match Android's preview, nested filters and fixed selection toolbar.
+    // Searching must reach a directory outside the three-row preview without expanding it first.
+    func testDrawerControlsOpenTheirMenusFromHome() {
+        let app = launch("home")
+        let open = app.buttons["打开会话目录"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8))
+        print("DRAWER_HIT_TARGET home=\(open.isHittable) frame=\(open.frame)")
+        open.tap()
+        let host = app.buttons["drawer-host-switcher"]
+        XCTAssertTrue(host.waitForExistence(timeout: 3))
+        print("DRAWER_HIT_TARGET host=\(host.isHittable) enabled=\(host.isEnabled) frame=\(host.frame)")
+        XCTAssertTrue(host.isHittable)
+        let close = app.buttons["关闭会话目录"]
+        XCTAssertTrue(close.isHittable)
+        XCTAssertGreaterThanOrEqual(close.frame.minX, host.frame.maxX)
+        close.tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 3))
+        open.tap()
+        XCTAssertTrue(host.waitForExistence(timeout: 3))
+        XCTAssertTrue(host.isHittable)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "drawer-hit-hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        host.tap()
+        XCTAssertTrue(app.buttons["添加电脑"].waitForExistence(timeout: 3))
+        capture("drawer-computer-menu-hit", app: app)
+    }
+
+    func testDrawerDirectoryPreviewAndSearchReachAllDirectories() {
+        let app = launch("drawer", arguments: ["--preview-many-directories", "--preview-hosts=2"])
+        let directories = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "drawer-directory-/"))
+        XCTAssertTrue(app.buttons["drawer-directory-/Projects/test-1"].waitForExistence(timeout: 8))
+        XCTAssertEqual(directories.count, 3)
+        XCTAssertTrue(app.staticTexts["7 个目录"].exists)
+        let more = app.buttons["drawer-directory-preview-more"]
+        more.tap()
+        XCTAssertEqual(directories.count, 7)
+        let list = app.scrollViews["drawer-session-list"]
+        for _ in 0..<4 where !more.isHittable { list.swipeUp() }
+        more.tap()
+        XCTAssertEqual(directories.count, 3)
+        let search = app.textFields["搜索目录或会话"]
+        search.tap(); search.typeText("test-7\n")
+        XCTAssertTrue(app.buttons["drawer-directory-/Projects/test-7"].waitForExistence(timeout: 3))
+        XCTAssertEqual(directories.count, 1)
+        XCTAssertFalse(more.exists)
+        capture("drawer-search-outside-preview", app: app)
+        app.buttons["清除搜索"].tap()
+        XCTAssertTrue(app.buttons["drawer-directory-/Projects/test-1"].waitForExistence(timeout: 3))
+        XCTAssertEqual(directories.count, 3)
+        XCTAssertTrue(app.buttons["drawer-host-switcher"].isHittable)
+        XCTAssertTrue(app.staticTexts["drawer-host-status"].label == "已连接")
+        XCTAssertTrue(app.staticTexts["2 台"].exists)
+        capture("drawer-three-directories-and-host", app: app)
+    }
+
+    func testDrawerSessionPreviewExpandsAndCollapsesAtThreeRows() {
+        let app = launch("drawer", arguments: ["--preview-long-directory"])
+        XCTAssertTrue(app.buttons["drawer-session-session-4"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["drawer-session-session-5"].exists)
+        let more = app.buttons["drawer-session-preview-more"]
+        XCTAssertTrue(more.label.contains("查看全部 24 条"))
+        XCTAssertLessThanOrEqual(more.frame.maxY, app.buttons["在此目录新建会话"].frame.minY)
+        more.tap()
+        XCTAssertTrue(app.buttons["drawer-session-session-25"].exists)
+        let list = app.scrollViews["drawer-session-list"]
+        for _ in 0..<12 where !more.isHittable { list.swipeUp() }
+        XCTAssertTrue(more.isHittable)
+        more.tap()
+        XCTAssertTrue(more.waitForExistence(timeout: 3))
+        XCTAssertTrue(more.isHittable, "收起后原生滚动范围应立即回到预览范围")
+        XCTAssertFalse(app.buttons["drawer-session-session-5"].exists)
+        capture("drawer-three-session-preview", app: app)
+    }
+
+    func testDrawerSelectionToolbarKeepsGeometryThroughArchiveAndRestore() {
+        for (dark, appearance, reduced) in [(false, "mist", false), (true, "sage", true)] {
+            let app = launch("drawer", dark: dark, arguments: ["--preview-drawer-layout", "-orbis.appearance", appearance]
+                + (reduced ? ["--preview-reduce-motion"] : []))
+            let first = app.buttons["drawer-session-session-4"]
+            let second = app.buttons["drawer-session-session-5"]
+            XCTAssertTrue(first.waitForExistence(timeout: 8))
+            let firstFrame = first.frame, secondFrame = second.frame
+            first.press(forDuration: 0.8)
+            XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+            XCTAssertEqual(first.frame, firstFrame)
+            XCTAssertEqual(second.frame, secondFrame)
+            second.tap()
+            XCTAssertTrue(app.staticTexts["已选择 2 项"].exists)
+            XCTAssertTrue(first.isSelected)
+            XCTAssertTrue(second.isSelected)
+            XCTAssertEqual(first.frame, firstFrame)
+            XCTAssertEqual(second.frame, secondFrame)
+            capture("drawer-fixed-selection-\(appearance)", app: app)
+            app.buttons["归档选中会话"].tap()
+            XCTAssertFalse(first.exists)
+            XCTAssertFalse(second.exists)
+            let archive = app.buttons["drawer-archive-toggle"]
+            archive.tap()
+            XCTAssertTrue(first.waitForExistence(timeout: 3))
+            XCTAssertTrue(archive.isSelected)
+            first.press(forDuration: 0.8); second.tap()
+            app.buttons["恢复选中会话"].tap()
+            XCTAssertTrue(app.staticTexts["没有已归档的会话"].waitForExistence(timeout: 3))
+            archive.tap()
+            XCTAssertTrue(first.waitForExistence(timeout: 3))
+            XCTAssertTrue(second.exists)
+            XCTAssertFalse(archive.isSelected)
+            capture("drawer-restored-\(appearance)", app: app)
+            app.terminate()
+        }
+    }
+
+    func testDrawerProviderSubmenuPreservesSearchAndArchiveFilters() {
+        let app = launch("drawer")
+        let search = app.textFields["搜索目录或会话"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8))
+        search.tap(); search.typeText("优化\n")
+        let filter = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "筛选会话：")).firstMatch
+        filter.tap()
+        let menu = app.descendants(matching: .any)["orbis-menu-panel"].firstMatch
+        capture("drawer-agent-filter-open", app: app)
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "drawer-filter-hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        XCTAssertTrue(menu.waitForExistence(timeout: 3))
+        XCTAssertFalse(menu.buttons["设置"].exists)
+        app.buttons["Codex 终端"].tap()
+        XCTAssertTrue(app.buttons["team"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Pi"].exists)
+        capture("drawer-provider-submenu", app: app)
+        app.buttons["team"].tap()
+        XCTAssertTrue(app.buttons["drawer-session-session-4"].waitForExistence(timeout: 3))
+        XCTAssertTrue(filter.label.contains("Codex 终端，team"))
+        app.buttons["drawer-archive-toggle"].tap()
+        XCTAssertEqual(search.value as? String, "优化")
+        XCTAssertTrue(filter.label.contains("Codex 终端，team"))
+        app.buttons["drawer-archive-toggle"].tap()
+        XCTAssertTrue(app.buttons["drawer-session-session-4"].waitForExistence(timeout: 3))
+        filter.tap(); app.buttons["全部"].tap()
+        XCTAssertEqual(search.value as? String, "优化")
+        XCTAssertEqual(filter.label, "筛选会话：全部")
+        capture("drawer-provider-search-preserved", app: app)
+    }
+
     func testDrawerCardsKeepUniformGeometryForShortAndLongTitles() {
         for (name, dark, category, style, reduced) in [("light", false, "UICTContentSizeCategoryL", "classic", false),
                                        ("dark", true, "UICTContentSizeCategoryL", "classic", false),
