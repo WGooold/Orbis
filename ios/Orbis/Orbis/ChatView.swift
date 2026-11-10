@@ -424,8 +424,6 @@ struct ChatView: View {
             } else {
                 Spacer(minLength: 0)
             }
-            OrbisTextButton(title: L10n.tr("刷新"), symbol: "arrow.clockwise", tint: accent, loading: store.isSyncing) { store.refresh() }
-                .disabled(store.isSyncing || !store.canSend)
         }.frame(minHeight: 48)
     }
 

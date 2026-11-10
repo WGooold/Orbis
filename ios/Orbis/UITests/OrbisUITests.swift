@@ -701,39 +701,13 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(counter.label, "Count 1")
         XCTAssertTrue(app.staticTexts["Updated body"].firstMatch.isHittable)
     }
-    func testRefreshKeepsHeaderTextAndTruncationStable() throws {
+    func testChatHeaderKeepsNavigationActionsWithoutManualRefresh() throws {
         let app = launch("chat", arguments: ["--preview-slow-sync"])
         let title = app.descendants(matching: .any)["chat-title"].firstMatch
-        let refresh = app.buttons["刷新"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 8))
-        let ready = NSPredicate(format: "enabled == true")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
-        let titleFrame = title.frame
-        let historyFrame = app.buttons["历史与分支"].frame
-        let downloadsFrame = app.buttons["下载"].frame
-        // Exclude the leading icon slot, then compare the actual rendered text pixels.
-        let textFrame = CGRect(x: titleFrame.minX + 25, y: titleFrame.minY,
-                               width: titleFrame.width - 25, height: titleFrame.height)
-        func headerPixels() throws -> Data {
-            let screenshot = app.screenshot().image
-            let scale = screenshot.scale
-            let crop = CGRect(x: textFrame.minX * scale, y: textFrame.minY * scale,
-                              width: textFrame.width * scale, height: textFrame.height * scale).integral
-            let image = try XCTUnwrap(screenshot.cgImage?.cropping(to: crop))
-            return try XCTUnwrap(UIImage(cgImage: image).pngData())
-        }
-        let idlePixels = try headerPixels()
-        for cycle in 0..<3 {
-            refresh.tap()
-            XCTAssertFalse(refresh.isEnabled)
-            XCTAssertEqual(titleFrame, title.frame)
-            XCTAssertEqual(historyFrame, app.buttons["历史与分支"].frame)
-            XCTAssertEqual(downloadsFrame, app.buttons["下载"].frame)
-            XCTAssertTrue(idlePixels == (try headerPixels()), "Header text changed during refresh \(cycle)")
-            if cycle == 0 { capture("chat-header-refresh", app: app) }
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 12), .completed)
-            XCTAssertTrue(idlePixels == (try headerPixels()), "Header text changed after refresh \(cycle)")
-        }
+        XCTAssertTrue(app.buttons["历史与分支"].exists)
+        XCTAssertTrue(app.buttons["下载"].exists)
+        XCTAssertFalse(app.buttons["刷新"].exists)
     }
     func testCompactionStatusInHomeChatAndDrawer() {
         for dark in [false, true] {
@@ -746,15 +720,11 @@ final class OrbisUITests: XCTestCase {
             let title = app.descendants(matching: .any)["chat-title"].firstMatch
             XCTAssertTrue(title.waitForExistence(timeout: 8))
             XCTAssertTrue(title.label.contains("压缩中"))
-            let refresh = app.buttons["刷新"].firstMatch
-            let ready = NSPredicate(format: "enabled == true")
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
             let frame = title.frame
-            refresh.tap()
+            XCTAssertFalse(app.buttons["刷新"].exists)
             XCTAssertTrue(title.label.contains("压缩中"))
             XCTAssertEqual(frame, title.frame)
             capture("compaction-chat-\(dark ? "dark" : "light")", app: app)
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: refresh)], timeout: 15), .completed)
             XCTAssertEqual(frame, title.frame)
             app.buttons["返回"].firstMatch.tap()
             app.buttons["打开会话目录"].tap()
