@@ -506,7 +506,7 @@ private func filterTitle(_ kind: String) -> String {
 }
 
 /// A local draft is the first step of creating a session. Nothing is sent to the
-/// computer until the first sentence is submitted through the existing launch/send ledgers.
+/// computer until starting explicitly, with an optional first sentence through the existing ledgers.
 struct SessionDraftView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
@@ -540,8 +540,9 @@ struct SessionDraftView: View {
     private var isCodex: Bool { agent == "codex" || agent == "codexDesktop" }
     private var codexVersionTitle: String { L10n.tr(agent == "codexDesktop" ? "Codex 桌面版" : "Codex 终端版") }
     private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
-    private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && currentPath?.isEmpty == false &&
+    private var hasMessage: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canStart: Bool {
+        currentPath?.isEmpty == false &&
             store.connection == .secured && store.activatingSessionId == nil && allowed.contains(agent)
     }
     var body: some View {
@@ -593,10 +594,9 @@ struct SessionDraftView: View {
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary), onSubmit: submit, onCancel: cancel)
                     .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 56)
                     .orbisField(focused: focused)
-                OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送"), tint: p.agent(agent), action: submit)
-                    .disabled(!canSend).accessibilityIdentifier("draft-send").padding(.bottom, 4)
+                OrbisIconButton(symbol: hasMessage ? "arrow.up" : "play.fill", label: L10n.tr(hasMessage ? "发送" : "启动"), tint: p.agent(agent), action: submit)
+                    .disabled(!canStart).accessibilityIdentifier("draft-send").padding(.bottom, 4)
             }
-            Text(L10n.tr("发出第一句话，才会在电脑上创建这个会话")).font(.orbisCaption()).foregroundStyle(p.secondary)
         }.opacity(risen ? 1 : 0).offset(y: risen ? 0 : 4)
             .neuSurface(inset: !risen, radius: 24, intensity: 0.65, padding: 16)
             .environment(\.orbisAccent, p.agent(agent)).tint(p.agent(agent))
@@ -653,7 +653,7 @@ struct SessionDraftView: View {
         else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { onCancel(retained) } }
     }
     private func submit() {
-        guard owner === store.activeConnection, canSend, let cwd = currentPath else { return }
+        guard owner === store.activeConnection, canStart, let cwd = currentPath else { return }
         let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard store.createSession(agentKind: agent, cwd: cwd, firstMessage: sentence), let launch = store.launching else { return }
         owner.saveDraft("", for: draftRuntime)

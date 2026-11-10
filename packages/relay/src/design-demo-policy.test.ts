@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 type DialGeometry = { width: number; height: number; cx: number; cy: number; hole: number; hub: number; seam: number; rim: number; radius: number };
 const source = readFileSync(new URL("./web/design-demo.js", import.meta.url), "utf8");
 const context = { window: {} as { OrbisDemoPolicy: {
-  canSend(text: string): boolean;
+  draftAction(text: string): { label: string; icon: string };
   swipeArmed(distance: number, width: number): boolean;
   dialGeometry(width?: number, height?: number): DialGeometry;
   dialLayer(x: number, y: number, touch: boolean, geometry?: DialGeometry): string | null;
@@ -17,10 +17,11 @@ runInNewContext(source.slice(0, source.indexOf("window.createOrbisDesignDemo")),
 const policy = context.window.OrbisDemoPolicy;
 
 describe("approved public demo interaction policy", () => {
-  // Empty drafts must never create empty sessions; whitespace remains a draft.
-  it("starts a session only with a written first message", () => {
-    expect(policy.canSend(" \n\t ")).toBe(false);
-    expect(policy.canSend(" 帮我检查首页 ")).toBe(true);
+  // S49 / SC70: the action itself distinguishes direct start from sending a first message.
+  it("offers start for empty drafts and send for a written first message", () => {
+    expect(policy.draftAction("")).toEqual({ label: "启动", icon: "play" });
+    expect(policy.draftAction(" \n\t ")).toEqual({ label: "启动", icon: "play" });
+    expect(policy.draftAction(" 帮我检查首页 ")).toEqual({ label: "发送第一句话", icon: "arrow-up" });
   });
   // Closing is distance-based, with a threshold proportional to the actual card width.
   it("arms only after forty percent of the card and disarms immediately on return", () => {
@@ -82,6 +83,7 @@ function demoHarness() {
     querySelectorAll() { return []; }
     getBoundingClientRect() { return { left: 0, top: 0, bottom: 200, width: 393, height: 200 }; }
     addEventListener(name: string, handler: (event: any) => void) { this.events[name] = handler; }
+    setAttribute() {}
     append() {}
     focus() { this.focused = true; }
     cloneNode() { return new Node(); }
@@ -116,6 +118,20 @@ function demoHarness() {
 }
 
 describe("public demo refined controls", () => {
+  // Empty creation must not fall back to the demonstration's seeded chat or fabricate a reply.
+  it.each(["", " \n\t "])("opens an empty session from draft %j without inventing a message", async text => {
+    const app = demoHarness();
+    app.action("draft-toggle"); await app.flush();
+    expect(app.root.innerHTML).toContain('data-demo-action="draft-send" aria-label="启动"');
+    expect(app.root.innerHTML).not.toContain("发出第一句话，才会在电脑上创建这个会话");
+    app.text(text);
+    app.action("draft-send"); await app.flush();
+    expect(app.root.dataset.page).toBe("chat");
+    expect(app.root.innerHTML).toContain("<h2>orbis</h2>");
+    expect(app.root.innerHTML).not.toContain('class="demo-message-user"');
+    expect(app.root.innerHTML).not.toContain('class="demo-message-assistant"');
+  });
+
   it("keeps the selected Codex variant through collapse, creation, and later draft changes", async () => {
     const app = demoHarness();
     app.action("draft-toggle"); await app.flush();

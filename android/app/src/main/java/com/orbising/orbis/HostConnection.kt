@@ -1326,6 +1326,8 @@ internal class HostConnection(
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
+            // S49 / SC70: reuse the original windowed launch without a send operation.
+            if (text.isBlank()) return@synchronized if (createSession(kind, cwd, expectedHost)) FirstSessionSubmission(null) else null
             if (!validateMessageInput(text)) return@synchronized null
             // One local transaction owns both slots; another state writer cannot consume the send slot after launch.
             if (!mutableState.value.ledger.hasCapacity(2)) {

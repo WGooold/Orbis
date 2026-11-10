@@ -63,12 +63,10 @@ struct LaunchLedgerTests {
         return fixture
     }
 
-    // S35 / SC55: no computer session before first send, then one launch and one
+    // S35 / SC55: a first sentence creates one launch and one
     // waiting message under the same placeholder; retrying the gesture cannot duplicate it.
     @Test func firstSentenceStartsOneNamedSessionAndQueuesOneMessage() async throws {
         let fixture = await setup(); let host = fixture.host
-        #expect(!host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "  "))
-        #expect(fixture.transport.activations.isEmpty)
         #expect(host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "帮我核对首页交互"))
         #expect(fixture.transport.activations.count == 1)
         #expect(host.launching?.title == "帮我核对首页交互")
@@ -80,6 +78,25 @@ struct LaunchLedgerTests {
         await fixture.transport.online("draft-first")
         #expect(fixture.transport.userMessages.count == 1)
         #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == "rt-draft-first")
+    }
+
+    // S49 / SC70: empty and whitespace drafts open the same desktop window as the
+    // original create action, without an empty user message or duplicate activation.
+    @Test(arguments: ["", " \n\t "]) func emptyDraftStartsAWindowWithoutSendingAMessage(text: String) async throws {
+        let fixture = await setup(); let host = fixture.host
+        #expect(host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: text))
+        let activation = try #require(fixture.transport.activations.first)
+        #expect(activation["spawnMode"] as? String == "tui")
+        #expect(activation["target"] as? [String: String] == ["type": "new", "agentKind": "codex", "cwd": "/repo/app"])
+        #expect(host.launching?.title == "app")
+        #expect(host.pendingSends.items.isEmpty)
+        #expect(!host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: text))
+        #expect(fixture.transport.activations.count == 1)
+        try await fixture.transport.activated("empty-draft")
+        await fixture.transport.online("empty-draft")
+        #expect(host.selectedRuntimeId == "rt-empty-draft")
+        #expect(fixture.transport.userMessages.isEmpty)
+        #expect(host.pendingSends.items.isEmpty)
     }
 
     // First-sentence validation must run before a remote activation. Invalid

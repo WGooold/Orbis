@@ -70,6 +70,35 @@ class DesignAlignmentInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf(RelayTransportMode.QUIC),choices) }
     }
 
+    /** S49 / SC70: the same card starts empty, switches its action for text, and keeps launch gates. */
+    @Test fun emptyDraftOffersStartAndSubmitsWithoutText() {
+        val state = mutableStateOf(ready())
+        val submissions = mutableListOf<List<String>>()
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, "/Projects/orbis", {}, {}, {}) { kind,cwd,text,_,_ ->
+                submissions += listOf(kind,cwd,text); true
+            }
+        } }
+        val action = compose.onNodeWithTag("draft-send")
+        val input = compose.onNode(hasSetTextAction())
+        action.assertIsEnabled().assertContentDescriptionEquals("启动")
+        compose.onNodeWithText("发出第一句话，才会在电脑上创建这个会话").assertDoesNotExist()
+        compose.runOnIdle { assertTrue(submissions.isEmpty()) }
+        compose.mainClock.advanceTimeBy(1_000)
+        capture("draft-empty-start")
+        action.performClick()
+        compose.runOnIdle { assertEquals(listOf("codex", "/Projects/orbis", ""), submissions.single()) }
+        input.performTextInput("测试")
+        action.assertContentDescriptionEquals("发出第一句话并创建会话")
+        input.performTextReplacement(" \n ")
+        action.assertIsEnabled().assertContentDescriptionEquals("启动").performClick()
+        compose.runOnIdle { assertEquals("", submissions.last().last()); assertEquals(2, submissions.size) }
+        input.performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+        compose.runOnIdle { assertEquals(3, submissions.size); state.value = ready().copy(e2eReady = false) }
+        action.assertIsNotEnabled().performClick()
+        compose.runOnIdle { assertEquals(3, submissions.size) }
+    }
+
     @Test fun localDraftKeepsItsTextUntilAFirstSendSucceedsAndUsesTheCurrentHostDirectory() {
         val state = mutableStateOf(ready())
         val open = mutableStateOf(true)
@@ -80,7 +109,7 @@ class DesignAlignmentInstrumentedTest {
                 submissions += listOf(state.value.hostId.orEmpty(),kind,cwd,text); accepted
             }
         } }
-        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+        compose.onNodeWithTag("draft-send").assertIsEnabled().assertContentDescriptionEquals("启动")
         compose.onNodeWithTag("draft-agent-claude").performClick()
         val input = compose.onNode(hasSetTextAction())
         input.performTextInput("第一句话")

@@ -56,7 +56,7 @@ internal class SessionDraftStore {
     }
 }
 
-/** Local draft only: a remote session is requested by the first message's send action. */
+/** Local draft only: starting explicitly creates a session, with an optional first message. */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: String?,
@@ -77,7 +77,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var fieldBounds by remember { mutableStateOf(Rect.Zero) }
     val focus = remember { FocusRequester() }
     fun submit() {
-        if (text.isNotBlank() && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
+        if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
     val supported = state.launchableAgents ?: state.supportedAgents
     val codexVersionsAvailable = supported?.contains("codex") == true && supported.contains("codexDesktop")
@@ -177,18 +177,18 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     NeumorphTextField(fieldValue, { fieldValue = it; text = it.text }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) { onCancel(); true }
                             else if (event.type == KeyEventType.KeyDown && event.key == Key.Enter && fieldValue.composition == null && !event.isShiftPressed &&
-                                text.isNotBlank() && !event.nativeKeyEvent.isAltPressed) { submit(); true }
+                                !event.nativeKeyEvent.isAltPressed) { submit(); true }
                             else false
                         },
                         placeholder = { Text(L10n.tr("让 {0} 做什么？", agentBrand(kind).title)) }, maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = { if (fieldValue.composition == null) submit() }))
-                    NeumorphIconButton(onClick = ::submit, icon = OrbisSymbols.ArrowUpward, contentDescription = L10n.tr("发出第一句话并创建会话"),
-                        enabled = text.isNotBlank() && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
+                    NeumorphIconButton(onClick = ::submit,
+                        icon = if (text.isBlank()) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
+                        contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
+                        enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }
-                Text(L10n.tr("发出第一句话，才会在电脑上创建这个会话"), style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (directoryOpen) OrbisChoiceSheet(L10n.tr("工作目录"), { directoryOpen = false }) {

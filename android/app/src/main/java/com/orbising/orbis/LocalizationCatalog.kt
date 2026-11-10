@@ -510,7 +510,6 @@ internal object LocalizationCatalog {
         "参数" to "Arguments",
         "参数接收中" to "Receiving arguments",
         "发出第一句话并创建会话" to "Send the first message and create the session",
-        "发出第一句话，才会在电脑上创建这个会话" to "This session is created on your computer when you send the first message",
         "发给 {0}，/ 命令" to "Message {0}, / commands",
         "发送" to "Send",
         "发送中" to "Sending",
@@ -622,9 +621,9 @@ internal object LocalizationCatalog {
         "完全访问" to "Full access",
         "完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。" to "Full access allows network access and cannot restrict it separately. Select read-only or workspace write first.",
         "完成" to "Completed",
+        "完成后发送" to "Send when done",
     )
     private fun part4(): Map<String, String> = mapOf(
-        "完成后发送" to "Send when done",
         "完整内容" to "Full content",
         "官方" to "Official",
         "官方 · " to "Official · ",
@@ -774,9 +773,9 @@ internal object LocalizationCatalog {
         "已送达" to "Delivered",
         "已选择" to "Selected",
         "已选择 {0} 项" to "{0} selected",
+        "已选择：" to "Selected: ",
     )
     private fun part5(): Map<String, String> = mapOf(
-        "已选择：" to "Selected: ",
         "已选择：{0}" to "Selected: {0}",
         "已配对" to "Paired",
         "已配对电脑" to "Paired computers",
@@ -926,9 +925,9 @@ internal object LocalizationCatalog {
         "收起细节" to "Hide details",
         "收起较早会话" to "Hide earlier sessions",
         "收起这个分支" to "Collapse this branch",
+        "改用 {0} 并重新连接" to "Use {0} and reconnect",
     )
     private fun part6(): Map<String, String> = mapOf(
-        "改用 {0} 并重新连接" to "Use {0} and reconnect",
         "放回输入框" to "Restore to composer",
         "文件" to "File",
         "文件下载参数无效，请更新电脑端。" to "Invalid file download parameters. Update the Host.",
@@ -1078,9 +1077,9 @@ internal object LocalizationCatalog {
         "本轮耗时 %.1f 秒" to "Turn duration %.1f s",
         "权限" to "Permissions",
         "权限模式" to "Permission mode",
+        "权限设置未发送：中继服务器当前离线" to "Permission update not sent: relay is offline",
     )
     private fun part7(): Map<String, String> = mapOf(
-        "权限设置未发送：中继服务器当前离线" to "Permission update not sent: relay is offline",
         "权限配置存在问题" to "Permission configuration has a problem",
         "权限问题：{0}" to "Permission problem: {0}",
         "材质" to "Material",
@@ -1230,9 +1229,9 @@ internal object LocalizationCatalog {
         "源文件已不可读，无法续传" to "Source file is no longer readable. Cannot resume.",
         "灰绿" to "Sage",
         "点下面的按钮读一页" to "Tap the button below to load a page",
+        "点击下载" to "Tap to download",
     )
     private fun part8(): Map<String, String> = mapOf(
-        "点击下载" to "Tap to download",
         "点击额度环查询" to "Tap the quota dial to check it",
         "片帧不能再被切片" to "A piece frame cannot be split again",
         "版本 {0}" to "Version {0}",
@@ -1295,6 +1294,7 @@ internal object LocalizationCatalog {
         "电脑端状态格式无法识别，请重新读取" to "Unrecognized computer state format. Reload.",
         "电脑端管理" to "Managed on computer",
         "电脑端记录格式无法识别，请重新读取" to "Unrecognized computer record format. Reload.",
+        "电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。" to "On your computer, download and activate Orbis Host for free at orbising.com, then display its pairing QR code for the app to scan.",
         "电脑端读取繁忙，请稍后重试" to "Computer is busy reading. Try again shortly.",
         "电脑端读取繁忙，请稍后重试。" to "Computer is busy reading. Try again shortly.",
         "电脑，当前 {0}" to "Computer, currently {0}",

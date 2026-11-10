@@ -763,6 +763,30 @@ final class OrbisUITests: XCTestCase {
             app.terminate()
         }
     }
+    // S49 / SC70: the raised card offers a start action while empty and enters
+    // the existing launch page without fabricating a first user message.
+    func testEmptyDraftStartsWithoutAFirstMessage() {
+        let app = launch("home", arguments: ["--preview-reset-design", "--preview-launch-slow"])
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        app.buttons["home-new-session"].tap()
+        let start = app.buttons["draft-send"]
+        XCTAssertTrue(start.waitForExistence(timeout: 4))
+        XCTAssertTrue(waitUntilEnabled(start, timeout: 3))
+        XCTAssertEqual(start.label, "启动")
+        XCTAssertFalse(app.staticTexts["发出第一句话，才会在电脑上创建这个会话"].exists)
+        let input = app.descendants(matching: .any)["draft-message"].firstMatch
+        input.tap(); input.typeText("a")
+        XCTAssertEqual(start.label, "发送")
+        input.typeText(XCUIKeyboardKey.delete.rawValue)
+        XCTAssertEqual(start.label, "启动")
+        capture("draft-empty-start", app: app)
+        start.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["等待会话启动"].exists)
+        XCTAssertTrue(input.waitForNonExistence(timeout: 3))
+        capture("draft-empty-launched", app: app)
+    }
+
     func testHomeDirectorySearchAndNewSession() {
         let app = launch("home")
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 8))
@@ -774,7 +798,8 @@ final class OrbisUITests: XCTestCase {
         app.buttons["新建会话"].firstMatch.tap()
         XCTAssertTrue(app.descendants(matching: .any)["session-draft"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["draft-send"].exists)
-        XCTAssertFalse(app.buttons["draft-send"].isEnabled)
+        XCTAssertTrue(app.buttons["draft-send"].isEnabled)
+        XCTAssertEqual(app.buttons["draft-send"].label, "启动")
         capture("new-session-local-draft", app: app)
     }
 

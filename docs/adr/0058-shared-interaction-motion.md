@@ -4,7 +4,7 @@
 
 交互动效复用共用组件，操作、内容身份与阅读保持连贯；取消、离页和辅助功能由共用生命周期管理。
 
-当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC68 复用 M03、M09、M25 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
+当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC70 复用 M03、M09、M25 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
 
 2026-11-09 S43 / M29 / SC64 修复：Android 底部面板按实际窗口测量并统一处理安全区，窗口完成布局后播放入场；选择、关闭按钮、遮罩、返回和把手拖动复用完整退场。短屏下载选择与问卷采用整段滚动，保留末项与操作按钮的可达性。实现见 [OrbisSheet.kt](../../android/app/src/main/java/com/orbising/orbis/OrbisSheet.kt)、[RemoteFileBrowser.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteFileBrowser.kt) 与 [QuestionnaireDialog.kt](../../android/app/src/main/java/com/orbising/orbis/QuestionnaireDialog.kt)；八类入口、真实窗口边界及动画中间帧回归见 [BottomSheetInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/BottomSheetInstrumentedTest.kt)。修复前失败、修复后自动验证与安装包信息见 [.artifacts/bottom-sheet-20261109](../../.artifacts/bottom-sheet-20261109/)；待用户安装验收。
 
@@ -84,6 +84,8 @@
 | SC66 | 历史与分支不提供下载管理入口，历史文件仍可下载 |
 | SC67 | 文件差异视图显示当前位置与已读总数或完整差异总数 |
 | SC68 | 归档显示从筛选菜单移至其左侧独立按钮，未选中凸起，选中凹陷并高亮实心图标；搜索与 Agent / provider 筛选保持 |
+| SC69 | 新建卡片右对齐 Agent 名称，Codex 右侧版本图标与原选择菜单 |
+| SC70 | 新建卡片空输入直接启动，按钮在启动三角与发送箭头间切换，沿用草稿开合和形变 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

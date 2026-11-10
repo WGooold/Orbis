@@ -372,7 +372,7 @@ internal fun RemoteApp(
                         draftOrigin = origin
                         val command = submission.commandId
                         firstDraftSend = command?.let(model::submittedSend)?.let { FirstDraftSend(state.hostId, it, fieldOrigin) }
-                        if (command == null) model.currentLaunchPresentation()?.let { model.saveDraft(it.placeholder, text) }
+                        if (command == null && text.isNotBlank()) model.currentLaunchPresentation()?.let { model.saveDraft(it.placeholder, text) }
                         newSessionOpen = false; model.dismissBrowse(); actionHaptic(); true
                     } else false
                 } },

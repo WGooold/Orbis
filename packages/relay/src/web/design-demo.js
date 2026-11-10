@@ -1,6 +1,6 @@
 /* Local interactive versions of the approved draft, directory and provider flows. */
 window.OrbisDemoPolicy = {
-  canSend(text) { return text.trim().length > 0; },
+  draftAction(text) { return text.trim() ? { label: "发送第一句话", icon: "arrow-up" } : { label: "启动", icon: "play" }; },
   swipeArmed(distance, width) { return distance >= width * 0.4; },
   dialGeometry(width = 393, height = 360) {
     const r0=Math.max(140,Math.min(Math.round(width*.52),Math.floor(height/2)-28,width-76-28-136));
@@ -33,7 +33,7 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   const root = document.createElement("div"); root.className = "design-demo"; root.id = "design-demo";
   const chrome = [...screen.querySelectorAll("#s4-home > .ui-time,#s4-home > .ui-sys")].map(el => el.outerHTML).join("");
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
-  const icon = name => `<i class="ico i-${name}" aria-hidden="true"></i>`;
+  const icon = name => name === "play" ? `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>` : `<i class="ico i-${name}" aria-hidden="true"></i>`;
   const mark = agent => `<span class="demo-agentmark demo-mark-${agent.id}" role="img" aria-label="${agent.name}"></span>`;
   const button = (action, label, name, extra = "") => `<button type="button" class="demo-icon" data-demo-action="${action}" aria-label="${label}" ${extra}>${icon(name)}</button>`;
   const codexName = variant => variant === "desktop" ? "Codex 桌面版" : "Codex 终端版";
@@ -75,7 +75,8 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     return `<div class="demo-session-wrap"><div class="demo-swipe-feedback" aria-hidden="true"><span class="demo-swipe-seat">${icon("close")}<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" pathLength="100"></circle></svg></span><span class="demo-swipe-label">关闭</span></div><article class="demo-session" role="button" tabindex="0" data-session="${session.id}" aria-label="${esc(session.title)}，${sessionAgentName(session)}，${session.status||"空闲"}" aria-pressed="${state.selected.has(session.id)}"><span class="demo-emblem">${mark(agent)}</span><div class="demo-session-text"><strong>${esc(session.title)}</strong><code>${esc(session.directory)}</code><span><b class="agent-${agent.id}">${sessionAgentName(session)}</b><i class="demo-dot ${session.syncing?"syncing":session.tone||"idle"}"></i>${session.status||"空闲"}</span></div><button type="button" class="demo-session-select" data-demo-action="select-session" data-id="${session.id}" aria-label="${state.selected.has(session.id)?"取消选择":"选择"} ${esc(session.title)}">${icon(state.selected.has(session.id)?"check":"more")}</button></article></div>`;
   }
   function draft() {
-    return `<section class="demo-draft" aria-label="新建会话草稿"><div class="demo-agent-choices" role="group" aria-label="Agent">${agentOrder.map(index=>{const agent=agents[index];return `<button type="button" class="demo-agent-choice agent-${agent.id}" data-demo-action="draft-agent" data-index="${index}" aria-label="${agent.name}" aria-pressed="${state.agent===index}">${mark(agent)}</button>`;}).join("")}${state.agent===1?`<span class="demo-codex-anchor"><button type="button" class="demo-draft-agent-name demo-codex-trigger" data-demo-action="codex-menu" aria-label="选择 Codex 版本" aria-haspopup="menu" aria-expanded="${!!state.codexMenu}">${codexName(state.codexVariant)}${icon("chevron-down")}</button>${state.codexMenu?codexMenu():""}</span>`:`<strong class="demo-draft-agent-name">${agents[state.agent].name}</strong>`}</div><button type="button" class="demo-directory-label" data-demo-action="draft-directory" aria-label="工作目录" id="demo-draft-directory">${icon("folder")}<span>${esc(state.directory)}</span>${icon("chevron-down")}</button><div class="demo-draft-compose"><label class="demo-draft-input"><textarea id="demo-first-message" aria-label="第一句话" placeholder="让 ${state.agent===1?codexName(state.codexVariant):agents[state.agent].name} 做什么？">${esc(state.text)}</textarea></label>${button("draft-send","发送第一句话","arrow-up",policy.canSend(state.text)?"":"disabled")}</div><div class="demo-draft-footer"><small>发出第一句话，才会在电脑上创建这个会话</small></div></section>`;
+    const action=policy.draftAction(state.text);
+    return `<section class="demo-draft" aria-label="新建会话草稿"><div class="demo-agent-choices" role="group" aria-label="Agent">${agentOrder.map(index=>{const agent=agents[index];return `<button type="button" class="demo-agent-choice agent-${agent.id}" data-demo-action="draft-agent" data-index="${index}" aria-label="${agent.name}" aria-pressed="${state.agent===index}">${mark(agent)}</button>`;}).join("")}${state.agent===1?`<span class="demo-codex-anchor"><button type="button" class="demo-draft-agent-name demo-codex-trigger" data-demo-action="codex-menu" aria-label="选择 Codex 版本" aria-haspopup="menu" aria-expanded="${!!state.codexMenu}">${codexName(state.codexVariant)}${icon("chevron-down")}</button>${state.codexMenu?codexMenu():""}</span>`:`<strong class="demo-draft-agent-name">${agents[state.agent].name}</strong>`}</div><button type="button" class="demo-directory-label" data-demo-action="draft-directory" aria-label="工作目录" id="demo-draft-directory">${icon("folder")}<span>${esc(state.directory)}</span>${icon("chevron-down")}</button><div class="demo-draft-compose"><label class="demo-draft-input"><textarea id="demo-first-message" aria-label="第一句话" placeholder="让 ${state.agent===1?codexName(state.codexVariant):agents[state.agent].name} 做什么？">${esc(state.text)}</textarea></label>${button("draft-send",action.label,action.icon)}</div></section>`;
   }
   function codexMenu() {
     return `<div class="demo-codex-menu" role="menu" aria-label="Codex 版本">${["terminal","desktop"].map(variant=>`<button type="button" role="menuitemradio" aria-checked="${state.codexVariant===variant}" data-demo-action="codex-variant" data-value="${variant}"><span>${codexName(variant)}</span>${state.codexVariant===variant?icon("check"):""}</button>`).join("")}</div>`;
@@ -151,7 +152,7 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   function chat() {
     const session=sessions.find(item=>item.id===state.session) || sessions[0];
     const agent=agents[session.agent];
-    return `<header class="demo-topbar">${button("back-home","返回聊天列表","arrow-left")}<h2>${esc(session.title)}</h2>${button("downloads","下载","download")}</header><div class="demo-chat"><div class="demo-message-user">${esc(session.firstMessage||"首页下拉回弹有点卡，帮我看看")}</div><div class="demo-message-assistant"><strong class="agent-${agent.id}">${mark(agent)}${sessionAgentName(session)}</strong><p>收到。我会先查看相关实现，再逐项修改和验证。</p></div></div><div class="demo-chat-composer"><input aria-label="消息" placeholder="发给 ${sessionAgentName(session)}，/ 命令">${button("chat-send","发送","arrow-up")}</div>`;
+    return `<header class="demo-topbar">${button("back-home","返回聊天列表","arrow-left")}<h2>${esc(session.title)}</h2>${button("downloads","下载","download")}</header><div class="demo-chat">${session.firstMessage === "" ? "" : `<div class="demo-message-user">${esc(session.firstMessage||"首页下拉回弹有点卡，帮我看看")}</div><div class="demo-message-assistant"><strong class="agent-${agent.id}">${mark(agent)}${sessionAgentName(session)}</strong><p>收到。我会先查看相关实现，再逐项修改和验证。</p></div>`}</div><div class="demo-chat-composer"><input aria-label="消息" placeholder="发给 ${sessionAgentName(session)}，/ 命令">${button("chat-send","发送","arrow-up")}</div>`;
   }
   function confirmation() {
     return `<div class="demo-modal-scrim"></div><section class="demo-dialog" role="dialog" aria-modal="true" aria-labelledby="demo-confirm-title"><h2 id="demo-confirm-title">${state.agent===0?(state.piEnabled.has(state.profile)?"从 Pi 移出 ":"为 Pi 启用 "):"切换 "+agents[state.agent].name+" 到 "}${profiles[state.profile]}？</h2><p>${state.agent===0?"Pi 配置将在当前电脑上启用或移出。":"已有会话需要重新打开。"}</p><div><button type="button" class="demo-text-button" data-demo-action="provider-cancel">取消</button><button type="button" class="demo-text-button primary" data-demo-action="provider-confirm">${state.agent===0?(state.piEnabled.has(state.profile)?"移出 Pi 配置":"启用 Pi 配置"):"切换并重载 Agent"}</button></div></section>`;
@@ -173,15 +174,15 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     state.draft=false; state.codexMenu=null; render();
   }
   async function sendDraft() {
-    if(!policy.canSend(state.text)||state.moving)return;
+    if(state.moving||!state.draft)return;
     const firstMessage=state.text.trim(), draft=$(".demo-draft"); state.moving=true;
     const rect=draft.getBoundingClientRect(), screenRect=root.getBoundingClientRect(), scale=screenRect.width/393;
     const cover=draft.cloneNode(true); cover.classList.add("demo-draft-morph"); root.append(cover);
     await motion(cover,[{left:`${(rect.left-screenRect.left)/scale}px`,top:`${(rect.top-screenRect.top)/scale}px`,width:`${rect.width/scale}px`,height:`${rect.height/scale}px`,borderRadius:"24px"},{left:"0px",top:"0px",width:"393px",height:"852px",borderRadius:"0px"}],320,"cubic-bezier(.32,.72,0,1)");
     if(disposed)return;
-    const session={id:nextId++,title:firstMessage,directory:state.directory,agent:state.agent,codexVariant:state.agent===1?state.codexVariant:undefined,firstMessage};
+    const session={id:nextId++,title:firstMessage||state.directory.split("/").filter(Boolean).pop()||"新会话",directory:state.directory,agent:state.agent,codexVariant:state.agent===1?state.codexVariant:undefined,firstMessage};
     sessions.unshift(session); state.session=session.id; state.page="chat"; state.draft=false; state.text=""; state.moving=false; render();
-    void motion($(".demo-message-user"),[{opacity:0,transform:"translateY(24px)"},{opacity:1,transform:"none"}],440);
+    if(firstMessage)void motion($(".demo-message-user"),[{opacity:0,transform:"translateY(24px)"},{opacity:1,transform:"none"}],440);
   }
   function selectAgent(index) { const old=state.agent; state.agent=Math.max(0,Math.min(3,index)); state.profile=state.active[state.agent]; render(); if(old!==state.agent&&!state.moving)void motion($(".demo-dial-labels"),[{opacity:0},{opacity:1}],160); }
   function selectProfile(index) { const old=state.profile;state.profile=Math.max(0,Math.min(3,index)); render(); if(old!==state.profile&&!state.moving)void motion($(".demo-dial-labels"),[{transform:`translateY(${(state.profile-old)*96}px)`},{transform:"none"}],260); }
@@ -244,7 +245,7 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     const card=event.target.closest("[data-session]");if(card){const id=Number(card.dataset.session);if(state.selected.size)toggleSelection(id);else{state.session=id;state.page="chat";render();}}
   });
   root.addEventListener("input",event=>{
-    if(event.target.id==="demo-first-message"){state.text=event.target.value;$("[data-demo-action=draft-send]").disabled=!policy.canSend(state.text);}
+    if(event.target.id==="demo-first-message"){state.text=event.target.value;const action=policy.draftAction(state.text),control=$("[data-demo-action=draft-send]");control.setAttribute("aria-label",action.label);control.innerHTML=icon(action.icon);}
     if(event.target.id==="demo-directory-search"){state.search=event.target.value;const position=event.target.selectionStart;render();const input=$("#demo-directory-search");input.focus();input.setSelectionRange(position,position);}
   });
   root.addEventListener("change",event=>{if(event.target.id==="demo-draft-directory")state.directory=event.target.value;});

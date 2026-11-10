@@ -1286,10 +1286,14 @@ final class HostConnection: ObservableObject {
         guard !cwd.isEmpty else { return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
-    /// S35 / SC55: the local draft starts both existing ledgers in one user action.
-    /// Empty or duplicate submissions cannot create an empty computer session.
+    /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
-        guard let text = validatedMessageBody(firstMessage), !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
+        guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
+        if firstMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            createSession(agentKind: agentKind, cwd: cwd)
+            return activationRequestId != nil
+        }
+        guard let text = validatedMessageBody(firstMessage) else { return false }
         // A first sentence needs one launch operation and one waiting send. Reject
         // capacity exhaustion before writing session.activate to the computer.
         guard ledger.operations.filter({ !$0.phase.isSettled }).count + 2 <= ledger.capacity else {
