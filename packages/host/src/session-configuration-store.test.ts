@@ -40,11 +40,20 @@ describe("recoverable configured launch", () => {
     expect(await restarted.recover("device", "launch")).toBeUndefined();
     expect((await restarted.begin("device", request)).execute).toBe(false);
   });
+  it("persists final preflight refusal so a delayed duplicate cannot become a new launch", async () => {
+    const { path, store } = await fixture();
+    await store.reject("device", request, "catalog changed");
+    const restarted = new SessionConfigurationStore(path);
+    expect(await restarted.result("device", "launch", "read")).toMatchObject({ phase: "failed", error: "catalog changed" });
+    expect((await restarted.begin("device", request)).execute).toBe(false);
+    expect(await restarted.recover("device", "launch")).toBeUndefined();
+  });
   it("recovers an exact recorded identity and blocks messages until native confirmation", async () => {
     const { path, store } = await fixture(); await store.begin("device", request);
     await store.update("device", "launch", { sessionId: "native-a", phase: "configuring", spawnMode: "tui" });
     const restarted = new SessionConfigurationStore(path);
     expect(await restarted.blocks("native-a")).toBe(true);
+    await expect(restarted.update("device", "launch", { sessionId: "wrong-session" })).rejects.toMatchObject({ code: "launch_identity_conflict" });
     expect(await restarted.recover("device", "launch")).toMatchObject({ sessionId: "native-a", values: request.values });
     expect(await restarted.recover("device", "launch")).toBeUndefined();
     await restarted.update("device", "launch", { phase: "ready" });

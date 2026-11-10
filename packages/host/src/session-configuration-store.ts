@@ -115,10 +115,24 @@ export class SessionConfigurationStore {
       return { record, execute: true };
     });
   }
+  /** A final preflight refusal is also idempotent, even if the catalog later changes. */
+  reject(deviceId: string, request: ConfiguredSessionLaunch, error: string): Promise<void> {
+    return this.#serial(async () => {
+      const data = structuredClone(await this.#load()); const key = this.#key(deviceId, request.launchId);
+      if (data.launches[key]) return;
+      if (Object.keys(data.launches).length >= 4096) throw new SessionConfigurationError("launch_capacity", "启动记录已达上限，请在电脑端检查保留记录");
+      data.launches[key] = { deviceId, fingerprint: fingerprint([request.agentKind, request.cwd, request.binding, request.values, request.spawnMode ?? "tui"]),
+        launchId: request.launchId, agentKind: request.agentKind, cwd: request.cwd, binding: request.binding,
+        revision: request.revision, values: request.values, phase: "failed", error };
+      await this.#commit(data);
+    });
+  }
   update(deviceId: string, launchId: string, patch: Partial<Pick<Launch, "phase" | "sessionId" | "spawnMode" | "error">>): Promise<Launch> {
     return this.#serial(async () => {
       const data = structuredClone(await this.#load()); const key = this.#key(deviceId, launchId); const prior = data.launches[key];
       if (!prior) throw new Error("Unknown launch");
+      if (prior.sessionId !== undefined && patch.sessionId !== undefined && prior.sessionId !== patch.sessionId)
+        throw new SessionConfigurationError("launch_identity_conflict", "恢复返回了不同会话身份，已停止发送");
       const next = { ...prior, ...patch }; data.launches[key] = next;
       await this.#commit(data);
       if (["ready", "failed", "unknown"].includes(next.phase)) this.#active.delete(key);
@@ -129,7 +143,7 @@ export class SessionConfigurationStore {
   recover(deviceId: string, launchId: string): Promise<Launch | undefined> {
     return this.#serial(async () => {
       const key = this.#key(deviceId, launchId); const record = (await this.#load()).launches[key];
-      if (!record?.sessionId || this.#active.has(key)) return undefined;
+      if (!record?.sessionId || record.phase === "failed" || this.#active.has(key)) return undefined;
       this.#active.add(key);
       return structuredClone(record);
     });

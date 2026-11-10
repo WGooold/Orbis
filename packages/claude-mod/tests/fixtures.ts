@@ -9,6 +9,7 @@ export function setup(on: On) {
     descriptor: { url: "ws://127.0.0.1:41001", token: "first-host-token-for-test" },
     descriptorPresent: true,
     sessionId: "same-native-session",
+    model: "test-model",
     reachable: true,
     generation: "first-generation",
     resumed: false,
@@ -40,7 +41,7 @@ export function setup(on: On) {
     expect(event.argv).toEqual(["node", "-e", "process.stdout.write(String(process.ppid))"]);
     return { value: { exitCode: 0, stdout: "4242", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
-  on("session.model", () => ({ value: "test-model" }));
+  on("session.model", () => ({ value: world.model }));
   on("session.usage", () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }));
   on("command.register", (_$, event) => ({ value: { command: event.name } }));
   on("command.list", () => ({ value: [] }));

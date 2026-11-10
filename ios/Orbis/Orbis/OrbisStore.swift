@@ -111,20 +111,28 @@ final class HostConnection: ObservableObject {
         guard sessionConfigurationSupported, let saved = readLaunchJournal(), let id = saved["launchId"] as? String,
               let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String else { return }
         configuredLaunchId = id
+        let rejected = saved["rejected"] as? Bool == true
         if launching == nil && (saved["sessionId"] == nil || (saved["firstMessageId"] as? String).flatMap { pendingSends.item($0) } == nil) {
             let placeholder = "launch:" + id
             _ = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
                               basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: true, now: Date())
             launching = LaunchState(requestId: id, placeholder: placeholder, target: ["type": "new", "agentKind": agent, "cwd": cwd],
                                     title: L10n.tr("新会话"), cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil)
-            selectedRuntimeId = placeholder; activationRequestId = id
+            if saved["following"] as? Bool == false { launching?.following = false }
+            else { selectedRuntimeId = placeholder }
+            activationRequestId = id
             if let text = saved["firstMessage"] as? String, !text.isEmpty, let messageId = saved["firstMessageId"] as? String,
                pendingSends.item(messageId) == nil {
                 pendingSendHostId = selectedHostId
                 var send = PendingSend(messageId: messageId, commandId: saved["firstCommandId"] as? String ?? messageId,
                     sessionId: placeholder, text: text, attachments: [], delivery: nil, createdAt: Date(), anchorMessageId: nil)
-                send.state = .unconfirmed; pendingSends.add(send); publishMessages()
+                send.state = rejected ? .failed(saved["error"] as? String ?? L10n.tr("配置未确认")) : .unconfirmed
+                pendingSends.add(send); publishMessages()
             }
+        }
+        if rejected {
+            launching?.failure = saved["error"] as? String ?? L10n.tr("配置未确认"); launching?.unconfirmed = false
+            return
         }
         _ = transport.send(["type": "session.launch.read", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id])
     }
@@ -1456,6 +1464,9 @@ final class HostConnection: ObservableObject {
     /// 启动失败后在聊天页原位重试：同一目标、新的请求（L6）。
     func retryLaunch() {
         guard let launch = launching, launch.failure != nil || launch.unconfirmed else { return }
+        if readLaunchJournal()?["rejected"] as? Bool == true {
+            errorMessage = L10n.tr("启动配置已失效，请返回新建卡片刷新"); return
+        }
         if launch.requestId == configuredLaunchId { recoverConfiguredLaunch(); return }
         var target: [String: Any] = launch.target
         if let kind = launch.agentKind { target["agentKind"] = kind }
@@ -1466,6 +1477,7 @@ final class HostConnection: ObservableObject {
     /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
     func stopFollowingLaunch() {
         guard launching?.following == true else { return }
+        if launching?.requestId == configuredLaunchId, var saved = readLaunchJournal() { saved["following"] = false; _ = writeLaunchJournal(saved) }
         launching?.following = false
         if launching?.failure != nil || launching?.unconfirmed == true { launching = nil }
     }
@@ -2492,9 +2504,14 @@ final class HostConnection: ObservableObject {
                 receive(activated, channel: channel)
 
             } else if message["phase"] as? String == "absent", let saved = readLaunchJournal() {
-                let payload = saved.filter { !["firstMessage", "firstMessageId", "firstCommandId", "sessionId"].contains($0.key) }
+                let payload = saved.filter { !["firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following"].contains($0.key) }
                 _ = transport.send(payload)
-            } else if ["unknown", "failed"].contains(message["phase"] as? String ?? "") {
+            } else if message["phase"] as? String == "failed" {
+                let error = message["error"] as? String ?? L10n.tr("配置未确认")
+                if var saved = readLaunchJournal() { saved["rejected"] = true; saved["error"] = error; _ = writeLaunchJournal(saved) }
+                handleLedger(ledger.receipt(id, connection: ledger.connection, .failed(AppLedger.Rejection("configuration_rejected", error)), now: Date()))
+                if (readLaunchJournal()?["firstMessage"] as? String ?? "").isEmpty { clearLaunchJournal() }
+            } else if message["phase"] as? String == "unknown" {
                 launching?.unconfirmed = true; launching?.failure = message["error"] as? String
             }
         case "session.activated":

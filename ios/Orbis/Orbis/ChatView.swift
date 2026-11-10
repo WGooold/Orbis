@@ -265,7 +265,7 @@ struct ChatView: View {
                         OrbisMotionText(L10n.tr("{0}，{1}", pending.label, pending.mark)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("chat-model-switching")
                     } else if let model = runtime.model, domainReady("model") {
-                        OrbisMotionText(model.name ?? model.id).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                        OrbisMotionText(runtime.status == "idle" ? model.name ?? model.id : L10n.tr("后续：{0}", model.name ?? model.id)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1650,10 +1650,10 @@ private struct RuntimeInfoView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     StatusSection(title: L10n.tr("模型与上下文")) {
-                        StatusFact(label: L10n.tr("模型"), value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "模型" : "后续模型"), value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
                                    ?? (ready("model") ? runtime.model?.name ?? runtime.model?.id ?? L10n.tr("未报告") : L10n.tr("状态待核对")))
                         StatusFact(label: L10n.tr("供应商"), value: ready("model") ? runtime.model?.provider ?? L10n.tr("未报告") : L10n.tr("状态待核对"))
-                        StatusFact(label: L10n.tr("思考级别"), value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "思考级别" : "后续思考深度"), value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
                                    ?? (ready("model") ? runtime.thinkingLevel ?? L10n.tr("来源未报告") : L10n.tr("状态待核对")))
                         StatusFact(label: L10n.tr("上下文"), value: ready("context") ? contextText : L10n.tr("状态待核对"))
                     }

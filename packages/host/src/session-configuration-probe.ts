@@ -87,13 +87,14 @@ export async function claudeSessionConfiguration(command: string, cwd: string, e
     label: typeof model.resolvedModel === "string" ? `${String(model.displayName ?? model.value)} (${model.resolvedModel})` : String(model.displayName ?? model.value),
     thinking: (Array.isArray(model.supportedEffortLevels)
       ? model.supportedEffortLevels.filter((value): value is string => typeof value === "string").map(value => ({ value, label: value })) : []) }]);
-  // Model aliases are resolved by this native CLI. Missing effort stays explicitly inherited.
+  // The alias list does not report the selected model. Sending `default` would
+  // override a configured model, so both unknown defaults stay inherited.
   const mode = typeof data.current_permission_mode === "string" ? data.current_permission_mode : undefined;
   const permissionValues = mode === undefined ? {} : { mode };
   // CLI calls the interactive default `manual`; transcript/classic hooks call it `default`.
   const modes = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
   return { binding: createHash("sha256").update(JSON.stringify([env.CLAUDE_CONFIG_DIR, env.ANTHROPIC_BASE_URL, models])).digest("hex"),
-    defaults: { ...(models.some(item => item.value === "default") ? { model: "default" } : {}), permissions: mode === "manual" ? { mode: "default" } : permissionValues }, models,
+    defaults: { permissions: mode === "manual" ? { mode: "default" } : permissionValues }, models,
     permissions: [{ id: "mode", label: "权限模式", ...(mode === undefined ? {} : { currentValue: mode }),
       options: modes.map(value => ({ value, label: ({ default: "手动审批", acceptEdits: "允许编辑", plan: "计划模式", auto: "自动审查", dontAsk: "不询问", bypassPermissions: "跳过权限检查" })[value] ?? value })) }] };
 }

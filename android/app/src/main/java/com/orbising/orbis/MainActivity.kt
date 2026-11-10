@@ -1985,7 +1985,7 @@ internal fun ChatScreen(
                             isChatSyncing = displayReadPending,
                             // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
                             modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} / ${it.second}" }
-                                ?: runtime?.model?.let(::modelLabel),
+                                ?: runtime?.model?.let { if (runtime.status == "idle") modelLabel(it) else L10n.tr("后续：{0}", modelLabel(it)) },
                             thinkingLevel = state.configStatus(runtimeId, "thinking")?.let { "${it.first} / ${it.second}" }
                                 ?: runtime?.thinkingLevel,
                         )

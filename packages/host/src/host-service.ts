@@ -2260,7 +2260,7 @@ export class HostService {
           permissions: { ...catalog.defaults.permissions, ...saved.values.permissions } };
         const model = catalog.models.find(item => item.value === values.model);
         if (!model) { delete values.model; delete values.thinking; Object.assign(values, {
-          ...(catalog.defaults.model === undefined ? {} : { model: catalog.defaults.model }),
+          ...(catalog.models.some(item => item.value === catalog.defaults.model) ? { model: catalog.defaults.model! } : {}),
           ...(catalog.defaults.thinking === undefined ? {} : { thinking: catalog.defaults.thinking }),
         }); }
         const chosen = catalog.models.find(item => item.value === values.model);
@@ -2302,6 +2302,20 @@ export class HostService {
       }
       await sendLaunch(message.launchId);
     } catch (error) {
+      if (message.type === "session.launch") {
+        // All native effects are inside the inner try. A rejected preflight has
+        // no native side effect, while a stored operation remains recoverable.
+        try {
+          const record = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+          if (record && !(error instanceof SessionConfigurationError && error.code === "launch_id_conflict")) {
+            this.#sendToDevice(deviceId, record); return;
+          }
+          if (!record) {
+            await this.#sessionConfigurations.reject(deviceId, message, describeError(error).slice(0, 2000));
+            await sendLaunch(message.launchId); return;
+          }
+        } catch { /* Storage is unreadable; never claim authoritative absence. */ }
+      }
       this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
         code: error instanceof SessionConfigurationError ? error.code : "session_configuration_failed", message: describeError(error) });
     }
@@ -2328,7 +2342,9 @@ export class HostService {
       await this.#sessionConfigurations.update(deviceId, launchId, { phase: "ready", error: undefined });
       this.#invalidateCatalog();
     } catch (error) {
-      await this.#sessionConfigurations.update(deviceId, launchId, { phase: "unknown", error: describeError(error).slice(0, 2000) });
+      // A failed process reattach does not invalidate historically confirmed
+      // configuration or authorize reapplying the launch snapshot over later edits.
+      await this.#sessionConfigurations.update(deviceId, launchId, { phase: record.phase === "ready" ? "ready" : "unknown", error: describeError(error).slice(0, 2000) });
     }
   }
 

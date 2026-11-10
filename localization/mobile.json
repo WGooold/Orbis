@@ -1544,5 +1544,9 @@
   "后续轮次设置": "Settings for later turns",
   "等待启动配置确认": "Waiting for startup configuration",
   "思考深度": "Reasoning depth",
-  "应用": "Apply"
+  "应用": "Apply",
+  "启动配置已失效，请返回新建卡片刷新": "Startup settings are no longer available. Return to the new-session card and refresh.",
+  "后续：{0}": "Next: {0}",
+  "后续模型": "Model for later turns",
+  "后续思考深度": "Reasoning for later turns"
 }

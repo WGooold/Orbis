@@ -39,7 +39,7 @@ let reportedTasks: { connection: Connection; encoded: string; at: number } | und
 let permissionMode: string | undefined;
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 let selectedEffort: Effort | undefined;
-let turnSelection: { turnId: string; model?: string; effort?: Effort | number; captured: boolean } | undefined;
+let turnSelection: { turnId: string; model?: string; selectedModel?: string; effort?: Effort | number; captured: boolean } | undefined;
 
 export const register: Register = on => {
   // Native classic events include the effective mode even before the first prompt.
@@ -134,7 +134,8 @@ export const register: Register = on => {
       }
       // Native turn.step is the documented per-request setter. Pin a turn's
       // values so a phone change during streaming affects the next turn only.
-      event = { ...event, ...(turnSelection.model === undefined ? {} : { model: turnSelection.model }),
+      event = { ...event, ...(turnSelection.selectedModel !== undefined && event.model === turnSelection.selectedModel && turnSelection.model !== undefined
+        ? { model: turnSelection.model } : {}),
         ...(turnSelection.effort === undefined ? {} : { effort: turnSelection.effort }) };
     }
     const stream = next(event);
@@ -432,6 +433,8 @@ async function runCommand($: Api, target: Connection, commandId: string,
         // The `/config` model row, as the settings menu changes it; `/model` alone opens a picker.
         const set = await $.config.set({ key: "model", value: command.args.trim() });
         if ("deny" in set && typeof set.deny === "string") throw new Error(set.deny);
+        if (activeTurnId !== undefined && turnSelection?.turnId === activeTurnId)
+          turnSelection.selectedModel = await $.session.model();
         output = `Model set to ${command.args.trim()}`;
       } else if (command.name === "effort") {
         const effort = command.args.trim();

@@ -2973,6 +2973,15 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(await response("absent")).toMatchObject({ type: "session.launch.result", phase: "absent", launchId: "never-sent" });
     sendRequest(device, { ...launch, requestId: "changed-identity", values: {} });
     expect(await response("changed-identity")).toMatchObject({ type: "protocol.error", code: "launch_id_conflict" });
+    // A final catalog refusal remains final when a delayed duplicate arrives
+    // with the now-current binding; it cannot create a second native session.
+    sendRequest(device, { ...launch, launchId: "refused-launch", requestId: "refused", binding: "stale-binding" });
+    expect(await response("refused", "failed")).toMatchObject({ error: expect.stringContaining("刷新启动配置") });
+    sendRequest(device, { ...launch, launchId: "refused-launch", requestId: "refused-duplicate", binding: "stale-binding" });
+    expect(await response("refused-duplicate", "failed")).toMatchObject({ launchId: "refused-launch" });
+    sendRequest(device, { ...launch, launchId: "refused-launch", requestId: "refused-changed" });
+    expect(await response("refused-changed")).toMatchObject({ type: "protocol.error", code: "launch_id_conflict" });
+    expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
   });
 
   it("lets DSH saves reach provider validation while busy, but still blocks switches", async () => {

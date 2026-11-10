@@ -115,6 +115,26 @@ struct LaunchLedgerTests {
         #expect(recovered.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
     }
 
+    // A final preflight refusal keeps the first sentence recoverable and cannot
+    // fall back to legacy creation after the user presses retry or reopens the App.
+    @Test func rejectedConfiguredLaunchKeepsItsFirstSentenceAndNeverFallsBackToLegacyCreation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-rejected-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = Fixture(root: root); try await configured(original)
+        #expect(original.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "preserve rejected sentence"))
+        let launch = try #require(original.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let id = try #require(launch["launchId"] as? String)
+        await original.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "failed", "error": "stale catalog"])
+        original.host.retryLaunch()
+        #expect(original.transport.activations.isEmpty)
+        #expect(original.host.pendingSends.items.first?.state == .failed("会话启动未完成，消息未发送"))
+        let recovered = Fixture(root: root)
+        await recovered.transport.emit(["type": "device.ready", "modelEpoch": "new-epoch", "sessionConfiguration": 1, "runtimes": []])
+        #expect(recovered.host.pendingSends.items.first?.text == "preserve rejected sentence")
+        #expect(recovered.host.launching?.failure == "stale catalog")
+        #expect(recovered.transport.sent.allSatisfy { !["session.launch", "session.launch.read", "session.activate"].contains($0["type"] as? String ?? "") })
+    }
+
     // S35 / SC55: a first sentence creates one launch and one
     // waiting message under the same placeholder; retrying the gesture cannot duplicate it.
     @Test func firstSentenceStartsOneNamedSessionAndQueuesOneMessage() async throws {

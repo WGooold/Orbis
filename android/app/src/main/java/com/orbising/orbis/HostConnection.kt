@@ -162,18 +162,27 @@ internal class HostConnection(
         val saved = runCatching { E2eJson.json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return
         val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return
         configuredLaunchId = id
+        val rejected = saved["rejected"]?.jsonPrimitive?.booleanOrNull == true
         if (mutableState.value.launching == null && (saved["sessionId"]?.jsonPrimitive?.contentOrNull == null ||
             mutableState.value.pendingSends[saved["firstMessageId"]?.jsonPrimitive?.contentOrNull] == null)) {
             val fields = mapOf("type" to "new", "agentKind" to (saved["agentKind"]?.jsonPrimitive?.contentOrNull ?: return),
                 "cwd" to (saved["cwd"]?.jsonPrimitive?.contentOrNull ?: return))
-            updateState { it.createLaunch(id, fields, L10n.tr("新会话"), System.currentTimeMillis()).first }
+            updateState { current ->
+                val next = current.createLaunch(id, fields, L10n.tr("新会话"), System.currentTimeMillis()).first
+                if (saved["following"]?.jsonPrimitive?.booleanOrNull == false) next.copy(selectedRuntimeId = current.selectedRuntimeId,
+                    launching = next.launching?.copy(following = false)) else next
+            }
             val text = saved["firstMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val messageId = saved["firstMessageId"]?.jsonPrimitive?.contentOrNull
             if (text.isNotBlank() && messageId != null) updateState { current ->
                 if (current.pendingSends.containsKey(messageId)) current else current.copy(pendingSends = current.pendingSends + (messageId to PendingSend(
                     messageId, saved["firstCommandId"]?.jsonPrimitive?.contentOrNull ?: messageId, "launch:$id", text, emptyList(), null,
-                    System.currentTimeMillis(), null, PendingSendState.Unconfirmed)))
+                    System.currentTimeMillis(), null, if (rejected) PendingSendState.Failed(saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认")) else PendingSendState.Unconfirmed)))
             }
+        }
+        if (rejected) {
+            updateState { it.copy(launching = it.launching?.copy(failure = saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认"), unconfirmed = false)) }
+            return
         }
         relay.sendDeviceMessage(buildJsonObject { put("type", "session.launch.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id) })
     }
@@ -826,6 +835,10 @@ internal class HostConnection(
     fun retryLaunch() {
         val launch = mutableState.value.launchPage ?: return
         if (launch.failure == null && !launch.unconfirmed) return
+        if (configuredLaunchPreferences.getString(hostId, null)?.let { runCatching {
+            E2eJson.json.parseToJsonElement(it).jsonObject["rejected"]?.jsonPrimitive?.booleanOrNull }.getOrNull() } == true) {
+            updateState { it.copy(error = L10n.tr("启动配置已失效，请返回新建卡片刷新")) }; return
+        }
         if (launch.requestId == configuredLaunchId) { recoverConfiguredLaunch(); return }
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
         activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } })
@@ -1018,7 +1031,13 @@ internal class HostConnection(
         var graph: SessionGraph? = null
         var needsSessionRefresh = false
         // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
-        if (runtimeId == null && mutableState.value.launchPage != null) updateState { it.stopFollowingLaunch() }
+        if (runtimeId == null && mutableState.value.launchPage != null) {
+            if (mutableState.value.launching?.requestId == configuredLaunchId) {
+                val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() }
+                if (saved != null) configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + ("following" to JsonPrimitive(false))).toString()).commit()
+            }
+            updateState { it.stopFollowingLaunch() }
+        }
         updateState { latest ->
             val candidate = runtimeId?.let(latest.runtimes::get)
             val candidateConversation = runtimeId?.let(latest.conversations::get)
@@ -1602,7 +1621,7 @@ internal class HostConnection(
 
     private fun clearConfiguredFirstMessage(messageId: String) {
         val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return
-        if (saved["firstMessageId"]?.jsonPrimitive?.contentOrNull == messageId && saved["sessionId"] != null) {
+        if (saved["firstMessageId"]?.jsonPrimitive?.contentOrNull == messageId && (saved["sessionId"] != null || saved["rejected"]?.jsonPrimitive?.booleanOrNull == true)) {
             configuredLaunchPreferences.edit().remove(hostId).commit(); configuredLaunchId = null
         }
     }
@@ -2543,7 +2562,15 @@ internal class HostConnection(
                                             if (session != null) configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + ("sessionId" to session)).toString()).commit()
                                         } else if (message["phase"]?.jsonPrimitive?.contentOrNull == "absent") {
                                             // Authoritative absence permits retrying the identical operation; native creation stays deduplicated.
-                                            relay.sendDeviceMessage(JsonObject(saved.filterKeys { it !in setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId") }))
+                                            relay.sendDeviceMessage(JsonObject(saved.filterKeys { it !in setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following") }))
+                                        } else if (message["phase"]?.jsonPrimitive?.contentOrNull == "failed") {
+                                            configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + mapOf("rejected" to JsonPrimitive(true),
+                                                "error" to (message["error"] ?: JsonPrimitive(L10n.tr("配置未确认"))))).toString()).commit()
+                                            updateState { it.ledgerReceipt(id!!, LedgerReceipt.Failed(LedgerRejection("configuration_rejected",
+                                                message["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认"))), System.currentTimeMillis()) }
+                                            if (saved["firstMessage"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
+                                                configuredLaunchPreferences.edit().remove(hostId).commit(); configuredLaunchId = null
+                                            }
                                         }
                                     }
                                 }

@@ -14,6 +14,7 @@ internal object LocalizationCatalog {
         putAll(part8())
         putAll(part9())
         putAll(part10())
+        putAll(part11())
     }
     private fun part0(): Map<String, String> = mapOf(
         "\n\n附件路径：\n" to "\n\nAttachment paths:\n",
@@ -549,7 +550,10 @@ internal object LocalizationCatalog {
         "同步暂未完成，请重试。" to "Sync is incomplete. Try again.",
         "后端条目不是对象" to "Backend entry is not an object",
         "后端条目缺少 kind/sessions/ready/complete" to "Backend entry is missing kind/sessions/ready/complete",
+        "后续思考深度" to "Reasoning for later turns",
+        "后续模型" to "Model for later turns",
         "后续轮次设置" to "Settings for later turns",
+        "后续：{0}" to "Next: {0}",
         "含同期工作区修改，归属未确认" to "Includes concurrent workspace edits with unconfirmed ownership",
         "启动" to "Start",
         "启动中" to "Starting",
@@ -559,6 +563,7 @@ internal object LocalizationCatalog {
         "启动未确认" to "Start unconfirmed",
         "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。" to "Start unconfirmed: the computer has not reported the session online. Check the session list shortly.",
         "启动权限" to "Startup permissions",
+        "启动配置已失效，请返回新建卡片刷新" to "Startup settings are no longer available. Return to the new-session card and refresh.",
         "启用" to "Enable",
         "启用 {0}" to "Enable {0}",
         "启用供应商" to "Enable provider",
@@ -618,12 +623,12 @@ internal object LocalizationCatalog {
         "子代理 · {0} 项" to "Subagents · {0}",
         "子代理 · {0} 项 · 清单不完整" to "Subagents · {0} · Incomplete list",
         "子代理 · {0} 项 · 状态待核对" to "Subagents · {0} · Status unconfirmed",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "子任务 · {0} 项" to "Subtasks · {0}",
         "子任务状态待核对" to "Subtask status needs checking",
         "子任务运行中" to "Subtasks running",
         "完全访问" to "Full access",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。" to "Full access allows network access and cannot restrict it separately. Select read-only or workspace write first.",
         "完成" to "Completed",
         "完成后发送" to "Send when done",
@@ -770,12 +775,12 @@ internal object LocalizationCatalog {
         "已读取至 {0}" to "Loaded through {0}",
         "已跟踪及非忽略文件" to "Tracked and non-ignored files",
         "已达到此文件 8 MiB 阅读上限，已加载内容仍可查看。" to "Reached this file's 8 MiB reading limit. Loaded content is still available.",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "已过期" to "Expired",
         "已连接" to "Connected",
         "已送入上下文" to "Added to context",
         "已送达" to "Delivered",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "已选择" to "Selected",
         "已选择 {0} 项" to "{0} selected",
         "已选择：" to "Selected: ",
@@ -922,12 +927,12 @@ internal object LocalizationCatalog {
         "收到无效的 Session 历史快照" to "Invalid session history snapshot received",
         "收到无效的 Session 状态 patch" to "Invalid session state patch received",
         "收到无效的中继服务器消息" to "Invalid relay message received",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "收起" to "Collapse",
         "收起交互" to "Collapse interaction",
         "收起内容" to "Collapse content",
         "收起工作目录" to "Collapse working directories",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "收起新会话" to "Close new session draft",
         "收起目录" to "Collapse folder",
         "收起细节" to "Hide details",
@@ -1074,12 +1079,12 @@ internal object LocalizationCatalog {
         "本机尚无缓存" to "No local cache yet",
         "本机缓存，可离线浏览，发送消息前需在电脑继续此会话" to "Local cache, available offline. Continue this session on the computer before sending messages.",
         "本机还没有这个节点的对话缓存" to "No local conversation cache for this node",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "本轮已运行" to "This turn has been running for",
         "本轮已运行 %.1f 秒" to "This turn has been running for %.1f s",
         "本轮文件变化未记录" to "File changes were not recorded for this turn",
         "本轮文件差异" to "This turn's file diff",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "本轮概况已更新，当前保持打开时的版本。" to "Turn summary updated. Keeping the version opened here.",
         "本轮没有文件变化" to "No file changes in this turn",
         "本轮耗时" to "Turn duration",
@@ -1226,12 +1231,12 @@ internal object LocalizationCatalog {
         "消息队列" to "Message queue",
         "深色" to "Dark",
         "添加到 Pi 配置，可与其他供应商同时启用。" to "Add to Pi configuration. Multiple providers can be enabled together.",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "添加电脑" to "Add computer",
         "清单不完整" to "Incomplete list",
         "清单不完整，显示已知任务" to "Incomplete list. Showing known tasks.",
         "清单未读到" to "List not loaded",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "清单被截断" to "List truncated",
         "清单里没有这个领域" to "This domain is absent from the list",
         "清空已读并继续" to "Clear loaded content and continue",
@@ -1378,12 +1383,12 @@ internal object LocalizationCatalog {
         "编辑这条消息并重新开始" to "Edit this message and restart",
         "缺席原因：" to "Reason for absence: ",
         "缺席没有给原因，不能当成 0 条" to "No reason for absence; cannot assume zero records",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "缺席没有给原因，不能当成完整目录" to "No reason for absence; cannot assume a complete catalog",
         "缺席没有给原因，不能当成没有切换" to "No reason for absence; cannot assume no pending switch",
         "网络访问" to "Network access",
         "网络：允许联网。" to "Network: access allowed.",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "网络：受限；是否能申请放行取决于审批策略。" to "Network: restricted. Whether access can be requested depends on the approval policy.",
         "网络：未知；原生后端尚未报告网络权限，不能从预设名称推断。" to "Network: unknown. The native backend has not reported network permissions; they cannot be inferred from a preset name.",
         "翻面查看" to "Flip to view",
@@ -1530,12 +1535,12 @@ internal object LocalizationCatalog {
         "返回" to "Back",
         "返回会话目录" to "Back to sessions",
         "返回会话筛选" to "Back to session filters",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "返回电脑菜单" to "Back to computer menu",
         "返回聊天" to "Back to chat",
         "还有 {0} 个文件" to "{0} more files",
         "还有更新的没读" to "Newer records remain unread",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
         "还没有可显示的会话" to "No sessions to display yet",
@@ -1682,6 +1687,8 @@ internal object LocalizationCatalog {
         "，有待确认" to ", awaiting confirmation",
         "，未确认" to ", Unconfirmed",
         "，此会话无头（电脑上无窗口）" to ", headless session (no window on the computer)",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "，进行中" to ", in progress",
         "，重置 " to ", resets ",
         "：" to ": ",

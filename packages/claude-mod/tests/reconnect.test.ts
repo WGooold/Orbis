@@ -350,11 +350,16 @@ test("child tool completion preserves approval identity without becoming a main 
   expect(events.some(event => (event as {type: string}).type === "tool.started")).toBe(false);
 });
 
-// S51 / SC73: changing effort during native execution must reach the next turn's
-// native request hook without rewriting the current turn or using settings-file defaults.
-test("pins an active turn and applies selected effort to the next turn", async ($, on) => {
+// S51 / SC73: phone model/depth changes affect subsequent turns. A native
+// fallback during the active turn must retain its own model identity.
+test("pins phone model and effort changes while preserving native fallback models", async ($, on) => {
   const { clock, world } = setup(on);
   mock.session(on);
+  on("config.set", (_$, event) => {
+    expect(event.key).toBe("model");
+    world.model = String(event.value);
+    return { value: event.value };
+  });
   const seen: { turnId: string; effort: unknown; model: string }[] = [];
   on("turn.step", async function* (_$, event) {
     seen.push({ turnId: event.turnId, effort: event.effort, model: event.model });
@@ -372,14 +377,18 @@ test("pins an active turn and applies selected effort to the next turn", async (
   await step("first", 0, "original-model");
   world.commands = [{ commandId: "next-depth", command: { type: "slash", name: "effort", args: "high" } }];
   await clock.advance(750);
+  world.commands = [{ commandId: "next-model", command: { type: "slash", name: "model", args: "next-model" } }];
+  await clock.advance(750);
   world.commands = [];
-  await step("first", 1, "changed-session-model");
+  await step("first", 1, "next-model");
+  await step("first", 2, "native-fallback");
   await $.turn.complete({ turnId: "first", answer: "done", durationMs: 1, reason: "answer", isAborted: false });
   await $.turn.start({ text: "second", turnId: "second" });
   await step("second", 0, "next-model");
   expect(seen).toEqual([
     { turnId: "first", effort: "low", model: "original-model" },
     { turnId: "first", effort: "low", model: "original-model" },
+    { turnId: "first", effort: "low", model: "native-fallback" },
     { turnId: "second", effort: "high", model: "next-model" },
   ]);
 });
