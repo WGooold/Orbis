@@ -48,7 +48,41 @@ it does not claim the running user Host has been upgraded.
 
 Adoption subscribes to the existing thread through `thread/resume`, retaining its native configuration. `thread/started` and `thread/status/changed` are global broadcasts, but merely reading `thread/turns/list` does not subscribe the Host connection to items, turns or effective permission changes. The resume response supplies the initial history, model and permissions; subsequent notifications keep them current. Codex 0.160.0 rejects resume before the first message materializes the rollout, so Host retains the empty session and retries on status broadcasts and its existing TUI window watcher. An absent rollout at that stage is not a permanent history error. Notifications received during resume are applied after the history snapshot to preserve newer state. TUI `/new` and `/resume` switches use the same subscription path.
 
-Terminal-first sessions become visible on the phone after the TUI creates its first thread. Multiple pending terminals in the same working directory are inherently ambiguous and are matched oldest-first; an explicit `codex resume <id>` remains an unmanaged official Codex invocation and is not retroactively claimed. Existing terminals need to be reopened after PATH installation. A machine-wide `codex` installed by another tool needs that single elevation before a bare `codex` reaches Orbis; until then the shim stays installed but unused, and the only user-visible trace is the Settings repair row. Host shutdown leaves the shim installed, but it transparently falls back to standalone Codex until Host is available again.
+Terminal-first sessions become visible on the phone after the TUI creates its first thread. Each registered launch now has its own loopback endpoint, including concurrent launches in the same working directory; the 2026-11-10 revision below replaces cwd matching and broadcast-based switch inference. An explicit `codex resume <id>` remains an unmanaged official Codex invocation and is not retroactively claimed. Existing terminals need to be reopened after PATH installation. A machine-wide `codex` installed by another tool needs that single elevation before a bare `codex` reaches Orbis; until then the shim stays installed but unused, and the only user-visible trace is the Settings repair row. Host shutdown leaves the shim installed, but it transparently falls back to standalone Codex until Host is available again.
+
+### Revision 2026-11-10: Exact terminal ownership (SC74)
+
+The terminal backend previously interpreted an unmanaged `thread/started` or
+`thread/status/changed` broadcast as a TUI switch and transferred the most recently
+active window to that thread. A closed historical thread could replace a live
+card while the card count stayed constant. Its `/quit` then targeted the replaced
+window's process. Repeated broadcasts could move cards out of and back into the
+active directory.
+
+Each managed terminal now uses a private loopback WebSocket connection to the
+same native app-server. Only a successful, correlated `thread/start`,
+`thread/resume` or `thread/fork` response on that connection determines its current
+interactive thread. Global broadcasts, ephemeral threads and child threads do
+not transfer terminal ownership. Monitoring and close use the complete private
+endpoint. Close checks the current selection and prevents a concurrent switch
+while the OS verifies the process. Process snapshots remain batched across
+windows, and disconnect cleanup releases the private listeners. Mobile protocol
+18 / 19 and Android / iOS wire contracts are unchanged.
+
+Implementation: `codex-terminal-connection.ts`, `codex-runtime.ts` and
+`codex-terminal-macos.ts`. Regression coverage in their tests includes repeated
+old-session broadcasts with two live windows, identical project directories,
+exact close targets, delayed history responses, selection races and native
+app-server routing with an isolated home and no model calls. Evidence:
+`.artifacts/codex-terminal-ownership-20261110/`. The native macOS PTY probe ran
+two Codex 0.167.0 TUIs in one directory, ignored an unrelated native thread,
+transferred only the `/new` window, confirmed that window's process exit on
+`/quit`, and verified the other TUI survived. No model was called. Windows native
+process termination and mobile device acceptance remain unverified. Source and automated validation
+are separate from deployment: the installed Host has not been replaced or
+restarted. After installing the updated Host, reopen its terminal sessions;
+Android installation is not required for this Host-side change. Device and user
+acceptance remain pending（待用户验证）.
 
 ### Revision 2026-11-03: Model selection before the first input
 

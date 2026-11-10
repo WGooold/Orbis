@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "@orbis/protocol";
 import type { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import type { CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRealTimers(); });
@@ -34,15 +35,24 @@ function harness() {
     return Promise.resolve({ data: [] });
   });
   const server = { request, endpoint: "ws://127.0.0.1:9931", codexCommand: { command: "node.exe", prefixArgs: ["codex.js"] } } as unknown as CodexAppServer;
-  const runtime = new CodexRuntime({ server, rolloutRoot, onEvent: event => events.push(event), tuiSwitchGraceMs: 1,
+  let select: CodexTerminalConnectionInput["onThread"] = () => {};
+  const runtime = new CodexRuntime({ server, rolloutRoot, onEvent: event => events.push(event),
+    createTerminalConnection: async ({ onThread }) => { select = onThread; return {
+      endpoint: "ws://127.0.0.1:19931/terminal", selectedThreadId: "terminal", selectionPending: false, acquireClose: () => () => {}, close: async () => {},
+    }; },
     pollTuiProcesses: async () => new Set(["__orbis_remote_tui__"]) });
   runtime.markStarted();
   cleanups.push(() => { server.onExit?.(0); rmSync(rolloutRoot, { recursive: true, force: true }); });
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
-  const launch = async () => {
+  const launch = async (awaitHydration = true) => {
     await runtime.prepareTerminalLaunch(rolloutRoot);
-    notify("thread/started", { thread: snapshot });
+    select(snapshot);
     await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+    // Selection now binds immediately; wait for native hydration to publish the
+    // initial metadata before testing history or subsequent notifications.
+    if (awaitHydration) await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "runtime.metadata", metadata: expect.objectContaining({ sessionId: "terminal" }),
+    })));
   };
   const sync = () => {
     const start = events.length;
@@ -169,7 +179,7 @@ describe("terminal Codex session synchronization", () => {
     const h = harness();
     let resolve!: (result: unknown) => void;
     h.resume.mockImplementationOnce(() => new Promise(result => { resolve = result; }));
-    await h.launch();
+    await h.launch(false);
     h.notify("item/completed", { threadId: "terminal", turnId: "running", item: assistant("a2", "newer answer") });
     h.notify("thread/settings/updated", { threadId: "terminal", threadSettings: { ...h.settings, approvalPolicy: "on-request" } });
     resolve({ ...h.settings, thread: { ...h.snapshot, status: { type: "active" }, turns: [

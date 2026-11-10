@@ -44,12 +44,14 @@ describe("macOS Codex terminal", () => {
   });
 
   it("tracks its rollout waiting shell so closing an unused session cannot leave a ghost window", () => {
-    const endpoint = "ws://127.0.0.1:51217";
+    const endpoint = "ws://127.0.0.1:51217/window-a";
     const script = macCodexTerminalScript({ sessionId: "session-a", cwd: "/repo", endpoint, sessionsRoot: "/sessions",
       codexCommand: { command: "/Tools/codex", prefixArgs: [] } });
     const output = `22 ttys002 Mon Nov  2 12:00:00 2026 /bin/sh -c ${script}`;
     expect(parseMacCodexTuis(output, endpoint)).toEqual([expect.objectContaining({ pid: 22, sessionId: "session-a" })]);
     expect(parseMacCodexTuis(output, "ws://127.0.0.1:51218")).toEqual([]);
+    // SC74: A recycled port must not claim the waiting shell of a previous window.
+    expect(parseMacCodexTuis(output, "ws://127.0.0.1:51217/window-b")).toEqual([]);
   });
 
   it("rechecks PID identity and waits for a confirmed exit before reporting close", async () => {

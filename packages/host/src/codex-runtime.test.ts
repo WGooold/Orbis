@@ -17,6 +17,7 @@ import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CODEX_RUNTIME_ID, CodexRequestError, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
 import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
+import type { CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 function makeHarness(options?: {
   /** 覆盖 `model/list` 的回复（capabilities 的 select 选项数据源）。 */
@@ -2653,11 +2654,12 @@ describe("CodexRuntime", () => {
     const events: RuntimeEvent[] = [];
     const kills: Array<{ sessionId: string; endpoint: string }> = [];
     const removed: { reason: string; runtimes: unknown[] }[] = [];
+    let terminalEndpoint = "";
     const runtime = new CodexRuntime({
       server,
       onEvent: (event) => events.push(event),
       rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-codex-quit-")),
-      openHeadWindow: () => {},
+      openHeadWindow: ({ endpoint }) => { terminalEndpoint = endpoint; },
       killTuiProcesses: ({ sessionId, endpoint: target }) => {
         kills.push({ sessionId, endpoint: target });
         return Promise.resolve(true);
@@ -2670,8 +2672,9 @@ describe("CodexRuntime", () => {
     await activating;
 
     expect(runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "c-quit", "th-quit")).toBe(true);
-    // 结束的是这个 thread 的 TUI（sessionId + 本 app-server 端点），不是别的会话。
-    await vi.waitFor(() => expect(kills).toEqual([{ sessionId: "th-quit", endpoint }]));
+    // SC74: close uses this window's private endpoint, never the shared app-server.
+    await vi.waitFor(() => expect(kills).toEqual([{ sessionId: expect.stringMatching(/^terminal:/u), endpoint: terminalEndpoint }]));
+    expect(terminalEndpoint).not.toBe(endpoint);
     await vi.waitFor(() => expect(removed).toHaveLength(1));
     expect(events).toContainEqual({ type: "command.result", commandId: "c-quit", ok: true, status: "success" });
     expect(removed[0]!.reason).toContain("/quit");
@@ -3075,12 +3078,11 @@ describe("codexHeadWindowLaunch", () => {
 });
 
 /**
- * TUI 切换会话检测（/new → thread/started、/resume → thread/status/changed 广播）：
- * 假 app-server 广播通知，Host 应把旧会话下线、新会话收编，并把窗口 key 过户给新
- * thread（看门狗 / /quit 继续按 argv 里的原始 sessionId 找进程）。
+ * SC74: TUI selection replies identify the window that actually switched.
+ * Global broadcasts cannot change cards. Watchdog and /quit retain that window's
+ * private endpoint across /new and /resume.
  */
 describe("CodexRuntime TUI 切换会话", () => {
-  const GRACE_MS = 5;
   const flush = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
   /** 与 makeHarness 同思路，但带 endpoint + openHeadWindow 注入（切换检测的前提是有窗口）。 */
@@ -3091,6 +3093,8 @@ describe("CodexRuntime TUI 切换会话", () => {
     const offline: { reason: string; runtimeIds: string[] }[] = [];
     const pollResults: Set<string>[] = [];
     const nativeTurns = new Map<string, unknown[]>();
+    const windows: Array<{ select: (thread: Record<string, unknown>) => void; endpoint: string; selectedThreadId: string | undefined; pending: boolean }> = [];
+    const kills = vi.fn(async () => true);
     const server = {
       request: (method: string, params?: { threadId?: string }): Promise<unknown> => {
         if (method === "config/read") return Promise.resolve({ config: {} });
@@ -3125,7 +3129,18 @@ describe("CodexRuntime TUI 切换会话", () => {
       rolloutRoot,
       openHeadWindow: ({ sessionId }) => { opened.push(sessionId); },
       pollTuiProcesses: () => Promise.resolve(pollResults.shift() ?? new Set(["th-1"])),
-      tuiSwitchGraceMs: GRACE_MS,
+      killTuiProcesses: kills,
+      createTerminalConnection: async ({ onThread }: CodexTerminalConnectionInput) => {
+        const window = {
+          endpoint: `ws://127.0.0.1:19931/terminal-${windows.length}`,
+          selectedThreadId: undefined as string | undefined,
+          pending: false,
+          select: (thread: Record<string, unknown>) => { window.selectedThreadId = String(thread.id); onThread(thread); },
+        };
+        windows.push(window);
+        return { endpoint: window.endpoint, get selectedThreadId() { return window.selectedThreadId; },
+          get selectionPending() { return window.pending; }, acquireClose: () => () => {}, close: async () => {} };
+      },
     });
     runtime.markStarted();
     runtime.onOffline = (reason, runtimes) => {
@@ -3146,15 +3161,15 @@ describe("CodexRuntime TUI 切换会话", () => {
       await activating;
       (globalThis as { setInterval: typeof setInterval }).setInterval = origSetInterval;
     };
-    return { runtime, events, queue, offline, opened, pollResults, notify, activateDefault, watcher: () => watcherTick() };
+    return { runtime, events, queue, offline, opened, pollResults, notify, activateDefault, windows, kills, select: (thread: Record<string, unknown>, index = 0) => windows[index]!.select(thread), watcher: () => watcherTick() };
   }
 
-  it("shim 终端的首个 thread/started 会按 cwd 收编，不要求预先落盘 rollout", async () => {
+  it("shim 终端由自身选择响应接入，不要求预先落盘 rollout", async () => {
     const h = makeSwitchHarness();
     const launch = await h.runtime.prepareTerminalLaunch("D:/terminal-repo");
-    expect(launch).toEqual({ endpoint: "ws://127.0.0.1:9931", command: "node.exe", prefixArgs: ["codex.js", "-C", "D:/terminal-repo"] });
+    expect(launch).toEqual({ endpoint: h.windows[0]!.endpoint, command: "node.exe", prefixArgs: ["codex.js", "-C", "D:/terminal-repo"] });
 
-    h.notify("thread/started", { thread: { id: "th-terminal", cwd: "D:/terminal-repo" } });
+    h.select({ id: "th-terminal", cwd: "D:/terminal-repo" });
     await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
     h.queue.shift()!.resolve({ thread: { id: "th-terminal", cwd: "D:/terminal-repo", turns: [] } });
     await flush();
@@ -3178,7 +3193,7 @@ describe("CodexRuntime TUI 切换会话", () => {
     const h = makeSwitchHarness();
     await h.activateDefault();
     h.runtime.seedDesktopThreads(["desktop-thread"]);
-    h.notify("thread/started", { thread: { id: "desktop-thread", cwd: "D:/repo" } });
+    h.select({ id: "desktop-thread", cwd: "D:/repo" });
     await flush();
     expect(h.offline.map(item => item.runtimeIds)).toEqual([["codex:th-1"]]);
     expect(h.runtime.directoryEntries()).toEqual([]);
@@ -3194,7 +3209,7 @@ describe("CodexRuntime TUI 切换会话", () => {
     h.notify("thread/started", { thread: { id: "th-subagent", cwd: "D:/repo", source } });
     await flush();
     expect(h.offline).toEqual([]);
-    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]));
     expect(h.queue).toEqual([]);
 
     h.notify("thread/status/changed", { threadId: "th-subagent", status: { type: "idle" } });
@@ -3205,13 +3220,13 @@ describe("CodexRuntime TUI 切换会话", () => {
       tasks: { availability: "unknown", truncated: true, items: [{ id: "th-subagent", status: "idle" }] },
     });
     expect(h.offline).toEqual([]);
-    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]));
 
     h.notify("item/started", { threadId: "th-subagent", item: { id: "child-item", type: "agentMessage", text: "内部任务" } });
     expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]);
     expect(h.queue).toEqual([]);
   });
-  it("TUI /new（thread/started 广播）→ 旧会话下线、新会话收编且不重开窗口", async () => {
+  it("TUI /new 的成功响应只替换该窗口的会话且不重开窗口", async () => {
     const h = makeSwitchHarness();
     await h.activateDefault();
     expect(h.opened).toEqual(["th-1"]);
@@ -3225,9 +3240,9 @@ describe("CodexRuntime TUI 切换会话", () => {
     expect(h.queue).toEqual([]); // 连探询都不用发
     expect(h.events).toEqual([]);
 
-    // TUI 在窗口里 /new：广播 thread/started（带完整 thread 对象，含 cwd）。
-    h.notify("thread/started", { thread: { id: "th-tui-new", cwd: "D:/repo2" } });
-    // 宽限窗口后：cwd 来自广播，无需 thread/list；thread/resume 接入同一会话的事件流。
+    // The TUI selects /new on its own connection; the response includes cwd.
+    h.select({ id: "th-tui-new", cwd: "D:/repo2" });
+    // Host subscribes to that confirmed thread without inferring a source window.
     await vi.waitFor(() => {
       expect(h.queue.length).toBeGreaterThan(0);
     });
@@ -3249,7 +3264,7 @@ describe("CodexRuntime TUI 切换会话", () => {
     // 不重开窗口：窗口就是原来那个。
     expect(h.opened).toEqual(["th-1"]);
 
-    // 窗口 key 过户：看门狗按 argv 里的原始 id（th-1）判存活。先在（不下线）后无（下线）。
+    // The private endpoint stays unchanged across /new, including watchdog polls.
     h.watcher();
     await flush();
     expect(h.offline).toHaveLength(1);
@@ -3260,34 +3275,21 @@ describe("CodexRuntime TUI 切换会话", () => {
     expect(h.offline[1]!.runtimeIds).toEqual(["codex:th-tui-new"]);
   });
 
-  it("TUI /resume（thread/status/changed 广播）→ cwd 问 thread/list，收编同上", async () => {
+  it("TUI /resume 由该连接的成功响应确定目标与目录", async () => {
     const h = makeSwitchHarness();
     await h.activateDefault();
     h.events.length = 0;
-
-    h.notify("thread/status/changed", { threadId: "th-other", status: { kind: "idle" } });
-    await vi.waitFor(() => {
-      expect(h.queue.length).toBeGreaterThan(0);
-    });
-    // 第一笔在途请求是 thread/list（cwd 探询；广播里只有 threadId）。
-    h.queue.shift()!.resolve({
-      data: [{ id: "th-other", cwd: "D:/repo3", createdAt: 1, updatedAt: 2, turns: [] }],
-    });
-    await vi.waitFor(() => {
-      expect(h.queue.length).toBeGreaterThan(0);
-    });
+    h.select({ id: "th-other", cwd: "D:/repo3" });
+    await vi.waitFor(() => expect(h.queue.length).toBeGreaterThan(0));
     h.queue.shift()!.resolve({ thread: { id: "th-other", cwd: "D:/repo3", turns: [] } });
     await flush();
-
     expect(h.offline).toHaveLength(1);
     expect(h.offline[0]!.runtimeIds).toEqual(["codex:th-1"]);
-    expect(h.events).toContainEqual(expect.objectContaining({
-      type: "runtime.metadata",
-      metadata: expect.objectContaining({ runtimeId: "codex:th-other", cwd: "D:/repo3" }),
-    }));
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.metadata",
+      metadata: expect.objectContaining({ runtimeId: "codex:th-other", cwd: "D:/repo3" }) }));
   });
 
-  it("Host 自己 activate 的广播不误判：宽限窗口内被收编的 thread 忽略", async () => {
+  it("Host 自己 activate 的全局广播不改变终端归属", async () => {
     const h = makeSwitchHarness();
     const activating = h.runtime.activate({ type: "resume", sessionId: "th-2" });
     // 广播先于 RPC 响应到达（此刻 th-2 还没进 #threads）。
@@ -3312,6 +3314,72 @@ describe("CodexRuntime TUI 切换会话", () => {
       && (event as { metadata?: { runtimeId?: string } }).metadata?.runtimeId === "codex:th-stray",
     )).toBe(false);
     expect(h.historyReads).not.toHaveBeenCalledWith("thread/turns/list", expect.anything());
+  });
+
+  // SC74: Global app-server broadcasts do not identify a terminal window; adopting
+  // one by recent activity must never remove a real card or redirect its close.
+  it("多窗口收到无来源的全局广播时保留原卡片和关闭归属", async () => {
+    const h = makeSwitchHarness();
+    await h.activateDefault();
+    const activating = h.runtime.activate({ type: "resume", sessionId: "th-2" });
+    h.queue.shift()!.resolve({ thread: { id: "th-2", cwd: "D:/repo", turns: [] } });
+    await activating;
+    for (let repeat = 0; repeat < 3; repeat++) {
+      h.notify("thread/started", { thread: { id: "closed-old", cwd: "D:/repo" } });
+      h.notify("thread/status/changed", { threadId: "closed-old", status: { type: "idle" } });
+    }
+    await flush();
+    expect(h.offline).toEqual([]);
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1", "th-2"]);
+    expect(h.queue).toEqual([]);
+    h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "close-2", "th-2");
+    await vi.waitFor(() => expect(h.kills).toHaveBeenCalledExactlyOnceWith({
+      sessionId: expect.stringMatching(/^terminal:/u), endpoint: h.windows[1]!.endpoint,
+    }));
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]));
+  });
+
+  // SC74: Selection evidence has to win before asynchronous history hydration.
+  it("只把实际切换的窗口过户，过户未完成时拒绝关闭旧卡片", async () => {
+    const h = makeSwitchHarness(); await h.activateDefault();
+    const activating = h.runtime.activate({ type: "resume", sessionId: "th-2" });
+    h.queue.shift()!.resolve({ thread: { id: "th-2", cwd: "D:/repo", turns: [] } });
+    await activating;
+    h.notify("thread/name/updated", { threadId: "th-1", threadName: "recently active" });
+    h.select({ id: "actual-new", cwd: "D:/repo" }, 1);
+    h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "stale-close", "th-2");
+    await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({
+      type: "command.result", commandId: "stale-close", ok: false,
+    })));
+    expect(h.kills).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(h.queue).toHaveLength(1));
+    h.queue.shift()!.resolve({ thread: { id: "actual-new", cwd: "D:/repo", turns: [] } });
+    await flush();
+    expect(h.offline.map(item => item.runtimeIds)).toEqual([["codex:th-2"]]);
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1", "actual-new"]);
+    h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "close-new", "actual-new");
+    await vi.waitFor(() => expect(h.kills).toHaveBeenCalledExactlyOnceWith({
+      sessionId: expect.stringMatching(/^terminal:/u), endpoint: h.windows[1]!.endpoint,
+    }));
+    await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["th-1"]));
+  });
+
+  // SC74: A slow subscribe must not resurrect a thread after its window has
+  // selected another one. Each completion still belongs to its original view.
+  it("连续切换时迟到的历史响应不会让旧卡片重新出现", async () => {
+    const h = makeSwitchHarness(); await h.activateDefault();
+    h.select({ id: "slow-old", cwd: "D:/repo" });
+    await vi.waitFor(() => expect(h.queue).toHaveLength(1));
+    const old = h.queue.shift()!;
+    h.select({ id: "current", cwd: "D:/repo" });
+    await vi.waitFor(() => expect(h.queue).toHaveLength(1));
+    h.queue.shift()!.resolve({ thread: { id: "current", cwd: "D:/repo", turns: [] } });
+    await flush();
+    const beforeLate = h.events.length;
+    old.resolve({ thread: { id: "slow-old", cwd: "D:/repo", turns: [] } });
+    await flush();
+    expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["current"]);
+    expect(h.events.slice(beforeLate).filter(event => event.type === "runtime.metadata" && event.metadata.runtimeId === "codex:slow-old")).toEqual([]);
   });
 });
 

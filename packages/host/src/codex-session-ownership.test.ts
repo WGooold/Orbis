@@ -41,6 +41,7 @@ async function fixture(mode: "owned" | "external" = "owned", failOpen = false) {
 describe("Codex session backend ownership", () => {
   it("does not turn historical Desktop origin into current backend ownership", async () => {
     const h = await fixture();
+    h.runtime.markStarted();
     await h.write(desktopId, "Codex Desktop");
     await h.write(terminalId, "codex_vscode");
     const catalog = await h.runtime.catalog();

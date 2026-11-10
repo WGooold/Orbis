@@ -41,7 +41,9 @@ export function parseMacCodexTuis(output: string, endpoint: string): MacCodexTui
     if (!match || match[2] === "??" || match[2] === "?" || !/^\d+$/u.test(match[1]!)) return [];
     const command = match[4]!;
     const waiting = command.match(/^\/bin\/sh -c : 'orbis-codex-wait:([a-zA-Z0-9-]+):(\d+)';/u);
-    if (waiting && waiting[2] === new URL(endpoint).port) return [{ pid: Number(match[1]), started: match[3]!, command, sessionId: waiting[1]! }];
+    if (waiting && waiting[2] === new URL(endpoint).port && command.includes(`'--remote' ${quote(endpoint)}`)) {
+      return [{ pid: Number(match[1]), started: match[3]!, command, sessionId: waiting[1]! }];
+    }
     const native = /^(?:.*\/)?codex(?:\s|$)/u.test(command);
     const npm = /^(?:.*\/)?node\s/u.test(command) && /\/@openai\/codex\/bin\/codex\.js(?:\s|$)/u.test(command);
     if (command.includes("app-server") || !native && !npm) return [];
@@ -54,23 +56,30 @@ export function parseMacCodexTuis(output: string, endpoint: string): MacCodexTui
 }
 
 export async function listMacCodexTuis(endpoint: string): Promise<MacCodexTui[]> {
+  return (await listMacCodexTuisByEndpoint([endpoint])).get(endpoint) ?? [];
+}
+
+/** One process snapshot per watchdog tick, even with many terminal windows. */
+export async function listMacCodexTuisByEndpoint(endpoints: readonly string[]): Promise<Map<string, MacCodexTui[]>> {
   const { stdout } = await execute("/bin/ps", ["-axo", "pid=,tty=,lstart=,args="], { timeout: 5_000, maxBuffer: 4 * 1024 * 1024 });
-  const candidates = parseMacCodexTuis(stdout, endpoint);
-  const verified = await Promise.all(candidates.map(async item => {
+  const byEndpoint = new Map(endpoints.map(endpoint => [endpoint, parseMacCodexTuis(stdout, endpoint)]));
+  const candidates = new Map([...byEndpoint.values()].flat().map(item => [item.pid, item]));
+  const verified = new Set(await Promise.all([...candidates.values()].map(async item => {
     const executable = await processExecutable(item.pid);
     // argv can mention any program. Check the executable itself before a PID is
     // eligible for monitoring or a close request.
-    return executable && /\/(?:codex|node|sh)$/u.test(executable) ? item : undefined;
-  }));
-  return verified.filter((item): item is MacCodexTui => item !== undefined);
+    return executable && /\/(?:codex|node|sh)$/u.test(executable) ? item.pid : undefined;
+  })));
+  return new Map([...byEndpoint].map(([endpoint, items]) => [endpoint, items.filter(item => verified.has(item.pid))]));
 }
 
 type MacTerminalControl = { list: typeof listMacCodexTuis; signal: (pid: number) => void; wait: () => Promise<void> };
 export async function closeMacCodexTuis(sessionId: string, endpoint: string, control: MacTerminalControl = {
   list: listMacCodexTuis, signal: pid => { process.kill(pid, "SIGTERM"); }, wait: () => delay(100),
 }): Promise<boolean> {
-  const matches = (await control.list(endpoint)).filter(item => sessionId.startsWith("terminal:")
-    ? item.sessionId === undefined : item.sessionId === sessionId);
+  // A terminal: key uses a private endpoint, so both bare and resumed TUIs
+  // (including a rollout-waiting shell) belong to exactly this window.
+  const matches = (await control.list(endpoint)).filter(item => sessionId.startsWith("terminal:") || item.sessionId === sessionId);
   let closed = false;
   for (const identity of matches) {
     // Recheck PID reuse and argv immediately before signalling only this native TUI.

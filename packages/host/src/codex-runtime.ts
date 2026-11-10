@@ -78,18 +78,17 @@ import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefre
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
 import { ActivationError } from "./spawner.js";
 import { CodexNotificationBuffer, type CodexBufferedNotification } from "./codex-notification-buffer.js";
-import { openMacCodexTerminal, listMacCodexTuis, closeMacCodexTuis } from "./codex-terminal-macos.js";
+import { openMacCodexTerminal, listMacCodexTuisByEndpoint, closeMacCodexTuis } from "./codex-terminal-macos.js";
+import { codexTerminalEndpoints, codexTerminalRemotePattern, createCodexTerminalConnection, type CodexTerminalConnection, type CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 /** 审批窗口。手机在 expiresAt 前不响应就按 decline 处理，防止 turn 挂死。 */
 const APPROVAL_TTL_MS = 5 * 60 * 1_000;
 /**
  * 终端启动登记的存活时间。官方 TUI 建 thread 之前可能先问「是否信任这个目录」，
  * 用户答复前不会发出 `thread/started`；登记过早过期就等于静默放弃收编。
- * 同一 cwd 的陈旧登记无害：收编本来就只按 cwd 认领。
+ * 每个登记有独立的端点，未连接的登记到期后释放。
  */
 const TERMINAL_LAUNCH_TTL_MS = 30 * 60 * 1_000;
-/** 无 `resume <id>` 的 shim TUI 在进程命令行上的共享标记。 */
-const REMOTE_TUI_PROCESS = "__orbis_remote_tui__";
 
 /**
  * Codex 后端对外声明的 Slash 命令子集（spec §9.1 / §13.3）。
@@ -169,12 +168,8 @@ export type CodexRuntimeOptions = {
    * attach、只在 `-EncodedCommand` 里含该命令的等待窗口。返回是否结束了至少一个进程。
    */
   killTuiProcesses?: (input: { sessionId: string; endpoint: string }) => Promise<boolean>;
-  /**
-   * TUI 切换会话的宽限窗口（毫秒，缺省 300）。app-server 把 thread/started 等通知
-   * 广播给所有客户端，Host 自己 activate 的广播可能先于 RPC 响应到达——等一个宽限
-   * 窗口再复查，已被收编的就是自己人的广播。测试注入小值。
-   */
-  tuiSwitchGraceMs?: number;
+  /** Private terminal transport; tests inject an observed selection connection. */
+  createTerminalConnection?: (input: CodexTerminalConnectionInput) => Promise<CodexTerminalConnection>;
   /** Windows wrapper evidence and the Host-owned durable recovery journal. */
   desktopRefresh?: CodexDesktopRefreshOptions;
 };
@@ -377,25 +372,14 @@ export class CodexRuntime implements AgentBackend {
     effortsByModel: Map<string, RuntimeSlashCommandOption[]>;
   } | undefined;
   #integrationCatalog = new Map<string, IntegrationCatalog>();
-  /**
-   * 挂着有头窗口的 thread 集合 +「至少见到过一次 TUI 进程」的标记。
-   * 新会话的 TUI 要等首轮 turn 落盘后才由 powershell 轮询拉起，在那之前 codex 进程
-   * 还没出现——不能因为「没找到」就误判掉线，所以要先 seen 过一次才允许判定消失。
-   *
-   * seen 与进程匹配都以**窗口 key**（开窗时 argv 里的原始 sessionId）为单位，而不是
-   * threadId：TUI 在窗口里 `/new` 或 `/resume` 切换 thread 后 argv 不变（启动时的
-   * 快照），进程级信号从此只能代表「这个窗口还活着」；窗口的当前 thread 由
-   * `#windowKeyByThread` 维护（切换检测收到广播后过户）。
-   */
+  /** Each TUI has a private endpoint. Its successful selection response binds
+   * the current thread to that endpoint for both monitoring and close. */
   readonly #headWindows = new Set<string>();
   readonly #headWindowSeen = new Set<string>();
-  readonly #pendingTerminalLaunches = new Map<string, { cwd: string; timer: NodeJS.Timeout }>();
-  /** threadId → 窗口 key（开窗时的原始 sessionId；TUI 切换 thread 后过户给新 thread）。 */
+  readonly #terminalConnections = new Map<string, { connection: CodexTerminalConnection; expectedThreadId?: string; timer?: NodeJS.Timeout }>();
+  readonly #terminalConnectionClosures = new Set<Promise<void>>();
+  /** threadId → private terminal connection key. */
   readonly #windowKeyByThread = new Map<string, string>();
-  /** 窗口 key → 最近一次活动时刻（托管 thread 的任意通知都算）。切换归属的启发式依据。 */
-  readonly #windowActivity = new Map<string, number>();
-  /** TUI 切换宽限定时器（规避 Host 自己 activate 的广播竞态）；app-server 退出时统一清。 */
-  readonly #switchTimers = new Set<NodeJS.Timeout>();
   readonly #desktopThreads = new Set<string>();
   readonly #desktopKnown = new Set<string>();
   readonly #desktopSuppressed = new Map<string, "active" | "idle">();
@@ -606,11 +590,7 @@ export class CodexRuntime implements AgentBackend {
       this.#headWindows.clear();
       this.#headWindowSeen.clear();
       this.#windowKeyByThread.clear();
-      this.#windowActivity.clear();
-      for (const pending of this.#pendingTerminalLaunches.values()) clearTimeout(pending.timer);
-      this.#pendingTerminalLaunches.clear();
-      for (const timer of this.#switchTimers) clearTimeout(timer);
-      this.#switchTimers.clear();
+      for (const key of this.#terminalConnections.keys()) this.#releaseTerminalConnection(key);
       this.#stopHeadWatcher();
       if (this.#desktopWatcher !== undefined) clearInterval(this.#desktopWatcher);
       this.#desktopWatcher = undefined;
@@ -665,6 +645,7 @@ export class CodexRuntime implements AgentBackend {
     this.#toolInventories.clear(); this.#captureEpochs.clear();
     await this.#server.stop();
     this.#server.onExit?.(0);
+    await Promise.all(this.#terminalConnectionClosures);
   }
 
   /** 是否挂着活跃 thread：Host 的进程目录只在这时收录 Codex（§8.1）。 */
@@ -840,24 +821,57 @@ export class CodexRuntime implements AgentBackend {
     return [...this.#threads.values()].map((thread) => this.threadMetadata(thread));
   }
 
-  /** 终端 shim 请求一个 remote TUI；thread 由官方 TUI 首次输入时创建。 */
+  /** Register one terminal endpoint before the official TUI selects its first thread. */
   async prepareTerminalLaunch(cwd: string): Promise<{ endpoint: string; command: string; prefixArgs: readonly string[] }> {
     if (!this.#started) throw new Error("Codex 后端尚未就绪");
     const endpoint = this.#server.endpoint;
     const command = this.#server.codexCommand;
     if (endpoint === undefined || command === undefined) throw new Error("Codex remote 端点不可用");
     await prepareCodexWorkspace(this.#server, cwd);
-    const key = `terminal:${randomUUID()}`;
+    const { key, connection } = await this.#createTerminalConnection();
     const timer = setTimeout(() => {
-      const pending = this.#pendingTerminalLaunches.get(key);
-      if (pending?.timer === timer) this.#pendingTerminalLaunches.delete(key);
+      if (this.#terminalConnections.get(key)?.timer === timer) this.#releaseTerminalConnection(key);
     }, TERMINAL_LAUNCH_TTL_MS);
     timer.unref?.();
-    this.#pendingTerminalLaunches.set(key, { cwd, timer });
+    this.#terminalConnections.get(key)!.timer = timer;
     this.#options.log?.(`已登记 Codex 终端启动（cwd=${cwd}）`);
-    // `-C` 是必需的：不带它时官方 TUI 用 app-server 自己的工作目录建 thread，
-    // 既让会话跑错目录，也让下面的 cwd 收编永远匹配不上这条登记。
-    return { endpoint, command: command.command, prefixArgs: [...command.prefixArgs, "-C", cwd] };
+    // Keep the TUI's project directory; the endpoint, rather than cwd, identifies its window.
+    return { endpoint: connection.endpoint, command: command.command, prefixArgs: [...command.prefixArgs, "-C", cwd] };
+  }
+
+  async #createTerminalConnection(expectedThreadId?: string): Promise<{ key: string; connection: CodexTerminalConnection }> {
+    const upstreamEndpoint = this.#server.endpoint;
+    if (upstreamEndpoint === undefined) throw new Error("Codex remote 端点不可用");
+    const key = `terminal:${randomUUID()}`;
+    const server = this.#server;
+    const connection = await (this.#options.createTerminalConnection ?? createCodexTerminalConnection)({
+      upstreamEndpoint,
+      onThread: snapshot => {
+        const window = this.#terminalConnections.get(key);
+        if (!window || this.#server !== server || !this.#started) return;
+        clearTimeout(window.timer); delete window.timer;
+        this.#headWindowSeen.add(key);
+        this.#startHeadWatcher();
+        // Bind synchronously before history I/O. A later real selection can then
+        // invalidate an earlier hydration without waiting for its native reply.
+        void this.#adoptTerminalSelection(key, snapshot).catch(error => {
+          this.#options.log?.(`接入 Codex 终端会话失败：${describeError(error)}`);
+        });
+      },
+    });
+    if (!this.#started || this.#server !== server) { await connection.close(); throw new Error("Codex 后端已断开"); }
+    this.#terminalConnections.set(key, { connection, ...(expectedThreadId === undefined ? {} : { expectedThreadId }) });
+    return { key, connection };
+  }
+
+  #releaseTerminalConnection(key: string): void {
+    const window = this.#terminalConnections.get(key);
+    if (!window) return;
+    this.#terminalConnections.delete(key);
+    clearTimeout(window.timer);
+    const closing = window.connection.close().catch(error => this.#options.log?.(`关闭 Codex 终端连接失败：${describeError(error)}`));
+    this.#terminalConnectionClosures.add(closing);
+    void closing.finally(() => this.#terminalConnectionClosures.delete(closing));
   }
 
   /** 标记已就绪（host-service 在 server 握手成功后调用）。 */
@@ -1428,23 +1442,29 @@ export class CodexRuntime implements AgentBackend {
     if (endpoint === undefined) return;
     const opener = this.#options.openHeadWindow ?? defaultOpenHeadWindow;
     const codexCommand = this.#server.codexCommand;
-    try { await opener({ sessionId, cwd, endpoint, ...(codexCommand === undefined ? {} : { codexCommand }) }); }
+    let window: { key: string; connection: CodexTerminalConnection } | undefined;
+    try {
+      window = await this.#createTerminalConnection(sessionId);
+      await opener({ sessionId, cwd, endpoint: window.connection.endpoint, ...(codexCommand === undefined ? {} : { codexCommand }) });
+    }
     catch (error) {
+      if (window !== undefined) this.#releaseTerminalConnection(window.key);
       throw new ActivationError("spawn_failed", `无法打开 Codex 终端窗口：${describeError(error)}`);
     }
+    const { key, connection } = window;
     this.#options.log?.(
       `Codex 终端启动请求已受理（等待 TUI attach）：sessionId=${sessionId} cwd=${cwd} endpoint=${endpoint}`,
     );
     // 看门狗只跟「生产开窗」：endpoint 未定义（测试桩 / app-server 未就绪）或
     // 显式关掉 HEAD 时不启。wt.exe 一启动就把窗口交给常驻 WindowsTerminal 进程后
     // 自己立刻退出，没法靠 child.on("exit")——只能轮询真正的 codex/node TUI 进程。
-    this.#trackHeadWindow(sessionId, sessionId);
+    // Selection may complete while Terminal is opening. Never overwrite a newer binding.
+    if (connection.selectedThreadId === undefined || connection.selectedThreadId === sessionId) this.#trackHeadWindow(sessionId, key);
   }
 
   #trackHeadWindow(sessionId: string, windowKey: string, respectSetting = true): void {
     if (respectSetting && orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
     this.#windowKeyByThread.set(sessionId, windowKey);
-    this.#windowActivity.set(windowKey, Date.now());
     this.#headWindows.add(sessionId);
     this.#startHeadWatcher();
   }
@@ -1472,17 +1492,20 @@ export class CodexRuntime implements AgentBackend {
    * 在 codex 退出后还会因 -NoExit 留着，不能拿来当「会话还活着」）。
    */
   async #checkHeadWindows(): Promise<void> {
-    if (this.#headWindows.size === 0) {
+    if (this.#headWindows.size === 0 && this.#terminalConnections.size === 0) {
       this.#stopHeadWatcher();
       return;
     }
-    const endpoint = this.#server.endpoint;
-    if (endpoint === undefined) return;
-    const alive = await this.#pollTuiProcesses(endpoint);
-    for (const id of [...this.#headWindows]) {
-      // 进程匹配按窗口 key（argv 快照），不是 threadId：TUI 切过 thread 后 argv 不变。
-      const key = this.#windowKeyByThread.get(id) ?? id;
-      if (alive.has(key) || (key.startsWith("terminal:") && alive.has(REMOTE_TUI_PROCESS))) {
+    const tracked = [...this.#headWindows].map(id => ({ id, key: this.#windowKeyByThread.get(id) }));
+    const connections = new Map(this.#terminalConnections);
+    const endpoints = [...this.#terminalConnections.values()].map(window => window.connection.endpoint);
+    const alive = await this.#pollTuiProcesses(endpoints);
+    for (const { id, key } of tracked) {
+      const window = key === undefined ? undefined : this.#terminalConnections.get(key);
+      if (!window || key === undefined) continue;
+      // A poll can finish after this window has switched or closed.
+      if (this.#windowKeyByThread.get(id) !== key || this.#terminalConnections.get(key) !== window) continue;
+      if (alive.has(window.connection.endpoint)) {
         this.#headWindowSeen.add(key);
         const thread = this.#threads.get(id);
         if (thread?.tuiAttachPending) void this.#attachTuiThread(thread);
@@ -1491,33 +1514,36 @@ export class CodexRuntime implements AgentBackend {
       if (!this.#headWindowSeen.has(key)) continue; // Native terminal startup has not been observed yet.
       this.#deactivateThread(id, "Codex TUI 窗口已关闭");
     }
+    // A duplicate view of the same native thread, or a terminal switched to a
+    // Desktop-owned thread, has no separate card but still owns its listener.
+    for (const [key, window] of connections) {
+      if (this.#terminalConnections.get(key) !== window || !this.#headWindowSeen.has(key)
+        || alive.has(window.connection.endpoint) || [...this.#windowKeyByThread.values()].includes(key)) continue;
+      this.#headWindowSeen.delete(key);
+      this.#releaseTerminalConnection(key);
+    }
   }
 
-  async #pollTuiProcesses(endpoint: string): Promise<Set<string>> {
-    if (this.#options.pollTuiProcesses !== undefined) return this.#options.pollTuiProcesses(endpoint);
-    if (process.platform === "darwin") return new Set((await listMacCodexTuis(endpoint)).map(item => item.sessionId ?? REMOTE_TUI_PROCESS));
-    return new Promise((resolve) => {
-      // endpoint 是我们自己 freePort 出来的值，不存在注入面。-like 通配。
-      const script =
-        `Get-CimInstance Win32_Process -Filter "Name='codex.exe' OR Name='node.exe'" ` +
-        `-Property ProcessId,CommandLine ` +
-        `| Where-Object { $_.CommandLine -like '*${endpoint}*' } ` +
-        `| ForEach-Object { $_.CommandLine }`;
+  async #pollTuiProcesses(endpoints: readonly string[]): Promise<Set<string>> {
+    if (this.#options.pollTuiProcesses !== undefined) {
+      const poll = this.#options.pollTuiProcesses;
+      const results = await Promise.all(endpoints.map(async endpoint => (await poll(endpoint)).size > 0 ? endpoint : undefined));
+      return new Set(results.filter((endpoint): endpoint is string => endpoint !== undefined));
+    }
+    if (process.platform === "darwin") {
+      return new Set([...(await listMacCodexTuisByEndpoint(endpoints))].filter(([, items]) => items.length > 0).map(([endpoint]) => endpoint));
+    }
+    return new Promise((resolve, reject) => {
+      const script = `Get-CimInstance Win32_Process -Filter "Name='codex.exe' OR Name='node.exe'" -Property CommandLine | ForEach-Object { $_.CommandLine }`;
       const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
       });
       let out = "";
       child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString("utf8"); });
-      child.on("error", () => resolve(new Set()));
-      child.on("exit", () => {
-        const ids = new Set<string>();
-        for (const line of out.split("\n")) {
-          const match = line.match(/resume\s+([0-9a-fA-F-]{30,})/);
-          if (match !== null && match[1] !== undefined) ids.add(match[1].toLowerCase());
-          else if (line.includes(endpoint) && line.includes("--remote")) ids.add(REMOTE_TUI_PROCESS);
-        }
-        resolve(ids);
+      child.on("error", reject);
+      child.on("exit", code => {
+        if (code !== 0) { reject(new Error(`无法核对 Codex 终端进程（code=${code ?? "signal"}）`)); return; }
+        resolve(codexTerminalEndpoints(out, endpoints));
       });
     });
   }
@@ -1527,7 +1553,7 @@ export class CodexRuntime implements AgentBackend {
    * 退出口径广播 offline 让手机删卡。onOffline 复用 app-server 整体退出那条路径——
    * 对 Host 而言都是「这几个 runtimeId 掉线了，逐个广播」。
    */
-  #deactivateThread(threadId: string, reason: string, preserveApproval = false): void {
+  #deactivateThread(threadId: string, reason: string, preserveApproval = false, preserveTerminalConnection = false): void {
     const thread = this.#threads.get(threadId);
     if (thread === undefined) return;
     thread.closing = true; clearTimeout(thread.compactStartTimer);
@@ -1571,7 +1597,7 @@ export class CodexRuntime implements AgentBackend {
       this.#headWindowSeen.delete(threadId);
     } else {
       this.#headWindowSeen.delete(windowKey);
-      this.#windowActivity.delete(windowKey);
+      if (!preserveTerminalConnection) this.#releaseTerminalConnection(windowKey);
     }
     this.#options.log?.(`Codex 会话已下线：${threadId}（${reason}）`);
     this.onMetadataChange?.();
@@ -2872,13 +2898,20 @@ export class CodexRuntime implements AgentBackend {
       this.#deactivateThread(thread.id, "手机已退出 Codex 桌面会话视图", true);
       return;
     }
-    const endpoint = this.#server.endpoint;
-    if (endpoint === undefined) throw new Error("Codex 端点未知，无法确认关闭会话");
-    const windowKey = this.#windowKeyByThread.get(thread.id) ?? thread.id;
-    const killed = await this.#killTuiProcesses(windowKey, endpoint);
-    if (!killed) throw new Error("未找到可关闭的 Codex TUI 进程，请在电脑端核对");
-    this.#commandResult(thread.id, commandId, true, undefined, "success");
-    this.#deactivateThread(thread.id, "Codex 会话已由手机 /quit 关闭");
+    const windowKey = this.#windowKeyByThread.get(thread.id);
+    const window = windowKey === undefined ? undefined : this.#terminalConnections.get(windowKey);
+    if (!window || windowKey === undefined || window.connection.selectionPending
+      || (window.connection.selectedThreadId ?? window.expectedThreadId) !== thread.id) {
+      throw new Error("无法确认该会话对应的 Codex 终端，请在电脑端核对");
+    }
+    const release = window.connection.acquireClose(thread.id);
+    if (!release) throw new Error("Codex 终端正在切换会话，请稍后核对再关闭");
+    try {
+      const killed = await this.#killTuiProcesses(windowKey, window.connection.endpoint);
+      if (!killed) throw new Error("未找到可关闭的 Codex TUI 进程，请在电脑端核对");
+      this.#commandResult(thread.id, commandId, true, undefined, "success");
+      this.#deactivateThread(thread.id, "Codex 会话已由手机 /quit 关闭");
+    } finally { release(); }
   }
 
   /**
@@ -3025,162 +3058,46 @@ export class CodexRuntime implements AgentBackend {
 
   // ── app-server 通知 → runtime 事件 ──────────────────────────────────────────
 
-  /**
-   * 非活跃 thread 的通知处理：唯一的正当来源是电脑上的 TUI 切换了会话——`/new` 产生
-   * `thread/started` 广播、`/resume` 产生 `thread/status/changed` 广播（实测 0.155.1，
-   * app-server 把通知发给**所有**客户端连接）。按 pi 的语义接管：TUI 归属变了 =
-   * 旧会话下线、新会话上线，手机跟着 TUI 当前会话走。
-   *
-   * 宽限重查是有意的：Host 自己 activate/fork（thread/start|resume|fork）同样会收到
-   * 广播，且广播可能先于 RPC 响应到达——此刻 thread 还没进 #threads。等一个宽限窗口
-   * 再复查（Host 操作还在途就再等一轮），已被收编的就是自己人的广播，忽略。
-   */
+  /** Global broadcasts carry no terminal identity. Desktop discovery remains
+   * native; terminal selection is observed on its private connection instead. */
   #handleUnmanagedNotification(method: string, record: Record<string, unknown>, threadId: string | undefined): void {
-    if (isDesktopAppServer(this.#server)) {
-      if (method === "thread/status/changed" && threadId !== undefined
-        && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
-        this.#desktopSuppressed.set(threadId, "idle");
-      }
-      if (method === "thread/started" || method === "thread/status/changed") {
-        void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
-      }
-      return;
+    if (!isDesktopAppServer(this.#server)) return;
+    if (method === "thread/status/changed" && threadId !== undefined
+      && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
+      this.#desktopSuppressed.set(threadId, "idle");
     }
-    if (method !== "thread/started" && method !== "thread/status/changed") return;
-    const nested = record.thread;
-    // app-server 会用 **ephemeral 线程**干一次性的活：会话标题生成、/side、review fork、
-    // 临时子代理。它们没有 rollout（thread.path 为 null）、也不接受 thread/turns/list——
-    // 收编过去就是「手机连到一个拉不出历史的空会话」，而且真会话会被下线（真机上表现为
-    // 发完第一条消息后聊天记录加载不出来、只有「运行中」）。这些不是会话，不算 TUI 切会话。
-    // TUI 里 /new 出来的新会话是非 ephemeral 的，不受影响。
-    if (nested !== null && typeof nested === "object" && (nested as { ephemeral?: unknown }).ephemeral === true) return;
-    const id = threadId ?? (nested !== null && typeof nested === "object" && typeof (nested as { id?: unknown }).id === "string"
-      ? (nested as { id: string }).id
-      : undefined);
-    if (id === undefined) return;
-    if (this.#threads.has(id)) return;
-    const terminalKey = method === "thread/started" ? this.#pendingTerminalKey(nested) : undefined;
-    if (this.#headWindows.size === 0 && terminalKey === undefined) return; // 无窗口时只接受 shim 登记的首个 TUI
-    const graceMs = this.#options.tuiSwitchGraceMs ?? 300;
-    const timer = setTimeout(() => {
-      this.#switchTimers.delete(timer);
-      if (this.#activating > 0) {
-        this.#scheduleSwitchAdoption(id, record, 1, terminalKey);
-        return;
-      }
-      void (terminalKey === undefined
-        ? this.#adoptTuiSwitchedThread(id, record)
-        : this.#adoptTuiLaunchedThread(id, record, terminalKey)).catch((error: unknown) => {
-        this.#options.log?.(`接管 TUI 切换的会话失败（thread=${id}）：${describeError(error)}`);
-      });
-    }, graceMs);
-    timer.unref?.();
-    this.#switchTimers.add(timer);
+    if (method === "thread/started" || method === "thread/status/changed") {
+      void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
+    }
   }
 
-  #pendingTerminalKey(nested: unknown): string | undefined {
-    if (nested === null || typeof nested !== "object" || typeof (nested as { cwd?: unknown }).cwd !== "string") return undefined;
-    const cwd = (nested as { cwd: string }).cwd;
-    for (const [key, pending] of this.#pendingTerminalLaunches) if (sameWorkingDirectory(pending.cwd, cwd)) return key;
-    return undefined;
-  }
-
-  #scheduleSwitchAdoption(threadId: string, record: Record<string, unknown>, depth: number, terminalKey?: string): void {
-    if (depth > 3) {
-      this.#options.log?.(`TUI 切换检测放弃等待 Host 自身激活收尾（thread=${threadId}）`);
-      return;
+  /** SC74: A successful selection reply from one TUI transfers only that
+   * connection's card, watchdog and close target, regardless of other activity. */
+  async #adoptTerminalSelection(key: string, snapshot: Record<string, unknown>): Promise<void> {
+    const window = this.#terminalConnections.get(key);
+    const threadId = snapshot.id;
+    const cwd = snapshot.cwd;
+    if (!window || typeof threadId !== "string" || typeof cwd !== "string"
+      || snapshot.ephemeral === true || isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) return;
+    // Ignore a queued selection superseded before its history finished loading.
+    if (window.connection.selectedThreadId !== threadId) return;
+    const oldThreadId = [...this.#windowKeyByThread].find(([, windowKey]) => windowKey === key)?.[0];
+    if (oldThreadId !== undefined && oldThreadId !== threadId) {
+      this.#deactivateThread(oldThreadId, "Codex TUI 已切换到其他会话", false, true);
     }
-    const graceMs = this.#options.tuiSwitchGraceMs ?? 300;
-    const timer = setTimeout(() => {
-      this.#switchTimers.delete(timer);
-      if (this.#activating > 0) {
-        this.#scheduleSwitchAdoption(threadId, record, depth + 1, terminalKey);
-        return;
-      }
-      void (terminalKey === undefined
-        ? this.#adoptTuiSwitchedThread(threadId, record)
-        : this.#adoptTuiLaunchedThread(threadId, record, terminalKey)).catch((error: unknown) => {
-        this.#options.log?.(`接管 TUI 切换的会话失败（thread=${threadId}）：${describeError(error)}`);
-      });
-    }, graceMs);
-    timer.unref?.();
-    this.#switchTimers.add(timer);
-  }
-
-  /** 收编由 shim 启动的官方 TUI。它没有旧 thread 可替换，窗口 key 来自 pending launch。 */
-  async #adoptTuiLaunchedThread(threadId: string, record: Record<string, unknown>, windowKey: string): Promise<void> {
-    if (this.#threads.has(threadId)) return;
-    const pending = this.#pendingTerminalLaunches.get(windowKey);
-    if (pending === undefined) return;
-    this.#pendingTerminalLaunches.delete(windowKey);
-    clearTimeout(pending.timer);
-    const nested = record.thread;
-    const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
-      ? nested as Record<string, unknown>
-      : await this.#threadFromList(threadId);
-    if (isCodexSubagentSource(snapshot?.source, snapshot?.parentThreadId)) {
-      this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
-      return;
-    }
-    if (this.#desktopKnown.has(threadId)) {
-      this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
-      return;
-    }
-    const cwd = typeof snapshot?.cwd === "string" ? snapshot.cwd : pending.cwd;
-    const thread = this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot?.name) });
+    if (this.#desktopKnown.has(threadId)) return;
+    const existing = this.#threads.get(threadId);
+    const otherKey = this.#windowKeyByThread.get(threadId);
+    // The same native thread can be displayed in two TUIs. Do not take another
+    // live window's close target away from its card.
+    if (otherKey !== undefined && otherKey !== key) return;
+    const thread = existing ?? this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot.name) });
     this.#threads.set(threadId, thread);
-    this.#trackHeadWindow(threadId, windowKey, false);
-    this.#headWindowSeen.add(windowKey);
-    await this.#initializeTuiThread(thread, snapshot);
-    this.#options.log?.(`Codex 终端会话已接入：thread=${threadId} cwd=${cwd}`);
-  }
-
-  /**
-   * 把 TUI 切过去的 thread 收编为托管会话：旧会话下线（手机删卡）、新会话走一遍
-   * 激活后处理（回放历史、广播 metadata/snapshot → Host 重播 runtime.online）。
-   * 不重开窗口——窗口就是现在这个，argv 里的窗口 key 原样过户给新 thread，看门狗
-   * 与 /quit 继续按这个 key 找进程。
-   */
-  async #adoptTuiSwitchedThread(threadId: string, record: Record<string, unknown>): Promise<void> {
-    // 到点复查：宽限窗口内被 Host 自己的 activate/fork 收编、或窗口全关了，就不算切换。
-    if (this.#threads.has(threadId)) return;
-    if (this.#headWindows.size === 0) return;
-    const victim = this.#victimWindowKey(threadId);
-    if (victim === undefined) {
-      this.#options.log?.(`收到未托管 thread 的通知（thread=${threadId}），但没有可归属的窗口；忽略`);
-      return;
-    }
-    // cwd：thread/started 广播自带 thread 对象；status/changed 只带 id，问 thread/list。
-    const nested = record.thread;
-    const snapshot = nested !== null && typeof nested === "object" && typeof (nested as { cwd?: unknown }).cwd === "string"
-      ? nested as Record<string, unknown>
-      : await this.#threadFromList(threadId);
-    if (isCodexSubagentSource(snapshot?.source, snapshot?.parentThreadId)) {
-      this.#options.log?.(`忽略 Codex 子代理线程：${threadId}`);
-      return;
-    }
-    if (this.#desktopKnown.has(threadId)) {
-      this.#deactivateThread(victim.oldThreadId, "Codex TUI 已切换到桌面版会话");
-      this.#options.log?.(`忽略已归属桌面版的 Codex 终端会话：${threadId}`);
-      return;
-    }
-    const cwd = snapshot?.cwd;
-    if (typeof cwd !== "string") {
-      this.#options.log?.(`无法确定 TUI 切换目标会话的 cwd（thread=${threadId}）；忽略`);
-      return;
-    }
-    this.#deactivateThread(victim.oldThreadId, "Codex TUI 已切换到其他会话");
-    const thread = this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot?.name) });
-    this.#threads.set(threadId, thread);
-    this.#windowKeyByThread.set(threadId, victim.key);
-    this.#windowActivity.set(victim.key, Date.now());
-    this.#headWindows.add(threadId);
-    this.#headWindowSeen.add(victim.key);
-    await this.#initializeTuiThread(thread, snapshot);
-
-    this.#options.log?.(
-      `Codex TUI 切换会话：${victim.oldThreadId} → ${threadId}（窗口 key=${victim.key}，cwd=${cwd}）`,
-    );
+    this.#trackHeadWindow(threadId, key, false);
+    this.#headWindowSeen.add(key);
+    if (existing === undefined) await this.#initializeTuiThread(thread, snapshot);
+    else if (thread.tuiAttachPending) await this.#attachTuiThread(thread);
+    this.#options.log?.(`Codex 终端会话已确认：thread=${threadId} window=${key}`);
   }
 
   async #initializeTuiThread(thread: ThreadState, snapshot: Record<string, unknown> | undefined): Promise<void> {
@@ -3260,35 +3177,6 @@ export class CodexRuntime implements AgentBackend {
     })();
     thread.tuiAttachPromise = attaching;
     return attaching;
-  }
-
-  /**
-   * 把一次切换归属到某个窗口：挑「最近有动静」的那个。单窗口时精确；多窗口时是
-   * 启发式——广播不携带来源连接，app-server 层面无法区分是哪个窗口切的。
-   */
-  #victimWindowKey(newThreadId: string): { key: string; oldThreadId: string } | undefined {
-    let best: { key: string; oldThreadId: string; at: number } | undefined;
-    for (const [oldThreadId, key] of this.#windowKeyByThread) {
-      if (!this.#headWindows.has(oldThreadId)) continue;
-      if (!this.#threads.has(oldThreadId)) continue;
-      if (oldThreadId === newThreadId) continue;
-      const at = this.#windowActivity.get(key) ?? 0;
-      if (best === undefined || at > best.at) best = { key, oldThreadId, at };
-    }
-    return best === undefined ? undefined : { key: best.key, oldThreadId: best.oldThreadId };
-  }
-
-  /** thread/list 里读取切换目标的目录与名称。 */
-  async #threadFromList(threadId: string): Promise<Record<string, unknown> | undefined> {
-    try {
-      const result = await this.#server.request("thread/list", { limit: 200 }) as {
-        data?: Array<Record<string, unknown>>;
-      };
-      return (result.data ?? []).find((candidate) => candidate?.id === threadId);
-    } catch (error) {
-      this.#options.log?.(`thread/list 查 cwd 失败（thread=${threadId}）：${describeError(error)}`);
-      return undefined;
-    }
   }
 
   /** 全量拉一个 thread 的 turns（itemsView full，分页取尽），用于回退后重建历史。 */
@@ -3454,9 +3342,6 @@ export class CodexRuntime implements AgentBackend {
       if (!thread.tuiAttachPending && !thread.reconcileDraining) void this.#checkNativeSource(thread).catch(() => undefined);
       return;
     }
-    // 该 thread 所属窗口有动静：TUI 切换归属时按「最近有动静」挑窗口用。
-    const windowKey = this.#windowKeyByThread.get(thread.id);
-    if (windowKey !== undefined) this.#windowActivity.set(windowKey, Date.now());
     if (method === "skills/changed" || method === "mcpServerStatus/updated") {
       void this.#refreshIntegrationCatalog(thread);
       return;
@@ -4549,11 +4434,6 @@ function itemClientId(item: Record<string, unknown>, message: ChatMessage): stri
     : undefined;
 }
 
-function sameWorkingDirectory(left: string, right: string): boolean {
-  const normalize = (cwd: string): string => cwd.replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();
-  return normalize(left) === normalize(right);
-}
-
 function codexSessionName(value: unknown): string | undefined {
   return typeof value === "string" ? value.trim().slice(0, 256) || undefined : undefined;
 }
@@ -4932,20 +4812,18 @@ async function defaultOpenHeadWindow(input: { sessionId: string; cwd: string; en
 /**
  * 生成关闭 Codex TUI 的 PowerShell 脚本（输出被结束的进程数）。
  *
- * sessionId 来自手机，必须按字面量匹配：用 `.Contains()` 而非 `-like`，避免 `[`/`*`
- * 被当成通配符；嵌进单引号字符串前把 `'` 双写。等待窗口只有 base64 的
- * `-EncodedCommand`，把它解码成 UTF-16 文本后再匹配同一对 `resume <id>` + `--remote`。
+ * Match the complete private --remote argument, including quoted PowerShell
+ * wait scripts. A port prefix must never close another window or app-server.
  */
 function codexTuiKillScript(sessionId: string, endpoint: string): string {
   const quote = (value: string) => value.replace(/'/g, "''");
   const target = sessionId.startsWith("terminal:") ? "" : quote(`resume ${sessionId}`);
-  const remote = quote(endpoint);
   return [
     `$target = '${target}'`,
-    `$remote = '${remote}'`,
+    `$remotePattern = '${quote(codexTerminalRemotePattern(endpoint))}'`,
     `$killed = 0`,
     `Get-CimInstance Win32_Process -Filter "Name='codex.exe' OR Name='node.exe'" -Property ProcessId,CommandLine |`,
-    `  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($remote) -and ($target -eq '' -or $_.CommandLine.Contains($target)) } |`,
+    `  Where-Object { $_.CommandLine -and $_.CommandLine -match $remotePattern -and ($target -eq '' -or $_.CommandLine.Contains($target)) } |`,
     `  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $killed++ }`,
     `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -Property ProcessId,CommandLine |`,
     `  Where-Object { $_.ProcessId -ne $PID } |`,
@@ -4954,7 +4832,7 @@ function codexTuiKillScript(sessionId: string, endpoint: string): string {
     `    if ($m.Success) {`,
     `      try {`,
     `        $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($m.Groups[1].Value))`,
-    `        if (($target -eq '' -or $decoded.Contains($target)) -and $decoded.Contains($remote)) { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $killed++ }`,
+    `        if (($target -eq '' -or $decoded.Contains($target)) -and $decoded -match $remotePattern) { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $killed++ }`,
     `      } catch {}`,
     `    }`,
     `  }`,
