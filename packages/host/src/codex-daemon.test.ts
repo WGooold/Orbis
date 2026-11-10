@@ -260,6 +260,19 @@ describe("CodexAppServer", () => {
 });
 
 describe("CodexAppServer owned 模式启动失败", () => {
+  // SC75: missing source-aware support must not silently launch the VSCode entry.
+  it("refuses to spawn when the matching terminal server cannot be verified", async () => {
+    const { fileURLToPath } = await import("node:url");
+    vi.stubEnv("ORBIS_CODEX_ENTRY", fileURLToPath(import.meta.url));
+    const spawnImpl = vi.fn();
+    try {
+      await expect(CodexAppServer.create({ spawnImpl,
+        resolveTerminalServer: async () => { throw new Error("source-aware server unavailable"); },
+      })).rejects.toThrow("source-aware server unavailable");
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("codex 不存在（ENOENT）时 create 正常 reject，而不是打崩进程", async () => {
     const { spawn } = await import("node:child_process");
     const { fileURLToPath } = await import("node:url");
@@ -269,6 +282,7 @@ describe("CodexAppServer owned 模式启动失败", () => {
     try {
       await expect(CodexAppServer.create({
         requestTimeoutMs: 20_000,
+        resolveTerminalServer: async () => ({ command: "codex-app-server", prefixArgs: [] }),
         spawnImpl: (_command, args) => spawn("orbis-missing-codex-binary", [...args], { stdio: ["pipe", "pipe", "pipe"] }),
       })).rejects.toThrow(/ENOENT/);
     } finally {

@@ -30,6 +30,17 @@ The isolated native reproduction is recorded with R56.
 
 2026-11-02 ownership clarification: historical rollout metadata describes creation context. App selection, observed native attachment and the current writer determine present ownership. A thread loaded in the terminal app-server can legitimately produce the Desktop warning that it is open in another application. Missing terminal windows are handled by the launcher / lifecycle repair in [ADR-0021](0021-codex-terminal-host-attachment.md); existing running work retains its ownership.
 
+2026-11-10 SC75: clearing the Desktop originator did not correct SQLite
+`threads.source`. The ordinary `codex app-server` entry fixed new thread sources
+to `vscode`, even on the independent terminal backend. Terminal startup now uses
+the version-matched official standalone server with `--session-source cli`, and
+releases an idle writer after its last subscriber leaves. The history of the
+incomplete repair, native persistence path, package validation and regression
+evidence are recorded in [ADR-0021, SC75](0021-codex-terminal-host-attachment.md#revision-2026-11-10-native-terminal-source-and-writer-release-sc75).
+Existing history metadata remains unchanged. Desktop attachment does not adopt
+terminal lifecycle settings; a currently active terminal writer still excludes
+a second independent writer. Deployment and Desktop acceptance remain pending.
+
 Desktop integration requires a compatible installed Codex CLI and a running, reachable desktop daemon. If the desktop connection fails, desktop sessions are unavailable while terminal sessions continue independently. If the connection drops after startup, Host reports attached desktop Sessions offline and re-attaches on its next poll once the desktop side answers again; no Host restart is needed. Host owns no desktop process and cannot repair or restart it. The polling interval adds small metadata traffic even while no desktop thread is active. The same watch publishes one attach state — `unsupported`, `notInstalled`, `closed`, `attached` or `error` — with a user-facing reason on `device.ready`, so the Windows Host diagnostics page and the phone connection status page can say why desktop sessions are or are not available instead of only showing them missing. A failed attach is a reported state, not a silent one.
 
 ## Decision (replaced 2026-10-05): attach through the Orbis wrapper

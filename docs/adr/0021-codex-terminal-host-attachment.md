@@ -84,6 +84,70 @@ restarted. After installing the updated Host, reopen its terminal sessions;
 Android installation is not required for this Host-side change. Device and user
 acceptance remain pending（待用户验证）.
 
+### Revision 2026-11-10: Native terminal source and writer release (SC75)
+
+The terminal backend uses an independent native process, but its former
+`codex app-server` entry did not have native TUI source semantics. In official
+`rust-v0.167.0` (`086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`),
+`codex-rs/cli/src/main.rs` passes `SessionSource::VSCode` to the app-server.
+`initialize.clientInfo.name` supplies the originator, not the session source.
+`thread/start` creates a thread through `ThreadManager` and `Session`;
+`CreateThreadParams` carries the source into both the rollout recorder's
+`session_meta.source` and the state metadata patch for SQLite `threads.source`.
+`originator` and `threadSource` are separate fields. The public thread RPC does
+not expose an override for the native session source. Exact upstream persistence
+calls and source hashes are recorded in
+[the persistence-chain evidence](../../.artifacts/codex-terminal-desktop-20261110/upstream-persistence-chain.json).
+
+The earlier repair `f24de19` (2026-11-02) removed the inherited
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop`. That repair was retained and
+was present in the installed Host on inspection. Its regression asserted the
+child environment, but not the persisted `source`. Two running terminal
+sessions still had `source=vscode` and `originator=orbis-host` in both SQLite and
+rollouts. The startup entry and missing source selection trace back to
+`c4d8d18`; `023619d` only renamed `pi-remote-host` to `orbis-host`. Isolated native
+starts with either name, or `codex_cli_rs`, all produced `vscode`. This is an
+incomplete earlier repair, with no evidence of a later source-selection revert.
+The separate window-ownership repair `4455eea` / SC74 was not present in the
+installed runtime; its shared endpoint can therefore still combine this issue
+with stale window tracking.
+
+Host now resolves the official complete `codex-app-server-package` matching the
+selected terminal CLI's exact version and platform, and launches its independent
+`codex-app-server --session-source cli` entry. The selected CLI remains the TUI
+executable. The complete package retains the code-mode host, exec server and
+other native resources. First preparation verifies the official release asset's
+size and SHA-256, package identity, executable version and source flag before
+atomic publication; a verified cache works offline. Preparation failures are
+reported rather than falling back to the VSCode entry. The native home,
+configuration and credentials retain their existing locations.
+
+The owned terminal server also uses `-c thread_unload_delay_secs=0`. Native
+unsubscribe otherwise leaves an idle writer loaded for the configured delay
+(60 seconds by default in 0.167.0). The native scheduler releases it after the
+last subscriber leaves and work becomes idle; another subscriber or a running
+turn keeps ownership. This works with SC74's exact window cleanup. Desktop
+attachment and its unload policy retain their native lifecycle.
+
+Implementation: `codex-terminal-server.ts` and `codex-daemon.ts`. Regressions:
+`codex-terminal-server.test.ts`, `codex-terminal-environment.test.ts`,
+`codex-daemon.test.ts` and `codex-session-source-native.test.ts`. The native gate
+uses `ORBIS_CODEX_NATIVE_TEST=1`, isolated native homes, synthetic turns and a
+local Responses fixture. It checks SQLite and rollout source for App creation,
+fork and remote-TUI creation; native `sourceKinds` filtering; cross-server
+writer exclusion; release after final disconnect; and retention during work or
+another subscription. The two native assertions fail before the repair and pass
+after it. The existing two-real-TUI SC74 probe also passes against the new server.
+
+Source investigation, first failures, final validation and deployment status:
+[SC75 evidence](../../.artifacts/codex-terminal-desktop-20261110/verification.json).
+The change is implemented and automatically verified, but the installed Host
+has not been replaced or restarted. Install the updated Host and reopen its
+terminal sessions; no mobile rebuild is required. Official Desktop and device
+acceptance remain pending（待用户验证）. Existing incorrectly labelled histories
+retain their creation source on native resume and are not automatically migrated;
+this repair does not claim they disappear from the Desktop history list.
+
 ### Revision 2026-11-03: Model selection before the first input
 
 The complete reconciliation decision and its tradeoffs are maintained in [ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md).

@@ -2,7 +2,7 @@
  * Codex app-server 的 JSON-RPC 客户端（spec §7.4 的 M4 接入）。
  *
  * 设计要点与坑：
- * - **终端 backend 传输走 WebSocket**：`codex app-server --listen ws://127.0.0.1:<port>`
+ * - **终端 backend 传输走 WebSocket**：独立 `codex-app-server --session-source cli --listen ws://…`
  *   会**取代** stdio（实测 stdio 上不再有任何 JSON-RPC 帧）。开 listen 是有意的——
  *   只有这样官方 TUI 才能 `codex resume <id> --remote ws://…` attach 上来，与手机
  *   订阅**同一个内存里的 thread**（双同步的关键，spec §7.4）。
@@ -28,6 +28,7 @@ import WebSocket from "ws";
 import { resolveNodePackageCli } from "./spawner.js";
 import { readCodexSelection } from "./codex-selection.js";
 import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
+import { resolveCodexTerminalServer } from "./codex-terminal-server.js";
 
 export const CODEX_RUNTIME_ID = "codex";
 export const CODEX_DESKTOP_RUNTIME_ID = "codex-desktop";
@@ -72,13 +73,15 @@ export type CodexAppServerOptions = {
   endpoint?: string;
   /**
    * 注入传输（测试）：提供后**不 spawn 子进程、不探测 healthz**。
-   * 缺省 spawn `codex app-server --listen ws://127.0.0.1:<空闲端口>` 并连上它。
+   * 缺省 spawn 同版本独立 `codex-app-server --session-source cli --listen ws://…`。
    */
   transportImpl?: () => Promise<CodexTransport>;
   /** 测试注入 endpoint 文案；只影响 `endpoint` 的返回值。 */
   endpointOverride?: string;
   /** 直接注入子进程（测试/特殊场景）；缺省按 `resolveCodexCommand` spawn 真进程。 */
   spawnImpl?: (command: string, args: readonly string[], options?: SpawnOptions) => ChildProcess;
+  /** Resolve the source-aware server separately from the exact CLI used by TUI windows. */
+  resolveTerminalServer?: typeof resolveCodexTerminalServer;
   /** 禁用 AppServer 的实验性 API 之外的默认值；当前只传 clientInfo。 */
   clientName?: string;
   requestTimeoutMs?: number;
@@ -162,10 +165,16 @@ export class CodexAppServer {
       } else {
         const { command, prefixArgs } = await resolveCodexCommand();
         server.#codexCommand = { command, prefixArgs: [...prefixArgs] };
+        const terminalServer = await (options.resolveTerminalServer ?? resolveCodexTerminalServer)(
+          server.#codexCommand, { ...(options.log === undefined ? {} : { log: options.log }) });
         const port = await freePort();
         server.#endpoint = `ws://127.0.0.1:${port}`;
         const spawnFn = options.spawnImpl ?? ((cmd: string, args: readonly string[], settings?: SpawnOptions) => spawn(cmd, args, settings ?? {}));
-        const child = spawnFn(command, [...prefixArgs, "app-server", "--listen", server.#endpoint], {
+        // SC75: the CLI subcommand hardcodes source=vscode. Use the official
+        // standalone entry's startup source; originator alone cannot classify it.
+        // Unload only after the final subscriber leaves AND the turn is idle.
+        const child = spawnFn(terminalServer.command, [...terminalServer.prefixArgs, "--session-source", "cli",
+          "-c", "thread_unload_delay_secs=0", "--listen", server.#endpoint], {
           stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: codexTerminalEnvironment(),
         });
         server.#child = child;
