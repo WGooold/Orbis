@@ -35,7 +35,8 @@ internal class HomeUiWorker {
             }))
         val menu = hosts.map { host -> HostSnapshot(host.pairing,
             if (host.hostId == source.hostId) state else RemoteState(hostId = host.hostId,
-                hostName = host.state.hostName, connection = host.state.connection), host.hasPendingInteraction) }
+                hostName = host.state.hostName, connection = host.state.connection,
+                e2eReady = host.state.e2eReady), host.hasPendingInteraction) }
         val tree = catalog.resolve(source, language)
         if (downloadInput !== source.downloads) {
             downloadInput = source.downloads

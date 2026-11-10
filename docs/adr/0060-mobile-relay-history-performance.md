@@ -127,7 +127,7 @@ MARKDOWN-LIVE-01（S11 / M04 / V09）纳入本轮后台呈现决策，修复提�
 
 沿用 S10–S11 / S18–S19、V09 / V13 / V21 及 ADR-0039 / ADR-0049 / ADR-0058。本轮收窄呈现层依赖，保持业务事件、来源事务、读取、跨 Host 路由与乐观操作的既有拥有者。
 
-- Android `HomeUiWorker` 在 Default 发布不含正文、历史图或下载载荷的首页快照；完整聊天状态继续供聊天与业务层使用。首页同步状态与下载数量在后台准备，保留首页消费同一份目录树。非当前电脑仅发布电脑菜单使用的名称、连接和待确认事实。
+- Android `HomeUiWorker` 在 Default 发布不含正文、历史图或下载载荷的首页快照；完整聊天状态继续供聊天与业务层使用。首页同步状态与下载数量在后台准备，保留首页消费同一份目录树。非当前电脑仅发布电脑菜单使用的名称、中继连接、端到端加密就绪和待确认事实。
 - Android 首页与目录缓存先比较实际标题、在线消息数、元数据和归档叠加，再决定准备行事实。助手正文变化复用已有结果，首次用户消息、同长度标题更正、消息数与归档变化仍失效；同一 Session 的多个 Runtime 分别核对标题。
 - Android `ChatRowResourcesWorker` 独立索引下载任务，按行准备附件对应任务及流式消息 ID；下载进度不重建聊天投影，无关任务复用行资源。附件 ID 或路径任一匹配时仍采用原任务顺序中的第一项，重复附件 ID 的不同路径保持独立。
 - iOS `OrbisStore` 仅转发当前 Host 的完整变更，后台 Host 按菜单事实决定是否通知。首页和目录使用独立发布器，父级聊天更新通过视图等值边界隔离；连接替换以拥有者身份重新发布。同步就绪判断按元数据版本复用，标题回退的普通正文追加跳过排序。
@@ -138,3 +138,5 @@ MARKDOWN-LIVE-01（S11 / M04 / V09）纳入本轮后台呈现决策，修复提�
 回归覆盖见 [HomeUiSnapshotTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomeUiSnapshotTest.kt)、[HomePresentationWorkerTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomePresentationWorkerTest.kt)、[DrawerCatalogCacheTest.kt](../../android/app/src/test/java/com/orbising/orbis/DrawerCatalogCacheTest.kt)、[ChatRowResourcesTest.kt](../../android/app/src/test/java/com/orbising/orbis/ChatRowResourcesTest.kt)、[ScreenPublicationTests.swift](../../ios/Orbis/Tests/ScreenPublicationTests.swift)、[MultiHostTests.swift](../../ios/Orbis/Tests/MultiHostTests.swift)。最终源码、构建、自动回归、首次失败及并行改动边界见 [verification.json](../../.artifacts/ui-regression/20261106-narrow-ui-dependencies/verification.json)。自动验证与真机体感分开记录，既有 iOS 阅读锚点失败保持原证据；本轮结果不能视为现场卡死已消除。
 
 验证记录：Android 专项单测 32/32，两个受测快照的设备回归分别为 18/18、9/9；并行聊天分卡合入后，受影响的 3 项行资源 / 投影测试与编译通过。iOS 合并后核心 46/46，受测快照界面 4/4；语言缓存和持续目录发布的最后补充由核心专项与最终编译覆盖。受测包、最终源码及各轮边界分别记录，原始失败保留；真机安装与体感待用户验证。
+
+2026-11-10 S18 / SC72：Android 非当前电脑的菜单快照补回 `e2eReady`，首页与侧边栏切换菜单据各电脑自身的加密连接状态显示在线 / 离线，切换选择保留其他电脑的状态。实现见 `HomeUiSnapshot.kt`，回归见 `HomeUiSnapshotTest.kt`；新增两项用例在修复前失败，修复后连同既有首页发布与目录缓存回归 12/12 通过。首次失败、构建、包校验与安装验收状态见[本次证据](../../.artifacts/android-host-switcher-status-20261110/verification.json)；待用户安装验证。
