@@ -2541,7 +2541,7 @@ final class HostConnection: ObservableObject {
             }
             refreshSessions()
         case "protocol.error":
-            if message["requestId"] as? String == sessionConfigurationRequest {
+            if let requestId = message["requestId"] as? String, requestId == sessionConfigurationRequest {
                 sessionConfigurationRequest = nil; sessionConfigurationError = message["message"] as? String ?? L10n.tr("配置未确认"); return
             }
             let commandId = message["commandId"] as? String

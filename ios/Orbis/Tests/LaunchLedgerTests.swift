@@ -72,6 +72,23 @@ struct LaunchLedgerTests {
             "catalog": ["binding": "fixture", "defaults": [:], "models": [["value": "fixture-model", "label": "Fixture", "thinking": [["value": "high", "label": "High"]]]], "permissions": []]])
     }
 
+    // SC73: only the exact configuration request owns its error; command errors
+    // remain visible and cannot finish or fail an unrelated configuration read.
+    @Test func configurationErrorsRequireTheExactNonemptyRequestIdentity() async throws {
+        let fixture = Fixture()
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": []])
+        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+        let id = try #require(fixture.host.sessionConfigurationRequest)
+        await fixture.transport.emit(["type": "protocol.error", "commandId": "unrelated-command", "code": "busy", "message": "Agent busy"])
+        #expect(fixture.host.errorMessage == "Agent busy")
+        #expect(fixture.host.sessionConfigurationRequest == id)
+        #expect(fixture.host.sessionConfigurationError == nil)
+        await fixture.transport.emit(["type": "protocol.error", "requestId": id, "code": "session_configuration_failed", "message": "catalog unavailable"])
+        #expect(fixture.host.sessionConfigurationRequest == nil)
+        #expect(fixture.host.sessionConfigurationError == "catalog unavailable")
+        #expect(fixture.host.connection == .secured)
+    }
+
     // S51 / SC73: runtime presence alone cannot release a first message. The journal
     // and stable message identity exist before launch, including the crash recovery path.
     @Test func configuredLaunchPersistsBeforeTransportAndWaitsForNativeReadiness() async throws {
