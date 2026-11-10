@@ -93,6 +93,9 @@ struct PairingScannerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .neuSurface(inset: true, radius: 20, padding: 6).padding(.horizontal, 24)
                 .accessibilityLabel(L10n.tr("二维码相机取景框"))
+            Text(L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"))
+                .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                .multilineTextAlignment(.center).padding(.horizontal, 24)
             if let failure {
                 OrbisNotice(text: failure, error: true).padding(.horizontal, 24)
                 HStack(spacing: 12) {

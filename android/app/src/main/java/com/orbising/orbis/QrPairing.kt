@@ -29,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -142,11 +143,19 @@ fun QrScannerDialog(
         title = { Text(L10n.tr("扫描配对二维码")) },
         text = {
             if (hasPermission) {
-                QrCameraPreview(
-                    context = context,
-                    lifecycleOwner = lifecycleOwner,
-                    onPayload = onPayloadUpdated,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    QrCameraPreview(
+                        context = context,
+                        lifecycleOwner = lifecycleOwner,
+                        onPayload = onPayloadUpdated,
+                    )
+                    Text(
+                        text = L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"),
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(L10n.tr("需要相机权限才能扫描配对二维码。"))
