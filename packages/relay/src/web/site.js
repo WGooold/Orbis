@@ -106,7 +106,8 @@ function renderApp(platform) {
   }
   if (platform === "ios") {
     const url = typeof siteData.ios === "string" && /^https:\/\//.test(siteData.ios) ? siteData.ios : undefined;
-    version.textContent = url ? "iOS 安装入口" : "安装入口暂未提供";
+    const testFlight = url?.startsWith("https://testflight.apple.com/join/");
+    version.textContent = url ? testFlight ? "TestFlight 测试版" : "iOS 安装入口" : "安装入口暂未提供";
     if (!url) {
       container.textContent = "当前发布信息未提供 iOS 安装链接，请留意版本页。";
       return;
@@ -114,7 +115,11 @@ function renderApp(platform) {
     const link = document.createElement("a");
     link.className = "button primary";
     link.href = url;
-    link.textContent = "获取 iOS 版";
+    link.textContent = testFlight ? "加入 iOS 测试" : "获取 iOS 版";
+    if (testFlight) {
+      document.getElementById("app-detail").textContent = "通过 TestFlight 安装 Orbis 测试版。";
+      document.getElementById("app-note").textContent = "请先安装 TestFlight，再加入测试并安装 Orbis。安装后扫描电脑端的配对二维码。";
+    }
     container.append(link);
     return;
   }
@@ -139,6 +144,10 @@ function renderApp(platform) {
 async function loadDownloads() {
   const hostSelect = document.getElementById("host-platform");
   const appSelect = document.getElementById("app-platform");
+  // iPadOS may identify as desktop Safari; touch-capable Macs here are iPads.
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) {
+    appSelect.value = "ios";
+  }
   hostSelect.addEventListener("change", () => renderHost(hostSelect.value));
   appSelect.addEventListener("change", () => renderApp(appSelect.value));
   try {

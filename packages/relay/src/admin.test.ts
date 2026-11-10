@@ -221,6 +221,8 @@ describe("Relay web console", () => {
       androidVersion: "0.1.49",
       androidVersionCode: 50,
       androidSha256: "b".repeat(64),
+      // SITE-IOS-01: the public invitation is published through the same site API as other platforms.
+      ios: "https://testflight.apple.com/join/9zGP1NZX",
     });
     await writeFile(join(androidDirectory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64), untrusted: true }));
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
