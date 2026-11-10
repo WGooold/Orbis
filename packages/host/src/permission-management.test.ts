@@ -45,14 +45,15 @@ describe("Codex permission management projection", () => {
     expect(future.settings.every(setting => setting.currentValue === undefined)).toBe(true);
   });
 
-  it("disables network in full access and disables every setting while busy", () => {
+  // SC73: active turns allow later configuration; an update or recovery still blocks conflicting writes.
+  it("disables network in full access and blocks settings during configuration updates or recovery", () => {
     const raw = codexPermissions({ sandboxPolicy: { type: "dangerFullAccess" }, approvalPolicy: "never" });
     const result = codexPermissionManagement(raw);
     expect(result.tone).toBe("full");
     expect(result.settings.find(setting => setting.id === "network")).toMatchObject({ currentValue: "enabled", disabledReason: expect.stringContaining("无法单独限制网络") });
     expect(result.settings.find(setting => setting.id === "sandbox")?.disabledReason).toBeUndefined();
     expect(result.details).toContain("这不代表自动批准所有操作");
-    expect(codexPermissionManagement(raw, true).settings.every(setting => setting.disabledReason?.includes("待处理审批"))).toBe(true);
+    expect(codexPermissionManagement(raw, true).settings.every(setting => setting.disabledReason === "会话配置正在更新或恢复，请稍后重试。")).toBe(true);
   });
 
   it("preserves reported problems with an actionable problem tone", () => {
@@ -100,13 +101,14 @@ describe("DSH permission management projection", () => {
     expect(result.details).toContain("网络：未知");
   });
 
-  it("keeps unknown approval policies unknown and reports busy and problems", () => {
+  // SC73: a native problem remains visible while concurrent configuration writes are blocked.
+  it("keeps unknown approval policies unknown and reports configuration recovery and problems", () => {
     const unknown = dshPermissionManagement({ sandbox: "danger-full-access", approvalPolicy: "future-policy" }, nativeOptions)!;
     expect(unknown.tone).toBe("unknown");
     expect(unknown.details).toContain("future-policy");
     const busy = dshPermissionManagement({ sandbox: "danger-full-access", approvalPolicy: "never", profile: "danger-full-access", problem: "原生权限配置失败" }, nativeOptions, true)!;
     expect(busy.tone).toBe("problem");
     expect(busy.details).toContain("原生权限配置失败");
-    expect(busy.settings.every(setting => setting.disabledReason?.includes("待处理审批"))).toBe(true);
+    expect(busy.settings.every(setting => setting.disabledReason === "会话配置正在更新或恢复，请稍后重试。")).toBe(true);
   });
 });
