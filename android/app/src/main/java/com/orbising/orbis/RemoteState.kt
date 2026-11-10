@@ -536,6 +536,8 @@ data class RemoteState(
      val supportedAgents: Set<String>? = null,
     /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
     val launchableAgents: Set<String>? = null,
+    val sessionConfigurationSupported: Boolean = false,
+    val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
      * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
@@ -801,7 +803,7 @@ private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): 
 }
 
 /** session.activated（spec §8）：只证明进程已拉起；会话真正上线由 runtime.online 对账。 */
-private fun reduceSessionActivated(state: RemoteState, message: JsonObject): RemoteState {
+internal fun reduceSessionActivated(state: RemoteState, message: JsonObject): RemoteState {
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
     // ADR-0049 §6.8：启动中的会话即使已转为未确认，迟到的同一 requestId 仍可结算。
     val launch = state.launching?.takeIf { it.requestId == requestId }
@@ -1912,6 +1914,7 @@ class RelayReducer(
                 // 上传的入站消息：状态由 ViewModel 的上传处理器维护，reducer 只需不把它当非法消息。
                 "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed",
                 "session.list.result", "session.browse.result", "session.activated", "session.archive.changed",
+                "session.configuration.result", "session.launch.result",
                 "host.online", "host.offline",
             )) {
             return state.copy(error = L10n.tr("收到不支持的中继服务器消息，请在电脑端检查协议版本"), errorNeedsAction = true)
@@ -2040,6 +2043,7 @@ class RelayReducer(
                     deviceId = message.string("deviceId"),
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     homeDirectoryReceived = true,
+                    sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2286,6 +2290,14 @@ class RelayReducer(
             "session.archive.changed" -> reduceSessionArchiveChanged(state, message)
             "session.browse.result" -> reduceSessionBrowseResult(state, message)
             "session.activated" -> reduceSessionActivated(state, message)
+            "session.launch.result" -> state.withConfiguredLaunchResult(message)
+            "session.configuration.result" -> {
+                val current = state.sessionConfiguration
+                if (message.string("requestId") != current.requestId) state else {
+                    val snapshot = json.decodeFromJsonElement<SessionConfigurationSnapshot>(message)
+                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null))
+                }
+            }
             // Host 明确拒绝了一次范围请求（越界/读盘失败/身份变了）：这条 pull 传输以确定原因收场。
             // 调度器的超时重传不再介入——它是「这条路走不通」，不是「这一片丢了」。
             "artifact.read.failed" -> {
@@ -2312,6 +2324,8 @@ class RelayReducer(
                         message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), System.currentTimeMillis())
                 }
                 val requestId = message.string("requestId")
+                if (requestId != null && requestId == state.sessionConfiguration.requestId)
+                    return state.copy(sessionConfiguration = state.sessionConfiguration.copy(requestId = null, error = message.string("message") ?: L10n.tr("配置未确认")))
                 if (requestId != null && state.ledger.operation(requestId) != null) {
                     return state.ledgerReceipt(requestId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
                         message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("请重试"))), System.currentTimeMillis())

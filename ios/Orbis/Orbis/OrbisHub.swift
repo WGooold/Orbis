@@ -245,6 +245,13 @@ final class OrbisStore: ObservableObject {
     var browse: DirectoryBrowse? { activeConnection.browse }
     var commands: [String: [SlashCommand]] { activeConnection.commands }
     var supportedAgents: [String]? { activeConnection.supportedAgents }
+    var sessionConfigurationSupported: Bool { activeConnection.sessionConfigurationSupported }
+    var sessionConfiguration: SessionConfigurationSnapshot? { activeConnection.sessionConfiguration }
+    var sessionConfigurationValues: SessionConfigurationValues { activeConnection.sessionConfigurationValues }
+    var sessionConfigurationRequest: String? { activeConnection.sessionConfigurationRequest }
+    var sessionConfigurationError: String? { activeConnection.sessionConfigurationError }
+    func loadSessionConfiguration(agent: String, cwd: String) { activeConnection.loadSessionConfiguration(agent: agent, cwd: cwd) }
+    func saveSessionConfiguration(_ values: SessionConfigurationValues) { activeConnection.saveSessionConfiguration(values) }
     var launchableAgents: [String]? { activeConnection.launchableAgents }
     var codexDesktop: CodexDesktopAttach? { activeConnection.codexDesktop }
     var drafts: [String: String] { activeConnection.drafts }

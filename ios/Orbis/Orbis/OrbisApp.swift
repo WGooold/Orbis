@@ -71,7 +71,11 @@ struct OrbisApp: App {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) { return }
         #endif
-        if !store.pairings.isEmpty { ReplyCompletionNotifications.shared.prepare() }
+        OrbisAppDelegate.updatePairings(store.pairings)
+        if !store.pairings.isEmpty {
+            ReplyCompletionNotifications.shared.prepare()
+            OrbisAppDelegate.registerForPushIfAllowed()
+        }
     }
     private var preferredScheme: ColorScheme? {
         #if DEBUG

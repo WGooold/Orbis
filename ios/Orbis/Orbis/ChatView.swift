@@ -1471,7 +1471,7 @@ struct PermissionsView: View {
                                 if let reason = setting.disabledReason { Text(L10n.hostText(reason)).font(.orbisCaption()).foregroundStyle(p.secondary).padding(.horizontal, 4) }
                             }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding)
                         }
-                        if store.selectedRuntime?.status != "idle" { OrbisNotice(text: L10n.tr("会话空闲时可调整权限。")) }
+                        if store.selectedRuntime?.status != "idle" { OrbisNotice(text: L10n.tr("模型和思考深度用于后续轮次；权限以电脑端确认生效")) }
                     }
                 }.padding(16)
             }

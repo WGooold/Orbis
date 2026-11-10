@@ -366,7 +366,8 @@ internal fun RemoteApp(
                     else { newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true }
                 },
                 draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
-                    model::browseSessions, model::browseInto, model::browseUp, onCancel = { newSessionOpen = false; model.dismissBrowse() }, drafts = sessionDrafts) { kind, cwd, text, origin, fieldOrigin ->
+                    model::browseSessions, model::browseInto, model::browseUp, onCancel = { newSessionOpen = false; model.dismissBrowse() }, drafts = sessionDrafts,
+                    onLoadConfiguration = model::loadSessionConfiguration, onSaveConfiguration = model::saveSessionConfiguration) { kind, cwd, text, origin, fieldOrigin ->
                     val submission = model.sendFirstSessionMessage(kind, cwd, text, newSessionHostId)
                     if (submission != null) {
                         draftOrigin = origin

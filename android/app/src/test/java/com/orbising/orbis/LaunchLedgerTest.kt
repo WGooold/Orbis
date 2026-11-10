@@ -39,6 +39,24 @@ class LaunchLedgerTest {
 
     private fun newSession(state: RemoteState) = launch(state, mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo/app"))
 
+    // S51 / SC73: a runtime can be visible during native setup; only the matching
+    // configured-ready result is allowed to bind and release waiting first messages.
+    @Test fun configuredLaunchWaitsForNativeConfirmationAndRejectsStaleReceipts() {
+        var (state, id) = newSession(setup())
+        state = state.createWaitingSend("first-command", "first-message", state.selectedRuntimeId!!, state.launching!!.placeholder,
+            "first sentence", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(id)!!)).first
+        state = online(state, "native-configured")
+        state = reduce(state, """{"type":"session.launch.result","requestId":"$id","launchId":"other","phase":"ready","sessionId":"native-configured"}""")
+        assertTrue(state.readySends().isEmpty())
+        state = reduce(state, """{"type":"session.launch.result","requestId":"$id","launchId":"$id","phase":"configuring","sessionId":"native-configured"}""")
+        assertTrue(state.readySends().isEmpty())
+        assertNull(state.launching!!.sessionId)
+        state = reduce(state, """{"type":"session.launch.result","requestId":"$id","launchId":"$id","phase":"ready","sessionId":"native-configured"}""")
+        assertEquals("rt-native-configured", state.selectedRuntimeId)
+        assertEquals(1, state.readySends().size)
+        assertEquals("native-configured", state.pendingSends.getValue("first-message").sessionId)
+    }
+
     @Test fun resumeEntersTheChatAtOnceShowingStartingAndSwitchesWhenOnline() {
         var (state, id) = launch(setup(), mapOf("type" to "resume", "sessionId" to "s1", "agentKind" to "codex"), "旧会话")
         assertEquals("starting", state.launchPage?.status)

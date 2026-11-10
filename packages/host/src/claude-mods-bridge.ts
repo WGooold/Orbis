@@ -64,6 +64,7 @@ export type ClaudeSessionState = {
   modelOptions?: readonly string[];
   modelSetting?: string;
   effort?: string;
+  permissionMode?: string;
   context?: { tokens?: number; window: number; percent?: number };
   commands?: readonly { name: string; description?: string; source: string }[];
 };
@@ -185,6 +186,7 @@ export class ClaudeModsBridge {
 
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
+  supportsTurnConfiguration(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("configuration.turn") === true; }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
   configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
@@ -572,7 +574,7 @@ export class ClaudeModsBridge {
     const { state, facts } = session;
     const model = state.model ?? facts.model;
     const context = state.context;
-    const permissions = claudePermissionManagement(facts.permissionMode);
+    const permissions = claudePermissionManagement(state.permissionMode ?? facts.permissionMode);
     return {
       runtimeId: session.runtime.runtimeId, name: "Claude Code", cwd: session.runtime.cwd, status: session.runtime.status,
       sessionGraphSync: true,
@@ -697,6 +699,7 @@ function parseState(value: unknown): ClaudeSessionState | undefined {
   if (value.modelName !== undefined) { if (!text(value.modelName, 256)) return undefined; state.modelName = value.modelName; }
   if (value.modelSetting !== undefined) { if (!text(value.modelSetting, 256)) return undefined; state.modelSetting = value.modelSetting; }
   if (value.effort !== undefined) { if (!text(value.effort, 64)) return undefined; state.effort = value.effort; }
+  if (value.permissionMode !== undefined) { if (!text(value.permissionMode, 64)) return undefined; state.permissionMode = value.permissionMode; }
   if (value.modelOptions !== undefined) {
     if (!Array.isArray(value.modelOptions) || value.modelOptions.length > 64 || !value.modelOptions.every(item => text(item, 256))) return undefined;
     state.modelOptions = value.modelOptions;

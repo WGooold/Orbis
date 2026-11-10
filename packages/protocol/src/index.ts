@@ -1,6 +1,9 @@
 import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
 export * from "./turn-file-changes.js";
 import { z } from "zod";
+import { SessionConfigurationReadSchema, SessionConfigurationSaveSchema, ConfiguredSessionLaunchSchema, SessionLaunchReadSchema,
+  SessionConfigurationResultSchema, SessionLaunchResultSchema } from "./session-configuration.js";
+export * from "./session-configuration.js";
 export { orbisEnvironment } from "./product-environment.js";
 import {
   StateDeltaSchema, AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
@@ -1221,6 +1224,10 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     command: RuntimeCommandSchema,
   }),
   // ── 进程激活（spec §8）。请求/响应都用 requestId 关联；失败走 protocol.error 并带回 requestId。
+  SessionConfigurationReadSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  SessionConfigurationSaveSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  ConfiguredSessionLaunchSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  SessionLaunchReadSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.list"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
   z.strictObject({
     type: z.literal("session.archive"),
@@ -1304,12 +1311,15 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  SessionConfigurationResultSchema,
+  SessionLaunchResultSchema,
   TransportFieldsPageSchema,
   MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({
     type: z.literal("device.ready"),
     modelEpoch: z.string().min(1).max(256).optional(),
+    sessionConfiguration: z.literal(1).optional(),
     protocolVersion: z.literal(PROTOCOL_VERSION),
     deviceId: z.string(),
     notificationEpoch: z.string().min(1).max(256).nullable(),

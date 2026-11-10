@@ -27,12 +27,14 @@ export type ClaudeLaunchRequest = {
   launchId: string;
   /** Explicit local setup may show native account/onboarding UI instead of requiring login. */
   setup?: boolean;
+  configuration?: import("@orbis/protocol").SessionConfigurationValues;
 };
 
 export interface ClaudeLauncher {
   /** A reason the Host cannot open a terminal window here, or undefined when it can. */
   unavailable(): Promise<string | undefined>;
   launch(request: ClaudeLaunchRequest): Promise<void>;
+  sessionConfiguration?(cwd: string): Promise<import("@orbis/protocol").SessionConfigurationCatalog>;
 }
 
 export type ClaudeLauncherOptions = {
@@ -57,6 +59,16 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
 
   constructor(options: ClaudeLauncherOptions) { this.#options = options; }
 
+  async sessionConfiguration(cwd: string): Promise<import("@orbis/protocol").SessionConfigurationCatalog> {
+    const cli = await this.#claude();
+    if (cli === undefined) throw new Error("找不到 Claude Code");
+    const { claudeSessionConfiguration } = await import("./session-configuration-probe.js");
+    const env = { ...(this.#options.env ?? process.env) };
+    const config = claudeLaunchConfig(this.#options.configDir, env, this.#options.home);
+    if (config.directory === undefined) delete env.CLAUDE_CONFIG_DIR; else env.CLAUDE_CONFIG_DIR = config.directory;
+    return claudeSessionConfiguration(cli, cwd, env);
+  }
+
   async unavailable(): Promise<string | undefined> {
     const platform = this.#options.platform ?? process.platform;
     const env = this.#options.env ?? process.env;
@@ -75,6 +87,9 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const startup = await claudeStartupSettings({ cwd: request.cwd, configDir: this.#options.configDir, env, platform,
       managedSettingsPath: claudeManagedSettingsPath(platform, env) });
     const args = [...(request.resume === undefined ? [] : ["--resume", request.resume]), ...startup.args];
+    if (request.configuration?.model !== undefined) args.push("--model", request.configuration.model);
+    if (request.configuration?.thinking !== undefined) args.push("--effort", request.configuration.thinking);
+    if (request.configuration?.permissions?.mode !== undefined) args.push("--permission-mode", request.configuration.permissions.mode === "default" ? "manual" : request.configuration.permissions.mode);
     // Without the installed plugin, load it for this TUI only; never both, or one process
     // would run two bridges for the same Session.
     if (!startup.installed) {
@@ -88,6 +103,12 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     if (config.directory === undefined) delete launchEnv.CLAUDE_CONFIG_DIR;
     else launchEnv.CLAUDE_CONFIG_DIR = config.directory;
     if (!request.setup) await checkClaudeAuthentication(claude, request.cwd, launchEnv);
+    if (request.configuration?.permissions?.mode !== undefined) {
+      const { claudeSessionConfiguration } = await import("./session-configuration-probe.js");
+      const checked = await claudeSessionConfiguration(claude, request.cwd, launchEnv, request.configuration);
+      if (checked.defaults.permissions?.mode !== request.configuration.permissions.mode)
+        throw new Error("Claude 原生启动参数未确认所选权限模式，已停止启动");
+    }
     await trustClaudeWorkspace({ cwd: request.cwd, configFile: config.file, env,
       ...(this.#options.home === undefined ? {} : { home: this.#options.home }) });
     const scripts = join(this.#options.stateDir, "tmp");

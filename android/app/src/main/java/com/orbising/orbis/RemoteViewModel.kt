@@ -452,6 +452,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun updatePermissions(settingId: String, value: String): String? =
         active()?.updatePermissions(settingId, value)
 
+    fun loadSessionConfiguration(kind: String, cwd: String) { active()?.loadSessionConfiguration(kind, cwd) }
+    fun saveSessionConfiguration(values: SessionConfigurationValues) { active()?.saveSessionConfiguration(values) }
+
     fun consumeCommandResult(commandId: String) = active()?.consumeCommandResult(commandId)
 
     fun stopRuntime(): String? = active()?.stopRuntime()

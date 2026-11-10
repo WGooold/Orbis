@@ -115,17 +115,36 @@ describe("mobile Codex permission settings", () => {
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "timeout", ok: false, error: expect.stringContaining("未收到") }));
   });
 
-  it("rejects concurrent writes and changes during an approval", async () => {
+  // SC73: a lost effective-settings notification cannot release queued work
+  // under unknown permissions. A later native snapshot resolves that barrier.
+  it("holds subsequent messages after a permission timeout until native settings match", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    h.apply("approvals", "never", "uncertain");
+    await vi.advanceTimersByTimeAsync(15_001); vi.useRealTimers();
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "uncertain", status: "unconfirmed" }));
+    h.request.mockClear();
+    h.runtime.dispatchCommand("codex:a", "blocked-first", { type: "user_message", text: "wait for settings" });
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    h.notify({ approvalPolicy: "never" });
+    h.runtime.dispatchCommand("codex:a", "confirmed-first", { type: "user_message", text: "now confirmed" });
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true));
+  });
+
+  it("serializes configuration writes while allowing changes during an approval", async () => {
     const h = await harness();
     h.apply("approvals", "never");
     h.apply("approval-reviewer", "auto_review", "concurrent");
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "concurrent", ok: false }));
     h.notify({ approvalPolicy: "never" });
     await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: "apply", ok: true }));
-    h.server.onServerRequest?.({ id: 42, method: "item/commandExecution/requestApproval", params: { threadId: "a", command: "Get-ChildItem" }, respond: vi.fn(), fail: vi.fn() });
+    const respond = vi.fn();
+    h.server.onServerRequest?.({ id: 42, method: "item/commandExecution/requestApproval", params: { threadId: "a", command: "Get-ChildItem" }, respond, fail: vi.fn() });
     h.request.mockClear();
     h.apply("sandbox", "dangerFullAccess", "busy");
-    expect(h.request).not.toHaveBeenCalled();
-    expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "busy", ok: false, error: expect.stringContaining("待处理交互") }));
+    expect(h.request).toHaveBeenCalledWith("thread/settings/update", { threadId: "a", sandboxPolicy: { type: "dangerFullAccess" } });
+    // SC73: selecting subsequent permissions must not answer the active approval.
+    expect(respond).not.toHaveBeenCalled();
+    h.notify({ sandboxPolicy: { type: "dangerFullAccess" } });
+    await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: "busy", ok: true }));
   });
 });

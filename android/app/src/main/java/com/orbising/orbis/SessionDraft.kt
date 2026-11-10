@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -61,7 +62,10 @@ internal class SessionDraftStore {
 @Composable
 internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: String?,
     onBrowse: (String?) -> Unit, onBrowseInto: (String) -> Unit, onBrowseUp: () -> Unit,
-    onCancel: () -> Unit = {}, drafts: SessionDraftStore? = null, onSubmit: (String, String, String, Rect, Rect) -> Boolean) {
+    onCancel: () -> Unit = {}, drafts: SessionDraftStore? = null,
+    onLoadConfiguration: (String, String) -> Unit = { _, _ -> },
+    onSaveConfiguration: (SessionConfigurationValues) -> Unit = {},
+    onSubmit: (String, String, String, Rect, Rect) -> Boolean) {
     val localStore = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
     val draft = remember(state.hostId, drafts) { (drafts ?: localStore).draft(state.hostId) }
     var kind by draft.agent
@@ -76,6 +80,12 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var bounds by remember { mutableStateOf(Rect.Zero) }
     var fieldBounds by remember { mutableStateOf(Rect.Zero) }
     val focus = remember { FocusRequester() }
+    var configurationPanel by remember { mutableStateOf<String?>(null) }
+    var proposedPermissions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
+    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported) {
+        if (open && state.e2eReady && state.sessionConfigurationSupported && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
+    }
     fun submit() {
         if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
@@ -173,6 +183,20 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if (state.sessionConfigurationSupported) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NeumorphTextButton(config?.model?.label ?: L10n.tr(if (config?.snapshot == null) "模型" else "电脑端默认"), onClick = { configurationPanel = "model" },
+                            enabled = config?.snapshot?.catalog?.models?.isNotEmpty() == true && config.requestId == null, modifier = Modifier.weight(1f))
+                        NeumorphTextButton(config?.values?.thinking ?: L10n.tr("默认深度"), onClick = { configurationPanel = "thinking" },
+                            enabled = config?.model?.thinking?.isNotEmpty() == true && config.requestId == null, modifier = Modifier.weight(1f))
+                        NeumorphTextButton(config?.snapshot?.catalog?.permissions?.mapNotNull { setting -> setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label }
+                            ?.takeIf { it.isNotEmpty() }?.joinToString(" · ") { L10n.hostText(it) } ?: L10n.tr("电脑端默认"), onClick = { proposedPermissions = config?.values?.permissions.orEmpty(); configurationPanel = "permissions" }, enabled = config?.snapshot != null)
+                    }
+                    config?.snapshot?.catalog?.notice?.let { Text(L10n.hostText(it), style = MaterialTheme.typography.labelSmall) }
+                    config?.error?.let { Text(L10n.hostText(it), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium) }
+                    if (config?.requestId != null) Text(L10n.tr("正在确认配置…"), style = MaterialTheme.typography.labelMedium)
+                    if (config?.error != null) NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
+                } else Text(L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"), style = MaterialTheme.typography.labelSmall)
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NeumorphTextField(fieldValue, { fieldValue = it; text = it.text }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) { onCancel(); true }
@@ -188,6 +212,38 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
                         enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
+                }
+
+            }
+        }
+        val panel = configurationPanel
+        if (panel != null && config?.snapshot != null) OrbisChoiceSheet(L10n.tr(if (panel == "model") "模型" else if (panel == "thinking") "思考深度" else "权限"), { configurationPanel = null }) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 440.dp).verticalScroll(androidx.compose.foundation.rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (panel == "model") config.snapshot.catalog.models.forEach { model ->
+                    NeumorphTextButton(model.label, filled = config.values.model == model.value, onClick = {
+                        val thinking = config.values.thinking?.takeIf { value -> model.thinking.any { it.value == value } } ?: model.defaultThinking
+                        onSaveConfiguration(config.values.copy(model = model.value, thinking = thinking)); configurationPanel = null
+                    }, modifier = Modifier.fillMaxWidth())
+                }
+                if (panel == "thinking") config.model?.thinking?.forEach { option ->
+                    NeumorphTextButton(L10n.hostText(option.label), filled = config.values.thinking == option.value, onClick = {
+                        onSaveConfiguration(config.values.copy(thinking = option.value)); configurationPanel = null
+                    }, modifier = Modifier.fillMaxWidth())
+                }
+                if (panel == "permissions") {
+                    config.snapshot.catalog.permissions.forEach { setting ->
+                        Text(L10n.hostText(setting.label))
+                        setting.options.forEach { option -> NeumorphTextButton(L10n.hostText(option.label),
+                            filled = proposedPermissions[setting.id] == option.value,
+                            enabled = setting.disabledReason == null && config.requestId == null,
+                            onClick = { proposedPermissions = proposedPermissions + (setting.id to option.value)
+                                if (setting.id == "sandbox" && option.value == "dangerFullAccess") proposedPermissions = proposedPermissions + ("network" to "enabled") },
+                            modifier = Modifier.fillMaxWidth()) }
+                    }
+                    config.snapshot.catalog.notice?.let { Text(L10n.hostText(it)) }
+                    if (config.snapshot.catalog.permissions.isNotEmpty()) NeumorphTextButton(L10n.tr("应用"), onClick = {
+                        onSaveConfiguration(config.values.copy(permissions = proposedPermissions)); configurationPanel = null
+                    }, enabled = config.requestId == null, modifier = Modifier.fillMaxWidth())
                 }
             }
         }

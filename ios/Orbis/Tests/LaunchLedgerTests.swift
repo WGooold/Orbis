@@ -51,8 +51,8 @@ struct LaunchLedgerTests {
         let transport = Transport()
         let store: OrbisStore
         var host: HostConnection { store.activeConnection }
-        init() {
-            store = OrbisStore(secure: Storage(), transport: transport, preferences: nil)
+        init(root: URL? = nil) {
+            store = OrbisStore(secure: Storage(), transport: transport, preferences: nil, transferRoot: root)
             transport.drain = { [weak store] in await store?.waitForPendingEvents() }
         }
     }
@@ -61,6 +61,58 @@ struct LaunchLedgerTests {
         let fixture = Fixture()
         await fixture.transport.ready()
         return fixture
+    }
+
+    private func configured(_ fixture: Fixture) async throws {
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": []])
+        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+        let request = try #require(fixture.transport.sent.last)
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": request["requestId"]!, "agentKind": "codex", "cwd": "/repo/app",
+            "binding": "fixture", "revision": 0, "values": ["model": "fixture-model", "thinking": "high"],
+            "catalog": ["binding": "fixture", "defaults": [:], "models": [["value": "fixture-model", "label": "Fixture", "thinking": [["value": "high", "label": "High"]]]], "permissions": []]])
+    }
+
+    // S51 / SC73: runtime presence alone cannot release a first message. The journal
+    // and stable message identity exist before launch, including the crash recovery path.
+    @Test func configuredLaunchPersistsBeforeTransportAndWaitsForNativeReadiness() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = Fixture(root: root); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first sentence"))
+        let request = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let id = try #require(request["launchId"] as? String)
+        let file = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("ConfiguredLaunches"), includingPropertiesForKeys: nil).first)
+        let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        #expect(saved["firstMessage"] as? String == "first sentence")
+        #expect(saved["firstMessageId"] as? String == fixture.host.pendingSends.items.first?.messageId)
+        await fixture.transport.online("configured")
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "configuring", "sessionId": "configured"])
+        #expect(fixture.transport.userMessages.isEmpty)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready", "sessionId": "configured"])
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(fixture.host.selectedRuntimeId == "rt-configured")
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready", "sessionId": "configured"])
+        #expect(fixture.transport.userMessages.count == 1)
+    }
+
+    @Test func configuredLaunchReopensWithTheOriginalIdentityAndDoesNotResendTheFirstSentence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-recovery-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = Fixture(root: root); try await configured(original)
+        #expect(original.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "recover this sentence"))
+        let request = try #require(original.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let id = try #require(request["launchId"] as? String)
+        let firstId = original.host.pendingSends.items.first?.messageId
+        let recovered = Fixture(root: root)
+        await recovered.transport.emit(["type": "device.ready", "modelEpoch": "new-epoch", "sessionConfiguration": 1, "runtimes": []])
+        #expect(recovered.transport.sent.contains { $0["type"] as? String == "session.launch.read" && $0["launchId"] as? String == id })
+        #expect(recovered.host.pendingSends.items.first?.messageId == firstId)
+        #expect(recovered.host.pendingSends.items.first?.text == "recover this sentence")
+        await recovered.transport.online("recovered-native")
+        await recovered.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready", "sessionId": "recovered-native"])
+        #expect(recovered.transport.userMessages.isEmpty)
+        #expect(recovered.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
     }
 
     // S35 / SC55: a first sentence creates one launch and one

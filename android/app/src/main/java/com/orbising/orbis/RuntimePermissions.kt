@@ -81,7 +81,7 @@ internal fun RuntimePermissionsStatus(
     val available = permissionManagement?.settings.orEmpty()
     val setting = available.find { it.id == selectedSettingId } ?: available.firstOrNull()
     val current = setting?.currentValue
-    val canEdit = connected && idle && pendingId == null && setting?.disabledReason == null
+    val canEdit = connected && pendingId == null && setting?.disabledReason == null
     LaunchedEffect(setting?.id) {
         selectedSettingId = setting?.id
         selectedValue = null
@@ -172,7 +172,7 @@ internal fun RuntimePermissionsStatus(
         }
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!connected) Text(L10n.tr("连接已断开，连接后可应用设置"), color = MaterialTheme.colorScheme.error)
-            else if (!idle) Text(L10n.tr("请先完成当前任务和待处理交互，再调整权限"))
+            else if (!idle) Text(L10n.tr("模型和思考深度用于后续轮次；权限以电脑端确认生效"))
             feedback?.let { Text(it) }
             if (setting != null) NeumorphTextButton(
                 if (pendingId != null) L10n.tr("正在应用，等待电脑确认…") else L10n.tr("应用到当前会话"), filled = true,

@@ -2,6 +2,39 @@ import Foundation
 
 let orbisProtocolVersion = 19
 
+struct SessionConfigurationValues: Codable, Equatable {
+    var model: String? = nil
+    var thinking: String? = nil
+    var permissions: [String: String]? = nil
+    var payload: [String: Any] {
+        var value: [String: Any] = ["permissions": permissions ?? [:]]
+        if let model { value["model"] = model }; if let thinking { value["thinking"] = thinking }
+        return value
+    }
+}
+struct SessionConfigurationModel: Codable, Equatable, Identifiable {
+    let value: String
+    let label: String
+    let thinking: [RuntimeOption]
+    var defaultThinking: String? = nil
+    var id: String { value }
+}
+struct SessionConfigurationCatalog: Codable, Equatable {
+    let binding: String
+    let defaults: SessionConfigurationValues
+    let models: [SessionConfigurationModel]
+    let permissions: [PermissionManagement.Setting]
+    var notice: String? = nil
+}
+struct SessionConfigurationSnapshot: Codable, Equatable {
+    let agentKind: String
+    let cwd: String
+    let binding: String
+    let revision: Int
+    let values: SessionConfigurationValues
+    let catalog: SessionConfigurationCatalog
+}
+
 struct PairingQR: Codable, Hashable {
     let v: Int
     let relayUrl: String

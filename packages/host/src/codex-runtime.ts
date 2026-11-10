@@ -29,7 +29,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource } from "@orbis/protocol";
-import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, type RuntimeInputState } from "@orbis/protocol";
+import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, configurationMutationError, type RuntimeInputState } from "@orbis/protocol";
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
@@ -57,10 +57,13 @@ import type {
   SessionSourceEpoch,
   ToolSummary,
   ToolContentLocator,
+  SessionConfigurationCatalog,
+  SessionConfigurationValues,
 } from "@orbis/protocol";
 
 import type {
   AgentActivateTarget,
+  AgentActivateContext,
   AgentBackend,
   BackendActivation,
   CommandDispatch,
@@ -355,6 +358,7 @@ export class CodexRuntime implements AgentBackend {
     resolve: () => void;
     reject: (error: Error) => void;
   }>();
+  readonly #permissionUnconfirmed = new Map<string, Record<string, unknown>>();
   #started = false;
   #eventSink: ((event: RuntimeEvent, threadId: string | undefined) => void) | undefined;
   /**
@@ -748,6 +752,11 @@ export class CodexRuntime implements AgentBackend {
    */
   #applyNativeSettings(thread: ThreadState, value: unknown): void {
     const settings = object(value);
+    const uncertain = this.#permissionUnconfirmed.get(thread.id);
+    if (uncertain && permissionPatchMatches(settings, uncertain)) {
+      this.#permissionUnconfirmed.delete(thread.id);
+      this.#scheduleQueue(thread);
+    }
     const model = settings.model;
     if (typeof model === "string" && model.length > 0) {
       if (model === thread.modelOverride || thread.nativeModel !== undefined && model !== thread.nativeModel) {
@@ -795,7 +804,7 @@ export class CodexRuntime implements AgentBackend {
       ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
       ...(contextUsage === undefined ? {} : { contextUsage }),
       permissions: thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" },
-      permissionManagement: codexPermissionManagement(thread.permissions, this.#statusOf(thread) !== "idle" || this.#permissionUpdates.has(thread.id) || [...this.#approvals.values()].some(item => item.threadId === thread.id)),
+      permissionManagement: codexPermissionManagement(thread.permissions, this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || thread.sessionChanging === true || this.#desktopClientProtected.has(thread.id)),
     };
   }
 
@@ -1157,7 +1166,7 @@ export class CodexRuntime implements AgentBackend {
   #inputState(thread: ThreadState): RuntimeInputState {
     return { phase: this.#statusOf(thread), compacting: thread.compactStartPending || thread.activity.compaction !== "unavailable" && thread.activity.compaction.phase === "running",
       starting: thread.turnStartPending, stopping: thread.stopping === true, closing: thread.closing === true,
-      mutating: this.#permissionUpdates.has(thread.id) || this.#desktopClientProtected.has(thread.id) || thread.sessionChanging === true,
+      mutating: this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || this.#desktopClientProtected.has(thread.id) || thread.sessionChanging === true,
       reconciling: thread.nativeMutationPromise === undefined && (thread.reconcilePromise !== undefined || !thread.sourceReady),
       offline: this.#threads.get(thread.id) !== thread, queueDepth: thread.queue.length };
   }
@@ -1211,6 +1220,74 @@ export class CodexRuntime implements AgentBackend {
       this.#options.log?.(`读取 Codex 当前 provider 失败：${describeError(error)}`);
       return undefined;
     }
+  }
+
+  async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
+    await this.#loadModelList();
+    const config = object(object(await this.#server.request("config/read", { cwd, includeLayers: false })).config);
+    const cache = this.#modelListCache!;
+    const model = typeof config.model === "string" ? config.model : cache.defaultId;
+    const thinking = typeof config.model_reasoning_effort === "string" ? config.model_reasoning_effort
+      : model === undefined ? undefined : cache.byId.get(model)?.defaultReasoningEffort;
+    const sandbox: Record<string, string> = { "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" };
+    const permissionValues: Record<string, string> = {};
+    if (typeof config.sandbox_mode === "string" && sandbox[config.sandbox_mode]) permissionValues.sandbox = sandbox[config.sandbox_mode]!;
+    if (typeof config.approval_policy === "string") permissionValues.approvals = config.approval_policy;
+    if (typeof config.approvals_reviewer === "string") permissionValues["approval-reviewer"] = config.approvals_reviewer;
+    const network = object(config.sandbox_workspace_write).network_access;
+    if (typeof network === "boolean") permissionValues.network = network ? "enabled" : "restricted";
+    const provider = typeof config.model_provider === "string" ? config.model_provider : "openai";
+    const binding = createHash("sha256").update(JSON.stringify([this.kind, provider, object(config.model_providers)[provider] ?? null])).digest("hex");
+    const models = cache.models.map(item => ({ value: item.value, label: item.label,
+      thinking: cache.effortsByModel.get(item.value) ?? [],
+      ...(cache.byId.get(item.value)?.defaultReasoningEffort === undefined ? {} : { defaultThinking: cache.byId.get(item.value)!.defaultReasoningEffort! }) }));
+    return { binding, defaults: { ...(model === undefined ? {} : { model }),
+      ...(thinking === undefined ? {} : { thinking }), permissions: permissionValues }, models,
+      permissions: CODEX_PERMISSION_COMMANDS.map(command => ({ id: command.name, label: command.description ?? command.name,
+        ...(permissionValues[command.name] === undefined ? {} : { currentValue: permissionValues[command.name]! }),
+        options: (command.argument?.options ?? []).map(item => ({ ...item })) })) };
+  }
+
+  #configurationStart(selection: SessionConfigurationValues): Record<string, unknown> {
+    const permissions = selection.permissions ?? {};
+    const modes: Record<string, string> = { readOnly: "read-only", workspaceWrite: "workspace-write", dangerFullAccess: "danger-full-access" };
+    return { ...(selection.model === undefined ? {} : { model: selection.model }),
+      ...(permissions.sandbox === undefined ? {} : { sandbox: modes[permissions.sandbox] }),
+      ...(permissions.approvals === undefined ? {} : { approvalPolicy: permissions.approvals }),
+      ...(permissions["approval-reviewer"] === undefined ? {} : { approvalsReviewer: permissions["approval-reviewer"] }),
+      config: { ...(selection.thinking === undefined ? {} : { model_reasoning_effort: selection.thinking }),
+        ...(permissions.network === undefined ? {} : { sandbox_workspace_write: { network_access: permissions.network === "enabled" } }) } };
+  }
+
+  #confirmConfiguration(selection: SessionConfigurationValues, settings: Record<string, unknown>): void {
+    const permissions = codexPermissions(settings);
+    const actual: Record<string, string | undefined> = { sandbox: permissions?.sandbox, approvals: permissions?.approvalPolicy,
+      "approval-reviewer": permissions?.reviewer, network: permissions?.networkAccess === undefined ? undefined : permissions.networkAccess ? "enabled" : "restricted" };
+    if (selection.model !== undefined && selection.model !== settings.model
+      || selection.thinking !== undefined && selection.thinking !== (settings.effort ?? settings.reasoningEffort)
+      || Object.entries(selection.permissions ?? {}).some(([key, value]) => actual[key] !== value))
+      throw new Error("Codex 返回的启动配置与所选值不一致，首句未发送");
+  }
+
+  async #configureLaunch(id: string, selection: SessionConfigurationValues, initial: Record<string, unknown>): Promise<Record<string, unknown>> {
+    try { this.#confirmConfiguration(selection, initial); return initial; } catch { /* Apply only to the recorded thread. */ }
+    const patch: Record<string, unknown> = { ...(selection.model === undefined ? {} : { model: selection.model }),
+      ...(selection.thinking === undefined ? {} : { effort: selection.thinking }) };
+    let settings = initial;
+    for (const [name, value] of Object.entries(selection.permissions ?? {})) {
+      const field = codexPermissionUpdate(name, value, settings);
+      Object.assign(patch, field); settings = { ...settings, ...field };
+    }
+    await this.#server.request("thread/settings/update", { threadId: id, ...patch });
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const observed = this.#effectiveSettings.get(id);
+      if (observed) {
+        try { this.#confirmConfiguration(selection, observed); return { ...initial, ...observed }; } catch { /* Await native confirmation. */ }
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error("Codex 启动配置尚未确认，首句未发送；请核对原会话");
   }
 
   /** Persistent thread catalog, with a rollout fallback when app-server discovery fails. */
@@ -1333,7 +1410,7 @@ export class CodexRuntime implements AgentBackend {
    * 成功后主动回放该 thread 的历史条目图，手机打开即见全部内容；随后在电脑上开
    * 有头终端窗口（官方 TUI attach 上来，与手机双同步）。
    */
-  async activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     // Native Codex thread IDs are unprefixed. Let Host try the owning backend
     // instead of sending another backend's namespaced ID to thread/resume.
     if (target.type === "resume" && (isDesktopAppServer(this.#server)
@@ -1346,13 +1423,13 @@ export class CodexRuntime implements AgentBackend {
     this.#activating += 1;
     try {
       return await this.#activateInner(target.type === "resume"
-        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target);
+        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target, context);
     } finally {
       this.#activating -= 1;
     }
   }
 
-  async #activateInner(target: AgentActivateTarget): Promise<BackendActivation> {
+  async #activateInner(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
     if (existing?.reconcilePromise !== undefined) await this.#waitForReconcile(existing);
     const existingGeneration = existing === undefined ? undefined : ++existing.reconcileGeneration;
@@ -1362,9 +1439,11 @@ export class CodexRuntime implements AgentBackend {
     // an unpublished session behind. Resume discovers cwd from the native reply.
     if (needsTerminalTrust && target.type === "new") await prepareCodexWorkspace(this.#server, target.cwd);
     const method = target.type === "resume" ? "thread/resume" : "thread/start";
+    const selection = context?.configuration;
+    const initial = selection === undefined ? {} : this.#configurationStart(selection);
     const params = target.type === "resume" ? { threadId: target.sessionId }
-      : { cwd: target.cwd, config: { [codexWorkspaceTrustKey(target.cwd)]: "trusted" } };
-    const result = (await this.#server.request(method, params)) as {
+      : { cwd: target.cwd, ...initial, config: { ...object(initial.config), [codexWorkspaceTrustKey(target.cwd)]: "trusted" } };
+    let result = (await this.#server.request(method, params)) as {
       thread?: Record<string, unknown>;
       model?: unknown;
       modelProvider?: unknown;
@@ -1375,6 +1454,8 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
+    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" });
+    if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
@@ -2182,7 +2263,9 @@ export class CodexRuntime implements AgentBackend {
       const state = this.#inputState(thread);
       // Existing tree writes already serialize behind native hydration. A failed source still rejects them.
       if (name === "tree" && thread.historyError === undefined) state.reconciling = false;
-      const error = inputMutationError(state, effect) ?? (effect === "write" && name !== "tree" && thread.nativeMutationPromise !== undefined ? "runtime_busy" : undefined);
+      const configuration = ["model", "thinking", "sandbox", "network", "approvals", "approval-reviewer"].includes(name);
+      const error = (configuration ? configurationMutationError(state) : inputMutationError(state, effect))
+        ?? (effect === "write" && name !== "tree" && thread.nativeMutationPromise !== undefined ? "runtime_busy" : undefined);
       if (error) { this.#commandResult(thread.id, commandId, false, error, "failure"); return true; }
     }
     if (dynamic !== undefined && thread !== undefined) {
@@ -2354,35 +2437,43 @@ export class CodexRuntime implements AgentBackend {
   async #updatePermissions(thread: ThreadState, name: string, value: string, commandId?: string): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let registered = false;
+    let patch: Record<string, unknown> | undefined;
+    let awaitingNative = false;
     try {
-      if (inputMutationError(this.#inputState(thread)) !== undefined || thread.nativeMutationPromise !== undefined
-        || [...this.#approvals.values()].some((request) => request.threadId === thread.id)) {
-        throw new Error("请先完成当前任务和待处理交互，再调整会话权限");
+      if (configurationMutationError(this.#inputState(thread)) !== undefined || thread.nativeMutationPromise !== undefined) {
+        throw new Error("会话配置正在更新或恢复，请稍后重试");
       }
       if (this.#permissionUpdates.has(thread.id)) throw new Error("权限设置正在应用，请等待电脑确认");
       const settings = this.#effectiveSettings.get(thread.id) ?? {};
-      const patch = codexPermissionUpdate(name, value, settings);
+      patch = codexPermissionUpdate(name, value, settings);
       // app-server intentionally emits no settings notification for an unchanged value.
       if (permissionPatchMatches({ ...settings, sandboxPolicy: settings.sandboxPolicy ?? settings.sandbox }, patch)) {
         this.#commandResult(thread.id, commandId, true);
         return;
       }
       const confirmed = new Promise<void>((resolve, reject) => {
-        this.#permissionUpdates.set(thread.id, { patch, resolve, reject });
+        this.#permissionUpdates.set(thread.id, { patch: patch!, resolve, reject });
         registered = true;
         timer = setTimeout(() => reject(new Error("未收到有效权限确认，请刷新会话检查结果")), 15_000);
         timer.unref();
       });
       this.#commandResult(thread.id, commandId, true, undefined, "pending");
       // The RPC acknowledges a write; only the settings notification establishes effective state.
-      await Promise.all([this.#server.request("thread/settings/update", { threadId: thread.id, ...patch }), confirmed]);
+      const written = this.#server.request("thread/settings/update", { threadId: thread.id, ...patch });
+      awaitingNative = true;
+      await Promise.all([written, confirmed]);
+      awaitingNative = false;
       this.#commandResult(thread.id, commandId, true);
       void this.#checkSandboxReadiness(thread);
     } catch (error) {
-      this.#commandResult(thread.id, commandId, false, `权限设置未确认：${describeError(error)}`);
+      // An explicit native refusal is final; transport loss or a missing effective
+      // notification cannot release queued work under an unknown permission set.
+      const uncertain = awaitingNative && /timeout|timed out|未收到|断开|closed|socket|ECONN|connection/i.test(describeError(error));
+      if (uncertain && patch) this.#permissionUnconfirmed.set(thread.id, patch);
+      this.#commandResult(thread.id, commandId, false, `权限设置未确认：${describeError(error)}`, uncertain ? "unconfirmed" : "failure");
     } finally {
       if (timer) clearTimeout(timer);
-      if (registered) { this.#permissionUpdates.delete(thread.id); this.#publishMetadataEvent(thread); }
+      if (registered) { this.#permissionUpdates.delete(thread.id); this.#publishMetadataEvent(thread); this.#scheduleQueue(thread); }
     }
   }
 

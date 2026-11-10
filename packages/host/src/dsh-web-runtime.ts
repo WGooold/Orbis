@@ -4,14 +4,15 @@ import { stat } from "node:fs/promises";
 import { ToolActivityProducer, ToolContentReadError, type NativeToolPart, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { isAbsolute } from "node:path";
 import {
-  NotificationSource, inputMutationError,
+  NotificationSource, inputMutationError, configurationMutationError,
   RecoverableSessionSource,
   SessionSyncPreparer,
   type AgentTaskInventory, type AgentDeliveryItem, type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
   type ToolContentLocator,
+  type SessionConfigurationCatalog, type SessionConfigurationValues,
 } from "@orbis/protocol";
-import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
+import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, DshWebUnconfirmedError, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebIsUserMessage, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
 import { localHostname } from "./sessions.js";
@@ -80,6 +81,7 @@ type WebSession = {
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
   permissionBusy: boolean; permissionOptions: ReturnType<typeof dshPermissionOptions>;
+  configurationUnconfirmed?: { model?: string; thinking?: string; permission?: string };
   queue: Map<string, { itemId: string; text: string; delivery: "steer" | "followUp" }>;
   deliverySeq: number; deliveryGeneration: number;
   activity: Extract<RuntimeEvent, { type: "execution.activity" }>;
@@ -362,25 +364,28 @@ export class DshWebRuntime implements AgentBackend {
     }
   }
 
-  activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (!this.#ready) return Promise.reject(new ActivationError("agent_unsupported", "DeepSeek Web 未连接"));
     if (target.type === "resume") {
       if (!target.sessionId.startsWith("dsh:")) return Promise.reject(new ActivationError("session_not_found", "不属于 DeepSeek Harness 的会话"));
       this.#detached.delete(target.sessionId.slice(4));
       const current = this.#sessions.get(target.sessionId);
       if (current && !current.closing) {
-        return this.#ensureWorkspace(current.cwd).then(() => ({ sessionId: target.sessionId, spawnMode: "headless" as const }));
+        return this.#ensureWorkspace(current.cwd).then(async () => {
+          if (context?.configuration) await this.#configureLaunch(current.id, context.configuration);
+          return { sessionId: target.sessionId, spawnMode: "headless" as const };
+        });
       }
       const prior = this.#activating.get(target.sessionId); if (prior) return prior;
-      const operation = this.#scheduleActivation(target).finally(() => this.#activating.delete(target.sessionId));
+      const operation = this.#scheduleActivation(target, context).finally(() => this.#activating.delete(target.sessionId));
       this.#activating.set(target.sessionId, operation); return operation;
     }
-    return this.#scheduleActivation(target);
+    return this.#scheduleActivation(target, context);
   }
-  #scheduleActivation(target: AgentActivateTarget): Promise<BackendActivation> {
-    const operation = this.#activate(target); return operation;
+  #scheduleActivation(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
+    const operation = this.#activate(target, context); return operation;
   }
-  async #activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  async #activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     let id: string; let cwd: string; let title: string | undefined; let createdAt = Date.now();
     if (target.type === "new") {
       cwd = target.cwd;
@@ -389,6 +394,8 @@ export class DshWebRuntime implements AgentBackend {
       const created = object(await this.#client.request("session/create", { request: { workspaceId } }));
       id = typeof created.sessionId === "string" ? created.sessionId : "";
       if (!id) throw new Error("DeepSeek Web 没有返回会话 ID");
+      await context?.onCreated?.({ sessionId: publicId(id), spawnMode: "headless" });
+
     } else {
       id = target.sessionId.slice(4);
       const item = (await this.#catalogRows(false, true)).find(value => value.sessionId === target.sessionId);
@@ -397,12 +404,32 @@ export class DshWebRuntime implements AgentBackend {
       const workspaceId = await this.#ensureWorkspace(cwd);
       await this.#client.request("session/create", { request: { sessionId: id, workspaceId } });
     }
+    if (context?.configuration) await this.#configureLaunch(id, context.configuration);
     if (!this.#ready) throw new ActivationError("agent_unsupported", "DeepSeek Web 已断开");
     this.#detached.delete(id);
     // 重新打开一个刚 detach 的会话时，#sessions 里已经没有它；用发现流保存的原生 running，
     // 否则手机在下一帧状态通知到达前会把它显示成「空闲」。
     this.#attach({ sessionId: id, cwd, createdAt, ...(title === undefined ? {} : { title }), running: this.#sessions.get(publicId(id))?.running ?? this.#running.get(id) ?? false });
     return { sessionId: publicId(id), spawnMode: "headless" };
+  }
+
+  async #configureLaunch(id: string, values: SessionConfigurationValues): Promise<void> {
+        if (values.model !== undefined) {
+          const chosen = this.#findModel(object(await this.#client.request("session/modelCatalog", {})), values.model);
+          if (!chosen) throw new Error("DeepSeek 模型选项已失效");
+          const result = object(await this.#client.request("session/selectModel", { request: { sessionId: id, ...chosen,
+            ...(values.thinking === undefined ? {} : { reasoningEffort: values.thinking }) } }));
+          const selected = object(result.selected);
+          if (selected.provider !== chosen.provider || selected.model !== chosen.model
+            || values.thinking !== undefined && selected.reasoningEffort !== values.thinking) throw new Error("DeepSeek 未确认所选模型与思考深度");
+        }
+        const preset = values.permissions?.["permission-preset"];
+        if (preset !== undefined) {
+          const result = object(await this.#client.request("commands/execute", { agentId: id, line: `/permission ${preset}`, submittedAttachments: [] }));
+          const projection = object(await this.#client.request("session/projections", { request: { sessionId: id } }));
+          if (object(result.result).kind !== "success" || object(object(projection.values).permissions).currentValue !== preset)
+            throw new Error("DeepSeek 未确认启动权限，首句未发送");
+        }
   }
 
   /**
@@ -496,8 +523,11 @@ export class DshWebRuntime implements AgentBackend {
     if (command.type === "slash.execute" || command.type === "permissions.update") {
       const query = command.type === "slash.execute" && (["name", "model", "thinking"].includes(command.name)
         || !command.args.trim() && ["session", "skills", "tree"].includes(command.name));
-      const error = inputMutationError({ phase: session.running ? "running" : "idle", mutating: session.permissionBusy,
-        compacting: session.activity.compaction !== "unavailable" && session.activity.compaction.phase === "running" }, query ? "read" : command.type === "slash.execute" && command.name === "quit" ? "close" : "write");
+      const state = { phase: session.running ? "running" as const : "idle" as const, mutating: session.permissionBusy || session.configurationUnconfirmed !== undefined,
+        compacting: session.activity.compaction !== "unavailable" && session.activity.compaction.phase === "running" };
+      const configuration = command.type === "permissions.update" || command.type === "slash.execute" && ["model", "thinking", "permission-preset"].includes(command.name);
+      const error = configuration ? configurationMutationError(state)
+        : inputMutationError(state, query ? "read" : command.type === "slash.execute" && command.name === "quit" ? "close" : "write");
       if (error) throw new Error(error);
     }
     // 只有命令可以带结果正文（`/tree` 的新分支会话 ID 与原文）；其余命令的结果只是回执。
@@ -507,6 +537,10 @@ export class DshWebRuntime implements AgentBackend {
         if (command.sessionId !== publicId(session.id)) throw new Error("session_mismatch");
         if (command.range === "preview") await this.#checkSource(session);
         await this.#loadDelivery(session);
+        if (session.configurationUnconfirmed) {
+          const baseline = await this.#client.request("session/projections", { request: { sessionId: session.id } });
+          this.#modelSelectionProjection(session, baseline); this.#permissionProjection(session, baseline);
+        }
         this.#publishTasks(session, true);
         this.#emit(session, structuredClone(session.activity));
         // Catchup fills the native parent gap toward the phone's known branch. Re-reading the
@@ -563,6 +597,7 @@ export class DshWebRuntime implements AgentBackend {
   }
 
   async #prompt(session: WebSession, commandId: string, command: Extract<RuntimeCommand, { type: "user_message" }>): Promise<void> {
+    if (session.permissionBusy || session.configurationUnconfirmed) throw new Error("会话配置尚未确认，请刷新核对后发送");
     const fingerprint = createHash("sha256").update(JSON.stringify([command.text, command.attachments ?? [], command.delivery])).digest("hex");
     const prior = command.messageId ? session.messages.get(command.messageId) : undefined;
     if (prior) {
@@ -598,17 +633,25 @@ export class DshWebRuntime implements AgentBackend {
   async #slash(session: WebSession, args: string, name: string, messageId?: string): Promise<unknown> {
     if (name === "tree") return await this.#tree(session, args.trim());
     if (name === "permission-preset") {
-      if (session.running || session.permissionBusy || [...this.#approvals.values()].some(item => item.session === session)) throw new Error("请先完成当前任务和待处理审批，再调整权限");
+      if (session.permissionBusy) throw new Error("权限配置正在更新，请稍后重试");
       const selected = args.trim();
       if (!session.permissionOptions?.some(option => option.value === selected)) throw new Error("权限配置不可用，请刷新会话");
       session.permissionBusy = true;
+      let written = false;
       try {
         const result = object(await this.#client.request("commands/execute", { agentId: session.id, line: `/permission ${selected}`, submittedAttachments: [] }));
         const outcome = object(result.result);
         if (outcome.kind !== "success") throw new Error(typeof outcome.text === "string" ? outcome.text : "DSH 未确认权限命令");
+        written = true;
         const baseline = await this.#client.request("session/projections", { request: { sessionId: session.id } });
         this.#permissionProjection(session, baseline);
         if (session.permissionProfile !== selected) throw new Error("权限设置未确认，请检查当前配置后重试");
+      } catch (error) {
+        if (written || error instanceof DshWebUnconfirmedError) {
+          session.configurationUnconfirmed = { permission: selected };
+          throw new DshWebUnconfirmedError("权限设置尚未确认，请刷新核对；后续消息已暂停");
+        }
+        throw error;
       } finally { session.permissionBusy = false; this.#publishMetadata(session); }
       return;
     }
@@ -641,7 +684,7 @@ export class DshWebRuntime implements AgentBackend {
       const catalog = session.modelCatalog ?? object(await this.#client.request("session/modelCatalog", {}));
       const model = this.#findModel(catalog, args.trim());
       if (!model) throw new Error("找不到模型");
-      const result = object(await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) } }));
+      const result = await this.#changeSelection(session, { provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) });
       // DSH 返回规范化后的选择；`modelSelection` 投影随后会用同一个值覆盖它。
       this.#applySelection(session, result.selected);
       return;
@@ -654,11 +697,22 @@ export class DshWebRuntime implements AgentBackend {
       try { const parsed = JSON.parse(selected) as unknown; if (typeof parsed === "string") effort = parsed; } catch { /* Plain effort id. */ }
       const available = this.#thinkingChoices(session).some(choice => choice.value === effort);
       if (!available) throw new Error("找不到思考级别");
-      const result = object(await this.#client.request("session/selectModel", { request: { sessionId: session.id, provider: current.provider, model: current.model, reasoningEffort: effort } }));
+      const result = await this.#changeSelection(session, { provider: current.provider, model: current.model, reasoningEffort: effort });
       this.#applySelection(session, result.selected);
       return;
     }
     throw new Error(`不支持的 DSH Web 命令：/${name}`);
+  }
+  async #changeSelection(session: WebSession, selected: ModelSelection): Promise<Obj> {
+    if (session.permissionBusy || session.configurationUnconfirmed) throw new Error("会话配置正在更新或核对");
+    session.permissionBusy = true;
+    try {
+      return object(await this.#client.request("session/selectModel", { request: { sessionId: session.id, ...selected } }));
+    } catch (error) {
+      if (error instanceof DshWebUnconfirmedError) session.configurationUnconfirmed = {
+        model: JSON.stringify([selected.provider, selected.model]), ...(selected.reasoningEffort === undefined ? {} : { thinking: selected.reasoningEffort }) };
+      throw error;
+    } finally { session.permissionBusy = false; this.#publishMetadata(session); }
   }
   /**
    * `/tree <entryId>`：DSH 的原生日志不支持「回到某条消息」，分支是 `session/fork` 从某个
@@ -1282,6 +1336,7 @@ export class DshWebRuntime implements AgentBackend {
     const previous = this.#selection(session);
     session.selectionSeq = Number(seq);
     session.selection = next;
+    this.#confirmPendingConfiguration(session);
     if (previous !== undefined && previous.provider === next.provider && previous.model === next.model
       && previous.reasoningEffort === next.reasoningEffort) return;
     this.#publishMetadata(session);
@@ -1296,12 +1351,20 @@ export class DshWebRuntime implements AgentBackend {
       ...(typeof value.reasoningEffort === "string" && value.reasoningEffort.length > 0 ? { reasoningEffort: value.reasoningEffort } : {}) };
     const previous = this.#selection(session);
     session.selection = next;
+    this.#confirmPendingConfiguration(session);
     this.#publishMetadata(session);
     if (previous?.provider !== next.provider || previous?.model !== next.model) this.#publishCapabilities(session);
   }
   #permissionMetadata(session: WebSession): Pick<RuntimeMetadata, "permissionManagement"> {
-    const management = dshPermissionManagement(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval), session.permissionOptions ?? [], session.running || session.permissionBusy || [...this.#approvals.values()].some(item => item.session === session));
+    const management = dshPermissionManagement(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval), session.permissionOptions ?? [], session.permissionBusy || session.configurationUnconfirmed !== undefined);
     return management ? { permissionManagement: management } : {};
+  }
+  #confirmPendingConfiguration(session: WebSession): void {
+    const pending = session.configurationUnconfirmed; if (!pending) return;
+    const selected = this.#selection(session);
+    if ((pending.permission === undefined || pending.permission === session.permissionProfile)
+      && (pending.model === undefined || pending.model === JSON.stringify([selected?.provider, selected?.model]))
+      && (pending.thinking === undefined || pending.thinking === selected?.reasoningEffort)) delete session.configurationUnconfirmed;
   }
   #titleProjection(id: string, raw: unknown, complete = false): void {
     this.#discovery.titleProjection(id, raw, complete);
@@ -1316,6 +1379,7 @@ export class DshWebRuntime implements AgentBackend {
     const profile = object(object(baseline.values).permissions).currentValue;
     if (!Number.isSafeInteger(seq) || Number(seq) < session.permissionSeq || typeof profile !== "string") return;
     session.permissionSeq = Number(seq); session.permissionProfile = profile;
+    this.#confirmPendingConfiguration(session);
     this.#publishMetadata(session);
     this.#publishCapabilities(session);
   }
@@ -1456,6 +1520,28 @@ export class DshWebRuntime implements AgentBackend {
       session.notifications.resolve("dsh.models");
     } catch (error) { if (generation === session.modelGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web 模型目录：${textOf(error)}`, publicId(session.id), "dsh.models"); }
   }
+  async sessionConfiguration(): Promise<SessionConfigurationCatalog> {
+    const catalog = object(await this.#client.request("session/modelCatalog", {}));
+    const permissions = dshPermissionOptions(await this.#client.request("permissionPresets/catalog", {})) ?? [];
+    const fallback = object(catalog.default);
+    const modelValue = typeof fallback.provider === "string" && typeof fallback.model === "string"
+      ? JSON.stringify({ provider: fallback.provider, model: fallback.model }) : undefined;
+    const models = arrayObjects(catalog.groups).flatMap(group => {
+      const provider = typeof group.id === "string" ? group.id : String(group.provider ?? "");
+      return arrayObjects(group.models).flatMap(model => {
+        const id = typeof model.id === "string" ? model.id : model.model;
+        if (!provider || typeof id !== "string") return [];
+        return [{ value: JSON.stringify({ provider, model: id }), label: `${String(group.name ?? provider)} / ${String(model.name ?? id)}`,
+          thinking: arrayObjects(object(model.reasoning).efforts).flatMap(effort => typeof effort.id === "string"
+            ? [{ value: effort.id, label: String(effort.name ?? effort.id) }] : []) }];
+      });
+    });
+    return { binding: createHash("sha256").update(JSON.stringify(catalog.groups ?? [])).digest("hex"),
+      defaults: { ...(modelValue === undefined ? {} : { model: modelValue }),
+        ...(typeof fallback.reasoningEffort === "string" ? { thinking: fallback.reasoningEffort } : {}) }, models,
+      permissions: permissions.length ? [{ id: "permission-preset", label: "权限预设", options: permissions }] : [] };
+  }
+
   #modelInfo(catalog: Obj | undefined, provider: string, id: string): RuntimeMetadata["model"] | undefined {
     for (const group of arrayObjects(catalog?.groups)) {
       const groupId = typeof group.id === "string" ? group.id : typeof group.provider === "string" ? group.provider : "";

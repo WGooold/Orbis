@@ -14,7 +14,7 @@ export function setup(on: On) {
     resumed: false,
     rejection: "",
     pollError: "",
-    commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } }[],
+    commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } | { type: "slash"; name: string; args: string } }[],
     submits: 0,
     toolResult: "still working",
     toolCalls: [] as unknown[],

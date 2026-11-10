@@ -337,6 +337,22 @@ describe("PiSlashCommandAdapter", () => {
     expect(fork).toHaveBeenCalledWith("entry-user", expect.objectContaining({ position: "before" }));
   });
 
+  // SC73: configuration must bypass the idle-only internal prompt while real
+  // configuration mutations still serialize with one another.
+  it("sets model and thinking directly during a native active turn", async () => {
+    vi.spyOn(SessionManager, "list").mockResolvedValue([]);
+    const pi = makePi(); const model = { provider: "fixture", id: "a", name: "A", reasoning: true };
+    const context = { cwd: "/work", isIdle: () => false, scopedModels: [], model,
+      modelRegistry: { getAvailable: () => [model], hasConfiguredAuth: () => true },
+      sessionManager: { getTree: () => [], getSessionDir: () => "/sessions" } };
+    const adapter = new PiSlashCommandAdapter(pi as never, () => context as never);
+    await expect(adapter.execute("model", "fixture/a")).resolves.toEqual({ provider: "fixture", modelId: "a" });
+    await adapter.execute("thinking", "medium");
+    expect(pi.setModel).toHaveBeenCalledWith(model);
+    expect(pi.setThinkingLevel).toHaveBeenCalledWith("medium");
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
   it("rejects built-in arguments that are missing, unexpected, or unavailable", async () => {
     vi.spyOn(SessionManager, "list").mockResolvedValue([]);
     const pi = makePi();

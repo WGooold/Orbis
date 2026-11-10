@@ -349,3 +349,37 @@ test("child tool completion preserves approval identity without becoming a main 
   expect(events).toContainEqual({ type: "task.tool.finished", agentId: "child", toolCallId: "child-tool", toolName: "Bash", arguments: { command: "unused" } });
   expect(events.some(event => (event as {type: string}).type === "tool.started")).toBe(false);
 });
+
+// S51 / SC73: changing effort during native execution must reach the next turn's
+// native request hook without rewriting the current turn or using settings-file defaults.
+test("pins an active turn and applies selected effort to the next turn", async ($, on) => {
+  const { clock, world } = setup(on);
+  mock.session(on);
+  const seen: { turnId: string; effort: unknown; model: string }[] = [];
+  on("turn.step", async function* (_$, event) {
+    seen.push({ turnId: event.turnId, effort: event.effort, model: event.model });
+    yield { kind: "text", index: 0, text: "synthetic" };
+    return { turnId: event.turnId, index: event.index, answer: "done", toolUses: [], stopReason: "end_turn", usage: null };
+  });
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  await $.turn.start({ text: "first", turnId: "first" });
+  const step = async (turnId: string, index: number, model: string) => {
+    const stream = $.turn.step({ turnId, index, model, effort: "low", messageCount: 1 });
+    for await (const chunk of stream) { void chunk; /* Drain the isolated native stream. */ }
+    await stream.result;
+  };
+  await step("first", 0, "original-model");
+  world.commands = [{ commandId: "next-depth", command: { type: "slash", name: "effort", args: "high" } }];
+  await clock.advance(750);
+  world.commands = [];
+  await step("first", 1, "changed-session-model");
+  await $.turn.complete({ turnId: "first", answer: "done", durationMs: 1, reason: "answer", isAborted: false });
+  await $.turn.start({ text: "second", turnId: "second" });
+  await step("second", 0, "next-model");
+  expect(seen).toEqual([
+    { turnId: "first", effort: "low", model: "original-model" },
+    { turnId: "first", effort: "low", model: "original-model" },
+    { turnId: "second", effort: "high", model: "next-model" },
+  ]);
+});

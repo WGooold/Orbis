@@ -109,6 +109,7 @@ import { browseDirectory, listPiSessions } from "./sessions.js";
 import { ActivationError, SessionSpawner } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { ProviderManager, ProviderError } from "./provider-manager.js";
+import { SessionConfigurationStore, SessionConfigurationError, validateSessionConfiguration } from "./session-configuration-store.js";
 import { parseProviderRequest, providerResult, type ProviderRequest } from "./provider-messages.js";
 import type { UsageSnapshot } from "./provider-usage-cache.js";
 
@@ -663,6 +664,7 @@ export class HostService {
   readonly #sharedOperations = new Map<string, HostSharedOperation>();
   #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
+  readonly #sessionConfigurations: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -673,6 +675,7 @@ export class HostService {
   ) {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
     this.#stateDir = stateDir;
+    this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
@@ -810,6 +813,7 @@ export class HostService {
         sendCommand: (runtimeId, commandId, command) =>
           this.#loopback?.sendCommand(runtimeId, commandId, command) ?? false,
         runtimeIds: () => this.localRuntimes.map((runtime) => runtime.runtimeId),
+        runtimeMetadata: () => this.localRuntimes,
         sessionIsOnline: (sessionId) => this.localRuntimes.some((runtime) => runtime.sessionId === sessionId),
         ...(options.sessionsRoot === undefined ? {} : { sessionsRoot: options.sessionsRoot }),
         ...(options.log === undefined ? {} : { log: options.log }),
@@ -1363,6 +1367,7 @@ export class HostService {
       agents: this.#agentsSnapshot(),
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
+      sessionConfiguration: 1,
     };
   }
 
@@ -1798,6 +1803,13 @@ export class HostService {
       }
       return;
     }
+    if (message.type === "session.configuration.read" || message.type === "session.configuration.save"
+      || message.type === "session.launch" || message.type === "session.launch.read") {
+      if (message.type === "session.launch" || message.type === "session.launch.read") {
+        this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
+      } else void this.#handleSessionConfiguration(deviceId, message);
+      return;
+    }
     if (message.type === "transport.fields.read") {
       this.#sendToDevice(deviceId, this.#fieldTraffic.page(deviceId, message)); return;
     }
@@ -1976,6 +1988,19 @@ export class HostService {
       message = { ...message, command };
     }
     const { runtimeId, commandId, command } = message;
+    if (command.type === "user_message") {
+      const sessionId = this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
+      if (sessionId !== undefined) {
+        // A configured launch may publish runtime.online before native settings are confirmed.
+        void this.#sessionConfigurations.blocks(sessionId).then(blocked => {
+          if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
+            ok: false, status: "failure", error: "会话启动配置尚未确认，消息未发送" }));
+          else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
+        }).catch(() => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId,
+          { type: "command.result", commandId, ok: false, status: "unconfirmed", error: "启动配置记录无法核对，消息未发送" })));
+        return;
+      }
+    }
     if (command.type === "session.changes.list" || command.type === "session.changes.read"
       || command.type === "session.change.detail.read" || command.type === "session.change.detail.cancel") {
       if (command.type === "session.changes.list") {
@@ -2041,6 +2066,10 @@ export class HostService {
       this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
       return;
     }
+    this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
+  }
+
+  #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand): void {
     const inputScope = this.#agentFacts.scopeOf(runtimeId);
     const admission = this.#commandOwners.begin(deviceId, runtimeId, commandId, command,
       inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId);
@@ -2186,6 +2215,121 @@ export class HostService {
     this.#catalogEpoch += 1;
     this.#catalogCache = undefined;
     this.#catalogInFlight = undefined;
+  }
+
+  async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
+    let backend = this.#backends.find(item => item.kind === kind);
+    if (kind === "dsh" && !backend?.isReady()) await this.#ensureDshRuntime();
+    if (kind === "codexDesktop" && !backend?.isReady()) {
+      const runtime = await this.#options.ensureCodexDesktop?.();
+      if (runtime) this.attachCodexDesktopRuntime(runtime);
+    }
+    backend = this.#backends.find(item => item.kind === kind);
+    if (!backend?.isReady() || !backend.sessionConfiguration) throw new SessionConfigurationError("configuration_unavailable", "当前后端尚未提供新建配置，请检查电脑端连接");
+    return backend;
+  }
+
+  async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
+    type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
+  }>): Promise<void> {
+    const sendLaunch = async (launchId: string) => {
+      const result = await this.#sessionConfigurations.result(deviceId, launchId, message.requestId);
+      this.#sendToDevice(deviceId, result ?? { type: "session.launch.result", requestId: message.requestId,
+        launchId, phase: "absent" });
+    };
+    try {
+      if (message.type === "session.launch.read") {
+        // Serialize with creation: a read must not report absence while the original create is queued.
+        await this.#recoverSessionLaunch(deviceId, message.launchId);
+        await sendLaunch(message.launchId); return;
+      }
+      if (message.type === "session.launch") {
+        const prior = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+        if (prior) {
+          // begin validates the immutable fingerprint even for a completed/recovered operation.
+          await this.#sessionConfigurations.begin(deviceId, message);
+          await this.#recoverSessionLaunch(deviceId, message.launchId);
+          await sendLaunch(message.launchId); return;
+        }
+      }
+      const backend = await this.#configuredBackend(message.agentKind);
+      const catalog = await backend.sessionConfiguration!(message.cwd);
+      if (message.type === "session.configuration.read") {
+        const saved = await this.#sessionConfigurations.read(message.agentKind, message.cwd, catalog.binding);
+        const values = { ...catalog.defaults, ...saved.values,
+          permissions: { ...catalog.defaults.permissions, ...saved.values.permissions } };
+        const model = catalog.models.find(item => item.value === values.model);
+        if (!model) { delete values.model; delete values.thinking; Object.assign(values, {
+          ...(catalog.defaults.model === undefined ? {} : { model: catalog.defaults.model }),
+          ...(catalog.defaults.thinking === undefined ? {} : { thinking: catalog.defaults.thinking }),
+        }); }
+        const chosen = catalog.models.find(item => item.value === values.model);
+        if (values.thinking !== undefined && !chosen?.thinking.some(item => item.value === values.thinking)) {
+          delete values.thinking;
+          if (chosen?.defaultThinking !== undefined) values.thinking = chosen.defaultThinking;
+        }
+        values.permissions = Object.fromEntries(Object.entries(values.permissions).filter(([id, value]) =>
+          catalog.permissions.some(setting => setting.id === id && !setting.disabledReason && setting.options.some(option => option.value === value))));
+        this.#sendToDevice(deviceId, { type: "session.configuration.result", requestId: message.requestId,
+          agentKind: message.agentKind, cwd: message.cwd, binding: catalog.binding, revision: saved.revision, values, catalog });
+        return;
+      }
+      if (catalog.binding !== message.binding) throw new SessionConfigurationError("configuration_stale", "供应商或模型清单已变化，请刷新启动配置");
+      validateSessionConfiguration(catalog, message.values);
+      if (message.type === "session.configuration.save") {
+        const saved = await this.#sessionConfigurations.save(message.agentKind, message.cwd, message.binding, message.revision, message.values);
+        this.#sendToDevice(deviceId, { type: "session.configuration.result", requestId: message.requestId,
+          agentKind: message.agentKind, cwd: message.cwd, binding: message.binding, ...saved, catalog }); return;
+      }
+      const begun = await this.#sessionConfigurations.begin(deviceId, message);
+      if (!begun.execute) { await sendLaunch(message.launchId); return; }
+      await sendLaunch(message.launchId);
+      try {
+        const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
+          deviceId, spawnMode: message.spawnMode ?? "tui", configuration: message.values,
+          onCreated: async result => {
+            await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "configuring",
+              ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), spawnMode: result.spawnMode });
+            await sendLaunch(message.launchId);
+          },
+        });
+        if (!activated.sessionId) throw new Error("后端未确认新会话身份，已停止发送首句");
+        await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "ready", sessionId: activated.sessionId, spawnMode: activated.spawnMode });
+        this.#invalidateCatalog();
+      } catch (error) {
+        // Native create may already have happened. Unknown is retained and never automatically re-created.
+        await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "unknown", error: describeError(error).slice(0, 2000) });
+      }
+      await sendLaunch(message.launchId);
+    } catch (error) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
+        code: error instanceof SessionConfigurationError ? error.code : "session_configuration_failed", message: describeError(error) });
+    }
+  }
+
+  async #recoverSessionLaunch(deviceId: string, launchId: string): Promise<void> {
+    const record = await this.#sessionConfigurations.recover(deviceId, launchId);
+    if (!record?.sessionId) return;
+    try {
+      const backend = await this.#configuredBackend(record.agentKind);
+      const online = backend.directoryEntries?.().some(item => item.sessionId === record.sessionId);
+      if (record.phase !== "ready" || !online) {
+        if (record.phase !== "ready") {
+          const catalog = await backend.sessionConfiguration!(record.cwd);
+          if (catalog.binding !== record.binding) throw new Error("后端配置来源已变化，请核对原会话；不会重新创建");
+          validateSessionConfiguration(catalog, record.values);
+        }
+        const result = await backend.activate({ type: "resume", sessionId: record.sessionId }, {
+          deviceId, spawnMode: record.spawnMode ?? "tui",
+          ...(record.phase === "ready" ? {} : { configuration: record.values }),
+        });
+        if (result.sessionId !== record.sessionId) throw new Error("恢复返回了不同会话身份，已停止发送");
+      }
+      await this.#sessionConfigurations.update(deviceId, launchId, { phase: "ready", error: undefined });
+      this.#invalidateCatalog();
+    } catch (error) {
+      await this.#sessionConfigurations.update(deviceId, launchId, { phase: "unknown", error: describeError(error).slice(0, 2000) });
+    }
   }
 
   /** §8 的四个请求。所有失败都走 `protocol.error` 并带回 `requestId`，不静默吞。 */

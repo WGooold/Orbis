@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RuntimeCommandSchema, RuntimeEventSchema, RuntimeCommandStatusSchema,
-  runtimeInputOwners, messageInputDecision, canDispatchMessage, inputMutationError, type RuntimeInputState } from "./index.js";
+  runtimeInputOwners, messageInputDecision, canDispatchMessage, inputMutationError, configurationMutationError, type RuntimeInputState } from "./index.js";
 
 describe("all runtime inputs and states (AIN-01/02)", () => {
   it("registers exactly every wire input, including service requests and one-way ACKs", () => {
@@ -35,6 +35,15 @@ describe("all runtime inputs and states (AIN-01/02)", () => {
     expect(inputMutationError(state, "read")).toBe(state.offline ? "runtime_offline" : state.closing ? "runtime_closing" : undefined);
     expect(inputMutationError(state, "close")).toBe(state.offline ? "runtime_offline" : state.closing ? "runtime_closing" : undefined);
     expect(canDispatchMessage(state)).toBe(plain === "start");
+  });
+
+  // SC73: native configuration can change independently from a running turn; mutation/recovery still serialize.
+  it("admits configuration during running, approval and compaction while retaining ownership barriers", () => {
+    for (const state of cases.map(item => item.state)) {
+      const expected = state.offline ? "runtime_offline" : state.closing ? "runtime_closing"
+        : state.mutating ? "configuration_busy" : state.reconciling || state.phase === "unknown" ? "state_unavailable" : undefined;
+      expect(configurationMutationError(state)).toBe(expected);
+    }
   });
 
   it("applies precedence to overlapping native facts and does not let later inputs bypass a queue", () => {

@@ -177,13 +177,13 @@ struct StoreTests {
         #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
         #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
         await transport.event(["type": "runtime.metadata", "metadata": ["permissionManagement": facts(), "status": "running"]], sequence: 3, channel: "ctl")
-        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        // S51 / SC73: native running and pending approvals do not forbid selecting subsequent settings.
+        #expect(store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
         await transport.event(["type": "runtime.metadata", "metadata": ["status": "idle"]], sequence: 4, channel: "ctl")
         let request: [String: Any] = ["runtimeId": "a", "requestId": "approval", "extensionId": "test", "kind": "confirm",
             "title": "允许操作？", "expiresAt": Int64(Date().timeIntervalSince1970 * 1000) + 60000]
         await transport.event(["type": "interaction.requested", "request": request], sequence: 5, channel: "ctl")
-        #expect(!store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
-        #expect(!store.updatePermission(settingId: "sandbox", value: "workspace-write"))
+        #expect(store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
         await transport.event(["type": "interaction.resolved", "requestId": "approval", "source": "remote"], sequence: 6, channel: "ctl")
         #expect(store.canUpdatePermission(settingId: "sandbox", value: "workspace-write"))
         transport.acceptsSends = false

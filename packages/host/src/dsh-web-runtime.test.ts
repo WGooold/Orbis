@@ -546,7 +546,7 @@ describe("DeepSeek Web runtime adapter", () => {
     await vi.waitFor(() => expect(f.runtime.directoryEntries()[0]?.thinkingLevel).toBe("high"));
   });
 
-  it("exposes native permission choices, confirms writes, and rejects busy or unavailable changes", async () => {
+  it("confirms permissions during an active turn and retains native refusals", async () => {
     const f = discoveryFixture(); f.list([f.live("browser", true)]);
     const base = f.request.getMockImplementation()!;
     let profile = "workspace-write"; let seq = 10; let fail = false;
@@ -566,7 +566,9 @@ describe("DeepSeek Web runtime adapter", () => {
     const apply = (id: string, value: string) => f.runtime.dispatchCommand("dsh:browser", id, { type: "permissions.update", settingId: "permission-preset", value });
     const result = (id: string) => f.events.find(item => item.event.type === "command.result" && item.event.commandId === id)?.event;
     apply("busy", "danger-full-access");
-    await vi.waitFor(() => expect(result("busy")).toMatchObject({ ok: false }));
+    await vi.waitFor(() => expect(result("busy")).toMatchObject({ ok: true }));
+    // SC73: the active turn remains running while subsequent permissions change.
+    expect(f.runtime.directoryEntries()[0]?.status).toBe("running");
     f.emit("api-session/status", "browser", false);
     apply("invalid", "arbitrary");
     await vi.waitFor(() => expect(result("invalid")).toMatchObject({ ok: false }));

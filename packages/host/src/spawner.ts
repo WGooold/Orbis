@@ -203,8 +203,11 @@ export function buildSpawnPlan(input: {
   /** macOS 启动握手；记录 exec 前的 PID，避免把短命的开窗进程当作 Pi。 */
   pidFile?: string;
   scriptFile?: string;
+  configuration?: import("@orbis/protocol").SessionConfigurationValues;
 }): SpawnPlan {
   const piArgs: string[] = [...input.pi.prefixArgs];
+  if (input.configuration?.model !== undefined) piArgs.push("--model", input.configuration.model);
+  if (input.configuration?.thinking !== undefined) piArgs.push("--thinking", input.configuration.thinking);
   if (input.target.type === "resume") {
     piArgs.push("--session", input.target.sessionFile);
   } else {
@@ -289,6 +292,7 @@ export type ActivateInput = {
     | { type: "resume"; sessionId: string; cwd: string; sessionFile: string }
     | { type: "new"; agentKind: AgentKind; cwd: string };
   spawnMode?: SpawnMode;
+  configuration?: import("@orbis/protocol").SessionConfigurationValues;
 };
 
 export type SessionSpawnerOptions = {
@@ -319,6 +323,11 @@ export class SessionSpawner {
     this.#env = options.env ?? process.env;
     this.#stateDir = options.stateDir;
     this.#now = options.now ?? Date.now;
+  }
+
+  async sessionConfiguration(cwd: string): Promise<import("@orbis/protocol").SessionConfigurationCatalog> {
+    const { piSessionConfiguration } = await import("./session-configuration-probe.js");
+    return piSessionConfiguration(await resolvePiCommand(this.#env), cwd, this.#env);
   }
 
   get running(): readonly SpawnedAgent[] {
@@ -383,6 +392,7 @@ export class SessionSpawner {
       desktop,
       terminal,
       env,
+      ...(input.configuration === undefined ? {} : { configuration: input.configuration }),
       target:
         input.target.type === "resume"
           ? { type: "resume", sessionId: input.target.sessionId, sessionFile: input.target.sessionFile }

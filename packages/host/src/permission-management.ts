@@ -2,7 +2,7 @@ import type { PermissionManagement, RuntimePermissions } from "@orbis/protocol";
 import { CODEX_PERMISSION_COMMANDS } from "./codex-permissions.js";
 
 type PermissionOption = { value: string; label: string; description?: string | undefined };
-const busyReason = "会话正在执行任务或有待处理审批，请完成后再修改权限。";
+const busyReason = "会话配置正在更新或恢复，请稍后重试。";
 const sessionDetails = "这里修改的是当前会话的持久权限设置，不会改变其他会话或新会话默认值。允许一次（once）只批准当前操作，不会修改会话权限。";
 const unknown = (value: string | undefined) => value && value !== "unknown" ? `未知（${value}）` : "未知";
 

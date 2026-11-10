@@ -9,7 +9,7 @@ import {
   type InteractionCoordinator,
 } from "@orbis/interaction-sdk";
 import {
-  prepareSessionSync, inputMutationError, RuntimeInputUnconfirmedError,
+  prepareSessionSync, inputMutationError, configurationMutationError, RuntimeInputUnconfirmedError,
   RecoverableSessionSource,
   selectPreparedSessionSync,
   type PreparedSessionSync,
@@ -68,6 +68,9 @@ const markInstanceActive = (): void => {
 };
 
 export default function piRemoteControl(pi: ExtensionAPI): void {
+  // A native catalog probe loads provider extensions but must not publish a
+  // second ordinary runtime to this Host.
+  if (process.env.ORBIS_CONFIGURATION_PROBE === "1") return;
   // 幂等守卫：已有活跃实例（manifest + `-e` 叠加、或双注册）时本次求值直接让位。
   // no-op 的实例不注册任何 handler，不会干扰活跃实例的生命周期。
   if ((globalThis as GlobalScope)[ACTIVE_INSTANCE] === true) {
@@ -571,8 +574,9 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
       }),
       executeSlashCommand: (name, args) => {
         const effect = name === "quit" ? "close" : !args.trim() && ["name", "tree", "model", "session", "stats"].includes(name) ? "read" : "write";
-        const error = inputMutationError({ phase: currentContext?.isIdle() === true ? "idle" : "running", compacting,
-          starting: submitting, queueDepth: queuedSends.length, offline: !ownsSession() }, effect);
+        const state = { phase: currentContext?.isIdle() === true ? "idle" as const : "running" as const, compacting,
+          starting: submitting, queueDepth: queuedSends.length, offline: !ownsSession() };
+        const error = ["model", "thinking"].includes(name) ? configurationMutationError(state) : inputMutationError(state, effect);
         if (error) return Promise.reject(new Error(error));
         return sessionSlashCommandAdapter.execute(name, args);
       },

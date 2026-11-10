@@ -31,6 +31,7 @@ const relay = await createRelayServer({
   host: process.env.HOST ?? "0.0.0.0",
   runtimeCredentials: runtimeCredential ? [runtimeCredential] : [],
   ...(adminToken === undefined ? {} : { adminToken }),
+  ...(apns === undefined ? {} : { apns }),
   registration,
   trustProxy: process.env.ORBIS_TRUST_PROXY === "1",
   adminStateFile: process.env.ORBIS_ADMIN_STATE_FILE ?? `${stateFile}.admin.json`,

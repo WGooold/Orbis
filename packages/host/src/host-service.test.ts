@@ -2919,6 +2919,62 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     target.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  // S51 / SC73: the durable snapshot precedes native create; lost receipts and
+  // failed configuration recover the same native identity without a second start.
+  it("recovers configured launch by exact identity after a lost receipt and configuration refusal", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-configured-host-"));
+    relay = await startRelayLocal(stateDir);
+    let refuse = true; let created = false;
+    const settings = { model: "model-a", reasoningEffort: "high", modelProvider: "fixture", approvalPolicy: "never",
+      approvalsReviewer: "user", sandboxPolicy: { type: "readOnly", networkAccess: false } };
+    const thread = { id: "configured-thread", cwd: stateDir, status: { type: "idle" }, turns: [] };
+    const request = vi.fn(async (method: string) => {
+      if (method === "model/list") return { data: [{ id: "model-a", model: "model-a", displayName: "Fixture A", isDefault: true,
+        defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }] }] };
+      if (method === "config/read") return { config: { model: "model-a", model_reasoning_effort: "high", model_provider: "fixture" } };
+      if (method === "thread/start") {
+        const disk = JSON.parse(await readFile(join(stateDir!, "session-configuration.json"), "utf8"));
+        expect(Object.values(disk.launches)).toMatchObject([{ phase: "preparing", values: { model: "model-a", thinking: "high" } }]);
+        created = true; return { thread, ...settings, reasoningEffort: "low" };
+      }
+      if (method === "thread/settings/update") { if (refuse) throw new Error("synthetic managed refusal"); return {}; }
+      if (method === "thread/resume" || method === "thread/read") return { thread, ...settings };
+      if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
+      return { data: [] };
+    });
+    const runtime = new CodexRuntime({ server: { request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts") });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: runtime });
+    await host.start();
+    const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
+    expect(connected.ready.sessionConfiguration).toBe(1);
+    const response = async (id: string, phase?: string): Promise<Record<string, unknown>> => {
+      for (let index = 0; index < 80; index++) {
+        const message = await device!.receiveMessage() as Record<string, unknown>;
+        if (message.requestId === id && (phase === undefined || message.phase === phase)) return message;
+      }
+      throw new Error(`missing configured launch result ${id} ${phase}`);
+    };
+    sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: "codex", cwd: stateDir });
+    const config = await response("config");
+    const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch", launchId: "stable-launch", agentKind: "codex",
+      cwd: stateDir, binding: config.binding, revision: config.revision, values: config.values, spawnMode: "tui" };
+    sendRequest(device, launch);
+    expect(await response("launch", "unknown")).toMatchObject({ sessionId: "configured-thread", error: "synthetic managed refusal" });
+    refuse = false;
+    sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "lost-receipt", launchId: "stable-launch" });
+    expect(await response("lost-receipt", "ready")).toMatchObject({ sessionId: "configured-thread", values: config.values });
+    sendRequest(device, { ...launch, requestId: "duplicate" });
+    expect(await response("duplicate", "ready")).toMatchObject({ sessionId: "configured-thread" });
+    expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
+    expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
+    sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "absent", launchId: "never-sent" });
+    expect(await response("absent")).toMatchObject({ type: "session.launch.result", phase: "absent", launchId: "never-sent" });
+    sendRequest(device, { ...launch, requestId: "changed-identity", values: {} });
+    expect(await response("changed-identity")).toMatchObject({ type: "protocol.error", code: "launch_id_conflict" });
+  });
+
   it("lets DSH saves reach provider validation while busy, but still blocks switches", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-save-gate-"));
     relay = await startRelayLocal(stateDir);

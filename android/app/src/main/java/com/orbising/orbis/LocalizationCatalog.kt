@@ -440,6 +440,7 @@ internal object LocalizationCatalog {
         "加载更多文件" to "Load more files",
         "助手" to "Assistant",
         "助手回复" to "Assistant reply",
+        "升级电脑端后可在此选择模型、思考深度和权限" to "Update the computer app to select a model, reasoning depth and permissions here.",
         "协议模式" to "Protocol mode",
         "单选" to "Choose one",
         "即将用完" to "Almost used up",
@@ -469,9 +470,9 @@ internal object LocalizationCatalog {
         "历史范围或显示结果不完整，请重试。" to "History range or presentation is incomplete. Try again.",
         "历史范围未推进，请重试" to "History range made no progress. Try again.",
         "历史范围未推进，请重试。" to "History range made no progress. Try again.",
-        "历史补齐范围已经失效。" to "History catch-up range expired.",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "历史补齐范围已经失效。" to "History catch-up range expired.",
         "历史补齐范围无法确认。" to "Could not confirm the history catch-up range.",
         "历史补齐读取失败。" to "History catch-up read failed.",
         "历史记录加载失败" to "History failed to load",
@@ -548,6 +549,7 @@ internal object LocalizationCatalog {
         "同步暂未完成，请重试。" to "Sync is incomplete. Try again.",
         "后端条目不是对象" to "Backend entry is not an object",
         "后端条目缺少 kind/sessions/ready/complete" to "Backend entry is missing kind/sessions/ready/complete",
+        "后续轮次设置" to "Settings for later turns",
         "含同期工作区修改，归属未确认" to "Includes concurrent workspace edits with unconfirmed ownership",
         "启动" to "Start",
         "启动中" to "Starting",
@@ -556,6 +558,7 @@ internal object LocalizationCatalog {
         "启动失败：{0}" to "Start failed: {0}",
         "启动未确认" to "Start unconfirmed",
         "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。" to "Start unconfirmed: the computer has not reported the session online. Check the session list shortly.",
+        "启动权限" to "Startup permissions",
         "启用" to "Enable",
         "启用 {0}" to "Enable {0}",
         "启用供应商" to "Enable provider",
@@ -619,11 +622,11 @@ internal object LocalizationCatalog {
         "子任务状态待核对" to "Subtask status needs checking",
         "子任务运行中" to "Subtasks running",
         "完全访问" to "Full access",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。" to "Full access allows network access and cannot restrict it separately. Select read-only or workspace write first.",
         "完成" to "Completed",
         "完成后发送" to "Send when done",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "完整内容" to "Full content",
         "官方" to "Official",
         "官方 · " to "Official · ",
@@ -771,18 +774,20 @@ internal object LocalizationCatalog {
         "已连接" to "Connected",
         "已送入上下文" to "Added to context",
         "已送达" to "Delivered",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "已选择" to "Selected",
         "已选择 {0} 项" to "{0} selected",
         "已选择：" to "Selected: ",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "已选择：{0}" to "Selected: {0}",
         "已配对" to "Paired",
         "已配对电脑" to "Paired computers",
         "已配对电脑 {0} 台" to "{0} paired computers",
         "已配对的电脑" to "Paired computer",
+        "应用" to "Apply",
         "应用到下一轮" to "Apply to the next turn",
         "应用到当前会话" to "Apply to this session",
+        "应用到新会话" to "Apply to new session",
         "应用已重新启动，可继续下载" to "App restarted. You can resume the download.",
         "应用已重新启动，可继续发送" to "App restarted. You can resume sending.",
         "开" to "On",
@@ -842,6 +847,7 @@ internal object LocalizationCatalog {
         "待确认" to "Awaiting confirmation",
         "思考" to "Reasoning",
         "思考中…" to "Thinking…",
+        "思考深度" to "Reasoning depth",
         "思考级别" to "Reasoning level",
         "思考过程" to "Reasoning",
         "恢复另一个 Codex 会话" to "Resume a different Codex session",
@@ -920,14 +926,14 @@ internal object LocalizationCatalog {
         "收起交互" to "Collapse interaction",
         "收起内容" to "Collapse content",
         "收起工作目录" to "Collapse working directories",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "收起新会话" to "Close new session draft",
         "收起目录" to "Collapse folder",
         "收起细节" to "Hide details",
         "收起较早会话" to "Hide earlier sessions",
         "收起这个分支" to "Collapse this branch",
         "改用 {0} 并重新连接" to "Use {0} and reconnect",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "放回输入框" to "Restore to composer",
         "文件" to "File",
         "文件下载参数无效，请更新电脑端。" to "Invalid file download parameters. Update the Host.",
@@ -969,6 +975,7 @@ internal object LocalizationCatalog {
         "无法保存上传记录" to "Could not save upload records",
         "无法保存下载记录" to "Could not save download records",
         "无法保存传输进度：{0}" to "Could not save transfer progress: {0}",
+        "无法保存启动恢复记录，请重试" to "Could not save launch recovery data. Try again.",
         "无法保存安全凭据，请解锁设备后重试。" to "Could not save credentials. Unlock the device and try again.",
         "无法保存文件" to "Could not save file",
         "无法写入手机下载文件" to "Could not write the download file on the phone",
@@ -1071,6 +1078,8 @@ internal object LocalizationCatalog {
         "本轮已运行 %.1f 秒" to "This turn has been running for %.1f s",
         "本轮文件变化未记录" to "File changes were not recorded for this turn",
         "本轮文件差异" to "This turn's file diff",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "本轮概况已更新，当前保持打开时的版本。" to "Turn summary updated. Keeping the version opened here.",
         "本轮没有文件变化" to "No file changes in this turn",
         "本轮耗时" to "Turn duration",
@@ -1078,8 +1087,6 @@ internal object LocalizationCatalog {
         "权限" to "Permissions",
         "权限模式" to "Permission mode",
         "权限设置未发送：中继服务器当前离线" to "Permission update not sent: relay is offline",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "权限配置存在问题" to "Permission configuration has a problem",
         "权限问题：{0}" to "Permission problem: {0}",
         "材质" to "Material",
@@ -1120,6 +1127,7 @@ internal object LocalizationCatalog {
         "桌面版" to "Desktop",
         "模型" to "Model",
         "模型与上下文" to "Model and context",
+        "模型和思考深度用于后续轮次；权限以电脑端确认生效" to "Model and reasoning changes apply to later turns. Permission changes take effect when confirmed by the computer.",
         "模型快照缺少代次" to "Model snapshot is missing generation",
         "模型快照缺少领域清单" to "Model snapshot is missing domain list",
         "模型快照里的领域不是对象" to "Model snapshot domain is not an object",
@@ -1153,6 +1161,7 @@ internal object LocalizationCatalog {
         "正在查询配额" to "Checking quota",
         "正在校验" to "Verifying",
         "正在核对子任务状态，以下为最后已知信息" to "Checking subtask status. Showing the last known information.",
+        "正在确认配置…" to "Confirming configuration…",
         "正在等待电脑连接：请确认电脑上的 Orbis Host 已打开，APP 会自动重连" to "Waiting for the computer. Make sure Orbis Host is running. The app will reconnect automatically.",
         "正在统计文件变化" to "Checking file changes",
         "正在请求文件" to "Requesting file",
@@ -1221,6 +1230,8 @@ internal object LocalizationCatalog {
         "清单不完整" to "Incomplete list",
         "清单不完整，显示已知任务" to "Incomplete list. Showing known tasks.",
         "清单未读到" to "List not loaded",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "清单被截断" to "List truncated",
         "清单里没有这个领域" to "This domain is absent from the list",
         "清空已读并继续" to "Clear loaded content and continue",
@@ -1230,8 +1241,6 @@ internal object LocalizationCatalog {
         "灰绿" to "Sage",
         "点下面的按钮读一页" to "Tap the button below to load a page",
         "点击下载" to "Tap to download",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "点击额度环查询" to "Tap the quota dial to check it",
         "片帧不能再被切片" to "A piece frame cannot be split again",
         "版本 {0}" to "Version {0}",
@@ -1297,6 +1306,7 @@ internal object LocalizationCatalog {
         "电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。" to "On your computer, download and activate Orbis Host for free at orbising.com, then display its pairing QR code for the app to scan.",
         "电脑端读取繁忙，请稍后重试" to "Computer is busy reading. Try again shortly.",
         "电脑端读取繁忙，请稍后重试。" to "Computer is busy reading. Try again shortly.",
+        "电脑端默认" to "Computer default",
         "电脑，当前 {0}" to "Computer, currently {0}",
         "目录" to "Folder",
         "目录分页失败：{0}" to "Folder pagination failed: {0}",
@@ -1343,6 +1353,7 @@ internal object LocalizationCatalog {
         "等待会话启动" to "Waiting for session to start",
         "等待传输" to "Waiting to transfer",
         "等待前一条发送" to "Waiting for the previous message",
+        "等待启动配置确认" to "Waiting for startup configuration",
         "等待电脑确认已超过 75 秒，权限设置尚未确认；请检查当前权限后再决定是否重试" to "No confirmation after 75 seconds. Permissions remain unconfirmed. Check current permissions before retrying.",
         "等待电脑端交互" to "Waiting for computer interaction",
         "等待电脑连接" to "Waiting for the computer to connect",
@@ -1371,6 +1382,8 @@ internal object LocalizationCatalog {
         "缺席没有给原因，不能当成没有切换" to "No reason for absence; cannot assume no pending switch",
         "网络访问" to "Network access",
         "网络：允许联网。" to "Network: access allowed.",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "网络：受限；是否能申请放行取决于审批策略。" to "Network: restricted. Whether access can be requested depends on the approval policy.",
         "网络：未知；原生后端尚未报告网络权限，不能从预设名称推断。" to "Network: unknown. The native backend has not reported network permissions; they cannot be inferred from a preset name.",
         "翻面查看" to "Flip to view",
@@ -1382,8 +1395,6 @@ internal object LocalizationCatalog {
         "聊天记录已更新，请连接后重新同步" to "Chat history updated. Connect to sync again.",
         "联网操作受沙箱限制，可否申请放行取决于审批策略。" to "Network operations are restricted by the sandbox. Whether access can be requested depends on the approval policy.",
         "自动" to "Auto",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "自动审查" to "Automatic review",
         "自动接受编辑" to "Accept edits automatically",
         "自动模式" to "Automatic mode",
@@ -1436,6 +1447,8 @@ internal object LocalizationCatalog {
         "请从命令菜单选择斜杠命令。" to "Choose slash commands from the command menu.",
         "请先完成当前任务和待处理交互，再调整权限" to "Finish the current task and pending interactions before changing permissions",
         "请先恢复这个已归档会话" to "Restore this archived session first",
+        "请先核对上一次启动及首句结果" to "Check the previous launch and first message before starting another session.",
+        "请先读取并确认启动配置" to "Load and confirm the startup settings first.",
         "请先连接已配对的电脑" to "Connect to the paired computer first",
         "请先退出 Claude Code 会话" to "Exit the Claude Code session first",
         "请先退出 Pi 会话" to "Exit the Pi session first",
@@ -1501,6 +1514,7 @@ internal object LocalizationCatalog {
         "运行中 · {0}" to "Running · {0}",
         "运行中 · {0} 个子任务" to "Running · {0} subtasks",
         "运行中 · 子任务待核对" to "Running · subtasks need checking",
+        "运行中也可修改，生效范围由电脑端确认" to "You can change settings while running; the computer confirms when they take effect.",
         "运行中，{0}" to "Running, {0}",
         "运行中，{0} 个子任务" to "Running, {0} subtasks",
         "运行中，子任务待核对" to "Running, subtasks need checking",
@@ -1520,6 +1534,8 @@ internal object LocalizationCatalog {
         "返回聊天" to "Back to chat",
         "还有 {0} 个文件" to "{0} more files",
         "还有更新的没读" to "Newer records remain unread",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
         "还没有可显示的会话" to "No sessions to display yet",
@@ -1534,8 +1550,6 @@ internal object LocalizationCatalog {
         "这是一条还没有对话内容的记录。" to "This record has no conversation content yet.",
         "这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair" to "Old QR code without encryption material. Run orbis pair again on the computer.",
         "这条记录只能预览" to "This record is preview only",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "这里修改的是当前会话的持久权限设置，不会改变其他会话或新会话默认值。允许一次（once）只批准当前操作，不会修改会话权限。" to "These changes apply to the current session's persistent permissions. They do not change other sessions or defaults for new sessions. Allow once approves only the current operation and does not change session permissions.",
         "进行中" to "In progress",
         "远程交互" to "Remote interaction",
@@ -1605,6 +1619,10 @@ internal object LocalizationCatalog {
         "配对连接已关闭" to "Pairing connection closed",
         "配对连接已断开" to "Pairing disconnected",
         "配置 {0} / {1}" to "Profile {0} / {1}",
+        "配置未发送，请检查连接" to "Configuration was not sent. Check your connection.",
+        "配置未确认" to "Configuration unconfirmed",
+        "配置未确认，请刷新核对" to "Configuration is unconfirmed. Refresh to check.",
+        "配置未确认，请检查连接" to "Configuration is unconfirmed. Check your connection.",
         "配额数据格式无法识别，请升级 Host 后重试" to "Unrecognized quota format. Update Host and try again.",
         "配额查询未发送，请重新连接" to "Quota request was not sent. Reconnect.",
         "配额查询超时，请稍后重试" to "Quota request timed out. Try again shortly.",
@@ -1652,6 +1670,7 @@ internal object LocalizationCatalog {
         "预览请求未送达。" to "Preview request was not delivered.",
         "预览读取超时，请重试。" to "Preview read timed out. Try again.",
         "默认" to "Default",
+        "默认深度" to "Default reasoning",
         "默认（需要时询问）" to "Default (ask when needed)",
         "（" to " (",
         "（{0}）" to " ({0})",

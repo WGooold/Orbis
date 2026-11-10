@@ -36,8 +36,20 @@ let status: string | undefined;
 let interactiveSession = false;
 let readingTasks = false;
 let reportedTasks: { connection: Connection; encoded: string; at: number } | undefined;
+let permissionMode: string | undefined;
+type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+let selectedEffort: Effort | undefined;
+let turnSelection: { turnId: string; model?: string; effort?: Effort | number; captured: boolean } | undefined;
 
 export const register: Register = on => {
+  // Native classic events include the effective mode even before the first prompt.
+  on("classic.*", async ($, event, next) => {
+    if ("permission_mode" in event && typeof event.permission_mode === "string" && !("agent_id" in event && event.agent_id)) {
+      permissionMode = event.permission_mode;
+      void reportState($, true);
+    }
+    return await next(event);
+  });
   on("session.start", async ($, event, next) => {
     interactiveSession = event.isInteractive && event.surface === "terminal";
     const result = await next(event);
@@ -101,6 +113,7 @@ export const register: Register = on => {
   on("turn.start", async ($, event, next) => {
     if (event.agentId === undefined) {
       activeTurnId = event.turnId;
+      turnSelection = { turnId: event.turnId, ...(selectedEffort === undefined ? {} : { effort: selectedEffort }), captured: false };
       // The authenticated HTTP acknowledgement is the capture barrier. Never replay next().
       await emit($, { type: "turn.start", turnId: event.turnId, startedAt: await $.clock.now() }).catch(() => false);
     }
@@ -113,6 +126,17 @@ export const register: Register = on => {
       activeStep = { turnId: event.turnId, stepIndex: event.index, uuids: [], target: connection ?? await connect($) };
     }
     const step = event.agentId === undefined ? activeStep : undefined;
+    if (event.agentId === undefined && turnSelection?.turnId === event.turnId) {
+      if (!turnSelection.captured) {
+        turnSelection.model = event.model;
+        turnSelection.effort ??= event.effort;
+        turnSelection.captured = true;
+      }
+      // Native turn.step is the documented per-request setter. Pin a turn's
+      // values so a phone change during streaming affects the next turn only.
+      event = { ...event, ...(turnSelection.model === undefined ? {} : { model: turnSelection.model }),
+        ...(turnSelection.effort === undefined ? {} : { effort: turnSelection.effort }) };
+    }
     const stream = next(event);
     let pending: { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] = [];
     let pendingChars = 0;
@@ -282,7 +306,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     interactive: true, claudeVersion: version.version, bridgeVersion: "4",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"],
+    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -313,6 +337,7 @@ async function reportState($: Api, force: boolean): Promise<void> {
     const target = connection;
     if (target === undefined) return;
     const state: Record<string, unknown> = {};
+    if (permissionMode !== undefined) state.permissionMode = permissionMode;
     const model = await $.session.model().catch(() => undefined);
     if (typeof model === "string" && model.length > 0) state.model = model.slice(0, 256);
     const usage = await $.session.usage().catch(() => undefined);
@@ -334,7 +359,8 @@ async function reportState($: Api, force: boolean): Promise<void> {
     if (modelRow?.options !== undefined) state.modelOptions = modelRow.options.slice(0, 64);
     if (typeof modelRow?.value === "string" && modelRow.value.length > 0) state.modelSetting = modelRow.value;
     const settings = await $.settings.read().catch(() => undefined) as Record<string, unknown> | undefined;
-    if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
+    if (selectedEffort !== undefined) state.effort = selectedEffort;
+    else if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
     const encoded = JSON.stringify(state);
     if (!force && reportedState?.connection === target && reportedState.encoded === encoded) return;
     if (await postEvent($, target, { type: "session.state", state })) reportedState = { connection: target, encoded };
@@ -374,7 +400,7 @@ async function runCommand($: Api, target: Connection, commandId: string,
   // a batch cannot start several idle-waiting calls before turn.start arrives.
   if (command.type === "user_message" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
       [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) return;
-  if (command.type === "slash" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
+  if (command.type === "slash" && ((!['model', 'effort'].includes(command.name) && (activeTurnId !== undefined || activeCompactions.size > 0)) ||
       [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) {
     await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
       status: "failure", error: "runtime_busy" });
@@ -407,6 +433,11 @@ async function runCommand($: Api, target: Connection, commandId: string,
         const set = await $.config.set({ key: "model", value: command.args.trim() });
         if ("deny" in set && typeof set.deny === "string") throw new Error(set.deny);
         output = `Model set to ${command.args.trim()}`;
+      } else if (command.name === "effort") {
+        const effort = command.args.trim();
+        if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error("effort_not_available");
+        selectedEffort = effort as Effort;
+        output = `Effort selected for subsequent turns: ${effort}`;
       } else {
         const ran = await $.command.run({ command: command.name, args: command.args });
         output = ran.text;

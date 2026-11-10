@@ -134,6 +134,7 @@ export class PiSlashCommandAdapter {
   readonly #listeners = new Set<() => void>();
   readonly #pending = new Map<string, PendingCommand>();
   #closed = false;
+  #configuring = false;
 
   constructor(
     pi: SlashCommandAPI,
@@ -250,6 +251,16 @@ export class PiSlashCommandAdapter {
     }
     this.#diagnostic?.("slash.adapter.validated", { name, source: command.source, argsLength: normalizedArgs.length });
 
+    // Native setters do not need an idle-only extension command context.
+    if (name === "model" || name === "thinking") {
+      const context = this.#getContext();
+      if (!context) throw new Error("runtime_offline");
+      if (this.#configuring) throw new Error("configuration_busy");
+      this.#configuring = true;
+      try { return await this.#executeConfiguration(name, args, context); }
+      finally { this.#configuring = false; }
+    }
+
     if (command.source !== "builtin") {
       const context = this.#getContext();
       this.#diagnostic?.("slash.adapter.user_message.dispatching", { name });
@@ -354,7 +365,7 @@ export class PiSlashCommandAdapter {
     }
   }
 
-  async #executeBuiltin(name: string, args: string, context: ExtensionCommandContext): Promise<unknown> {
+  async #executeConfiguration(name: string, args: string, context: ExtensionContext): Promise<unknown> {
     switch (name) {
       case "model": {
         const reference = singleArgument(args, name);
@@ -379,6 +390,13 @@ export class PiSlashCommandAdapter {
         this.#pi.setThinkingLevel(level as Parameters<SlashCommandAPI["setThinkingLevel"]>[0]);
         return { level: this.#pi.getThinkingLevel() };
       }
+    }
+    throw new Error("configuration_not_available");
+  }
+
+  async #executeBuiltin(name: string, args: string, context: ExtensionCommandContext): Promise<unknown> {
+    switch (name) {
+      case "model": case "thinking": return this.#executeConfiguration(name, args, context);
       case "name": {
         const value = args.trim();
         if (value) this.#pi.setSessionName(value);

@@ -3562,10 +3562,12 @@ describe("Codex all-state input lifecycle (AIN-04)", () => {
     h.server.onExit?.(0);
   });
 
-  it("rejects configuration writes during compaction, keeps queries available, and allows cancellation", async () => {
+  // SC73: compaction still blocks session mutations while subsequent-turn settings remain writable.
+  it("accepts subsequent-turn settings during compaction, blocks session mutations, and allows cancellation", async () => {
     const h = makeHarness(); await activate(h); compact(h);
     for (const name of ["model", "thinking", "compact", "fork"]) h.runtime.handleCommand({ type: "slash.execute", name, args: "next" }, name, "th-1");
-    for (const name of ["model", "thinking", "compact", "fork"]) expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: name, ok: false, error: "runtime_busy" }));
+    for (const name of ["model", "thinking"]) expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: name, ok: true }));
+    for (const name of ["compact", "fork"]) expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: name, ok: false, error: "runtime_busy" }));
     h.runtime.handleCommand({ type: "slash.execute", name: "tree", args: "" }, "query", "th-1");
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "query", ok: true }));
     h.runtime.handleCommand({ type: "user_message", text: "cancel me", messageId: "phone" }, "send", "th-1");

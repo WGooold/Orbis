@@ -53,5 +53,14 @@ export function inputMutationError(state: RuntimeInputState, effect: "read" | "w
     : decision.action === "queue" || !canDispatchMessage(state) ? "runtime_busy" : undefined;
 }
 
+/** S51: configuring subsequent work is independent of the active turn's execution. */
+export function configurationMutationError(state: RuntimeInputState): string | undefined {
+  if (state.offline) return "runtime_offline";
+  if (state.closing) return "runtime_closing";
+  if (state.mutating) return "configuration_busy";
+  if (state.reconciling || state.phase === "unknown") return "state_unavailable";
+  return undefined;
+}
+
 /** The operation may have reached its native owner; retry requires evidence. */
 export class RuntimeInputUnconfirmedError extends Error {}

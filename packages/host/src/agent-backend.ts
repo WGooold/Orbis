@@ -17,7 +17,7 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SpawnMode } from "@orbis/protocol";
+import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SpawnMode, SessionConfigurationCatalog, SessionConfigurationValues } from "@orbis/protocol";
 import { ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 
 import { ActivationError, type SessionSpawner } from "./spawner.js";
@@ -44,6 +44,8 @@ export type CommandDispatch = "handled" | "unsupported" | "offline";
 export type AgentActivateContext = {
   deviceId?: string;
   spawnMode?: SpawnMode;
+  configuration?: SessionConfigurationValues;
+  onCreated?: (activation: BackendActivation) => Promise<void>;
 };
 
 export interface AgentBackend {
@@ -61,6 +63,7 @@ export interface AgentBackend {
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
   /** Effective configured provider, independent of any open session. Unknown on failure. */
   currentProvider?(): Promise<string | undefined>;
+  sessionConfiguration?(cwd: string): Promise<SessionConfigurationCatalog>;
   setArchived(sessionId: string, archived: boolean): Promise<void>;
   /**
    * 激活一个会话。不归本后端的会话抛 `ActivationError("session_not_found")`，
@@ -84,6 +87,7 @@ export type PiBackendOptions = {
   sendCommand: (runtimeId: string, commandId: string, command: RuntimeCommand) => boolean;
   /** loopback 当前注册的 runtimeId 列表（归属判定用；动态读，不快照）。 */
   runtimeIds: () => readonly string[];
+  runtimeMetadata?: () => readonly RuntimeMetadata[];
   sessionIsOnline?: (sessionId: string) => boolean;
   sessionsRoot?: string;
   log?: (line: string) => void;
@@ -103,6 +107,8 @@ export class PiBackend implements AgentBackend {
   isReady(): boolean {
     return true;
   }
+
+  sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> { return this.#options.spawner.sessionConfiguration(cwd); }
 
   ownsRuntime(runtimeId: string): boolean {
     return this.#options.runtimeIds().includes(runtimeId);
@@ -128,6 +134,11 @@ export class PiBackend implements AgentBackend {
 
   async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (target.type === "resume") {
+      const online = this.#options.runtimeMetadata?.().find(item => item.sessionId === target.sessionId);
+      if (online) {
+        if (context?.configuration) await this.#confirmConfiguration(target.sessionId, context.configuration, true);
+        return { sessionId: target.sessionId, spawnMode: "tui" };
+      }
       // 从磁盘找会话文件与 cwd（§8.2）。找不到 = 不归 Pi 管（可能是 codex 的 thread）。
       const scan = await listPiSessions(
         this.#options.sessionsRoot === undefined ? {} : { root: this.#options.sessionsRoot },
@@ -140,8 +151,10 @@ export class PiBackend implements AgentBackend {
       const spawned = await this.#options.spawner.activate({
         deviceId: context?.deviceId ?? "",
         target: { type: "resume", sessionId: target.sessionId, cwd: entry.cwd, sessionFile },
+        ...(context?.configuration === undefined ? {} : { configuration: context.configuration }),
         ...(context?.spawnMode === undefined ? {} : { spawnMode: context.spawnMode }),
       });
+      if (context?.configuration) await this.#confirmConfiguration(target.sessionId, context.configuration);
       return {
         ...(spawned.sessionId === undefined ? {} : { sessionId: spawned.sessionId }),
         spawnMode: spawned.spawnMode,
@@ -152,12 +165,34 @@ export class PiBackend implements AgentBackend {
       deviceId: context?.deviceId ?? "",
       target: { type: "new", agentKind: "pi", cwd: target.cwd },
       ...(context?.spawnMode === undefined ? {} : { spawnMode: context.spawnMode }),
+      ...(context?.configuration === undefined ? {} : { configuration: context.configuration }),
     });
+    await context?.onCreated?.({ ...(spawned.sessionId === undefined ? {} : { sessionId: spawned.sessionId }), spawnMode: spawned.spawnMode, pid: spawned.pid });
+    if (context?.configuration && spawned.sessionId) await this.#confirmConfiguration(spawned.sessionId, context.configuration);
+
     return {
       ...(spawned.sessionId === undefined ? {} : { sessionId: spawned.sessionId }),
       spawnMode: spawned.spawnMode,
       pid: spawned.pid,
     };
+  }
+
+  async #confirmConfiguration(sessionId: string, values: SessionConfigurationValues, apply = false): Promise<void> {
+    for (const [name, wanted] of [["model", values.model], ["thinking", values.thinking]] as const) {
+      if (wanted === undefined) continue;
+      const read = () => this.#options.runtimeMetadata?.().find(item => item.sessionId === sessionId);
+      const actual = () => name === "model" ? `${read()?.model?.provider}/${read()?.model?.id}` : read()?.thinkingLevel;
+      if (apply && actual() !== wanted) {
+        const runtime = read();
+        if (!runtime || !this.#options.sendCommand(runtime.runtimeId, randomUUID(), { type: "slash.execute", name, args: wanted }))
+          throw new Error("Pi 原会话不在线，配置尚未确认");
+      }
+      const deadline = Date.now() + 60_000;
+      while (actual() !== wanted) {
+        if (Date.now() >= deadline) throw new Error("Pi 启动配置尚未确认，首句未发送");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
   }
 
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
@@ -210,6 +245,12 @@ export class ClaudeBackend implements AgentBackend {
   /** Whether the phone can open a Claude Code terminal here (`launchableAgents`). */
   async launchable(): Promise<boolean> { return await this.#launchUnavailable() === undefined; }
 
+  async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
+    const read = this.#options.launcher?.sessionConfiguration;
+    if (!read) throw new Error("Claude 启动器尚未提供配置读取");
+    return read.call(this.#options.launcher, cwd);
+  }
+
   ownsRuntime(runtimeId: string): boolean { return runtimeId.startsWith("claude:") && this.#options.runtimeIds().includes(runtimeId); }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
@@ -235,19 +276,50 @@ export class ClaudeBackend implements AgentBackend {
     await archive.set(sessionId, archived);
   }
 
-  async activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (target.type === "resume") {
-      if (this.#options.runtimeIds().includes(`claude:${target.sessionId}`)) return { sessionId: target.sessionId, spawnMode: "tui" };
+      if (this.#options.runtimeIds().includes(`claude:${target.sessionId}`)) {
+        if (context?.configuration) {
+          const live = this.directoryEntries().find(item => item.sessionId === target.sessionId);
+          if (!live) throw new Error("Claude 原会话未上线");
+          await this.#confirmConfiguration(live, context.configuration);
+        }
+        return { sessionId: target.sessionId, spawnMode: "tui" };
+      }
       const file = await this.#options.catalog?.find(target.sessionId, this.#configDirs());
       if (file === undefined) throw new ActivationError("session_not_found", `Claude Code 会话目录里没有 ${target.sessionId}`);
       await this.#requireDirectory(file.cwd);
-      const runtime = await this.#launch({ cwd: file.cwd, resume: target.sessionId });
+      const runtime = await this.#launch({ cwd: file.cwd, resume: target.sessionId, ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
+      if (context?.configuration) await this.#confirmConfiguration(runtime, context.configuration);
       return { sessionId: runtime.sessionId ?? target.sessionId, spawnMode: "tui" };
     }
     if (!isAbsolute(target.cwd)) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
     await this.#requireDirectory(target.cwd);
-    const runtime = await this.#launch({ cwd: target.cwd });
+    const runtime = await this.#launch({ cwd: target.cwd,
+      ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
+    await context?.onCreated?.({ ...(runtime.sessionId === undefined ? {} : { sessionId: runtime.sessionId }), spawnMode: "tui" });
+    if (context?.configuration) await this.#confirmConfiguration(runtime, context.configuration);
     return { ...(runtime.sessionId === undefined ? {} : { sessionId: runtime.sessionId }), spawnMode: "tui" };
+  }
+
+  async #confirmConfiguration(runtime: RuntimeMetadata, value: SessionConfigurationValues): Promise<void> {
+    const catalog = await this.sessionConfiguration(runtime.cwd);
+    const chosen = catalog.models.find(item => item.value === value.model);
+    if (value.thinking !== undefined) {
+      if (!this.#options.modsBridge.supportsTurnConfiguration(runtime.runtimeId)) throw new Error("请更新 Claude 的 Orbis 插件后确认思考深度；首句未发送");
+      const accepted = this.#options.modsBridge.sendCommand(runtime.runtimeId, randomUUID(), { type: "slash", name: "effort", args: value.thinking });
+      if (accepted !== "accepted") throw new Error("Claude 思考深度设置未接入原生 turn.step，首句未发送");
+    }
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const current = this.#options.modsBridge.runtimeMetadata().find(item => item.runtimeId === runtime.runtimeId);
+      // Permissions were confirmed by the native CLI initialization with the same
+      // flags before opening this TUI. config.permissionMode only changes defaults.
+      if (current && (value.model === undefined || current.model?.id === value.model || chosen?.label.includes(`(${current.model?.id})`) === true)
+        && (value.thinking === undefined || current.thinkingLevel === value.thinking)) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error("Claude 已打开，启动配置尚未确认；首句未发送，请核对当前会话");
   }
 
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
@@ -381,7 +453,7 @@ export class ClaudeBackend implements AgentBackend {
     }
   }
 
-  async #launch(request: { cwd: string; resume?: string }): Promise<RuntimeMetadata> {
+  async #launch(request: { cwd: string; resume?: string; configuration?: SessionConfigurationValues }): Promise<RuntimeMetadata> {
     const reason = await this.#launchUnavailable();
     if (reason !== undefined || this.#options.launcher === undefined) throw new ActivationError("agent_unsupported", reason ?? "无法打开 Claude Code");
     const launchId = randomUUID();

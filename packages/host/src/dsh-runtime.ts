@@ -10,8 +10,9 @@ import {
   SessionSyncPreparer,
   type AgentSessionSummary, type ChatMessage, type InteractionRequest, type RemoteSessionEntry,
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
+  type SessionConfigurationCatalog,
 } from "@orbis/protocol";
-import type { AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
+import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, DshUnconfirmedError, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
@@ -188,7 +189,7 @@ export class DshAcpRuntime implements AgentBackend {
     throw new Error("DeepSeek Harness ACP 不支持归档，请在 dsh 中管理会话");
   }
 
-  activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (!this.#ready) return Promise.reject(new ActivationError("agent_unsupported", "DSH 后端未就绪"));
     if (target.type === "resume") {
       if (!target.sessionId.startsWith("dsh:")) return Promise.reject(new ActivationError("session_not_found", "不属于 DeepSeek Harness 的会话"));
@@ -200,16 +201,16 @@ export class DshAcpRuntime implements AgentBackend {
       this.#activating.set(target.sessionId, operation);
       return operation;
     }
-    return this.#scheduleActivation(target);
+    return this.#scheduleActivation(target, context);
   }
 
-  #scheduleActivation(target: AgentActivateTarget): Promise<BackendActivation> {
-    const operation = this.#activation.then(() => this.#activate(target));
+  #scheduleActivation(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
+    const operation = this.#activation.then(() => this.#activate(target, context));
     this.#activation = operation.catch(() => {});
     return operation;
   }
 
-  async #activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  async #activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (!this.#ready) throw new ActivationError("agent_unsupported", "DSH 后端未就绪");
     if (this.#sessions.size >= 8) throw new ActivationError("spawn_limit_reached", "DSH 活跃会话已达上限（8），请先关闭不用的会话");
     let cwd: string;
@@ -228,6 +229,17 @@ export class DshAcpRuntime implements AgentBackend {
     }, 60_000));
     id ??= typeof response.sessionId === "string" ? response.sessionId : undefined;
     if (!id) throw new Error("DSH 没有返回会话 ID");
+    await context?.onCreated?.({ sessionId: publicId(id), spawnMode: "headless" });
+    let configOptions = objects(response.configOptions);
+    for (const [configId, desired] of [["model", context?.configuration?.model], ["reasoning_effort", context?.configuration?.thinking]] as const) {
+      if (desired === undefined) continue;
+      const option = configOptions.find(item => item.id === configId);
+      const choice = option && optionChoices(option.options).find(item => wireOption(item.value) === desired);
+      if (!choice) throw new Error("DeepSeek ACP 配置选项已失效");
+      const changed = record(await this.#client.request("session/set_config_option", { sessionId: id, configId, value: choice.value }));
+      configOptions = objects(changed.configOptions);
+      if (wireOption(String(configOptions.find(item => item.id === configId)?.currentValue ?? "")) !== desired) throw new Error("DeepSeek ACP 未确认配置");
+    }
     try {
       if (!this.#ready) throw new Error("DSH 后端正在停止");
       const log = await this.#history.read(id);
@@ -238,7 +250,7 @@ export class DshAcpRuntime implements AgentBackend {
         notifications: new NotificationSource(randomUUID(), publicId(id), event => {
           if (this.#sessions.get(publicId(id!))?.notifications.epoch === event.producerEpoch) this.#sink(event, publicId(id!));
         }),
-        id, cwd, createdAt: log.header.createdAt, options: objects(response.configOptions), entries: dshEntries(log, entryCache),
+        id, cwd, createdAt: log.header.createdAt, options: configOptions, entries: dshEntries(log, entryCache),
         entryCache, preparer: new SessionSyncPreparer(),
         running: false, closing: false, cancelRequested: false, pendingStops: new Set(), updates: Promise.resolve(), streamed: new Map(), tools: new Map(), messages: new Map(), lastSeq: log.events.at(-1)?.seq ?? -1,
       };
@@ -316,7 +328,7 @@ export class DshAcpRuntime implements AgentBackend {
         break;
       }
       case "slash.execute": {
-        if (command.name !== "quit" && session.running) throw new Error("runtime_busy");
+        if (!["quit", "model", "thinking"].includes(command.name) && session.running) throw new Error("runtime_busy");
         if (command.name === "quit") {
           session.closing = true;
           session.cancelRequested = true;
@@ -680,7 +692,7 @@ export class DshRuntime implements AgentBackend {
   ownsRuntime(runtimeId: string): boolean { return this.#implementation.ownsRuntime(runtimeId); }
   catalog(archived = false): Promise<AgentSessionSummary[]> { return this.#implementation.catalog(archived); }
   setArchived(sessionId: string, archived: boolean): Promise<void> { return this.#implementation.setArchived(sessionId, archived); }
-  activate(target: AgentActivateTarget, context?: { deviceId?: string; spawnMode?: import("@orbis/protocol").SpawnMode }): Promise<BackendActivation> {
+  activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     return this.#implementation.activate(target, context);
   }
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
@@ -692,6 +704,11 @@ export class DshRuntime implements AgentBackend {
     this.#implementation.announce?.();
   }
   currentProvider(): Promise<string | undefined> { return this.#implementation.currentProvider?.() ?? Promise.resolve(undefined); }
+  sessionConfiguration(): Promise<SessionConfigurationCatalog> {
+    return this.#implementation instanceof DshWebRuntime ? this.#implementation.sessionConfiguration()
+      : Promise.resolve({ binding: "dsh-acp", defaults: {}, models: [], permissions: [],
+        notice: "此 ACP 版本在创建会话后提供配置选项；可先启动空会话，再选择模型和思考深度。" });
+  }
   async assertProviderSwitchReady(): Promise<void> { await this.#implementation.assertProviderSwitchReady?.(); }
   async reloadProviderConfiguration(env: NodeJS.ProcessEnv, live = false): Promise<void> {
     if (this.#implementation.reloadProviderConfiguration) {
