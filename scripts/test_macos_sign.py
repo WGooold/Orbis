@@ -113,6 +113,55 @@ class SigningTests(unittest.TestCase):
                 SIGN.notarize_dmg(args)
         self.assertFalse(any(command[0] == "xcrun" for command in calls))
 
+    def test_wait_timeout_on_stderr_reads_actual_processing_status(self):
+        # Real notarytool emits its timeout JSON on stderr, without a status.
+        args, calls, normal = self.exercise_notary("In Progress")
+
+        def run(command, check=True):
+            if command[:3] == ["xcrun", "notarytool", "wait"]:
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 69, stdout="", stderr=json.dumps(
+                    dict(id="submission-id", message="Timeout of 1500 second(s) was reached")))
+            if command[:3] == ["xcrun", "notarytool", "info"]:
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps(
+                    dict(id="submission-id", status="In Progress")), stderr="")
+            return normal(command, check=check)
+
+        with patch.object(SIGN, "run", side_effect=run), patch.object(SIGN, "verify_identity"):
+            with self.assertRaisesRegex(RuntimeError, "In Progress"):
+                SIGN.notarize_dmg(args)
+        report = json.loads(args.report.read_text())
+        self.assertEqual(report["submission"]["id"], "submission-id")
+        self.assertEqual(report["status"], "In Progress")
+        self.assertIn("Timeout", report["waitDiagnostic"]["message"])
+
+    def test_successful_resume_does_not_resign_or_upload_again(self):
+        # A completed pending submission can be stapled without replacing its bytes.
+        args, calls, pending = self.exercise_notary("In Progress")
+        with patch.object(SIGN, "run", side_effect=pending), patch.object(SIGN, "verify_identity"):
+            with self.assertRaisesRegex(RuntimeError, "In Progress"):
+                SIGN.notarize_dmg(args)
+        args.submission_id = "submission-id"
+        calls.clear()
+        saved = json.loads(args.report.read_text())
+        saved.update(error="previous timeout", response="")
+        args.report.write_text(json.dumps(saved))
+
+        def accepted(command, check=True):
+            result = pending(command, check=check)
+            if command[:3] == ["xcrun", "notarytool", "wait"]:
+                result.stdout = json.dumps(dict(id="submission-id", status="Accepted"))
+            return result
+
+        with patch.object(SIGN, "run", side_effect=accepted), patch.object(SIGN, "verify_identity"):
+            SIGN.notarize_dmg(args)
+        self.assertFalse(any(command[:3] == ["xcrun", "notarytool", "submit"] for command in calls))
+        self.assertFalse(any("--force" in command for command in calls))
+        report = json.loads(args.report.read_text())
+        self.assertEqual(report["status"], "notarized-stapled-and-assessed")
+        self.assertNotIn("error", report)
+
 
 if __name__ == "__main__":
     unittest.main()

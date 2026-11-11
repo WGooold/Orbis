@@ -151,13 +151,26 @@ def notarize_dmg(args):
     def request(command):
         result = run(["xcrun", "notarytool", *command, *auth, "--output-format", "json"], check=False)
         try:
-            response = json.loads(result.stdout)
+            # notarytool writes its JSON timeout diagnostic to stderr.
+            response = json.loads(result.stdout.strip() or result.stderr)
         except ValueError:
             report.update(status="request-error", error=result.stderr, response=result.stdout)
             save(args.report, report)
             raise RuntimeError("Notary service did not return JSON; see the saved report") from None
         if command[0] == "wait":
             response.setdefault("id", command[1])
+            if not response.get("status"):
+                report["waitDiagnostic"] = response
+                info = run(["xcrun", "notarytool", "info", command[1], *auth,
+                            "--output-format", "json"], check=False)
+                try:
+                    state = json.loads(info.stdout)
+                    if state.get("status"):
+                        response = state
+                except ValueError:
+                    pass  # Retain the submission ID if the status query also failed.
+        report.pop("error", None)
+        report.pop("response", None)
         report.update(submission=response, status=response.get("status", "unknown"))
         save(args.report, report)
         return response
