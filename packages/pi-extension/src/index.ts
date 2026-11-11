@@ -112,7 +112,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   let toolStore: ToolContentStore | undefined;
   let toolDisposal: Promise<void> = Promise.resolve();
   const projectEntries = (entries: readonly unknown[]): ReturnType<typeof sessionEntriesFromEntries> =>
-    sessionEntriesFromEntries(entries).map((entry, order) => toolProducer?.entry(entry, order) ?? entry);
+    sessionEntriesFromEntries(entries, entry => {
+      // ADR-0049 §2：手机发起的用户消息把 App id 带到持久行上（Pi 原生条目本身没有身份）。
+      const messageId = messageStream.messageIdFor(entry["message"]);
+      return messageId === undefined ? undefined : phoneSends.identityFor(messageId);
+    }).map((entry, order) => toolProducer?.entry(entry, order) ?? entry);
   let lastNativeLeaf: string | null | undefined;
   const reconcileSource = (ctx: ExtensionContext, force = false): void => {
     if (!sessionSource) return;

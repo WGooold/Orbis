@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import { describe, expect, it } from "vitest";
+import { projectDisplayEntries, type RemoteSessionEntry } from "@orbis/protocol";
 import {
   PhoneSendClaims,
   PiMessageStream,
@@ -507,6 +508,32 @@ describe("Phone send claims (ADR-0049)", () => {
     claims.expect("app-1", [{ type: "text", text: "失败" }]);
     claims.forget("app-1");
     expect(start(stream, claims, user("失败")).message.clientMessageId).toBeUndefined();
+  });
+
+  it("declares the identity on the persisted entry, not only on the live row", () => {
+    let id = 0;
+    const stream = new PiMessageStream(() => `live-${++id}`);
+    const claims = new PhoneSendClaims();
+    claims.expect("app-1", [{ type: "text", text: "你好" }]);
+    const message = user("你好");
+    start(stream, claims, message);
+    claims.finished(stream.finished(message));
+    // Pi 把 message_end 的那个对象原样落盘，条目投影靠它找回 live id，再把 App id 写回持久行。
+    const entry = { type: "message", id: "entry-1", parentId: null, timestamp: "2026-11-01T00:00:00.000Z", message };
+    const project = (entries: readonly unknown[]) => sessionEntriesFromEntries(entries, raw => {
+      const messageId = stream.messageIdFor(raw["message"]);
+      return messageId === undefined ? undefined : claims.identityFor(messageId);
+    });
+    const [projected] = project([entry]);
+    expect((projected!.data["message"] as { clientMessageId?: string }).clientMessageId).toBe("app-1");
+    // 身份不变时投影按引用复用（ADR-0035 §2），来源端才能用引用相等判断“没变”。
+    expect(project([entry])[0]).toBe(projected);
+    // 本地终端输入的消息永远不会被认领。
+    const local = { type: "message", id: "entry-2", parentId: "entry-1", timestamp: "2026-11-01T00:00:01.000Z", message: user("本地输入") };
+    expect((project([local])[0]!.data["message"] as { clientMessageId?: string }).clientMessageId).toBeUndefined();
+    // 手机对账读的是显示投影：身份必须一路走到那里（ADR-0049 §2）。
+    const display = projectDisplayEntries([project([entry])[0]!] as unknown as RemoteSessionEntry[], "entry-1");
+    expect(display.entries[0]?.message).toMatchObject({ messageId: "entry-1", clientMessageId: "app-1" });
   });
 });
 

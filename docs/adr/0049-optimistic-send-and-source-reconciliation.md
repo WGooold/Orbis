@@ -350,3 +350,16 @@ r32 验证记录见 `.artifacts/ui-regression/2026-11-02-optimistic-merge/summar
 ## 2026-11-02 / r35 交互补充（已接入，验证中）
 
 新建启动卡通过 requestId 与账本关联，按 [ADR-0058](0058-shared-interaction-motion.md) 交接聊天页；恢复、重试和减少动画沿各自生命周期处理。双端完整验收仍待完成。
+
+## 2026-11-11 Pi 身份随持久行声明
+
+Pi 的手机身份原先只挂在对账用的 live 副本上。来源端把消息落成条目时会删掉这份副本
+（`packages/protocol/src/session-source.ts` 的 `reconcile`：commit history and remove its live twins），
+而 Pi 只在 `message_start` / `message_end` 给出身份，条目本身没有。手机一旦这一帧没接上
+（新建会话的首句正好落在基线读取的窗口里），本地行就再也对不上权威行，只能等 §4 的宽限兜底，
+表现为同一句话出现两条：一条已发送、一条一直“发送中”。
+
+现在身份属于条目投影：`packages/pi-extension/src/pi-adapter.ts` 的 `PhoneSendClaims` 在消息结束后保留
+live id → App id 的对应，`sessionEntriesFromEntries` 据此把 `clientMessageId` 写进
+`data.message`。显示投影（`packages/protocol/src/display-entries.ts`）本来就只复制这一项，
+因此两端都能在权威行上完成精确对账，与基线、翻页、重连的时序无关。

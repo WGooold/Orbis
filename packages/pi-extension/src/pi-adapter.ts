@@ -316,12 +316,19 @@ export function mergeTurnTimings(
   return [...timings.values()];
 }
 
-const sessionEntryData = (entry: Record<string, unknown>): Record<string, unknown> => {
+const sessionEntryData = (entry: Record<string, unknown>, clientMessageId?: string): Record<string, unknown> => {
   const data: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(entry)) {
     if (key === "type" || key === "id" || key === "parentId" || key === "timestamp") continue;
     const safe = safeValue(stripInlineMedia(value));
     if (safe !== undefined) data[key] = safe;
+  }
+  // ADR-0049 §2：这条用户消息由手机 `user_message` 产生时，持久行也要声明原 `messageId`。
+  // live 行只是承载身份的临时副本，来源端一落到历史就会删掉它；身份留在条目上，
+  // 手机才能在任何时候（重读基线、翻页、重连）用权威行完成精确对账。
+  const message = data["message"];
+  if (clientMessageId !== undefined && entry["type"] === "message" && message !== null && typeof message === "object" && !Array.isArray(message)) {
+    data["message"] = { ...(message as Record<string, unknown>), clientMessageId };
   }
   // The APP renders the chat from persisted entries, so the reason a provider request failed has
   // to travel with the entry. Without it a failed turn projects to a message with no content and
@@ -389,23 +396,33 @@ export function sessionCatalogFromInfos(infos: readonly unknown[]): SessionCatal
  * 每次拿到同一个投影对象。`RecoverableSessionSource.reconcile` 于是可以用引用相等判断
  * “没变”，不必对整段历史做序列化 + 深拷贝。
  */
-const ENTRY_PROJECTIONS = new WeakMap<object, RemoteSessionEntryInput>();
+const ENTRY_PROJECTIONS = new WeakMap<object, { projected: RemoteSessionEntryInput; clientMessageId?: string }>();
 
-export function sessionEntriesFromEntries(entries: readonly unknown[]): RemoteSessionEntryInput[] {
+/**
+ * @param identity 这条原生消息的手机消息 id（ADR-0049 §2）。给出时写进
+ * `data.message.clientMessageId`，与 live 行声明同一个身份。身份属于条目投影本身：
+ * 显示投影只从 `data.message` 复制这一项，手机据此对账本地待确认发送。
+ */
+export function sessionEntriesFromEntries(
+  entries: readonly unknown[],
+  identity?: (entry: Record<string, unknown>) => string | undefined,
+): RemoteSessionEntryInput[] {
   return entries.flatMap((raw): RemoteSessionEntryInput[] => {
     if (!raw || typeof raw !== "object") return [];
     const entry = raw as PiEntry;
     if (typeof entry.id !== "string" || typeof entry.type !== "string" || typeof entry.timestamp !== "string") return [];
+    const clientMessageId = identity?.(entry as Record<string, unknown>);
     const cached = ENTRY_PROJECTIONS.get(raw);
-    if (cached !== undefined && cached.entryId === entry.id && cached.timestamp === entry.timestamp) return [cached];
+    if (cached !== undefined && cached.clientMessageId === clientMessageId &&
+      cached.projected.entryId === entry.id && cached.projected.timestamp === entry.timestamp) return [cached.projected];
     const projected: RemoteSessionEntryInput = {
       entryId: entry.id,
       parentId: typeof entry.parentId === "string" ? entry.parentId : null,
       type: entry.type,
       timestamp: entry.timestamp,
-      data: sessionEntryData(entry as Record<string, unknown>),
+      data: sessionEntryData(entry as Record<string, unknown>, clientMessageId),
     };
-    ENTRY_PROJECTIONS.set(raw, projected);
+    ENTRY_PROJECTIONS.set(raw, { projected, ...(clientMessageId === undefined ? {} : { clientMessageId }) });
     return [projected];
   });
 }
@@ -429,6 +446,8 @@ const MAX_REPORTED_ENTRY_IDS = 4_096;
 
 /** Upper bound on phone sends handed to Pi whose user message has not started yet. */
 const MAX_PENDING_PHONE_SENDS = 64;
+/** Upper bound on remembered phone identities, so a long session cannot grow unbounded. */
+const MAX_REMEMBERED_PHONE_SENDS = 4_096;
 
 /**
  * ADR-0049 §2：Pi 的用户消息没有手机身份，`message_start` 的 id 由本扩展另行分配。交给
@@ -440,6 +459,17 @@ export class PhoneSendClaims {
   readonly #pending: { clientMessageId: string; texts: string[] }[] = [];
   /** live messageId → clientMessageId for messages that started but have not finished. */
   readonly #claimed = new Map<string, string>();
+
+  /**
+   * live messageId → clientMessageId, retained after the message finished.
+   *
+   * Pi 只在 `message_start`/`message_end` 给出手机身份；这两帧一过，持久条目里只剩原生
+   * 正文。条目投影据此把身份写回持久行（ADR-0049 §2），手机才对得上自己的本地行。
+   */
+  readonly #identities = new Map<string, string>();
+
+  /** A started phone send, whether or not it has finished: live messageId → App messageId. */
+  identityFor(messageId: string): string | undefined { return this.#identities.get(messageId); }
 
   expect(clientMessageId: string, content: readonly { type: "text"; text: string }[]): void {
     this.forget(clientMessageId);
@@ -460,6 +490,8 @@ export class PhoneSendClaims {
     if (index < 0) return event;
     const [claim] = this.#pending.splice(index, 1);
     this.#claimed.set(event.message.messageId, claim!.clientMessageId);
+    this.#identities.set(event.message.messageId, claim!.clientMessageId);
+    while (this.#identities.size > MAX_REMEMBERED_PHONE_SENDS) this.#identities.delete(this.#identities.keys().next().value!);
     while (this.#claimed.size > MAX_PENDING_PHONE_SENDS) this.#claimed.delete(this.#claimed.keys().next().value!);
     return { ...event, message: { ...event.message, clientMessageId: claim!.clientMessageId } };
   }
