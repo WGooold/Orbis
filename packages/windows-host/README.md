@@ -50,7 +50,7 @@ To build an installer using an independently installed Inno Setup 6 compiler, ad
 
 For development, run the built executable with `--runtime-root <repository>`. `--data-dir <directory> --host-state-dir <directory>` isolate desktop/Host data. `--smoke-test --screenshot <png>` renders the actual QML window, checks the bundled Host and exits; add `--smoke-agents` to capture the latest-version and batch update dialogs without accepting them. Smoke tests automatically isolate Host identity if no state directory was supplied; they do not send emails or start agent sessions. `ORBIS_AGENT_INSTALL_ROOT` isolates downloaded Agent versions when testing the install lifecycle.
 
-## macOS preview builds
+## macOS builds
 
 The same Qt sources are packaged by `.github/workflows/macos-host-build.yml`, triggered manually with `workflow_dispatch`. Separate native runners produce `macos-arm64.dmg` for Apple Silicon and `macos-x64.dmg` for Intel, with SHA-256 files. The deployment target is macOS 12 or later. The workflow runs the complete existing test suite on Windows, portable tests and native CTest on each Mac, and a bundled application smoke test with development Node removed from PATH.
 
@@ -58,7 +58,11 @@ The `.app` includes Qt, Node, npm and the runtime dependency closure in `Content
 
 Starting or resuming Pi from a phone also opens its interactive interface in Terminal. A TUI activation succeeds after its terminal opens; launch failure reports an activation error. Explicit headless mode remains available to integrations that request it.
 
-These previews are ad-hoc signed, without Developer ID signing or Apple notarization. Native execution and clean-machine installation still need validation on Macs. Updates open the verified DMG; quit Host and drag the replacement app into Applications to install. A build uploads CI artifacts only: it does not create a Release, upload website downloads or deploy the Relay. Publishing the two DMGs and their checksum files to the website remains a separate authorized operation.
+The workflow defaults to Developer ID signing and Apple notarization. Set the repository variable `MACOS_TEAM_ID` and the repository secrets `MACOS_DEVELOPER_ID_P12_BASE64`, `MACOS_DEVELOPER_ID_P12_PASSWORD`, `MACOS_NOTARY_APPLE_ID`, and `MACOS_NOTARY_APP_PASSWORD`. The P12 must include the Developer ID Application certificate and its private key; the notarization password is an Apple app-specific password. Each runner imports them into a temporary Keychain and deletes that Keychain after packaging. Missing credentials fail the signed build. Select `ad-hoc` explicitly to make a preview without Developer ID signing or notarization.
+
+`scripts/macos-sign.py` signs Qt frameworks, plug-ins, bundled Node and native modules from the inside out, with Hardened Runtime and secure timestamps. Node alone allows externally installed native modules; the Host retains Qt JIT and Terminal automation permissions. The final DMG is signed, accepted by Apple's notary service, stapled and assessed by Gatekeeper before its checksum is generated. Signing and notarization reports accompany the artifacts, including Apple's rejection log when available. A timed-out notarization can be resumed with `notarize-dmg --submission-id` using the original report and unchanged DMG. Local signing can use a Developer ID identity and a `notarytool` Keychain profile through the same script; see `--help` and each subcommand's `--help`.
+
+Clean-machine installation and Terminal permission prompts remain user acceptance steps. Updates open the verified DMG; quit Host and drag the replacement app into Applications to install. A build uploads CI artifacts only: it does not create a Release, upload website downloads or deploy the Relay. Publishing the two DMGs and their checksum files to the website remains a separate authorized operation.
 
 ## Registration service
 

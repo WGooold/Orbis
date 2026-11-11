@@ -2,6 +2,12 @@ name: macOS Host build
 
 on:
   workflow_dispatch:
+    inputs:
+      signing:
+        description: macOS signing and notarization
+        type: choice
+        options: [developer-id, ad-hoc]
+        default: developer-id
 
 permissions:
   contents: read
@@ -41,9 +47,44 @@ jobs:
             artifact: macos-x64
             node_architecture: x64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 75
+    env:
+      ORBIS_SIGNING_MODE: ${{ inputs.signing || 'developer-id' }}
+      ORBIS_MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
     steps:
       - uses: actions/checkout@v5
+      - name: Prepare Developer ID and notarization credentials
+        if: env.ORBIS_SIGNING_MODE == 'developer-id'
+        shell: bash
+        env:
+          P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          NOTARY_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${ORBIS_MACOS_TEAM_ID:?Missing variable MACOS_TEAM_ID}"
+          : "${P12_BASE64:?Missing secret MACOS_DEVELOPER_ID_P12_BASE64}"
+          : "${P12_PASSWORD:?Missing secret MACOS_DEVELOPER_ID_P12_PASSWORD}"
+          : "${NOTARY_APPLE_ID:?Missing secret MACOS_NOTARY_APPLE_ID}"
+          : "${NOTARY_APP_PASSWORD:?Missing secret MACOS_NOTARY_APP_PASSWORD}"
+          keychain="$RUNNER_TEMP/orbis-signing.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          python3 -c 'import os, base64, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "orbis-signing.p12").write_bytes(base64.b64decode(os.environ["P12_BASE64"], validate=True))'
+          security import "$RUNNER_TEMP/orbis-signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          identity=$(python3 scripts/macos-sign.py identity --team-id "$ORBIS_MACOS_TEAM_ID" --keychain "$keychain")
+          xcrun notarytool store-credentials orbis-macos --keychain "$keychain" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$ORBIS_MACOS_TEAM_ID" --password "$NOTARY_APP_PASSWORD"
+          echo "ORBIS_MACOS_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "ORBIS_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/orbis-signing.p12"
+      - name: Verify signing and notarization regressions
+        run: python3 -m unittest discover -s scripts -p 'test_macos_sign.py'
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.3'
@@ -75,7 +116,14 @@ jobs:
           cleanup() {
             status=$?
             rm -rf "$build" "$dmg_root" "$RUNNER_TEMP"/orbis-rw-*.dmg "$RUNNER_TEMP"/orbis-dmg-mnt-* "$RUNNER_TEMP"/OrbisHost-*.dmg
-            if [ "$status" -ne 0 ]; then rm -rf .artifacts/host; fi
+            if [ "$status" -ne 0 ]; then
+              mkdir -p .artifacts/host-diagnostics
+              # Keep a pending/rejected signed image with its submission report.
+              for image in .artifacts/host/*.dmg; do
+                if [ -f "$image" ]; then mv "$image" .artifacts/host-diagnostics/; fi
+              done
+              rm -rf .artifacts/host
+            fi
             exit "$status"
           }
           trap cleanup EXIT
@@ -93,8 +141,13 @@ jobs:
           cp packages/windows-host/README.md .artifacts/host/OrbisHost.app/Contents/Resources/README.md
           cp packages/windows-host/THIRD-PARTY-NOTICES.md .artifacts/host/OrbisHost.app/Contents/Resources/THIRD-PARTY-NOTICES.md
           cp -R packages/windows-host/licenses .artifacts/host/OrbisHost.app/Contents/Resources/licenses
-          # Ad-hoc signing permits native arm64 execution; these are unnotarized previews.
-          codesign --force --deep --sign - .artifacts/host/OrbisHost.app
+          if [ "$ORBIS_SIGNING_MODE" = developer-id ]; then
+            python3 scripts/macos-sign.py sign-app --app .artifacts/host/OrbisHost.app \
+              --identity "$ORBIS_MACOS_IDENTITY" --team-id "$ORBIS_MACOS_TEAM_ID" \
+              --keychain "$ORBIS_MACOS_KEYCHAIN" --report .artifacts/host-diagnostics/signing.json
+          else
+            codesign --force --deep --sign - .artifacts/host/OrbisHost.app
+          fi
           codesign --verify --deep --strict .artifacts/host/OrbisHost.app
           python3 - <<'PY'
           import os, pathlib, subprocess
@@ -142,7 +195,22 @@ jobs:
           rmdir "$mountpoint" 2>/dev/null || true
           hdiutil convert "$rw_image" -format UDZO -o "$staged_dmg"
           mv "$staged_dmg" ".artifacts/host/$dmg"
+          if [ "$ORBIS_SIGNING_MODE" = developer-id ]; then
+            python3 scripts/macos-sign.py notarize-dmg --dmg ".artifacts/host/$dmg" \
+              --identity "$ORBIS_MACOS_IDENTITY" --team-id "$ORBIS_MACOS_TEAM_ID" \
+              --keychain "$ORBIS_MACOS_KEYCHAIN" --profile orbis-macos \
+              --report .artifacts/host-diagnostics/notarization.json
+          fi
+          # Stapling changes the DMG bytes; checksum only the assessed final image.
           (cd .artifacts/host && shasum -a 256 "$dmg" > "$dmg.sha256")
+      - name: Remove signing credentials
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/orbis-signing.keychain-db"
+          if [ -f "$keychain" ]; then security delete-keychain "$keychain"; fi
+          rm -f "$RUNNER_TEMP/orbis-signing.p12"
       - uses: actions/upload-artifact@v4
         with:
           name: OrbisHost-${{ matrix.artifact }}
@@ -152,7 +220,8 @@ jobs:
             .artifacts/host/*.sha256
             .artifacts/host/smoke/*.log
             .artifacts/host/smoke/*.png
-      - name: Preserve failed macOS smoke diagnostics
+            .artifacts/host-diagnostics/*.json
+      - name: Preserve macOS signing and smoke diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
