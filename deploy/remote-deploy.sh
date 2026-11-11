@@ -62,6 +62,10 @@ install -d -m 755 "$app/releases" "$shared" "$data_dir"
 chown 1000:1000 "$data_dir"
 chmod 700 "$data_dir"
 
+rm -rf "$release_dir"
+install -d -m 755 "$release_dir"
+tar -xzf "$archive" -C "$release_dir"
+
 # Release downloads are separate from source and secrets. Only the CI-selected,
 # checksummed Host artifacts are published (Windows installer + portable zip, and
 # the macOS dmgs when their build run is passed), and the container gets a
@@ -70,21 +74,11 @@ install -d -m 755 "$shared/download-releases/empty"
 downloads_dir="$(readlink -f "$shared/downloads-current" 2>/dev/null || true)"
 if [[ ! -d "$downloads_dir" ]]; then downloads_dir="$shared/download-releases/empty"; fi
 if [[ -n "$downloads_archive" ]]; then
-  downloads_dir="$shared/download-releases/$release"
-  install -d -m 755 "$downloads_dir"
-  tar -xzf "$downloads_archive" --no-same-owner -C "$downloads_dir"
-  # PowerShell-generated checksum files may use CRLF. Normalize only line
-  # endings; sha256sum still validates both the digest and the exact file name.
-  # Whatever the workflow archived gets checked here: the archive is the only
-  # proof that the bytes served to clients match the verified builds.
-  (cd "$downloads_dir" &&
-    shopt -s nullglob
-    checksums=(OrbisHost-*.sha256)
-    [[ "${#checksums[@]}" -gt 0 ]]
-    for checksum in "${checksums[@]}"; do
-      tr -d '\r' < "$checksum" | sha256sum -c -
-    done)
-  chmod 644 "$downloads_dir"/*
+  # Publish only the selected platforms while retaining verified downloads for
+  # omitted ones. A fresh directory also prevents stale files after a retry.
+  downloads_dir="$(python3 "$release_dir/deploy/prepare-host-downloads.py" \
+    --archive "$downloads_archive" --previous "$downloads_dir" \
+    --parent "$shared/download-releases" --release "$release")"
 fi
 
 # Android 的 APK 和版本元数据由 nginx 直接从 /var/www/orbis-downloads 服务（见
@@ -97,10 +91,6 @@ if [[ -d "$android_downloads" ]]; then
   android_mount=(-v "$android_downloads:/android-downloads:ro")
   android_env=(-e ORBIS_ANDROID_DOWNLOADS_DIR=/android-downloads)
 fi
-
-rm -rf "$release_dir"
-install -d -m 755 "$release_dir"
-tar -xzf "$archive" -C "$release_dir"
 
 cd "$release_dir"
 # Build the archived source, never a developer machine dist directory.
