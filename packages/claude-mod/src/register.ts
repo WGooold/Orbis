@@ -385,15 +385,22 @@ async function reportState($: Api, force: boolean): Promise<void> {
 async function readDescriptor($: Api): Promise<Descriptor | undefined> {
   const stateDir = await $.env.get("ORBIS_STATE_DIR");
   const home = await $.env.get("USERPROFILE") ?? await $.env.get("HOME");
-  const root = stateDir ?? (home === undefined ? undefined : `${home}${home.includes("\\") ? "\\.orbis" : "/.orbis"}`);
-  if (root === undefined) return undefined;
-  const path = `${root.replace(/[\\/]+$/u, "")}${root.includes("\\") ? "\\" : "/"}loopback.json`;
-  try {
-    const parsed: unknown = JSON.parse(await $.fs.read(path));
-    if (!isRecord(parsed) || typeof parsed.url !== "string" || typeof parsed.token !== "string" ||
-        !/^ws:\/\/127\.0\.0\.1:\d+$/u.test(parsed.url) || parsed.token.length < 16) return undefined;
-    return { url: parsed.url.replace(/^ws:/u, "http:"), token: parsed.token };
-  } catch { return undefined; }
+  const at = (root: string): string =>
+    `${root.replace(/[\\/]+$/u, "")}${root.includes("\\") ? "\\" : "/"}loopback.json`;
+  // Same rule as the Host's resolveStateDir: a branding upgrade keeps the existing
+  // ~/.pi-remote records, so ~/.orbis does not exist on an upgraded machine.
+  const roots = stateDir !== undefined && stateDir.length > 0 ? [stateDir]
+    : home === undefined ? [] : [`${home}${home.includes("\\") ? "\\" : "/"}.orbis`,
+      `${home}${home.includes("\\") ? "\\" : "/"}.pi-remote`];
+  for (const root of roots) {
+    try {
+      const parsed: unknown = JSON.parse(await $.fs.read(at(root)));
+      if (!isRecord(parsed) || typeof parsed.url !== "string" || typeof parsed.token !== "string" ||
+          !/^ws:\/\/127\.0\.0\.1:\d+$/u.test(parsed.url) || parsed.token.length < 16) continue;
+      return { url: parsed.url.replace(/^ws:/u, "http:"), token: parsed.token };
+    } catch { /* try the next state directory */ }
+  }
+  return undefined;
 }
 
 async function runCommand($: Api, target: Connection, commandId: string,

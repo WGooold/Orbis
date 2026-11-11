@@ -32,6 +32,15 @@ test("rediscovers a restarted Host without restarting the native Claude session"
   expect(world.statuses.at(-1)).toBeUndefined();
 });
 
+// A Host upgraded from the previous brand keeps its discovery file in ~/.pi-remote, so a
+// hand-started Claude Code (without ORBIS_STATE_DIR) must find that Host too.
+test("finds a Host whose state directory is still the legacy .pi-remote location", async ($, on) => {
+  const { clock, hellos } = setup(on, { home: "C:\\Users\\tester" });
+  await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
+  await clock.settle();
+  expect(hellos()).toHaveLength(1);
+});
+
 test("preserves the generation across a temporary HTTP failure on the same Host", async ($, on) => {
   const { clock, world, hellos } = setup(on);
   await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
