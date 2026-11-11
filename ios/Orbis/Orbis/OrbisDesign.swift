@@ -1444,6 +1444,33 @@ struct OrbisEmptyState: View {
     }
 }
 
+/// S53 / SC77: secondary explanations open above the current page or sheet.
+struct OrbisInfoButton: View {
+    @EnvironmentObject private var overlay: OrbisOverlay
+    let title: String
+    let message: String
+    var identifier = "inline-info"
+    var body: some View {
+        OrbisIconButton(symbol: "info.circle", label: L10n.tr("查看{0}说明", title), size: 28) {
+            overlay.showDialog(title, message: message, actions: [OrbisDialogAction(title: L10n.tr("知道了"), role: .cancel)])
+        }.accessibilityIdentifier(identifier)
+    }
+}
+
+struct OrbisStatusWithInfo: View {
+    @Environment(\.colorScheme) private var scheme
+    let title: String
+    let message: String
+    var error = false
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).font(.orbisCaption()).foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            OrbisInfoButton(title: title, message: message)
+        }
+    }
+}
+
 struct OrbisNotice: View {
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.appearance") private var visualStyle = "mist"

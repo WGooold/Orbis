@@ -14,7 +14,7 @@ Status: accepted（主路径已实现；自动验证与后端能力边界见下�
 
 ### 配置作用域与来源
 
-新建卡片显示模型、该模型支持的思考深度和权限摘要，使用现有选择面板。Host 按后端、供应商配置身份与绝对工作目录返回原生默认值、可用选项及已保存偏好。未知、不支持和跟随原生默认分别表示。App 提交不透明选项，Host 校验和原子持久化后返回版本；偏好只影响随后新建的会话。
+新建卡片显示模型、该模型支持的思考深度和权限入口，使用现有选择面板。Host 按后端、供应商配置身份与绝对工作目录返回原生默认值、可用选项及已保存偏好。未知、不支持和跟随原生默认分别表示。App 提交不透明选项，Host 校验和原子持久化后返回版本；偏好只影响随后新建的会话。
 
 运行中允许提交当前会话的后续配置。后续所选值、保存进度和原生确认分开处理；运行中显示后续模型，模型变化时重算深度选项。当前请求使用的值由原生请求事实确认。后端能够原生更新时直接调用并核对，后端没有可验证的修改接口时明确显示能力限制。配置修改与历史回退、重载、关闭分别准入。权限按原生实际生效边界确认，单次工具审批保持独立，不能把配置成功当成某次审批的回答。
 
@@ -61,3 +61,5 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 自动验证指针：`implementation/node-final.json`、`final-launch-recovery-2.json`、`swift-final/run.log`、`android-final-2/`、`ios-app-final/`、`claude-model-regression-final.log`。回归源码为 `session-configuration-store.test.ts`、`session-configuration-probe.test.ts`、`host-service.test.ts` 的 configured launch 用例、双端 `LaunchLedger`、`ConfigLedger`、运行时权限用例，以及 Claude 插件 `reconnect.test.ts`。最终计数、源码指纹与构建状态统一见 `implementation/verification.json`。
 
 剩余能力边界：ACP 的新建前清单、Claude 当前会话权限写入、Claude 原生默认模型与深度精确展示，以及 DSH Web 切换后的第二次真实模型请求尚未完成端到端验证。Claude 默认值未报告时显示继承并省略参数，模型清单的 `default` 别名不能替代当前配置。无专属权限接口的 Pi／ACP 保留来源说明。设备安装与视觉验收未执行；本轮不宣称这些边界已通过。
+
+S55／SC79（r57）：两端新建卡片的模型独占一行，思考深度与权限在下一行等宽排列；权限入口使用短名称，完整组合保留在无障碍值及分类面板中，深度优先展示 Host 选项标签。实现见 `SessionDraft.kt`、`SessionViews.swift`，HTML 同步见 `docs/design/session-draft-card-proposal.html`。320dp、中英文放大文字与长权限组合回归见 `SessionDraftConfigurationInstrumentedTest`、`OrbisUITests`；构建、界面验证及交付状态见 `.artifacts/draft-config-layout-20261111/verification.json`，待用户验证。

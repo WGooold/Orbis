@@ -108,7 +108,7 @@ struct ContentView: View {
         }
         .overlay(alignment: .bottom) { TransferErrorBanner(transfers: store.transfers) }
         .overlay(alignment: .bottom) {
-            if draftNotice { OrbisNotice(text: L10n.tr("草稿已保留，下次新建时还在")).padding(.horizontal, 20).padding(.bottom, 88).transition(InteractionMotion.notice) }
+            if draftNotice { OrbisNotice(text: L10n.tr("草稿已保留")).padding(.horizontal, 20).padding(.bottom, 88).transition(InteractionMotion.notice) }
         }
         #if DEBUG
         .overlay(alignment: .topTrailing) {
@@ -258,7 +258,7 @@ struct ContentView: View {
                               if session.archived != true, let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
                               else if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                               else {
-                                  overlay.showDialog(L10n.tr("本机尚无缓存"), message: L10n.tr("连接电脑并打开会话后，可把历史保存在本机。"), actions: [OrbisDialogAction(title: L10n.tr("返回"), role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: L10n.tr("在电脑继续会话")) { store.activate(session) }] : []))
+                                  overlay.showDialog(L10n.tr("本机尚无缓存"), actions: [OrbisDialogAction(title: L10n.tr("返回"), role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: L10n.tr("在电脑继续会话")) { store.activate(session) }] : []))
                               }
                           },
                           onOpenHistory: { session in
@@ -280,7 +280,7 @@ struct ContentView: View {
     }
     private func confirmUnpair(_ host: HostPairing?) {
         guard let host else { return }
-        overlay.showDialog(L10n.tr("取消配对这台电脑？"), message: L10n.tr("此电脑在本机保存的配对和草稿将被移除。之后可以重新扫码连接。"), actions: [
+        overlay.showDialog(L10n.tr("取消配对这台电脑？"), message: L10n.tr("将移除本机配对与草稿"), actions: [
             OrbisDialogAction(title: L10n.tr("返回"), role: .cancel),
             OrbisDialogAction(title: L10n.tr("取消配对 {0}", host.hostName), role: .destructive) {
                 store.unpair(hostId: host.hostId); navigation.replace(with: []); setDrawer(false)

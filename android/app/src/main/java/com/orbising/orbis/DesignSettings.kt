@@ -125,7 +125,7 @@ internal fun ProtocolChoiceSheet(current: RelayTransportMode, enabled: Boolean, 
         listOf(RelayTransportMode.AUTO, RelayTransportMode.QUIC, RelayTransportMode.WS).forEach { mode ->
             ChoiceRow(protocolName(mode), "", selected == mode, "relay-mode-${mode.name}",
                 trailingContent = if (mode == RelayTransportMode.QUIC) {
-                    { InlineInfoButton(L10n.tr("当前网络不支持 QUIC 时无法连接")) }
+                    { InlineInfoButton(L10n.tr("当前网络不支持 QUIC 时无法连接"), "QUIC") }
                 } else null) { selected = mode }
         }
         NeumorphActionButton(text = if (selected == current) L10n.tr("当前使用") else L10n.tr("切换到 {0} 并重连", protocolName(selected)),
@@ -155,16 +155,6 @@ internal fun ChoiceRow(title: String, sub: String, selected: Boolean, tag: Strin
             trailingContent?.invoke()
         }
     }
-}
-
-@Composable
-private fun InlineInfoButton(message: String) {
-    var open by rememberSaveable(message) { mutableStateOf(false) }
-    NeumorphIconButton(onClick = { open = true }, icon = OrbisSymbols.Info,
-        contentDescription = L10n.tr("查看说明"), size = 28.dp, compact = true)
-    if (open) NeumorphDialog(onDismissRequest = { open = false },
-        title = { Text(L10n.tr("QUIC")) }, text = { Text(message) },
-        confirmButton = { NeumorphTextButton(L10n.tr("知道了"), { open = false }) })
 }
 
 @Composable

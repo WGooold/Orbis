@@ -18,8 +18,8 @@ struct ToolDetailView: View {
                 Spacer()
                 Text(L10n.tr("已读取至 {0}", byteCount(reader.throughOffset))).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
             }.padding(.horizontal, 24)
-            if reader.discardedPrefix { OrbisNotice(text: L10n.tr("已清空较早内容，当前只保留最近读取的 2 MiB。")).padding(.horizontal, 24) }
-            if !reader.gaps.isEmpty { OrbisNotice(text: L10n.tr("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。"), error: true).padding(.horizontal, 24) }
+            if reader.discardedPrefix { OrbisStatusWithInfo(title: L10n.tr("较早内容已清空"), message: L10n.tr("已清空较早内容，当前只保留最近读取的 2 MiB。")).padding(.horizontal, 24) }
+            if !reader.gaps.isEmpty { OrbisStatusWithInfo(title: L10n.tr("内容不完整"), message: L10n.tr("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。"), error: true).padding(.horizontal, 24) }
             ScrollView([.horizontal, .vertical]) {
                 Text(reader.text.isEmpty ? (reader.loading ? L10n.tr("读取中…") : L10n.tr("当前范围没有文本内容。")) : reader.text)
                     .font(.orbisCaption(mono: true)).textSelection(.enabled)
@@ -37,7 +37,7 @@ struct ToolDetailView: View {
                 } else if reader.loading {
                     ProgressView().controlSize(.small)
                 } else {
-                    Text(reader.final ? L10n.tr("已到当前读取范围末尾") : L10n.tr("已到当前末尾，工具可能仍在运行")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    Text(reader.final ? L10n.tr("已到当前读取范围末尾") : L10n.tr("等待更多输出")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                 }
             }.frame(maxWidth: .infinity, minHeight: 52).padding(.horizontal, 24)
             if reader.exporting {

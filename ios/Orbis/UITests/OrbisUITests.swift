@@ -93,7 +93,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(newSession.frame.minY, 0)
         newSession.tap()
         XCTAssertTrue(draft.waitForNonExistence(timeout: 4))
-        XCTAssertTrue(app.staticTexts["草稿已保留，下次新建时还在"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["草稿已保留"].waitForExistence(timeout: 3))
         newSession.tap()
         XCTAssertTrue(draft.waitForExistence(timeout: 3))
         XCTAssertEqual(draft.value as? String, "核对设计草稿")
@@ -292,6 +292,76 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(draft.value as? String, "first\nsecond")
         draft.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 4))
+    }
+
+    // S53/S54: info is independent of selection, categories retain the draft, and Apply never scrolls away.
+    func testQuietPermissionDraftKeepsApplyVisibleAndInfoDoesNotSelect() {
+        let app = launch("home", arguments: ["--preview-permission-options", "--preview-reset-design", "--preview-reduce-motion"])
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        app.buttons["home-new-session"].tap()
+        let entry = app.buttons["draft-config-permissions"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitUntilEnabled(entry, timeout: 5)); entry.tap()
+        let apply = app.buttons["draft-permissions-apply"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 4)); XCTAssertTrue(apply.isHittable); XCTAssertFalse(apply.isEnabled)
+        let explanation = "允许读取文件；写入需要额外授权。"
+        XCTAssertFalse(app.staticTexts[explanation].exists)
+        app.buttons["permission-option-sandbox-readOnly"].tap()
+        app.buttons["查看只读说明"].tap()
+        XCTAssertTrue(app.staticTexts[explanation].waitForExistence(timeout: 3))
+        app.buttons["知道了"].tap()
+        XCTAssertTrue(apply.isEnabled)
+        app.buttons["permission-tab-network"].tap()
+        app.buttons["permission-option-network-enabled"].tap()
+        app.buttons["permission-tab-sandbox"].tap()
+        XCTAssertTrue(app.buttons["permission-option-sandbox-readOnly"].isSelected)
+        XCTAssertTrue(apply.isHittable)
+        XCTAssertLessThanOrEqual(apply.frame.maxY, app.frame.maxY)
+        capture("quiet-draft-permissions", app: app)
+        apply.tap()
+        XCTAssertTrue(apply.waitForNonExistence(timeout: 4))
+        XCTAssertEqual(entry.label, "权限")
+        XCTAssertTrue((entry.value as? String ?? "").contains("只读"))
+        XCTAssertTrue((entry.value as? String ?? "").contains("允许联网"))
+        entry.tap()
+        XCTAssertTrue(apply.waitForExistence(timeout: 4)); XCTAssertFalse(apply.isEnabled)
+    }
+
+    // S55 / SC79: all Codex permission values stay outside the card's layout allocation.
+    func testDraftConfigurationKeepsModelAndThinkingVisibleWithLongPermissions() {
+        let app = launch("home", arguments: ["--preview-permission-options", "--preview-reset-design", "--preview-reduce-motion"])
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        app.buttons["home-new-session"].tap()
+        let model = app.buttons["draft-config-model"]
+        let thinking = app.buttons["draft-config-thinking"]
+        let permissions = app.buttons["draft-config-permissions"]
+        XCTAssertTrue(model.waitForExistence(timeout: 5)); XCTAssertTrue(waitUntilEnabled(model, timeout: 5))
+        XCTAssertTrue(model.isHittable); XCTAssertTrue(thinking.isHittable); XCTAssertTrue(permissions.isHittable)
+        XCTAssertEqual(model.value as? String, "GPT-5.4")
+        XCTAssertEqual(thinking.value as? String, "高")
+        XCTAssertEqual(permissions.label, "权限")
+        XCTAssertGreaterThan((permissions.value as? String ?? "").count, 12)
+        XCTAssertLessThanOrEqual(model.frame.maxY, thinking.frame.minY)
+        XCTAssertLessThan(thinking.frame.maxX, permissions.frame.minX)
+        XCTAssertEqual(thinking.frame.width, permissions.frame.width, accuracy: 1)
+        XCTAssertEqual(model.frame.minX, thinking.frame.minX, accuracy: 1)
+        XCTAssertEqual(model.frame.maxX, permissions.frame.maxX, accuracy: 1)
+        capture("draft-config-full-model-and-thinking", app: app)
+        thinking.tap()
+        XCTAssertTrue(app.staticTexts["思考深度"].waitForExistence(timeout: 3))
+    }
+
+    func testPairingExplanationOnlyOpensFromTitleInfo() {
+        let app = launch("pairing", arguments: ["--preview-reduce-motion"])
+        let info = app.buttons["pairing-info"]
+        XCTAssertTrue(info.waitForExistence(timeout: 5))
+        let explanation = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "电脑端请前往")).firstMatch
+        XCTAssertFalse(explanation.exists)
+        capture("quiet-pairing-entry", app: app)
+        info.tap()
+        XCTAssertTrue(explanation.waitForExistence(timeout: 3))
+        app.buttons["知道了"].tap()
+        XCTAssertTrue(app.buttons["扫码配对"].isHittable)
     }
 
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
@@ -2934,8 +3004,8 @@ final class OrbisUITests: XCTestCase {
         let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["取消下载"].exists)
-        let active = NSPredicate(format: "label CONTAINS %@", "轻点暂停")
-        let paused = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "已暂停", "轻点继续")
+        let active = NSPredicate(format: "label CONTAINS %@", "暂停")
+        let paused = NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "已暂停", "继续")
         XCTAssertTrue(active.evaluate(with: card))
         let cardWidth = card.frame.width
         card.tap()

@@ -55,7 +55,7 @@ struct DownloadsView: View {
 
     private func confirmDelete() {
         let ids = selected
-        overlay.showDialog(L10n.tr("删除下载记录与本机文件？"), message: L10n.tr("电脑上的原文件不受影响。"), actions: [
+        overlay.showDialog(L10n.tr("删除下载记录与本机文件？"), actions: [
             OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
             OrbisDialogAction(title: L10n.tr("删除 {0} 项", ids.count), role: .destructive) { transfers.remove(ids); selected = [] }
         ])
@@ -94,11 +94,11 @@ struct DownloadsView: View {
         let active = ["queued", "downloading", "verifying"].contains(task.status)
         let stopped = ["paused", "cancelled"].contains(task.status)
         let actionHint: String = {
-            if !selected.isEmpty { return selected.contains(task.id) ? L10n.tr("已选择") : L10n.tr("轻点选择") }
-            if active { return L10n.tr("轻点暂停") }
-            if task.status == "completed" { return task.localPath == nil ? "" : L10n.tr("轻点分享") }
+            if !selected.isEmpty { return selected.contains(task.id) ? L10n.tr("已选择") : L10n.tr("选择") }
+            if active { return L10n.tr("暂停") }
+            if task.status == "completed" { return task.localPath == nil ? "" : L10n.tr("分享") }
             if store.connection != .secured { return L10n.tr("连接电脑后继续") }
-            return failed ? L10n.tr("轻点重试") : L10n.tr("轻点继续")
+            return failed ? L10n.tr("重试") : L10n.tr("继续")
         }()
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {

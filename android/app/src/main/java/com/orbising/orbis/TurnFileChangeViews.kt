@@ -225,11 +225,9 @@ internal fun TurnChangeSummaryView(
                 }
             }
         }
-        if (caveat.isNotEmpty()) Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Icon(Icons.Rounded.WarningAmber, contentDescription = null, tint = changeModifiedColor(), modifier = Modifier.size(14.dp))
-            Text(caveat, style = MaterialTheme.typography.bodySmall, color = changeModifiedColor())
-        }
+        if (caveat.isNotEmpty()) StatusWithInfo(
+            L10n.tr(if (summary.coverage != "complete") "记录不完整" else if (summary.reasons.any { it.contains("concurrent") }) "归属未确认" else "记录范围"),
+            caveat, Modifier.padding(horizontal = 4.dp))
     }
 }
 

@@ -588,6 +588,10 @@ struct SessionDraftView: View {
     private var configurationModel: SessionConfigurationModel? {
         configuration?.catalog.models.first { $0.value == store.sessionConfigurationValues.model }
     }
+    private var thinkingTitle: String {
+        (configurationModel?.thinking.first { $0.value == store.sessionConfigurationValues.thinking }?.label)
+            .map { L10n.hostText($0) } ?? store.sessionConfigurationValues.thinking ?? L10n.tr("默认深度")
+    }
     private var permissionSummary: String {
         guard let config = configuration else { return L10n.tr("权限") }
         let labels = config.catalog.permissions.compactMap { setting in
@@ -644,20 +648,23 @@ struct SessionDraftView: View {
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
             if store.sessionConfigurationSupported {
-                HStack(spacing: 8) {
-                    configurationButton(configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"), panel: "model", enabled: configuration?.catalog.models.isEmpty == false)
-                    configurationButton(store.sessionConfigurationValues.thinking ?? L10n.tr("默认深度"), panel: "thinking", enabled: configurationModel?.thinking.isEmpty == false)
-                    configurationButton(permissionSummary, panel: "permissions", enabled: configuration != nil)
+                // S55 / SC79: the model owns a row; permission text cannot resize either value.
+                VStack(spacing: 8) {
+                    configurationButton(L10n.tr("模型"), value: configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"),
+                        panel: "model", enabled: configuration?.catalog.models.isEmpty == false)
+                    HStack(spacing: 8) {
+                        configurationButton(L10n.tr("思考深度"), value: thinkingTitle, panel: "thinking", enabled: configurationModel?.thinking.isEmpty == false)
+                        configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
+                    }
                 }
-                if let notice = configuration?.catalog.notice { Text(L10n.hostText(notice)).font(.orbisCaption()).foregroundStyle(p.secondary) }
                 if let error = store.sessionConfigurationError {
-                    Text(L10n.hostText(error)).font(.orbisCaption()).foregroundStyle(p.error)
+                    OrbisStatusWithInfo(title: L10n.tr("设置未确认"), message: L10n.hostText(error), error: true)
                     OrbisMotionButton { loadConfiguration() } label: { Text(L10n.tr("刷新")) }.buttonStyle(.plain)
                 } else if store.sessionConfigurationRequest != nil {
                     Text(L10n.tr("正在确认配置…")).font(.orbisCaption()).foregroundStyle(p.secondary)
                 }
             } else {
-                Text(L10n.tr("升级电脑端后可在此选择模型、思考深度和权限")).font(.orbisCaption()).foregroundStyle(p.secondary)
+                OrbisStatusWithInfo(title: L10n.tr("电脑端默认"), message: L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
@@ -697,28 +704,60 @@ struct SessionDraftView: View {
             .task(id: "\(agent)|\(currentPath ?? "")|\(store.connection == .secured)|\(store.sessionConfigurationSupported)") { loadConfiguration() }
             .onKeyPress(.escape) { cancel(); return .handled }
             .orbisBottomSheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
-            .orbisBottomSheet(isPresented: $choosingConfiguration) { configurationSheet.orbisSheet([.medium, .large]) }
+            .orbisBottomSheet(isPresented: $choosingConfiguration) { configurationSheet.orbisSheet(configurationPanel == "permissions" ? [.large] : [.medium, .large]) }
     }
     private func loadConfiguration() {
         if owner === store.activeConnection, let cwd = currentPath { store.loadSessionConfiguration(agent: agent, cwd: cwd) }
     }
-    private func configurationButton(_ title: String, panel: String, enabled: Bool) -> some View {
+    private func configurationButton(_ title: String, value: String?, panel: String, enabled: Bool) -> some View {
         OrbisMotionButton {
             focused = false; configurationPanel = panel
             proposedPermissions = store.sessionConfigurationValues.permissions ?? [:]; choosingConfiguration = true
         } label: {
-            HStack(spacing: 4) { Text(title).font(.orbisCaption()).lineLimit(1); Image(systemName: "chevron.down").font(.system(size: 10)) }
-                .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(!enabled || store.sessionConfigurationRequest != nil)
+            HStack(spacing: 8) {
+                if let value {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(title).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                        Text(value).font(panel == "model" ? .orbisBody(.semibold) : .orbisLabel(.semibold))
+                            .foregroundStyle(OrbisPalette(scheme).text).lineLimit(1).truncationMode(.tail)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Image(systemName: "shield").font(.system(size: 16)).accessibilityHidden(true)
+                    Text(title).font(.orbisLabel(.semibold)).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Image(systemName: "chevron.down").font(.system(size: 14)).accessibilityHidden(true)
+            }.foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, minHeight: 56).contentShape(Rectangle())
+        }.buttonStyle(NeuButtonStyle(radius: 16)).disabled(!enabled || store.sessionConfigurationRequest != nil)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel(title).accessibilityValue(panel == "permissions" ? permissionSummary : value ?? "")
+            .accessibilityIdentifier("draft-config-" + panel)
     }
     private var configurationSheet: some View {
-        VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr(configurationPanel == "model" ? "模型" : configurationPanel == "thinking" ? "思考深度" : "权限"), closes: true,
-                            back: { choosingConfiguration = false }) { EmptyView() }
-            ScrollView {
-                VStack(spacing: 10) {
-                    if let config = configuration {
-                        if configurationPanel == "model" {
+        VStack(spacing: 12) {
+            OrbisPageHeader(title: L10n.tr(configurationPanel == "model" ? "模型" : configurationPanel == "thinking" ? "思考深度" : "新会话权限"), closes: true,
+                            back: { choosingConfiguration = false }) {
+                if let notice = configuration?.catalog.notice {
+                    OrbisInfoButton(title: L10n.tr("新会话配置"), message: L10n.hostText(notice))
+                }
+            }
+            if configurationPanel == "permissions", let config = configuration {
+                OrbisPermissionChoices(settings: config.catalog.permissions, values: proposedPermissions,
+                    currentValues: store.sessionConfigurationValues.permissions ?? [:], enabled: store.connection == .secured && store.sessionConfigurationRequest == nil) { id, value in
+                        proposedPermissions[id] = value
+                        if id == "sandbox" && value == "dangerFullAccess" { proposedPermissions["network"] = "enabled" }
+                    }
+                if !config.catalog.permissions.isEmpty {
+                    OrbisActionButton(title: L10n.tr("应用到新会话")) {
+                        var value = store.sessionConfigurationValues; value.permissions = proposedPermissions
+                        choosingConfiguration = false; store.saveSessionConfiguration(value)
+                    }.disabled(store.connection != .secured || store.sessionConfigurationRequest != nil || proposedPermissions == (store.sessionConfigurationValues.permissions ?? [:]))
+                        .padding(.horizontal, 16).padding(.bottom, 16).accessibilityIdentifier("draft-permissions-apply")
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        if configurationPanel == "model", let config = configuration {
                             ForEach(config.catalog.models) { model in
                                 OrbisChoiceRow(title: model.label, subtitle: "", selected: store.sessionConfigurationValues.model == model.value) {
                                     var value = store.sessionConfigurationValues; value.model = model.value
@@ -726,35 +765,23 @@ struct SessionDraftView: View {
                                     choosingConfiguration = false; store.saveSessionConfiguration(value)
                                 }
                             }
-                        } else if configurationPanel == "thinking" {
-                            ForEach(configurationModel?.thinking ?? []) { option in
-                                OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: option.description.map { L10n.hostText($0) } ?? "", selected: store.sessionConfigurationValues.thinking == option.value) {
-                                    var value = store.sessionConfigurationValues; value.thinking = option.value
-                                    choosingConfiguration = false; store.saveSessionConfiguration(value)
-                                }
-                            }
                         } else {
-                            ForEach(config.catalog.permissions) { setting in
-                                Text(L10n.hostText(setting.label)).font(.orbisLabel(.semibold)).frame(maxWidth: .infinity, alignment: .leading)
-                                ForEach(setting.options) { option in
-                                    OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: L10n.hostText(option.description ?? ""), selected: proposedPermissions[setting.id] == option.value) {
-                                        proposedPermissions[setting.id] = option.value
-                                        if setting.id == "sandbox" && option.value == "dangerFullAccess" { proposedPermissions["network"] = "enabled" }
-                                    }.disabled(setting.disabledReason != nil)
+                            ForEach(configurationModel?.thinking ?? []) { option in
+                                HStack(spacing: 0) {
+                                    OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "", selected: store.sessionConfigurationValues.thinking == option.value) {
+                                        var value = store.sessionConfigurationValues; value.thinking = option.value
+                                        choosingConfiguration = false; store.saveSessionConfiguration(value)
+                                    }
+                                    if let description = option.description, !description.isEmpty {
+                                        OrbisInfoButton(title: L10n.hostText(option.label), message: L10n.hostText(description))
+                                    }
                                 }
                             }
-                            if let notice = config.catalog.notice { Text(L10n.hostText(notice)).font(.orbisCaption()) }
                         }
-                    }
+                    }.padding(16)
                 }
             }
-            if configurationPanel == "permissions", configuration?.catalog.permissions.isEmpty == false {
-                OrbisActionButton(title: L10n.tr("应用到新会话")) {
-                    var value = store.sessionConfigurationValues; value.permissions = proposedPermissions
-                    choosingConfiguration = false; store.saveSessionConfiguration(value)
-                }
-            }
-        }.padding(16)
+        }
     }
     private var directorySheet: some View {
         VStack(spacing: 16) {

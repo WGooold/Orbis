@@ -33,7 +33,7 @@ class CodexPermissionsInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf("1"), submissions) }
     }
 
-    @Test fun permissionDetailsShowHostSummaryAndFailureVerbatim() {
+    @Test fun permissionDetailsStayBehindInfoAndKeepHostFailureVerbatim() {
         compose.setContent { OrbisTheme { RuntimePermissionsStatus(RuntimePermissionManagement(
             summary = "Host 提供的权限异常摘要",
             details = "Windows 沙箱初始化失败，请在电脑端修复 Codex 沙箱设置后重试。",
@@ -42,7 +42,11 @@ class CodexPermissionsInstrumentedTest {
         compose.onNodeWithContentDescription("当前会话权限").performClick()
         compose.onNodeWithText("当前会话权限").assertIsDisplayed()
         compose.onAllNodesWithText("Host 提供的权限异常摘要").onFirst().assertExists()
-        compose.onNodeWithText("电脑端修复 Codex 沙箱设置", substring = true).assertExists()
+        compose.onNodeWithText("电脑端修复 Codex 沙箱设置", substring = true).assertDoesNotExist()
+        compose.onNodeWithTag("permission-info").performClick()
+        compose.onNodeWithText("电脑端修复 Codex 沙箱设置", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("知道了").performClick()
+        compose.onNodeWithTag("session-control-sheet").assertIsDisplayed()
     }
 
     @Test fun freeTextQuestionCanBeAnsweredWithoutSelectingADummyOption() {

@@ -175,7 +175,10 @@ class SettingsEntryInstrumentedTest {
             compose.onNodeWithText("Workspace write, Ask when needed").performClick()
             compose.onNodeWithTag("session-control-sheet").assertIsDisplayed()
             compose.onNodeWithText("File access scope").assertIsDisplayed()
+            compose.onNodeWithText("Network: access allowed.\nVendor-only detail").assertDoesNotExist()
+            compose.onNodeWithTag("permission-info").performClick()
             compose.onNodeWithText("Network: access allowed.\nVendor-only detail").assertIsDisplayed()
+            compose.onNodeWithText(L10n.tr("知道了")).performClick()
             compose.onNodeWithText("Workspace write").performScrollTo().performClick()
             compose.onNodeWithText(L10n.tr("应用到当前会话")).performClick()
             compose.runOnIdle { assertEquals("vendor-scope" to "opaque-B", applied) }

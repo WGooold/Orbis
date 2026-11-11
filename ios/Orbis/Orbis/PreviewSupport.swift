@@ -300,6 +300,7 @@ private final class PreviewTransport: OrbisTransport {
             if ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") { runtimes[0]["agentKind"] = "claude"; runtimes[0]["name"] = "Claude Code" }
             let launchableDshOnly = ProcessInfo.processInfo.arguments.contains("--preview-launchable-dsh")
             receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
+                     "sessionConfiguration": ProcessInfo.processInfo.arguments.contains("--preview-permission-options") ? 1 : 0,
                      "agents": launchableDshOnly ? ["pi"] : ["pi", "codex", "dsh"],
                      "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"]], "ctl")
             var path: [String: Any] = ["type": "device.path", "path": "relay"]
@@ -391,6 +392,21 @@ private final class PreviewTransport: OrbisTransport {
             } catch { }
         }
     }
+    // S54 / SC78: isolated native draft flow, including a real save acknowledgement.
+    private var configurationValues: [String: Any] = ["model": "gpt-5.4", "thinking": "high",
+        "permissions": ["sandbox": "workspaceWrite", "network": "restricted", "approvals": "on-request", "approval-reviewer": "user"]]
+    private var permissionOptions: [[String: Any]] { [
+        ["id": "sandbox", "label": "文件访问范围", "currentValue": "workspaceWrite", "options": [
+            ["value": "readOnly", "label": "只读", "description": "允许读取文件；写入需要额外授权。"],
+            ["value": "workspaceWrite", "label": "工作区可写"], ["value": "dangerFullAccess", "label": "完全访问"]]],
+        ["id": "network", "label": "网络访问", "currentValue": "restricted", "options": [
+            ["value": "restricted", "label": "限制联网"], ["value": "enabled", "label": "允许联网"]]],
+        ["id": "approvals", "label": "何时申请审批", "currentValue": "on-request", "options": [
+            ["value": "on-request", "label": "按需询问"], ["value": "never", "label": "不申请审批"]]],
+        ["id": "approval-reviewer", "label": "谁来处理审批", "currentValue": "user", "options": [
+            ["value": "user", "label": "由我处理"], ["value": "guardian_subagent", "label": "自动审查"]]]
+    ] }
+
     func send(_ object: [String: Any]) -> Bool {
         if ProcessInfo.processInfo.arguments.contains("--preview-home-refresh-probe"),
            object["type"] as? String == "agent.state.request", object["scope"] as? String == "agent",
@@ -419,6 +435,16 @@ private final class PreviewTransport: OrbisTransport {
                     ["sessionId": "home-session-1", "name": "整理家庭照片脚本", "cwd": "/Users/home/scripts", "createdAt": 1793145600000,
                      "modifiedAt": 1793232000000, "messageCount": 4, "agentKind": "pi", "archived": false]], "currentProviders": []], "ctl")
             }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--preview-permission-options"),
+           ["session.configuration.read", "session.configuration.save"].contains(object["type"] as? String ?? "") {
+            if let values = object["values"] as? [String: Any] { configurationValues = values }
+            receive?(["type": "session.configuration.result", "requestId": object["requestId"]!,
+                "agentKind": object["agentKind"] ?? "codex", "cwd": object["cwd"] ?? "/Projects/orbis", "binding": "quiet-ui", "revision": 1,
+                "values": configurationValues, "catalog": ["binding": "quiet-ui", "defaults": configurationValues,
+                    "models": [["value": "gpt-5.4", "label": "GPT-5.4", "thinking": [["value": "high", "label": "高"]]]],
+                    "permissions": permissionOptions]], "ctl")
             return
         }
         if object["type"] as? String == "session.list" {

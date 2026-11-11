@@ -644,7 +644,10 @@ private fun PairingScreen(
                 }
             }
             Spacer(Modifier.height(18.dp))
-            Text(L10n.tr("连接你的电脑"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(L10n.tr("连接你的电脑"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                InlineInfoButton(L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"), L10n.tr("连接你的电脑"), "pairing-info")
+            }
             Spacer(Modifier.height(24.dp))
             NeumorphActionButton(
                 onClick = {
@@ -2525,42 +2528,20 @@ private fun SlashCommandPicker(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(matches, key = { "slash:${it.source}:${it.name}" }) { command ->
-            NeumorphSurface(
-                onClick = {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                NeumorphSurface(onClick = {
                     onCommandSelected(command, "/${command.name}${if (command.argument == null) "" else " "}")
-                },
-                shape = RemoteUi.ControlShape,
-                shadowScale = 0.5f,
-                modifier = Modifier.fillMaxWidth(),
-                contentInset = 12.dp,
-            ) {
-                Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            "/${command.name}",
-                            modifier = Modifier.weight(1f),
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        // 内置命令属于当前 agent，不再逐项写 agent 名；只标出扩展、模板等其他来源（与 iOS 一致）。
+                }, shape = RemoteUi.ControlShape, shadowScale = 0.5f, modifier = Modifier.weight(1f), contentInset = 12.dp) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("/${command.name}", Modifier.weight(1f), fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (command.source != "builtin") Text(slashSourceText(command.source, isCodex), color = MaterialTheme.colorScheme.primary)
                     }
-                    command.description?.let {
-                        val description = if (command.source == "builtin") L10n.hostText(it) else it
-                        Text(
-                            if (command.argument?.hint == null) description else "$description ${command.argument.hint}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
+                val explanation = listOfNotNull(command.description, command.argument?.hint).filter { it.isNotBlank() }
+                    .joinToString("\n") { if (command.source == "builtin") L10n.hostText(it) else it }
+                if (explanation.isNotEmpty()) InlineInfoButton(explanation, "/${command.name}")
             }
         }
     }
@@ -2588,29 +2569,14 @@ private fun SlashOptionList(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(options, key = RuntimeSlashCommandOption::value) { option ->
-            NeumorphSurface(
-                onClick = { onSelect(option) },
-                shape = RemoteUi.ControlShape,
-                shadowScale = 0.5f,
-                modifier = Modifier.fillMaxWidth(),
-                contentInset = 12.dp,
-            ) {
-                Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
-                    Text(
-                        option.label,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    option.description?.let {
-                        Text(
-                            if (localizeDescription) L10n.hostText(it) else it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                NeumorphSurface(onClick = { onSelect(option) }, shape = RemoteUi.ControlShape, shadowScale = 0.5f,
+                    modifier = Modifier.weight(1f), contentInset = 12.dp) {
+                    Text(option.label, Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp),
+                        fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                option.description?.takeIf { it.isNotBlank() }?.let {
+                    InlineInfoButton(if (localizeDescription) L10n.hostText(it) else it, option.label)
                 }
             }
         }
@@ -2819,7 +2785,7 @@ internal fun AllDownloadsScreen(
         AlertDialog(
             onDismissRequest = { pendingDeletion = emptySet() },
             title = { Text(L10n.tr("删除下载记录与本机文件？")) },
-            text = { Text(L10n.tr("电脑上的原文件不受影响。")) },
+            text = {},
             confirmButton = {
                 TextButton(enabled = ids.isNotEmpty(), onClick = {
                     onDelete(ids)
@@ -2862,10 +2828,10 @@ private fun DownloadTaskCard(
         (task.sourcePath != null || task.sourceArtifactId != null)
     val actionHint = when {
         !active && !canRetry -> null
-        active -> L10n.tr("轻点暂停")
+        active -> L10n.tr("暂停")
         !connected -> L10n.tr("连接电脑后继续")
-        task.status == "failed" -> L10n.tr("轻点重试")
-        else -> L10n.tr("轻点继续")
+        task.status == "failed" -> L10n.tr("重试")
+        else -> L10n.tr("继续")
     }
     val statusColor = when (task.status) {
         "completed" -> MaterialTheme.colorScheme.tertiary
@@ -2905,7 +2871,7 @@ private fun DownloadTaskCard(
                     // Keep the normal caption's measured height while hiding its action hint.
                     Box {
                         Text(
-                            listOfNotNull(downloadStatusText(task), actionHint).joinToString(", "),
+                            downloadStatusText(task),
                             modifier = Modifier.alpha(if (selectionMode) 0f else 1f)
                                 .then(if (selectionMode) Modifier.clearAndSetSemantics {} else Modifier),
                             style = MaterialTheme.typography.bodySmall, color = statusColor,
@@ -2914,6 +2880,8 @@ private fun DownloadTaskCard(
                             style = MaterialTheme.typography.bodySmall, color = statusColor)
                     }
                 }
+                if (!selectionMode && actionHint != null) Text(actionHint, style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
                 OrbisSelectionIndicator(selected, selectionMode)
             }
             if (active || task.status in setOf("paused", "cancelled", "failed")) {
@@ -4520,9 +4488,8 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(launch.failure?.let { L10n.tr("启动失败：{0}", it) } ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"),
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (launch.failure != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            StatusWithInfo(L10n.tr(if (launch.failure != null) "启动失败" else "启动未确认"),
+                launch.failure ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error = launch.failure != null)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = OrbisSymbols.Refresh, modifier = Modifier.testTag("launch-retry"))
                 NeumorphTextButton(L10n.tr("返回"), onClick = onBack, modifier = Modifier.testTag("launch-back"))

@@ -26,8 +26,10 @@ struct PairingEntryView: View {
                     VStack(spacing: 0) {
                         Image("OrbisMark").resizable().scaledToFit().frame(width: 52, height: 52)
                             .frame(width: 76, height: 76).neuSurface(inset: true, radius: 20)
-                        Text(L10n.tr("连接你的电脑")).font(.orbisTitle()).padding(.top, 18).padding(.bottom, 28)
-                            .accessibilityAddTraits(.isHeader)
+                        HStack(spacing: 0) {
+                            Text(L10n.tr("连接你的电脑")).font(.orbisTitle()).accessibilityAddTraits(.isHeader)
+                            OrbisInfoButton(title: L10n.tr("连接你的电脑"), message: L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"), identifier: "pairing-info")
+                        }.padding(.top, 18).padding(.bottom, 28)
                         OrbisActionButton(title: L10n.tr("扫码配对"), symbol: "qrcode.viewfinder") {
                             codeFocused = false; validationError = nil; scannerOpen = true
                         }.disabled(store.isPairing)
@@ -93,9 +95,6 @@ struct PairingScannerView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .neuSurface(inset: true, radius: 20, padding: 6).padding(.horizontal, 24)
                 .accessibilityLabel(L10n.tr("二维码相机取景框"))
-            Text(L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"))
-                .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                .multilineTextAlignment(.center).padding(.horizontal, 24)
             if let failure {
                 OrbisNotice(text: failure, error: true).padding(.horizontal, 24)
                 HStack(spacing: 12) {

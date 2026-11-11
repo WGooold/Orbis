@@ -1072,6 +1072,8 @@ fun NeumorphTextButton(
     icon: ImageVector? = null,
     maxLines: Int = 1,
     copyFeedback: Boolean? = null,
+    /** Staged edits stay in their sheet; only a final action uses its exit callback. */
+    dismissOnClick: Boolean = true,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
     var activation by remember { mutableIntStateOf(0) }
@@ -1086,7 +1088,7 @@ fun NeumorphTextButton(
         modifier = modifier.heightIn(min = RemoteUi.TouchTarget),
         shape = RemoteUi.ControlShape,
         shadowScale = 0.5f,
-        onClick = { activation++; if (modalCommit != null) modalCommit(onClick) else onClick() },
+        onClick = { activation++; if (dismissOnClick && modalCommit != null) modalCommit(onClick) else onClick() },
         enabled = active,
     ) {
         Row(

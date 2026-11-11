@@ -221,12 +221,9 @@ internal fun HistoryTreePage(
                 )
             }
             if (olderUnread && query.isBlank()) {
-                Text(
+                StatusWithInfo(L10n.tr("部分历史未加载"),
                     L10n.tr("更早的记录还没有读到：在聊天页往上翻，读到的部分会自动补进这张树"),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 2.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                    Modifier.padding(horizontal = RemoteUi.PagePadding))
             }
             if (rows.isEmpty()) {
                 Text(
@@ -650,16 +647,13 @@ private fun HistoryPreviewActions(
             )
         }
         if (node.action != null) {
-            Text(
-                when {
-                    isPendingNode -> L10n.tr("正在跳转…")
-                    hint != null -> hint
-                    node.action == HistoryNodeAction.EditAndRestart -> L10n.tr("分支会移到这条消息之前，原文回到输入框")
-                    else -> L10n.tr("分支会停在这条回复之后，接着往下聊")
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            when {
+                isPendingNode -> Text(L10n.tr("正在跳转…"), style = MaterialTheme.typography.labelSmall)
+                busy -> StatusWithInfo(L10n.tr("运行中"), L10n.tr("运行中：切换分支要等这一轮结束"))
+                node.isCurrent -> Text(L10n.tr("当前位置"), style = MaterialTheme.typography.labelSmall)
+                else -> InlineInfoButton(L10n.tr(if (node.action == HistoryNodeAction.EditAndRestart)
+                    "分支会移到这条消息之前，原文回到输入框" else "分支会停在这条回复之后，接着往下聊"), L10n.tr("历史与分支"))
+            }
         }
     }
 }

@@ -149,16 +149,11 @@ fun QrScannerDialog(
                         lifecycleOwner = lifecycleOwner,
                         onPayload = onPayloadUpdated,
                     )
-                    Text(
-                        text = L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"),
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                    )
+
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(L10n.tr("需要相机权限才能扫描配对二维码。"))
+                    Text(L10n.tr("相机权限未开启"))
                     NeumorphActionButton(
                         onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
                         text = L10n.tr("允许相机权限"),

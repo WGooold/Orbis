@@ -18,6 +18,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -131,49 +133,23 @@ internal fun RuntimePermissionsStatus(
         Icon(OrbisSymbols.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp).actionGlyphMotion(glyphActivation), tint = tint)
     }
     if (expanded) SessionControlDialog(L10n.tr("当前会话权限"), onClose = { expanded = false }) {
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (permissionManagement == null) {
-                Text(L10n.tr("当前会话未提供权限管理信息，请在电脑端查看和管理权限"))
-            } else {
-                Text(L10n.tr("当前生效"), style = MaterialTheme.typography.labelLarge)
-                Text(L10n.hostSummary(permissionManagement.summary), style = MaterialTheme.typography.titleMedium, color = tint)
-                SelectionContainer { Text(L10n.hostText(permissionManagement.details), style = MaterialTheme.typography.bodyMedium) }
-            }
-            if (available.isNotEmpty()) {
-                Text(L10n.tr("修改设置"), style = MaterialTheme.typography.titleMedium)
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    available.forEach { item ->
-                        NeumorphTextButton(L10n.hostText(item.label), filled = item == setting, enabled = pendingId == null,
-                            onClick = { selectedSettingId = item.id; selectedValue = null; feedback = null })
-                    }
-                }
-                setting?.disabledReason?.let { Text(L10n.hostText(it)) }
-                setting?.options?.forEach { option ->
-                    val chosen = (selectedValue ?: current) == option.value
-                    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape,
-                        style = if (chosen) NeumorphStyle.Pressed else NeumorphStyle.Raised,
-                        enabled = canEdit, onClick = { selectedValue = option.value; feedback = null }, contentInset = 12.dp) {
-                        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                                AgentIconRecess(Modifier.fillMaxSize(), androidx.compose.foundation.shape.CircleShape)
-                                if (chosen) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
-                            }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(L10n.hostText(option.label) + if (option.value == current) L10n.tr("，当前") else "",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = if (chosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                                option.description?.let { Text(L10n.hostText(it), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            }
-                        }
-                    }
-                }
-            } else if (permissionManagement != null) Text(L10n.tr("当前会话未提供手机端权限设置"))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = tint)
+            InlineInfoButton(permissionManagement?.details?.let(L10n::hostText)
+                ?: L10n.tr("当前会话未提供权限管理信息，请在电脑端查看和管理权限"), L10n.tr("当前会话权限"), "permission-info")
         }
+        PermissionSettingChoices(available, setting?.id, available.mapNotNull { item ->
+            (if (item.id == setting?.id) selectedValue ?: item.currentValue else item.currentValue)?.let { item.id to it }
+        }.toMap(), available.mapNotNull { item -> item.currentValue?.let { item.id to it } }.toMap(),
+            enabled = connected && pendingId == null, modifier = Modifier.weight(1f),
+            onCategory = { selectedSettingId = it; selectedValue = null; feedback = null },
+            onSelect = { _, value -> selectedValue = value; feedback = null })
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!connected) Text(L10n.tr("连接已断开，连接后可应用设置"), color = MaterialTheme.colorScheme.error)
-            else if (!idle) Text(L10n.tr("模型和思考深度用于后续轮次；权限以电脑端确认生效"))
-            feedback?.let { Text(it) }
+            if (!connected) Text(L10n.tr("已断开"), color = MaterialTheme.colorScheme.error)
+            feedback?.let {
+                if (it == L10n.tr("已应用到当前会话")) Text(it)
+                else StatusWithInfo(L10n.tr("设置未确认"), it, error = true)
+            }
             if (setting != null) NeumorphTextButton(
                 if (pendingId != null) L10n.tr("正在应用，等待电脑确认…") else L10n.tr("应用到当前会话"), filled = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -184,6 +160,56 @@ internal fun RuntimePermissionsStatus(
                     feedback = if (pendingId == null) L10n.tr("设置未发送，请检查连接后重试") else null
                 },
             )
+        }
+    }
+}
+
+/** S54 / SC78: shared by draft and live permissions; only the option body scrolls. */
+@Composable
+internal fun PermissionSettingChoices(
+    settings: List<RuntimePermissionSetting>, selectedId: String?, values: Map<String, String>,
+    currentValues: Map<String, String>, enabled: Boolean, modifier: Modifier = Modifier,
+    onCategory: (String) -> Unit, onSelect: (String, String) -> Unit,
+) {
+    val setting = settings.find { it.id == selectedId } ?: settings.firstOrNull()
+    Column(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            settings.forEach { item ->
+                NeumorphTextButton(L10n.hostText(item.label), filled = item.id == setting?.id, enabled = enabled,
+                    dismissOnClick = false, modifier = Modifier.testTag("permission-tab-${item.id}"), onClick = { onCategory(item.id) })
+            }
+        }
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (setting == null) Text(L10n.tr("电脑端管理"), style = MaterialTheme.typography.labelMedium)
+            val reason = setting?.disabledReason ?: if (setting?.id == "network" && values["sandbox"] == "dangerFullAccess")
+                L10n.tr("完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。") else null
+            if (reason != null) StatusWithInfo(L10n.tr("当前不可修改"), L10n.hostText(reason))
+            setting?.options?.forEach { option ->
+                val chosen = values[setting.id] == option.value
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    NeumorphSurface(Modifier.weight(1f).testTag("permission-option-${setting.id}-${option.value}")
+                        .semantics { selected = chosen }, shape = RemoteUi.ControlShape,
+                        style = if (chosen) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                        enabled = enabled && reason == null, onClick = { onSelect(setting.id, option.value) }, contentInset = 12.dp) {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(12.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                                AgentIconRecess(Modifier.fillMaxSize(), androidx.compose.foundation.shape.CircleShape)
+                                if (chosen) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, androidx.compose.foundation.shape.CircleShape))
+                            }
+                            Text(L10n.hostText(option.label), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                                color = if (chosen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                            if (currentValues[setting.id] == option.value) Text(L10n.tr("当前"), style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    option.description?.takeIf { it.isNotBlank() }?.let {
+                        InlineInfoButton(L10n.hostText(it), L10n.hostText(option.label))
+                    }
+                }
+            }
         }
     }
 }

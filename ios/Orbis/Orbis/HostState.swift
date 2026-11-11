@@ -145,9 +145,8 @@ struct AgentProvider: Identifiable, Hashable {
     var official = false
     var removable: Bool { kind == "pi" && enabled && additive }
     var confirmation: String {
-        let explanation = additive ? (enabled ? L10n.tr("从 Pi 配置移除；Host 中的卡片和配置仍保留。") : L10n.tr("添加到 Pi 配置，可与其他供应商同时启用。")) :
-            L10n.tr("将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。")
-        return name + "\n" + explanation + (enabled && globalDefault ? L10n.tr("\n这是 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。") : "")
+        if additive { return enabled && globalDefault ? L10n.tr("将移除默认供应商，需重新选择模型") : "" }
+        return L10n.tr("已有会话需要重新打开。")
     }
 }
 

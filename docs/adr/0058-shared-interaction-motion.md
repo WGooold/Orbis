@@ -88,6 +88,9 @@
 | SC70 | 新建卡片空输入直接启动，按钮在启动三角与发送箭头间切换，沿用草稿开合和形变 |
 | SC71 | iOS 侧边栏对齐 Android 的三项预览、分级筛选、固定多选工具栏与电脑状态 |
 | SC73 | 新建配置沿用选择弹层与乐观启动；配置未确认不放行首句，运行中后续设置与当前工具审批分开确认 |
+| SC77 | 次要 info 复用共用对话框的进入、退场和焦点；打开或关闭说明不执行相邻操作 |
+| SC78 | 权限页分类切换仅更新当前选项区；草稿选择跨类别保留，固定应用按钮提交并退场，取消丢弃待选值 |
+| SC79 | 新建卡片模型使用独立整行，深度与权限拥有独立固定槽位；权限组合不参与卡片宽度计算，入口沿用配置选择面板 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

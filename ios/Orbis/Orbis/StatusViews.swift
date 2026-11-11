@@ -153,8 +153,11 @@ struct ConnectionStatusView: View {
         VStack(alignment: .leading, spacing: 16) {
             OrbisPageHeader(title: L10n.tr("连接协议"), closes: true, back: { protocolOpen = false }) { EmptyView() }
             ForEach([RelayTransportMode.auto, .ws, .quic], id: \.rawValue) { mode in
-                OrbisChoiceRow(title: protocolTitle(mode), subtitle: relayTransportModeDescription(mode), selected: proposedProtocol == mode) { proposedProtocol = mode }
-                    .accessibilityIdentifier("relay-mode-" + mode.rawValue)
+                HStack(spacing: 0) {
+                    OrbisChoiceRow(title: protocolTitle(mode), subtitle: "", selected: proposedProtocol == mode) { proposedProtocol = mode }
+                        .accessibilityIdentifier("relay-mode-" + mode.rawValue)
+                    if mode == .quic { OrbisInfoButton(title: "QUIC", message: L10n.tr("当前网络不支持 QUIC 时无法连接")) }
+                }
             }
             OrbisActionButton(title: proposedProtocol == store.relayTransportMode ? L10n.tr("正在使用") : L10n.tr("改用 {0} 并重新连接", protocolTitle(proposedProtocol))) {
                 store.setRelayTransportMode(proposedProtocol); protocolOpen = false
@@ -179,6 +182,7 @@ struct OrbisChoiceRow: View {
     let title: String
     let subtitle: String
     let selected: Bool
+    var current = false
     let action: () -> Void
     var body: some View {
         OrbisMotionButton(action: action) {
@@ -189,9 +193,59 @@ struct OrbisChoiceRow: View {
                     Text(title).font(.orbisBody(.semibold)).foregroundStyle(selected ? OrbisPalette(scheme).accent : OrbisPalette(scheme).text)
                     if !subtitle.isEmpty { Text(subtitle).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).fixedSize(horizontal: false, vertical: true) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
+                if current { Text(L10n.tr("当前")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }.padding(12).frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(NeuButtonStyle(selected: selected, radius: 16))
             .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// S54 / SC78: draft and live permissions share categories and compact radio rows.
+struct OrbisPermissionChoices: View {
+    let settings: [PermissionManagement.Setting]
+    let values: [String: String]
+    let currentValues: [String: String]
+    var enabled = true
+    var onCategory: () -> Void = {}
+    let onSelect: (String, String) -> Void
+    @State private var category: String?
+    @Environment(\.colorScheme) private var scheme
+    private var setting: PermissionManagement.Setting? { settings.first { $0.id == category } ?? settings.first }
+    var body: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(settings) { item in
+                        OrbisMotionButton { category = item.id; onCategory() } label: {
+                            Text(L10n.hostText(item.label)).font(.orbisLabel(.semibold)).fixedSize()
+                                .padding(.horizontal, 14).frame(minHeight: 48)
+                        }.buttonStyle(NeuButtonStyle(selected: item.id == setting?.id, radius: 16))
+                            .disabled(!enabled).accessibilityIdentifier("permission-tab-" + item.id)
+                            .accessibilityAddTraits(item.id == setting?.id ? .isSelected : [])
+                    }
+                }.padding(.horizontal, 16).padding(.vertical, 4)
+            }.fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let setting {
+                        let reason = setting.disabledReason ?? (setting.id == "network" && values["sandbox"] == "dangerFullAccess"
+                            ? L10n.tr("完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。") : nil)
+                        if let reason { OrbisStatusWithInfo(title: L10n.tr("当前不可修改"), message: L10n.hostText(reason)) }
+                        ForEach(setting.options) { option in
+                            HStack(spacing: 0) {
+                                OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "", selected: values[setting.id] == option.value,
+                                               current: currentValues[setting.id] == option.value) { onSelect(setting.id, option.value) }
+                                    .disabled(!enabled || reason != nil)
+                                    .accessibilityIdentifier("permission-option-" + setting.id + "-" + option.value)
+                                if let description = option.description, !description.isEmpty {
+                                    OrbisInfoButton(title: L10n.hostText(option.label), message: L10n.hostText(description))
+                                }
+                            }
+                        }
+                    } else { Text(L10n.tr("电脑端管理")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary) }
+                }.padding(16)
+            }.frame(maxHeight: .infinity)
+        }
     }
 }
 
@@ -220,7 +274,7 @@ struct AgentProvidersView: View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
                 Spacer(minLength: 8)
-                Text(host.providerKind == "pi" ? L10n.tr("Pi 可以同时启用多个配置") : L10n.tr("{0} 个配置", host.providers.count))
+                Text(L10n.tr("{0} 个配置", host.providers.count))
                     .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
             ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
@@ -271,8 +325,7 @@ struct AgentProvidersView: View {
                     if host.quotaProviderId == provider.id, let error = host.quotaError { Text(error).font(.orbisCaption()).foregroundStyle(palette.error) }
                 }
             } else {
-                HStack(spacing: 6) { Image(systemName: "info.circle"); Text(L10n.tr("这个配置不提供配额查询")) }
-                    .font(.orbisLabel()).foregroundStyle(palette.secondary).frame(maxWidth: .infinity)
+                OrbisStatusWithInfo(title: L10n.tr("配额不可用"), message: L10n.tr("这个配置不提供配额查询"))
             }
         }
     }
@@ -321,7 +374,7 @@ private struct ProviderQuotaCell: View {
             if loading { Text(L10n.tr("正在查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
             else if let reset = window?.resetsAt {
                 Text(Date(timeIntervalSince1970: Double(reset) / 1000), style: .relative).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
-            } else { Text(L10n.tr("轻点刷新查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
+            } else { Text(L10n.tr("待查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("provider-quota-" + name)

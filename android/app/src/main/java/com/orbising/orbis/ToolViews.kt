@@ -148,8 +148,8 @@ internal fun ToolDetailSheet(
                 SummaryCaption(L10n.tr("已读取至 {0}", formatByteCount(detail.offset)))
             }
             if (detail.gaps.isNotEmpty()) {
-                Text(L10n.tr("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。"),
-                    Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                StatusWithInfo(L10n.tr("内容不完整"), L10n.tr("来源存在不可恢复的内容缺口，当前读取范围不代表完整输出。"),
+                    Modifier.padding(horizontal = 24.dp), error = true)
             }
             key(detail.viewerId) {
                 NeumorphSurface(
@@ -179,7 +179,7 @@ internal fun ToolDetailSheet(
                         modifier = Modifier.fillMaxWidth(), enabled = !loading && !detail.exporting,
                     )
                     loading -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    else -> SummaryCaption(if (detail.contentFinal) L10n.tr("已到当前读取范围末尾") else L10n.tr("已到当前末尾，工具可能仍在运行"))
+                    else -> SummaryCaption(if (detail.contentFinal) L10n.tr("已到当前读取范围末尾") else L10n.tr("等待更多输出"))
                 }
             }
             if (detail.exporting) {

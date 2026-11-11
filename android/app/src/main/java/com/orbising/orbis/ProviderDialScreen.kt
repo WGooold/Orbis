@@ -376,8 +376,8 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
         if (canQuery && available && !queried && snapshot == null && !loading) { queried = true; provider?.let(onQuery) }
     }
     Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
-        if (!available) Text(if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"),
-            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (!available) StatusWithInfo(L10n.tr("配额不可用"),
+            if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
         else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             listOf("five_hour", "seven_day").forEach { name ->
                 val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }

@@ -119,7 +119,7 @@ struct ChatView: View {
                 if let launch = store.launching, store.isLaunchPage, launch.failure != nil || launch.unconfirmed {
                     // ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。
                         VStack(alignment: .leading, spacing: 8) {
-                            OrbisNotice(text: launch.failure.map { L10n.tr("启动失败：") + $0 } ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
+                            OrbisStatusWithInfo(title: L10n.tr(launch.failure != nil ? "启动失败" : "启动未确认"), message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
                             HStack(spacing: 12) {
                                 OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
                                 OrbisActionButton(title: L10n.tr("返回")) { onBack() }.accessibilityIdentifier("launch-back")
@@ -165,7 +165,7 @@ struct ChatView: View {
                 }
             }
             .orbisBottomSheet(isPresented: $permissionsOpen) {
-                PermissionsView(runtime: runtime).orbisSheet([.medium, .large])
+                PermissionsView(runtime: runtime).orbisSheet([.large])
             }
             .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
                 RuntimeInfoView(runtime: runtime).orbisSheet([.large])
@@ -398,7 +398,7 @@ struct ChatView: View {
 
     private var cachedComposer: some View {
         VStack(spacing: 10) {
-            Text(L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+            OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话"))
             if let session = store.sessions.first(where: { $0.sessionId == runtime.sessionId }) {
                 OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") { store.activate(session) }
                     .disabled(store.connection != .secured || store.activatingSessionId != nil)
@@ -1075,14 +1075,14 @@ private struct TruncatedMessageContent: View {
     var body: some View {
         Group {
             if let truncated = message.content.first(where: { $0.truncated == true }) {
-                Text(truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
-                    .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                OrbisStatusWithInfo(title: L10n.tr("内容已截断"), message:
+                    (truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
+                    + (store.canSend ? "" : "\n" + L10n.tr("连接电脑并继续此会话后可取回完整内容。")))
                 OrbisTextButton(title: L10n.tr("查看完整内容"), symbol: "doc.text.magnifyingglass") {
                     store.previewEntry(message.messageId)
                     fullEntryId = store.entryPreview?.entryId ?? message.messageId
                     fullOpen = true
                 }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
-                if !store.canSend { Text(L10n.tr("连接电脑并继续此会话后可取回完整内容。")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }
         }.orbisBottomSheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
     }
@@ -1406,41 +1406,47 @@ private struct SlashPickerView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 if let selected, let command = commands.first(where: { $0.name == selected }), let argument = command.argument {
-                    if let hint = argument.hint { Text(command.source == "builtin" ? L10n.hostText(hint) : hint).font(.orbisCaption()).foregroundStyle(p.secondary) }
+                    if let hint = argument.hint {
+                        HStack { Text("/" + command.name).font(.orbisLabel(mono: true)); Spacer()
+                            OrbisInfoButton(title: "/" + command.name, message: command.source == "builtin" ? L10n.hostText(hint) : hint)
+                        }
+                    }
                     ForEach(argument.options ?? []) { option in
-                        OrbisMotionButton { input = "/\(command.name) \(option.value)" } label: {
-                            VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 0) {
+                            OrbisMotionButton { input = "/\(command.name) \(option.value)" } label: {
                                 Text(option.label).font(.orbisLabel(.medium))
-                                if let description = option.description { Text(command.source == "builtin" ? L10n.hostText(description) : description).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2) }
-                            }.frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).padding(.horizontal, 12)
-                        }.buttonStyle(NeuButtonStyle(radius: 12))
+                                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).padding(.horizontal, 12)
+                            }.buttonStyle(NeuButtonStyle(radius: 12))
+                            if let description = option.description, !description.isEmpty {
+                                OrbisInfoButton(title: option.label, message: command.source == "builtin" ? L10n.hostText(description) : description)
+                            }
+                        }
                     }
                 } else {
                     let query = String(input.trimmingCharacters(in: .whitespacesAndNewlines).dropFirst()).lowercased()
-                    // Built-in commands first, then by name: the same order as Android.
                     let filtered = commands.filter { query.isEmpty || $0.name.lowercased().contains(query) }
                         .sorted { ($0.source == "builtin" ? 0 : 1, $0.name) < ($1.source == "builtin" ? 0 : 1, $1.name) }
                     if filtered.isEmpty { Text(commands.isEmpty ? L10n.tr("当前会话尚未提供可用命令") : L10n.tr("没有匹配的命令")).font(.orbisCaption()).foregroundStyle(p.secondary).padding(12) }
                     ForEach(filtered) { command in
-                        OrbisMotionButton {
-                            if command.name == "tree" { input = ""; selected = nil; onHistory() }
-                            else { selected = command.name; input = "/" + command.name + (command.argument == nil ? "" : " ") }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Text("/" + command.name).font(.orbisLabel(.semibold, mono: true))
-                                Text(command.source == "builtin" ? L10n.hostText(command.description ?? "") : command.description ?? "").font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(2)
-                                Spacer(minLength: 0)
-                                // Only a non-built-in source is worth naming; built-ins belong to this agent.
-                                if let source = slashSourceTitle(command.source) {
-                                    Text(source).font(.orbisCaption()).foregroundStyle(.tint)
-                                }
-                            }.frame(minHeight: 48).padding(.horizontal, 12)
-                        }.buttonStyle(NeuButtonStyle(radius: 12))
+                        HStack(spacing: 0) {
+                            OrbisMotionButton {
+                                if command.name == "tree" { input = ""; selected = nil; onHistory() }
+                                else { selected = command.name; input = "/" + command.name + (command.argument == nil ? "" : " ") }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Text("/" + command.name).font(.orbisLabel(.semibold, mono: true))
+                                    Spacer(minLength: 0)
+                                    if let source = slashSourceTitle(command.source) { Text(source).font(.orbisCaption()).foregroundStyle(.tint) }
+                                }.frame(minHeight: 48).padding(.horizontal, 12)
+                            }.buttonStyle(NeuButtonStyle(radius: 12))
+                            if let description = command.description, !description.isEmpty {
+                                OrbisInfoButton(title: "/" + command.name, message: command.source == "builtin" ? L10n.hostText(description) : description)
+                            }
+                        }
                     }
                 }
             }.padding(8)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
-        // A fixed height keeps the conversation, not the picker, absorbing the keyboard's squeeze.
         }.frame(height: min(contentHeight, 180)).scrollBounceBehavior(.basedOnSize).padding(.horizontal, 12)
     }
 }
@@ -1456,24 +1462,22 @@ struct PermissionsView: View {
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr("当前会话权限"), closes: true, back: { dismiss() }) { EmptyView() }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if let permissions = store.selectedRuntime?.permissionManagement {
-                        Text(L10n.hostSummary(permissions.summary)).font(.orbisBody(.semibold))
-                        Text(L10n.hostText(permissions.details)).font(.orbisLabel()).foregroundStyle(p.secondary)
-                        ForEach(permissions.settings) { setting in
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(L10n.hostText(setting.label)).font(.orbisBody(.semibold)).padding(.horizontal, 4)
-                                ForEach(setting.options) { option in
-                                    permissionOption(option, setting: setting)
-                                }
-                                if let reason = setting.disabledReason { Text(L10n.hostText(reason)).font(.orbisCaption()).foregroundStyle(p.secondary).padding(.horizontal, 4) }
-                            }.neuSurface(radius: OrbisRadius.card, padding: OrbisRadius.cardPadding)
-                        }
-                        if store.selectedRuntime?.status != "idle" { OrbisNotice(text: L10n.tr("模型和思考深度用于后续轮次；权限以电脑端确认生效")) }
+            OrbisPageHeader(title: L10n.tr("当前会话权限"), closes: true, back: { dismiss() }) {
+                if let permissions = store.selectedRuntime?.permissionManagement {
+                    OrbisInfoButton(title: L10n.tr("当前会话权限"), message: L10n.hostText(permissions.details), identifier: "permission-info")
+                }
+            }
+            if let permissions = store.selectedRuntime?.permissionManagement {
+                Text(L10n.hostSummary(permissions.summary)).font(.orbisLabel()).foregroundStyle(p.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
+                OrbisPermissionChoices(settings: permissions.settings, values: proposedValues(permissions),
+                    currentValues: Dictionary(uniqueKeysWithValues: permissions.settings.compactMap { item in item.currentValue.map { (item.id, $0) } }),
+                    enabled: store.canSend && store.pendingActionIds.isEmpty,
+                    onCategory: { proposedSetting = nil; proposedValue = nil }) { id, value in
+                        proposedSetting = id; proposedValue = value
                     }
-                }.padding(16)
+            } else {
+                Text(L10n.tr("电脑端管理")).font(.orbisLabel()); Spacer()
             }
             OrbisActionButton(title: L10n.tr("应用到当前会话")) {
                 guard let setting = proposedSetting, let value = proposedValue else { return }
@@ -1488,12 +1492,10 @@ struct PermissionsView: View {
               let setting = store.selectedRuntime?.permissionManagement?.settings.first(where: { $0.id == id }) else { return false }
         return value != setting.currentValue && store.canUpdatePermission(settingId: id, value: value)
     }
-    private func permissionOption(_ option: RuntimeOption, setting: PermissionManagement.Setting) -> some View {
-        let current = proposedSetting == setting.id ? proposedValue : setting.currentValue
-        let disabled = !store.canUpdatePermission(settingId: setting.id, value: option.value)
-        return OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: L10n.hostText(option.description ?? ""), selected: option.value == current) {
-            proposedSetting = setting.id; proposedValue = option.value
-        }.disabled(disabled)
+    private func proposedValues(_ permissions: PermissionManagement) -> [String: String] {
+        var values = Dictionary(uniqueKeysWithValues: permissions.settings.compactMap { item in item.currentValue.map { (item.id, $0) } })
+        if let proposedSetting, let proposedValue { values[proposedSetting] = proposedValue }
+        return values
     }
 
 }

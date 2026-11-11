@@ -54,7 +54,7 @@ struct HistoryBranchView: View {
                 OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { query = "" }
                     .opacity(query.isEmpty ? 0 : 1).disabled(query.isEmpty).accessibilityHidden(query.isEmpty)
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused).padding(.horizontal, 20)
-            if store.isViewingCachedSession { OrbisNotice(text: L10n.tr("当前显示本机缓存。浏览节点和分支不会改变电脑端会话。")).padding(.horizontal, 20) }
+            if store.isViewingCachedSession { OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("当前显示本机缓存。浏览节点和分支不会改变电脑端会话。")).padding(.horizontal, 20) }
             if options.isEmpty && (optionCatalog?.count ?? 0) > 0 {
                 ProgressView(L10n.tr("读取中…")).padding(24)
                 OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {

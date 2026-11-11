@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="zh-CN" data-ob="light" data-theme="light">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Orbis · 新建会话草稿卡片</title>
+<style>
+/* Existing Orbis palette, shadows and semantic colors, embedded for offline use. */
+/* Semantic tokens from the approved 2026-11-08 design reference. */
+:root {
+  --surface-base: #e6ebf4;
+  --surface-lift: #edf1f8;
+  --surface-top: #f3f6fb;
+  --highlight: #ffffff;
+  --shade: #a6b2c6;
+  --hairline: #c9d1de;
+  --scrim: #2a3344;
+  --ink: #232a36;
+  --ink-muted: #4a5364;
+  --ink-faint: #737d90;
+  --accent: #2f5287;
+  --accent-soft: #d0d9e7;
+  --on-accent: #ffffff;
+  --focus-ring: var(--accent);
+  --success: #1a6a4d;
+  --warning: #845000;
+  --danger: #ad241c;
+  --agent-pi: #8c3870;
+  --agent-codex: #00655d;
+  --agent-deepseek: #3550cf;
+  --agent-claude: #9a4521;
+  --raised-sm: 2px 2px 5px #a6b2c68c, -2px -2px 5px #ffffffe6;
+  --raised-md: 4px 4px 10px #a6b2c68c, -4px -4px 10px #ffffffe6;
+  --raised-lg: 8px 8px 22px #a6b2c68c, -8px -8px 22px #ffffffe6;
+  --inset-sm: inset 2px 2px 4px #a6b2c68c, inset -2px -2px 4px #ffffffe6;
+  --inset-md: inset 3px 3px 7px #a6b2c68c, inset -3px -3px 7px #ffffffe6;
+  --engrave: -0.9px -0.9px 0 #a6b2c699, 0.9px 0.9px 0 #ffffffeb;
+  --focus-halo: 0 0 0 1px #2f528747, 0 0 0 6px #2f52871a;
+  --flat: none;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --surface-base: #23262e;
+  --surface-lift: #292d36;
+  --surface-top: #2f333d;
+  --highlight: #343946;
+  --shade: #0a0c11;
+  --hairline: #3a4150;
+  --scrim: #05070a;
+  --ink: #dde1e9;
+  --ink-muted: #b8c0ce;
+  --ink-faint: #858d9c;
+  --accent: #afc6e6;
+  --accent-soft: #343944;
+  --on-accent: #16233a;
+  --focus-ring: var(--accent);
+  --success: #84d6b3;
+  --warning: #f2c26b;
+  --danger: #ffb4ab;
+  --agent-pi: #f0a9d3;
+  --agent-codex: #77d6c7;
+  --agent-deepseek: #a9bbff;
+  --agent-claude: #f0b48c;
+  --raised-sm: 2px 2px 5px #0a0c11b3, -2px -2px 5px #343946cc;
+  --raised-md: 4px 4px 10px #0a0c11b3, -4px -4px 10px #343946cc;
+  --raised-lg: 8px 8px 22px #0a0c11b3, -8px -8px 22px #343946cc;
+  --inset-sm: inset 2px 2px 4px #0a0c11b3, inset -2px -2px 4px #343946cc;
+  --inset-md: inset 3px 3px 7px #0a0c11b3, inset -3px -3px 7px #343946cc;
+  --engrave: -0.9px -0.9px 0 #0a0c1199, 0.9px 0.9px 0 #343946eb;
+  --focus-halo: 0 0 0 1px #afc6e652, 0 0 0 6px #afc6e61f;
+  --flat: none;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --surface-base: #23262e;
+  --surface-lift: #292d36;
+  --surface-top: #2f333d;
+  --highlight: #343946;
+  --shade: #0a0c11;
+  --hairline: #3a4150;
+  --scrim: #05070a;
+  --ink: #dde1e9;
+  --ink-muted: #b8c0ce;
+  --ink-faint: #858d9c;
+  --accent: #afc6e6;
+  --accent-soft: #343944;
+  --on-accent: #16233a;
+  --focus-ring: var(--accent);
+  --success: #84d6b3;
+  --warning: #f2c26b;
+  --danger: #ffb4ab;
+  --agent-pi: #f0a9d3;
+  --agent-codex: #77d6c7;
+  --agent-deepseek: #a9bbff;
+  --agent-claude: #f0b48c;
+  --raised-sm: 2px 2px 5px #0a0c11b3, -2px -2px 5px #343946cc;
+  --raised-md: 4px 4px 10px #0a0c11b3, -4px -4px 10px #343946cc;
+  --raised-lg: 8px 8px 22px #0a0c11b3, -8px -8px 22px #343946cc;
+  --inset-sm: inset 2px 2px 4px #0a0c11b3, inset -2px -2px 4px #343946cc;
+  --inset-md: inset 3px 3px 7px #0a0c11b3, inset -3px -3px 7px #343946cc;
+  --engrave: -0.9px -0.9px 0 #0a0c1199, 0.9px 0.9px 0 #343946eb;
+  --focus-halo: 0 0 0 1px #afc6e652, 0 0 0 6px #afc6e61f;
+  --flat: none;
+  color-scheme: dark;
+}
+:root[data-ob="light"], .theme-preview[data-ob="light"], .design-demo [data-ob="light"] {
+  --surface-base: #e6ebf4;
+  --surface-lift: #edf1f8;
+  --surface-top: #f3f6fb;
+  --highlight: #ffffff;
+  --shade: #a6b2c6;
+  --hairline: #c9d1de;
+  --scrim: #2a3344;
+  --ink: #232a36;
+  --ink-muted: #4a5364;
+  --ink-faint: #737d90;
+  --accent: #2f5287;
+  --accent-soft: #d0d9e7;
+  --on-accent: #ffffff;
+  --focus-ring: var(--accent);
+  --success: #1a6a4d;
+  --warning: #845000;
+  --danger: #ad241c;
+  --agent-pi: #8c3870;
+  --agent-codex: #00655d;
+  --agent-deepseek: #3550cf;
+  --agent-claude: #9a4521;
+  --raised-sm: 2px 2px 5px #a6b2c68c, -2px -2px 5px #ffffffe6;
+  --raised-md: 4px 4px 10px #a6b2c68c, -4px -4px 10px #ffffffe6;
+  --raised-lg: 8px 8px 22px #a6b2c68c, -8px -8px 22px #ffffffe6;
+  --inset-sm: inset 2px 2px 4px #a6b2c68c, inset -2px -2px 4px #ffffffe6;
+  --inset-md: inset 3px 3px 7px #a6b2c68c, inset -3px -3px 7px #ffffffe6;
+  --engrave: -0.9px -0.9px 0 #a6b2c699, 0.9px 0.9px 0 #ffffffeb;
+  --focus-halo: 0 0 0 1px #2f528747, 0 0 0 6px #2f52871a;
+  --flat: none;
+  color-scheme: light;
+}
+:root[data-ob="dark"], .theme-preview[data-ob="dark"], .design-demo [data-ob="dark"] {
+  --surface-base: #23262e;
+  --surface-lift: #292d36;
+  --surface-top: #2f333d;
+  --highlight: #343946;
+  --shade: #0a0c11;
+  --hairline: #3a4150;
+  --scrim: #05070a;
+  --ink: #dde1e9;
+  --ink-muted: #b8c0ce;
+  --ink-faint: #858d9c;
+  --accent: #afc6e6;
+  --accent-soft: #343944;
+  --on-accent: #16233a;
+  --focus-ring: var(--accent);
+  --success: #84d6b3;
+  --warning: #f2c26b;
+  --danger: #ffb4ab;
+  --agent-pi: #f0a9d3;
+  --agent-codex: #77d6c7;
+  --agent-deepseek: #a9bbff;
+  --agent-claude: #f0b48c;
+  --raised-sm: 2px 2px 5px #0a0c11b3, -2px -2px 5px #343946cc;
+  --raised-md: 4px 4px 10px #0a0c11b3, -4px -4px 10px #343946cc;
+  --raised-lg: 8px 8px 22px #0a0c11b3, -8px -8px 22px #343946cc;
+  --inset-sm: inset 2px 2px 4px #0a0c11b3, inset -2px -2px 4px #343946cc;
+  --inset-md: inset 3px 3px 7px #0a0c11b3, inset -3px -3px 7px #343946cc;
+  --engrave: -0.9px -0.9px 0 #0a0c1199, 0.9px 0.9px 0 #343946eb;
+  --focus-halo: 0 0 0 1px #afc6e652, 0 0 0 6px #afc6e61f;
+  --flat: none;
+  color-scheme: dark;
+}
+:root[data-ob="sage-light"], .theme-preview[data-ob="sage-light"], .design-demo [data-ob="sage-light"] {
+  --surface-base: #e0e7df;
+  --surface-lift: #e8eee5;
+  --surface-top: #f0f5ed;
+  --highlight: #f8fbf5;
+  --shade: #b2c0b0;
+  --hairline: #c7d1c5;
+  --scrim: #203626;
+  --ink: #2f4235;
+  --ink-muted: #4f6153;
+  --ink-faint: #6e7f6f;
+  --accent: #41603f;
+  --accent-soft: #d3dcd2;
+  --on-accent: #ffffff;
+  --focus-ring: var(--accent);
+  --success: #1a6a4d;
+  --warning: #845000;
+  --danger: #ad241c;
+  --agent-pi: #8c3870;
+  --agent-codex: #00655d;
+  --agent-deepseek: #3550cf;
+  --agent-claude: #9a4521;
+  --raised-sm: 2px 2px 5px #b2c0b0a6, -2px -2px 5px #f8fbf5cc;
+  --raised-md: 4px 4px 10px #b2c0b0a6, -4px -4px 10px #f8fbf5cc;
+  --raised-lg: 8px 8px 22px #b2c0b0a6, -8px -8px 22px #f8fbf5cc;
+  --inset-sm: inset 2px 2px 4px #b2c0b0a6, inset -2px -2px 4px #f8fbf5cc;
+  --inset-md: inset 3px 3px 7px #b2c0b0a6, inset -3px -3px 7px #f8fbf5cc;
+  --engrave: -0.9px -0.9px 0 #b2c0b099, 0.9px 0.9px 0 #f8fbf5eb;
+  --focus-halo: 0 0 0 1px #41603f47, 0 0 0 6px #41603f1a;
+  --flat: none;
+  color-scheme: light;
+}
+:root[data-ob="sage-dark"], .theme-preview[data-ob="sage-dark"], .design-demo [data-ob="sage-dark"] {
+  --surface-base: #33393d;
+  --surface-lift: #3a4246;
+  --surface-top: #424b50;
+  --highlight: #4a555a;
+  --shade: #1c2427;
+  --hairline: #4a5653;
+  --scrim: #0b1214;
+  --ink: #eff3f0;
+  --ink-muted: #bac7c2;
+  --ink-faint: #8e9c97;
+  --accent: #a9ddc1;
+  --accent-soft: #414d4d;
+  --on-accent: #173322;
+  --focus-ring: var(--accent);
+  --success: #8fddb8;
+  --warning: #f2c26b;
+  --danger: #ffb4ab;
+  --agent-pi: #f0a9d3;
+  --agent-codex: #77d6c7;
+  --agent-deepseek: #a9bbff;
+  --agent-claude: #f0b48c;
+  --raised-sm: 2px 2px 5px #1c2427b3, -2px -2px 5px #4a555ab3;
+  --raised-md: 4px 4px 10px #1c2427b3, -4px -4px 10px #4a555ab3;
+  --raised-lg: 8px 8px 22px #1c2427b3, -8px -8px 22px #4a555ab3;
+  --inset-sm: inset 2px 2px 4px #1c2427b3, inset -2px -2px 4px #4a555ab3;
+  --inset-md: inset 3px 3px 7px #1c2427b3, inset -3px -3px 7px #4a555ab3;
+  --engrave: -0.9px -0.9px 0 #1c242799, 0.9px 0.9px 0 #4a555aeb;
+  --focus-halo: 0 0 0 1px #a9ddc152, 0 0 0 6px #a9ddc11f;
+  --flat: none;
+  color-scheme: dark;
+}
+:root {
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --radius-xs: 8px;
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-xl: 32px;
+  --radius-full: 999px;
+  --touch-target: 48px;
+  --field-height: 56px;
+  --control-height: 48px;
+  --control-height-sm: 40px;
+  --bar-height: 56px;
+  --disc-lg: 44px;
+  --disc-md: 40px;
+  --disc-sm: 36px;
+  --disc-xs: 28px;
+  --icon-md: 22px;
+  --icon-sm: 18px;
+  --icon-xs: 16px;
+  --icon-inline: 14px;
+  --dot: 8px;
+  --dot-ring: 16px;
+  --checkbox: 24px;
+  --reading-width: 720px;
+  --drawer-width: 320px;
+  --host-sidebar: 232px;
+  --dur-press: 80ms;
+  --dur-release: 160ms;
+  --dur-state: 160ms;
+  --dur-panel: 220ms;
+  --dur-selection: 260ms;
+  --dur-collapse: 260ms;
+  --dur-exit: 160ms;
+  --dur-dismiss: 180ms;
+  --dur-reply-grow: 180ms;
+  --dur-fade-out: 90ms;
+  --dur-fade-in: 210ms;
+  --dur-send: 440ms;
+  --dur-page: 320ms;
+  --dur-loop: 1100ms;
+  --hold-copy: 2500ms;
+  --hold-toast: 4000ms;
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-pop: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --ease-page: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-linear: linear;
+  --opacity-glyph-pressed: 0.82;
+  --opacity-scrim: 0.34;
+  --opacity-skeleton: 0.6;
+  --opacity-dim: 0.4;
+  --scale-press: 0.94;
+  --scale-enter: 0.96;
+  --scale-pop: 1.12;
+  --z-bar: 10;
+  --z-drawer: 20;
+  --z-menu: 30;
+  --z-scrim: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+  --font-sans: system-ui, -apple-system, "SF Pro Text", "PingFang SC", Roboto, "Noto Sans SC", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+*{box-sizing:border-box}body{margin:0;background:var(--surface-base);color:var(--ink);font:15px/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;font-variant-numeric:tabular-nums}button,input,textarea,select{font:inherit}button{cursor:pointer;color:inherit;border:0;background:none}button:disabled{cursor:default;opacity:.5}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}button:active:not(:disabled){transform:translateY(1px)}[hidden]{display:none!important}h1,h2,h3,p{margin:0}a{color:inherit}.icon{display:inline-block;flex:none;width:20px;height:20px;background:currentColor;mask:var(--asset) center/contain no-repeat;-webkit-mask:var(--asset) center/contain no-repeat}.icon.small{width:16px;height:16px}.muted{color:var(--ink-muted)}.mono{font-family:ui-monospace,"SF Mono",Consolas,monospace}.shell{max-width:1180px;margin:auto;padding:28px 40px 44px}.masthead{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:24px;border-bottom:1px solid var(--hairline)}.brand{font-weight:650;letter-spacing:.02em}.brand span{font-size:12px;font-weight:400;color:var(--ink-muted);margin-left:14px}.pill{font-size:12px;color:var(--ink-muted);padding:5px 10px;border:1px solid var(--hairline);border-radius:100px}.layout{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:72px;padding-top:44px;align-items:start}.eyebrow{font-size:12px;letter-spacing:.12em;color:var(--agent-codex);font-weight:600;margin-bottom:18px}h1{font-size:36px;line-height:1.35;font-weight:600;letter-spacing:-.03em}.lead{margin-top:22px;font-size:15px;line-height:1.9;color:var(--ink-muted);max-width:435px}.decision{margin-top:32px;padding-top:24px;border-top:1px solid var(--hairline)}.decision h2{font-size:15px;font-weight:600;margin-bottom:9px}.decision p{font-size:13px;color:var(--ink-muted);line-height:1.9}.ideas{margin:28px 0 0;display:grid;gap:22px}.idea{display:grid;grid-template-columns:26px 1fr;gap:12px}.idea .num{font:12px/24px ui-monospace,monospace;color:var(--ink-muted)}.idea h3{font-size:15px;font-weight:600}.idea p{font-size:13px;color:var(--ink-muted);margin-top:4px;line-height:1.8}.specs{display:grid;grid-template-columns:repeat(3,1fr);margin-top:30px;padding:18px 0;border-top:1px solid var(--hairline);border-bottom:1px solid var(--hairline)}.specs b{display:block;font-size:20px;font-weight:600}.specs span{font-size:12px;color:var(--ink-muted)}.small-note{font-size:12px;color:var(--ink-muted);line-height:1.8;margin-top:18px}.preview-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;align-items:center}.select{min-height:40px;border:1px solid var(--hairline);border-radius:10px;background:var(--surface-base);color:var(--ink);padding:6px 10px;font-size:12px;max-width:100%}.preview-label{font-size:12px;color:var(--ink-muted);margin-left:auto}.stage{display:flex;justify-content:center}.device{--device-width:390px;width:var(--device-width);max-width:100%;background:var(--surface-base);border-radius:32px;border:1px solid color-mix(in srgb,var(--hairline) 75%,transparent);box-shadow:0 18px 56px color-mix(in srgb,var(--shade) 22%,transparent);overflow:hidden;position:relative;container-type:inline-size}.app{padding:20px 16px 12px;min-height:680px;display:flex;flex-direction:column;gap:16px}.app-header{display:flex;align-items:center;gap:10px;min-height:48px}.app-wordmark{font-size:20px;line-height:28px;font-weight:600;flex:1}.icon-button{display:grid;place-items:center;width:48px;height:48px;flex:none;border-radius:50%}.icon-button .seat{width:36px;height:36px;display:grid;place-items:center;border-radius:50%;box-shadow:var(--raised-sm)}.icon-button:active .seat{box-shadow:var(--inset-sm)}.connection{display:flex;align-items:center;gap:8px;font-size:13px;line-height:20px;margin:0 4px 2px}.connection .status{margin-left:auto;color:var(--success);font-size:12px}.dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;vertical-align:2px;margin-right:5px}.draft{padding:16px;border-radius:24px;box-shadow:var(--raised-md);display:flex;flex-direction:column;gap:12px;--agent:var(--agent-codex)}.agent-row{display:flex;align-items:center;gap:4px;min-width:0}.agents{display:flex;gap:4px;flex:none}.agent-button{width:44px;height:48px;display:grid;place-items:center;padding:0;border-radius:24px}.agent-button .agent-seat{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--ink-faint)}.agent-button[aria-pressed="true"] .agent-seat{box-shadow:var(--inset-sm);color:var(--agent)}.agent-button .icon{width:20px;height:20px}.agent-name{display:flex;align-items:center;gap:6px;justify-content:flex-end;flex:1;min-width:0;min-height:48px;font-size:13px;font-weight:600;color:var(--agent);padding:0}.agent-name span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.directory{display:flex;align-items:center;gap:8px;min-height:44px;color:var(--ink-muted);padding:0;text-align:left}.directory code{font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}.composer{display:flex;align-items:flex-end;gap:8px}.input-wrap{min-width:0;flex:1;min-height:80px;border-radius:16px;box-shadow:var(--inset-md);display:flex;align-items:stretch}.input-wrap:focus-within{box-shadow:var(--inset-md),var(--focus-halo)}textarea{border:0;outline:none!important;resize:vertical;width:100%;min-height:80px;max-height:168px;padding:16px 12px;color:var(--ink);background:none;font-size:15px;line-height:24px;border-radius:16px}textarea::placeholder{color:var(--ink-muted)}.send{color:var(--agent);margin-bottom:2px}.send .seat{width:40px;height:40px}.config{display:flex;flex-direction:column;padding-top:4px}.model-trigger{min-height:48px;display:flex;align-items:center;gap:10px;padding:0;text-align:left}.config-label{font-size:12px;line-height:18px;color:var(--ink-muted);flex:none}.model-value{font-size:15px;line-height:24px;font-weight:600;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.config .chevron{width:16px;height:16px;color:var(--ink-muted)}.secondary-config{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border-top:1px solid color-mix(in srgb,var(--hairline) 65%,transparent);margin-top:0}.setting{display:flex;align-items:center;gap:8px;min-height:64px;padding:8px 0;text-align:left;min-width:0}.setting + .setting{padding-left:16px}.setting-text{min-width:0;flex:1}.setting-text .config-label{display:block;margin-bottom:2px}.setting-value{display:block;font-size:13px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.setting[data-risk="true"] .setting-value{color:var(--warning)}.feedback{font-size:12px;line-height:18px;color:var(--ink-muted);padding:0 0 4px}.feedback.error{color:var(--danger)}.feedback button{font-size:12px;min-height:44px;padding:0 8px;text-decoration:underline}.session-preview{margin-top:4px;padding:16px;border-radius:24px;box-shadow:var(--raised-sm);display:flex;gap:12px}.session-preview .icon{color:var(--agent-claude);margin-top:4px}.session-preview strong{font-size:15px;font-weight:600;display:block;line-height:24px}.session-preview code{font-size:12px;color:var(--ink-muted);display:block;margin:5px 0}.session-preview small{font-size:12px;color:var(--ink-muted)}.app-bottom{display:flex;gap:4px;padding-top:12px;margin-top:auto}.app-bottom span{flex:1;display:flex;justify-content:center;align-items:center;gap:6px;min-height:48px;font-size:13px;border-radius:16px;color:var(--ink-muted)}.app-bottom .active{color:var(--accent);box-shadow:var(--inset-sm);font-weight:600}.app-bottom .icon{width:18px;height:18px}.homebar{height:4px;width:104px;border-radius:4px;background:var(--ink);opacity:.5;align-self:center;margin-top:4px}.caption-below{font-size:12px;color:var(--ink-muted);text-align:center;margin-top:18px;line-height:1.8}.audit{margin-top:48px;border-top:1px solid var(--hairline);padding-top:26px}.audit h2{font-size:20px;font-weight:600;margin-bottom:16px}.audit table{width:100%;border-collapse:collapse;font-size:13px;text-align:left}.audit th{font-weight:500;color:var(--ink-muted);font-size:12px}.audit td,.audit th{padding:12px 16px 12px 0;border-bottom:1px solid color-mix(in srgb,var(--hairline) 60%,transparent);vertical-align:top}.audit td:first-child{min-width:100px;font-weight:600}.audit td:last-child{width:38%}.audit a{color:var(--accent);text-underline-offset:3px}.footer{font-size:12px;color:var(--ink-muted);margin-top:24px;display:flex;justify-content:space-between;gap:16px}.overlay{position:absolute;inset:0;z-index:10;display:flex;align-items:flex-end}.scrim{position:absolute;inset:0;background:color-mix(in srgb,var(--scrim) 34%,transparent);border-radius:0}.sheet{position:relative;width:100%;max-height:85%;background:var(--surface-base);border-radius:24px 24px 0 0;padding:8px 20px 20px;box-shadow:0 -8px 28px color-mix(in srgb,var(--shade) 25%,transparent);display:flex;flex-direction:column;animation:sheet-in 220ms cubic-bezier(.2,0,0,1)}.sheet.closing{animation:sheet-out 160ms ease-in forwards}.handle{width:32px;height:4px;background:var(--ink-faint);border-radius:9px;align-self:center;margin:4px 0 8px;opacity:.5}.sheet-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.sheet-head h2{font-size:20px;line-height:28px;font-weight:600}.sheet-head .icon-button{margin-right:-12px}.sheet-scroll{overflow:auto;overscroll-behavior:contain;min-height:0;padding:0 2px 4px}.sheet-note{font-size:13px;color:var(--ink-muted);line-height:20px;margin-bottom:12px}.choice{display:flex;align-items:center;gap:12px;min-height:64px;width:100%;text-align:left;padding:12px;border-radius:12px;margin:4px 0}.choice[aria-checked="true"]{box-shadow:var(--inset-sm)}.choice-copy{flex:1;min-width:0}.choice-title{font-size:15px;line-height:24px;overflow-wrap:anywhere}.choice small{display:block;font-size:12px;line-height:18px;color:var(--ink-muted);margin-top:2px}.choice .check{color:var(--agent);width:18px;height:18px;visibility:hidden}.choice[aria-checked="true"] .check{visibility:visible}.sheet-group{padding:10px 0 14px;border-bottom:1px solid var(--hairline)}.sheet-group:last-child{border:0}.sheet-group label{font-size:13px;display:block;margin-bottom:7px;color:var(--ink-muted)}.apply{flex:none;min-height:48px;border-radius:16px;box-shadow:var(--raised-sm);color:var(--agent);font-size:15px;font-weight:600;width:100%;margin-top:16px}.toast{position:absolute;bottom:82px;left:20px;right:20px;background:var(--surface-top);box-shadow:var(--raised-md);border-radius:16px;padding:14px 16px;font-size:13px;z-index:20}.warning{color:var(--warning)}.legacy-row{display:none;gap:8px;align-items:stretch}.legacy-row button{border-radius:16px;box-shadow:var(--raised-sm);min-height:48px;font-size:15px;font-weight:600;line-height:24px;padding:12px 16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}.legacy-row button:nth-child(-n+2){flex:1}.legacy-row button:last-child{flex:0 1 auto}.device[data-layout="old"] .config{display:none}.device[data-layout="old"] .legacy-row{display:flex;order:2}.device[data-layout="old"] .composer{order:3}.device[data-layout="old"] .feedback{order:4}.legacy-note{font-size:12px;color:var(--warning);display:none}.device[data-layout="old"] .legacy-note{display:block;order:5}.device[data-large="true"] .draft .model-value,.device[data-large="true"] .draft textarea{font-size:18px;line-height:28px}.device[data-large="true"] .draft .setting-value{font-size:16px;line-height:24px}.device[data-large="true"] .draft .config-label{font-size:14px;line-height:21px}.device[data-large="true"] .secondary-config{grid-template-columns:1fr}.device[data-large="true"] .setting+.setting{padding-left:0;border-top:1px solid var(--hairline)}.device[data-large="true"] .model-trigger{flex-wrap:wrap;gap:4px 12px;padding:8px 0}.device[data-large="true"] .model-value{min-width:65%}.statebar{display:flex;gap:12px;margin-top:16px;align-items:center;flex-wrap:wrap}.statebar label{font-size:12px;display:flex;align-items:center;gap:7px;min-height:32px;color:var(--ink-muted)}.statebar input{accent-color:var(--accent)}@keyframes sheet-in{from{transform:translateY(100%)}to{transform:translateY(0)}}@keyframes sheet-out{to{transform:translateY(100%)}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}@media(max-width:1000px){.shell{padding:24px}.layout{grid-template-columns:minmax(0,1fr) 390px;gap:36px}h1{font-size:28px}.preview-label{display:none}}@media(max-width:760px){.shell{padding:20px 16px}.brand span{display:none}.layout{grid-template-columns:1fr;gap:32px;padding-top:28px}.intro .lead{max-width:100%}.preview{grid-row:2}.ideas{grid-template-columns:1fr}.preview-toolbar{justify-content:center}.specs{max-width:460px}.audit{overflow-x:auto}.audit table{min-width:580px}.footer{display:block}.device{border-radius:24px}.decision{margin-top:20px}.intro .ideas,.intro .specs,.intro .small-note{display:none}}@container(max-width:330px){.agent-button{width:40px}.agents{gap:0}.agent-row{gap:4px}.agent-name{font-size:13px}.setting+.setting{padding-left:12px}.model-trigger{gap:8px}.app-header{gap:2px}}
+
+/* Permission workspace follows the in-session Android category / choice layout. */
+.sheet[data-panel="permissions"] { height: 560px; max-height: 94%; padding: 8px 16px 20px; --agent: var(--agent-codex); }
+.sheet[data-panel="permissions"] .handle { display: none; }
+.sheet[data-panel="permissions"] .sheet-head { flex: none; margin: 0 0 16px; min-height: 48px; }
+.sheet[data-panel="permissions"] .sheet-scroll { flex: 1; padding: 4px; }
+.sheet[data-panel="permissions"] #sheetClose { width: auto; padding: 0 16px; margin: 0; border-radius: 16px; box-shadow: var(--raised-sm); font-size: 15px; font-weight: 600; }
+.permission-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 4px 4px 12px; margin: -4px -4px 8px; scrollbar-width: none; overscroll-behavior-x: contain; }
+.permission-tabs::-webkit-scrollbar { display: none; }
+.permission-tab { flex: none; min-height: 48px; padding: 0 16px; border-radius: 16px; box-shadow: var(--raised-sm); font-size: 15px; line-height: 24px; font-weight: 600; white-space: nowrap; }
+.permission-tab[aria-selected="true"] { box-shadow: var(--inset-sm); color: var(--agent-codex); }
+.permission-options { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+.permission-choice { display: flex; gap: 12px; align-items: center; min-height: 72px; padding: 12px 16px; border-radius: 16px; box-shadow: var(--raised-sm); text-align: left; font-size: 15px; line-height: 24px; font-weight: 600; }
+.permission-choice[aria-checked="true"] { box-shadow: var(--inset-sm); color: var(--agent-codex); }
+.permission-choice .radio-disc { display: grid; place-items: center; width: 24px; height: 24px; flex: none; border-radius: 50%; box-shadow: var(--inset-sm); }
+.permission-choice[aria-checked="true"] .radio-disc::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--agent-codex); }
+.permission-choice .option-label { flex: 1; }
+.permission-choice .current-mark { font-size: 12px; font-weight: 400; color: var(--ink-muted); }
+.permission-state { margin: 8px 0 0; color: var(--ink-muted); font-size: 12px; line-height: 18px; }
+.permission-footer { flex: none; padding: 16px 4px 0; margin-top: 12px; background: var(--surface-base); }
+.permission-footer .apply { margin-top: 0; }
+.device[data-large="true"] .permission-choice { font-size: 18px; line-height: 28px; }
+
+/* S55 / SC79: equal secondary slots; permission values never participate in sizing. */
+.config{gap:8px;padding-top:0}
+.model-trigger,.setting{min-width:0;min-height:56px;padding:8px 12px;border-radius:16px;box-shadow:var(--raised-sm);background:var(--surface-base)}
+.model-trigger{align-items:center}
+.model-trigger .setting-text{display:block;overflow:hidden}
+.model-value{display:block}
+.secondary-config{gap:8px;border:0;margin:0}
+.setting+.setting{padding:8px 12px}
+.setting-text .config-label{margin:0}
+.setting-value{font-weight:600}
+.permission-entry-label{font-size:13px;font-weight:600;min-width:0;flex:1}
+.device[data-large="true"] .secondary-config{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.device[data-large="true"] .setting+.setting{padding:8px 12px;border:0}
+.device[data-large="true"] .model-trigger{flex-wrap:nowrap;gap:8px;padding:8px 12px}
+.device[data-large="true"] .permission-entry-label{font-size:16px}
+</style></head>
+<body>
+<div class="shell">
+ <header class="masthead"><div class="brand">ORBIS <span>INTERACTION STUDY / 01</span></div><span class="pill">新建会话 · 设计提案</span></header>
+ <main class="layout">
+  <section class="intro"><div class="eyebrow">A QUIETER WAY TO START</div><h1>输入是主角，<br>配置清楚就好。</h1><p class="lead">把三个挤在一起的按钮，整理成一个有主次的配置区。模型留足空间，深度与权限一眼可读；想改哪一项，就直接点哪一项。</p>
+   <div class="decision"><h2>建议采用：一主行 + 两个轻入口</h2><p>模型独占一行，深度与权限在下一行各占一半。权限仅保留固定入口，完整设置在面板内查看，输入框保留在配置区下方。</p></div>
+   <div class="ideas">
+    <div class="idea"><span class="num">01</span><div><h3>模型有完整的阅读位置</h3><p>15 / 24、半粗。长名称只在末尾省略；点开列表可读完整名称，不再与权限摘要抢宽度。</p></div></div>
+    <div class="idea"><span class="num">02</span><div><h3>深度直接可读，权限按需查看</h3><p>12 / 18 的字段名，13 / 20 的深度值。显示“高”而非原始值 high；权限不再把文件、网络、审批四项拼成长串。</p></div></div>
+    <div class="idea"><span class="num">03</span><div><h3>一张卡片，只保留必要的深度</h3><p>外卡浮起、输入框凹入。配置本身采用平面文字入口，按下才出现反馈，避免三个凸起按钮层层堆叠。</p></div></div>
+   </div>
+   <div class="specs"><div><b>16</b><span>卡片内边距</span></div><div><b>12</b><span>主要分组间距</span></div><div><b>48+</b><span>配置触控高度</span></div></div>
+   <p class="small-note">取舍：比现有单行配置多约 64px 高度，换取稳定的文字空间与更少截断。字体放大时改为纵向排列，不继续压缩字号。</p>
+  </section>
+  <section class="preview" aria-label="交互设计预览">
+   <div class="preview-toolbar"><select id="layoutSelect" class="select" aria-label="对比布局"><option value="new">推荐布局</option><option value="old">改前 Android 结构推演</option></select><select id="themeSelect" class="select" aria-label="切换主题"><option value="light">雾蓝 · 浅色</option><option value="dark">雾蓝 · 深色</option><option value="sage-light">苔绿 · 浅色</option><option value="sage-dark">苔绿 · 深色</option></select><select id="widthSelect" class="select" aria-label="预览宽度"><option value="390">390px</option><option value="320">320px</option></select></div>
+   <div class="stage"><div class="device" id="device" data-layout="new">
+    <div class="app" id="app">
+     <header class="app-header"><span class="icon-button" aria-hidden="true"><i class="icon" data-icon="menu"></i></span><span class="app-wordmark">Orbis</span><span class="icon-button" aria-hidden="true"><i class="icon" data-icon="download"></i></span><button class="icon-button" id="draftToggle" aria-label="收起草稿"><span class="seat"><i class="icon" data-icon="close"></i></span></button></header>
+     <div class="connection"><i class="icon small" data-icon="computer"></i><span>MacBook Pro</span><span class="status"><span class="dot"></span>已连接</span></div>
+     <article class="draft" id="draft" aria-label="新建会话草稿">
+      <div class="agent-row"><div class="agents" role="group" aria-label="Agent"><button class="agent-button" data-agent="codex" aria-label="选择 Codex" aria-pressed="true"><span class="agent-seat"><i class="icon" data-icon="agent-codex"></i></span></button><button class="agent-button" data-agent="claude" aria-label="选择 Claude Code" aria-pressed="false"><span class="agent-seat"><i class="icon" data-icon="agent-claude"></i></span></button><button class="agent-button" data-agent="deepseek" aria-label="选择 DeepSeek" aria-pressed="false"><span class="agent-seat"><i class="icon" data-icon="agent-deepseek"></i></span></button><button class="agent-button" data-agent="pi" aria-label="选择 Pi" aria-pressed="false"><span class="agent-seat"><i class="icon" data-icon="agent-pi"></i></span></button></div><button class="agent-name" id="agentName" aria-label="Codex 终端版，切换版本"><span>Codex</span><i class="icon small" data-icon="terminal"></i></button></div>
+      <button class="directory" id="directory" aria-label="选择工作目录"><i class="icon small" data-icon="folder"></i><code id="path">~/Projects/orbis</code><i class="icon small" data-icon="keyboard_arrow_down"></i></button>
+      <div class="config" aria-label="新会话配置"><button class="model-trigger" data-panel="model"><span class="setting-text"><span class="config-label">模型</span><span class="model-value" id="modelValue">GPT-5.4</span></span><i class="icon chevron" data-icon="keyboard_arrow_down"></i></button><div class="secondary-config"><button class="setting" data-panel="thinking"><span class="setting-text"><span class="config-label">思考深度</span><span class="setting-value" id="thinkingValue">高</span></span><i class="icon chevron" data-icon="keyboard_arrow_down"></i></button><button class="setting" data-panel="permissions" id="permissionsTrigger"><i class="icon small" data-icon="shield"></i><span class="permission-entry-label">权限</span><i class="icon chevron" data-icon="keyboard_arrow_down"></i></button></div></div>
+      <div class="composer"><div class="input-wrap"><textarea id="message" aria-label="第一句话，可留空" placeholder="让 Codex 做什么？" rows="2"></textarea></div><button class="icon-button send" id="send" aria-label="启动空会话"><span class="seat"><i class="icon" id="sendIcon" data-icon="play_arrow"></i></span></button></div>
+      <div class="legacy-row" aria-label="按改前源码推演"><button data-panel="model" id="oldModel">GPT-5.4</button><button data-panel="thinking" id="oldThinking">high</button><button data-panel="permissions" id="oldPermission">工作目录 · 按需审批 · 禁用网络</button></div>
+      <div class="feedback" id="feedback" role="status" hidden></div><p class="legacy-note">源码结构推演，非真机截图。</p>
+     </article>
+     <article class="session-preview" aria-label="已有会话示例"><i class="icon" data-icon="agent-claude"></i><div><strong>梳理首页的交互与动效</strong><code>~/Projects/orbis</code><small>Claude Code · 空闲</small></div></article>
+     <div class="app-bottom" aria-hidden="true"><span class="active"><i class="icon" data-icon="chat_bubble"></i>聊天</span><span><i class="icon" data-icon="tune"></i>供应商</span><span><i class="icon" data-icon="settings"></i>设置</span></div><div class="homebar" aria-hidden="true"></div>
+    </div>
+    <div class="overlay" id="overlay" hidden><button class="scrim" id="scrim" aria-label="取消并关闭"></button><section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"><div class="handle" aria-hidden="true"></div><div class="sheet-head"><h2 id="sheetTitle"></h2><button class="icon-button" id="sheetClose" aria-label="关闭选择面板"><i class="icon" data-icon="close"></i></button></div><div class="sheet-scroll" id="sheetContent"></div><div class="permission-footer" id="permissionFooter" hidden><button class="apply" id="apply">应用到新会话</button></div></section></div><div class="toast" id="toast" role="status" hidden></div>
+   </div></div>
+   <div class="statebar"><select class="select" id="scenario" aria-label="预览边界状态"><option value="normal">默认状态</option><option value="long">长模型名称</option><option value="error">配置保存失败</option><option value="unsupported">电脑端不支持</option></select><label><input type="checkbox" id="largeText">放大字体</label></div><p class="caption-below">可点选模型、深度、权限，也可输入、收起草稿。<br>全部为本地演示数据；不会连接电脑或创建真实会话。</p>
+  </section>
+ </main>
+ <section class="audit"><h2>当前实现，哪些地方需要调整？</h2><table><thead><tr><th>核对项</th><th>改前源码</th><th>设计判断</th></tr></thead><tbody><tr><td>配置字号</td><td>Android：15 / 24，半粗。<br>iOS：12pt，常规。</td><td>都在字号集合内，但两端层级不一致。统一为模型 15，次级值 13，标签 12。</td></tr><tr><td>空间分配</td><td>Android 模型与深度分剩余宽度，权限按内容占位。<br>iOS 三项等宽。</td><td>权限多字段拼接会挤压或截断。模型独占一行，权限使用固定入口。</td></tr><tr><td>间距与触控</td><td>内边距 16，组间距 12，配置间距 8。<br>Android 最小 48；iOS 配置最小 44。</td><td>间距基线成立。新配置入口统一 48+；目录保留独立 44 高度。</td></tr><tr><td>文字与材质</td><td>直接显示 thinking 值；权限用中点拼接。<br>Android 采用三个凸起文字按钮。</td><td>展示选项 label。模型全宽，深度与权限等宽；权限完整字段在面板中编辑并显式应用。</td></tr></tbody></table><p class="small-note">依据：ADR-0051 的 r57、ADR-0070、ADR-0072、Orbis 交互稿，以及 SessionDraft.kt、Neumorph.kt、OrbisTheme.kt、SessionViews.swift、OrbisDesign.swift。源码核对已完成；真机当前未连接，未进行本轮原生截图审查。HTML 与本轮原生配置区同步；原生设备验证状态见本轮交付。</p></section>
+ <footer class="footer"><span>Orbis · 草稿卡片 / HTML 交互提案</span><span>原有色板、图标与柔和材质 · 单文件离线可用</span></footer>
+</div>
+<script>
+const assets={"play_arrow":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNMzIwLTc2MHY1NjBsNDQwLTI4MFoiLz48L3N2Zz4=","menu":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNMTUwLTI0MHEtMTIuNzUgMC0yMS4zNy04LjY4LTguNjMtOC42Ny04LjYzLTIxLjUgMC0xMi44MiA4LjYzLTIxLjMyIDguNjItOC41IDIxLjM3LTguNWg2NjBxMTIuNzUgMCAyMS4zOCA4LjY4IDguNjIgOC42NyA4LjYyIDIxLjUgMCAxMi44Mi04LjYyIDIxLjMyLTguNjMgOC41LTIxLjM4IDguNUgxNTBabTAtMjEwcS0xMi43NSAwLTIxLjM3LTguNjgtOC42My04LjY3LTguNjMtMjEuNSAwLTEyLjgyIDguNjMtMjEuMzIgOC42Mi04LjUgMjEuMzctOC41aDY2MHExMi43NSAwIDIxLjM4IDguNjggOC42MiA4LjY3IDguNjIgMjEuNSAwIDEyLjgyLTguNjIgMjEuMzItOC42MyA4LjUtMjEuMzggOC41SDE1MFptMC0yMTBxLTEyLjc1IDAtMjEuMzctOC42OC04LjYzLTguNjctOC42My0yMS41IDAtMTIuODIgOC42My0yMS4zMiA4LjYyLTguNSAyMS4zNy04LjVoNjYwcTEyLjc1IDAgMjEuMzggOC42OCA4LjYyIDguNjcgOC42MiAyMS41IDAgMTIuODItOC42MiAyMS4zMi04LjYzIDguNS0yMS4zOCA4LjVIMTUwWiIvPjwvc3ZnPg==","download":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDY5LTMyN3EtNS0yLTEwLTdMMzA4LTQ4NXEtOS05LjI3LTguNS0yMS42NC41LTEyLjM2IDkuMTEtMjEuMzYgOS4zOS05IDIxLjg5LTl0MjEuNSA5bDk4IDk5di0zNDFxMC0xMi43NSA4LjY4LTIxLjM4IDguNjctOC42MiAyMS41LTguNjIgMTIuODIgMCAyMS4zMiA4LjYyIDguNSA4LjYzIDguNSAyMS4zOHYzNDFsOTktOTlxOC44LTkgMjAuOS04LjUgMTIuMS41IDIxLjQ5IDkuNSA4LjYxIDkgOC42MSAyMS41dC05IDIxLjVMNTAxLTMzNHEtNSA1LTEwLjEzIDctNS4xNCAyLTExIDItNS44NyAwLTEwLjg3LTJaTTIyMC0xNjBxLTI0IDAtNDItMTh0LTE4LTQydi0xMTNxMC0xMi43NSA4LjY4LTIxLjM4IDguNjctOC42MiAyMS41LTguNjIgMTIuODIgMCAyMS4zMiA4LjYyIDguNSA4LjYzIDguNSAyMS4zOHYxMTNoNTIwdi0xMTNxMC0xMi43NSA4LjY4LTIxLjM4IDguNjctOC42MiAyMS41LTguNjIgMTIuODIgMCAyMS4zMiA4LjYyIDguNSA4LjYzIDguNSAyMS4zOHYxMTNxMCAyNC0xOCA0MnQtNDIgMThIMjIwWiIvPjwvc3ZnPg==","settings":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDIxLTgwcS0xNCAwLTI1LTl0LTEzLTIzbC0xNS05NHEtMTktNy00MC0xOXQtMzctMjVsLTg2IDQwcS0xNCA2LTI4IDEuNVQxNTUtMjI2TDk3LTMzMHEtOC0xMy00LjUtMjd0MTUuNS0yM2w4MC01OXEtMi05LTIuNS0yMC41VDE4NS00ODBxMC05IC41LTIwLjVUMTg4LTUyMWwtODAtNTlxLTEyLTktMTUuNS0yM3Q0LjUtMjdsNTgtMTA0cTgtMTMgMjItMTcuNXQyOCAxLjVsODYgNDBxMTYtMTMgMzctMjV0NDAtMThsMTUtOTVxMi0xNCAxMy0yM3QyNS05aDExOHExNCAwIDI1IDl0MTMgMjNsMTUgOTRxMTkgNyA0MC41IDE4LjVUNjY5LTcxMGw4Ni00MHExNC02IDI3LjUtMS41VDgwNC03MzRsNTkgMTA0cTggMTMgNC41IDI3LjVUODUyLTU4MGwtODAgNTdxMiAxMCAyLjUgMjEuNXQuNSAyMS41cTAgMTAtLjUgMjF0LTIuNSAyMWw4MCA1OHExMiA4IDE1LjUgMjIuNVQ4NjMtMzMwbC01OCAxMDRxLTggMTMtMjIgMTcuNXQtMjgtMS41bC04Ni00MHEtMTYgMTMtMzYuNSAyNS41VDU5Mi0yMDZsLTE1IDk0cS0yIDE0LTEzIDIzdC0yNSA5SDQyMVptMTUtNjBoODhsMTQtMTEycTMzLTggNjIuNS0yNXQ1My41LTQxbDEwNiA0NiA0MC03Mi05NC02OXE0LTE3IDYuNS0zMy41VDcxNS00ODBxMC0xNy0yLTMzLjV0LTctMzMuNWw5NC02OS00MC03Mi0xMDYgNDZxLTIzLTI2LTUyLTQzLjVUNTM4LTcwOGwtMTQtMTEyaC04OGwtMTQgMTEycS0zNCA3LTYzLjUgMjRUMzA2LTY0MmwtMTA2LTQ2LTQwIDcyIDk0IDY5cS00IDE3LTYuNSAzMy41VDI0NS00ODBxMCAxNyAyLjUgMzMuNVQyNTQtNDEzbC05NCA2OSA0MCA3MiAxMDYtNDZxMjQgMjQgNTMuNSA0MXQ2Mi41IDI1bDE0IDExMlptNDQtMjEwcTU0IDAgOTItMzh0MzgtOTJxMC01NC0zOC05MnQtOTItMzhxLTU0IDAtOTIgMzh0LTM4IDkycTAgNTQgMzggOTJ0OTIgMzhabTAtMTMwWiIvPjwvc3ZnPg==","arrow_upward":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDUwLTY4NiAyMjMtNDU5cS05IDktMjEgOXQtMjEtOXEtOS05LTktMjF0OS0yMWwyNzgtMjc4cTUtNSAxMC03dDExLTJxNiAwIDExIDJ0MTAgN2wyNzggMjc4cTkgOSA5IDIxdC05IDIxcS05IDktMjEgOXQtMjEtOUw1MTAtNjg2djQ5NnEwIDEzLTguNSAyMS41VDQ4MC0xNjBxLTEzIDAtMjEuNS04LjVUNDUwLTE5MHYtNDk2WiIvPjwvc3ZnPg==","add":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDUwLTQ1MEgyMzBxLTEyLjc1IDAtMjEuMzctOC42OC04LjYzLTguNjctOC42My0yMS41IDAtMTIuODIgOC42My0yMS4zMiA4LjYyLTguNSAyMS4zNy04LjVoMjIwdi0yMjBxMC0xMi43NSA4LjY4LTIxLjM4IDguNjctOC42MiAyMS41LTguNjIgMTIuODIgMCAyMS4zMiA4LjYyIDguNSA4LjYzIDguNSAyMS4zOHYyMjBoMjIwcTEyLjc1IDAgMjEuMzggOC42OCA4LjYyIDguNjcgOC42MiAyMS41IDAgMTIuODItOC42MiAyMS4zMi04LjYzIDguNS0yMS4zOCA4LjVINTEwdjIyMHEwIDEyLjc1LTguNjggMjEuMzctOC42NyA4LjYzLTIxLjUgOC42My0xMi44MiAwLTIxLjMyLTguNjMtOC41LTguNjItOC41LTIxLjM3di0yMjBaIi8+PC9zdmc+","folder":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNMTQwLTE2MHEtMjQgMC00Mi0xOC41VDgwLTIyMHYtNTIwcTAtMjMgMTgtNDEuNXQ0Mi0xOC41aDI1NnExMi40NCAwIDIzLjcyIDV0MTkuMzcgMTMuMDlMNDgxLTc0MGgzMzlxMjMgMCA0MS41IDE4LjVUODgwLTY4MHY0NjBxMCAyMy0xOC41IDQxLjVUODIwLTE2MEgxNDBabTAtNjBoNjgwdi00NjBINDU2bC02MC02MEgxNDB2NTIwWm0wIDB2LTUyMCA1MjBaIi8+PC9zdmc+","keyboard_arrow_down":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDY5LTM1OHEtNS0yLTEwLTdMMjYxLTU2M3EtOS05LTguNS0yMS41VDI2Mi02MDZxOS05IDIxLjUtOXQyMS41IDlsMTc1IDE3NiAxNzYtMTc2cTktOSAyMS04LjV0MjEgOS41cTkgOSA5IDIxLjV0LTkgMjEuNUw1MDEtMzY1cS01IDUtMTAgN3QtMTEgMnEtNiAwLTExLTJaIi8+PC9zdmc+","close":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDgwLTQzOCAyNzAtMjI4cS05IDktMjEgOXQtMjEtOXEtOS05LTktMjF0OS0yMWwyMTAtMjEwLTIxMC0yMTBxLTktOS05LTIxdDktMjFxOS05IDIxLTl0MjEgOWwyMTAgMjEwIDIxMC0yMTBxOS05IDIxLTl0MjEgOXE5IDkgOSAyMXQtOSAyMUw1MjItNDgwbDIxMCAyMTBxOSA5IDkgMjF0LTkgMjFxLTkgOS0yMSA5dC0yMS05TDQ4MC00MzhaIi8+PC9zdmc+","check":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJtMzc4LTMzMiAzNjMtMzYzcTktOSAyMS41LTl0MjEuNSA5cTkgOSA5IDIxLjV0LTkgMjEuNUwzOTktMjY3cS05IDktMjEgOXQtMjEtOUwxNzUtNDQ5cS05LTktOC41LTIxLjVUMTc2LTQ5MnE5LTkgMjEuNS05dDIxLjUgOWwxNTkgMTYwWiIvPjwvc3ZnPg==","computer":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNzAtMTIwcS0xMi43NSAwLTIxLjM3LTguNjgtOC42My04LjY3LTguNjMtMjEuNSAwLTEyLjgyIDguNjMtMjEuMzJRNTcuMjUtMTgwIDcwLTE4MGg4MjBxMTIuNzUgMCAyMS4zOCA4LjY4IDguNjIgOC42NyA4LjYyIDIxLjUgMCAxMi44Mi04LjYyIDIxLjMyLTguNjMgOC41LTIxLjM4IDguNUg3MFptNzAtMTIwcS0yNCAwLTQyLTE4dC0xOC00MnYtNDgwcTAtMjQgMTgtNDJ0NDItMThoNjgwcTI0IDAgNDIgMTh0MTggNDJ2NDgwcTAgMjQtMTggNDJ0LTQyIDE4SDE0MFptMC02MGg2ODB2LTQ4MEgxNDB2NDgwWm0wIDB2LTQ4MCA0ODBaIi8+PC9zdmc+","chat_bubble":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNMjQwLTI0MCAxMzEtMTMxcS0xNCAxNC0zMi41IDYuMzRRODAtMTMyLjMxIDgwLTE1MnYtNjY4cTAtMjQgMTgtNDJ0NDItMThoNjgwcTI0IDAgNDIgMTh0MTggNDJ2NTIwcTAgMjQtMTggNDJ0LTQyIDE4SDI0MFptLTI2LTYwaDYwNnYtNTIwSDE0MHY2MDBsNzQtODBabS03NCAwdi01MjAgNTIwWiIvPjwvc3ZnPg==","tune":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNNDM1LjUtMTI4LjYzUTQyNy0xMzcuMjUgNDI3LTE1MHYtMTY1cTAtMTIuNzUgOC42OC0yMS4zOCA4LjY3LTguNjIgMjEuNS04LjYyIDEyLjgyIDAgMjEuMzIgOC42MiA4LjUgOC42MyA4LjUgMjEuMzh2NTNoMzIzcTEyLjc1IDAgMjEuMzggOC42OCA4LjYyIDguNjcgOC42MiAyMS41IDAgMTIuODItOC42MiAyMS4zMi04LjYzIDguNS0yMS4zOCA4LjVINDg3djUycTAgMTIuNzUtOC42OCAyMS4zNy04LjY3IDguNjMtMjEuNSA4LjYzLTEyLjgyIDAtMjEuMzItOC42M1pNMTUwLTIwMnEtMTIuNzUgMC0yMS4zNy04LjY4LTguNjMtOC42Ny04LjYzLTIxLjUgMC0xMi44MiA4LjYzLTIxLjMyIDguNjItOC41IDIxLjM3LTguNWgxODdxMTIuNzUgMCAyMS4zOCA4LjY4IDguNjIgOC42NyA4LjYyIDIxLjUgMCAxMi44Mi04LjYyIDIxLjMyLTguNjMgOC41LTIxLjM4IDguNUgxNTBabTE2NS41LTE3NC42M1EzMDctMzg1LjI1IDMwNy0zOTh2LTUySDE1MHEtMTIuNzUgMC0yMS4zNy04LjY4LTguNjMtOC42Ny04LjYzLTIxLjUgMC0xMi44MiA4LjYzLTIxLjMyIDguNjItOC41IDIxLjM3LTguNWgxNTd2LTU0cTAtMTIuNzUgOC42OC0yMS4zOCA4LjY3LTguNjIgMjEuNS04LjYyIDEyLjgyIDAgMjEuMzIgOC42MiA4LjUgOC42MyA4LjUgMjEuMzh2MTY2cTAgMTIuNzUtOC42OCAyMS4zNy04LjY3IDguNjMtMjEuNSA4LjYzLTEyLjgyIDAtMjEuMzItOC42M1pNNDU3LTQ1MHEtMTIuNzUgMC0yMS4zNy04LjY4LTguNjMtOC42Ny04LjYzLTIxLjUgMC0xMi44MiA4LjYzLTIxLjMyIDguNjItOC41IDIxLjM3LTguNWgzNTNxMTIuNzUgMCAyMS4zOCA4LjY4IDguNjIgOC42NyA4LjYyIDIxLjUgMCAxMi44Mi04LjYyIDIxLjMyLTguNjMgOC41LTIxLjM4IDguNUg0NTdabTE0NC41LTE3My42M1E1OTMtNjMyLjI1IDU5My02NDV2LTE2NXEwLTEyLjc1IDguNjgtMjEuMzggOC42Ny04LjYyIDIxLjUtOC42MiAxMi44MiAwIDIxLjMyIDguNjIgOC41IDguNjMgOC41IDIxLjM4djUyaDE1N3ExMi43NSAwIDIxLjM4IDguNjggOC42MiA4LjY3IDguNjIgMjEuNSAwIDEyLjgyLTguNjIgMjEuMzItOC42MyA4LjUtMjEuMzggOC41SDY1M3Y1M3EwIDEyLjc1LTguNjggMjEuMzctOC42NyA4LjYzLTIxLjUgOC42My0xMi44MiAwLTIxLjMyLTguNjNaTTE1MC02OThxLTEyLjc1IDAtMjEuMzctOC42OC04LjYzLTguNjctOC42My0yMS41IDAtMTIuODIgOC42My0yMS4zMiA4LjYyLTguNSAyMS4zNy04LjVoMzUzcTEyLjc1IDAgMjEuMzggOC42OCA4LjYyIDguNjcgOC42MiAyMS41IDAgMTIuODItOC42MiAyMS4zMi04LjYzIDguNS0yMS4zOCA4LjVIMTUwWiIvPjwvc3ZnPg==","terminal":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBkPSJNODAwIC04MDBIMTYwQzExNS42IC04MDAgODAgLTc2NCA4MCAtNzIwdjQ4MGMwIDQ0IDM1LjYgODAgODAgODBoNjQwYzQ0IDAgODAgLTM2IDgwIC04MFYtNzIwQzg4MCAtNzY0IDg0NC40IC04MDAgODAwIC04MDBaTTgwMCAtMjQwSDE2MFYtNjQwaDY0MFYtMjQwWk00ODAgLTMyMGMwIC0yMiAxOCAtNDAgNDAgLTQwaDE2MGMyMiAwIDQwIDE4IDQwIDQwYzAgMjIgLTE4IDQwIC00MCA0MGgtMTYwQzQ5OCAtMjgwIDQ4MCAtMjk4IDQ4MCAtMzIwWk0yNzEuNiAtNTcxLjZjMTUuNiAtMTUuNiA0MC44IC0xNS42IDU2LjQgMGwxMDMuNiAxMDMuNmMxNS42IDE1LjYgMTUuNiA0MC44IDAgNTYuNGwtMTAzLjYgMTAzLjZjLTE1LjYgMTUuNiAtNDAuOCAxNS42IC01Ni40IDBjLTE1LjYgLTE1LjYgLTE1LjYgLTQwLjggMCAtNTYuNEwzNDYuOCAtNDQwbC03NS4yIC03NS4yQzI1NiAtNTMwLjggMjU2IC01NTYgMjcxLjYgLTU3MS42WiIvPjwvc3ZnPg==","agent-codex":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzAwMDAwMCIgZmlsbC1ydWxlPSJldmVub2RkIiBkPSJNIDguMDg2IC40NTcgYSA2LjEwNSA2LjEwNSAwIDAgMSAzLjA0NiAtLjQxNSBjIDEuMzMzIC4xNTMgMi41MjEgLjcyIDMuNTY0IDEuNyBhIC4xMTcgLjExNyAwIDAgMCAuMTA3IC4wMjkgYyAxLjQwOCAtLjM0NiAyLjc2MiAtLjIyNCA0LjA2MSAuMzY2IGwgLjA2MyAuMDMgbCAuMTU0IC4wNzYgYyAxLjM1NyAuNzAzIDIuMzMgMS43NyAyLjkxOCAzLjE5OCBjIC4yNzggLjY3OSAuNDE4IDEuMzg4IC40MjEgMi4xMjYgYSA1LjY1NSA1LjY1NSAwIDAgMSAtLjE4IDEuNjMxIGEgLjE2NyAuMTY3IDAgMCAwIC4wNCAuMTU1IGEgNS45ODIgNS45ODIgMCAwIDEgMS41NzggMi44OTEgYyAuMzg1IDEuOTAxIC0uMDEgMy42MTUgLTEuMTgzIDUuMTQgbCAtLjE4MiAuMjIgYSA2LjA2MyA2LjA2MyAwIDAgMSAtMi45MzQgMS44NTEgYSAuMTYyIC4xNjIgMCAwIDAgLS4xMDggLjEwMiBjIC0uMjU1IC43MzYgLS41MTEgMS4zNjQgLS45ODcgMS45OTIgYyAtMS4xOTkgMS41ODIgLTIuOTYyIDIuNDYyIC00Ljk0OCAyLjQ1MSBjIC0xLjU4MyAtLjAwOCAtMi45ODYgLS41ODcgLTQuMjEgLTEuNzM2IGEgLjE0NSAuMTQ1IDAgMCAwIC0uMTQgLS4wMzIgYyAtLjUxOCAuMTY3IC0xLjA0IC4xOTEgLTEuNjA0IC4xODUgYSA1LjkyNCA1LjkyNCAwIDAgMSAtMi41OTUgLS42MjIgYSA2LjA1OCA2LjA1OCAwIDAgMSAtMi4xNDYgLTEuNzgxIGMgLS4yMDMgLS4yNjkgLS40MDQgLS41MjIgLS41NTEgLS44MjEgYSA3Ljc0IDcuNzQgMCAwIDEgLS40OTUgLTEuMjgzIGEgNi4xMSA2LjExIDAgMCAxIC0uMDE3IC0zLjA2NCBhIC4xNjYgLjE2NiAwIDAgMCAuMDA4IC0uMDc0IGEgLjExNSAuMTE1IDAgMCAwIC0uMDM3IC0uMDY0IGEgNS45NTggNS45NTggMCAwIDEgLTEuMzggLTIuMjAyIGEgNS4xOTYgNS4xOTYgMCAwIDEgLS4zMzMgLTEuNTg5IGEgNi45MTUgNi45MTUgMCAwIDEgLjE4OCAtMi4xMzIgYyAuNDUgLTEuNDg0IDEuMzA5IC0yLjY0OCAyLjU3NyAtMy40OTMgYyAuMjgyIC0uMTg4IC41NSAtLjMzNCAuODAyIC0uNDM4IGMgLjI4NiAtLjEyIC41NzMgLS4yMiAuODYxIC0uMzA0IGEgLjEyOSAuMTI5IDAgMCAwIC4wODcgLS4wODcgQSA2LjAxNiA2LjAxNiAwIDAgMSA1LjYzNSAyLjMxIEMgNi4zMTUgMS40NjQgNy4xMzIgLjg0NiA4LjA4NiAuNDU3IHogbSAtLjgwNCA3Ljg1IGEgLjg0OCAuODQ4IDAgMCAwIC0xLjQ3MyAuODQyIGwgMS42OTQgMi45NjUgbCAtMS42ODggMi44NDggYSAuODQ5IC44NDkgMCAwIDAgMS40NiAuODY0IGwgMS45NCAtMy4yNzIgYSAuODQ5IC44NDkgMCAwIDAgLjAwNyAtLjg1NCBsIC0xLjk0IC0zLjM5MyB6IG0gNS40NDYgNi4yNCBhIC44NDkgLjg0OSAwIDAgMCAwIDEuNjk1IGggNC44NDggYSAuODQ5IC44NDkgMCAwIDAgMCAtMS42OTYgaCAtNC44NDggeiIvPjwvc3ZnPg==","agent-claude":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+CiAgPCEtLSBDbGF1ZGUgbWFyayBmcm9tIExvYmUgSWNvbnMgKE1JVCk7IHNlZSBBR0VOVC1JQ09OLU5PVElDRVMudHh0LiAtLT4KICA8cGF0aCBmaWxsPSIjRDk3NzU3IiBmaWxsLXJ1bGU9Im5vbnplcm8iIGQ9Ik0gNC43MDkgMTUuOTU1IGwgNC43MiAtMi42NDcgLjA4IC0uMjMgLS4wOCAtLjEyOCBIIDkuMiBsIC0uNzkgLS4wNDggLTIuNjk4IC0uMDczIC0yLjMzOSAtLjA5NyAtMi4yNjYgLS4xMjIgLS41NzEgLS4xMjEgTCAwIDExLjc4NCBsIC4wNTUgLS4zNTIgLjQ4IC0uMzIxIC42ODYgLjA2IDEuNTIgLjEwMyAyLjI3OCAuMTU4IDEuNjUyIC4wOTcgMi40NDkgLjI1NSBoIC4zODkgbCAuMDU1IC0uMTU3IC0uMTM0IC0uMDk4IC0uMTAzIC0uMDk3IC0yLjM1OCAtMS41OTYgLTIuNTUyIC0xLjY4OCAtMS4zMzYgLS45NzIgLS43MjQgLS40OTEgLS4zNjQgLS40NjIgLS4xNTggLTEuMDA4IC42NTYgLS43MjIgLjg4MSAuMDYgLjIyNSAuMDYxIC44OTMgLjY4NiAxLjkwOCAxLjQ3NiAyLjQ5MSAxLjgzMyAuMzY1IC4zMDQgLjE0NSAtLjEwMyAuMDE5IC0uMDczIC0uMTY0IC0uMjc0IC0xLjM1NSAtMi40NDYgLTEuNDQ2IC0yLjQ5IC0uNjQ0IC0xLjAzMiAtLjE3IC0uNjE5IGEgMi45NyAyLjk3IDAgMCAxIC0uMTA0IC0uNzI5IEwgNi4yODMgLjEzNCA2LjY5NiAwIGwgLjk5NiAuMTM0IC40MiAuMzY0IC42MiAxLjQxNCAxLjAwMiAyLjIyOSAxLjU1NSAzLjAzIC40NTYgLjg5OCAuMjQzIC44MzIgLjA5MSAuMjU1IGggLjE1OCBWIDkuMDEgbCAuMTI4IC0xLjcwNiAuMjM3IC0yLjA5NSAuMjMgLTIuNjk1IC4wOCAtLjc2IC4zNzYgLS45MSAuNzQ3IC0uNDkyIC41ODQgLjI4IC40OCAuNjg1IC0uMDY3IC40NDQgLS4yODYgMS44NTEgLS41NTkgMi45MDMgLS4zNjQgMS45NDIgaCAuMjEyIGwgLjI0MyAtLjI0MiAuOTg1IC0xLjMwNiAxLjY1MiAtMi4wNjQgLjczIC0uODIgLjg1IC0uOTA0IC41NDcgLS40MzEgaCAxLjAzMyBsIC43NiAxLjEyOSAtLjM0IDEuMTY2IC0xLjA2NCAxLjM0NyAtLjg4MSAxLjE0MiAtMS4yNjQgMS43IC0uNzkgMS4zNiAuMDczIC4xMSAuMTg4IC0uMDIgMi44NTYgLS42MDYgMS41NDMgLS4yOCAxLjg0MSAtLjMxNSAuODMzIC4zODggLjA5MSAuMzk1IC0uMzI4IC44MDcgLTEuOTY5IC40ODYgLTIuMzA5IC40NjIgLTMuNDM5IC44MTMgLS4wNDIgLjAzIC4wNDkgLjA2MSAxLjU0OSAuMTQ2IC42NjIgLjAzNiBoIDEuNjIyIGwgMy4wMiAuMjI1IC43OSAuNTIyIC40NzQgLjYzOCAtLjA3OSAuNDg1IC0xLjIxNSAuNjIgLTEuNjQgLS4zODkgLTMuODI5IC0uOTEgLTEuMzEyIC0uMzI5IGggLS4xODIgdiAuMTEgbCAxLjA5MyAxLjA2OCAyLjAwNiAxLjgxIDIuNTA5IDIuMzMgLjEyNyAuNTc4IC0uMzIyIC40NTUgLS4zNCAtLjA0OSAtMi4yMDUgLTEuNjU3IC0uODUxIC0uNzQ3IC0xLjkyNiAtMS42MiBoIC0uMTI4IHYgLjE3IGwgLjQ0NCAuNjQ5IDIuMzQ1IDMuNTIxIC4xMjIgMS4wOCAtLjE3IC4zNTMgLS42MDggLjIxMyAtLjY2OCAtLjEyMiAtMS4zNzQgLTEuOTI1IC0xLjQxNSAtMi4xNjcgLTEuMTQzIC0xLjk0MyAtLjE0IC4wOCAtLjY3NCA3LjI1NCAtLjMxNiAuMzcgLS43MjkgLjI4IC0uNjA3IC0uNDYxIC0uMzIyIC0uNzQ3IC4zMjIgLTEuNDc2IC4zODkgLTEuOTI0IC4zMTUgLTEuNTMgLjI4NiAtMS45IC4xNyAtLjYzMiAtLjAxMiAtLjA0MiAtLjE0IC4wMTggLTEuNDM0IDEuOTY3IC0yLjE4IDIuOTQ1IC0xLjcyNiAxLjg0NSAtLjQxNCAuMTY0IC0uNzE3IC0uMzcgLjA2NyAtLjY2MiAuNDAxIC0uNTg5IDIuMzg4IC0zLjAzNiAxLjQ0IC0xLjg4MiAuOTMgLTEuMDg2IC0uMDA2IC0uMTU4IGggLS4wNTUgTCA0LjEzMiAxOC41NiBsIC0xLjEzIC4xNDYgLS40ODcgLS40NTYgLjA2MSAtLjc0NiAuMjMxIC0uMjQzIDEuOTA4IC0xLjMxMiAtLjAwNiAuMDA2IHoiLz4KPC9zdmc+Cg==","agent-deepseek":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OC4zNCA0OC4zNCI+PGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTEgLTAuOTkpIj48cGF0aCBmaWxsPSIjNEQ2QkZFIiBmaWxsLXJ1bGU9Im5vbnplcm8iIGQ9Ik00OC44MzU0IDEwLjA0NzlDNDguMzIzMiA5Ljc5MTk5IDQ4LjEwMjUgMTAuMjc5OCA0Ny44MDMyIDEwLjUyNzhDNDcuNzAwNyAxMC42MDc5IDQ3LjYxNDMgMTAuNzExOSA0Ny41MjczIDEwLjgwNzZDNDYuNzc5MyAxMS42MjQgNDUuOTA0OCAxMi4xNTk3IDQ0Ljc2MjIgMTIuMDk1N0M0My4wOTIzIDEyIDQxLjY2NiAxMi41MzU2IDQwLjQwNTggMTMuODM5OEM0MC4xMzc3IDEyLjIzMTkgMzkuMjQ3NiAxMS4yNzIgMzcuODkyNiAxMC42NTU4QzM3LjE4MzYgMTAuMzM1OSAzNi40NjY4IDEwLjAxNTYgMzUuOTcwMiA5LjMxOTgyQzM1LjYyMzUgOC44MjM3MyAzNS41MjkzIDguMjcxOTcgMzUuMzU2IDcuNzI3NTRDMzUuMjQ1NiA3LjM5OTkgMzUuMTM1MyA3LjA2Mzk2IDM0Ljc2NTEgNy4wMDc4MUMzNC4zNjMzIDYuOTQzODUgMzQuMjA1NiA3LjI4NzYgMzQuMDQ3OSA3LjU3NTY4QzMzLjQxOCA4Ljc1MTk1IDMzLjE3MzMgMTAuMDQ3OSAzMy4xOTczIDExLjM1OTlDMzMuMjUyNCAxNC4zMTIgMzQuNDczNiAxNi42NjQxIDM2Ljg5OTkgMTguMzM1OUMzNy4xNzU4IDE4LjUyNzggMzcuMjQ2NiAxOC43MTk3IDM3LjE1OTcgMTlDMzYuOTk0NiAxOS41NzU3IDM2Ljc5NzQgMjAuMTM1NyAzNi42MjQgMjAuNzExOUMzNi41MTM3IDIxLjA4MDEgMzYuMzQ4NiAyMS4xNTk3IDM1Ljk2MjQgMjFDMzQuNjMwOSAyMC40MzIxIDMzLjQ4MSAxOS41OTE4IDMyLjQ2NDQgMTguNTc1N0MzMC43MzkzIDE2Ljg3MjEgMjkuMTc5MiAxNC45OTE3IDI3LjIzMzQgMTMuNTJDMjYuNzc2NCAxMy4xNzU4IDI2LjMxOTMgMTIuODU2IDI1Ljg0NjcgMTIuNTUxOEMyMy44NjE4IDEwLjU4NCAyNi4xMDY5IDguOTY3NzcgMjYuNjI3IDguNzc1ODhDMjcuMTcwNCA4LjU3NTY4IDI2LjgxNTkgNy44ODc3IDI1LjA1OTEgNy44OTZDMjMuMzAyMiA3LjkwMzgxIDIxLjY5NTMgOC41MDM5MSAxOS42NDcgOS4zMDM3MUMxOS4zNDc3IDkuNDIzODMgMTkuMDMyMiA5LjUxMTcyIDE4LjcwOTUgOS41ODM5OEMxNi44NTAxIDkuMjIzNjMgMTQuOTE5OSA5LjE0MzU1IDEyLjkwMzMgOS4zNzU5OEM5LjEwNTk2IDkuODA3NjIgNi4wNzI3NSAxMS42Mzk2IDMuODQzMjYgMTQuNzY4MUMxLjE2NDU1IDE4LjUyNzggMC41MzQxOCAyMi43OTk4IDEuMzA2NjQgMjcuMjU1OUMyLjExNzY4IDMxLjk1MjEgNC40NjU4MiAzNS44Mzk4IDguMDczNzMgMzguODc5OUMxMS44MTU5IDQyLjAzMjIgMTYuMTI1NSA0My41NzYyIDIxLjA0MSA0My4yODAzQzI0LjAyNjkgNDMuMTA0IDI3LjM1MTYgNDIuNjk2MyAzMS4xMDE2IDM5LjQ1NjFDMzIuMDQ2OSAzOS45MzYgMzMuMDM5NiA0MC4xMjc5IDM0LjY4NiA0MC4yNzJDMzUuOTU0NiA0MC4zOTIxIDM3LjE3NTggNDAuMjA4IDM4LjEyMTEgNDAuMDA3OEMzOS42MDIxIDM5LjY4OCAzOS40OTk1IDM4LjI4ODEgMzguOTYzOSAzOC4wMzIyQzM0LjYyMyAzNS45Njc4IDM1LjU3NjIgMzYuODA4MSAzNC43MSAzNi4xMjc5QzM2LjkxNTUgMzMuNDYzOSA0MC4yNDAyIDMwLjY5NTggNDEuNTQgMjEuNzI4QzQxLjY0MjYgMjEuMDE2MSA0MS41NTU3IDIwLjU2NzkgNDEuNTQgMTkuOTkxN0M0MS41MzIyIDE5LjYzOTYgNDEuNjEwOCAxOS41MDM5IDQyLjAwNDkgMTkuNDYzOUM0My4wOTIzIDE5LjMzNTkgNDQuMTQ3OSAxOS4wMzE3IDQ1LjExNjcgMTguNDg3OEM0Ny45MjkyIDE2LjkxOTkgNDkuMDY0IDE0LjM0MzggNDkuMzMxNSAxMS4yNTU5QzQ5LjM3MTEgMTAuNzgzNyA0OS4zMjM3IDEwLjI5NTkgNDguODM1NCAxMC4wNDc5Wk0yNC4zMjYyIDM3LjgzOThDMjAuMTE5NiAzNC40NjM5IDE4LjA3OTEgMzMuMzUyMSAxNy4yMzU4IDMzLjM5OTlDMTYuNDQ4MiAzMy40NDgyIDE2LjU4OTggMzQuMzY4MiAxNi43NjMyIDM0Ljk2NzhDMTYuOTQ0MyAzNS41NjAxIDE3LjE4MTIgMzUuOTY4MyAxNy41MTE3IDM2LjQ4NzhDMTcuNzQwMiAzNi44MzIgMTcuODk3OSAzNy4zNDQyIDE3LjI4MzIgMzcuNzI4QzE1LjkyODIgMzguNTg0IDEzLjU3MjggMzcuNDM5OSAxMy40NjI0IDM3LjM4MzhDMTAuNzIwNyAzNS43MzU4IDguNDI4MjIgMzMuNTYwMSA2LjgxMzQ4IDMwLjU4NEM1LjI1MzQyIDI3LjcxOTcgNC4zNDc2NiAyNC42NDc5IDQuMTk3NzUgMjEuMzY3N0M0LjE1ODIgMjAuNTc1NyA0LjM4NjcyIDIwLjI5NTkgNS4xNTg2OSAyMC4xNTE5QzYuMTc1MjkgMTkuOTYgNy4yMjMxNCAxOS45MTk5IDguMjM5MjYgMjAuMDcxOEMxMi41MzI3IDIwLjcxMTkgMTYuMTg4NSAyMi42NzE5IDE5LjI1MjkgMjUuNzc1OUMyMS4wMDIgMjcuNTQzOSAyMi4zMjUyIDI5LjY1NTggMjMuNjg4NSAzMS43MjAyQzI1LjEzNzcgMzMuOTEyMSAyNi42OTc4IDM2IDI4LjY4MzEgMzcuNzExOUMyOS4zODQzIDM4LjMxMiAyOS45NDM0IDM4Ljc2ODEgMzAuNDc5IDM5LjEwNEMyOC44NjQzIDM5LjI4ODEgMjYuMTY5OSAzOS4zMjgxIDI0LjMyNjIgMzcuODM5OFpNMjYuMzQzMyAyNC42MDAxQzI2LjM0MzMgMjQuMjQ4IDI2LjYxOTEgMjMuOTY3OCAyNi45NjU4IDIzLjk2NzhDMjcuMDQ0NCAyMy45Njc4IDI3LjExNTIgMjMuOTgzOSAyNy4xNzgyIDI0LjAwNzhDMjcuMjY1MSAyNC4wNCAyNy4zNDM4IDI0LjA4NzkgMjcuNDA2NyAyNC4xNjAyQzI3LjUxNzEgMjQuMjcyIDI3LjU4MDEgMjQuNDMyMSAyNy41ODAxIDI0LjYwMDFDMjcuNTgwMSAyNC45NTIxIDI3LjMwNDIgMjUuMjMxOSAyNi45NTc1IDI1LjIzMTlDMjYuNjEwOCAyNS4yMzE5IDI2LjM0MzMgMjQuOTUyMSAyNi4zNDMzIDI0LjYwMDFaTTMyLjYwNjQgMjcuODc5OUMzMi4yMDQ2IDI4LjA0NzkgMzEuODAyNyAyOC4xOTE5IDMxLjQxNjUgMjguMjA4QzMwLjgxNzkgMjguMjM5NyAzMC4xNjQxIDI3Ljk5MjIgMjkuODA5NiAyNy42ODhDMjkuMjU4MyAyNy4yMTU4IDI4Ljg2NDMgMjYuOTUyMSAyOC42OTg3IDI2LjEyNzlDMjguNjI3OSAyNS43NzU5IDI4LjY2NzUgMjUuMjMxOSAyOC43MzA1IDI0LjkxOTlDMjguODcyMSAyNC4yNDggMjguNzE0NCAyMy44MTU5IDI4LjI0OTUgMjMuNDIzOEMyNy44NzE2IDIzLjEwNCAyNy4zOTExIDIzLjAxNjEgMjYuODYzMyAyMy4wMTYxQzI2LjY2NiAyMy4wMTYxIDI2LjQ4NDkgMjIuOTI3NyAyNi4zNTExIDIyLjg1NkMyNi4xMzA0IDIyLjc0NDEgMjUuOTQ5MiAyMi40NjM5IDI2LjEyMjYgMjIuMTIwMUMyNi4xNzc3IDIyLjAwNzggMjYuNDQ1OCAyMS43MzU4IDI2LjUwODggMjEuNjg4QzI3LjIyNTYgMjEuMjcyIDI4LjA1MjcgMjEuNDA3NyAyOC44MTY5IDIxLjcxOTdDMjkuNTI1OSAyMi4wMTYxIDMwLjA2MTUgMjIuNTYwMSAzMC44MzQgMjMuMzI4MUMzMS42MjE2IDI0LjI1NTkgMzEuNzYzMiAyNC41MTE3IDMyLjIxMjQgMjUuMjA4QzMyLjU2NjkgMjUuNzUyIDMyLjg5MDEgMjYuMzEyIDMzLjExMDQgMjYuOTUyMUMzMy4yNDQ2IDI3LjM1MjEgMzMuMDcxMyAyNy42ODAyIDMyLjYwNjQgMjcuODc5OVoiLz48L2c+PC9zdmc+","agent-pi":"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NzAgNDcwIj48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgtMTY1LjI5IC0xNjUuMjkpIj48cGF0aCBmaWxsPSIjRjA5MDgyIiBmaWxsLXJ1bGU9Im5vbnplcm8iIGQ9Ik0xNjUuMjksMTY1LjI5SDUxNy4zNlY0MDBINDAwVjI4Mi42NUgxNjUuMjlaIi8+PHBhdGggZmlsbD0iIzREOUFCRiIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNMTY1LjI5LDI4Mi42NUgyODIuNjVWNDAwSDQwMFY1MTcuMzZIMjgyLjY1VjYzNC43MkgxNjUuMjlaIi8+PHBhdGggZmlsbD0iI0YxQkU1OCIgZmlsbC1ydWxlPSJub256ZXJvIiBkPSJNNTE3LjM2LDQwMEg2MzQuNzJWNjM0LjcySDUxNy4zNloiLz48L2c+PC9zdmc+"};
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+assets.shield='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgLTk2MCA5NjAgOTYwIj48cGF0aCBmaWxsPSJjdXJyZW50Q29sb3IiIGQ9Ik00NzAuMTItODVxLTQuNTYtMS05LjEyLTMtMTM5LTQ3LTIyMC0xNjguNXQtODEtMjY2LjYxVi03MTlxMC0xOS4yNiAxMC44OC0zNC42NlExODEuNzUtNzY5LjA3IDE5OS03NzZsMjYwLTk3cTExLTQgMjEtNHQyMSA0bDI2MCA5N3ExNy4yNSA2LjkzIDI4LjEzIDIyLjM0UTgwMC03MzguMjYgODAwLTcxOXYxOTUuODlRODAwLTM3OCA3MTktMjU2LjVUNDk5LTg4cS00LjU2IDItOS4xMiAzVDQ4MC04NHEtNS4zMiAwLTkuODgtMVptOS44OC01OHExMTUtMzggMTg3LjUtMTQzLjVUNzQwLTUyM3YtMTk2bC0yNjAtOTgtMjYwIDk4djE5NnEwIDEzMSA3Mi41IDIzNi41VDQ4MC0xNDNabTAtMzM3WiIvPjwvc3ZnPg==';
+function icons(root=document){root.querySelectorAll('[data-icon]').forEach(el=>{el.style.setProperty('--asset',`url("${assets[el.dataset.icon]||assets.settings}")`)});}icons();
+const names={codex:'Codex',claude:'Claude Code',deepseek:'DeepSeek',pi:'Pi'};
+const models={codex:['GPT-5.4','GPT-5.4 mini','GPT-5.4 · Team Research Preview'],claude:['Sonnet','Opus'],deepseek:['DeepSeek Chat','DeepSeek Reasoner'],pi:['电脑端默认']};
+const state={agent:'codex',variant:'terminal',model:'GPT-5.4',thinking:'high',permissions:{scope:'workspace',approval:'request',network:'off',reviewer:'user'},panel:null,pending:null,scenario:'normal'};
+const thinkingLabels={default:'电脑端默认',low:'低',medium:'中',high:'高',xhigh:'超高'};
+let returnFocus=null,toastTimer,closeTimer;
+function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function permissionSummary(p){if(p.scope==='full')return '完全访问';if(p.scope==='readonly'&&p.network==='off'&&p.approval==='request')return '只读';if(p.scope==='workspace'&&p.network==='off'&&p.approval==='request'&&p.reviewer==='user')return '工作区受限';return '自定义';}
+function refresh(){const limited=state.agent==='pi'||state.scenario==='unsupported';$('#draft').style.setProperty('--agent',`var(--agent-${state.agent})`);$$('[data-agent]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.agent===state.agent)));$('#agentName').innerHTML=`<span>${names[state.agent]}</span>${state.agent==='codex'?`<i class="icon small" data-icon="${state.variant==='terminal'?'terminal':'computer'}"></i>`:''}`;$('#agentName').disabled=state.agent!=='codex';$('#agentName').setAttribute('aria-label',state.agent==='codex'?`Codex ${state.variant==='terminal'?'终端版':'桌面版'}，切换版本`:names[state.agent]);$('#message').placeholder=`让 ${names[state.agent]} 做什么？`;$('#modelValue').textContent=limited?'电脑端默认':state.model;$('#modelValue').title=limited?'电脑端默认':state.model;$('#thinkingValue').textContent=limited?'电脑端默认':thinkingLabels[state.thinking];$('#permissionsTrigger').setAttribute('aria-label','权限，'+(limited?'由电脑端管理':permissionSummary(state.permissions)));$('#permissionsTrigger').dataset.risk=String(!limited&&state.permissions.scope==='full');$('#oldModel').textContent=state.model;$('#oldThinking').textContent=state.thinking;$('#oldPermission').textContent=[{workspace:'工作目录',readonly:'只读',full:'完全访问'}[state.permissions.scope],{request:'按需审批',always:'始终审批',never:'不审批'}[state.permissions.approval],state.permissions.network==='off'?'禁用网络':'启用网络'].join(' · ');$$('[data-panel]').forEach(b=>b.disabled=limited);const f=$('#feedback');f.className='feedback';f.hidden=true;if(limited){f.hidden=false;f.textContent=state.scenario==='unsupported'?'升级电脑端后可选择新会话配置。':'此 Agent 的配置由电脑端管理。';}else if(state.scenario==='error'){f.hidden=false;f.classList.add('error');f.innerHTML='配置未保存，请重试。<button id="retry">重试</button>';$('#retry').onclick=()=>{state.scenario='normal';$('#scenario').value='normal';refresh();notify('演示：配置已重新保存');};}$('#send').disabled=state.scenario==='error';icons();}
+function notify(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,3200);}
+function updateSend(){const has=$('#message').value.trim().length>0;$('#sendIcon').dataset.icon=has?'arrow_upward':'play_arrow';$('#send').setAttribute('aria-label',has?'发送第一句话':'启动空会话');icons();}
+function choice(value,title,subtitle,selected){return `<button class="choice" role="radio" aria-checked="${selected}" data-choice="${escapeHTML(value)}"><span class="choice-copy"><span class="choice-title">${escapeHTML(title)}</span>${subtitle?`<small>${escapeHTML(subtitle)}</small>`:''}</span><i class="icon check" data-icon="check"></i></button>`;}
+function openPanel(panel) {
+  clearTimeout(closeTimer);returnFocus=document.activeElement;
+  state.panel=panel;state.pending={...state.permissions};activePermissionTab='scope';
+  $('#overlay').hidden=false;$('#app').inert=true;$('#sheet').classList.remove('closing');
+  $('#sheet').dataset.panel=panel;$('#permissionFooter').hidden=panel!=='permissions';
+  $('#sheetClose').innerHTML=panel==='permissions'?'收起':'<i class="icon" data-icon="close"></i>';
+  const titles={model:'选择模型',thinking:'思考深度',permissions:'新会话权限',directory:'工作目录',variant:'Codex 版本'};
+  $('#sheetTitle').textContent=titles[panel];
+  let html='';
+  if(panel==='model') html='<p class="sheet-note">用于新建会话。以下为设计演示的模型清单。</p><div role="radiogroup" aria-label="模型">'+models[state.agent].map(m=>choice(m,m,m.includes('Preview')?'长名称在这里完整显示':'',m===state.model)).join('')+'</div>';
+  if(panel==='thinking') html='<p class="sheet-note">显示模型支持的选项；切换模型后重新确认。</p><div role="radiogroup" aria-label="思考深度">'+Object.entries(thinkingLabels).map(([v,l])=>choice(v,l,v==='default'?'使用电脑端原生设置':'',v===state.thinking)).join('')+'</div>';
+  if(panel==='directory') html='<div role="radiogroup" aria-label="工作目录">'+['~/Projects/orbis','~/Projects/website','~/Projects/research'].map(path=>choice(path,path,'',path===$('#path').textContent)).join('')+'</div>';
+  if(panel==='variant') html='<div role="radiogroup" aria-label="Codex 版本">'+choice('terminal','Codex 终端版','',state.variant==='terminal')+choice('desktop','Codex 桌面版','',state.variant==='desktop')+'</div>';
+  if(panel==='permissions') html='<div class="permission-tabs" role="tablist" aria-label="权限设置类别">'+Object.entries(permissionFields).map(([key,field])=>`<button class="permission-tab" id="permission-tab-${key}" role="tab" data-permission-tab="${key}" aria-controls="permissionOptions">${field.label}</button>`).join('')+'</div><div id="permissionOptions" role="tabpanel"></div>';
+  $('#sheetContent').innerHTML=html;$('#sheetContent').scrollTop=0;icons($('#sheet'));
+  $$('[data-choice]').forEach(button=>button.onclick=()=>{
+    const value=button.dataset.choice;
+    if(panel==='model'){state.model=value;state.thinking='high';}
+    if(panel==='thinking')state.thinking=value;
+    if(panel==='directory')$('#path').textContent=value;
+    if(panel==='variant')state.variant=value;
+    refresh();closePanel();
+  });
+  if(panel==='permissions') {
+    $$('[data-permission-tab]').forEach(button=>{
+      button.onclick=()=>{activePermissionTab=button.dataset.permissionTab;renderPermissionOptions();};
+      button.onkeydown=event=>{
+        if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+        event.preventDefault();
+        const keys=Object.keys(permissionFields),index=keys.indexOf(activePermissionTab);
+        activePermissionTab=keys[event.key==='Home'?0:event.key==='End'?keys.length-1:(index+(event.key==='ArrowRight'?1:-1)+keys.length)%keys.length];
+        renderPermissionOptions();$(`#permission-tab-${activePermissionTab}`).focus({preventScroll:true});
+        $(`#permission-tab-${activePermissionTab}`).scrollIntoView({block:'nearest',inline:'nearest'});
+      };
+    });
+    renderPermissionOptions();
+  }
+  $('#sheetClose').focus({preventScroll:true});
+}
+const permissionFields={
+  scope:{label:'文件访问范围',options:[['readonly','只读'],['workspace','工作区可写'],['full','完全访问']]},
+  network:{label:'网络访问',options:[['off','限制联网'],['on','允许联网']]},
+  approval:{label:'何时申请审批',options:[['request','按需询问'],['always','不可信操作先询问'],['never','不申请审批']]},
+  reviewer:{label:'谁来处理审批',options:[['user','由我处理'],['auto','自动审查']]}
+};
+let activePermissionTab='scope';
+function renderPermissionOptions(focusValue=null) {
+  const key=activePermissionTab,field=permissionFields[key];
+  const disabled=key==='network'&&state.pending.scope==='full';
+  $$('[data-permission-tab]').forEach(button=>{
+    const selected=button.dataset.permissionTab===key;
+    button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;
+  });
+  $('#permissionOptions').setAttribute('aria-labelledby','permission-tab-'+key);
+  $('#permissionOptions').innerHTML=`<div class="permission-options" role="radiogroup" aria-label="${field.label}">${field.options.map(([value,label])=>`<button class="permission-choice" role="radio" data-permission-value="${value}" aria-checked="${state.pending[key]===value}" ${disabled?'disabled':''}><span class="radio-disc" aria-hidden="true"></span><span class="option-label">${label}</span>${state.permissions[key]===value?'<span class="current-mark">当前</span>':''}</button>`).join('')}</div>${disabled?'<p class="permission-state" role="status">完全访问已启用联网</p>':''}`;
+  $$('[data-permission-value]').forEach(button=>button.onclick=()=>{
+    state.pending[key]=button.dataset.permissionValue;
+    if(key==='scope'&&state.pending.scope==='full')state.pending.network='on';
+    renderPermissionOptions(button.dataset.permissionValue);
+  });
+  $('#apply').disabled=!Object.keys(permissionFields).some(field=>state.pending[field]!==state.permissions[field]);
+  if(focusValue) $(`[data-permission-value="${focusValue}"]`)?.focus({preventScroll:true});
+}
+function closePanel(){if($('#overlay').hidden)return;$('#sheet').classList.add('closing');const delay=matchMedia('(prefers-reduced-motion:reduce)').matches?0:160;closeTimer=setTimeout(()=>{$('#overlay').hidden=true;$('#sheet').classList.remove('closing');$('#app').inert=false;state.panel=null;state.pending=null;if(returnFocus?.isConnected)returnFocus.focus({preventScroll:true});},delay);}
+$$('[data-panel]').forEach(b=>b.onclick=()=>openPanel(b.dataset.panel));$('#sheetClose').onclick=closePanel;$('#scrim').onclick=closePanel;$('#apply').onclick=()=>{state.permissions={...state.pending};refresh();closePanel();};$('#agentName').onclick=()=>openPanel('variant');$('#directory').onclick=()=>openPanel('directory');$$('[data-agent]').forEach(b=>b.onclick=()=>{state.agent=b.dataset.agent;state.model=models[state.agent][0];state.thinking='high';state.scenario='normal';$('#scenario').value='normal';refresh();});$('#message').oninput=updateSend;$('#send').onclick=()=>notify($('#message').value.trim()?'演示：已带配置发送第一句话。草稿内容保留供继续体验。':'演示：按当前配置启动空会话。');$('#draftToggle').onclick=()=>{const d=$('#draft');d.hidden=!d.hidden;$('#draftToggle').setAttribute('aria-label',d.hidden?'展开草稿':'收起草稿');$('#draftToggle i').dataset.icon=d.hidden?'add':'close';icons();};$('#layoutSelect').onchange=e=>$('#device').dataset.layout=e.target.value;$('#widthSelect').onchange=e=>$('#device').style.setProperty('--device-width',e.target.value+'px');$('#themeSelect').onchange=e=>document.documentElement.dataset.ob=e.target.value;$('#largeText').onchange=e=>$('#device').dataset.large=String(e.target.checked);$('#scenario').onchange=e=>{state.scenario=e.target.value;if(state.scenario==='long'){state.agent='codex';state.model=models.codex[2];}else{state.model=models[state.agent][0];}refresh();};document.addEventListener('keydown',e=>{if($('#overlay').hidden)return;if(e.key==='Escape'){e.preventDefault();closePanel();}if(e.key==='Tab'){const focusable=[...$('#sheet').querySelectorAll('button:not([disabled]),select:not([disabled])')].filter(el=>!el.hidden&&el.offsetParent!==null);const first=focusable[0],last=focusable.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});refresh();updateSend();
+</script></body></html>

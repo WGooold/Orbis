@@ -67,8 +67,7 @@ private struct TurnChangeCard: View {
                 }
             }.padding(.horizontal, 12).padding(.vertical, 2).neuSurface(inset: true, radius: 14, intensity: 0.35)
             if let note = caveat {
-                Label(note, systemImage: summary.coverage == "complete" ? "info.circle" : "exclamationmark.triangle")
-                    .font(.orbisCaption()).foregroundStyle(summary.coverage == "complete" ? p.secondary : p.warning)
+                OrbisStatusWithInfo(title: L10n.tr(summary.coverage != "complete" ? "记录不完整" : summary.reasons.contains(where: { $0.contains("concurrent") }) ? "归属未确认" : "记录范围"), message: note)
                     .padding(.horizontal, 4).accessibilityIdentifier("turn-changes-partial")
             }
         }.padding(.top, 4)
@@ -229,7 +228,7 @@ struct TurnFileReviewView: View {
         let index = files.firstIndex { $0.fileId == changes.selectedFileId } ?? 0
         VStack(spacing: 8) {
             header(p)
-            if changes.newerVersionAvailable { OrbisNotice(text: L10n.tr("本轮概况已更新，当前保持打开时的版本。")).padding(.horizontal, 16) }
+            if changes.newerVersionAvailable { OrbisStatusWithInfo(title: L10n.tr("有新版本"), message: L10n.tr("本轮概况已更新，当前保持打开时的版本。")).padding(.horizontal, 16) }
             if changes.suspended {
                 OrbisActionButton(title: L10n.tr("继续读取"), symbol: "play") { changes.resume() }.padding(.horizontal, 16)
             }

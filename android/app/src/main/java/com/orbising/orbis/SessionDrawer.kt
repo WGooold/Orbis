@@ -676,7 +676,7 @@ private fun DrawerHostSwitcher(
     pendingUnpair?.let { host ->
         NeumorphDialog(onDismissRequest = { pendingUnpair = null },
             title = { Text(L10n.tr("取消配对 {0}？", host.name)) },
-            text = { Text(L10n.tr("电脑上的会话与历史不受影响，之后可以重新扫码配对。")) },
+            text = { Text(L10n.tr("将移除本机配对与草稿")) },
             confirmButton = { NeumorphTextButton(L10n.tr("取消配对"), { pendingUnpair = null; onUnpairHost(host.hostId) }, danger = true) },
             dismissButton = { NeumorphTextButton(L10n.tr("保留"), { pendingUnpair = null }) })
     }
