@@ -13,6 +13,7 @@ from pathlib import Path
 import plistlib
 import re
 import subprocess
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 MACHO_MAGIC = {bytes.fromhex(value) for value in (
@@ -80,6 +81,32 @@ def verify_identity(path, team, runtime=False):
     if "Timestamp=" not in details:
         raise RuntimeError(f"Secure timestamp is missing: {path}")
     return details
+
+
+def run_stapler(command, phase, report_path, report):
+    delays = (5, 10, 20, 40)
+    for attempt in range(1, len(delays) + 2):
+        result = run(command, check=False)
+        if result.returncode == 0:
+            report.setdefault("stapler", {})[phase] = dict(status="success", attempts=attempt)
+            save(report_path, report)
+            return
+        diagnostic = result.stderr.strip() or result.stdout.strip()
+        report.setdefault("stapler", {})[phase] = dict(
+            status="retrying", attempts=attempt, lastError=diagnostic)
+        save(report_path, report)
+        transient_network_error = bool(re.search(
+            r"NSURLErrorDomain Code=-100(?:1|3|4|5|9)|"
+            r"network (?:connection was lost|is unreachable)|timed out",
+            diagnostic, re.IGNORECASE))
+        if not transient_network_error or attempt > len(delays):
+            report["stapler"][phase]["status"] = "failed"
+            save(report_path, report)
+            raise RuntimeError(f"xcrun stapler {phase} failed after {attempt} attempt(s): {diagnostic}")
+        delay = delays[attempt - 1]
+        print(f"Transient Apple network error during stapler {phase}; "
+              f"retrying in {delay}s ({attempt}/{len(delays) + 1})", flush=True)
+        time.sleep(delay)
 
 
 def sign_app(args):
@@ -194,8 +221,8 @@ def notarize_dmg(args):
             args.report.with_suffix(".apple-log.json").write_text(log.stdout or log.stderr)
         raise RuntimeError(f"Notarization is {report['status']}; see {args.report}. "
                            "Resume a pending submission with --submission-id.")
-    run(["xcrun", "stapler", "staple", dmg])
-    run(["xcrun", "stapler", "validate", dmg])
+    run_stapler(["xcrun", "stapler", "staple", dmg], "staple", args.report, report)
+    run_stapler(["xcrun", "stapler", "validate", dmg], "validate", args.report, report)
     run(["codesign", "--verify", "--strict", dmg])
     assessment = run(["spctl", "--assess", "--type", "open", "--context",
                       "context:primary-signature", "--verbose=2", dmg])

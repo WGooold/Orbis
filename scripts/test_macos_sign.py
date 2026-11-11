@@ -92,6 +92,28 @@ class SigningTests(unittest.TestCase):
         self.assertNotEqual(report["sha256"], report["submittedSha256"])
         self.assertEqual(calls[-1][0], "spctl")
 
+    def test_stapler_retries_transient_cloudkit_network_failure(self):
+        args, calls, normal = self.exercise_notary("Accepted")
+        failed_staple = False
+
+        def run(command, check=True):
+            nonlocal failed_staple
+            if command[:3] == ["xcrun", "stapler", "staple"] and not failed_staple:
+                failed_staple = True
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 68, stdout="", stderr=(
+                    'NSURLErrorDomain Code=-1005 "The network connection was lost."'))
+            return normal(command, check=check)
+
+        with patch.object(SIGN, "run", side_effect=run), patch.object(SIGN.time, "sleep") as sleep, \
+             patch.object(SIGN, "verify_identity"):
+            SIGN.notarize_dmg(args)
+        report = json.loads(args.report.read_text())
+        self.assertEqual(report["status"], "notarized-stapled-and-assessed")
+        self.assertEqual(report["stapler"]["staple"], {"status": "success", "attempts": 2})
+        self.assertEqual(report["stapler"]["validate"], {"status": "success", "attempts": 1})
+        sleep.assert_called_once_with(5)
+
     def test_rejection_never_staples_or_claims_success(self):
         args, calls, run = self.exercise_notary("Invalid")
         with patch.object(SIGN, "run", side_effect=run), patch.object(SIGN, "verify_identity"):
