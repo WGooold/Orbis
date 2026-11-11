@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket } from "ws";
-import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, RuntimeClientMessageSchema, RuntimeEventSchema, SessionLiveStateSchema, SessionLiveTurnSchema, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
+import { PROTOCOL_VERSION, PROTOCOL_VERSION_ERROR_CODE, RuntimeClientMessageSchema, RuntimeEventSchema, RuntimeMetadataSchema, SessionLiveStateSchema, SessionLiveTurnSchema, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
 import { RelayRuntimeTransport } from "./transport.js";
 
 const metadata: RuntimeMetadata = {
@@ -11,6 +11,19 @@ const metadata: RuntimeMetadata = {
   name: "test runtime",
   cwd: "/work/test",
   status: "idle",
+};
+
+// v0.1.16's metadata shape is strict: optional additions still need peer support.
+const legacyMetadataSchema = RuntimeMetadataSchema.omit({
+  currentTurnConfiguration: true, currentTurnConfigurationSupported: true, modelSelection: true,
+});
+const selectedMetadata: RuntimeMetadata = {
+  ...metadata, status: "running", model: { provider: "p", id: "selected" }, thinkingLevel: "high",
+};
+const modelMetadata: RuntimeMetadata = {
+  ...selectedMetadata,
+  modelSelection: { model: "p/selected", thinking: "high" }, currentTurnConfigurationSupported: true,
+  currentTurnConfiguration: { turnId: "turn", model: { provider: "p", id: "actual" }, thinkingLevel: "low" },
 };
 
 // Model the released strict live-turn shape, while retaining every other source field.
@@ -54,6 +67,77 @@ describe("RelayRuntimeTransport", () => {
     const address = server.address() as AddressInfo;
     return { url: `ws://127.0.0.1:${address.port}`, connection };
   };
+
+  // SC81: prevent same-version additions from breaking authentication or later metadata;
+  // compatibility projection must leave local facts and arbitrary tool data intact.
+  it.each([undefined, "0", "1"])("projects model metadata using the peer's exact capability header %s", async header => {
+    const relay = await listen(), connected = vi.fn();
+    wss!.on("headers", headers => {
+      // Outcome support predates model facts and cannot imply support for them.
+      headers.push("X-Orbis-Session-Turn-Outcome: 1");
+      if (header !== undefined) headers.push(`X-Orbis-Runtime-Model-State: ${header}`);
+    });
+    transport = new RelayRuntimeTransport({ relayUrl: relay.url, credential: "runtime-secret", reconnect: false });
+    const before = structuredClone(modelMetadata);
+    await transport.start(modelMetadata, { connected, resync: vi.fn(), command: vi.fn() });
+    const socket = await relay.connection;
+    const [rawAuthentication] = await once(socket, "message");
+    const authentication = JSON.parse(rawAuthentication.toString());
+    const expected = header === "1" ? modelMetadata : selectedMetadata;
+    expect(authentication.runtime).toEqual(expected);
+    expect(legacyMetadataSchema.safeParse(authentication.runtime).success).toBe(header !== "1");
+    expect(authentication).toMatchObject({ type: "runtime.authenticate", role: "agent", credential: "runtime-secret", protocolVersion: PROTOCOL_VERSION });
+
+    const received: unknown[] = [];
+    socket.on("message", raw => received.push(JSON.parse(raw.toString())));
+    transport.publish({ type: "runtime.metadata", metadata: modelMetadata });
+    expect(received).toEqual([]);
+    socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: PROTOCOL_VERSION, runtimeId: metadata.runtimeId }));
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledOnce());
+    const published = once(socket, "message");
+    transport.publish({ type: "runtime.metadata", metadata: modelMetadata });
+    const [rawUpdate] = await published;
+    expect(JSON.parse(rawUpdate.toString()).event).toEqual({ type: "runtime.metadata", metadata: expected });
+    expect(received).toHaveLength(1);
+    expect(modelMetadata).toEqual(before);
+
+    const tool: RuntimeEvent = { type: "tool.updated", toolCallId: "tool", toolName: "test", partialResult: {
+      currentTurnConfiguration: "user data", currentTurnConfigurationSupported: "user data", modelSelection: "user data",
+    } };
+    const toolMessage = once(socket, "message");
+    transport.publish(tool);
+    const [rawTool] = await toolMessage;
+    expect(JSON.parse(rawTool.toString()).event).toEqual(tool);
+  });
+
+  // A Host rollback must clear the previous socket's support. Re-upgrading must
+  // recover the full latest local facts rather than permanently storing stripped metadata.
+  it("renegotiates model facts on new, old and new Host connections", async () => {
+    const relay = await listen(), connected = vi.fn();
+    let supportsModelState = true;
+    wss!.on("headers", headers => { if (supportsModelState) headers.push("X-Orbis-Runtime-Model-State: 1"); });
+    transport = new RelayRuntimeTransport({ relayUrl: relay.url, credential: "runtime-secret", initialReconnectDelayMs: 5, maxReconnectDelayMs: 5 });
+    let latest = structuredClone(modelMetadata);
+    await transport.start(latest, { connected, resync: vi.fn(), command: vi.fn() });
+    let socket = await relay.connection;
+    for (let index = 0; index < 3; index++) {
+      const [rawAuthentication] = await once(socket, "message");
+      expect(JSON.parse(rawAuthentication.toString()).runtime).toEqual(supportsModelState ? latest : { ...selectedMetadata, thinkingLevel: latest.thinkingLevel });
+      socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: PROTOCOL_VERSION, runtimeId: metadata.runtimeId }));
+      await vi.waitFor(() => expect(connected).toHaveBeenCalledTimes(index + 1));
+      latest = { ...latest, thinkingLevel: `level-${index}`, modelSelection: { model: `p/next-${index}` },
+        currentTurnConfiguration: index === 1 ? null : { turnId: `turn-${index}` } };
+      const update = once(socket, "message");
+      transport.publish({ type: "runtime.metadata", metadata: latest });
+      const [rawUpdate] = await update;
+      expect(JSON.parse(rawUpdate.toString()).event.metadata).toEqual(supportsModelState ? latest : { ...selectedMetadata, thinkingLevel: latest.thinkingLevel });
+      if (index === 2) break;
+      supportsModelState = !supportsModelState;
+      const next = once(wss!, "connection").then(([peer]) => peer as WebSocket);
+      socket.close(1012, "Host restarted");
+      socket = await next;
+    }
+  });
 
   it.each(["session.patch", "session.snapshot"] as const)("sends %s to an old Host without changing nested data or the source object", async type => {
     // No capability header means the released strict schema, even with the same protocol version.

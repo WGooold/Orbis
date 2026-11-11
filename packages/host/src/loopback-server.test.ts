@@ -227,6 +227,7 @@ describe("HostLoopbackServer 的发现文件", () => {
     // Source-field support lives in HTTP so strict released runtime.ready frames stay unchanged.
     const [response] = await upgrade;
     expect(response.headers["x-orbis-session-turn-outcome"]).toBe("1");
+    expect(response.headers["x-orbis-runtime-model-state"]).toBe("1");
     const ready = once(peer, "message");
     peer.send(authenticate(version, "runtime-current"));
     const [confirmation] = await ready;

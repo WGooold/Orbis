@@ -125,7 +125,11 @@ export class HostLoopbackServer {
     const wss = new WebSocketServer({ noServer: true });
     // Optional source fields are negotiated outside the strict 18/19 business messages.
     // Older runtimes ignore this HTTP header; upgraded Pi retains the field only for this socket.
-    wss.on("headers", headers => headers.push("X-Orbis-Session-Turn-Outcome: 1"));
+    wss.on("headers", headers => {
+      headers.push("X-Orbis-Session-Turn-Outcome: 1");
+      // Pi must know the strict metadata additions before it authenticates.
+      headers.push("X-Orbis-Runtime-Model-State: 1");
+    });
     const server = createServer((request, response) => {
       void this.#handleHttp(request, response);
     });

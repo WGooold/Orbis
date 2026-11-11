@@ -51,6 +51,10 @@ schema 保持既有字段语义，按消息类别声明扩展性；影响副作�
 
 本机 Pi 接入按每条 WebSocket upgrade 的 `X-Orbis-Session-Turn-Outcome` 能力头投影该字段，`runtime.ready` 后生效；旧 Host 缺少能力声明时仅剥除 source `live.turn.outcome`，保留原有命令、正文和工具数据。连接重建重新判断能力。兼容与重连回归见 [transport.test.ts](../../packages/pi-extension/src/transport.test.ts)、[loopback-server.test.ts](../../packages/host/src/loopback-server.test.ts)及[本次证据](../../.artifacts/design-alignment-20261108/source-outcome-gate/)。
 
+2026-11-11，S57／SC81：Pi 的 `currentTurnConfiguration`、`currentTurnConfigurationSupported` 和 `modelSelection` 为同协议号下的新增字段，旧 Host 的严格 metadata schema 会拒绝整条注册或更新消息。Host 在 WebSocket upgrade 声明 `X-Orbis-Runtime-Model-State: 1`；Pi 按每条连接在 `runtime.authenticate.runtime` 与 `runtime.metadata` 统一投影，无声明时仅移除这三个字段。注册前确定可接受的格式，后续事件仍等待原有 `runtime.ready`；本地保留完整事实，重连重新判断能力，既有选择值、身份、命令及用户／工具数据保持原语义。
+
+回归见 [transport.test.ts](../../packages/pi-extension/src/transport.test.ts) 和 [loopback-server.test.ts](../../packages/host/src/loopback-server.test.ts)，覆盖注册、更新、能力缺失／无效、回退重连及原始数据保留。v0.1.15／0.1.16／0.1.17 原始实现的隔离互通、元数据更新、命令与同进程回退证据见 `.artifacts/pi-host-compatibility-fix-20261111/verification.json`；首次缺陷证据保留在 `.artifacts/compatibility-review-20261111/`。自动验证与部署、设备验收分别记录；未部署，待用户验证。
+
 ### 6. Relay＋Host 承担兼容，保留已安装 App（2026-11-05）
 
 Relay 适配认证路由外层，Host 在端到端业务边界按设备格式完整收发，App 沿用其已发布能力。业务适配保持加密、身份、原语义与真实回执；长期演进由 Host 保留旧 App 的基础互通。

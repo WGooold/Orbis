@@ -96,6 +96,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   #socket: WebSocket | undefined;
   #ready = false;
   #sessionTurnOutcome = false;
+  #runtimeModelState = false;
   #closed = false;
   #reconnectDelayMs: number;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -144,6 +145,9 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       // Old Host source schemas reject unknown live-turn keys. Project only this protocol field;
       // user entries, message content and tool payloads may also contain a key named outcome.
       let projected = event;
+      if (event.type === "runtime.metadata") {
+        projected = { ...event, metadata: this.#metadataForPeer(event.metadata) };
+      }
       if (!this.#sessionTurnOutcome && (event.type === "session.patch" || event.type === "session.snapshot") &&
           event.live?.turn?.outcome !== undefined) {
         const turn = { ...event.live.turn };
@@ -163,10 +167,22 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     }
   }
 
+  #metadataForPeer(metadata: RuntimeMetadata): RuntimeMetadata {
+    if (this.#runtimeModelState) return metadata;
+    // Released Hosts parse metadata strictly, including the registration frame.
+    // Retain complete local facts so a later supporting connection can receive them.
+    const projected = { ...metadata };
+    delete projected.currentTurnConfiguration;
+    delete projected.currentTurnConfigurationSupported;
+    delete projected.modelSelection;
+    return projected;
+  }
+
   close(): void {
     this.#closed = true;
     this.#ready = false;
     this.#sessionTurnOutcome = false;
+    this.#runtimeModelState = false;
     this.#options.onConnectionStateChange?.("closed");
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
@@ -220,11 +236,16 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     const socket = new WebSocket(`${relayUrl.replace(/\/$/, "")}${this.#options.path ?? DEFAULT_RUNTIME_PATH}`);
     this.#socket = socket;
     this.#sessionTurnOutcome = false;
+    this.#runtimeModelState = false;
     let advertisedSessionTurnOutcome = false;
     this.#startReadyTimer(socket);
 
     socket.on("upgrade", response => {
-      if (this.#socket === socket) advertisedSessionTurnOutcome = response.headers["x-orbis-session-turn-outcome"] === "1";
+      if (this.#socket !== socket) return;
+      advertisedSessionTurnOutcome = response.headers["x-orbis-session-turn-outcome"] === "1";
+      // Registration itself contains metadata, so project it before runtime.ready.
+      // This capability only selects wire fields; authenticated readiness still gates events.
+      this.#runtimeModelState = response.headers["x-orbis-runtime-model-state"] === "1";
     });
 
     socket.on("open", () => {
@@ -236,7 +257,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
         credential,
         // 必填（ADR-0009）：Pi 扩展是 agent，网关（Host）自己声明 host。
         role: "agent",
-        runtime: this.#metadata,
+        runtime: this.#metadataForPeer(this.#metadata),
       }));
     });
 
@@ -302,6 +323,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       this.#socket = undefined;
       this.#ready = false;
       this.#sessionTurnOutcome = false;
+      this.#runtimeModelState = false;
       this.#handlers?.disconnected?.();
       if (!this.#closed) this.#options.onConnectionStateChange?.("reconnecting");
       this.#scheduleReconnect();
