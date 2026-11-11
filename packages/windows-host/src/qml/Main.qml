@@ -683,6 +683,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenPiTui"
                                         text: "打开 Pi"
+                                        mark: "pi"
                                         primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "pi" && a.installed)
                                         Accessible.name: "打开 Pi 终端界面"
@@ -691,6 +692,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenCodexTui"
                                         text: "打开 Codex"
+                                        mark: "codex"
                                         primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.installed)
                                         Accessible.name: "打开 Codex 终端界面"
@@ -699,6 +701,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenClaudeTui"
                                         text: "打开 Claude Code"
+                                        mark: "claude"
                                         primary: true
                                         enabled: host.bridgeReady && !host.busy && host.claudeInstalled
                                         Accessible.name: "打开 Claude Code 终端界面"
@@ -707,6 +710,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenCodexDesktop"
                                         text: "打开 Codex 桌面版"
+                                        symbol: "computer"
                                         primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.desktopInstalled)
                                         Accessible.name: "打开 Codex 桌面版"
@@ -715,6 +719,7 @@ ApplicationWindow {
                                     ActionButton {
                                         objectName: "overviewOpenDsh"
                                         text: "打开 DeepSeek Harness"
+                                        mark: "dsh"
                                         primary: true
                                         enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "dsh" && a.installed)
                                         Accessible.name: "打开 DeepSeek Harness 网页工作台"
@@ -745,7 +750,7 @@ ApplicationWindow {
                                         Field { id: codeField; objectName: "verificationCode"; placeholderText: "6 位验证码"; Layout.fillWidth: true; maximumLength: 6; validator: RegularExpressionValidator { regularExpression: /[0-9]{0,6}/ } Accessible.name: "验证码" }
                                         ActionButton { text: host.cooldown > 0 ? host.cooldown + " 秒后重发" : "获取验证码"; enabled: host.bridgeReady && host.registrationAvailable && !host.busy && host.cooldown === 0; onClicked: host.requestCode(emailField.text) }
                                     }
-                                    ActionButton { text: host.busy ? "正在处理…" : host.verificationRequired ? "注册并激活" : "直接激活"; primary: true; Layout.fillWidth: true; Layout.topMargin: 7; enabled: host.bridgeReady && host.registrationAvailable && !host.busy; onClicked: { if (host.verificationRequired) host.activate(emailField.text, codeField.text); else host.activateWithoutEmail() } }
+                                    ActionButton { objectName: "overviewActivate"; text: host.busy ? "正在处理…" : host.verificationRequired ? "注册并激活" : "直接激活"; primary: true; Layout.fillWidth: true; Layout.topMargin: 7; enabled: host.bridgeReady && host.registrationAvailable && !host.busy; onClicked: { if (host.verificationRequired) host.activate(emailField.text, codeField.text); else host.activateWithoutEmail() } }
                                     Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true }
                                 }
                             }

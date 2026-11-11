@@ -194,6 +194,20 @@ int main(int argc, char *argv[]) {
                 for (const auto &other : launchBounds) if (bounds.intersects(other)) { app.exit(46); return; }
                 launchBounds.append(bounds);
             }
+            // A caption keeps the button's optical center whether or not a glyph sits beside it:
+            // a reserved slot without an icon would push the text right by half of its width.
+            auto contentIsCentered = [](QQuickItem *button) {
+                auto *caption = findVisualItem(button, "actionButtonCaption");
+                if (!caption) return false;
+                QRectF content = caption->mapRectToScene(caption->boundingRect());
+                if (auto *glyph = findVisualItem(button, "actionButtonGlyph"); glyph && glyph->isVisible())
+                    content = content.united(glyph->mapRectToScene(glyph->boundingRect()));
+                const auto bounds = button->mapRectToScene(button->boundingRect());
+                return qAbs(content.center().x() - bounds.center().x()) <= 1.0;
+            };
+            for (const auto &name : {"overviewOpenPiTui", "overviewOpenCodexTui", "overviewOpenClaudeTui", "overviewOpenCodexDesktop", "overviewOpenDsh"})
+                if (!contentIsCentered(findVisualItem(window->contentItem(), name))) { app.exit(56); return; }
+            if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif
             controller.requestCode("not-a-qq-mailbox@example.com");
             if (!controller.message().contains("@qq.com")) { app.exit(6); return; }
