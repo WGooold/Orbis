@@ -145,7 +145,7 @@ struct AgentProvider: Identifiable, Hashable {
     var official = false
     var removable: Bool { kind == "pi" && enabled && additive }
     var confirmation: String {
-        if additive { return enabled && globalDefault ? L10n.tr("将移除默认供应商，需重新选择模型") : "" }
+        if additive { return enabled && globalDefault ? L10n.tr("将移除全局默认供应商，需重新选择模型") : "" }
         return L10n.tr("已有会话需要重新打开。")
     }
 }

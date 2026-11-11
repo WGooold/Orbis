@@ -1579,7 +1579,7 @@
   "归属未确认": "Attribution unconfirmed",
   "记录范围": "Capture scope",
   "内容已截断": "Content truncated",
-  "将移除默认供应商，需重新选择模型": "The default provider will be removed. Select a model again.",
+  "将移除全局默认供应商，需重新选择模型": "The global default provider will be removed. Select a model again.",
   "选择": "Select",
   "分享": "Share",
   "当前": "Current",
