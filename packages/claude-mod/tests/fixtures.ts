@@ -1,10 +1,23 @@
 import type { On } from "claude-code";
 import { expect, mock } from "claude-code/testing";
 
-// Shared isolated Host discovery, clock and HTTP boundary; model submissions stay mocked.
-export function setup(on: On) {
+/** The engine resolves mod file paths onto the current drive on Windows ("/x" becomes "D:/x"). */
+function sameFile(actual: string, expected: string): boolean {
+  const slashed = (path: string): string => path.replaceAll("\\", "/").replace(/^[A-Za-z]:/u, "");
+  return slashed(actual) === slashed(expected);
+}
+
+/** Shared isolated Host discovery, clock and HTTP boundary; model submissions stay mocked. */
+export function setup(on: On, options: { home?: string } = {}) {
   const clock = mock.clock(on);
-  mock.env(on, { ORBIS_STATE_DIR: "/orbis-test" });
+  const home = options.home;
+  // A Host-launched Claude Code receives ORBIS_STATE_DIR; a hand-started session resolves the
+  // state directory from the user profile, where an upgraded Host may still use the legacy name.
+  mock.env(on, home === undefined ? { ORBIS_STATE_DIR: "/orbis-test" } : { USERPROFILE: home });
+  const roots = home === undefined ? ["/orbis-test"]
+    : [`${home}${home.includes("\\") ? "\\" : "/"}.orbis`, `${home}${home.includes("\\") ? "\\" : "/"}.pi-remote`];
+  const discoveryPaths = roots.map(root => `${root.replace(/[\\/]+$/u, "")}${root.includes("\\") ? "\\" : "/"}loopback.json`);
+  const discovery = discoveryPaths.at(-1);
   const world = {
     descriptor: { url: "ws://127.0.0.1:41001", token: "first-host-token-for-test" },
     descriptorPresent: true,
@@ -58,8 +71,9 @@ export function setup(on: On) {
   });
   on("ui.status", (_$, event) => { world.statuses.push(event.text); return { value: undefined }; });
   on("fs.read", (_$, event) => {
-    expect(event.path).toBe("/orbis-test/loopback.json");
-    return world.descriptorPresent ? { value: JSON.stringify(world.descriptor) } : { deny: "Host discovery is absent" };
+    const requested = discoveryPaths.find(path => sameFile(event.path, path));
+    expect(requested).toBeDefined();
+    return world.descriptorPresent && requested === discovery ? { value: JSON.stringify(world.descriptor) } : { deny: "Host discovery is absent" };
   });
   on("http.fetch", async (_$, event) => {
     const body = JSON.parse(event.init?.body ?? "{}") as Record<string, unknown>;
