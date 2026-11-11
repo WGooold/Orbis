@@ -13,8 +13,8 @@ android {
         applicationId = "com.orbising.orbis"
         minSdk = 26
         targetSdk = 35
-        versionCode = 57
-        versionName = "0.1.56"
+        versionCode = 58
+        versionName = "0.1.57"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
