@@ -77,6 +77,7 @@ jobs:
           python3 -c 'import os, base64, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"], "orbis-signing.p12").write_bytes(base64.b64decode(os.environ["P12_BASE64"], validate=True))'
           security import "$RUNNER_TEMP/orbis-signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
           identity=$(python3 scripts/macos-sign.py identity --team-id "$ORBIS_MACOS_TEAM_ID" --keychain "$keychain")
           xcrun notarytool store-credentials orbis-macos --keychain "$keychain" \
             --apple-id "$NOTARY_APPLE_ID" --team-id "$ORBIS_MACOS_TEAM_ID" --password "$NOTARY_APP_PASSWORD"

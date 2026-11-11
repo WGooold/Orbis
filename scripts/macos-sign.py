@@ -105,7 +105,10 @@ def sign_app(args):
             command += ["--entitlements", entitlements / "node.entitlements"]
         elif target == app:
             command += ["--entitlements", entitlements / "host.entitlements"]
-        run([*command, target])
+        try:
+            run([*command, target])
+        except RuntimeError as error:
+            raise RuntimeError(f"Failed to sign {target}: {error}") from error
         if index % 20 == 0 or index == len(targets):
             print(f"Signed {index}/{len(targets)}", flush=True)
     run(["codesign", "--verify", "--deep", "--strict", app])
