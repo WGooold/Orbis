@@ -7,6 +7,18 @@ import { normalizeDeviceRequest, encodeDeviceResponse, convertDeviceBinary } fro
 import { HostDeviceSession } from "./device-session.js";
 
 describe("released device business formats", () => {
+  // S52: current-turn facts are optional additions inside existing metadata/model
+  // domains. Released mobile readers ignore unknown fields; selection is unchanged.
+  it.each([18, 19] as const)("preserves selected model and optional turn facts in format %s", version => {
+    const currentTurn = { turnId: "turn", model: { provider: "p", id: "actual" }, thinkingLevel: "low" };
+    const selected = { provider: "p", id: "next", thinkingLevel: "high" };
+    const additions = { selection: { model: "opaque/next", thinking: "high" }, currentTurnSupported: true };
+    const input = { type: "agent.state.snapshot", protocolVersion: 19, domains: [{ domain: "model", value: { ...selected, currentTurn, ...additions } }] };
+    const result = JSON.parse(Buffer.from(encodeDeviceResponse(Buffer.from(JSON.stringify(input)), version)!).toString());
+    expect(result).toMatchObject({ protocolVersion: version, domains: [{ value: { ...selected, currentTurn, ...additions } }] });
+    const releasedMobileFields = z.object({ provider: z.string(), id: z.string(), thinkingLevel: z.string() });
+    expect(releasedMobileFields.parse(result.domains[0].value)).toEqual(selected);
+  });
   it.each([18, 19])("normalizes %s without relaxing known fields or changing operation identity", version => {
     const value = { type: "session.list", protocolVersion: version, requestId: "stable-request" };
     const normalized = normalizeDeviceRequest(Buffer.from(JSON.stringify(value)))!;

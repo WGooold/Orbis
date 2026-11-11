@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProviderHealthSchema, HostProviderRoutingSchema } from "./host-model-domains.js";
 
 /**
@@ -218,6 +219,9 @@ export const AgentModelStateSchema = z.strictObject({
   id: z.string().min(1).max(256),
   name: z.string().min(1).max(256).optional(),
   thinkingLevel: z.string().min(1).max(128).optional(),
+  currentTurn: TurnConfigurationSchema.nullable().optional(),
+  currentTurnSupported: z.boolean().optional(),
+  selection: ModelSelectionValuesSchema.optional(),
 });
 export type AgentModelState = z.infer<typeof AgentModelStateSchema>;
 

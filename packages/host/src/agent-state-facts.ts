@@ -493,6 +493,9 @@ export class AgentStateFacts {
             provider: model.provider, id: model.id,
             ...(model.name === undefined ? {} : { name: model.name }),
             ...(metadata?.thinkingLevel === undefined ? {} : { thinkingLevel: metadata.thinkingLevel }),
+            ...(metadata?.currentTurnConfiguration === undefined ? {} : { currentTurn: metadata.currentTurnConfiguration }),
+            ...(metadata?.currentTurnConfigurationSupported === undefined ? {} : { currentTurnSupported: metadata.currentTurnConfigurationSupported }),
+            ...(metadata?.modelSelection === undefined ? {} : { selection: metadata.modelSelection }),
           } satisfies AgentModelState,
         });
     }

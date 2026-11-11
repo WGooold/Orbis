@@ -3,6 +3,8 @@ import { AgentTaskInventorySchema, agentTasksAllowQuit, type AgentTaskInventory 
 import type { ToolContentStore } from "@orbis/runtime-bridge";
 import {
   ChatMessageSchema,
+  TurnConfigurationSchema,
+  type TurnConfiguration,
   RuntimeEventSchema,
   type ChatMessage,
   type PermissionManagement,
@@ -57,6 +59,7 @@ export type ClaudeModsCommand =
 
 /** What the TUI reports about itself; each field present replaces the previous value. */
 export type ClaudeSessionState = {
+  currentTurnConfiguration?: TurnConfiguration | null;
   model?: string;
   /** Claude's own display name of the model (`Opus 5.5`). */
   modelName?: string;
@@ -422,7 +425,9 @@ export class ClaudeModsBridge {
       return "accepted";
     }
     if (parsed.type === "session.state") {
-      session.state = { ...session.state, ...parsed.state };
+      const { currentTurnConfiguration, ...selected } = parsed.state;
+      session.state = { ...session.state, ...selected };
+      this.#observeConfiguration(session, currentTurnConfiguration);
       this.#publishMetadata(runtimeId, session);
       this.#publishCapabilities(runtimeId, session);
       return "accepted";
@@ -449,6 +454,7 @@ export class ClaudeModsBridge {
       if (session.activeTurn?.turnId === parsed.turnId || session.completedTurns.has(parsed.turnId)) return "accepted";
       const startedAt = finiteTime(parsed.startedAt) ?? Date.now();
       session.activeTurn = { turnId: parsed.turnId, startedAt, messages: new Map(), messageIds: new Set(), completedSteps: new Set(), announced: [] };
+      session.state.currentTurnConfiguration = null;
       this.#status(runtimeId, "running");
     } else if (parsed.type === "turn.complete") {
       // A completion from an older native turn cannot finish or clear the current one.
@@ -495,6 +501,8 @@ export class ClaudeModsBridge {
         }).catch(() => undefined);
       }
       delete session.activeTurn;
+      session.state.currentTurnConfiguration = null;
+      this.#publishMetadata(runtimeId, session);
       session.runningTools.clear();
       session.completedTurns.add(parsed.turnId);
       while (session.completedTurns.size > 128) session.completedTurns.delete(session.completedTurns.values().next().value!);
@@ -570,6 +578,17 @@ export class ClaudeModsBridge {
     delete session.pendingStopId;
   }
 
+  #observeConfiguration(session: Session, current: TurnConfiguration | null | undefined): void {
+    if (current == null) {
+      if (!session.activeTurn && current === null) session.state.currentTurnConfiguration = null;
+      return;
+    }
+    if (current.turnId !== session.activeTurn?.turnId) return;
+    const previous = session.state.currentTurnConfiguration;
+    if (previous?.turnId === current.turnId && (previous.requestIndex ?? -1) > (current.requestIndex ?? -1)) return;
+    session.state.currentTurnConfiguration = current;
+  }
+
   #metadata(session: Session): RuntimeMetadata {
     const { state, facts } = session;
     const model = state.model ?? facts.model;
@@ -583,6 +602,11 @@ export class ClaudeModsBridge {
       ...(model === undefined ? {} : { model: { provider: "claude-code", id: model.slice(0, 256),
         ...(state.modelName === undefined || state.model === undefined ? {} : { name: state.modelName.slice(0, 256) }) } }),
       ...(state.effort === undefined ? {} : { thinkingLevel: state.effort.slice(0, 64) }),
+      currentTurnConfigurationSupported: session.capabilities.has("configuration.observed"),
+      currentTurnConfiguration: session.activeTurn?.turnId === state.currentTurnConfiguration?.turnId
+        ? state.currentTurnConfiguration ?? null : null,
+      modelSelection: { ...(state.modelSetting === undefined ? {} : { model: state.modelSetting }),
+        ...(state.effort === undefined ? {} : { thinking: state.effort }) },
       ...(context === undefined || !(context.window > 0) ? {} : { contextUsage: {
         tokens: context.tokens === undefined ? null : Math.max(0, Math.round(context.tokens)),
         contextWindow: Math.round(context.window),
@@ -695,6 +719,11 @@ function parseHello(value: unknown): ClaudeModsHello | undefined {
 function parseState(value: unknown): ClaudeSessionState | undefined {
   if (!isRecord(value)) return undefined;
   const state: ClaudeSessionState = {};
+  if (value.currentTurnConfiguration !== undefined) {
+    const parsed = TurnConfigurationSchema.nullable().safeParse(value.currentTurnConfiguration);
+    if (!parsed.success) return undefined;
+    state.currentTurnConfiguration = parsed.data;
+  }
   if (value.model !== undefined) { if (!text(value.model, 256)) return undefined; state.model = value.model; }
   if (value.modelName !== undefined) { if (!text(value.modelName, 256)) return undefined; state.modelName = value.modelName; }
   if (value.modelSetting !== undefined) { if (!text(value.modelSetting, 256)) return undefined; state.modelSetting = value.modelSetting; }

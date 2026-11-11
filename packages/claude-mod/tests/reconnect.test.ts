@@ -391,4 +391,14 @@ test("pins phone model and effort changes while preserving native fallback model
     { turnId: "first", effort: "low", model: "native-fallback" },
     { turnId: "second", effort: "high", model: "next-model" },
   ]);
+  // S56 / SC80: publish what next(event) actually received, never the live selection getters.
+  const configurations = world.requests.flatMap(request => {
+    const event = request.body.event as { type?: string; state?: { currentTurnConfiguration?: {
+      turnId: string; requestIndex?: number; model?: unknown; thinkingLevel?: unknown } } } | undefined;
+    const current = event?.state?.currentTurnConfiguration;
+    return event?.type === "session.state" && current?.model ? [current] : [];
+  });
+  const requests = new Map(configurations.map(value => [`${value.turnId}:${value.requestIndex}`, value]));
+  expect([...requests.values()]).toEqual(seen.map((value, index) => ({ turnId: value.turnId, requestIndex: index === 3 ? 0 : index,
+    model: { provider: "claude-code", id: value.model }, thinkingLevel: value.effort })));
 });

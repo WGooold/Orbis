@@ -58,6 +58,37 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  // S56 / SC80: bind request/header to turn/start; a lastUsed projection alone can be stale.
+  it("keeps request facts separate from next selection across active changes and snapshots", async () => {
+    const f = discoveryFixture(); f.list([f.live("configuration", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    const record = (seq: number, type: string, data: unknown = {}) => ({ event: { seq, time: 1000 + seq, type, data } });
+    const header = (model: string, reasoningEffort?: string) => ({ header: { config: { provider: "p", model, reasoningEffort } } });
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 1,
+      records: [record(0, "turn/start", { turn: 1 }), record(1, "request/header", header("a", "low"))],
+      projections: { asOfSeq: 1, values: { modelSelection: { lastUsed: { provider: "p", model: "a", reasoningEffort: "low" },
+        next: { provider: "p", model: "b", reasoningEffort: "high" } } } } });
+    const metadata = () => f.runtime.directoryEntries()[0]!;
+    expect(metadata()).toMatchObject({ model: { id: "b" }, thinkingLevel: "high",
+      modelSelection: { model: JSON.stringify({ provider: "p", model: "b" }), thinking: "high" },
+      currentTurnConfiguration: { turnId: "dsh:configuration:web:0", model: { id: "a" }, thinkingLevel: "low" } });
+    const event = (seq: number, type: string, data: unknown = {}) => follow.frame({ type: "event", ...record(seq, type, data) });
+    event(2, "request/header", header("b", "high"));
+    expect(metadata().currentTurnConfiguration).toMatchObject({ model: { id: "b" }, thinkingLevel: "high" });
+    // A delayed pre-request snapshot must not rewind a newer observed request.
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 1,
+      records: [record(0, "turn/start", { turn: 1 }), record(1, "request/header", header("a", "low"))] });
+    expect(metadata().currentTurnConfiguration).toMatchObject({ model: { id: "b" }, thinkingLevel: "high" });
+    // A bounded reconnect tail has no start; the already known turn is retained.
+    follow.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 2, records: [record(2, "request/header", header("b", "high"))] });
+    expect(metadata().currentTurnConfiguration?.turnId).toBe("dsh:configuration:web:0");
+    event(3, "turn/end", { turn: 1 });
+    expect(metadata().currentTurnConfiguration).toBeNull();
+    event(4, "turn/start", { turn: 2 });
+    expect(metadata().currentTurnConfiguration).toBeNull();
+    event(5, "request/header", header("b"));
+    expect(metadata().currentTurnConfiguration).toMatchObject({ turnId: "dsh:configuration:web:4", thinkingLevel: null });
+  });
   it("projects large native tool events before shared publication and privately hydrates fixed result pages", async () => {
     const f = discoveryFixture(), root = await mkdtemp(join(tmpdir(), "orbis-dsh-tools-")); roots.push(root);
     const store = await ToolContentStore.create({ directory: root, producerId: "dsh-test" });

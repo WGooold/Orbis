@@ -1,0 +1,382 @@
+{
+  "terminal": {
+    "before": [
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "before",
+        "scope": "agent",
+        "runtimeId": "codex:01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "agentKind": "codex",
+        "sessionId": "01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+        "domains": [
+          {
+            "domain": "execution",
+            "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codex",
+              "sourceEpoch": "VrVFvgj1-b6rofdtYm4PM1WJx32pOYtjt_mmeZi9uiM",
+              "sourceRevision": 9
+            },
+            "checkedAt": 1794354163137,
+            "value": {
+              "phase": "running",
+              "waitingFor": [],
+              "retry": {
+                "phase": "idle"
+              },
+              "compaction": "unavailable",
+              "turn": {
+                "turnId": "01a1c7d7-ad4b-7633-a917-394a5c6169d8",
+                "startedAt": 1794354163000
+              },
+              "tasks": {
+                "availability": "unknown",
+                "items": [],
+                "truncated": false
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      },
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "before",
+        "scope": "agent",
+        "runtimeId": "codex:01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "agentKind": "codex",
+        "sessionId": "01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+        "domains": [
+          {
+            "domain": "model",
+            "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codex",
+              "sourceEpoch": "VrVFvgj1-b6rofdtYm4PM1WJx32pOYtjt_mmeZi9uiM",
+              "sourceRevision": 4
+            },
+            "checkedAt": 1794354163137,
+            "value": {
+              "provider": "probe",
+              "id": "gpt-5.5",
+              "name": "GPT-5.5",
+              "thinkingLevel": "low",
+              "currentTurn": {
+                "turnId": "01a1c7d7-ad4b-7633-a917-394a5c6169d8",
+                "model": {
+                  "provider": "probe",
+                  "id": "gpt-5.5",
+                  "name": "GPT-5.5"
+                },
+                "thinkingLevel": "low"
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      }
+    ],
+    "changed": [
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "changed",
+        "scope": "agent",
+        "runtimeId": "codex:01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "agentKind": "codex",
+        "sessionId": "01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+        "domains": [
+          {
+            "domain": "execution",
+            "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codex",
+              "sourceEpoch": "VrVFvgj1-b6rofdtYm4PM1WJx32pOYtjt_mmeZi9uiM",
+              "sourceRevision": 9
+            },
+            "checkedAt": 1794354163137,
+            "value": {
+              "phase": "running",
+              "waitingFor": [],
+              "retry": {
+                "phase": "idle"
+              },
+              "compaction": "unavailable",
+              "turn": {
+                "turnId": "01a1c7d7-ad4b-7633-a917-394a5c6169d8",
+                "startedAt": 1794354163000
+              },
+              "tasks": {
+                "availability": "unknown",
+                "items": [],
+                "truncated": false
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      },
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "changed",
+        "scope": "agent",
+        "runtimeId": "codex:01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "agentKind": "codex",
+        "sessionId": "01a1c7d7-ad43-79e0-a3fd-076e818438ce",
+        "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+        "domains": [
+          {
+            "domain": "model",
+            "modelEpoch": "cad56085-d47d-472a-8109-7e7c8c7afae7",
+            "revision": 3,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codex",
+              "sourceEpoch": "VrVFvgj1-b6rofdtYm4PM1WJx32pOYtjt_mmeZi9uiM",
+              "sourceRevision": 14
+            },
+            "checkedAt": 1794354163138,
+            "value": {
+              "provider": "probe",
+              "id": "gpt-6.1-sol",
+              "name": "GPT-6.1-Sol",
+              "thinkingLevel": "high",
+              "currentTurn": {
+                "turnId": "01a1c7d7-ad4b-7633-a917-394a5c6169d8",
+                "model": {
+                  "provider": "probe",
+                  "id": "gpt-5.5",
+                  "name": "GPT-5.5"
+                },
+                "thinkingLevel": "low"
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      }
+    ]
+  },
+  "desktop": {
+    "before": [
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "before",
+        "scope": "agent",
+        "runtimeId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "agentKind": "codexDesktop",
+        "sessionId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+        "domains": [
+          {
+            "domain": "execution",
+            "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codexDesktop",
+              "sourceEpoch": "S2IpdnIkgN4TXRw665Wb33tn1Mh5xm8TKrJXcECTrus",
+              "sourceRevision": 11
+            },
+            "checkedAt": 1794354163100,
+            "value": {
+              "phase": "running",
+              "waitingFor": [],
+              "retry": {
+                "phase": "idle"
+              },
+              "compaction": "unavailable",
+              "turn": {
+                "turnId": "01a1c7d7-ad32-7492-923e-8fa3ec0ff9b2",
+                "startedAt": 1794354162000
+              },
+              "tasks": {
+                "availability": "unknown",
+                "items": [],
+                "truncated": false
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      },
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "before",
+        "scope": "agent",
+        "runtimeId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "agentKind": "codexDesktop",
+        "sessionId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+        "domains": [
+          {
+            "domain": "model",
+            "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codexDesktop",
+              "sourceEpoch": "S2IpdnIkgN4TXRw665Wb33tn1Mh5xm8TKrJXcECTrus",
+              "sourceRevision": 6
+            },
+            "checkedAt": 1794354163100,
+            "value": {
+              "provider": "probe",
+              "id": "gpt-5.5",
+              "name": "GPT-5.5",
+              "thinkingLevel": "low",
+              "currentTurn": {
+                "turnId": "01a1c7d7-ad32-7492-923e-8fa3ec0ff9b2",
+                "model": {
+                  "provider": "probe",
+                  "id": "gpt-5.5",
+                  "name": "GPT-5.5"
+                },
+                "thinkingLevel": "low"
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      }
+    ],
+    "changed": [
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "changed",
+        "scope": "agent",
+        "runtimeId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "agentKind": "codexDesktop",
+        "sessionId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+        "domains": [
+          {
+            "domain": "execution",
+            "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+            "revision": 1,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codexDesktop",
+              "sourceEpoch": "S2IpdnIkgN4TXRw665Wb33tn1Mh5xm8TKrJXcECTrus",
+              "sourceRevision": 11
+            },
+            "checkedAt": 1794354163100,
+            "value": {
+              "phase": "running",
+              "waitingFor": [],
+              "retry": {
+                "phase": "idle"
+              },
+              "compaction": "unavailable",
+              "turn": {
+                "turnId": "01a1c7d7-ad32-7492-923e-8fa3ec0ff9b2",
+                "startedAt": 1794354162000
+              },
+              "tasks": {
+                "availability": "unknown",
+                "items": [],
+                "truncated": false
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      },
+      {
+        "type": "agent.state.snapshot",
+        "protocolVersion": 19,
+        "requestId": "changed",
+        "scope": "agent",
+        "runtimeId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "agentKind": "codexDesktop",
+        "sessionId": "codex-desktop:01a1c7d7-ad2a-7261-93be-61aeee2b1adb",
+        "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+        "domains": [
+          {
+            "domain": "model",
+            "modelEpoch": "270ca730-544d-4db6-bffb-19053f16b905",
+            "revision": 3,
+            "availability": "ready",
+            "completeness": "complete",
+            "source": {
+              "producer": "adapter",
+              "sourceId": "adapter:codexDesktop",
+              "sourceEpoch": "S2IpdnIkgN4TXRw665Wb33tn1Mh5xm8TKrJXcECTrus",
+              "sourceRevision": 16
+            },
+            "checkedAt": 1794354163102,
+            "value": {
+              "provider": "probe",
+              "id": "gpt-6.1-sol",
+              "name": "GPT-6.1-Sol",
+              "thinkingLevel": "high",
+              "currentTurn": {
+                "turnId": "01a1c7d7-ad32-7492-923e-8fa3ec0ff9b2",
+                "model": {
+                  "provider": "probe",
+                  "id": "gpt-5.5",
+                  "name": "GPT-5.5"
+                },
+                "thinkingLevel": "low"
+              }
+            },
+            "projectionComplete": true
+          }
+        ],
+        "missing": [],
+        "truncated": false,
+        "stateFormat": "compact-v2"
+      }
+    ]
+  }
+}

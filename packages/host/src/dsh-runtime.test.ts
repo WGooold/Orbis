@@ -49,6 +49,13 @@ async function fixture() {
 }
 
 describe("DeepSeek Harness backend", () => {
+  // S56 / SC80: ACP selection values are JSON-encoded command values, not request facts.
+  it("publishes exact selection values and explicitly unsupported request observation", async () => {
+    const { runtime } = await fixture();
+    expect(runtime.directoryEntries()[0]).toMatchObject({
+      currentTurnConfigurationSupported: false, modelSelection: { model: JSON.stringify("opaque-model") },
+    });
+  });
   it("syncs the published tool inventory without changing live under the same source version", async () => {
     // DSH-SYNC-06：ACP 同步也必须使用已发布投影，内部 raw live 不能作为同版本线路状态。
     const f = await fixture(), registry = new AgentStateRegistry(), model = new AgentConversationState(registry);

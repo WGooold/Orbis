@@ -27,6 +27,35 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  // S56 / SC80: the shared model domain retains request facts through alias changes/reconnect.
+  it("separates native request configuration from selection and ignores stale reports", () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge, hello({ capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "configuration.observed"] }));
+    const send = (event: unknown) => bridge.receiveEvent(current.runtimeId, current.generation, event);
+    const last = () => events.flatMap(event => event.type === "runtime.metadata" ? [event.metadata] : []).at(-1)!;
+    try {
+      send({ type: "turn.start", turnId: "first", startedAt: 100 });
+      const configuration = { turnId: "first", requestIndex: 0, model: { provider: "claude-code", id: "original" }, thinkingLevel: "low" };
+      send({ type: "session.state", state: { currentTurnConfiguration: configuration } });
+      send({ type: "session.state", state: { model: "next", modelSetting: "opus", effort: "high", currentTurnConfiguration: null } });
+      expect(last()).toMatchObject({ model: { id: "next" }, thinkingLevel: "high",
+        modelSelection: { model: "opus", thinking: "high" }, currentTurnConfiguration: configuration, currentTurnConfigurationSupported: true });
+      const fallback = { ...configuration, requestIndex: 1, model: { provider: "claude-code", id: "fallback" } };
+      send({ type: "session.state", state: { currentTurnConfiguration: fallback } });
+      send({ type: "session.state", state: { currentTurnConfiguration: configuration } });
+      expect(last().currentTurnConfiguration).toEqual(fallback);
+      const reconnected = online(bridge, hello({ capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "configuration.observed"] }));
+      expect(reconnected.resumed).toBe(true);
+      expect(last().currentTurnConfiguration).toEqual(fallback);
+      current.generation = reconnected.generation;
+      send({ type: "turn.complete", turnId: "first" });
+      expect(last().currentTurnConfiguration).toBeNull();
+      send({ type: "turn.start", turnId: "second", startedAt: 200 });
+      send({ type: "session.state", state: { currentTurnConfiguration: fallback } });
+      expect(last().currentTurnConfiguration).toBeNull();
+    } finally { bridge.close(); }
+  });
   it.each([
     [{ reason: "answer", isAborted: false }, "completed"],
     [{ reason: "error" }, "failed"],

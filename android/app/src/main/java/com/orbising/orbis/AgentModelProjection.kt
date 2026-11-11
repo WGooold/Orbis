@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -54,6 +55,7 @@ internal fun RemoteState.applyAgentDomainProjection(
                     val phase = (value as? JsonObject)?.text("phase") ?: error(L10n.tr("execution 缺少 phase"))
                     require(phase in setOf("idle", "running", "waiting_local_interaction"))
                     runtime = runtime.copy(status = phase,
+                        executionTurnId = ((value as? JsonObject)?.get("turn") as? JsonObject)?.text("turnId"),
                         compactionPhase = ((value as? JsonObject)?.get("compaction") as? JsonObject)?.text("phase"))
                     val taskValue = (value as? JsonObject)?.get("tasks")?.takeUnless { it is JsonNull }
                     if (taskValue != null) {
@@ -67,10 +69,16 @@ internal fun RemoteState.applyAgentDomainProjection(
                     conversation = conversation.copy(waitingLocalInteraction = phase == "waiting_local_interaction")
                 }
                 "model" -> runtime = if (value == null && domain.completeness == "complete") {
-                    runtime.copy(model = null, thinkingLevel = null)
+                    runtime.copy(model = null, thinkingLevel = null, currentTurnConfiguration = null,
+                        currentTurnConfigurationSupported = null, modelSelection = null)
                 } else if (value != null) {
                     val model = value as? JsonObject ?: error(L10n.tr("model 不是对象"))
-                    runtime.copy(model = json.decodeFromJsonElement<RuntimeModelInfo>(model), thinkingLevel = model.text("thinkingLevel"))
+                    runtime.copy(model = json.decodeFromJsonElement<RuntimeModelInfo>(model), thinkingLevel = model.text("thinkingLevel"),
+                        currentTurnConfigurationSupported = (model["currentTurnSupported"] as? JsonPrimitive)?.booleanOrNull,
+                        modelSelection = (model["selection"] as? JsonObject)?.let { json.decodeFromJsonElement<SessionConfigurationValues>(it) },
+                        currentTurnConfiguration = (model["currentTurn"] as? JsonObject)?.let {
+                            json.decodeFromJsonElement<RuntimeTurnConfiguration>(it).copy(thinkingKnown = "thinkingLevel" in it)
+                        })
                 } else runtime
                 "context" -> if (value != null || domain.completeness == "complete") {
                     runtime = runtime.copy(contextUsage = value?.let { json.decodeFromJsonElement<RuntimeContextUsage>(it) })

@@ -109,6 +109,7 @@ import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
@@ -1618,11 +1619,14 @@ internal fun ChatScreen(
     }
     val composerMode = composerAction(isWorking = runtime?.status == "running", input = input)
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
+    var modelConfigurationOpen by remember(runtimeId) { mutableStateOf(false) }
+    var modelConfigurationSetting by remember(runtimeId) { mutableStateOf<String?>(null) }
+    val sessionModel = state.sessionModelPresentation(runtimeId)
     var downloadManagerOpen by remember(runtimeId) { mutableStateOf(false) }
     // 历史与分支整页：顶栏入口和输入 /tree 进的是同一页。动作（跳分支）走 /tree 命令，
     // 节点 ID 只在页面内部流转，不会再被拼进输入框。
     var historyOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    val optionCommand = if (historyOpen) "tree" else selectedSlashCommandName
+    val optionCommand = if (historyOpen) "tree" else if (modelConfigurationOpen) modelConfigurationSetting else selectedSlashCommandName
     val optionCatalogId = state.capabilities[runtimeId]?.commands?.find { it.name == optionCommand }?.argument?.optionCatalog?.id
     DisposableEffect(model, state.hostId, runtimeId, optionCommand, optionCatalogId) {
         val originHost = state.hostId
@@ -1949,6 +1953,11 @@ internal fun ChatScreen(
         pendingMessageText = ""
     }
 
+    if (modelConfigurationOpen) SessionModelConfigurationSheet(state, runtimeId,
+        onClose = { modelConfigurationOpen = false; modelConfigurationSetting = null },
+        setting = modelConfigurationSetting, onSettingChange = { modelConfigurationSetting = it },
+        onSelect = { name, value -> executeSlash(name, value) }, onVerify = ::refreshConversation)
+
     // 历史与分支和下载页一样盖在原聊天实例上，右滑时露出原聊天，保留列表、草稿与展开状态。
     OrbisPageHost(
         onBack = { historyOpen = false; historyActionError = null },
@@ -1966,13 +1975,16 @@ internal fun ChatScreen(
             Column {
             TopAppBar(
                 title = {
-                    Column {
+                    BoxWithConstraints(Modifier.testTag("session-model-entry").clickable(enabled = runtime != null,
+                        onClickLabel = L10n.tr("模型与深度")) { modelConfigurationOpen = true }) {
+                        val compactConfiguration = maxWidth < 200.dp * LocalDensity.current.fontScale
+                        Column {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(MetaLineGap),
                         ) {
                             AgentIcon(LocalAgentBrand.current, Modifier.size(MetaLineLeadingSlot))
-                            Text(LocalAgentBrand.current.title, style = MaterialTheme.typography.labelLarge, color = LocalAgentBrand.current.accent())
+                            if (!compactConfiguration) Text(LocalAgentBrand.current.title, style = MaterialTheme.typography.labelLarge, color = LocalAgentBrand.current.accent())
                             Text(
                                 launch?.title ?: state.sessionDisplayName(sessionId, runtime),
                                 modifier = Modifier.weight(1f),
@@ -1981,17 +1993,21 @@ internal fun ChatScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            sessionModel.indicator?.let { label ->
+                                MotionText(label, modifier = Modifier.widthIn(max = 100.dp).testTag("session-model-indicator"),
+                                    color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                         ChatRuntimeStatus(
                             status = runtime?.presentationStatus ?: launch?.status ?: "error",
                             title = runtime?.presentationTitle,
                             isChatSyncing = displayReadPending,
-                            // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
-                            modelLabel = state.configStatus(runtimeId, "model")?.let { "${it.first} / ${it.second}" }
-                                ?: runtime?.model?.let { if (runtime.status == "idle") modelLabel(it) else L10n.tr("后续：{0}", modelLabel(it)) },
-                            thinkingLevel = state.configStatus(runtimeId, "thinking")?.let { "${it.first} / ${it.second}" }
-                                ?: runtime?.thinkingLevel,
+                            modelLabel = sessionModel.model,
+                            thinkingLevel = sessionModel.thinking,
+                            showStatusLabel = !compactConfiguration,
                         )
+                        }
                     }
                 },
                 navigationIcon = {
@@ -3447,9 +3463,10 @@ internal fun ChatRuntimeStatus(
     modelLabel: String?,
     thinkingLevel: String?,
     title: String? = null,
+    showStatusLabel: Boolean = true,
 ) {
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().semantics { if (!showStatusLabel) stateDescription = title ?: runtimeStatusText(status) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(MetaLineGap),
     ) {
@@ -3465,7 +3482,7 @@ internal fun ChatRuntimeStatus(
                 RuntimeStatusDot(status)
             }
         }
-        MotionText(
+        if (showStatusLabel) MotionText(
             title ?: runtimeStatusText(status),
             color = runtimeStatusColor(status),
             style = MaterialTheme.typography.labelSmall,

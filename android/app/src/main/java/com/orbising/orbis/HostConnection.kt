@@ -1754,7 +1754,7 @@ internal class HostConnection(
         return commandId
     }
 
-    /** ADR-0049 §6.7 `config`：选择器与顶栏立即显示所选值并标“切换中”；连续选择只提交最新一次。 */
+    /** ADR-0049 §6.7 / S52：保存进度与本轮配置分开；连续选择只提交最新一次。 */
     private fun submitConfig(runtimeId: String, setting: String, value: String, label: String): String? {
         val target = OperationKinds.configTarget(runtimeId, setting)
         val state = mutableState.value
@@ -1763,7 +1763,10 @@ internal class HostConnection(
             return target
         }
         // 已经是确认值：不需要切换。
-        if (state.runtimes[runtimeId]?.let { OperationKinds.confirmedValue(it, setting) } == value) return target
+        if (state.runtimes[runtimeId]?.let { OperationKinds.confirmedValue(it, setting) } == value) {
+            updateState { it.copy(configFailures = it.configFailures - runtimeId) }
+            return target
+        }
         val commandId = UUID.randomUUID().toString()
         var created = false
         updateState { current ->
@@ -1774,7 +1777,11 @@ internal class HostConnection(
         if (!created) return null
         if (relay.executeSlashCommand(runtimeId, setting, value, commandId,
             optionCatalogId = state.capabilities[runtimeId]?.commands?.find { it.name == setting }?.argument?.optionCatalog?.id) == null) {
-            updateState { it.copy(ledger = it.ledger.remove(commandId), error = L10n.tr("命令未发送：中继服务器当前离线")) }
+            updateState {
+                val message = L10n.tr("命令未发送：中继服务器当前离线")
+                it.copy(ledger = it.ledger.remove(commandId), error = message,
+                    configFailures = it.configFailures + (runtimeId to SessionConfigFailure(setting, value, message, it.runtimes[runtimeId]?.sessionId)))
+            }
             return null
         }
         updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }

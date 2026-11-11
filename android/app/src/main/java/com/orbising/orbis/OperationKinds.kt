@@ -20,7 +20,7 @@ sealed interface LedgerPayload {
     data class Respond(val runtimeId: String, val requestId: String, val summary: String) : LedgerPayload
     /** 等待前置操作的消息（附件上传、同会话前一条）。写入通道后交给 ADR-0055 的 outbox 结算。 */
     data class Send(val runtimeId: String, val sessionId: String, val messageId: String) : LedgerPayload
-    /** 模型 / 思考级别（条件乐观）。`setting` 为 `model` 或 `thinking`；`label` 是选择器里的名字。 */
+    /** 模型 / 思考级别（条件乐观）。`setting` 保留后端的原生命令名；`label` 是选择器里的名字。 */
     data class Config(val runtimeId: String, val setting: String, val value: String, val label: String) : LedgerPayload
     /** 新建 / 恢复会话（即时反馈）：立即进入聊天页并显示“启动中”。`placeholder` 是启动期间聊天页的占位身份。 */
     data class Launch(val requestId: String, val placeholder: String) : LedgerPayload
@@ -65,7 +65,8 @@ object OperationKinds {
     )
     /** 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。 */
     fun modelDomain(runtimeId: String) = "model:$runtimeId"
-    fun isConfigSetting(name: String) = name == "model" || name == "thinking"
+    val configSettings = listOf("model", "thinking", "effort")
+    fun isConfigSetting(name: String) = name in configSettings
     fun configTitle(setting: String) = if (setting == "model") L10n.tr("模型") else L10n.tr("思考级别")
     fun configTarget(runtimeId: String, setting: String) = "config:$runtimeId:$setting"
 
@@ -82,13 +83,20 @@ object OperationKinds {
         deviceReceipts = true,
     )
 
-    fun confirmedValue(runtime: RuntimeSummary, setting: String): String? = if (setting == "model") runtime.model?.id else runtime.thinkingLevel
+    fun confirmedValue(runtime: RuntimeSummary, setting: String): String? {
+        runtime.modelSelection?.let { return if (setting == "model") it.model else it.thinking }
+        return if (setting == "model") runtime.model?.id else runtime.thinkingLevel
+    }
 
     /** 模型配置对 `config` 说明了什么：确认值等于所选即落地；成功回执后确认值不同（规范化或别名）也落地，显示确认值。 */
     fun configEvidence(op: LedgerOperation<LedgerPayload>, runtime: RuntimeSummary?): LedgerEvidence {
         val payload = op.payload as? LedgerPayload.Config ?: return LedgerEvidence.NONE
-        val confirmed = runtime?.let { confirmedValue(it, payload.setting) } ?: return LedgerEvidence.NONE
-        return if (confirmed == payload.value || op.succeeded) LedgerEvidence.LANDED else LedgerEvidence.NONE
+        runtime ?: return LedgerEvidence.NONE
+        val confirmed = confirmedValue(runtime, payload.setting)
+        // Native success + refreshed display facts also covers normalized values or an
+        // unreported model alias. That does not make the alias safe for option highlighting.
+        val observed = confirmed != null || if (payload.setting == "model") runtime.model != null else runtime.thinkingLevel != null
+        return if (confirmed == payload.value || op.succeeded && observed) LedgerEvidence.LANDED else LedgerEvidence.NONE
     }
 
     /** 未结算的配置切换：等它的消息排在它后面（§6.2）。 */
@@ -387,6 +395,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var verify = ledgerVerifyWanted
     var outcomes = interactionOutcomes
     var sends = pendingSends
+    var configurationFailures = configFailures
     var launch = launching
     var selected = selectedRuntimeId
     var draftMove = launchDraftMove
@@ -394,6 +403,10 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
         is LedgerEvent.Rejected -> {
+            (event.operation.payload as? LedgerPayload.Config)?.let { config ->
+                configurationFailures = configurationFailures + (config.runtimeId to SessionConfigFailure(config.setting, config.value,
+                    OperationKinds.message(event.operation) ?: L10n.tr("修改失败"), runtimes[config.runtimeId]?.sessionId))
+            }
             // 等待中的消息：前置失败时这条转失败，原因写明前置操作（ADR-0049 §6.2）。
             (event.operation.payload as? LedgerPayload.Send)?.let { send ->
                 val rejection = (event.operation.phase as? LedgerPhase.Rejected)?.rejection
@@ -443,6 +456,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         else -> Unit
     }
     return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
+        configFailures = configurationFailures,
         launching = launch, selectedRuntimeId = selected, launchDraftMove = draftMove, sessionActivateRequests = activateRequests)
 }
 
@@ -457,8 +471,13 @@ internal fun RemoteState.ledgerOpenConnection(): RemoteState {
 
 /** 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。 */
 internal fun RemoteState.ledgerCloseConnection(): RemoteState {
-    if (!ledgerConnectionOpen) return this
-    return copy(ledgerConnectionOpen = false, ledgerReads = emptyMap(), ledgerFresh = emptySet(), interactionOutcomes = emptyMap()).withLedgerStep(ledger.connectionLost())
+    // S52: reconnect must receive fresh model and execution evidence, including
+    // confirmed unchanged domains, before a cached turn is presented as current.
+    val disconnected = copy(runtimes = runtimes.mapValues { (_, runtime) ->
+        runtime.copy(currentTurnConfiguration = null, executionTurnId = null)
+    })
+    if (!ledgerConnectionOpen) return disconnected
+    return disconnected.copy(ledgerConnectionOpen = false, ledgerReads = emptyMap(), ledgerFresh = emptySet(), interactionOutcomes = emptyMap()).withLedgerStep(ledger.connectionLost())
 }
 
 /** 创建操作时记下它要读的领域已应用到哪里（L2 的 basis）。 */
@@ -717,7 +736,7 @@ internal fun RemoteState.createConfig(commandId: String, runtimeId: String, sett
     val (next, creation) = ledger.create(commandId, OperationKinds.CONFIG, OperationKinds.configTarget(runtimeId, setting),
         policy = OperationKinds.configPolicy, basis = ledgerBasis(OperationKinds.modelDomain(runtimeId)),
         payload = LedgerPayload.Config(runtimeId, setting, value, label), written = false, now = now)
-    return copy(ledger = next) to creation
+    return copy(ledger = next, configFailures = configFailures - runtimeId) to creation
 }
 
 /** 顶栏与选择器显示的值：(名字, 标记)；没有进行中的切换时为 null，显示确认值。 */

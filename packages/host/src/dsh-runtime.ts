@@ -571,6 +571,12 @@ export class DshAcpRuntime implements AgentBackend {
       runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness", cwd: session.cwd,
       hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true,
       sessionLeafId: session.entries.at(-1)?.entryId ?? null,
+      // ACP reports selected config only; it does not identify the in-flight request's model.
+      currentTurnConfigurationSupported: false,
+      modelSelection: {
+        ...(typeof model?.currentValue === "string" ? { model: wireOption(model.currentValue) } : {}),
+        ...(typeof thinking?.currentValue === "string" ? { thinking: wireOption(thinking.currentValue) } : {}),
+      },
       ...(typeof model?.currentValue === "string" ? { model: { provider: "dsh", id: model.currentValue,
         name: optionChoices(model.options).find(choice => choice.value === model.currentValue)?.label ?? model.currentValue } } : {}),
       ...(typeof thinking?.currentValue === "string" ? { thinkingLevel: thinking.currentValue || "default" } : {}),

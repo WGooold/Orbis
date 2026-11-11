@@ -33,6 +33,7 @@ import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutati
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
+import { readCodexTurnConfiguration } from "./codex-turn-configuration.js";
 import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
 
 import type {
@@ -59,6 +60,7 @@ import type {
   ToolContentLocator,
   SessionConfigurationCatalog,
   SessionConfigurationValues,
+  TurnConfiguration,
 } from "@orbis/protocol";
 
 import type {
@@ -286,6 +288,10 @@ type ThreadState = {
   /** 最近实际观察到的原生值；权限完整快照可能原样重复，不能当作新切模。 */
   nativeModel?: string;
   nativeEffort?: string | null;
+  currentTurnConfiguration?: TurnConfiguration;
+  configurationReadPromise?: Promise<void>;
+  configurationReadAt?: number;
+  configurationReroutedTurn?: string;
   /**
    * app-server `thread/tokenUsage/updated` 报的当前上下文占用（`last.inputTokens` /
    * `modelContextWindow`）。`total.inputTokens` 是线程累计输入量，不能用于上下文窗口
@@ -802,10 +808,39 @@ export class CodexRuntime implements AgentBackend {
       sessionLeafId: thread.entries.at(-1)?.entryId ?? null,
       ...(model === undefined ? {} : { model }),
       ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+      currentTurnConfiguration: this.#currentTurnConfiguration(thread),
       ...(contextUsage === undefined ? {} : { contextUsage }),
       permissions: thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" },
       permissionManagement: codexPermissionManagement(thread.permissions, this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || thread.sessionChanging === true || this.#desktopClientProtected.has(thread.id)),
     };
+  }
+
+  #currentTurnConfiguration(thread: ThreadState): TurnConfiguration | null {
+    if (!thread.turnInProgress || !thread.turnId) return null;
+    const current = thread.currentTurnConfiguration?.turnId === thread.turnId
+      ? thread.currentTurnConfiguration : { turnId: thread.turnId };
+    const name = current.model && this.#modelListCache?.byId.get(current.model.id)?.displayName;
+    return name ? { ...current, model: { ...current.model!, name } } : current;
+  }
+
+  #refreshTurnConfiguration(thread: ThreadState): void {
+    const turnId = thread.turnId;
+    const path = thread.rolloutPath;
+    const current = this.#currentTurnConfiguration(thread);
+    if (!current || !turnId || !path || thread.configurationReadPromise || thread.configurationReroutedTurn === turnId
+      || current.model && Object.hasOwn(current, "thinkingLevel")
+      || Date.now() - (thread.configurationReadAt ?? 0) < 1_000) return;
+    thread.configurationReadAt = Date.now();
+    thread.configurationReadPromise = readCodexTurnConfiguration(path, thread.id, turnId).then(observed => {
+      if (!observed || this.#threads.get(thread.id) !== thread || !thread.turnInProgress
+        || thread.turnId !== turnId || thread.rolloutPath !== path || thread.configurationReroutedTurn === turnId) return;
+      thread.currentTurnConfiguration = observed;
+      this.#publishMetadataEvent(thread);
+    }).catch(() => { /* Native context may not be flushed yet; retain unknown and retry on reconciliation. */ })
+      .finally(() => {
+        delete thread.configurationReadPromise;
+        if (thread.turnId !== turnId) this.#refreshTurnConfiguration(thread);
+      });
   }
 
   /**
@@ -2297,6 +2332,15 @@ export class CodexRuntime implements AgentBackend {
         }
         thread.model = arg;
         thread.modelOverride = arg;
+        // S52: model and effort are one selection. Never carry an unsupported
+        // effort into turn/start merely because its old menu has disappeared.
+        const efforts = known?.effortsByModel.get(arg);
+        if (thread.effort !== undefined && efforts !== undefined && efforts.length > 0 && !efforts.some(option => option.value === thread.effort)) {
+          const preferred = known?.byId.get(arg)?.defaultReasoningEffort;
+          thread.effort = efforts.find(option => option.value === preferred)?.value ?? efforts[0]?.value;
+          if (thread.effort === undefined) delete thread.effortOverride;
+          else thread.effortOverride = thread.effort;
+        }
         this.#commandResult(threadId, commandId, true);
         // 换模型后 `/thinking` 的候选 effort 也跟着变（各模型支持的不一样）：
         // 元数据刷新会连同 capabilities 一起重播，手机再打开那个菜单才是对的。
@@ -2800,6 +2844,7 @@ export class CodexRuntime implements AgentBackend {
         if (this.#isCurrentReconcile(thread, generation)) thread.lastNativeCheckAt = Date.now();
       });
       await this.#waitForReconcile(thread);
+      this.#refreshTurnConfiguration(thread);
     })();
     const tracked = checking.catch(error => {
       this.#options.log?.(`Codex 源端核对失败（thread=${thread.id}）：${describeError(error)}`);
@@ -3116,7 +3161,8 @@ export class CodexRuntime implements AgentBackend {
         ++thread.reconcileGeneration;
         thread.turnInProgress = true;
         this.#publishMetadataEvent(thread);
-        await this.#server.request("turn/start", {
+        const submitted = { model: thread.model, provider: thread.modelProvider, effort: thread.effort };
+        const result = object(await this.#server.request("turn/start", {
           threadId: thread.id,
           input,
       // 把 App 的 messageId 钉到本次 turn 的 userMessage item 上：app-server 会在
@@ -3128,7 +3174,19 @@ export class CodexRuntime implements AgentBackend {
       // 覆盖并延续后续 turn，所以每个 turn 都带上（未设置时不传，用 app-server 缺省）。
           ...(thread.model === undefined ? {} : { model: thread.model }),
           ...(thread.effort === undefined ? {} : { effort: thread.effort }),
-        });
+        }));
+        const acceptedTurn = object(result.turn).id;
+        // Bind accepted explicit parameters to the native response identity. A
+        // settings notification alone never establishes the active turn's model.
+        if (typeof acceptedTurn === "string" && thread.turnInProgress && (thread.turnId === acceptedTurn || thread.turnId === priorTurnId)
+          && this.#threads.get(thread.id) === thread
+          && thread.configurationReroutedTurn !== acceptedTurn
+          && !(thread.currentTurnConfiguration?.turnId === acceptedTurn && thread.currentTurnConfiguration.model)) {
+          thread.currentTurnConfiguration = { turnId: acceptedTurn,
+            ...(submitted.model && submitted.provider ? { model: { provider: submitted.provider, id: submitted.model } } : {}),
+            ...(submitted.effort === undefined ? {} : { thinkingLevel: submitted.effort }) };
+          this.#publishMetadataEvent(thread);
+        }
       });
     } catch (error) {
       if (this.#threads.get(thread.id) === thread && thread.turnId === priorTurnId
@@ -3452,6 +3510,13 @@ export class CodexRuntime implements AgentBackend {
         const from = String(record.fromModel ?? record.originalModel ?? "原模型");
         const to = String(record.toModel ?? record.model ?? "其他模型");
         const turnId = typeof record.turnId === "string" ? record.turnId : thread.turnId;
+        const current = this.#currentTurnConfiguration(thread);
+        if (turnId && turnId === thread.turnId && thread.turnInProgress && typeof record.toModel === "string") {
+          thread.configurationReroutedTurn = turnId;
+          const provider = current?.model?.provider ?? thread.modelProvider;
+          thread.currentTurnConfiguration = { turnId, ...(provider ? { model: { provider, id: record.toModel } } : {}) };
+          this.#publishMetadataEvent(thread);
+        }
         thread.notifications.outcome({ code: "codex.model.rerouted", occurrenceId: String(record.itemId ?? turnId ?? randomUUID()),
           scope: turnId === undefined ? {} : { turnId }, severity: "info", message: `模型已从 ${from} 切换为 ${to}` });
         return;
@@ -3688,6 +3753,7 @@ export class CodexRuntime implements AgentBackend {
           if (owner !== undefined && owner.turnId !== started.id) this.#settleCompactionTurn(thread, owner.turnId, "idle");
           thread.asyncInputs.updateTurn(started.id, "inProgress");
           thread.turnId = started.id;
+          if (thread.currentTurnConfiguration?.turnId !== started.id) delete thread.configurationReadAt;
           // app-server 的 startedAt 是秒级 epoch；本端事件用毫秒，统一乘 1000。
           thread.turnStartedAt = started.startedAt === undefined
             ? Date.now()
@@ -4286,6 +4352,7 @@ export class CodexRuntime implements AgentBackend {
 
   /** 状态（idle/running/waiting）变了就广播一份 metadata，手机角标跟着走。 */
   #publishMetadataEvent(thread: ThreadState): void {
+    this.#refreshTurnConfiguration(thread);
     this.#emit(thread.id, { type: "runtime.status", status: this.#statusOf(thread) });
     // app-server 的 thread 快照不带 model/contextUsage，而这些只有本后端知道；APP 的
     // 模型名/上下文占用条正是从 `runtime.metadata` 读的（Pi 由 RuntimeBridge 发，codex
@@ -4331,6 +4398,7 @@ export class CodexRuntime implements AgentBackend {
 
   syncNotifications(runtimeId: string): void {
     for (const thread of this.#threads.values()) if (this.runtimeIdFor(thread.id) === runtimeId) {
+      this.#refreshTurnConfiguration(thread);
       thread.notifications.announce();
       if (Date.now() - thread.lastNativeCheckAt >= 15_000) void this.#checkNativeSource(thread).catch(() => undefined);
       if (thread.notifications.snapshot().notifications.some(item => item.code === "codex.sandbox")) void this.#checkSandboxReadiness(thread);

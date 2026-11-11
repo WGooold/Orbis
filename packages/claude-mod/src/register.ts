@@ -40,6 +40,7 @@ let permissionMode: string | undefined;
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 let selectedEffort: Effort | undefined;
 let turnSelection: { turnId: string; model?: string; selectedModel?: string; effort?: Effort | number; captured: boolean } | undefined;
+let currentTurnConfiguration: { turnId: string; requestIndex?: number; model?: { provider: string; id: string }; thinkingLevel?: string | null } | null = null;
 
 export const register: Register = on => {
   // Native classic events include the effective mode even before the first prompt.
@@ -113,6 +114,7 @@ export const register: Register = on => {
   on("turn.start", async ($, event, next) => {
     if (event.agentId === undefined) {
       activeTurnId = event.turnId;
+      currentTurnConfiguration = { turnId: event.turnId };
       turnSelection = { turnId: event.turnId, ...(selectedEffort === undefined ? {} : { effort: selectedEffort }), captured: false };
       // The authenticated HTTP acknowledgement is the capture barrier. Never replay next().
       await emit($, { type: "turn.start", turnId: event.turnId, startedAt: await $.clock.now() }).catch(() => false);
@@ -137,6 +139,12 @@ export const register: Register = on => {
       event = { ...event, ...(turnSelection.selectedModel !== undefined && event.model === turnSelection.selectedModel && turnSelection.model !== undefined
         ? { model: turnSelection.model } : {}),
         ...(turnSelection.effort === undefined ? {} : { effort: turnSelection.effort }) };
+    }
+    if (event.agentId === undefined && activeTurnId === event.turnId) {
+      currentTurnConfiguration = { turnId: event.turnId, requestIndex: event.index, model: { provider: "claude-code", id: event.model },
+        thinkingLevel: event.effort === undefined ? null : String(event.effort) };
+      // Publish the effective request after pinning, including native fallback models.
+      await emit($, { type: "session.state", state: { currentTurnConfiguration } });
     }
     const stream = next(event);
     let pending: { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] = [];
@@ -179,7 +187,7 @@ export const register: Register = on => {
         else commands.set(commandId, { state: "result", event: nativeEvent });
       }
       // Keep submissions deferred through the completion acknowledgement/capture barrier.
-      if (activeTurnId === event.turnId) activeTurnId = undefined;
+      if (activeTurnId === event.turnId) { activeTurnId = undefined; currentTurnConfiguration = null; }
       // Context fill and the model can change with every turn.
       void reportState($, true);
     }
@@ -307,7 +315,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     interactive: true, claudeVersion: version.version, bridgeVersion: "4",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn"],
+    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -362,6 +370,8 @@ async function reportState($: Api, force: boolean): Promise<void> {
     const settings = await $.settings.read().catch(() => undefined) as Record<string, unknown> | undefined;
     if (selectedEffort !== undefined) state.effort = selectedEffort;
     else if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
+    // Read after asynchronous getters so a completed/replaced turn cannot be re-published.
+    state.currentTurnConfiguration = currentTurnConfiguration;
     const encoded = JSON.stringify(state);
     if (!force && reportedState?.connection === target && reportedState.encoded === encoded) return;
     if (await postEvent($, target, { type: "session.state", state })) reportedState = { connection: target, encoded };

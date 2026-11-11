@@ -59,6 +59,7 @@ export type RemoteContextSource = {
 export type RemoteContextSnapshot = {
   model?: RuntimeModelInfo;
   thinkingLevel?: string;
+  modelSelection?: { model?: string; thinking?: string };
   contextUsage?: RuntimeContextUsage;
 };
 
@@ -75,6 +76,10 @@ export function runtimeContextSnapshot(context: RemoteContextSource): RemoteCont
   return {
     ...(model === undefined ? {} : { model }),
     ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+    ...(model === undefined && thinkingLevel === undefined ? {} : { modelSelection: {
+      ...(model === undefined ? {} : { model: `${model.provider}/${model.id}` }),
+      ...(thinkingLevel === undefined ? {} : { thinking: thinkingLevel }),
+    } }),
     ...(contextUsage === undefined ? {} : { contextUsage }),
   };
 }

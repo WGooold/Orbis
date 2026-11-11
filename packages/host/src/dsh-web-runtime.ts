@@ -11,6 +11,7 @@ import {
   type RuntimeCapabilities, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata,
   type ToolContentLocator,
   type SessionConfigurationCatalog, type SessionConfigurationValues,
+  type TurnConfiguration,
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, DshWebUnconfirmedError, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
@@ -78,6 +79,7 @@ type WebSession = {
    */
   historyComplete?: boolean;
   lastSeq: number; turnId?: string; turnStartedAt?: number; fileChangeAnchor?: string;
+  currentTurnConfiguration?: TurnConfiguration;
   permissionProfile?: string; permissionSandbox?: string; permissionApproval?: string;
   permissionSeq: number; permissionSandboxSeq: number; permissionApprovalSeq: number; permissionGeneration: number;
   permissionBusy: boolean; permissionOptions: ReturnType<typeof dshPermissionOptions>;
@@ -922,7 +924,7 @@ export class DshWebRuntime implements AgentBackend {
       }
       session.lastSeq = Math.max(session.lastSeq, Number(frame.cursor ?? -1)); session.createdAt = Number(header.createdAt ?? session.createdAt); session.cwd = typeof header.cwd === "string" ? header.cwd : session.cwd;
       session.historyComplete = this.#historyCovered(session);
-      this.#syncSnapshotTurnState(session, events);
+      this.#syncSnapshotTurnState(session, events, Number(frame.cursor));
       // This bounded native window cannot confirm activity omitted before its first event.
       if (Number(frame.cursor) >= session.activitySeq) {
         session.activity = { type: "execution.activity", retry: "unavailable", compaction: "unavailable" };
@@ -1054,12 +1056,20 @@ export class DshWebRuntime implements AgentBackend {
       if (session.entries.length <= count) throw new Error("DeepSeek 历史分页未前进，请重试同步会话");
     }
   }
-  #syncSnapshotTurnState(session: WebSession, events: readonly DshWebLogEvent[]): void {
+  #syncSnapshotTurnState(session: WebSession, events: readonly DshWebLogEvent[], cursor: number): void {
+    // Reuse the durable stream cursor; an older snapshot cannot rewind execution facts.
+    if (cursor < session.lastSeq) return;
     let start: DshWebLogEvent | undefined;
     let boundarySeen = false;
     for (const event of events) {
-      if (event.type === "turn/start") { start = event; boundarySeen = true; }
-      else if (event.type === "turn/end") { start = undefined; boundarySeen = true; }
+      if (event.type === "turn/start") {
+        start = event; boundarySeen = true;
+        if (session.turnId !== dshWebEntryId(session.id, event.seq)) delete session.currentTurnConfiguration;
+        session.turnId = dshWebEntryId(session.id, event.seq);
+      } else if (event.type === "turn/end") {
+        start = undefined; boundarySeen = true;
+        delete session.turnId; delete session.currentTurnConfiguration;
+      } else if (event.type === "request/header") this.#requestConfiguration(session, event.data);
     }
     // A bounded reconnect tail may begin in the middle of an existing turn and
     // contain no boundary. Preserve the live bit in that case.
@@ -1073,6 +1083,17 @@ export class DshWebRuntime implements AgentBackend {
     session.running = true;
     session.turnId = dshWebEntryId(session.id, start.seq);
     session.turnStartedAt = start.time;
+  }
+  #requestConfiguration(session: WebSession, raw: unknown): void {
+    if (!session.turnId) return;
+    const header = object(object(raw).header), config = object(header.config);
+    if (typeof config.provider !== "string" || !config.provider || typeof config.model !== "string" || !config.model) return;
+    // A sequenced native request header belongs to the preceding turn/start. lastUsed in
+    // a standalone projection can still describe the previous turn and is not sufficient.
+    session.currentTurnConfiguration = { turnId: session.turnId,
+      model: this.#modelInfo(session.modelCatalog, config.provider, config.model),
+      thinkingLevel: object(header.adapterDefaults).reasoningEffort === true || typeof config.reasoningEffort !== "string"
+        ? null : config.reasoningEffort || null };
   }
   #rememberTools(session: WebSession, events: readonly { type: string; data: unknown }[]): void {
     for (const event of events) {
@@ -1137,12 +1158,14 @@ export class DshWebRuntime implements AgentBackend {
     if (event.type === "assistant/message" && entry && session.turnId) session.fileChangeAnchor = entry.entryId;
     if (event.type === "turn/start") {
       delete session.fileChangeAnchor;
+      delete session.currentTurnConfiguration;
       session.running = true;
       session.turnId = dshWebEntryId(session.id, event.seq);
       session.turnStartedAt = event.time;
       session.source.setAvailability(true, true);
       this.#emit(session, { type: "turn.started", turnId: session.turnId, startedAt: event.time, ...(typeof data.turn === "number" ? { turnIndex: data.turn } : {}) });
     }
+    if (event.type === "request/header") this.#requestConfiguration(session, data);
     if (event.type === "tool/result") {
       const message = existing;
       const toolCallId = message?.toolCallId ?? String(object(data.message).toolCallId ?? dshWebEntryId(session.id, event.seq));
@@ -1152,6 +1175,7 @@ export class DshWebRuntime implements AgentBackend {
     }
     if (event.type === "turn/end") {
       session.running = false;
+      delete session.currentTurnConfiguration;
       const turnId = session.turnId ?? dshWebEntryId(session.id, event.seq);
       const startedAt = session.turnStartedAt ?? event.time;
       const persistedMessages = [...session.persistedMappings.entries()].map(([messageId, entryId]) => ({ messageId, entryId }));
@@ -1306,7 +1330,12 @@ export class DshWebRuntime implements AgentBackend {
   }
   #metadata(session: WebSession): RuntimeMetadata {
     const selection = this.#selection(session);
-    return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(selection === undefined ? {} : { model: this.#modelInfo(session.modelCatalog, selection.provider, selection.model) }), ...(selection?.reasoningEffort === undefined ? {} : { thinkingLevel: selection.reasoningEffort }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }) };
+    return { runtimeId: publicId(session.id), sessionId: publicId(session.id), name: "DeepSeek Harness Web", ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(selection === undefined ? {} : { model: this.#modelInfo(session.modelCatalog, selection.provider, selection.model) }), ...(selection?.reasoningEffort === undefined ? {} : { thinkingLevel: selection.reasoningEffort }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }),
+      currentTurnConfigurationSupported: true,
+      currentTurnConfiguration: session.running ? session.currentTurnConfiguration ?? null : null,
+      modelSelection: { ...(selection === undefined ? {} : { model: wire({ provider: selection.provider, model: selection.model }) }),
+        ...(selection?.reasoningEffort === undefined ? {} : { thinking: selection.reasoningEffort }) },
+    };
   }
   /**
    * 会话自己的模型选择：`modelSelection` 投影的 `next`（DSH 已回落到 `lastUsed`）。

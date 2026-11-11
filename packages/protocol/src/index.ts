@@ -1,6 +1,8 @@
 import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
 export * from "./turn-file-changes.js";
 import { z } from "zod";
+import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
+export * from "./turn-configuration.js";
 import { SessionConfigurationReadSchema, SessionConfigurationSaveSchema, ConfiguredSessionLaunchSchema, SessionLaunchReadSchema,
   SessionConfigurationResultSchema, SessionLaunchResultSchema } from "./session-configuration.js";
 export * from "./session-configuration.js";
@@ -219,6 +221,9 @@ export const RuntimeMetadataSchema = z.strictObject({
   // in the chat status line. All are optional because a runtime may not know them yet.
   model: RuntimeModelInfoSchema.optional(),
   thinkingLevel: z.string().min(1).max(64).optional(),
+  currentTurnConfiguration: TurnConfigurationSchema.nullable().optional(),
+  currentTurnConfigurationSupported: z.boolean().optional(),
+  modelSelection: ModelSelectionValuesSchema.optional(),
   contextUsage: RuntimeContextUsageSchema.optional(),
   permissions: RuntimePermissionsSchema.optional(),
   permissionManagement: PermissionManagementSchema.optional(),

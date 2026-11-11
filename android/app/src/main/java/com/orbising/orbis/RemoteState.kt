@@ -78,6 +78,11 @@ data class RuntimeSummary(
     val model: RuntimeModelInfo? = null,
     /** Current thinking depth (`thinkingLevel` for Pi, reasoning effort for Codex). */
     val thinkingLevel: String? = null,
+    /** S52: native turn identity prevents a stale model snapshot from describing a new turn. */
+    val currentTurnConfiguration: RuntimeTurnConfiguration? = null,
+    val currentTurnConfigurationSupported: Boolean? = null,
+    val modelSelection: SessionConfigurationValues? = null,
+    val executionTurnId: String? = null,
     /** Context utilization reported by the Runtime; absent on older Runtime or Relay versions. */
     val contextUsage: RuntimeContextUsage? = null,
     val permissions: RuntimePermissions? = null,
@@ -520,6 +525,7 @@ data class RemoteState(
     val interactionOutcomes: Map<String, InteractionOutcome> = emptyMap(),
     /** 切换中再次选择：目标 → (值, 名字)，前一次结束后只在它与确认值不同时再提交（ADR-0049 §6.7）。 */
     val configSelections: Map<String, Pair<String, String>> = emptyMap(),
+    val configFailures: Map<String, SessionConfigFailure> = emptyMap(),
     /** ADR-0049 §6.8：正在启动的会话（立即进入的聊天页用它的占位身份）。 */
     val launching: LaunchState? = null,
     /** 启动期间消息的占位 Session → 确认后的 Session。 */
@@ -712,6 +718,10 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         backgroundTasks = sameSession?.backgroundTasks,
         model = sameSession?.model,
         thinkingLevel = sameSession?.thinkingLevel,
+        currentTurnConfiguration = sameSession?.currentTurnConfiguration,
+        currentTurnConfigurationSupported = sameSession?.currentTurnConfigurationSupported,
+        modelSelection = sameSession?.modelSelection,
+        executionTurnId = sameSession?.executionTurnId,
         contextUsage = sameSession?.contextUsage,
         permissions = null,
         permissionManagement = sameSession?.permissionManagement,

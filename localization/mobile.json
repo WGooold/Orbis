@@ -1,4 +1,6 @@
 {
+  "加载中…": "Loading…",
+  "暂无可用选项": "No options available",
   "\n\n附件路径：\n": "\n\nAttachment paths:\n",
   "\n从 Pi 配置移除；Host 中的卡片和配置仍保留。": "\nRemove from Pi configuration; the Host card and configuration are kept.",
   "\n包含 Pi 的全局默认供应商，移除后请在 Pi 中重新选择模型。": "\nIncludes Pi's global default provider. Select a model in Pi again after removal.",
@@ -1549,6 +1551,16 @@
   "后续：{0}": "Next: {0}",
   "后续模型": "Model for later turns",
   "后续思考深度": "Reasoning for later turns",
+  "模型与深度": "Model and reasoning",
+  "保存中": "Saving",
+  "下轮已设": "Next turn set",
+  "本轮使用": "This turn",
+  "下轮使用": "Next turn",
+  "当前所选": "Selected configuration",
+  "模型未确认": "Model unconfirmed",
+  "深度未确认": "Reasoning unconfirmed",
+  "核对配置": "Check configuration",
+  "修改失败": "Change failed",
   "说明": "Information",
   "查看{0}说明": "About {0}",
   "当前不可修改": "Unavailable to change",
@@ -1573,5 +1585,8 @@
   "当前": "Current",
   "暂停": "Pause",
   "继续": "Continue",
-  "设置未确认": "Settings unconfirmed"
+  "设置未确认": "Settings unconfirmed",
+  "后续已设": "Next request set",
+  "后续选择": "Next request selection",
+  "所选：{0}": "Selected: {0}"
 }

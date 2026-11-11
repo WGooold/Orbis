@@ -16,7 +16,9 @@ Status: accepted（主路径已实现；自动验证与后端能力边界见下�
 
 新建卡片显示模型、该模型支持的思考深度和权限入口，使用现有选择面板。Host 按后端、供应商配置身份与绝对工作目录返回原生默认值、可用选项及已保存偏好。未知、不支持和跟随原生默认分别表示。App 提交不透明选项，Host 校验和原子持久化后返回版本；偏好只影响随后新建的会话。
 
-运行中允许提交当前会话的后续配置。后续所选值、保存进度和原生确认分开处理；运行中显示后续模型，模型变化时重算深度选项。当前请求使用的值由原生请求事实确认。后端能够原生更新时直接调用并核对，后端没有可验证的修改接口时明确显示能力限制。配置修改与历史回退、重载、关闭分别准入。权限按原生实际生效边界确认，单次工具审批保持独立，不能把配置成功当成某次审批的回答。
+运行中允许提交当前会话的后续配置。后续所选值、保存进度和原生确认分开处理，模型变化时重算深度选项。当前请求使用的值由原生请求事实确认。后端能够原生更新时直接调用并核对，后端没有可验证的修改接口时明确显示能力限制。配置修改与历史回退、重载、关闭分别准入。权限按原生实际生效边界确认，单次工具审批保持独立，不能把配置成功当成某次审批的回答。
+
+S52／SC76（r55）：Android Codex 顶栏运行中显示绑定原生 turn ID 的实际模型与深度，空闲显示确认的所选值。正常运行不加前缀；保存中、未确认、修改失败在标题行独立标记，仅确认所选配置与本轮不同才显示“下轮已设”。入口使用共用选择弹层分别显示本轮与下轮，修改保持输入草稿；改回原值清除差异标记。窄屏大字体优先显示模型与深度，Agent 与运行状态保留图标及无障碍描述。Host 依据已接受的原生 turn/start 参数或该 turn 的原生 turn_context 提供可选 currentTurn 事实；缺失、断线或身份不匹配显示未确认，保持 18／19 旧端所选字段语义。模型切换时将明确不受支持的深度调整到新模型支持的默认值。
 
 ### 新建时序
 
@@ -58,6 +60,10 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 
 实现指针：协议 `packages/protocol/src/session-configuration.ts`；Host `session-configuration-store.ts`、`host-service.ts` 及各后端适配器；Android `SessionConfiguration.kt`、`SessionDraft.kt`、`HostConnection.kt`；iOS `Models.swift`、`SessionViews.swift`、`OrbisStore.swift`。S51／SC73 使用基线 r54。
 
+S52／SC76 实现：Host `codex-turn-configuration.ts`、`codex-runtime.ts`、`agent-state-facts.ts`；Android `SessionModelConfiguration.kt`、`AgentModelProjection.kt`、`OperationKinds.kt`、`MainActivity.kt`。针对回合身份、运行中修改、断线、失败和弹层草稿保持的测试见 `codex-turn-configuration.test.ts`、`SessionModelPresentationTest.kt`、`SessionModelConfigurationInstrumentedTest.kt`。自动验证、首次失败、部署与验收边界分别保存在 `.artifacts/android-turn-configuration-20261111/verification.json`；尚未部署，待用户验证。
+
+S52／SC76 配套验证：已安装 Host 缺少 `currentTurnConfiguration`，新版 Android 在活动会话持续显示未确认；源码测试不能替代已安装包核对。两种 Codex 原生程序的隔离中途接入、运行中修改与完成清除，经生产适配器和 compact-v2 分帧验证；实际消息作为 `CodexTurnWireTest` 的固定输入验证 Android 双顺序接收及 unchanged 重连。新 Host 包的模块指纹、包内复测和旧安装差异见 `.artifacts/android-turn-configuration-20261111/running-unconfirmed/verification.json`；包已构建，未替换运行中的 Host，待用户验证。
+
 自动验证指针：`implementation/node-final.json`、`final-launch-recovery-2.json`、`swift-final/run.log`、`android-final-2/`、`ios-app-final/`、`claude-model-regression-final.log`。回归源码为 `session-configuration-store.test.ts`、`session-configuration-probe.test.ts`、`host-service.test.ts` 的 configured launch 用例、双端 `LaunchLedger`、`ConfigLedger`、运行时权限用例，以及 Claude 插件 `reconnect.test.ts`。最终计数、源码指纹与构建状态统一见 `implementation/verification.json`。
 
 剩余能力边界：ACP 的新建前清单、Claude 当前会话权限写入、Claude 原生默认模型与深度精确展示，以及 DSH Web 切换后的第二次真实模型请求尚未完成端到端验证。Claude 默认值未报告时显示继承并省略参数，模型清单的 `default` 别名不能替代当前配置。无专属权限接口的 Pi／ACP 保留来源说明。设备安装与视觉验收未执行；本轮不宣称这些边界已通过。
@@ -65,3 +71,7 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 Android S51／SC73 回归：新建权限选项在弹层内暂存，显式应用才执行退场提交，避免透明窗口残留拦截触摸。启动恢复记录通过 `ConfiguredLaunchJournal` 在后台串行读写，UI 和状态锁只访问内存快照；启动发送与就绪结果仍等待对应记录落盘。回归源码为 `SessionDraftConfigurationInstrumentedTest`、`ConfiguredLaunchJournalTest` 及既有启动／等待发送／配置账本测试。构建、自动验证与设备环境阻挡记录见 `.artifacts/draft-permission-freeze-20261111/verification.json`；未安装，待用户验证。
 
 S55／SC79（r57）：两端新建卡片的模型独占一行，思考深度与权限在下一行等宽排列；权限入口使用短名称，完整组合保留在无障碍值及分类面板中，深度优先展示 Host 选项标签。实现见 `SessionDraft.kt`、`SessionViews.swift`，HTML 同步见 `docs/design/session-draft-card-proposal.html`。320dp、中英文放大文字与长权限组合回归见 `SessionDraftConfigurationInstrumentedTest`、`OrbisUITests`；构建、界面验证及交付状态见 `.artifacts/draft-config-layout-20261111/verification.json`，待用户验证。
+
+S56／SC80（r58）：Pi 原生 assistant 消息、Claude 既有 session.state 和 DeepSeek Web 顺序日志的 request/header，统一映射到 S52 的 currentTurn 契约；实际配置按本轮身份核对，Claude 请求序号阻止迟到状态覆盖原生回退。ACP 明确只报告选择值。非 Codex 缺少可匹配本轮事实时显示“所选”，面板使用“当前所选”，不提供无效的事实核对按钮；未知原生深度不借用实时选择值。Pi／Web 的修改可作用于后续模型请求，确认差异标为“后续已设”。Codex 的本轮规则保持 S52。
+
+选中值复用 `SessionConfigurationValues` 的模型与深度字段，通过既有 metadata、model 领域和 Android 投影传递，保留 Pi provider/id、Claude 别名和 DeepSeek JSON 命令编码。Claude effort 复用 submitConfig、配置账本、发送前置等待及重试；权限继续使用原有独立投影和操作。实现见各后端适配器、`SessionModelConfiguration.kt`、`OperationKinds.kt`；回归见相邻适配器测试、`SessionModelPresentationTest`、`ConfigLedgerTest` 和 `SessionModelConfigurationInstrumentedTest`。实现、自动验证、打包与部署边界见 `.artifacts/android-turn-configuration-20261111/cross-agent-fix/verification.json`；未替换正在运行的 Host，待用户验证。

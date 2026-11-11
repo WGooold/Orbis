@@ -189,6 +189,18 @@ describe("AgentStateFacts 交互与等待", () => {
 });
 
 describe("AgentStateFacts 队列与能力", () => {
+  // S56 / SC80: all adapters reuse the existing model domain, including exact command values.
+  it("keeps native selection and observation support in the shared model projection", () => {
+    const { registry, facts } = setup();
+    const modelSelection = { model: "opus", thinking: "high" };
+    const currentTurnConfiguration = { turnId: "turn", requestIndex: 0, model: { provider: "p", id: "actual" }, thinkingLevel: "low" };
+    facts.observe("codex:r1", metadata({ model: { provider: "p", id: "selected" }, modelSelection,
+      currentTurnConfigurationSupported: true, currentTurnConfiguration }));
+    expect(read<AgentModelState>(registry, "model")?.value).toMatchObject({ id: "selected", selection: modelSelection,
+      currentTurnSupported: true, currentTurn: currentTurnConfiguration });
+    facts.observe("codex:r1", metadata({ model: { provider: "p", id: "selected" } }));
+    expect(read<AgentModelState>(registry, "model")?.value).not.toHaveProperty("selection");
+  });
   it("队列只有部分清单：合并更新，且不能当基线", () => {
     const { registry, facts } = setup();
     facts.observe("codex:r1", metadata());

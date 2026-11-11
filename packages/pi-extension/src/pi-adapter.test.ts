@@ -547,6 +547,7 @@ describe("Remote context snapshot", () => {
       model: { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
       thinkingLevel: "high",
       contextUsage: { tokens: 24_600, contextWindow: 200_000, percent: 12.3 },
+      modelSelection: { model: "anthropic/claude-sonnet-4-5", thinking: "high" },
     });
   });
 
@@ -582,6 +583,7 @@ describe("Remote context snapshot", () => {
       model: { provider: "llama.cpp", id: "local-qwen" },
     })).toEqual({
       model: { provider: "llama.cpp", id: "local-qwen" },
+      modelSelection: { model: "llama.cpp/local-qwen" },
     });
   });
 

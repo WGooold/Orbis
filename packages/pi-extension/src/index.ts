@@ -1,4 +1,5 @@
 import { fileChangeBoundary } from "./file-change-boundary.js";
+import { piTurnConfiguration } from "./turn-configuration.js";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -14,6 +15,7 @@ import {
   selectPreparedSessionSync,
   type PreparedSessionSync,
   type RuntimeEvent,
+  type TurnConfiguration,
 } from "@orbis/protocol";
 import { RuntimeBridge, ToolActivityProducer, ToolContentReadError, createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
 import { loadRemoteControlConfig } from "./config.js";
@@ -196,6 +198,14 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     liveTurnTimer = setInterval(() => updateLiveTurn(ctx), 1_000);
   };
   const turnTiming = new PiTurnTiming();
+  let currentTurnConfiguration: TurnConfiguration | null = null;
+  const observeTurnConfiguration = (message: unknown): void => {
+    if (currentTurnConfiguration === null) return;
+    const next = piTurnConfiguration(currentTurnConfiguration.turnId, message);
+    if (next === undefined || JSON.stringify(next) === JSON.stringify(currentTurnConfiguration)) return;
+    currentTurnConfiguration = next;
+    bridge?.refreshMetadata();
+  };
   const terminalIndicator = new TerminalRemoteIndicator((frame) => {
     const ctx = currentContext;
     if (!ctx) return;
@@ -295,6 +305,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     slashCommandAdapter = undefined;
     broker = undefined;
     turnTiming.reset();
+    currentTurnConfiguration = null;
     turnTimingStore = undefined;
     drainQueuedSends = async () => {};
     for (const owner of stopWaiters.keys()) settleStops(owner, new RuntimeInputUnconfirmedError("会话已切换，停止结果待核对"));
@@ -490,6 +501,8 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
           // Model and context utilization power the APP composer status. They are re-read on every
           // metadata refresh, so a model switch or a finished turn updates them without a new event.
           ...runtimeContextSnapshot(ctx),
+          currentTurnConfigurationSupported: true,
+          currentTurnConfiguration,
         };
       },
       syncSession: (request) => {
@@ -715,6 +728,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
+    currentTurnConfiguration = null;
     await finishFileReview();
     settleStops(activeSessionToken);
     stopLiveTurn(ctx);
@@ -738,9 +752,11 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
 
   pi.on("turn_start", async (event, ctx) => {
     const started = turnTiming.start(event.turnIndex, event.timestamp);
+    currentTurnConfiguration = { turnId: started.turnId };
     if (fileReview && fileReview.sourceTurnIds.length < 128) fileReview.sourceTurnIds.push(started.turnId);
     startLiveTurn(ctx, started.startedAt);
     publishSessionEvent(started, ctx);
+    bridge?.refreshMetadata();
   });
 
   pi.on("turn_end", async (event, ctx) => {
@@ -768,6 +784,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
     const finished = turnTiming.finish(event.turnIndex, messageId, persistedMessageId, persistedMessages,
       piTurnOutcome((event.message as { stopReason?: string }).stopReason));
     if (finished) {
+      currentTurnConfiguration = null;
       stopLiveTurn(ctx);
       const persistedTimingMessageId = persistedMessageId ?? messageId;
       void turnTimingStore?.record({
@@ -785,6 +802,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("message_start", async (event, ctx) => {
+    observeTurnConfiguration(event.message);
     const entry = [...ctx.sessionManager.getBranch()].reverse().find((candidate) =>
       candidate.type === "message" && candidate.message === event.message
     );
@@ -792,6 +810,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("message_update", async (event) => {
+    observeTurnConfiguration(event.message);
     const update = messageStream.updated(event.assistantMessageEvent, event.message);
     if (!update) return;
     sessionSource?.transaction(() => {
@@ -803,6 +822,7 @@ export default function piRemoteControl(pi: ExtensionAPI): void {
   });
 
   pi.on("message_end", async (event, ctx) => {
+    observeTurnConfiguration(event.message);
     publishSessionEvent(phoneSends.finished(messageStream.finished(event.message)), ctx);
   });
 
