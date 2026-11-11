@@ -35,7 +35,9 @@ test("rediscovers a restarted Host without restarting the native Claude session"
 // A Host upgraded from the previous brand keeps its discovery file in ~/.pi-remote, so a
 // hand-started Claude Code (without ORBIS_STATE_DIR) must find that Host too.
 test("finds a Host whose state directory is still the legacy .pi-remote location", async ($, on) => {
-  const { clock, hellos } = setup(on, { home: "C:\\Users\\tester" });
+  // The native test engine resolves fs.read paths on the runner's OS; a Windows
+  // drive path is relative on macOS. Keep this synthetic home absolute on both.
+  const { clock, hellos } = setup(on, { home: "/orbis-test-home" });
   await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
   await clock.settle();
   expect(hellos()).toHaveLength(1);
