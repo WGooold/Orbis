@@ -93,10 +93,10 @@ the release. Either failure stays inside the existing rollback boundary.
 
 Release order for a tagged build on `main`:
 
-1. Dispatch **Windows Host build**, **macOS Host build** and **Android build**, all on `main` from the release commit. Each run uploads its own artifacts (`OrbisHost-windows-x64`, `OrbisHost-macos-arm64`, `OrbisHost-macos-x64`, `Orbis-android`), and each artifact carries the `.sha256` files next to the binaries.
+1. Dispatch **Windows Host build** and **macOS Host build**, plus **Android build** when Android is in scope, all on `main` from the release commit. Each run uploads its own artifacts (`OrbisHost-windows-x64`, `OrbisHost-macos-arm64`, `OrbisHost-macos-x64`, `Orbis-android`), and each artifact carries the `.sha256` files next to the binaries.
 2. Create a draft release for the tag.
-3. Dispatch **Publish client release** with `release_tag`, `windows_build_run_id`, `macos_build_run_id` and `android_build_run_id`. It refuses runs whose `head_sha` is not the tagged commit, re-checks every checksum, uploads the installer, portable ZIP, both dmgs and `orbis.apk` to the release, then undrafts it as latest.
-4. Dispatch **Relay deploy** with the same `windows_build_run_id` and `macos_build_run_id` plus `android_release_tag` and the `android_apk_sha256` printed by the Android build. It re-verifies the runs, archives the four host files, and publishes them from a read-only mount; the server re-verifies every archived checksum before switching traffic.
+3. Dispatch **Publish client release** with `release_tag`, `windows_build_run_id`, `macos_build_run_id` and, when Android is included, `android_build_run_id`. It refuses runs whose `head_sha` is not the tagged commit, re-checks every checksum, uploads the installer, portable ZIP, both dmgs and optional `orbis.apk` to the release, then undrafts it as latest. A Host-only release omits the Android input and assets.
+4. Dispatch **Relay deploy** with the same `windows_build_run_id` and `macos_build_run_id` plus `android_release_tag` and the `android_apk_sha256` printed by the Android build when publishing Android. Omit both Android inputs to retain its existing website download. It re-verifies the runs, archives the four host files, and publishes them from a read-only mount; the server re-verifies every archived checksum before switching traffic.
 
 Without those inputs a push-triggered **Relay deploy** still moves the Relay but publishes no downloads. The version in the client, packaging scripts, allowlist (`packages/relay/src/web.ts`) and release workflow must agree: the deploy fails if a file named after the version in `packages/windows-host/CMakeLists.txt` is missing from the artifacts.
 
