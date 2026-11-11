@@ -27,6 +27,14 @@ describe("updateClaudeIntegration", () => {
       ["plugin", "install", "orbis-host-session-link@orbis-host", "--scope", "user"],
       ["plugin", "update", "orbis-host-session-link@orbis-host", "--scope", "user"],
     ]);
+    // The plugin directory comes from a directory URL, so it carries a trailing separator.
+    // Claude Code 2.1.310 answers `Path does not exist: <dir>\` for that form of an existing directory.
+    for (const [pluginDir, added] of [["/app/runtime/packages/claude-mod/", "/app/runtime/packages/claude-mod"],
+      ["D:\\app\\runtime\\packages\\claude-mod\\", "D:\\app\\runtime\\packages\\claude-mod"]] as const) {
+      calls.length = 0;
+      await expect(updateClaudeIntegration({ pluginDir, uninstall: false, claude: "/bin/claude", run })).resolves.toBe("installed");
+      expect(calls[0]).toEqual(["plugin", "marketplace", "add", added]);
+    }
   });
 
   it("reports Claude's own failure instead of claiming the plugin is installed", async () => {

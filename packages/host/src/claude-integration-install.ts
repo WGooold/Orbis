@@ -55,6 +55,9 @@ export async function updateClaudeIntegration(input: {
   if (claude === undefined) return "claude_not_found";
   const run = input.run ?? runClaude;
   const plugin = `${CLAUDE_PLUGIN}@${CLAUDE_MARKETPLACE}`;
+  // Callers derive this from a directory URL, which keeps a trailing separator. Claude Code
+  // rejects that form with "Path does not exist: <dir>\" for a directory that exists.
+  const pluginDir = input.pluginDir.replace(/[\\/]+$/u, "");
   if (input.uninstall) {
     // Removing what is already absent is success; Claude reports it on stderr only.
     await run(claude, ["plugin", "uninstall", plugin, "--scope", "user"], env);
@@ -62,7 +65,7 @@ export async function updateClaudeIntegration(input: {
     return "removed";
   }
   // `add` re-points an existing marketplace of the same name, and `install` is idempotent.
-  await expectSuccess(run(claude, ["plugin", "marketplace", "add", input.pluginDir], env), "登记 Orbis 插件目录失败");
+  await expectSuccess(run(claude, ["plugin", "marketplace", "add", pluginDir], env), "登记 Orbis 插件目录失败");
   await expectSuccess(run(claude, ["plugin", "install", plugin, "--scope", "user"], env), "安装 Orbis Claude Code 插件失败");
   // Repeating `install` leaves an existing cached version unchanged. Refresh it
   // from the bundled marketplace so a Host upgrade also delivers plugin fixes.
