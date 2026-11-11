@@ -62,4 +62,6 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 
 剩余能力边界：ACP 的新建前清单、Claude 当前会话权限写入、Claude 原生默认模型与深度精确展示，以及 DSH Web 切换后的第二次真实模型请求尚未完成端到端验证。Claude 默认值未报告时显示继承并省略参数，模型清单的 `default` 别名不能替代当前配置。无专属权限接口的 Pi／ACP 保留来源说明。设备安装与视觉验收未执行；本轮不宣称这些边界已通过。
 
+Android S51／SC73 回归：新建权限选项在弹层内暂存，显式应用才执行退场提交，避免透明窗口残留拦截触摸。启动恢复记录通过 `ConfiguredLaunchJournal` 在后台串行读写，UI 和状态锁只访问内存快照；启动发送与就绪结果仍等待对应记录落盘。回归源码为 `SessionDraftConfigurationInstrumentedTest`、`ConfiguredLaunchJournalTest` 及既有启动／等待发送／配置账本测试。构建、自动验证与设备环境阻挡记录见 `.artifacts/draft-permission-freeze-20261111/verification.json`；未安装，待用户验证。
+
 S55／SC79（r57）：两端新建卡片的模型独占一行，思考深度与权限在下一行等宽排列；权限入口使用短名称，完整组合保留在无障碍值及分类面板中，深度优先展示 Host 选项标签。实现见 `SessionDraft.kt`、`SessionViews.swift`，HTML 同步见 `docs/design/session-draft-card-proposal.html`。320dp、中英文放大文字与长权限组合回归见 `SessionDraftConfigurationInstrumentedTest`、`OrbisUITests`；构建、界面验证及交付状态见 `.artifacts/draft-config-layout-20261111/verification.json`，待用户验证。

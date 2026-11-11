@@ -75,7 +75,7 @@ internal const val UPLOAD_READ_IDLE_MS = 10_000L
  * Shared, app-wide stores. One instance each: every store persists the whole document, so two
  * independent copies racing across Host connections would lose each other's writes.
  */
-internal class HostStores(application: Application) {
+internal class HostStores(private val application: Application) {
     // Set once by the hub before installing connections. Lazy initialization runs in their IO
     // startup worker, including migration, so the UI cannot wait on a disk-owning store lock.
     var legacyHostId: String? = null
@@ -85,6 +85,20 @@ internal class HostStores(application: Application) {
     val uploads by lazy { ArtifactUploadStore(application).also { store -> legacyHostId?.let(store::adoptHostId) } }
     val lastSession = LastSessionStore(application)
     val notifier = InteractionNotifier(application)
+    private val launchJournals = mutableMapOf<String, ConfiguredLaunchJournal>()
+
+    // Re-pairing replaces HostConnection while a previous disk write may still be running.
+    // Keep one ordered journal per Host for the hub's lifetime, as with the other shared stores.
+    fun configuredLaunchJournal(hostId: String, scope: CoroutineScope): ConfiguredLaunchJournal = synchronized(launchJournals) {
+        launchJournals.getOrPut(hostId) {
+            val preferences by lazy { application.getSharedPreferences("orbis_configured_launch", android.content.Context.MODE_PRIVATE) }
+            ConfiguredLaunchJournal(scope, read = { preferences.getString(hostId, null)?.let { raw ->
+                runCatching { E2eJson.json.parseToJsonElement(raw).jsonObject }.getOrNull()
+            } }, persist = { record -> preferences.edit().apply {
+                if (record == null) remove(hostId) else putString(hostId, record.toString())
+            }.commit() })
+        }
+    }
 }
 
 /** 首屏本地读取的三种结果：有数据 / 完全没有本地缓存（新会话）/ 有缓存但缺一段。 */
@@ -120,8 +134,8 @@ internal class HostConnection(
 
     val hostId: String get() = pairing.hostId
     private val relay = RelayClient()
-    private val configuredLaunchPreferences by lazy { application.getSharedPreferences("orbis_configured_launch", android.content.Context.MODE_PRIVATE) }
-    private var configuredLaunchId: String? = null
+    private val configuredLaunchJournal = stores.configuredLaunchJournal(hostId, scope)
+    private val configuredLaunchId: String? get() = configuredLaunchJournal.launchId
 
     fun loadSessionConfiguration(kind: String, cwd: String) {
         val current = mutableState.value
@@ -156,12 +170,20 @@ internal class HostConnection(
         }
     }
 
-    private fun recoverConfiguredLaunch() {
+    private fun recoverConfiguredLaunch() { scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground() } }
+
+    private suspend fun recoverConfiguredLaunchInBackground() {
+        configuredLaunchJournal.awaitLoaded()
         if (!mutableState.value.sessionConfigurationSupported) return
-        val raw = configuredLaunchPreferences.getString(hostId, null) ?: return
-        val saved = runCatching { E2eJson.json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return
-        val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return
-        configuredLaunchId = id
+        val id = configuredLaunchId ?: return
+        // Retry the same durable identity even if its first disk write failed. No native request
+        // is allowed to overtake the journal, including recovery after an immediate disconnect.
+        if (configuredLaunchJournal.update(id) { it }?.await() != true) {
+            configuredLaunchPersistenceFailed(id)
+            return
+        }
+        if (configuredLaunchId != id || !shouldConnect) return
+        val saved = configuredLaunchJournal.snapshot?.takeIf { it["launchId"]?.jsonPrimitive?.contentOrNull == id } ?: return
         val rejected = saved["rejected"]?.jsonPrimitive?.booleanOrNull == true
         if (mutableState.value.launching == null && (saved["sessionId"]?.jsonPrimitive?.contentOrNull == null ||
             mutableState.value.pendingSends[saved["firstMessageId"]?.jsonPrimitive?.contentOrNull] == null)) {
@@ -192,7 +214,10 @@ internal class HostConnection(
         if (snapshot == null || snapshot.agentKind != kind || snapshot.cwd != cwd || config.error != null) {
             updateState { it.copy(error = L10n.tr("请先读取并确认启动配置")) }; return false
         }
-        if (configuredLaunchPreferences.contains(hostId)) {
+        if (!configuredLaunchJournal.isLoaded) {
+            updateState { it.copy(error = L10n.tr("请先核对上一次启动及首句结果")) }; return false
+        }
+        if (configuredLaunchJournal.snapshot != null) {
             recoverConfiguredLaunch()
             updateState { it.copy(error = L10n.tr("请先核对上一次启动及首句结果")) }; return false
         }
@@ -204,12 +229,9 @@ internal class HostConnection(
             put("agentKind", kind); put("cwd", cwd); put("binding", snapshot.binding); put("revision", snapshot.revision)
             put("values", config.values.payload()); put("spawnMode", spawnMode)
         }
-        // Persist before writing. A lost write/result is recovered by identity, never by creating another launch.
+        // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
-        if (!configuredLaunchPreferences.edit().putString(hostId, journal.toString()).commit()) {
-            updateState { it.copy(error = L10n.tr("无法保存启动恢复记录，请重试")) }; return false
-        }
-        configuredLaunchId = id
+        val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
         val target = mapOf("type" to "new", "agentKind" to kind, "cwd" to cwd)
         updateState { it.copy(sessionActivateRequests = it.sessionActivateRequests + id).createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis()).first }
         if (firstMessage.isNotBlank()) {
@@ -217,9 +239,21 @@ internal class HostConnection(
             sendWhenReady(launch.placeholder, launch.placeholder, firstMessage, null, emptyList(), emptyList(),
                 listOfNotNull(mutableState.value.ledger.operation(id)), firstId, firstCommand)
         }
-        if (relay.sendDeviceMessage(payload)) updateState { it.ledgerWritten(id, System.currentTimeMillis()) }
-        else updateState { it.copy(launching = it.launching?.copy(unconfirmed = true)) }
+        scope.launch(Dispatchers.IO) {
+            if (!persisted.await()) { configuredLaunchPersistenceFailed(id); return@launch }
+            if (configuredLaunchId != id || !shouldConnect) return@launch
+            if (relay.sendDeviceMessage(payload)) updateState { it.ledgerWritten(id, System.currentTimeMillis()) }
+            else updateState { current -> current.copy(launching = current.launching?.let {
+                if (it.requestId == id) it.copy(unconfirmed = true) else it
+            }) }
+        }
         return true
+    }
+
+    private fun configuredLaunchPersistenceFailed(id: String) {
+        updateState { current -> current.copy(launching = current.launching?.let {
+            if (it.requestId == id) it.copy(unconfirmed = true, failure = L10n.tr("无法保存启动恢复记录，请重试")) else it
+        }) }
     }
     private val relayPreferences = application.getSharedPreferences("orbis_relay_transport", android.content.Context.MODE_PRIVATE)
     private fun savedRelayMode(): RelayTransportMode = runCatching {
@@ -427,6 +461,7 @@ internal class HostConnection(
 
     init {
         startupJob = scope.launch {
+            configuredLaunchJournal.awaitLoaded()
             // Hydrate before connecting so a late disk result cannot overwrite a live catalog.
             // Cancellation/shutdown must also prevent a slow read from opening a new socket.
             val restored = loadHostCache {
@@ -770,7 +805,7 @@ internal class HostConnection(
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
     /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
-        if (!mutableState.value.sessionConfigurationSupported && configuredLaunchPreferences.contains(hostId)) {
+        if (!mutableState.value.sessionConfigurationSupported && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
             updateState { it.copy(error = L10n.tr("请先核对上一次启动及首句结果")) }; return false
         }
         if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
@@ -835,8 +870,7 @@ internal class HostConnection(
     fun retryLaunch() {
         val launch = mutableState.value.launchPage ?: return
         if (launch.failure == null && !launch.unconfirmed) return
-        if (configuredLaunchPreferences.getString(hostId, null)?.let { runCatching {
-            E2eJson.json.parseToJsonElement(it).jsonObject["rejected"]?.jsonPrimitive?.booleanOrNull }.getOrNull() } == true) {
+        if (configuredLaunchJournal.snapshot?.get("rejected")?.jsonPrimitive?.booleanOrNull == true) {
             updateState { it.copy(error = L10n.tr("启动配置已失效，请返回新建卡片刷新")) }; return
         }
         if (launch.requestId == configuredLaunchId) { recoverConfiguredLaunch(); return }
@@ -1033,8 +1067,9 @@ internal class HostConnection(
         // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
         if (runtimeId == null && mutableState.value.launchPage != null) {
             if (mutableState.value.launching?.requestId == configuredLaunchId) {
-                val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() }
-                if (saved != null) configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + ("following" to JsonPrimitive(false))).toString()).commit()
+                configuredLaunchId?.let { id -> configuredLaunchJournal.update(id) { saved ->
+                    saved?.let { JsonObject(it + ("following" to JsonPrimitive(false))) }
+                } }
             }
             updateState { it.stopFollowingLaunch() }
         }
@@ -1499,9 +1534,8 @@ internal class HostConnection(
         }
         val pairedDevice = device
         val runtime = mutableState.value.runtimes[runtimeId]
-        if (pairedDevice != null && runtime != null && configuredLaunchPreferences.getString(hostId, null)?.let {
-            runCatching { E2eJson.json.parseToJsonElement(it).jsonObject["firstMessageId"]?.jsonPrimitive?.contentOrNull }.getOrNull()
-        } != messageId) draftStore.saveWaiting(pairedDevice, runtime, messageId, text)
+        if (pairedDevice != null && runtime != null && configuredLaunchJournal.snapshot?.get("firstMessageId")?.jsonPrimitive?.contentOrNull != messageId)
+            draftStore.saveWaiting(pairedDevice, runtime, messageId, text)
         flushReadySends()
         return commandId
     }
@@ -1620,9 +1654,9 @@ internal class HostConnection(
     fun uploadsOf(messageId: String): List<String> = mutableState.value.pendingSends[messageId]?.uploadIds.orEmpty()
 
     private fun clearConfiguredFirstMessage(messageId: String) {
-        val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return
+        val saved = configuredLaunchJournal.snapshot ?: return
         if (saved["firstMessageId"]?.jsonPrimitive?.contentOrNull == messageId && (saved["sessionId"] != null || saved["rejected"]?.jsonPrimitive?.booleanOrNull == true)) {
-            configuredLaunchPreferences.edit().remove(hostId).commit(); configuredLaunchId = null
+            configuredLaunchJournal.update(saved["launchId"]?.jsonPrimitive?.contentOrNull) { null }
         }
     }
 
@@ -2405,10 +2439,12 @@ internal class HostConnection(
                 if (interactiveChannel != null && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "session.launch.result" &&
                     incomingMessage["phase"]?.jsonPrimitive?.contentOrNull == "ready" &&
                     incomingMessage["launchId"]?.jsonPrimitive?.contentOrNull == configuredLaunchId) {
-                    val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() }
+                    val id = configuredLaunchId
                     val session = incomingMessage["sessionId"]
-                    if (saved != null && session != null && !configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + ("sessionId" to session)).toString()).commit()) {
-                        updateState { it.copy(error = L10n.tr("无法保存启动恢复记录，请重试")) }; continue
+                    if (id != null && session != null && configuredLaunchJournal.update(id) { saved ->
+                        saved?.let { JsonObject(it + ("sessionId" to session)) }
+                    }?.await() != true) {
+                        configuredLaunchPersistenceFailed(id); continue
                     }
                 }
                 val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
@@ -2555,21 +2591,20 @@ internal class HostConnection(
                                 if (interactiveChannel != null && messageType == "device.ready") scope.launch { recoverConfiguredLaunch() }
                                 if (interactiveChannel != null && messageType == "session.launch.result" && message != null) {
                                     val id = message["launchId"]?.jsonPrimitive?.contentOrNull
-                                    val saved = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() }
+                                    val saved = configuredLaunchJournal.snapshot
                                     if (id == configuredLaunchId && saved != null) {
-                                        if (message["phase"]?.jsonPrimitive?.contentOrNull == "ready") {
-                                            val session = message["sessionId"]
-                                            if (session != null) configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + ("sessionId" to session)).toString()).commit()
-                                        } else if (message["phase"]?.jsonPrimitive?.contentOrNull == "absent") {
+                                        if (message["phase"]?.jsonPrimitive?.contentOrNull == "absent") {
                                             // Authoritative absence permits retrying the identical operation; native creation stays deduplicated.
-                                            relay.sendDeviceMessage(JsonObject(saved.filterKeys { it !in setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following") }))
+                                            if (configuredLaunchJournal.update(id) { it }?.await() == true && configuredLaunchId == id)
+                                                relay.sendDeviceMessage(JsonObject(saved.filterKeys { it !in setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following") }))
+                                            else if (id != null) configuredLaunchPersistenceFailed(id)
                                         } else if (message["phase"]?.jsonPrimitive?.contentOrNull == "failed") {
-                                            configuredLaunchPreferences.edit().putString(hostId, JsonObject(saved + mapOf("rejected" to JsonPrimitive(true),
-                                                "error" to (message["error"] ?: JsonPrimitive(L10n.tr("配置未确认"))))).toString()).commit()
+                                            configuredLaunchJournal.update(id) { current -> current?.let { JsonObject(it + mapOf("rejected" to JsonPrimitive(true),
+                                                "error" to (message["error"] ?: JsonPrimitive(L10n.tr("配置未确认"))))) } }
                                             updateState { it.ledgerReceipt(id!!, LedgerReceipt.Failed(LedgerRejection("configuration_rejected",
                                                 message["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认"))), System.currentTimeMillis()) }
                                             if (saved["firstMessage"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
-                                                configuredLaunchPreferences.edit().remove(hostId).commit(); configuredLaunchId = null
+                                                configuredLaunchJournal.update(id) { null }
                                             }
                                         }
                                     }
@@ -3183,12 +3218,12 @@ internal class HostConnection(
             // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
             val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
             next = reconciled
-            val savedLaunch = configuredLaunchPreferences.getString(hostId, null)?.let { runCatching { E2eJson.json.parseToJsonElement(it).jsonObject }.getOrNull() }
+            val savedLaunch = configuredLaunchJournal.snapshot
             val firstId = savedLaunch?.get("firstMessageId")?.jsonPrimitive?.contentOrNull
             val savedSession = savedLaunch?.get("sessionId")?.jsonPrimitive?.contentOrNull
             if (savedSession != null && next.launching == null && (savedLaunch["firstMessage"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
                 firstId != null && current.pendingSends.containsKey(firstId) && !next.pendingSends.containsKey(firstId))) {
-                configuredLaunchPreferences.edit().remove(hostId).commit(); configuredLaunchId = null
+                configuredLaunchJournal.update(savedLaunch["launchId"]?.jsonPrimitive?.contentOrNull) { null }
             }
             settlementSyncs = syncs
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
