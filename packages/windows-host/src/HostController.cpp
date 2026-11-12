@@ -47,6 +47,7 @@ static bool validRelay(const QString &value) {
 HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir, bool automaticIntegrations, QObject *parent)
     : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
+    m_activationPool.setMaxThreadCount(1);
     m_automaticIntegrations = automaticIntegrations;
     m_installLauncher = [](const QString &path) {
 #ifdef Q_OS_MACOS
@@ -96,7 +97,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     if (!m_settings.contains("relayUrl") && validRelay(stored.value("relayUrl").toString())) {
         m_settings.setValue("relayUrl", stored.value("relayUrl").toString());
     }
-    if (stored.value("relayUrl").toString() == relayUrl()) {
+    if (CredentialStore::normalizedRelay(stored.value("relayUrl").toString()) == CredentialStore::normalizedRelay(relayUrl())) {
         m_email = stored.value("email").toString();
         m_credential = stored.value("credential").toString();
         m_hostId = stored.value("hostId").toString();
@@ -115,7 +116,9 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
             detectAgents(true);
             checkUpdatesInternal(false);
-            if (!m_deferStartup && activated() && m_settings.value("runHost", true).toBool()) startHost();
+            restoreActivation(relayUrl(), [this] {
+                if (!m_deferStartup && activated() && m_settings.value("runHost", true).toBool()) startHost();
+            });
             emit changed();
         });
     });
@@ -135,6 +138,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
+        // The relaunched core starts paused; a change that was waiting to resume the old one no longer applies.
+        m_settled.clear(); m_resumePending = false; m_relaySelectionPending = false;
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
@@ -198,11 +203,30 @@ void HostController::command(const QString &method, const QJsonObject &params, C
     m_bridge.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
     emit changed();
 }
+void HostController::afterQueuedCommands(std::function<void()> next) {
+    const int last = m_nextId - 1;
+    if (m_pending.contains(last)) m_settled.insert(last, std::move(next));
+    else next();
+}
+bool HostController::pauseForChange() {
+    if (!m_desiredRunning) return false;
+    m_desiredRunning = false; m_resumePending = true; m_qr.clear(); m_pairExpires = 0;
+    command("stop");
+    return true;
+}
+void HostController::resumeAfterChange() {
+    if (!m_resumePending) return;
+    m_resumePending = false;
+    // A previously used Relay resumes with its own credential; a new one needs activation.
+    startHost();
+    emit changed();
+}
 void HostController::receiveLine(const QJsonObject &line) {
     if (line.contains("id")) {
         int id = line.value("id").toInt();
         if (!m_pending.contains(id)) return;
         auto callback = m_pending.take(id); auto method = m_methods.take(id); m_requestParams.remove(id);
+        auto settled = m_settled.take(id);
         if (!isProviderBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
@@ -211,6 +235,7 @@ void HostController::receiveLine(const QJsonObject &line) {
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
         else if (callback) callback(line.value("result"));
+        if (settled) settled();
     } else {
         const auto event = line.value("event").toString();
         if (event == "state") {
@@ -263,9 +288,14 @@ void HostController::api(const QString &endpoint, const QJsonObject &body, Callb
     request.setTransferTimeout(30000);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     auto *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    const auto generation = m_activationGeneration;
+    const auto requestedRelay = relayUrl(), requestedHost = m_hostId;
     ++m_busy; emit changed();
-    connect(reply, &QNetworkReply::finished, this, [this, reply, done = std::move(done)] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, requestedRelay, requestedHost, done = std::move(done)] {
         m_busy = qMax(0, m_busy - 1);
+        if (generation != m_activationGeneration || requestedRelay != relayUrl() || requestedHost != m_hostId) {
+            reply->deleteLater(); emit changed(); return;
+        }
         auto result = QJsonDocument::fromJson(reply->readAll());
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status >= 200 && status < 300 && result.isObject()) done(result.object());
@@ -300,6 +330,7 @@ void HostController::requestCode(const QString &email) {
     });
 }
 void HostController::activate(const QString &email, const QString &code) {
+    if (!m_bridgeReady || busy()) return;
     const auto normalized = email.trimmed().toLower();
     if (m_challenge.isEmpty() || normalized != m_challengeEmail) { setMessage("请先为这个 QQ 邮箱获取验证码"); return; }
     if (!QRegularExpression("^\\d{6}$").match(code.trimmed()).hasMatch()) { setMessage("请输入 6 位验证码"); return; }
@@ -312,11 +343,45 @@ void HostController::activateWithoutEmail() {
 void HostController::saveActivation(const QJsonValue &value, const QString &successMessage) {
     auto obj = value.toObject();
     if (obj.value("hostId").toString() != m_hostId || !obj.value("credential").toString().startsWith("orbis_host_")) { setMessage("服务器返回了无效的激活凭据"); return; }
-    obj.insert("relayUrl", relayUrl()); QString error;
-    if (!CredentialStore::save(activationPath(), obj, &error)) { setMessage(error); return; }
-    m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString(); m_challenge.clear(); m_recoverWithEmail = false;
-    setMessage(successMessage);
-    startHost();
+    obj.insert("relayUrl", relayUrl());
+    const auto path = activationPath();
+    const auto generation = m_activationGeneration;
+    ++m_activationIO; emit changed();
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, obj, successMessage, generation] {
+        const auto error = watcher->result(); watcher->deleteLater(); --m_activationIO;
+        if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
+        if (!error.isEmpty()) { setMessage(error); emit changed(); return; }
+        m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString();
+        m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0; m_recoverWithEmail = false;
+        setMessage(successMessage); startHost(); emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, obj] {
+        QString error; CredentialStore::save(path, obj, &error); return error;
+    }));
+}
+void HostController::restoreActivation(const QString &relay, std::function<void()> done) {
+    const auto generation = ++m_activationGeneration;
+    const auto path = activationPath(), hostId = m_hostId;
+    ++m_activationIO; emit changed();
+    using Result = QPair<QJsonObject, QString>;
+    auto *watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, relay, generation, done = std::move(done)] {
+        const auto result = watcher->result(); watcher->deleteLater(); --m_activationIO;
+        if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
+        if (!result.second.isEmpty()) {
+            resumeAfterChange(); setMessage(result.second); emit changed(); return;
+        }
+        m_settings.setValue("relayUrl", CredentialStore::normalizedRelay(relay)); m_settings.sync();
+        m_email = result.first.value("email").toString(); m_credential = result.first.value("credential").toString();
+        m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0; m_qr.clear(); m_pairExpires = 0;
+        m_recoverWithEmail = false; m_verificationRequired = true; m_registrationAvailable = false;
+        refreshRegistrationPolicy(); done(); emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, relay, hostId] {
+        QString error; const auto value = CredentialStore::selectActivation(path, relay, hostId, &error);
+        return Result{value, error};
+    }));
 }
 void HostController::invalidateActivation() {
     if (m_credential.isEmpty()) return;
@@ -325,22 +390,20 @@ void HostController::invalidateActivation() {
     m_verificationRequired = !m_email.isEmpty();
     setMessage("激活凭据已失效，请重新激活");
     // Native key stores may wait on the OS; persist the rejected state off the UI thread.
-    ++m_busy;
+    const auto generation = m_activationGeneration;
+    ++m_activationIO;
     auto *watcher = new QFutureWatcher<QString>(this);
-    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, generation] {
         const auto error = watcher->result(); watcher->deleteLater();
-        m_busy = qMax(0, m_busy - 1);
-        if (!error.isEmpty()) setMessage("无法重置激活凭据：" + error);
+        --m_activationIO;
+        if (!m_shutdown && generation == m_activationGeneration && !error.isEmpty()) setMessage("无法重置激活凭据：" + error);
         emit changed();
     });
     const auto path = activationPath();
-    watcher->setFuture(QtConcurrent::run([path, recovery] {
+    watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, recovery] {
         QString error;
-        if (CredentialStore::save(path, recovery, &error)) return QString();
-        // A failed metadata save must not revive the rejected credential on relaunch.
-        QString clearError;
-        if (CredentialStore::clear(path, &clearError)) return QString();
-        return clearError;
+        CredentialStore::invalidateActivation(path, recovery, &error);
+        return error;
     }));
     refreshRegistrationPolicy();
 }
@@ -350,10 +413,11 @@ void HostController::refreshRegistrationPolicy() {
     QNetworkRequest request(url); request.setTransferTimeout(15000);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     const auto requestedRelay = relayUrl();
+    const auto generation = m_activationGeneration;
     auto *reply = m_network.get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, requestedRelay] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestedRelay, generation] {
         const auto status = QJsonDocument::fromJson(reply->readAll()).object();
-        if (requestedRelay == relayUrl()) {
+        if (requestedRelay == relayUrl() && generation == m_activationGeneration) {
             if (reply->error() == QNetworkReply::NoError && status.value("enabled").isBool()) {
                 // Re-verifying the original mailbox can rotate an existing registration,
                 // even while new computers are allowed to activate without email.
@@ -370,14 +434,14 @@ void HostController::refreshRegistrationPolicy() {
 }
 QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}, {"dshWebUrl", dshWebUrl()}}; }
 void HostController::startHost() {
-    if (!activated() || !m_bridgeReady || m_desiredRunning || agentInstalling()) return;
-    m_desiredRunning = true; m_state = "connecting"; m_settings.setValue("runHost", true);
+    if (!activated() || !m_bridgeReady || m_desiredRunning || agentInstalling() || m_activationIO > 0 || m_relaySelectionPending) return;
+    m_desiredRunning = true; m_resumePending = false; m_state = "connecting"; m_settings.setValue("runHost", true);
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
     params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
     command("start", params);
 }
-void HostController::stopHost() { m_desiredRunning = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
+void HostController::stopHost() { m_desiredRunning = false; m_resumePending = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
 void HostController::pair() { command("pair", {}, [this](const QJsonValue &value) { m_qr = value.toObject().value("qr").toString(); m_pairExpires = qint64(value.toObject().value("expiresAt").toDouble()); emit changed(); }); }
 void HostController::cancelPair() { m_qr.clear(); m_pairExpires = 0; command("cancelPair"); }
 void HostController::revoke(const QString &deviceId) { command("revoke", {{"deviceId", deviceId}}, [this](const QJsonValue &) { setMessage("设备已撤销，连接立即失效"); }); }
@@ -609,9 +673,9 @@ void HostController::setAutoStart(bool enabled) {
 
 void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration) {
     if (busy()) return;
-    QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
+    const auto normalized = CredentialStore::normalizedRelay(relay);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
-    if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
+    if (m_desiredRunning && normalized == CredentialStore::normalizedRelay(relayUrl())) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
     if (!dshUrl.trimmed().isEmpty()) {
         const QUrl web(dshUrl.trimmed());
         const auto query = QUrlQuery(web).queryItems();
@@ -621,11 +685,24 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
             setMessage("请填写本机 dsh web 启动时输出的完整 http://127.0.0.1:端口/?token=... 链接"); return;
         }
     }
+    if (normalized != CredentialStore::normalizedRelay(relayUrl())) {
+        // Drain the old runtime first: an authentication refusal from that connection
+        // must finish persisting before the worker selects another Relay's active slot.
+        pauseForChange(); m_relaySelectionPending = true; emit changed();
+        afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration] {
+            m_relaySelectionPending = false;
+            restoreActivation(normalized, [this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration] {
+                afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration] {
+                    saveSettings(normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration);
+                });
+            });
+        });
+        return;
+    }
     // Agent 入口由 Orbis 自己维护（安装、激活、共享记录），设置里不再提供路径字段。
     // Kept in the desktop API for older QML callers; the current switch applies independently.
     if (startup != autoStart()) { setAutoStart(startup); if (startup != autoStart()) return; }
 
-    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_recoverWithEmail = false; m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS
@@ -643,6 +720,7 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     }
     m_settings.sync();
     if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });
+    if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
     setMessage("设置已保存"); detectAgents(); refreshRegistrationPolicy();
 }
 void HostController::diagnose() {

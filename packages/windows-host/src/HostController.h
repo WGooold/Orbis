@@ -8,6 +8,7 @@
 #include <QNetworkReply>
 #include <QPointer>
 #include <QTimer>
+#include <QThreadPool>
 #include <QVariantList>
 #include <QHash>
 #include <functional>
@@ -72,6 +73,7 @@ public:
     ~HostController() override;
     QString state() const { return m_state; }
     bool desiredRunning() const { return m_desiredRunning; }
+    bool resumePending() const { return m_resumePending; }
     QString message() const { return m_message; }
     qint64 downloadReceived() const { return m_downloadReceived; }
     qint64 downloadTotal() const { return m_downloadTotal; }
@@ -93,7 +95,7 @@ public:
     bool activated() const { return !m_credential.isEmpty(); }
     bool verificationRequired() const { return m_verificationRequired; }
     bool registrationAvailable() const { return m_registrationAvailable; }
-    bool busy() const { return m_busy > 0 || m_exiting || m_updating; }
+    bool busy() const { return m_busy > 0 || m_activationIO > 0 || m_relaySelectionPending || m_exiting || m_updating; }
     bool exiting() const { return m_exiting; }
     bool exitApproved() const { return m_exitApproved; }
     bool bridgeReady() const { return m_bridgeReady; }
@@ -206,9 +208,18 @@ private:
     void finishExit();
     void failExit(const QString &message);
     void command(const QString &method, const QJsonObject &params = {}, Callback done = {});
+    /**
+     * The bridge answers requests strictly in queue order (cancelInstall excepted), so `next`
+     * runs once every request queued so far has settled, successfully or not.
+     */
+    void afterQueuedCommands(std::function<void()> next);
+    /** HOST-ACT-12: pause the old Relay before selecting credentials; remember whether to resume. */
+    bool pauseForChange();
+    void resumeAfterChange();
     void receiveLine(const QJsonObject &line);
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
     void saveActivation(const QJsonValue &value, const QString &successMessage);
+    void restoreActivation(const QString &relay, std::function<void()> done);
     void invalidateActivation();
     void handleRegistrationError(const QJsonObject &result);
     void setMessage(const QString &message);
@@ -226,6 +237,9 @@ private:
     QString activationPath() const { return m_credentialDir + "/activation.dat"; }
     QString m_runtimeRoot, m_dataDir, m_hostStateDir, m_credentialDir;
     QSettings m_settings;
+    QThreadPool m_activationPool;
+    int m_activationIO = 0, m_activationGeneration = 0;
+    bool m_relaySelectionPending = false;
     QProcess m_bridge;
     QProcess m_exitWorker;
     QTimer m_exitDeadline;
@@ -241,6 +255,7 @@ private:
     QTimer m_tick;
     QByteArray m_stdout;
     QHash<int, Callback> m_pending;
+    QHash<int, std::function<void()>> m_settled;
     QHash<int, QString> m_methods;
     QHash<int, QJsonObject> m_requestParams;
     int m_draftGeneration = 0;
@@ -258,7 +273,7 @@ private:
     QString m_downloadLabel;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;
-    bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
+    bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false, m_resumePending = false;
     bool m_claudeInstalled = false;
     bool m_claudeCompatible = false;
     QString m_claudeVersion, m_claudeMinimumVersion, m_claudeVersionError;
