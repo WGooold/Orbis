@@ -43,6 +43,29 @@ private slots:
     }
     void init() { m_mailConfigured = true; }
 
+    void claudeVersionStatusRecoversAfterUpgrade() {
+        // CLAUDE-MODS-MIN-01: stale version failures must clear on refresh; the
+        // native bridge still accepts the older installed-only status event.
+        QTemporaryDir temp;
+        HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
+        QCoreApplication::processEvents(); controller.m_tick.stop();
+        controller.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false},
+            {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}, {"error", "请升级 Claude Code"}});
+        QVERIFY(controller.claudeInstalled()); QVERIFY(!controller.claudeCompatible());
+        QCOMPARE(controller.claudeVersion(), QString("2.1.286"));
+        QCOMPARE(controller.claudeMinimumVersion(), QString("2.1.287"));
+        QVERIFY(!controller.claudeVersionError().isEmpty());
+        controller.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true},
+            {"version", "2.1.287"}, {"minimumVersion", "2.1.287"}});
+        QVERIFY(controller.claudeCompatible()); QVERIFY(controller.claudeVersionError().isEmpty());
+        QCOMPARE(controller.claudeVersion(), QString("2.1.287"));
+        controller.receiveLine({{"event", "claudeStatus"}, {"installed", true}});
+        QVERIFY(controller.claudeInstalled()); QVERIFY(controller.claudeCompatible());
+        QVERIFY(controller.claudeVersion().isEmpty()); QVERIFY(controller.claudeMinimumVersion().isEmpty());
+        controller.receiveLine({{"event", "claudeStatus"}, {"installed", false}, {"compatible", false}, {"minimumVersion", "2.1.287"}});
+        QVERIFY(!controller.claudeInstalled()); QVERIFY(!controller.claudeCompatible());
+    }
+
     void rejectedActivationReturnsToRegistration_data() {
         QTest::addColumn<QString>("email");
         QTest::addColumn<QString>("format");

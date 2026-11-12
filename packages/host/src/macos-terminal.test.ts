@@ -20,6 +20,9 @@ vi.mock("./claude-integration-install.js", async importOriginal => ({
 vi.mock("./claude-startup.js", async importOriginal => ({
   ...await importOriginal<typeof import("./claude-startup.js")>(), checkClaudeAuthentication: vi.fn(async () => undefined),
 }));
+vi.mock("./claude-version.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./claude-version.js")>(), requireClaudeModsVersion: vi.fn(async () => undefined),
+}));
 import { DesktopRuntime, shouldAutoEnableCodexTerminal } from "./desktop-runtime.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 

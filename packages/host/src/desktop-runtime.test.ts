@@ -9,12 +9,16 @@ import { RegistrationAuthority } from "../../relay/src/registration.js";
 import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 import * as claudeInstallation from "./claude-integration-install.js";
+import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
 
 describe("desktop Host lifecycle", () => {
   // Passive discovery must never attach these isolated test Hosts to a user's Web service.
-  beforeEach(() => { vi.spyOn(DshRuntime, "connectExisting").mockResolvedValue(undefined); });
+  beforeEach(() => {
+    vi.spyOn(DshRuntime, "connectExisting").mockResolvedValue(undefined);
+    vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
+  });
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("recovers an existing DSH bridge with prestart disabled and closes it when paused", async () => {
@@ -47,8 +51,45 @@ describe("desktop Host lifecycle", () => {
     const find = vi.spyOn(claudeInstallation, "findClaudeExecutable").mockResolvedValue(executable);
     try {
       await runtime.initialize({ claudeIntegrationEnabled: false });
-      expect(events).toContainEqual({ event: "claudeStatus", installed: executable !== undefined });
+      expect(events).toContainEqual({ event: "claudeStatus", installed: executable !== undefined, minimumVersion: "2.1.287",
+        compatible: executable !== undefined, ...(executable ? { version: "2.1.322" } : {}) });
     } finally { find.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // CLAUDE-MODS-MIN-01: finding a binary is not proof of Mods support. A failed
+  // probe stays visible in Agent status without preventing the Host from opening.
+  it.each(["2.1.286", "2.1.287", undefined])("reports the native Mods version requirement for %s", async version => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-version-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    vi.spyOn(claudeInstallation, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    if (version) vi.mocked(claudeVersion.readClaudeVersion).mockResolvedValue(version);
+    else vi.mocked(claudeVersion.readClaudeVersion).mockRejectedValue(new Error("无法读取 Claude Code 版本"));
+    try {
+      await expect(runtime.initialize({ claudeIntegrationEnabled: false })).resolves.toHaveProperty("hostId");
+      expect(events).toContainEqual(expect.objectContaining({ event: "claudeStatus", installed: true,
+        minimumVersion: "2.1.287", compatible: version === "2.1.287",
+        ...(version ? { version } : {}), ...(version === "2.1.287" ? {} : { error: expect.stringContaining(version ? "最低 2.1.287" : "无法读取") }) }));
+    } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // CLAUDE-MODS-MIN-03: a slow optional version probe must not hold the entire
+  // Host at initialization; its result is delivered independently as Agent status.
+  it("initializes the Host while a Claude version check is still pending", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-pending-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    vi.spyOn(claudeInstallation, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    let finish!: (version: string) => void;
+    vi.mocked(claudeVersion.readClaudeVersion).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    let initialized = false;
+    const pending = runtime.initialize({ claudeIntegrationEnabled: false }).then(() => { initialized = true; });
+    try {
+      await vi.waitFor(() => expect(claudeVersion.readClaudeVersion).toHaveBeenCalled());
+      await vi.waitFor(() => expect(initialized).toBe(true));
+      finish("2.1.322");
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "claudeStatus", version: "2.1.322", compatible: true })));
+    } finally { finish?.("2.1.322"); await pending; await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 
   it.each([undefined, true, false])("applies the Claude integration preference %s before Relay activation", async enabled => {

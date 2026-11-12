@@ -139,6 +139,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
         m_claudeInstalled = false;
+        m_claudeCompatible = false;
+        m_claudeVersion.clear(); m_claudeMinimumVersion.clear(); m_claudeVersionError.clear();
         if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
@@ -243,7 +245,13 @@ void HostController::receiveLine(const QJsonObject &line) {
         else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt(); }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
-        else if (event == "claudeStatus") { m_claudeInstalled = line.value("installed").toBool(); }
+        else if (event == "claudeStatus") {
+            m_claudeInstalled = line.value("installed").toBool();
+            m_claudeCompatible = line.value("compatible").toBool(m_claudeInstalled);
+            m_claudeVersion = line.value("version").toString();
+            m_claudeMinimumVersion = line.value("minimumVersion").toString();
+            m_claudeVersionError = line.value("error").toString();
+        }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
     emit changed();

@@ -11,6 +11,7 @@ import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
 import { CLAUDE_STARTUP_ENV } from "./agent-startup.js";
 import { AGENT_LAUNCH_ENV_KEYS, agentPowerShellScript } from "./agent-command.js";
 import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
+import { requireClaudeModsVersion } from "./claude-version.js";
 
 /**
  * Opens Claude Code's official TUI in a terminal window on this computer (ADR-0033 §1:
@@ -71,6 +72,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const env = { ...(this.#options.env ?? process.env) };
     const config = claudeLaunchConfig(this.#options.configDir, env, this.#options.home);
     if (config.directory === undefined) delete env.CLAUDE_CONFIG_DIR; else env.CLAUDE_CONFIG_DIR = config.directory;
+    await requireClaudeModsVersion(cli, env, cwd);
     return claudeSessionConfiguration(cli, cwd, env);
   }
 
@@ -91,6 +93,11 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const claude = (await this.#claude())!;
     let terminalAttempted = false;
     try {
+    const config = claudeLaunchConfig(this.#options.configDir, env, this.#options.home);
+    const launchEnv = { ...env };
+    if (config.directory === undefined) delete launchEnv.CLAUDE_CONFIG_DIR;
+    else launchEnv.CLAUDE_CONFIG_DIR = config.directory;
+    await requireClaudeModsVersion(claude, launchEnv, request.cwd);
     const startup = await claudeStartupSettings({ cwd: request.cwd, configDir: this.#options.configDir, env, platform,
       managedSettingsPath: claudeManagedSettingsPath(platform, env) });
     const args = [...(request.resume !== undefined ? ["--resume", request.resume]
@@ -106,10 +113,6 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       catch { throw new Error("找不到 Orbis 的 Claude Code 插件，请在电脑端 Host 设置里开启 Claude Code 连接"); }
       args.push("--plugin-dir", pluginDir);
     }
-    const config = claudeLaunchConfig(this.#options.configDir, env, this.#options.home);
-    const launchEnv = { ...env };
-    if (config.directory === undefined) delete launchEnv.CLAUDE_CONFIG_DIR;
-    else launchEnv.CLAUDE_CONFIG_DIR = config.directory;
     if (!request.setup) await checkClaudeAuthentication(claude, request.cwd, launchEnv);
     if (request.configuration?.permissions?.mode !== undefined) {
       const { claudeSessionConfiguration } = await import("./session-configuration-probe.js");

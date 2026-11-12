@@ -27,6 +27,7 @@ import type { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.
 import type { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import type { ClaudeLauncher } from "./claude-launcher.js";
 import { ClaudeStartupBlocked } from "./claude-startup.js";
+import { CLAUDE_MIN_VERSION } from "./claude-version.js";
 import type { ClaudeModsBridge } from "./claude-mods-bridge.js";
 
 export type AgentActivateTarget =
@@ -480,7 +481,7 @@ export class ClaudeBackend implements AgentBackend {
     const runtime = await connected;
     if (runtime === undefined) {
       throw new ActivationError("spawn_failed", `已在电脑上打开 Claude Code，但 ${Math.round(timeoutMs / 1000)} 秒内没有连上 Orbis。`
-        + "目录授权已处理；请检查 Claude 登录状态、Orbis 插件加载或管理策略，并确认 Claude Code 为 2.1.287 或更新版本。");
+        + `目录授权已处理；请检查 Claude 登录状态、Orbis 插件加载或管理策略，并确认 Claude Code 为 ${CLAUDE_MIN_VERSION} 或更新版本。`);
     }
     return runtime;
   }

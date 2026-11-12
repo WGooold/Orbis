@@ -46,6 +46,10 @@ class HostController : public QObject {
     Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeIntegrationEnabled READ claudeIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeInstalled READ claudeInstalled NOTIFY changed)
+    Q_PROPERTY(bool claudeCompatible READ claudeCompatible NOTIFY changed)
+    Q_PROPERTY(QString claudeVersion READ claudeVersion NOTIFY changed)
+    Q_PROPERTY(QString claudeMinimumVersion READ claudeMinimumVersion NOTIFY changed)
+    Q_PROPERTY(QString claudeVersionError READ claudeVersionError NOTIFY changed)
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
@@ -98,6 +102,10 @@ public:
     bool piIntegrationEnabled() const { return m_settings.value("piIntegrationEnabled", true).toBool(); }
     bool claudeIntegrationEnabled() const { return m_settings.value("claudeIntegrationEnabled", true).toBool(); }
     bool claudeInstalled() const { return m_claudeInstalled; }
+    bool claudeCompatible() const { return m_claudeCompatible; }
+    QString claudeVersion() const { return m_claudeVersion; }
+    QString claudeMinimumVersion() const { return m_claudeMinimumVersion; }
+    QString claudeVersionError() const { return m_claudeVersionError; }
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
@@ -251,6 +259,8 @@ private:
     qint64 m_pairExpires = 0;
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
     bool m_claudeInstalled = false;
+    bool m_claudeCompatible = false;
+    QString m_claudeVersion, m_claudeMinimumVersion, m_claudeVersionError;
     bool m_verificationRequired = true, m_registrationAvailable = false;
     bool m_recoverWithEmail = false;
     QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;

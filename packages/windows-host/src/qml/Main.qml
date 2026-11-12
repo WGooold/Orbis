@@ -855,8 +855,10 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth: true
                                     Heading { text: "Claude Code"; color: Theme.agentClaude }
                                     Item { Layout.fillWidth: true }
-                                    Hint { text: host.claudeInstalled ? "可用" : "尚未安装" }
+                                    Hint { text: !host.claudeInstalled ? "尚未安装" : host.claudeCompatible ? "可用" : host.claudeVersion ? "需升级" : "版本未确认"; color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
                                 }
+                                Hint { visible: !!host.claudeMinimumVersion; text: "当前 " + (host.claudeVersion || "—") + "，最低 " + host.claudeMinimumVersion; Layout.fillWidth: true }
+                                Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
                                 Hint { text: "供应商切换后，请重新打开 Claude Code 会话。"; Layout.fillWidth: true }
                                 RowLayout {
                                     ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }

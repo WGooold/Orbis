@@ -23,10 +23,11 @@ import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { claudeConfigDir, type ClaudeTranscriptFacts } from "./claude-transcript.js";
 import { localHostname } from "./sessions.js";
 import { LocalClaudeProcessControl, type ClaudeProcessControl, type ClaudeProcessIdentity } from "./claude-process.js";
+import { CLAUDE_MIN_VERSION, supportsClaudeMods } from "./claude-version.js";
+export { CLAUDE_MIN_VERSION } from "./claude-version.js";
 
 /** The bridge contract is deliberately independent of the TUI's internal API. */
 export const CLAUDE_BRIDGE_VERSION = "4";
-export const CLAUDE_MIN_VERSION = "2.1.287";
 export const CLAUDE_BRIDGE_CAPABILITIES = [
   "prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity",
   "agent.list",
@@ -249,7 +250,7 @@ export class ClaudeModsBridge {
     if (!parsed.interactive) return reject("non_interactive_session");
     if (parsed.bridgeVersion !== CLAUDE_BRIDGE_VERSION) return reject(`bridge_version_unsupported:${CLAUDE_BRIDGE_VERSION}`);
     const minimum = this.#options.minClaudeVersion ?? CLAUDE_MIN_VERSION;
-    if (compareVersion(parsed.claudeVersion, minimum) < 0) return reject(`claude_version_too_old:${minimum}`);
+    if (!supportsClaudeMods(parsed.claudeVersion, minimum)) return reject(`claude_version_too_old:${minimum}`);
     const required = this.#options.requiredCapabilities ?? CLAUDE_BRIDGE_CAPABILITIES;
     const capabilities = new Set(parsed.capabilities);
     const missing = required.find(capability => !capabilities.has(capability));
@@ -876,16 +877,6 @@ function finishedMessage(messageId: string, live: { blocks: Map<number, { type: 
 function messageOf(messageId: string, role: ChatMessage["role"], content: readonly RemoteContent[]): ChatMessage {
   const result = ChatMessageSchema.parse({ messageId, role, content, timestamp: Date.now() });
   return result;
-}
-
-function compareVersion(a: string, b: string): number {
-  const left = a.match(/\d+/g)?.map(Number) ?? [];
-  const right = b.match(/\d+/g)?.map(Number) ?? [];
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const delta = (left[i] ?? 0) - (right[i] ?? 0);
-    if (delta !== 0) return delta;
-  }
-  return 0;
 }
 
 function validVersion(value: string): boolean { return /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(value); }

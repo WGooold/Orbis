@@ -26,6 +26,7 @@ import { openWindowsConsole, WindowsConsoleLaunchError } from "./windows-console
 import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher } from "./claude-launcher.js";
+import { CLAUDE_MIN_VERSION, claudeVersionRequirement, readClaudeVersion } from "./claude-version.js";
 import { CODEX_STARTUP_ARGS, PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
@@ -119,6 +120,7 @@ async function terminalWorkspace(cwd: string | undefined): Promise<string> {
 export class DesktopRuntime {
   readonly #stateDir: string;
   #claudeIntegrationInstalled = false;
+  #claudeDetection: Promise<void> | undefined;
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
   #codex: CodexAppServer | undefined;
@@ -173,7 +175,7 @@ export class DesktopRuntime {
     await adoptWindowsEnvironment();
     // DMG / portable installs have no installer hook. Register before Relay activation as well.
     await this.#ensureClaudeIntegration(settings);
-    await this.#detectClaude();
+    this.#scheduleClaudeDetection();
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
     try { await this.#providers.startRouting(); }
     catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
@@ -259,7 +261,7 @@ export class DesktopRuntime {
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
     await adoptWindowsEnvironment();
     await this.#environment(settings);
-    await this.#detectClaude();
+    this.#scheduleClaudeDetection();
     const managed = this.#managedRoot();
     return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
       const copies = await findAgentCopies(kind, process.env);
@@ -337,9 +339,27 @@ export class DesktopRuntime {
     }));
   }
 
+  #scheduleClaudeDetection(): void {
+    // CLAUDE-MODS-MIN-03: optional native version I/O must not delay unrelated
+    // Host initialization or Agent discovery. Concurrent refreshes share one read.
+    this.#claudeDetection ??= this.#detectClaude()
+      .catch(error => this.log(`检测 Claude Code 失败：${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => { this.#claudeDetection = undefined; });
+  }
+
   async #detectClaude(): Promise<void> {
     // Claude uses its native installer and settings, outside the managed npm Agents.
-    this.#emit({ event: "claudeStatus", installed: await findClaudeExecutable(process.env) !== undefined });
+    const cli = await findClaudeExecutable(process.env);
+    const status = { event: "claudeStatus", installed: cli !== undefined, minimumVersion: CLAUDE_MIN_VERSION };
+    if (!cli) { this.#emit({ ...status, compatible: false }); return; }
+    this.#emit({ ...status, compatible: false });
+    try {
+      const version = await readClaudeVersion(cli, process.env);
+      const error = claudeVersionRequirement(version);
+      this.#emit({ ...status, version, compatible: error === undefined, ...(error ? { error } : {}) });
+    } catch (error) {
+      this.#emit({ ...status, compatible: false, error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   /**
@@ -1035,7 +1055,7 @@ export class DesktopRuntime {
     this.cancelInstall();
     await this.#installationTask?.catch(() => {});
     if (this.#poll) clearInterval(this.#poll);
-    await Promise.all([this.#usage.close(), this.stop()]);
+    await Promise.all([this.#usage.close(), this.stop(), this.#claudeDetection]);
     await this.#providers.closeRouting();
   }
   cancelInstall(): void {

@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { agentInvocation, findExternalAgentEntries } from "./agent-command.js";
+import { requireClaudeModsVersion } from "./claude-version.js";
 
 /**
  * Registers the Orbis Claude Code plugin through Claude Code's own plugin CLI
@@ -52,6 +53,7 @@ export async function updateClaudeIntegration(input: {
     await run(claude, ["plugin", "marketplace", "remove", CLAUDE_MARKETPLACE], env);
     return "removed";
   }
+  await requireClaudeModsVersion(claude, env, undefined, input.run);
   // `add` re-points an existing marketplace of the same name, and `install` is idempotent.
   await expectSuccess(run(claude, ["plugin", "marketplace", "add", pluginDir], env), "登记 Orbis 插件目录失败");
   await expectSuccess(run(claude, ["plugin", "install", plugin, "--scope", "user"], env), "安装 Orbis Claude Code 插件失败");
