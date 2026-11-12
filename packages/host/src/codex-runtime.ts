@@ -3331,11 +3331,14 @@ export class CodexRuntime implements AgentBackend {
   /** 全量拉一个 thread 的 turns（itemsView full，分页取尽），用于回退后重建历史。 */
   async #listAllTurns(threadId: string): Promise<unknown[]> {
     let previous: string | undefined;
+    let pages = 0, total = 0;
     for (let attempt = 0; attempt < 3; attempt++) {
       const turns: unknown[] = [];
       const cursors = new Set<string>();
       let cursor: string | undefined;
+      pages = 0;
       do {
+        pages += 1;
         let page: Record<string, unknown>;
         try {
           page = object(await this.#server.request("thread/turns/list", {
@@ -3364,17 +3367,22 @@ export class CodexRuntime implements AgentBackend {
         turns.push(...page.data);
         cursor = typeof page.nextCursor === "string" && page.nextCursor.length > 0 ? page.nextCursor : undefined;
         if (cursor !== undefined) {
-          if (cursors.has(cursor)) throw new Error("codex_native_history_unstable");
+          if (cursors.has(cursor)) {
+            this.#options.log?.(`Codex 原生历史分页游标重复（thread=${threadId} attempt=${attempt + 1} pages=${pages} turns=${turns.length}）`);
+            throw new Error("codex_native_history_cursor_loop");
+          }
           cursors.add(cursor);
         }
       } while (cursor !== undefined);
       if (cursors.size === 0 && previous === undefined) return turns;
       // Native cursors have no revision token. Require consecutive matching reads
       // before publishing a history assembled from multiple native responses.
-      const signature = nativeHistorySignature(turns);
+      const signature = nativeHistoryStabilitySignature(turns);
       if (signature === previous) return turns;
       previous = signature;
+      total = turns.length;
     }
+    this.#options.log?.(`Codex 原生历史连续读取不一致（thread=${threadId} attempts=3 pages=${pages} turns=${total}）`);
     throw new Error("codex_native_history_unstable");
   }
 
@@ -4500,6 +4508,17 @@ function resultText(value: unknown, canonical = false): string {
 
 function nativeHistorySignature(turns: unknown): string {
   return createHash("sha256").update(resultText(turns, true)).digest("base64url");
+}
+
+/**
+ * Stability key for consecutive multi-page reads. A running final turn arrives in one page
+ * and grows while Codex works, so only its identity is compared; every retained turn is
+ * compared in full and still exposes a revert between pages.
+ */
+function nativeHistoryStabilitySignature(turns: unknown[]): string {
+  const last = object(turns.at(-1));
+  if (last.status !== "inProgress" && last.status !== "in_progress") return nativeHistorySignature(turns);
+  return nativeHistorySignature([...turns.slice(0, -1), { id: last.id, status: "inProgress" }]);
 }
 
 function skillCommands(value: unknown): DynamicSlashCommand[] {

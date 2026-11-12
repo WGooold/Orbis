@@ -249,7 +249,8 @@ export class SessionSyncTasks {
     task.reserved = 0;
     this.#options.error(task.deviceId, task.commandId, code, message);
     // 现场判据：距上次进展多久才被宣布结束（区分"慢"与"死"靠的就是这个数）。
-    this.#log(task, "failed", `code=${code} sinceProgressMs=${this.#now() - task.lastProgressAt}`);
+    const reason = message === undefined || message.length === 0 ? "" : ` error=${JSON.stringify(message.replace(/\s+/gu, " ").slice(0, 160))}`;
+    this.#log(task, "failed", `code=${code} sinceProgressMs=${this.#now() - task.lastProgressAt}${reason}`);
     this.#schedule();
   }
   #remove(task: Task): void {

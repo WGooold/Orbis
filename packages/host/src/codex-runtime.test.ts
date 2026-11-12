@@ -1065,6 +1065,71 @@ describe("Codex recoverable source checkpoints", () => {
       .toMatchObject({ source: { ready: true }, head: { leafId: "a" } }));
     expect(syncHistory(h)?.entries.map(entry => entry.entryId)).toEqual(["a"]);
   });
+
+  // CODEX-HISTORY-01: an overdue preview re-reads a multi-page Codex history while its final
+  // turn is still running. The tail grows between reads; retained turns must still match.
+  /** Answers one complete paged pass; `served` counts native reads answered before it. */
+  const pagedRead = async (h: ReturnType<typeof makeHarness>, pages: unknown[][], served: number) => {
+    for (const [index, data] of pages.entries()) {
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(served + index + 1));
+      h.resolveNext(index < pages.length - 1 ? { data, nextCursor: `page-${index + 2}` } : { data });
+    }
+    return served + pages.length;
+  };
+  const running = (...items: unknown[]) => ({ id: "t2", status: "inProgress", items });
+  const syncResult = (h: ReturnType<typeof makeHarness>) =>
+    h.events.find(event => event.type === "command.result" && event.commandId === "sync-command");
+
+  it("publishes an overdue preview for a paged history whose final turn keeps running", async () => {
+    const h = makeHarness();
+    const first = { id: "t1", status: "completed", items: [agent("a")] };
+    await resume(h, [first, running(agent("b", "par"))]);
+    const date = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      expect(syncHistory(h, { syncId: "probe" })).toBeUndefined();
+      const served = await pagedRead(h, [[first], [running(agent("b", "partial"))]], 0);
+      await pagedRead(h, [[first], [running(agent("b", "partial longer"), tool("c"))]], served);
+      await vi.waitFor(() => expect(syncResult(h)).toMatchObject({ ok: true }));
+      expect(nativeReads(h)).toHaveLength(4);
+      const response = h.events.find(event => event.type === "session.snapshot" && event.syncId === "probe");
+      expect(response).toMatchObject({ source: { ready: true }, entries: [expect.objectContaining({ entryId: "a" })] });
+      // Only the latest read contains tool "c": the published tail comes from that read.
+      // Running message text stays owned by the live stream (CODEX-LIVE-01).
+      expect(response).toMatchObject({ live: { toolInventory: { totalCount: 1 } } });
+    } finally { date.mockRestore(); }
+  });
+
+  it("still refuses a paged history whose retained turns change on every read", async () => {
+    const h = makeHarness();
+    const first = (text: string) => ({ id: "t1", status: "completed", items: [agent("a", text)] });
+    await resume(h, [first("a0"), running(agent("b", "par"))]);
+    const date = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      expect(syncHistory(h, { syncId: "probe" })).toBeUndefined();
+      let served = 0;
+      for (const text of ["a1", "a2", "a3"]) served = await pagedRead(h, [[first(text)], [running(agent("b", "partial"))]], served);
+      await vi.waitFor(() => expect(syncResult(h)).toMatchObject({ ok: false, error: "codex_native_history_unstable" }));
+      expect(nativeReads(h)).toHaveLength(6);
+      expect(h.events.find(event => event.type === "session.snapshot" && event.syncId === "probe")).toBeUndefined();
+    } finally { date.mockRestore(); }
+  });
+
+  it("reports a repeated native page cursor with its own code and does not retry", async () => {
+    const h = makeHarness();
+    const first = { id: "t1", status: "completed", items: [agent("a")] };
+    const second = { id: "t2", status: "completed", items: [agent("b")] };
+    await resume(h, [first, second]);
+    const date = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 16_000);
+    try {
+      expect(syncHistory(h, { syncId: "probe" })).toBeUndefined();
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.resolveNext({ data: [first], nextCursor: "page-2" });
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+      h.resolveNext({ data: [second], nextCursor: "page-2" });
+      await vi.waitFor(() => expect(syncResult(h)).toMatchObject({ ok: false, error: "codex_native_history_cursor_loop" }));
+      expect(nativeReads(h)).toHaveLength(2);
+    } finally { date.mockRestore(); }
+  });
 });
 
 describe("Codex bounded canonical history", () => {

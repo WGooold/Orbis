@@ -359,6 +359,15 @@ describe("SessionSyncTasks", () => {
     expect(h.log).toHaveBeenCalledWith(expect.stringContaining("code=session_sync_busy reason=pending_limit path=relay records=32 pending=32"));
   });
 
+  it("logs the backend failure reason on the failed stage line", () => {
+    // CODEX-HISTORY-01：同一 session_sync_backend_failed 可来自不同后端原因，诊断日志需保留原因且保持单行。
+    const h = harness();
+    h.manager.request("a", "runtime", "cmd", request()); h.manager.tick();
+    h.manager.handleEvent("runtime", { type: "command.result", commandId: h.dispatches[0]!.id, ok: false, error: "codex_native_history_unstable\nnext" });
+    expect(h.error).toHaveBeenLastCalledWith("a", "cmd", "session_sync_backend_failed", "codex_native_history_unstable\nnext");
+    expect(h.log).toHaveBeenCalledWith(expect.stringMatching(/stage=failed .* code=session_sync_backend_failed sinceProgressMs=0 error="codex_native_history_unstable next"$/u));
+  });
+
   it("queue refusal and path loss return correlated errors and release budget", () => {
     const h = harness();
     h.manager.request("a", "runtime", "cmd", request()); h.manager.tick();

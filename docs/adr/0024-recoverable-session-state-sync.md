@@ -166,6 +166,7 @@ v22（追加“！”）到达，要求 baseSeq=21。
 - Protocol 的 checkpoint/patch 契约已接入全部后端；当前工作树协议版本为 12（条件响应见 ADR-0026，通知集合另见 ADR-0028）。状态 checkpoint 只由 preview 返回，history/catchup 携带 source 所有权，不接管当前 head/live。
 - Codex adapter 和 APP reducer 为首阶段实现；2026-10-10 继续接入 Pi extension、默认 DSH Web adapter 及 legacy/test ACP adapter。APP 复用已有版本化入口；这些源端不再向手机发布旧 message/turn/tool 生命周期事件，不存在新旧事件共同写聊天状态的回落路径。
 - Codex 的确定性重建、协调代次与版本化 live/checkpoint 已有实现和单测。原生通知的 canonical 提交及 live/tool 移除作为一次状态事务发布；每 15 秒、重新 announce 以及到期 preview 核对原生 `thread/turns/list`，可以发现静默回退和遗漏的完成通知。首版会读取完整 turns，长会话和多会话的读取成本仍需优化；原生多页没有 revision token 时要求连续读取一致，不把无法确认的结果发布为 ready。
+- CODEX-HISTORY-01（2026-11-12）：多页一致性比较对仍在运行的末尾 turn 只核对身份，其余 turn 完整比较，页间回退照常拒绝；分页游标重复报 `codex_native_history_cursor_loop`，两类失败及 `session.sync` 失败行记录原因。实现与回归见 [codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)、[session-sync-tasks.ts](../../packages/host/src/session-sync-tasks.ts)，现场摘录与自动验证见 [verification.json](../../.artifacts/codex-history-unstable-20261112/verification.json)。代码修复与自动验证完成；未部署，用户验收待用户验证。
 - APP 已实现缺口恢复、完整 checkpoint 后重放连续 patch、history/catchup 只补缓存和旧生命周期隔离。SQLite 版本 7 按 ADR-0025 持久化缓存 epoch/行 seq 并允许权威修正；保留旧 Codex 表示迁移记录，非法结构仍整批失败。
 - Codex GUI/TUI 自动刷新由 ADR-0023 / Issue #4 跟踪。刷新协调器和持久 journal 不等于生产 driver 已接入，也不等于真实 GUI 已完成 hydration。
 - 单测覆盖和真实链路验收分别记录。此前 Android SQLite 设备测试 20 项通过，覆盖旧 Codex 缓存迁移、迁移失败整批回滚、不可变冲突与 coverage 恢复；本次 Pi/DSH 的源端与隔离原生链路验证见下节。大 checkpoint 分块、真实手机断连/换路及全部故障矩阵仍是明确限制。
