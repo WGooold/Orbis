@@ -126,6 +126,30 @@ describe("QQ mailbox activation", () => {
     }
     await expect(authority.activate({ hostId: "direct-host-extra" }, "source", () => false)).rejects.toMatchObject({ code: "too_many_requests" });
   });
+
+  it("retains a reset registration and follows the current verification policy before replacing its credential", async () => {
+    // HOST-ACT-07: operator reset is a persisted recovery authorization, not an
+    // automatic replacement. Even a formerly direct Host must obey a new email policy.
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-registration-reset-")), "accounts.json");
+    let code = "";
+    const authority = await RegistrationAuthority.create({ stateFile, sendMail: async mail => { code = mail.code; } });
+    const hostId = "direct-reset-host";
+    const original = await authority.activate({ hostId }, "source", () => false);
+    const registeredAt = authority.listHosts()[0]!.registeredAt;
+    await authority.resetHost(hostId);
+    expect(authority.hostForCredential(original.credential)).toBeUndefined();
+    expect(authority.listHosts()).toContainEqual(expect.objectContaining({ hostId, registeredAt, activationResetAt: expect.any(Number) }));
+    const restarted = await RegistrationAuthority.create({ stateFile, sendMail: async mail => { code = mail.code; } });
+    await expect(restarted.activate({ hostId }, "source", () => true)).rejects.toMatchObject({ code: "email_verification_required" });
+    const body = { hostId, email: "owner@qq.com" };
+    const challenge = await restarted.requestCode(body, "source");
+    const replacement = await restarted.activate({ ...body, ...challenge, code }, "source", () => true);
+    expect(restarted.hostForCredential(replacement.credential)).toBe(hostId);
+    expect(restarted.hostForCredential(original.credential)).toBeUndefined();
+    expect(restarted.listHosts()[0]).toMatchObject({ hostId, email: body.email, registeredAt });
+    expect(restarted.listHosts()[0]).not.toHaveProperty("activationResetAt");
+    await expect(restarted.activate({ hostId }, "source", () => false)).rejects.toMatchObject({ code: "host_already_registered" });
+  });
 });
 
 describe("registered Host Relay routes", () => {

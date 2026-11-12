@@ -9,6 +9,7 @@ import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolve
 import QRCode from "qrcode";
 import type { AgentStateRangeRequest } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
+import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
@@ -509,6 +510,7 @@ export class DesktopRuntime {
         if (runtime) this.#dshRuntime = runtime;
         return runtime;
       };
+      let relayAuthenticated = false;
       const service = await HostService.create({
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
@@ -530,7 +532,14 @@ export class DesktopRuntime {
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
         // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。
-        onStateChange: state => { if (this.#desired === settings) this.#emit({ event: "state", state }); },
+        onStateChange: state => {
+          if (state === "connected") relayAuthenticated = true;
+          if (this.#desired === settings) this.#emit({ event: "state", state });
+        },
+        onRelayAuthenticationError: error => {
+          // Startup rejects through the catch below; reconnects have no start() caller.
+          if (relayAuthenticated && error.code === "unauthorized") void this.#requireActivation(settings);
+        },
         onPaired: device => { this.#emit({ event: "paired", deviceId: device.deviceId }); this.status(); },
         onPathChange: () => this.status(),
       });
@@ -556,6 +565,10 @@ export class DesktopRuntime {
       if (this.#desired !== settings) return;
       const message = error instanceof Error ? error.message : String(error);
       this.log(`Host 启动失败：${message}`);
+      if (error instanceof RelayAuthenticationError && error.code === "unauthorized") {
+        await this.#requireActivation(settings);
+        return;
+      }
       if (/unauthorized|credential|已有另一个 Host/i.test(message)) {
         this.#desired = undefined;
         this.#emit({ event: "state", state: "error", message });
@@ -565,6 +578,16 @@ export class DesktopRuntime {
         this.#retry = setTimeout(() => { void this.#connect(); }, delay);
       }
     } finally { this.#starting = false; }
+  }
+
+  async #requireActivation(settings: DesktopSettings): Promise<void> {
+    if (this.#desired !== settings) return;
+    if (this.#retry) clearTimeout(this.#retry);
+    await this.#dispose();
+    if (this.#desired !== settings) return;
+    this.#desired = undefined;
+    this.#emit({ event: "state", state: "error", activationRequired: true,
+      message: "激活凭据已失效，请重新激活" });
   }
 
   status(): void {

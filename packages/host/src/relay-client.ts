@@ -28,6 +28,8 @@ export type HostRelayClientOptions = {
   onStateChange?: (state: HostRelayState) => void;
   /** Relay 明确回绝了一次转发，例如目标设备不在线、或下载路由已丢失（`transferId` 随附）。 */
   onProtocolError?: (code: string, message: string, transferId?: string, targetDeviceId?: string) => void;
+  /** Authentication refusals include reconnects, separately from forwarding errors. */
+  onAuthenticationError?: (error: RelayAuthenticationError) => void;
   reconnect?: boolean;
   /** 覆盖重连退避上限，测试里用来缩短等待。 */
   maxReconnectDelayMs?: number;
@@ -44,6 +46,13 @@ type PendingReady = {
   resolve: () => void;
   reject: (error: unknown) => void;
 };
+
+export class RelayAuthenticationError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(`Relay 认证失败：${code} ${message}`);
+    this.name = "RelayAuthenticationError";
+  }
+}
 
 export class HostRelayClient {
   readonly #options: HostRelayClientOptions;
@@ -275,7 +284,9 @@ export class HostRelayClient {
         if (this.#pendingReady !== undefined) {
           const versionMismatch = message.code === "protocol_version_mismatch" ||
             (message.code === "invalid_message" && /issuePaths=[^)]*\bprotocolVersion\b/u.test(message.message));
-          this.#pendingReady.reject(new Error(versionMismatch ? PROTOCOL_MISMATCH_MESSAGE : `Relay 认证失败：${message.code} ${message.message}`));
+          const error = versionMismatch ? new Error(PROTOCOL_MISMATCH_MESSAGE) : new RelayAuthenticationError(message.code, message.message);
+          this.#pendingReady.reject(error);
+          if (error instanceof RelayAuthenticationError) this.#options.onAuthenticationError?.(error);
         }
         return;
       default:

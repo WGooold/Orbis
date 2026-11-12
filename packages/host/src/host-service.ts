@@ -104,7 +104,7 @@ import { HostPairingService, requestPairingCode, type OpenedPairingWindow } from
 import { describePath, type PathChange } from "./path.js";
 import { SessionSyncTasks } from "./session-sync-tasks.js";
 import { NotificationStore } from "./notification-store.js";
-import { HostRelayClient, type HostRelayState } from "./relay-client.js";
+import { HostRelayClient, type HostRelayState, type RelayAuthenticationError } from "./relay-client.js";
 import { browseDirectory, listPiSessions } from "./sessions.js";
 import { ActivationError, SessionSpawner } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
@@ -254,6 +254,7 @@ export type HostServiceOptions = {
   /** 某台设备的生效路径变了（§6.2）。 */
   onPathChange?: (deviceId: string, change: ActivePathChange) => void;
   onStateChange?: (state: HostRelayState) => void;
+  onRelayAuthenticationError?: (error: RelayAuthenticationError) => void;
 };
 
 export class HostService {
@@ -1437,6 +1438,7 @@ export class HostService {
       onFrame: (envelope) => {
         this.#handleFrame(envelope, "relay");
       },
+      onAuthenticationError: error => this.#options.onRelayAuthenticationError?.(error),
       ...(this.#options.reconnect === undefined ? {} : { reconnect: this.#options.reconnect }),
       onStateChange: (state) => {
         if (state === "connected") {

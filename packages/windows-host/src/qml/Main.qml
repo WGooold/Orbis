@@ -743,7 +743,7 @@ ApplicationWindow {
                                     Heading { text: "连接，从这里开始" }
                                     Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true; Layout.bottomMargin: 9 }
                                     Label { visible: host.verificationRequired; text: "QQ 邮箱"; color: Theme.inkMuted; font.pixelSize: Theme.label }
-                                    Field { id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"; placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱" }
+                                    Field { id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"; text: host.email; placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱" }
                                     Label { visible: host.verificationRequired; text: "邮箱验证码"; color: Theme.inkMuted; font.pixelSize: Theme.label }
                                     RowLayout {
                                         visible: host.verificationRequired; Layout.fillWidth: true; spacing: 10

@@ -105,6 +105,21 @@ bool CredentialStore::save(const QString &path, const QJsonObject &value, QStrin
 #endif
 }
 
+bool CredentialStore::clear(const QString &path, QString *error) {
+    QFile file(path);
+    if (!file.exists()) return true;
+#ifdef Q_OS_MACOS
+    if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return false; }
+    const auto reference = file.readAll();
+    file.close();
+#endif
+    if (!file.remove()) { if (error) *error = file.errorString(); return false; }
+#ifdef Q_OS_MACOS
+    keychainRemove(path, reference);
+#endif
+    return true;
+}
+
 QJsonObject CredentialStore::load(const QString &path, QString *error) {
     QFile file(path);
     if (!file.exists()) return {};

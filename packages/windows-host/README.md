@@ -76,6 +76,8 @@ The Relay provides these endpoints under its existing URL prefix:
 
 Codes expire after 10 minutes, can be used once, allow five verification attempts, and have resend/address/source limits. Only credential hashes are persisted by Relay. Verified Host credentials can create pairing codes for their own devices and cannot access administrator routes or another Host's routing identity. Re-verification rotates that Host's credential.
 
+If Relay rejects an activation credential, Host reopens registration and retains the computer identity and phone pairings. A previously verified computer can recover through its original QQ mailbox. If a reinstall lost a direct-activation credential, the Relay administrator can use **重置激活** on that Host and the user can activate again under the current registration policy. The console keeps the registration visible while recovery is pending. An administrator-disabled Host must be enabled before an activation reset. These recovery changes require the updated Host and Relay; see ADR-0014 for verification and release status.
+
 The Relay console's Service page defaults to requiring QQ verification. Turning it off allows new Hosts to activate without mail, while preserving one-Host credential scope and source rate limits. Turning it back on affects only new activations; existing Host credentials remain valid. Windows 0.1.1 reads the current policy before showing the activation controls.
 
 Configure SMTP through the Relay server environment:

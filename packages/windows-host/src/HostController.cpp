@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
@@ -18,6 +19,7 @@
 #include <QUrlQuery>
 #include <QVersionNumber>
 #include <QCryptographicHash>
+#include <QtConcurrentRun>
 
 static QString friendlyError(const QString &code) {
     static const QHash<QString, QString> messages{
@@ -26,7 +28,7 @@ static QString friendlyError(const QString &code) {
         {"email_verification_required", "服务器现在要求验证 QQ 邮箱，请获取验证码后重试"},
         {"verification_delivery_failed", "验证码发送失败，请稍后重试或联系服务维护者"},
         {"invalid_verification_code", "验证码错误、已过期或已使用，请重新获取"},
-        {"host_already_registered", "这台电脑已注册；无法直接覆盖现有凭据"},
+        {"host_already_registered", "这台电脑已有激活记录，请恢复激活"},
         {"code_cooldown", "验证码已发送，请等待 60 秒后再试"},
         {"too_many_requests", "请求次数过多，请稍后重试"},
         {"registration_busy", "注册服务繁忙，请稍后重试"},
@@ -163,11 +165,19 @@ void HostController::receiveLine(const QJsonObject &line) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
             setMessage(line.value("error").toString());
+            if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
         else if (callback) callback(line.value("result"));
     } else {
         const auto event = line.value("event").toString();
-        if (event == "state") { m_state = line.value("state").toString(); if (m_state == "error") m_desiredRunning = false; if (line.contains("message")) setMessage(line.value("message").toString()); }
+        if (event == "state") {
+            m_state = line.value("state").toString();
+            if (m_state == "error") m_desiredRunning = false;
+            if (line.contains("message")) setMessage(line.value("message").toString());
+            // Older bundled bridges report only the original authentication message.
+            if (m_state == "error" && (line.value("activationRequired").toBool() ||
+                line.value("message").toString().startsWith("Relay 认证失败：unauthorized "))) invalidateActivation();
+        }
         else if (event == "log") { appendLog(line.value("message").toString()); return; }
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
         else if (event == "agentInstall") {
@@ -210,14 +220,25 @@ void HostController::api(const QString &endpoint, const QJsonObject &body, Callb
         auto result = QJsonDocument::fromJson(reply->readAll());
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status >= 200 && status < 300 && result.isObject()) done(result.object());
-        else if (result.object().contains("error")) {
-            const auto code = result.object().value("error").toString();
-            if (code == "email_verification_required") { m_verificationRequired = true; emit changed(); }
-            setMessage(friendlyError(code));
-        }
+        else if (result.object().contains("error")) handleRegistrationError(result.object());
         else setMessage("无法连接注册服务：" + reply->errorString());
         reply->deleteLater(); emit changed();
     });
+}
+void HostController::handleRegistrationError(const QJsonObject &result) {
+    const auto code = result.value("error").toString();
+    if (code == "host_already_registered") {
+        m_recoverWithEmail = result.value("recovery").toString() != "administrator";
+        if (m_recoverWithEmail) {
+            m_verificationRequired = true;
+            setMessage("请验证原 QQ 邮箱以恢复激活");
+            refreshRegistrationPolicy();
+        } else setMessage("请联系管理员重置激活，电脑 ID：" + m_hostId);
+    } else {
+        if (code == "email_verification_required") m_verificationRequired = true;
+        setMessage(friendlyError(code));
+    }
+    emit changed();
 }
 void HostController::requestCode(const QString &email) {
     const auto normalized = email.trimmed().toLower();
@@ -244,9 +265,35 @@ void HostController::saveActivation(const QJsonValue &value, const QString &succ
     if (obj.value("hostId").toString() != m_hostId || !obj.value("credential").toString().startsWith("orbis_host_")) { setMessage("服务器返回了无效的激活凭据"); return; }
     obj.insert("relayUrl", relayUrl()); QString error;
     if (!CredentialStore::save(activationPath(), obj, &error)) { setMessage(error); return; }
-    m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString(); m_challenge.clear();
+    m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString(); m_challenge.clear(); m_recoverWithEmail = false;
     setMessage(successMessage);
     startHost();
+}
+void HostController::invalidateActivation() {
+    if (m_credential.isEmpty()) return;
+    const QJsonObject recovery{{"email", m_email}, {"hostId", m_hostId}, {"relayUrl", relayUrl()}};
+    m_credential.clear(); m_qr.clear(); m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0;
+    m_verificationRequired = !m_email.isEmpty();
+    setMessage("激活凭据已失效，请重新激活");
+    // Native key stores may wait on the OS; persist the rejected state off the UI thread.
+    ++m_busy;
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        const auto error = watcher->result(); watcher->deleteLater();
+        m_busy = qMax(0, m_busy - 1);
+        if (!error.isEmpty()) setMessage("无法重置激活凭据：" + error);
+        emit changed();
+    });
+    const auto path = activationPath();
+    watcher->setFuture(QtConcurrent::run([path, recovery] {
+        QString error;
+        if (CredentialStore::save(path, recovery, &error)) return QString();
+        // A failed metadata save must not revive the rejected credential on relaunch.
+        QString clearError;
+        if (CredentialStore::clear(path, &clearError)) return QString();
+        return clearError;
+    }));
+    refreshRegistrationPolicy();
 }
 void HostController::refreshRegistrationPolicy() {
     if (!validRelay(relayUrl())) return;
@@ -259,8 +306,11 @@ void HostController::refreshRegistrationPolicy() {
         const auto status = QJsonDocument::fromJson(reply->readAll()).object();
         if (requestedRelay == relayUrl()) {
             if (reply->error() == QNetworkReply::NoError && status.value("enabled").isBool()) {
-                m_verificationRequired = status.value("qqEmailVerificationRequired").toBool(true);
-                m_registrationAvailable = status.value("enabled").toBool();
+                // Re-verifying the original mailbox can rotate an existing registration,
+                // even while new computers are allowed to activate without email.
+                m_verificationRequired = status.value("qqEmailVerificationRequired").toBool(true) || m_recoverWithEmail || (!activated() && !m_email.isEmpty());
+                m_registrationAvailable = status.value("enabled").toBool() &&
+                    (!m_verificationRequired || status.value("mailConfigured").toBool(true));
             } else {
                 m_verificationRequired = true; m_registrationAvailable = false;
             }
@@ -509,6 +559,7 @@ void HostController::setAutoStart(bool enabled) {
 }
 
 void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration) {
+    if (busy()) return;
     QString normalized = relay.trimmed(); while (normalized.endsWith('/')) normalized.chop(1);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
     if (m_desiredRunning) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
@@ -525,7 +576,7 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     // Kept in the desktop API for older QML callers; the current switch applies independently.
     if (startup != autoStart()) { setAutoStart(startup); if (startup != autoStart()) return; }
 
-    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
+    if (normalized != relayUrl()) { m_credential.clear(); m_email.clear(); m_challenge.clear(); m_recoverWithEmail = false; m_verificationRequired = true; m_registrationAvailable = false; QFile::remove(activationPath()); }
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS

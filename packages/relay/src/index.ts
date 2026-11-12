@@ -490,6 +490,20 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         });
         return;
       }
+      const resetHostMatch = /^\/v1\/admin\/hosts\/([^/]+)\/reset-activation$/.exec(path);
+      if (request.method === "POST" && resetHostMatch) {
+        admin.authenticate(request, true);
+        const hostId = decodeURIComponent(resetHostMatch[1] ?? "");
+        if (admin.isDisabled(hostId)) throw new HttpError(409, "host_disabled");
+        if (!options.registration?.hasHost(hostId)) throw new HttpError(404, "host_not_found");
+        // Persist the audit before removing the credential; failure leaves access unchanged.
+        await admin.record("host.reset_activation", hostId);
+        await options.registration.resetHost(hostId);
+        runtimes.get(hostId)?.socket.close(4003, "activation reset");
+        for (const [key, pairing] of pairingCodes) if (pairing.hostId === hostId) pairingCodes.delete(key);
+        jsonResponse(response, 204);
+        return;
+      }
       const disableHostMatch = /^\/v1\/admin\/hosts\/([^/]+)$/.exec(path);
       if (request.method === "POST" && disableHostMatch) {
         admin.authenticate(request, true);
@@ -549,7 +563,16 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         if (request.method === "POST" && path === "/v1/registration/activate") {
           const body = await readJson(request) as { email?: unknown; hostId?: unknown; challengeId?: unknown; code?: unknown };
           if (!body || typeof body !== "object") throw new RegistrationError(400, "invalid_request");
-          const activated = await options.registration.activate(body, requestSource(request, options.trustProxy), () => admin.qqEmailVerificationRequired);
+          let activated: Awaited<ReturnType<RegistrationAuthority["activate"]>>;
+          try {
+            activated = await options.registration.activate(body, requestSource(request, options.trustProxy), () => admin.qqEmailVerificationRequired);
+          } catch (error) {
+            if (error instanceof RegistrationError && error.code === "host_already_registered" && typeof body.hostId === "string") {
+              jsonResponse(response, error.status, { error: error.code, recovery: options.registration.recoveryForHost(body.hostId) });
+              return;
+            }
+            throw error;
+          }
           runtimes.get(activated.hostId)?.socket.close(4003, "credential rotated");
           jsonResponse(response, 201, activated);
           return;

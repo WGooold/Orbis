@@ -158,6 +158,80 @@ describe("Relay web console", () => {
     expect(saved).toContain("host.enable"); expect(saved).not.toContain("admin-secret");
   });
 
+  it("authorizes an activation reset only through an operator session and preserves phone credentials", async () => {
+    // HOST-ACT-07: a direct-activation Host whose desktop token was lost can recover
+    // only after operator authorization; unauthenticated callers cannot replace it.
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-reset-activation-")), "state.json");
+    const registrationFile = `${stateFile}.registration.json`;
+    let registration = await RegistrationAuthority.create({ stateFile: registrationFile });
+    const hostId = "direct-computer";
+    const issued = await registration.activate({ hostId }, "test", () => false);
+    let options = { stateFile, registration, adminToken: "admin-secret", deviceCredentials: [
+      { deviceId: "phone-1", credential: "phone-secret", name: "My Phone", hostId },
+    ] };
+    relay = await createRelayServer(options);
+    let base = relay.url.replace("ws:", "http:");
+    let headers = await login(base);
+    await fetch(`${base}/v1/admin/registration`, { method: "POST", headers, body: JSON.stringify({ qqEmailVerificationRequired: false }) });
+    const activation = () => fetch(`${base}/v1/registration/activate`, { method: "POST", body: JSON.stringify({ hostId }) });
+    expect(await (await activation()).json()).toEqual({ error: "host_already_registered", recovery: "administrator" });
+    expect(registration.hostForCredential(issued.credential)).toBe(hostId);
+    const reset = () => fetch(`${base}/v1/admin/hosts/${hostId}/reset-activation`, { method: "POST", headers });
+    expect((await fetch(`${base}/v1/admin/hosts/${hostId}/reset-activation`, { method: "POST" })).status).toBe(401);
+    expect((await fetch(`${base}/v1/admin/hosts/${hostId}/reset-activation`, { method: "POST", headers: { ...headers, "x-orbis-csrf": "wrong" } })).status).toBe(403);
+    expect(registration.hostForCredential(issued.credential)).toBe(hostId);
+    const hostMessage = { type: "runtime.authenticate", role: "host", protocolVersion: PROTOCOL_VERSION, credential: issued.credential,
+      runtime: { runtimeId: hostId, name: "My Host", cwd: "/", status: "idle" } };
+    const host = await authenticate("/v1/runtime", hostMessage);
+    const oldCode = await (await fetch(`${base}/v1/pairing-codes`, { method: "POST", headers: { authorization: `Bearer ${issued.credential}` } })).json() as { code: string };
+    const closed = once(host.socket, "close");
+    expect((await reset()).status).toBe(204);
+    await closed;
+    expect(registration.hostForCredential(issued.credential)).toBeUndefined();
+    expect((await authenticate("/v1/runtime", hostMessage)).message.code).toBe("unauthorized");
+    expect((await authenticate("/v1/device", { type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: "phone-secret" })).message.type).toBe("device.ready");
+    const expiredPairing = await fetch(`${base}/v1/pairings`, { method: "POST", body: JSON.stringify({ code: oldCode.code, deviceName: "late phone" }) });
+    expect(expiredPairing.status).toBe(401);
+    expect(await expiredPairing.json()).toEqual({ error: "invalid_pairing_code" });
+    for (const socket of sockets.splice(0)) socket.terminate();
+    await relay.close();
+    registration = await RegistrationAuthority.create({ stateFile: registrationFile });
+    options = { ...options, registration };
+    relay = await createRelayServer(options);
+    base = relay.url.replace("ws:", "http:"); headers = await login(base);
+    expect(registration.hasHost(hostId)).toBe(true);
+    expect(registration.listHosts()).toContainEqual(expect.objectContaining({ hostId, activationResetAt: expect.any(Number) }));
+    expect((await fetch(`${base}/v1/admin/hosts/not-existing-host/reset-activation`, { method: "POST", headers })).status).toBe(404);
+    const replacementResponse = await activation();
+    expect(replacementResponse.status).toBe(201);
+    const replacement = await replacementResponse.json() as { credential: string };
+    expect(registration.listHosts().find(host => host.hostId === hostId)).not.toHaveProperty("activationResetAt");
+    expect((await authenticate("/v1/runtime", { ...hostMessage, credential: replacement.credential })).message.type).toBe("runtime.ready");
+    expect((await authenticate("/v1/runtime", hostMessage)).message.code).toBe("unauthorized");
+    const overview = await (await fetch(`${base}/v1/admin/overview`, { headers })).json() as { audit: Array<{ action: string; target: string }> };
+    expect(overview.audit).toContainEqual(expect.objectContaining({ action: "host.reset_activation", target: hostId }));
+    expect((await fetch(`${base}/v1/admin/hosts/${hostId}`, { method: "POST", headers, body: JSON.stringify({ disabled: true }) })).status).toBe(204);
+    expect((await reset()).status).toBe(409);
+    expect(registration.hostForCredential(replacement.credential)).toBe(hostId);
+  });
+
+  it("offers mailbox recovery without returning the registered address or replacing the credential", async () => {
+    // HOST-ACT-06: optional email policy must still let a reinstalled verified Host
+    // find its existing mailbox-recovery flow, without revealing the mailbox itself.
+    let code = "";
+    const registration = await RegistrationAuthority.create({ sendMail: async mail => { code = mail.code; } });
+    const body = { hostId: "verified-computer", email: "owner@qq.com" };
+    const challenge = await registration.requestCode(body, "test");
+    const issued = await registration.activate({ ...body, ...challenge, code });
+    relay = await createRelayServer({ registration, adminToken: "admin-secret" });
+    const base = relay.url.replace("ws:", "http:"), headers = await login(base);
+    await fetch(`${base}/v1/admin/registration`, { method: "POST", headers, body: JSON.stringify({ qqEmailVerificationRequired: false }) });
+    const conflict = await fetch(`${base}/v1/registration/activate`, { method: "POST", body: JSON.stringify({ hostId: body.hostId }) });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: "host_already_registered", recovery: "email" });
+    expect(registration.hostForCredential(issued.credential)).toBe(body.hostId);
+  });
+
   it("revokes a device using the protected browser route and prevents reconnection", async () => {
     const stateFile = join(await testDirectory(join(tmpdir(), "orbis-revoke-")), "state.json");
     relay = await createRelayServer({ stateFile, adminToken: "admin-secret", deviceCredentials: [{ deviceId: "phone-1", credential: "phone-secret", name: "My Phone" }] });

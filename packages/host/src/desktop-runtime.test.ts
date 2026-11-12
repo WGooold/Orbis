@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,6 +128,96 @@ describe("desktop Host lifecycle", () => {
       await expect(runtime.pair()).rejects.toThrow("请先连接 Host");
       expect(events).toContainEqual({ event: "state", state: "stopped" });
     } finally { await runtime.close(); await relay.close(); }
+  });
+
+  // HOST-ACT-01: deleted Relay registration must return to activation without replacing
+  // the Host keys or phone trust. Retained registrations still require mailbox ownership.
+  it.each(["deleted", "rotated"])("recovers a %s registration with the same Host identity and phone pairings", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-activation-recovery-"));
+    const state = join(root, "host");
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), state,
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    let now = Date.now(), code = "";
+    const stateFile = join(root, "registration.json");
+    let registration = await RegistrationAuthority.create({ stateFile, now: () => now, sendMail: async mail => { code = mail.code; } });
+    let relay: Awaited<ReturnType<typeof createRelayServer>> | undefined;
+    try {
+      const identity = await runtime.initialize({ claudeIntegrationEnabled: false }) as { hostId: string };
+      const body = { email: "owner@qq.com", hostId: identity.hostId };
+      let challenge = await registration.requestCode(body, "test");
+      const original = await registration.activate({ ...body, ...challenge, code });
+      await saveDeviceStore(state, { version: 1, devices: [{ deviceId: "phone", devicePub: "public", pskRoot: "secret", label: "My phone", createdAt: 1, revoked: false }] });
+      const hostBefore = await readFile(join(state, "host.json"), "utf8");
+      const devicesBefore = await readFile(join(state, "devices.json"), "utf8");
+      if (mode === "deleted") {
+        await writeFile(stateFile, JSON.stringify({ version: 2, hosts: [] }));
+        registration = await RegistrationAuthority.create({ stateFile });
+      } else {
+        now += 61_000;
+        challenge = await registration.requestCode(body, "test");
+        await registration.activate({ ...body, ...challenge, code });
+      }
+      relay = await createRelayServer({ registration });
+      const settings = { relayUrl: relay.url, lanPort: 0, codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+      await runtime.start({ ...settings, credential: original.credential });
+      expect(events.at(-1)).toMatchObject({ event: "state", state: "error", activationRequired: true });
+      expect(await readFile(join(state, "host.json"), "utf8")).toBe(hostBefore);
+      expect(await readFile(join(state, "devices.json"), "utf8")).toBe(devicesBefore);
+      expect(await runtime.initialize({ claudeIntegrationEnabled: false })).toMatchObject({ hostId: identity.hostId });
+      let credential: string;
+      if (mode === "deleted") {
+        ({ credential } = await registration.activate({ hostId: identity.hostId }, "test", () => false));
+      } else {
+        await expect(registration.activate({ hostId: identity.hostId }, "test", () => false)).rejects.toMatchObject({ code: "host_already_registered" });
+        now += 61_000;
+        challenge = await registration.requestCode(body, "test");
+        ({ credential } = await registration.activate({ ...body, ...challenge, code }));
+      }
+      await runtime.start({ ...settings, credential });
+      expect(events).toContainEqual({ event: "state", state: "connected" });
+      expect(await readFile(join(state, "host.json"), "utf8")).toBe(hostBefore);
+      expect(await readFile(join(state, "devices.json"), "utf8")).toBe(devicesBefore);
+    } finally { await runtime.close(); await relay?.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("returns to activation if a previously connected Host is refused during reconnect", async () => {
+    // HOST-ACT-02: a reconnect has no pending desktop start command to carry its failure.
+    const root = await mkdtemp(join(tmpdir(), "orbis-activation-reconnect-"));
+    const events: DesktopEvent[] = [];
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>(resolve => server.once("listening", resolve));
+    let connected: WebSocket | undefined;
+    let attempts = 0;
+    server.on("connection", socket => {
+      socket.once("message", raw => {
+        const auth = JSON.parse(raw.toString());
+        if (++attempts === 1) {
+          connected = socket;
+          socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: auth.protocolVersion, runtimeId: auth.runtime.runtimeId }));
+        } else {
+          socket.send(JSON.stringify({ type: "protocol.error", code: "unauthorized", message: "Invalid runtime credential" }));
+        }
+      });
+    });
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      await runtime.start({ relayUrl: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, credential: "orbis_host_" + "A".repeat(43),
+        lanPort: 0, codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      expect(events).toContainEqual({ event: "state", state: "connected" });
+      connected!.close();
+      await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ event: "state", state: "error", activationRequired: true }), { timeout: 4_000 });
+      const terminal = events.filter(event => event.event === "state");
+      await new Promise(resolve => setTimeout(resolve, 1_100));
+      expect(events.filter(event => event.event === "state")).toEqual(terminal);
+      expect(attempts).toBe(2);
+    } finally {
+      await runtime.close();
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("stays stopped when an already-cancelled connection attempt fails afterwards", async () => {

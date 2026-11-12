@@ -3,12 +3,12 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { PROTOCOL_VERSION } from "@orbis/protocol";
-import { HostRelayClient } from "./relay-client.js";
+import { HostRelayClient, RelayAuthenticationError } from "./relay-client.js";
 import * as relaySockets from "./relay-socket.js";
 import { createRelayServer } from "@orbis/relay";
 import { createBusinessRelayServer, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
-const expectHandshakeFailure = async (response: object, expected: RegExp): Promise<void> => {
+const expectHandshakeFailure = async (response: object, expected: RegExp, expectedCode?: string): Promise<void> => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
@@ -17,15 +17,21 @@ const expectHandshakeFailure = async (response: object, expected: RegExp): Promi
       socket.send(JSON.stringify(response), () => socket.close(1008, "invalid_message"));
     });
   });
+  const onAuthenticationError = vi.fn();
   const client = new HostRelayClient({
     relayUrl: `ws://127.0.0.1:${port}`,
     credential: "secret",
     runtime: { runtimeId: "host-1", name: "Host", cwd: "/", status: "idle" },
     onFrame: () => undefined,
     reconnect: false,
+    onAuthenticationError,
   });
   try {
     await expect(client.start()).rejects.toThrow(expected);
+    if (expectedCode) {
+      expect(onAuthenticationError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: expectedCode }));
+      expect(onAuthenticationError.mock.calls[0]![0]).toBeInstanceOf(RelayAuthenticationError);
+    } else expect(onAuthenticationError).not.toHaveBeenCalled();
   } finally {
     await client.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -62,7 +68,7 @@ describe("Host Relay handshake errors", () => {
       type: "protocol.error",
       code: "unauthorized",
       message: "Invalid runtime credential",
-    }, /Relay 认证失败：unauthorized Invalid runtime credential/u);
+    }, /Relay 认证失败：unauthorized Invalid runtime credential/u, "unauthorized");
   });
 });
 

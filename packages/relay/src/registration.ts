@@ -8,7 +8,7 @@ export type RegistrationOptions = {
   sendMail?: (mail: VerificationMail) => Promise<void>;
   now?: () => number;
 };
-type HostRegistration = { email: string | null; hostId: string; credentialHash: string; verifiedAt: number | null; registeredAt: number };
+type HostRegistration = { email: string | null; hostId: string; credentialHash: string; verifiedAt: number | null; registeredAt: number; activationResetAt?: number };
 type Challenge = { id: string; email: string; hostId: string; digest: Buffer; expiresAt: number; attempts: number };
 const digest = (value: string): Buffer => createHash("sha256").update(value).digest();
 const CODE_TTL = 10 * 60_000;
@@ -57,7 +57,8 @@ export class RegistrationAuthority {
           validHostId(host.hostId);
           const registeredAt = stored.version === 1 ? host.verifiedAt : host.registeredAt;
           if (!/^[a-f0-9]{64}$/.test(host.credentialHash) || !Number.isFinite(registeredAt) ||
-              (host.email === null ? host.verifiedAt !== null : !Number.isFinite(host.verifiedAt))) throw new Error("Invalid registered Host");
+              (host.email === null ? host.verifiedAt !== null : !Number.isFinite(host.verifiedAt)) ||
+              (host.activationResetAt !== undefined && !Number.isFinite(host.activationResetAt))) throw new Error("Invalid registered Host");
           authority.#hosts.set(host.hostId, { ...host, registeredAt: registeredAt! });
         }
       } catch (error) {
@@ -69,16 +70,45 @@ export class RegistrationAuthority {
 
   get enabled(): boolean { return this.#options.sendMail !== undefined; }
   hasHost(hostId: string): boolean { return this.#hosts.has(hostId); }
+  recoveryForHost(hostId: string): "email" | "administrator" | undefined {
+    const host = this.#hosts.get(hostId);
+    return host === undefined ? undefined : host.email === null ? "administrator" : "email";
+  }
   listHosts(): Array<Omit<HostRegistration, "credentialHash">> {
-    return [...this.#hosts.values()].map(({ email, hostId, verifiedAt, registeredAt }) => ({ email, hostId, verifiedAt, registeredAt }));
+    return [...this.#hosts.values()].map(({ email, hostId, verifiedAt, registeredAt, activationResetAt }) => ({ email, hostId, verifiedAt, registeredAt,
+      ...(activationResetAt === undefined ? {} : { activationResetAt }) }));
   }
   hostForCredential(credential: string): string | undefined {
     if (!credential.startsWith("orbis_host_") || credential.length > 128) return undefined;
     const candidate = digest(credential);
     for (const host of this.#hosts.values()) {
+      if (host.activationResetAt !== undefined) continue;
       if (timingSafeEqual(Buffer.from(host.credentialHash, "hex"), candidate)) return host.hostId;
     }
     return undefined;
+  }
+
+  /** Only the authenticated operator route may authorize a fresh activation. */
+  async resetHost(hostId: string): Promise<void> {
+    const save = async (): Promise<void> => {
+      const previous = this.#hosts.get(hostId);
+      if (!previous) throw new RegistrationError(404, "host_not_found");
+      // Retain the visible registration and its ownership metadata. No credential
+      // is issued here; only the next policy-compliant activation may replace it.
+      const pending = { ...previous, credentialHash: randomBytes(32).toString("hex"), activationResetAt: this.#options.now?.() ?? Date.now() };
+      const hosts = new Map(this.#hosts).set(hostId, pending);
+      if (this.#options.stateFile) {
+        const path = this.#options.stateFile;
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(`${path}.tmp`, JSON.stringify({ version: 2, hosts: [...hosts.values()] }), { mode: 0o600 });
+        await rename(`${path}.tmp`, path);
+      }
+      this.#hosts.set(hostId, pending);
+      for (const [id, challenge] of this.#challenges) if (challenge.hostId === hostId) this.#challenges.delete(id);
+    };
+    const pending = this.#persistence.then(save);
+    this.#persistence = pending.catch(() => {});
+    await pending;
   }
 
   async requestCode(body: { email?: unknown; hostId?: unknown }, source: string): Promise<{ challengeId: string; expiresInSeconds: number; retryAfterSeconds: number }> {
@@ -140,7 +170,7 @@ export class RegistrationAuthority {
       // A queued activation must still obey the policy in force when it is saved.
       if (direct && verificationRequired()) throw new RegistrationError(403, "email_verification_required");
       const previous = this.#hosts.get(hostId);
-      if (previous && (direct || previous.email !== email)) throw new RegistrationError(409, "host_already_registered");
+      if (previous && previous.activationResetAt === undefined && (direct || previous.email !== email)) throw new RegistrationError(409, "host_already_registered");
       const registered = { email, hostId, credentialHash: digest(credential).toString("hex"), verifiedAt: email === null ? null : now, registeredAt: previous?.registeredAt ?? now };
       if (this.#options.stateFile) {
         const path = this.#options.stateFile;

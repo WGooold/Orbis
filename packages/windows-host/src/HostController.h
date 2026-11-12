@@ -172,12 +172,15 @@ signals:
     void providerSaved();
     void notification(const QString &title, const QString &body);
 private:
+    friend class HostActivationTest;
     using Callback = std::function<void(const QJsonValue &)>;
     void launchBridge();
     void command(const QString &method, const QJsonObject &params = {}, Callback done = {});
     void receiveLine(const QJsonObject &line);
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
     void saveActivation(const QJsonValue &value, const QString &successMessage);
+    void invalidateActivation();
+    void handleRegistrationError(const QJsonObject &result);
     void setMessage(const QString &message);
     void checkUpdatesInternal(bool announce);
     void refreshDeviceUpdateIndicators();
@@ -218,6 +221,7 @@ private:
     bool m_bridgeReady = false, m_shutdown = false, m_desiredRunning = false;
     bool m_claudeInstalled = false;
     bool m_verificationRequired = true, m_registrationAvailable = false;
+    bool m_recoverWithEmail = false;
     QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;
     QString m_androidLatestVersion;
     int m_androidLatestVersionCode = 0;
