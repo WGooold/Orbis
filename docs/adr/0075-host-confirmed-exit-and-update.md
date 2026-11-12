@@ -18,6 +18,7 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 | HOST-EXIT-02 | 确认后默认关闭 Host 核心及已确认归属的后台，包括 Orbis 管理的 DSH Web 和当前状态目录登记的 Codex 桌面桥接。独立收尾进程负责等待、升级终止与退出核验，UI 保持响应。 |
 | HOST-EXIT-03 | 同时识别此前保留的 version-1 DSH 记录和 schema-1 Codex 桥接记录；读取旧记录时核验服务、命令与监听进程归属。 |
 | HOST-EXIT-04 | 进程身份由 PID、创建时间和可执行路径共同确定。核心进程还须匹配直接父进程和脚本；每次发信号前重新核对身份。保留已采集的后代身份以应对父进程先退出，不按 node / codex 名称批量清理。 |
+| HOST-EXIT-05 | 收尾验证成功后将退出许可暴露给 QML，窗口关闭不再进入托盘隐藏或确认流程。排队关闭窗口和托盘，并结束应用事件循环；已确认的退出不再重新请求平台 Quit。取消和收尾失败不授予退出许可。 |
 | HOST-UPDATE-01 | 应用内 Host 更新先确认中断影响，再下载和校验；成功收尾后才打开安装包。重复点击只执行一次；下载、校验、收尾或启动安装包失败均保持可见失败状态。下载期间仍可请求退出。 |
 | HOST-UPDATE-02 | Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认。取消或失败暂停安装。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
 
@@ -49,16 +50,30 @@ Host 更新的哈希与文件提交移到后台线程，使用独立临时目录
 | TypeScript / lint | 运行时构建、测试类型检查和本次新增 TS 文件 ESLint 通过；[构建](../../.artifacts/host-exit-update-20261112/runtime-build-complete/)、[类型检查](../../.artifacts/host-exit-update-20261112/types-complete.log)、[ESLint](../../.artifacts/host-exit-update-20261112/lint-complete.log)。 |
 | macOS 原生构建 / CTest | Qt 6.8.3 构建通过，8 组 CTest 全部通过；[最终原生构建](../../.artifacts/host-exit-update-20261112/build-quit-regression/)、[native-tests-verify](../../.artifacts/host-exit-update-20261112/native-tests-verify/)。`HostExitTest.cpp` 覆盖确认前不执行、异步完成、重复确认、收尾失败 / 超时、原生 Quit、下载失败、校验失败、安装器启动失败、成功更新顺序及下载时退出请求。 |
 | 真实收尾子进程协议 | 最终编译的 `desktop-shutdown.js` 对隔离挂起核心完成 ready → proceed → done，核心经升级终止退出，辅助进程退出 0，所属进程已清理；[协议证据](../../.artifacts/host-exit-update-20261112/protocol-complete/shutdown-protocol.json)。 |
-| 实际 QML 窗口 / 安装器 IPC | 隔离 smoke 退出 0，依次展示并取消三个确认弹窗，最后确认退出并完成真实收尾和原生 Quit；第二个 Host 进程通过 `--prepare-update` 发出请求，取消后退出码 20。截图检查无截断 / 重叠；[结果](../../.artifacts/host-exit-update-20261112/smoke-complete/result.json)、[退出](../../.artifacts/host-exit-update-20261112/smoke-complete/preview.png.exit.png)、[更新](../../.artifacts/host-exit-update-20261112/smoke-complete/preview.png.update.png)、[安装器](../../.artifacts/host-exit-update-20261112/smoke-complete/preview.png.installer.png)、[无残留与租约释放](../../.artifacts/host-exit-update-20261112/smoke-complete-lease/cleanup.json)。 |
+| 首轮 QML 窗口 / 安装器 IPC | 当时隔离 smoke 退出 0，三个确认弹窗可展示和取消，安装器取消返回 20；[结果](../../.artifacts/host-exit-update-20261112/smoke-complete/result.json)。但 smoke 绕过 `ExitGuard`，且没有断言退出许可、窗口关闭与托盘移除，**不足以证明实际退出流程正确**。原截图、结果和清理证据保留；原生退出结论由下方 HOST-EXIT-05 回归替代。 |
 
 测试源码：[desktop-shutdown.test.ts](../../packages/host/src/desktop-shutdown.test.ts)、[HostExitTest.cpp](../../packages/windows-host/src/tests/HostExitTest.cpp) 及上述相关生命周期用例。共享探针为 `~/.orbis/tools/ui-regression/host-shutdown-probe.py`、`host-confirmation-smoke.py`，参数见 `--help`。构建和原生运行均使用共享构建租约；清理与释放结果保存在各证据子目录。
+
+## HOST-EXIT-05：清理完成后的主程序退出修复
+
+原 `Main.qml.onClosing` 无条件拒绝窗口关闭，即使控制器已经授予退出许可，也会重新进入隐藏 / 请求退出分支。新增回归直接执行该实际 QML 处理器，修复前有托盘、无托盘两项均失败：[首次失败证据](../../.artifacts/host-exit-native-quit-20261112/window-before-fix/run.log)。隔离 Cocoa 主进程流程未稳定复现全部现场症状；该窗口拒绝关闭缺陷已被确定复现，不能把它写成对现场全部原因的证明。
+
+最终退出改为 `exitReady` 后排队关闭窗口、移除托盘并调用 `QCoreApplication::exit(0)`。首次用户 Quit 仍由统一确认拦截；不使用 smoke 特例放行。测试最终必须同时记录 `exitApproved=true`、`bridgeReady=false`、`windowVisible=false`、`trayVisible=false` 以及主进程退出 0，缺少证据或超时均失败。分别通过原生 Quit 与真实托盘 QAction 入口运行；自动化调用原生退出请求，物理键盘 ⌘Q 与用户安装验证仍需手动验收。
+
+| 修复验证 | 实际结果与证据 |
+| --- | --- |
+| 原生构建与全部 CTest | 当前工作树 9 组全部通过，包含 `approvedWindowClose` 两项以及原有取消、收尾失败、超时和安装失败测试；[构建](../../.artifacts/host-exit-native-quit-20261112/build-final/)、[CTest](../../.artifacts/host-exit-native-quit-20261112/ctest-fixed/run.log)。 |
+| macOS Cocoa 原生 Quit | 实际窗口取消三种确认后确认退出，最终四项状态符合断言、进程退出 0，安装器 IPC 取消返回 20；[结果](../../.artifacts/host-exit-native-quit-20261112/cocoa-native-fixed/result.json)、[所属进程无残留、租约已释放](../../.artifacts/host-exit-native-quit-20261112/cocoa-native-fixed-lease/cleanup.json)。 |
+| macOS Cocoa 托盘 QAction | 独立执行托盘动作的取消和确认退出，最终四项状态符合断言、进程退出 0；[结果](../../.artifacts/host-exit-native-quit-20261112/cocoa-tray-fixed/result.json)、[所属进程无残留、租约已释放](../../.artifacts/host-exit-native-quit-20261112/cocoa-tray-fixed-lease/cleanup.json)。 |
+
+此轮只修复原生退出收尾和测试，不修改 Node 进程清理算法；首轮 Node 结果保留，未重复执行全量 Node。测试继续使用隔离状态，没有强制结束真实 Host / Agent 会话。尚未替换用户安装版本；macOS 安装后通过托盘和 ⌘Q 各执行一次取消与确认，并检查 Dock、托盘和活动监视器中的 Host 主进程，**待用户验证**。
 
 ## Windows 必须补做的验证
 
 以下均未在本机执行，不以 macOS 结果代替。使用 Windows 10 / 11 x64 的隔离用户、隔离 Host 状态和合成会话；保留安装日志、进程身份 / 父子关系、端口、文件哈希、退出码和确认界面截图。
 
 1. **工具链与全部自动回归**：`npx vitest run --maxWorkers=2`、类型检查、原生 CTest，以及 `scripts/windows/windows-host-build.ps1 -Package -InnoCompiler <ISCC.exe>`。不得跳过 Windows 专属 DSH 重启测试；确认打包包含新增两个 JS 模块，Inno 编译成功。
-2. **退出各入口与取消**：托盘退出、应用原生 Quit（平台提供时）、无托盘关闭窗口分别显示提示。取消、Esc 不断开手机、不结束任务；重复操作只出现一个有效收尾流程。关闭普通窗口仍隐藏到托盘。
+2. **退出各入口与取消**：托盘退出、应用原生 Quit（平台提供时）、无托盘关闭窗口分别显示提示。取消、Esc 不断开手机、不结束任务；重复操作只出现一个有效收尾流程。关闭普通窗口仍隐藏到托盘。确认后必须观察主窗口、托盘图标和 Host EXE 进程全部退出，不能只以后台进程已清理为通过；运行 `HostExitTest::approvedWindowClose` 的两组场景。
 3. **真实进程树与文件占用**：核心运行时、Codex app-server、DSH npm / pnpm / cmd / PowerShell 启动器以及嵌套子进程全部纳入对应归属核对；正常、忽略退出、核心命令队列卡住分别验证。确认后所属进程退出、监听端口释放、安装目录 EXE / DLL 可替换；无关 Node、外部终端及显式外部 DSH 仍运行。额外核对 PowerShell 无监听结果被当作空集合、CIM / 端口查询权限错误被当作失败，不能错误放行或在空端口时阻塞安装。
 4. **旧端兼容与同版正对照**：执行时从官网取得最近已发布安装包并记录版本、哈希与架构。用其真实旧 DSH / Codex 桥接记录升级到新版，再以新版 → 新版重复同样场景。旧 Host 不认识 `--prepare-update` 时会拒绝该参数；安装器显示手动关闭确认，由用户关闭旧 Host、DSH Web 与 Codex 桌面端。取消不得写安装目录；继续时仍由文件占用检测阻止带占用覆盖。此首轮迁移为手动路径，不能写成自动清理旧 Host 已验收。
 5. **应用内更新**：在有活动任务时确认 / 取消，校验后停止后台，再进入安装；成功只重启一次 Host。验证激活、配对、供应商配置及历史保留，重新打开 Codex Desktop 后桥接恢复。断网、HTTP 失败、错误 SHA、磁盘写入失败、后台重生、收尾拒绝及安装器启动失败均不能被报告成更新成功。

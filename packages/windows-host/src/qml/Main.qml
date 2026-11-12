@@ -259,6 +259,8 @@ ApplicationWindow {
         return updates.join("、")
     }
     onClosing: function(close) {
+        // HOST-EXIT-05: the verified final close must bypass hide-to-tray and confirmation.
+        if (host.exitApproved) { close.accepted = true; return }
         close.accepted = false
         if (trayAvailable && !host.exiting) window.hide()
         else host.requestExit()

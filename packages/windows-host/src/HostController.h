@@ -38,6 +38,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool exiting READ exiting NOTIFY changed)
+    Q_PROPERTY(bool exitApproved READ exitApproved NOTIFY exitReady)
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
     Q_PROPERTY(bool desiredRunning READ desiredRunning NOTIFY changed)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)

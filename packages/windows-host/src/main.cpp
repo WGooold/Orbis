@@ -75,6 +75,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
+    parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
     parser.process(app);
     const auto sharedDataDir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).absolutePath();
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = sharedDataDir;
@@ -163,19 +164,29 @@ int main(int argc, char *argv[]) {
     menu.addAction("开始连接", &controller, &HostController::startHost);
     menu.addAction("暂停连接", &controller, &HostController::stopHost);
     menu.addSeparator();
-    menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
+    auto *exitAction = menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
     tray.setContextMenu(&menu); tray.setToolTip("Orbis Host");
     if (QSystemTrayIcon::isSystemTrayAvailable()) { app.setQuitOnLastWindowClosed(false); tray.show(); }
     QObject::connect(&tray, &QSystemTrayIcon::activated, &app, [show](QSystemTrayIcon::ActivationReason reason) { if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) show(); });
     QObject::connect(&controller, &HostController::notification, &tray, [&tray](const QString &title, const QString &body) { tray.showMessage(title, body, QSystemTrayIcon::Information, 4000); });
     QObject::connect(&app, &QApplication::aboutToQuit, &controller, &HostController::shutdown);
-    ExitGuard exitGuard([&] { return parser.isSet("smoke-test") || controller.exitApproved(); }, [&] { controller.requestExit(); });
+    ExitGuard exitGuard([&] { return controller.exitApproved(); }, [&] { controller.requestExit(); });
     app.installEventFilter(&exitGuard);
-    QObject::connect(&controller, &HostController::exitReady, &app, &QCoreApplication::quit);
+    QObject::connect(&controller, &HostController::exitReady, &app, [&] {
+        // Cleanup and user confirmation are already complete. Finish the event loop instead
+        // of asking the native platform to approve Quit a second time.
+        tray.hide();
+        window->close();
+        QCoreApplication::exit(0);
+    }, Qt::QueuedConnection);
     if (parser.isSet("prepare-update")) QTimer::singleShot(0, &controller, &HostController::requestInstallerExit);
     if (parser.isSet("tray") && QSystemTrayIcon::isSystemTrayAvailable() && !parser.isSet("smoke-test")) window->hide();
     QString smokeModelUrl;
     int smokePiModelCount = 0;
+    const auto requestSmokeExit = [&] {
+        if (parser.value("smoke-exit-entry") == "tray") exitAction->trigger();
+        else QCoreApplication::quit();
+    };
     if (parser.isSet("smoke-test")) {
         if (parser.isSet("smoke-providers")) {
             auto *models = new QTcpServer(&app);
@@ -541,7 +552,7 @@ int main(int argc, char *argv[]) {
                     app.exit(0);
                 });
             } else if (parser.isSet("smoke-exit")) {
-                controller.requestExit();
+                requestSmokeExit();
                 QTimer::singleShot(500, &app, [&] {
                     auto *dialog = window->findChild<QObject *>("hostExitDialog");
                     if (!dialog || !dialog->property("visible").toBool() || controller.exiting()) { app.exit(60); return; }
@@ -564,7 +575,7 @@ int main(int argc, char *argv[]) {
                 });
                 QTimer::singleShot(2200, &app, [&] {
                     if (controller.exiting() || controller.exitApproved()) { app.exit(63); return; }
-                    controller.requestExit();
+                    requestSmokeExit();
                     QTimer::singleShot(500, &app, [&] {
                         auto *dialog = window->findChild<QObject *>("hostExitDialog");
                         if (!dialog || !dialog->property("visible").toBool()) { app.exit(64); return; }
@@ -576,5 +587,15 @@ int main(int argc, char *argv[]) {
             } else QTimer::singleShot(parser.isSet("smoke-motion") ? 2300 : 1800, &app, [&] { app.exit(0); });
         });
     }
-    return app.exec();
+    const int result = app.exec();
+    // A successful smoke run must reach verified cleanup, not leave via a test-only Quit bypass.
+    if (parser.isSet("smoke-exit")) {
+        QFile report(dataDir + "/smoke-exit-result.json");
+        if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{
+            {"exitApproved", controller.exitApproved()}, {"bridgeReady", controller.bridgeReady()},
+            {"windowVisible", window->isVisible()}, {"trayVisible", tray.isVisible()},
+            {"entry", parser.value("smoke-exit-entry")}, {"exitCode", result}}).toJson());
+        if (!controller.exitApproved() || controller.bridgeReady() || window->isVisible() || tray.isVisible()) return 78;
+    }
+    return result;
 }
