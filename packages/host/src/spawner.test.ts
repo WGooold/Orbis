@@ -197,7 +197,7 @@ describe("buildSpawnPlan", () => {
     expect(plan.command).toBe("/usr/bin/open");
     expect(plan.args).toEqual(["-a", "Terminal", "/tmp/Pi launch.command"]);
     expect(plan.script).toContain("#!/bin/sh\ncd -- '/tmp/workspace' || exit 1");
-    expect(plan.script).toContain("exec /usr/bin/env 'node' '/pi/cli.js'");
+    expect(plan.script).toContain("exec /usr/bin/env 'PI_SKIP_VERSION_CHECK=1' 'node' '/pi/cli.js'");
     expect(plan.script).not.toContain("--mode");
   });
 
@@ -558,7 +558,7 @@ describe.runIf(process.platform === "darwin")("macOS phone activation", () => {
         cwd: process.cwd(), args: process.argv.slice(2), pid: process.pid,
         stateDir: process.env.ORBIS_STATE_DIR, legacyStateDir: process.env.PI_REMOTE_STATE_DIR,
         configDir: process.env.PI_CODING_AGENT_DIR, path: process.env.PATH,
-        hostOnly: process.env.ORBIS_HOST_ONLY_TEST,
+        hostOnly: process.env.ORBIS_HOST_ONLY_TEST, versionCheck: process.env.PI_SKIP_VERSION_CHECK,
       }));
       setInterval(() => {}, 1000);
     `);
@@ -600,7 +600,7 @@ describe.runIf(process.platform === "darwin")("macOS phone activation", () => {
     expect(launcher.mock.calls[0]![2]).toMatchObject({ shell: false, timeout: 15_000 });
     await vi.waitFor(async () => {
       const captured = JSON.parse(await readFile(capture, "utf8"));
-      expect(captured).toMatchObject({ cwd: realCwd, pid: record.pid, stateDir, legacyStateDir: stateDir, configDir, path: "/usr/bin:/bin" });
+      expect(captured).toMatchObject({ cwd: realCwd, pid: record.pid, stateDir, legacyStateDir: stateDir, configDir, path: "/usr/bin:/bin", versionCheck: "1" });
       expect(captured.hostOnly).toBeUndefined();
       expect(captured.args).toEqual(type === "new"
         ? ["--session-id", record.sessionId, "--approve", "-e", extension]

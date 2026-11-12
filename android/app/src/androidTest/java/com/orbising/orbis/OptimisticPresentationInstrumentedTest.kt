@@ -158,6 +158,20 @@ class OptimisticPresentationInstrumentedTest {
         compose.onNodeWithContentDescription("截图.png，发送中 90%").assertExists()
     }
 
+    // SC73: abandoning uncertainty requires confirmation; cancel keeps the original guard.
+    @Test fun uncertainLaunchCanOnlyBeAbandonedAfterConfirmation() {
+        val launch = LaunchState("request", "launch:request", emptyMap(), "app", "/repo", "claude", null, unconfirmed = true)
+        var abandons = 0
+        compose.setContent { OrbisTheme { LaunchNotice(launch, {}, {}, onAbandon = { abandons++ }) } }
+        compose.onNodeWithTag("launch-abandon").performClick()
+        compose.runOnIdle { assertEquals(0, abandons) }
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle { assertEquals(0, abandons) }
+        compose.onNodeWithTag("launch-abandon").performClick()
+        compose.onAllNodesWithText("结束等待").filterToOne(hasAnyAncestor(isDialog())).performClick()
+        compose.runOnIdle { assertEquals(1, abandons) }
+    }
+
     @Test fun aFailedLaunchOffersRetryAndBackInPlace() {
         val launch = LaunchState("request", "launch:request", mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo/app"),
             "app", "/repo/app", "codex", resumed = null, failure = "对应的 agent 后端未就绪")

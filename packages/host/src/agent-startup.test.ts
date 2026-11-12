@@ -1,8 +1,13 @@
 import { homedir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
-import { codexWorkspaceApprovalArgs, codexWorkspaceTrustKey, prepareCodexWorkspace } from "./agent-startup.js";
+import { CODEX_STARTUP_ARGS, CLAUDE_STARTUP_ENV, PI_STARTUP_ENV, codexWorkspaceApprovalArgs, codexWorkspaceTrustKey, prepareCodexWorkspace } from "./agent-startup.js";
 
 describe("Agent startup workspace authorization", () => {
+  it("keeps update checks disabled only for Orbis-launched processes", () => {
+    expect(CODEX_STARTUP_ARGS).toEqual(["-c", "check_for_update_on_startup=false"]);
+    expect(CLAUDE_STARTUP_ENV).toEqual({ DISABLE_AUTOUPDATER: "1" });
+    expect(PI_STARTUP_ENV).toEqual({ PI_SKIP_VERSION_CHECK: "1" });
+  });
   it("quotes Codex paths as a single config key without changing execution permissions", () => {
     for (const cwd of ["/work/a.b", '/work/a"quote', "C:\\work\\a b", "D:/project"]) {
       expect(codexWorkspaceTrustKey(cwd)).toBe(`projects.${JSON.stringify(cwd)}.trust_level`);

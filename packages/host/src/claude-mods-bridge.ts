@@ -104,6 +104,7 @@ export type ClaudeModsPoll = {
 export type ClaudeModsCommandResult = "accepted" | "offline" | "queue_full" | "id_conflict" | "not_cancelable";
 
 type Session = {
+  launchId?: string;
   process?: ClaudeProcessIdentity;
   closing?: Promise<void>;
   runtime: RuntimeMetadata;
@@ -178,7 +179,7 @@ export type ClaudeModsBridgeOptions = {
 export class ClaudeModsBridge {
   readonly #options: ClaudeModsBridgeOptions;
   readonly #sessions = new Map<string, Session>();
-  readonly #launches = new Map<string, { resolve: (runtime: RuntimeMetadata | undefined) => void; timer: ReturnType<typeof setTimeout> }>();
+  readonly #launches = new Map<string, { expectedSessionId?: string; resolve: (runtime: RuntimeMetadata | undefined) => void; timer: ReturnType<typeof setTimeout> }>();
   #toolStore: ToolContentStore | undefined;
   readonly #processControl: ClaudeProcessControl;
 
@@ -192,6 +193,12 @@ export class ClaudeModsBridge {
   supportsTurnConfiguration(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("configuration.turn") === true; }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
+  findLaunch(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined {
+    // Old plugins repeat the process environment's launchId after /clear or /resume.
+    // Only the durable native identity can authorize recovering a timed-out launch.
+    const session = this.#sessions.get(`claude:${expectedSessionId}`);
+    return session?.launchId === launchId ? session.runtime : undefined;
+  }
   configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
   capabilities(runtimeId: string): RuntimeCapabilities | undefined {
     const session = this.#sessions.get(runtimeId);
@@ -223,11 +230,12 @@ export class ClaudeModsBridge {
     if (pending) { clearTimeout(pending.timer); this.#launches.delete(launchId); pending.resolve(undefined); }
   }
 
-  waitForLaunch(launchId: string, timeoutMs: number): Promise<RuntimeMetadata | undefined> {
+  waitForLaunch(launchId: string, timeoutMs: number, expectedSessionId?: string): Promise<RuntimeMetadata | undefined> {
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.#launches.delete(launchId); resolve(undefined); }, timeoutMs);
       timer.unref?.();
-      this.#launches.set(launchId, { resolve: runtime => { clearTimeout(timer); this.#launches.delete(launchId); resolve(runtime); }, timer });
+      this.#launches.set(launchId, { ...(expectedSessionId === undefined ? {} : { expectedSessionId }),
+        resolve: runtime => { clearTimeout(timer); this.#launches.delete(launchId); resolve(runtime); }, timer });
     });
   }
 
@@ -282,6 +290,7 @@ export class ClaudeModsBridge {
         ...(this.#toolStore === undefined ? {} : { toolStore: this.#toolStore }),
       });
     const session: Session = {
+      ...(parsed.launchId === undefined ? {} : { launchId: parsed.launchId }),
       runtime: { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: retained?.runtime.status ?? "idle", sessionId: parsed.sessionId, hostname: localHostname() },
       instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
       capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(retained?.completedTurns),
@@ -303,7 +312,8 @@ export class ClaudeModsBridge {
     this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
     this.#options.onRuntimeOnline?.(session.runtime);
     void history.refresh().catch(() => undefined);
-    if (parsed.launchId !== undefined) this.#launches.get(parsed.launchId)?.resolve(session.runtime);
+    const pending = parsed.launchId === undefined ? undefined : this.#launches.get(parsed.launchId);
+    if (pending && (pending.expectedSessionId === undefined || pending.expectedSessionId === parsed.sessionId)) pending.resolve(session.runtime);
     return { ok: true, runtimeId, generation, capabilities: [...capabilities], ...(retained === undefined ? {} : { resumed: true }) };
   }
 

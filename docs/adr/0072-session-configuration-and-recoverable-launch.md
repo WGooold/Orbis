@@ -30,7 +30,9 @@ S52／SC76（r55）：Android Codex 顶栏运行中显示绑定原生 turn ID �
 
 ### 中断与恢复
 
-配置和启动操作按身份及参数指纹去重。重复请求读取原结果或继续同一操作；同身份异参拒绝。启动操作持久保存原生会话身份及阶段，回执丢失后按启动身份查询。恢复配置使用原生读取或幂等 setter 对同一会话核对并确认；超时表示未确认，不能自动使用默认值或新建另一个会话。原生创建已执行、返回身份尚未持久记录时若无法精确找回，保留未知并阻止自动重建。
+配置和启动操作按身份及参数指纹去重。重复请求读取原结果或继续同一操作；同身份异参拒绝。启动操作持久保存原生会话身份及阶段，回执丢失后按启动身份查询。恢复配置使用原生读取或幂等 setter 对同一会话核对并确认；超时表示未确认，不能自动使用默认值或新建另一个会话。原生创建已执行、返回身份尚未持久记录时若无法精确找回，保留未知并阻止自动重建。Android SC73 的结果不明页提供显式“结束等待”，确认后解除本地阻塞并将首句还原到新建草稿；同时清理该启动占位会话的等待发送展示和发送账本操作，释放容量，保留其他会话的发送；提示原终端可能仍在启动及再次创建可能产生另一会话。
+
+Claude 配置启动在开窗前按设备与启动记录持久保存预定原生 UUID，通过 `--session-id` 创建。插件继续使用既有 `launchId`／`sessionId` 握手，初次确认与迟到恢复均核对预定 UUID；同进程切换会话、断线或 Host 重启后仍只认原身份。预定身份不代表已创建，不作为就绪结果发送给 App。旧记录若既无已确认身份又无预定身份，则保留未知；已确认的旧记录继续按原会话恢复。实现见 `SessionConfigurationStore`、`ClaudeBackend`、`ClaudeModsBridge`、`TerminalClaudeLauncher`。Host 发起的 Claude 启动按 ADR-0073 无条件跳过 bypass 首次风险提示，通过单次临时 settings 传入 `skipDangerousModePermissionPrompt=true`，权限模式按所选配置执行。
 
 App 在写入前保存启动与消息恢复信息，重开后先核对；未确认的消息不自动重发。旧连接或旧配置版本不能释放新操作的依赖。离开启动页后保持后台执行和不拉回页面的既有语义。Host 停止、配置清单变化和供应商切换后重新校验身份及选项。创建前的最终拒绝也持久保存，同身份迟到请求不能在稍后转为新建；App 保留被拒绝首句，重新选择配置前先处理原输入。
 
@@ -52,7 +54,11 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 
 功能 S51／SC73：新建配置、配置确认后的首句放行、运行中后续配置、同身份启动恢复。相关实现及最小充分回归分别记录。
 
+Claude 启动准备及 Android 结束等待回归：`claude-startup.test.ts`、`claude-launcher.test.ts`、`agent-backend.test.ts`、`host-service.test.ts`、`LaunchLedgerTest` 与 `OptimisticPresentationInstrumentedTest.uncertainLaunchCanOnlyBeAbandonedAfterConfirmation`。运行终端提示页、自动验证和 APK 审计见 `.artifacts/claude-launch-unresolved-20261112/verification.json`；其中首次风险提示拦截属于历史实现，当前按 ADR-0073 无条件跳过。Host 源码已编译，未替换运行中的 Host；Android 已构建，未安装，待用户验证。
+
 ## 验证与完成状态
+
+2026-11-12 未提交改动审查发现的两项回归已修复：Claude 迟到恢复按持久预定原生身份核对，Android 结束等待同时释放发送账本。对应回归见 `claude-mods-bridge.test.ts`、`agent-backend.test.ts`、`session-configuration-store.test.ts`、`host-service.test.ts` 与 `LaunchLedgerTest`。隔离 Host／Relay 的实际重启、旧插件握手、会话切换及同会话重连通过；Claude 2.1.318／2.1.322 的原生隔离 TUI 均报告预定 UUID，并继续无条件跳过首次 bypass 提示。首次失败、修复前快照及修复后证据分别保留于 `.artifacts/native-cli-startup-review-20261112/verification-before-fixes.json`、`verification.json` 与 `fixes/`。Windows 所需验证见 ADR-0073「Windows 待验证」。
 
 本机隔离原生验证、初次失败与未完成边界见 `.artifacts/new-session-launch-settings-20261110/verification.json` 及 `runtime-updates/verification.json`。Codex 两类 app-server 活动 turn 更新、Pi RPC 活动请求更新通过；DeepSeek Web 活动 turn 的选择及权限投影已确认，下一次模型请求探针尚有失败，保留原断言。Claude 原生 CLI 启动参数与首个本地请求已核对；隔离 TUI 的 `config.permissionMode` 修改只影响默认值，计划模式的原生 `tool.check` 不变；`settings.read()` 的文件深度与启动深度不同，不能用它确认 `--effort`。深度改为桥接到原生 `turn.step` 并以插件回归确认当前／下一 turn。TUI 探针初次失败与后续有效证据保存在 `implementation/native*`，插件验证见 `implementation/claude-mod-tests-final.log`。
 
@@ -69,6 +75,8 @@ S52／SC76 配套验证：已安装 Host 缺少 `currentTurnConfiguration`，新
 剩余能力边界：ACP 的新建前清单、Claude 当前会话权限写入、Claude 原生默认模型与深度精确展示，以及 DSH Web 切换后的第二次真实模型请求尚未完成端到端验证。Claude 默认值未报告时显示继承并省略参数，模型清单的 `default` 别名不能替代当前配置。无专属权限接口的 Pi／ACP 保留来源说明。设备安装与视觉验收未执行；本轮不宣称这些边界已通过。
 
 Android S51／SC73 回归：新建权限选项在弹层内暂存，显式应用才执行退场提交，避免透明窗口残留拦截触摸。启动恢复记录通过 `ConfiguredLaunchJournal` 在后台串行读写，UI 和状态锁只访问内存快照；启动发送与就绪结果仍等待对应记录落盘。回归源码为 `SessionDraftConfigurationInstrumentedTest`、`ConfiguredLaunchJournalTest` 及既有启动／等待发送／配置账本测试。构建、自动验证与设备环境阻挡记录见 `.artifacts/draft-permission-freeze-20261111/verification.json`；未安装，待用户验证。
+
+Android S51／SC73 工作目录弹层：草稿卡片的目录浏览复用共用面板，面板内导航（「上一级」「重新读取」）不触发退场，只有「使用此目录」按关闭时序提交；否则退场先于面板移除执行，残留的透明窗口吞掉后续触摸，界面看起来卡死。回归为 `BottomSheetInstrumentedTest.draftDirectoryNavigationKeepsTheSheetAlive`，修复前同一用例在 `上一级` 处收不到点击。构建、修复前失败与修复后 13 项设备回归见 `.artifacts/draft-directory-freeze-20261112/`；未安装，待用户验证。
 
 S55／SC79（r57）：两端新建卡片的模型独占一行，思考深度与权限在下一行等宽排列；权限入口使用短名称，完整组合保留在无障碍值及分类面板中，深度优先展示 Host 选项标签。实现见 `SessionDraft.kt`、`SessionViews.swift`，HTML 同步见 `docs/design/session-draft-card-proposal.html`。320dp、中英文放大文字与长权限组合回归见 `SessionDraftConfigurationInstrumentedTest`、`OrbisUITests`；构建、界面验证及交付状态见 `.artifacts/draft-config-layout-20261111/verification.json`，待用户验证。
 

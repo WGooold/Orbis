@@ -26,7 +26,7 @@ import { openWindowsConsole, WindowsConsoleLaunchError } from "./windows-console
 import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher } from "./claude-launcher.js";
-import { PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
+import { CODEX_STARTUP_ARGS, PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { adoptLoginShellEnvironment, adoptWindowsEnvironment } from "./login-shell-env.js";
@@ -986,15 +986,17 @@ export class DesktopRuntime {
     const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
     const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
       ? await this.#codexRuntime.prepareTerminalLaunch(workingDirectory) : undefined;
-    const args = kind === "pi" ? [...cli.prefixArgs, ...PI_WORKSPACE_APPROVAL_ARGS, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : [...cli.prefixArgs, ...codexWorkspaceApprovalArgs(workingDirectory)];
+    const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+    const args = kind === "pi" ? [...cli.prefixArgs, ...PI_WORKSPACE_APPROVAL_ARGS, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, ...CODEX_STARTUP_ARGS, "--remote", remote.endpoint] : [...cli.prefixArgs, ...CODEX_STARTUP_ARGS, ...codexWorkspaceApprovalArgs(workingDirectory)];
     const command = remote?.command ?? cli.command;
     if (process.platform === "darwin") {
       await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: workingDirectory, command, args,
-        env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir }, ...(kind === "codex" ? { unsetEnv: ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] } : {}) });
+        env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir, ...(kind === "pi" ? PI_STARTUP_ENV : {}) }, ...(kind === "codex" ? { unsetEnv: ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] } : {}) });
       return;
     }
-    const script = (kind === "codex" ? "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; " : "")
-      + agentPowerShellScript({ command, prefixArgs: [] }, args);
+    const startup = kind === "codex" ? "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; "
+      : Object.entries(PI_STARTUP_ENV).map(([key, value]) => `$env:${key} = ${quote(value)}; `).join("");
+    const script = startup + agentPowerShellScript({ command, prefixArgs: [] }, args);
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");

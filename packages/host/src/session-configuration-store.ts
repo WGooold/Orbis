@@ -11,6 +11,8 @@ const launch = z.object({
   cwd: z.string(), binding: z.string(), revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema,
   phase: z.enum(["preparing", "created", "configuring", "ready", "failed", "unknown"]),
   sessionId: z.string().optional(), spawnMode: z.enum(["tui", "headless"]).optional(), error: z.string().optional(),
+  /** Reserved before opening Claude; not evidence that the native session exists. */
+  expectedSessionId: z.string().uuid().optional(),
 });
 type Launch = z.infer<typeof launch>;
 const fileSchema = z.object({ version: z.literal(1), preferences: z.record(z.string(), preference), launches: z.record(z.string(), launch) });
@@ -110,7 +112,8 @@ export class SessionConfigurationStore {
       const revision = fingerprint(pref.values) === fingerprint(request.values) ? pref.revision : pref.revision + 1;
       data.preferences[prefKey] = { revision, values: request.values };
       const record: Launch = { deviceId, fingerprint: hash, launchId: request.launchId, agentKind: request.agentKind,
-        cwd: request.cwd, binding: request.binding, revision, values: request.values, phase: "preparing" };
+        cwd: request.cwd, binding: request.binding, revision, values: request.values, phase: "preparing",
+        ...(request.agentKind === "claude" ? { expectedSessionId: randomUUID() } : {}) };
       data.launches[key] = record; await this.#commit(data); this.#active.add(key);
       return { record, execute: true };
     });
@@ -133,11 +136,16 @@ export class SessionConfigurationStore {
       if (!prior) throw new Error("Unknown launch");
       if (prior.sessionId !== undefined && patch.sessionId !== undefined && prior.sessionId !== patch.sessionId)
         throw new SessionConfigurationError("launch_identity_conflict", "恢复返回了不同会话身份，已停止发送");
+      if (prior.expectedSessionId !== undefined && patch.sessionId !== undefined && prior.expectedSessionId !== patch.sessionId)
+        throw new SessionConfigurationError("launch_identity_conflict", "启动返回了不同会话身份，已停止发送");
       const next = { ...prior, ...patch }; data.launches[key] = next;
       await this.#commit(data);
       if (["ready", "failed", "unknown"].includes(next.phase)) this.#active.delete(key);
       return next;
     });
+  }
+  expectedSessionId(deviceId: string, launchId: string): Promise<string | undefined> {
+    return this.#serial(async () => (await this.#load()).launches[this.#key(deviceId, launchId)]?.expectedSessionId);
   }
   /** Claim only the original native identity. No recovery path may call native create. */
   recover(deviceId: string, launchId: string): Promise<Launch | undefined> {

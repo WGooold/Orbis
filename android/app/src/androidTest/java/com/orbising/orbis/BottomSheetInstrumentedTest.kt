@@ -89,6 +89,32 @@ class BottomSheetInstrumentedTest {
         capture("directory")
     }
 
+    /** S51 / SC73: browsing up and retrying stay in the sheet instead of pre-running its exit. */
+    @Test fun draftDirectoryNavigationKeepsTheSheetAlive() {
+        val browsed = mutableListOf<String?>()
+        val ups = mutableListOf<String?>()
+        val base = browseState()
+        val state = mutableStateOf(base.copy(sessionBrowse = base.sessionBrowse!!.copy(
+            parent = "/", error = L10n.tr("没有权限读取目录"))))
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, null, { browsed.add(it) }, {}, { ups.add("up") },
+                onSubmit = { _, _, _, _, _ -> false })
+        } }
+        compose.onNodeWithTag("draft-directory").performClick()
+        compose.runOnIdle { browsed.clear() }
+        compose.onNodeWithText("重新读取").performClick()
+        compose.onNodeWithText("上一级").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf<String?>("/workspace"), browsed)
+            assertEquals(listOf<String?>("up"), ups)
+        }
+        // A committed exit that the sheet never owns leaves a transparent window behind, so the
+        // scrim could no longer close anything. Dismissing proves the sheet still holds its exit.
+        compose.onNodeWithTag("orbis-sheet-scrim").performTouchInput { click(Offset(20f, 150f)) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("orbis-sheet-window").assertDoesNotExist()
+    }
+
     @Test fun downloadBrowserKeepsItsFooterAndOnlyDownloadsAfterExit() {
         val open = mutableStateOf(true)
         val downloads = mutableListOf<String>()

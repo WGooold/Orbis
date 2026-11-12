@@ -47,14 +47,22 @@ describe("macOS terminal launch", () => {
   it("opens native Claude Code in the selected workspace with the Orbis plugin", async () => {
     const state = join(workspace, "state");
     await new DesktopRuntime(() => {}, state).openAgent("claude", "tui", workspace);
-    const scripts = await readdir(join(state, "tmp"));
+    const files = await readdir(join(state, "tmp"));
+    const scripts = files.filter(name => name.endsWith(".command"));
     expect(scripts).toHaveLength(1);
+    // SC81: every launch has one private settings file and one executable script.
+    const settings = files.filter(name => name.endsWith(".settings.json"));
+    expect(files).toHaveLength(2);
+    expect(settings).toHaveLength(1);
+    expect(JSON.parse(await readFile(join(state, "tmp", settings[0]!), "utf8"))).toEqual({ skipDangerousModePermissionPrompt: true });
     const script = join(state, "tmp", scripts[0]!);
     expect(terminal.spawn).toHaveBeenCalledWith("/usr/bin/open", ["-a", "Terminal", script], expect.objectContaining({ stdio: "ignore", timeout: 15_000 }));
     const contents = await readFile(script, "utf8");
     expect(contents).toContain(`cd -- '${workspace.replaceAll("'", "'\\''")}' || exit 1`);
     expect(contents).toContain("export ORBIS_STATE_DIR=");
-    expect(contents).toContain("exec '/User'\\''s tools/claude' '--plugin-dir'");
+    expect(contents).toContain("'/User'\\''s tools/claude' '--settings'");
+    expect(contents).toContain("'--plugin-dir'");
+    expect(contents).toContain("export DISABLE_AUTOUPDATER='1'");
     expect(terminal.pi).not.toHaveBeenCalled();
     expect(terminal.codex).not.toHaveBeenCalled();
   });
@@ -91,7 +99,7 @@ describe("macOS terminal launch", () => {
     const script = await readFile(args[2]!, "utf8");
     expect(script).toContain(`cd -- '${workspace.replaceAll("'", "'\\''")}' || exit 1`);
     expect(script).toContain("exec /usr/bin/env '-u' 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE'");
-    expect(script).toContain("'/Orbis Tools/node' '/User'\\''s tools/$HOME;codex.js' '-c' "
+    expect(script).toContain("'/Orbis Tools/node' '/User'\\''s tools/$HOME;codex.js' '-c' 'check_for_update_on_startup=false' '-c' "
       + `'${(`projects.${JSON.stringify(workspace)}.trust_level="trusted"`).replaceAll("'", "'\\''")}'`);
     expect(script).toContain('rm -f -- "$0"');
     expect(script).not.toContain("must-not-appear-in-launch-file");
@@ -102,6 +110,7 @@ describe("macOS terminal launch", () => {
     await new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("pi", "tui", workspace);
     const args = terminal.spawn.mock.calls[0]![1] as string[];
     const script = await readFile(args[2]!, "utf8");
+    expect(script).toContain("'PI_SKIP_VERSION_CHECK=1'");
     expect(script).toContain("'/My Projects/pi.js' '--approve' '-e'");
     expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
   });

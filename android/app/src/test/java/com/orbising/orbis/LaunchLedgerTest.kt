@@ -57,6 +57,56 @@ class LaunchLedgerTest {
         assertEquals("native-configured", state.pendingSends.getValue("first-message").sessionId)
     }
 
+    // Leaving the failed page retains its ledger operation; admission deduplication must not hide it forever.
+    @Test fun unresolvedConfiguredLaunchCanBeReopenedAfterLeavingItsPage() {
+        var (state, id) = newSession(setup())
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"unknown"}""")
+        val fields = state.launching!!.target
+        state = state.stopFollowingLaunch().copy(selectedRuntimeId = null)
+        assertNull(state.launching)
+        val restored = state.restoreConfiguredLaunch(id, fields, 2000)
+        assertEquals(id, restored.launchPage?.requestId)
+        assertTrue(restored.launchPage!!.unconfirmed)
+        assertEquals(state.ledger.operations.size, restored.ledger.operations.size)
+    }
+
+    // Unknown without sessionId still guards against duplicates. Only explicit abandonment releases it.
+    @Test fun explicitAbandonmentRemovesOnlyTheMatchingUncertainLaunchAndWaitingMessage() {
+        var (state, id) = newSession(setup())
+        state = state.createWaitingSend("first-command", "first-message", state.selectedRuntimeId!!, state.launching!!.placeholder,
+            "unsent draft", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(id)!!)).first
+        assertEquals(state, state.abandonConfiguredLaunchState(id, "first-message"))
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"unknown","error":"native consent pending"}""")
+        assertEquals(state, state.abandonConfiguredLaunchState("stale-launch", "first-message"))
+        val cleared = state.abandonConfiguredLaunchState(id, "first-message")
+        assertNull(cleared.launching)
+        assertNull(cleared.selectedRuntimeId)
+        assertTrue(cleared.pendingSends.isEmpty())
+        assertTrue(cleared.sessionActivateRequests.isEmpty())
+        assertNull(cleared.ledger.operation(id))
+        assertNull(cleared.ledger.operation("first-command"))
+        assertTrue(cleared.ledger.hasCapacity(256))
+        assertTrue(cleared.canCreateSessionOn("host-1"))
+    }
+
+    // R2: abandonment owns a launch placeholder, not the rest of the outbox. Missing
+    // journal IDs or restored UI-only rows must not leak slots or delete unrelated sends.
+    @Test fun abandonmentCleansPlaceholderSendsAndRestoredRowsWithoutTouchingOtherSessions() {
+        var (state, id) = newSession(setup())
+        val placeholder = state.launching!!.placeholder
+        state = state.createWaitingSend("first-command", "first-message", placeholder, placeholder,
+            "unsent draft", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(id)!!)).first
+        state = state.createWaitingSend("other-command", "other-message", "rt-s1", "s1",
+            "unrelated", null, emptyList(), emptyList(), 1000).first
+        val restored = state.pendingSends.getValue("first-message").copy(messageId = "restored-message", commandId = "restored-command")
+        state = state.copy(pendingSends = state.pendingSends + (restored.messageId to restored))
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"failed","error":"login required"}""")
+        val cleared = state.abandonConfiguredLaunchState(id, null)
+        assertEquals(listOf(state.ledger.operation("other-command")), cleared.ledger.operations)
+        assertEquals(mapOf("other-message" to state.pendingSends.getValue("other-message")), cleared.pendingSends)
+        assertTrue(cleared.ledger.hasCapacity(255))
+    }
+
     @Test fun resumeEntersTheChatAtOnceShowingStartingAndSwitchesWhenOnline() {
         var (state, id) = launch(setup(), mapOf("type" to "resume", "sessionId" to "s1", "agentKind" to "codex"), "旧会话")
         assertEquals("starting", state.launchPage?.status)

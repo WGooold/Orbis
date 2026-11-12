@@ -25,6 +25,34 @@ internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject 
     put("permissions", buildJsonObject { permissions.forEach { (key, value) -> put(key, value) } })
 }
 
+/** Leaving an uncertain page preserves its ledger identity; reopening must not attempt to create it again. */
+internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long): RemoteState {
+    if (launching != null) return this
+    val existing = ledger.operation(id)
+    if (existing == null) return createLaunch(id, fields, L10n.tr("新会话"), now).first
+    val launch = LaunchState(id, "launch:$id", fields, L10n.tr("新会话"), fields["cwd"].orEmpty(), fields["agentKind"], null,
+        unconfirmed = true)
+    return copy(launching = launch, selectedRuntimeId = launch.placeholder)
+}
+
+/** Only explicit abandonment releases an uncertain launch; an unreported native identity is not absence. */
+internal fun RemoteState.abandonConfiguredLaunchState(id: String, firstId: String?): RemoteState {
+    val launch = launching?.takeIf { it.requestId == id } ?: return this
+    if (launch.failure == null && !launch.unconfirmed) return this
+    // Send operations use command IDs, not message IDs. Release every send owned
+    // by this placeholder, including restored rows without a ledger operation.
+    val abandonedSends = ledger.operations.filter { op ->
+        val send = op.payload as? LedgerPayload.Send
+        send != null && (send.sessionId == launch.placeholder || send.messageId == firstId && id in op.prerequisites)
+    }
+    val messageIds = abandonedSends.map { (it.payload as LedgerPayload.Send).messageId }.toSet() +
+        pendingSends.values.filter { it.sessionId == launch.placeholder }.map { it.messageId }
+    val remainingLedger = abandonedSends.fold(ledger.remove(id)) { current, op -> current.remove(op.opId) }
+    return copy(launching = null, ledger = remainingLedger, sessionActivateRequests = sessionActivateRequests - id,
+        pendingSends = pendingSends - messageIds,
+        selectedRuntimeId = selectedRuntimeId.takeUnless { it == launch.placeholder }, activatedSessionToOpen = null)
+}
+
 /** S51: only the matching native configuration confirmation can release the optimistic launch. */
 internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): RemoteState {
     val id = message["launchId"]?.jsonPrimitive?.contentOrNull ?: return this

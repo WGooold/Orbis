@@ -1588,5 +1588,8 @@
   "设置未确认": "Settings unconfirmed",
   "后续已设": "Next request set",
   "后续选择": "Next request selection",
-  "所选：{0}": "Selected: {0}"
+  "所选：{0}": "Selected: {0}",
+  "结束本次等待？": "Stop waiting for this launch?",
+  "电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。": "The session on your computer may still be starting. Your first message will be kept as a draft. Creating again may open another session.",
+  "结束等待": "Stop waiting"
 }

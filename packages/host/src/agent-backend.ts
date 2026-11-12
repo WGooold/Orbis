@@ -26,6 +26,7 @@ import { piArchiveRoot, SessionArchiveError, setPiSessionArchived } from "./sess
 import type { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import type { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import type { ClaudeLauncher } from "./claude-launcher.js";
+import { ClaudeStartupBlocked } from "./claude-startup.js";
 import type { ClaudeModsBridge } from "./claude-mods-bridge.js";
 
 export type AgentActivateTarget =
@@ -43,6 +44,9 @@ export type CommandDispatch = "handled" | "unsupported" | "offline";
 
 export type AgentActivateContext = {
   deviceId?: string;
+  launchId?: string;
+  /** Claude's preallocated native identity, durably recorded before terminal launch. */
+  expectedSessionId?: string;
   spawnMode?: SpawnMode;
   configuration?: SessionConfigurationValues;
   onCreated?: (activation: BackendActivation) => Promise<void>;
@@ -64,6 +68,7 @@ export interface AgentBackend {
   /** Effective configured provider, independent of any open session. Unknown on failure. */
   currentProvider?(): Promise<string | undefined>;
   sessionConfiguration?(cwd: string): Promise<SessionConfigurationCatalog>;
+  findLaunch?(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined;
   setArchived(sessionId: string, archived: boolean): Promise<void>;
   /**
    * 激活一个会话。不归本后端的会话抛 `ActivationError("session_not_found")`，
@@ -295,7 +300,8 @@ export class ClaudeBackend implements AgentBackend {
     }
     if (!isAbsolute(target.cwd)) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
     await this.#requireDirectory(target.cwd);
-    const runtime = await this.#launch({ cwd: target.cwd,
+    const runtime = await this.#launch({ cwd: target.cwd, ...(context?.launchId === undefined ? {} : { launchId: context.launchId }),
+      ...(context?.expectedSessionId === undefined ? {} : { sessionId: context.expectedSessionId }),
       ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
     await context?.onCreated?.({ ...(runtime.sessionId === undefined ? {} : { sessionId: runtime.sessionId }), spawnMode: "tui" });
     if (context?.configuration) await this.#confirmConfiguration(runtime, context.configuration);
@@ -453,16 +459,21 @@ export class ClaudeBackend implements AgentBackend {
     }
   }
 
-  async #launch(request: { cwd: string; resume?: string; configuration?: SessionConfigurationValues }): Promise<RuntimeMetadata> {
+  findLaunch(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined {
+    return this.#options.modsBridge.findLaunch(launchId, expectedSessionId);
+  }
+
+  async #launch(request: { cwd: string; resume?: string; sessionId?: string; launchId?: string; configuration?: SessionConfigurationValues }): Promise<RuntimeMetadata> {
     const reason = await this.#launchUnavailable();
     if (reason !== undefined || this.#options.launcher === undefined) throw new ActivationError("agent_unsupported", reason ?? "无法打开 Claude Code");
-    const launchId = randomUUID();
+    const launchId = request.launchId ?? randomUUID();
     const timeoutMs = this.#options.launchTimeoutMs ?? 60_000;
-    const connected = this.#options.modsBridge.waitForLaunch(launchId, timeoutMs);
+    const connected = this.#options.modsBridge.waitForLaunch(launchId, timeoutMs, request.sessionId ?? request.resume);
     try {
       await this.#options.launcher.launch({ ...request, launchId });
     } catch (error) {
       this.#options.modsBridge.cancelLaunch(launchId);
+      if (error instanceof ClaudeStartupBlocked) throw error;
       throw new ActivationError("spawn_failed", `无法在电脑上打开 Claude Code 终端：${error instanceof Error ? error.message : String(error)}`);
     }
     this.#options.log?.(`[activate] 已在电脑上打开 Claude Code 终端（${request.resume === undefined ? "新会话" : `恢复 ${request.resume}`}，cwd=${request.cwd}）`);

@@ -30,18 +30,33 @@ describe("Claude startup prerequisites", () => {
     await expect(checkClaudeAuthentication(cli, input.cwd, process.env)).resolves.toBeUndefined();
   });
 
+  // S57 / SC81: every Host launch skips the warning, including an unset/false
+  // native acceptance; the permission mode and native files stay intact.
+  it("unconditionally skips the bypass warning for one invocation without changing native files", async () => {
+    const input = await fixture();
+    const file = join(input.configDir, ".claude.json");
+    const local = join(input.cwd, ".claude/settings.local.json");
+    await writeFile(file, '{"bypassPermissionsModeAccepted":false}');
+    await writeFile(local, '{"skipDangerousModePermissionPrompt":false}');
+    const settings = await claudeStartupSettings(input);
+    expect(settings.args).toEqual(["--settings", '{"skipDangerousModePermissionPrompt":true}']);
+    expect(await readFile(file, "utf8")).toBe('{"bypassPermissionsModeAccepted":false}');
+    expect(await readFile(local, "utf8")).toBe('{"skipDangerousModePermissionPrompt":false}');
+    expect(settings.args).not.toContain("--permission-mode");
+  });
+
   it("snapshots only current project MCP names and preserves explicit denials", async () => {
     const input = await fixture();
     await writeFile(join(input.cwd, ".mcp.json"), JSON.stringify({ mcpServers: { docs: { command: "fixture" }, denied: {}, search: {} } }));
     const contents = JSON.stringify({ disabledMcpjsonServers: ["denied"], permissions: { defaultMode: "manual" } });
     await writeFile(join(input.cwd, ".claude/settings.local.json"), contents);
     const result = await claudeStartupSettings(input);
-    expect(result).toEqual({ installed: false, args: ["--settings", '{"enabledMcpjsonServers":["docs","search"]}'] });
+    expect(result).toEqual({ installed: false, args: ["--settings", '{"skipDangerousModePermissionPrompt":true,"enabledMcpjsonServers":["docs","search"]}'] });
     expect(await readFile(join(input.cwd, ".claude/settings.local.json"), "utf8")).toBe(contents);
     expect(JSON.stringify(result)).not.toContain("enableAllProjectMcpServers");
   });
   it("does not add a blanket approval when no project MCP exists", async () => {
-    expect(await claudeStartupSettings(await fixture())).toEqual({ installed: false, args: [] });
+    expect(await claudeStartupSettings(await fixture())).toEqual({ installed: false, args: ["--settings", '{"skipDangerousModePermissionPrompt":true}'] });
   });
   it("uses enabled Orbis installation and rejects explicit disable rather than loading a second copy", async () => {
     const input = await fixture();
@@ -58,7 +73,7 @@ describe("Claude startup prerequisites", () => {
     await writeFile(join(input.configDir, "settings.json"), '{"disableAllHooks":true}');
     await expect(claudeStartupSettings(input)).rejects.toThrow("disableAllHooks");
     await writeFile(join(input.cwd, ".claude/settings.local.json"), '{"disableAllHooks":false}');
-    expect((await claudeStartupSettings(input)).args).toEqual([]);
+    expect((await claudeStartupSettings(input)).args).toEqual(["--settings", '{"skipDangerousModePermissionPrompt":true}']);
     await writeFile(input.managedSettingsPath, '{"disableAllHooks":true}');
     await expect(claudeStartupSettings(input)).rejects.toThrow("disableAllHooks");
   });
@@ -82,7 +97,7 @@ describe("Claude startup prerequisites", () => {
     await mkdir(join(input.cwd, "child"));
     await writeFile(join(input.cwd, ".mcp.json"), '{"mcpServers":{"parent-only":{}}}');
     await writeFile(join(input.cwd, ".claude/settings.json"), JSON.stringify({ enabledPlugins: { [plugin]: false } }));
-    await expect(claudeStartupSettings({ ...input, cwd: join(input.cwd, "child") })).resolves.toEqual({ installed: false, args: [] });
+    await expect(claudeStartupSettings({ ...input, cwd: join(input.cwd, "child") })).resolves.toEqual({ installed: false, args: ["--settings", '{"skipDangerousModePermissionPrompt":true}'] });
   });
   it.each(["settings.json", "settings.local.json"])("reports malformed %s without exposing contents", async name => {
     const input = await fixture();

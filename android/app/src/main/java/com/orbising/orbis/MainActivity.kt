@@ -552,7 +552,13 @@ internal fun RemoteApp(
                     }
                     HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
-                        ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null })
+                        ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null },
+                            onAbandonLaunch = { text ->
+                                val draft = sessionDrafts.draft(state.hostId)
+                                state.launchPage?.let { pending -> draft.agent.value = pending.agentKind ?: draft.agent.value; draft.cwd.value = pending.cwd }
+                                if (text.isNotBlank()) draft.text.value = text
+                                newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
+                            })
                     }
                     HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                     null -> Unit
@@ -1444,6 +1450,7 @@ internal fun ChatScreen(
     executeSlash: (String, String) -> String? = model::executeSlashCommand,
     firstDraftSend: FirstDraftSend? = null,
     onFirstDraftSend: () -> Unit = {},
+    onAbandonLaunch: (String) -> Unit = {},
 ) {
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
@@ -2439,7 +2446,8 @@ internal fun ChatScreen(
             )
             launch?.takeIf { it.failure != null || it.unconfirmed }?.let { failed ->
                 Box(Modifier.align(Alignment.TopCenter)) {
-                    LaunchNotice(failed, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) })
+                    LaunchNotice(failed, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
+                        onAbandon = { model.abandonConfiguredLaunch()?.let(onAbandonLaunch) })
                 }
             }
             state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }?.let { projection ->
@@ -4499,7 +4507,13 @@ private fun fullEntryText(entry: SessionGraphEntry): String {
 
 /** ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。 */
 @Composable
-internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit) {
+internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit, onAbandon: (() -> Unit)? = null) {
+    var confirmAbandon by remember { mutableStateOf(false) }
+    if (confirmAbandon) AlertDialog(onDismissRequest = { confirmAbandon = false },
+        title = { Text(L10n.tr("结束本次等待？")) },
+        text = { Text(L10n.tr("电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。")) },
+        confirmButton = { TextButton(onClick = { confirmAbandon = false; onAbandon?.invoke() }) { Text(L10n.tr("结束等待")) } },
+        dismissButton = { TextButton(onClick = { confirmAbandon = false }) { Text(L10n.tr("取消")) } })
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).testTag("launch-notice"),
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
@@ -4510,6 +4524,7 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = OrbisSymbols.Refresh, modifier = Modifier.testTag("launch-retry"))
                 NeumorphTextButton(L10n.tr("返回"), onClick = onBack, modifier = Modifier.testTag("launch-back"))
+                if (onAbandon != null) NeumorphTextButton(L10n.tr("结束等待"), onClick = { confirmAbandon = true }, modifier = Modifier.testTag("launch-abandon"))
             }
         }
     }

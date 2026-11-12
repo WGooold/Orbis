@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { processExecutable } from "./codex-desktop-macos.js";
+import { CODEX_STARTUP_ARGS } from "./agent-startup.js";
 
 const execute = promisify(execFile);
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -16,7 +17,7 @@ export type MacCodexTui = { pid: number; started: string; command: string; sessi
 /** Keep the exact app-server CLI and endpoint; a fresh standalone CLI would take a second writer lock. */
 export function macCodexTerminalScript(input: TerminalInput & { codexCommand: CodexCommand; sessionsRoot: string }): string {
   const invocation = [input.codexCommand.command, ...input.codexCommand.prefixArgs,
-    "resume", input.sessionId, "--remote", input.endpoint].map(quote).join(" ");
+    ...CODEX_STARTUP_ARGS, "resume", input.sessionId, "--remote", input.endpoint].map(quote).join(" ");
   return [
     `: ${quote(`orbis-codex-wait:${input.sessionId}:${new URL(input.endpoint).port}`)};`,
     "unset CODEX_INTERNAL_ORIGINATOR_OVERRIDE;",

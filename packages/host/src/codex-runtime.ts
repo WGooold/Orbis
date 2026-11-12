@@ -73,7 +73,7 @@ import type {
 import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, CodexRequestError, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
 import { openWindowsConsole, type WindowsConsoleRequest } from "./windows-console.js";
-import { prepareCodexWorkspace, codexWorkspaceTrustKey } from "./agent-startup.js";
+import { CODEX_STARTUP_ARGS, prepareCodexWorkspace, codexWorkspaceTrustKey } from "./agent-startup.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CodexAsyncInputs, codexAsyncQuestionText, codexQuestionReplyText } from "./codex-async-input.js";
@@ -4950,7 +4950,7 @@ export function codexHeadWindowLaunch(input: {
     `};`,
     `do { Start-Sleep -Milliseconds 500 }`,
     `until (Get-ChildItem "$env:USERPROFILE\\.codex\\sessions" -Recurse -Filter '*${input.sessionId}*' -ErrorAction SilentlyContinue)`,
-    `; ${codexInvocation} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`,
+    `; ${codexInvocation} ${CODEX_STARTUP_ARGS.map(quote).join(" ")} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`,
     // codex 退出（正常退出 / 崩 / 连接断）= 这条会话不在电脑上了，窗口不该留。
     // 必须显式 `exit 0`：默认终端是 Windows Terminal 时，closeOnExit 缺省只在退出码为 0
     // 时关窗格，拿 codex 的退出码（`exit` 不带参数会沿用 $LASTEXITCODE）会留下一个死窗格。

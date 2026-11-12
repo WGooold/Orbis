@@ -23,7 +23,8 @@ describe("macOS Codex terminal", () => {
         codexCommand: { command: process.execPath, prefixArgs: [cli, output] } });
       await promisify(execFile)("/bin/sh", ["-c", script], { cwd: root, timeout: 5_000,
         env: { ...process.env, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop" } });
-      expect(JSON.parse(await readFile(output, "utf8"))).toEqual({args:["resume", sessionId, "--remote", endpoint],originator:null});
+      // SC81: the launch override must reach the same CLI without disturbing resume identity or quoting.
+      expect(JSON.parse(await readFile(output, "utf8"))).toEqual({args:["-c", "check_for_update_on_startup=false", "resume", sessionId, "--remote", endpoint],originator:null});
       expect(script).not.toContain("wt.exe");
     } finally { await rm(root, { recursive: true, force: true }); }
   });

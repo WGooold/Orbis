@@ -7,6 +7,7 @@ import { orbisEnvironment } from "@orbis/protocol";
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
 import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
+import { CODEX_STARTUP_ARGS } from "./agent-startup.js";
 
 type LoopbackDescriptor = { url?: unknown; token?: unknown };
 type LaunchResult = { endpoint?: unknown; command?: unknown; prefixArgs?: unknown };
@@ -21,7 +22,7 @@ export async function runCodexShim(args: readonly string[] = process.argv.slice(
     const launch = await requestHostLaunch(process.cwd()).catch(() => undefined);
     if (launch !== undefined) return await spawnCodex({
       command: { command: launch.command, prefixArgs: launch.prefixArgs },
-      args: ["--remote", launch.endpoint],
+      args: [...CODEX_STARTUP_ARGS, "--remote", launch.endpoint],
       cwd: process.cwd(),
     });
   }

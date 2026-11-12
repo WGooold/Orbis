@@ -93,13 +93,15 @@ internal fun RemoteDirectoryBrowser(
             }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // In-sheet navigation stays inside the browser: a committing control would run the sheet's
+        // exit without its owner closing it, leaving an invisible window that eats every touch.
         if (!browse?.path.isNullOrBlank()) {
-            NeumorphTextButton(L10n.tr("上一级"), onClick = onBrowseUp, enabled = enabled,
+            NeumorphTextButton(L10n.tr("上一级"), onClick = onBrowseUp, enabled = enabled, dismissOnClick = false,
                 icon = OrbisSymbols.ArrowUpward, modifier = Modifier.fillMaxWidth())
         }
         if (browse?.error != null) {
             Text(browse.error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            NeumorphTextButton(L10n.tr("重新读取"), onClick = { onBrowse(browse.path) }, enabled = enabled)
+            NeumorphTextButton(L10n.tr("重新读取"), onClick = { onBrowse(browse.path) }, enabled = enabled, dismissOnClick = false)
         } else if (connected && !loading && browse != null && entries.isEmpty()) {
             Text(if (showFiles) L10n.tr("此目录没有可浏览的文件或子目录") else L10n.tr("此目录没有子目录"),
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

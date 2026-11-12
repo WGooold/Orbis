@@ -170,9 +170,9 @@ internal class HostConnection(
         }
     }
 
-    private fun recoverConfiguredLaunch() { scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground() } }
+    private fun recoverConfiguredLaunch(show: Boolean = false) { scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground(show) } }
 
-    private suspend fun recoverConfiguredLaunchInBackground() {
+    private suspend fun recoverConfiguredLaunchInBackground(show: Boolean = false) {
         configuredLaunchJournal.awaitLoaded()
         if (!mutableState.value.sessionConfigurationSupported) return
         val id = configuredLaunchId ?: return
@@ -190,8 +190,8 @@ internal class HostConnection(
             val fields = mapOf("type" to "new", "agentKind" to (saved["agentKind"]?.jsonPrimitive?.contentOrNull ?: return),
                 "cwd" to (saved["cwd"]?.jsonPrimitive?.contentOrNull ?: return))
             updateState { current ->
-                val next = current.createLaunch(id, fields, L10n.tr("新会话"), System.currentTimeMillis()).first
-                if (saved["following"]?.jsonPrimitive?.booleanOrNull == false) next.copy(selectedRuntimeId = current.selectedRuntimeId,
+                val next = current.restoreConfiguredLaunch(id, fields, System.currentTimeMillis())
+                if (!show && saved["following"]?.jsonPrimitive?.booleanOrNull == false) next.copy(selectedRuntimeId = current.selectedRuntimeId,
                     launching = next.launching?.copy(following = false)) else next
             }
             val text = saved["firstMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -202,6 +202,9 @@ internal class HostConnection(
                     System.currentTimeMillis(), null, if (rejected) PendingSendState.Failed(saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认")) else PendingSendState.Unconfirmed)))
             }
         }
+        if (show) updateState { current -> current.launching?.takeIf { it.requestId == id }?.let { launch ->
+            current.copy(selectedRuntimeId = launch.placeholder, launching = launch.copy(following = true))
+        } ?: current }
         if (rejected) {
             updateState { it.copy(launching = it.launching?.copy(failure = saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认"), unconfirmed = false)) }
             return
@@ -218,7 +221,7 @@ internal class HostConnection(
             updateState { it.copy(error = L10n.tr("请先核对上一次启动及首句结果")) }; return false
         }
         if (configuredLaunchJournal.snapshot != null) {
-            recoverConfiguredLaunch()
+            recoverConfiguredLaunch(show = true)
             updateState { it.copy(error = L10n.tr("请先核对上一次启动及首句结果")) }; return false
         }
         val id = UUID.randomUUID().toString()
@@ -864,6 +867,19 @@ internal class HostConnection(
             scope.launch(Dispatchers.IO) { loadCachedSessionGraph(pairedDevice, resumed) }
         }
         return sent
+    }
+
+    /** Explicitly stop waiting after an uncertain launch; never infer that its native TUI is gone. */
+    fun abandonConfiguredLaunch(): String? {
+        val saved = configuredLaunchJournal.snapshot ?: return null
+        val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return null
+        val launch = mutableState.value.launching?.takeIf { it.requestId == id } ?: return null
+        if (launch.failure == null && !launch.unconfirmed) return null
+        if (configuredLaunchJournal.update(id) { null } == null) return null
+        val firstId = saved["firstMessageId"]?.jsonPrimitive?.contentOrNull
+        updateState { it.abandonConfiguredLaunchState(id, firstId) }
+        firstId?.let { messageId -> scope.launch(Dispatchers.IO) { draftStore.removeWaiting(messageId) } }
+        return saved["firstMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
     }
 
     /** 启动失败或未确认后在聊天页原位重试：同一目标、新的请求（L6）。 */

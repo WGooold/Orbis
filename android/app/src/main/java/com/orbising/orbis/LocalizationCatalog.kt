@@ -1295,6 +1295,7 @@ internal object LocalizationCatalog {
         "电脑" to "Computer",
         "电脑上的会话与历史不受影响，之后可以重新扫码配对。" to "Sessions and history on your computer stay intact. You can scan again to pair later.",
         "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。" to "The session is still running on the computer. Try again later or close it on the computer.",
+        "电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。" to "The session on your computer may still be starting. Your first message will be kept as a draft. Creating again may open another session.",
         "电脑上的会话目录仍是原状态" to "The computer's session catalog is unchanged",
         "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
         "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
@@ -1382,9 +1383,9 @@ internal object LocalizationCatalog {
         "第 {0} 次" to "Attempt {0}",
         "第 {0} 轮" to "Turn {0}",
         "等待" to "Waiting",
-        "等待{0}切换" to "Waiting for {0} switch",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "等待{0}切换" to "Waiting for {0} switch",
         "等待中" to "Waiting",
         "等待任务完成后归档" to "Waiting for the task to finish before archiving",
         "等待会话启动" to "Waiting for session to start",
@@ -1406,6 +1407,8 @@ internal object LocalizationCatalog {
         "粘贴配对二维码内容" to "Paste pairing QR code data",
         "系统语言为中文时使用简体中文，其他未支持的语言使用英文。" to "Uses your preferred supported language. Falls back to English.",
         "经典" to "Classic",
+        "结束本次等待？" to "Stop waiting for this launch?",
+        "结束等待" to "Stop waiting",
         "结果" to "Result",
         "结果被上限截断" to "Results truncated at the limit",
         "继续" to "Continue",
@@ -1532,11 +1535,11 @@ internal object LocalizationCatalog {
         "路由" to "Routing",
         "跳到最新消息" to "Jump to latest message",
         "跳转失败：{0}" to "Navigation failed: {0}",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "跳转未送达：当前会话没有提供 /tree 命令" to "Navigation not sent: this session does not offer /tree",
         "跳过权限检查" to "Bypass permission checks",
         "轮次差异已超过电脑端保留期限" to "The computer's retention period for this turn's diff has expired",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "轻点分享" to "Tap to share",
         "轻点切换选择" to "Tap to toggle selection",
         "轻点刷新查询" to "Tap to refresh",
@@ -1684,11 +1687,11 @@ internal object LocalizationCatalog {
         "重新连接" to "Reconnect",
         "重置 " to "Resets ",
         "重置 {0}" to "Resets {0}",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "重置时间：" to "Resets at: ",
         "重试" to "Retry",
         "重试上传" to "Retry upload",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "重试历史加载" to "Retry history load",
         "重试工具清单" to "Retry tool inventory",
         "重试读取" to "Retry loading",

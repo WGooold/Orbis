@@ -13,7 +13,7 @@ export async function openMacAgentTerminal(input: { stateDir: string; cwd: strin
   const startedFile = `${file}.started`;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   // Deliberately do not copy credentials or the entire Host environment into a file.
-  const environment = [...AGENT_LAUNCH_ENV_KEYS, "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE"]
+  const environment = [...AGENT_LAUNCH_ENV_KEYS, "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK"]
     .flatMap(key => input.env[key] === undefined ? [] : [`${key}=${input.env[key]}`]);
   const script = ["#!/bin/sh", `cd -- ${quote(input.cwd)} || exit 1`, 'rm -f -- "$0"',
     ...(input.confirmStart ? [`[ -t 0 ] || exit 1`, `/usr/bin/touch -- ${quote(startedFile)}`] : []),

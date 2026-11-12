@@ -26,6 +26,9 @@ export async function checkClaudeAuthentication(cli: string, cwd: string, env: N
   if (!result.loggedIn) throw new Error("Claude 尚未完成账号授权，请先连接供应商账号后重试；未打开等待登录的终端");
 }
 
+/** Preparation failed before a terminal was opened; the launch can settle as failed. */
+export class ClaudeStartupBlocked extends Error {}
+
 const plugin = `${CLAUDE_PLUGIN}@${CLAUDE_MARKETPLACE}`;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 async function jsonFile(path: string): Promise<Record<string, unknown> | undefined> {
@@ -92,7 +95,12 @@ export async function claudeStartupSettings(input: { cwd: string; configDir: str
   if (enabled === false) throw new Error("Orbis Claude 插件已被明确禁用，请先在设置中启用连接");
   if (disabledHooks) throw new Error("Claude 的 disableAllHooks 禁用了 Orbis 插件，无法启动连接");
   const approved = [...servers].filter(name => !denied.has(name)).sort();
-  return { installed: enabled === true, args: approved.length === 0 ? [] : ["--settings", JSON.stringify({ enabledMcpjsonServers: approved })] };
+  // ADR-0073: unconditionally skip the bypass warning for this invocation.
+  // The selected permission mode and persistent native settings stay intact.
+  return { installed: enabled === true, args: ["--settings", JSON.stringify({
+    skipDangerousModePermissionPrompt: true,
+    ...(approved.length === 0 ? {} : { enabledMcpjsonServers: approved }),
+  })] };
 }
 
 export function claudeManagedSettingsPath(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {

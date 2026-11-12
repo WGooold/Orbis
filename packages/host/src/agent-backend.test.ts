@@ -341,6 +341,37 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
     await expect(backend.activate({ type: "new", cwd: root })).rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("登录状态、Orbis 插件加载或管理策略") });
   });
 
+  // A late hello after timeout is an existing native session, never permission to create another.
+  it("retains the configured launch identity for a late Claude connection", async () => {
+    const { backend, mods, repo, launches } = await fixture();
+    const expectedSessionId = "ea3d27e1-d794-4ad4-af9c-92ea81b67f03";
+    await expect(backend.activate({ type: "new", cwd: repo }, { launchId: "durable-launch", expectedSessionId })).rejects.toMatchObject({ code: "spawn_failed" });
+    expect(launches[0]?.launchId).toBe("durable-launch");
+    expect(launches[0]?.sessionId).toBe(expectedSessionId);
+    expect(backend.findLaunch("durable-launch", expectedSessionId)).toBeUndefined();
+    connect(mods, "another-session", "durable-launch", repo);
+    expect(backend.findLaunch("durable-launch", expectedSessionId)).toBeUndefined();
+    connect(mods, expectedSessionId, "durable-launch", repo);
+    expect(backend.findLaunch("durable-launch", expectedSessionId)).toMatchObject({ sessionId: expectedSessionId, cwd: repo });
+    expect(backend.findLaunch("other-launch", expectedSessionId)).toBeUndefined();
+    expect(launches).toHaveLength(1);
+  });
+
+  // A reused launch token must not complete creation or release onCreated for a different native session.
+  it("waits for the reserved native session before acknowledging configured creation", async () => {
+    const expectedSessionId = "ea3d27e1-d794-4ad4-af9c-92ea81b67f03";
+    const onCreated = vi.fn(async () => undefined);
+    const { backend, repo } = await fixture(async (request, mods) => {
+      connect(mods, "another-session", request.launchId, request.cwd);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      expect(onCreated).not.toHaveBeenCalled();
+      connect(mods, request.sessionId!, request.launchId, request.cwd);
+    });
+    await expect(backend.activate({ type: "new", cwd: repo }, { launchId: "reserved", expectedSessionId, onCreated }))
+      .resolves.toEqual({ sessionId: expectedSessionId, spawnMode: "tui" });
+    expect(onCreated).toHaveBeenCalledExactlyOnceWith({ sessionId: expectedSessionId, spawnMode: "tui" });
+  });
+
   it("cancels the Claude bridge wait when Terminal never executes its startup script", async () => {
     const { backend, mods, repo } = await fixture(async () => {
       throw new Error("Terminal 未确认执行 Claude Code 启动脚本");

@@ -57,9 +57,11 @@ describe("desktop terminal shortcuts", () => {
       terminal.spawn.mockClear();
       await runtime.openAgent(kind, "tui", workspace);
       const { script, launcher, options } = invocation();
-      if (kind === "codex") expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' '-c' "
+      if (kind === "codex") expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' '-c' 'check_for_update_on_startup=false' '-c' "
         + `'${(`projects.${JSON.stringify(workspace)}.trust_level="trusted"`).replaceAll("'", "''")}'`);
       else {
+        // SC81: a new Windows console receives the override inside its own script.
+        expect(script).toContain("$env:PI_SKIP_VERSION_CHECK = '1';");
         expect(script).toContain("'C:\\My Projects\\pi.js' '--approve' '-e'");
         expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
       }

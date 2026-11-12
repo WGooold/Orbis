@@ -19,7 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { AgentKind, SpawnMode } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
-import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
+import { PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
 import { AGENT_LAUNCH_ENV_KEYS, agentCommandForEntry, agentInvocation, agentPowerShellScript, cliPathDirs, findExternalAgentEntries, isOrbisPiCommand, type AgentCommand } from "./agent-command.js";
 import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 
@@ -199,6 +199,7 @@ export function buildSpawnPlan(input: {
     if (input.scriptFile === undefined) throw new ActivationError("spawn_failed", "缺少 Pi 终端启动文件");
     const environment = [...AGENT_LAUNCH_ENV_KEYS, "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE"]
       .flatMap(key => input.env?.[key] === undefined ? [] : [`${key}=${input.env[key]}`]);
+    environment.push(...Object.entries(PI_STARTUP_ENV).map(([key, value]) => `${key}=${value}`));
     const steps = [
       "#!/bin/sh",
       `cd -- ${quotePosix(input.cwd)} || exit 1`,
@@ -213,10 +214,16 @@ export function buildSpawnPlan(input: {
   }
   // Pi 的入口与参数整体 base64 进 `-EncodedCommand`，路径里的空格和引号都不经过命令行
   // 解析；`-NoExit` 让窗口在 pi 退出后留着，报错不闪退。窗口继承启动器的环境。
-  const script = agentPowerShellScript({ command: input.pi.command, prefixArgs: [] }, piArgs, input.env);
+  const script = `${Object.entries(PI_STARTUP_ENV).map(([key, value]) => `$env:${key} = ${quotePowerShell(value)};`).join(" ")} `
+    + agentPowerShellScript({ command: input.pi.command, prefixArgs: [] }, piArgs, input.env);
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const window: WindowsConsoleRequest = { file: "powershell.exe", argumentLine: `-NoProfile -NoExit -EncodedCommand ${encoded}`, cwd: input.cwd };
   return { kind: "tui", ...windowsConsoleLaunch(window, input.env), cwd: input.cwd, console: window };
+}
+
+/** PowerShell 单引号字面量：内部的 `'` 双写。 */
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/gu, "''")}'`;
 }
 
 function quotePosix(value: string): string {
@@ -330,11 +337,10 @@ export class SessionSpawner {
     const terminal = platform() === "darwin"
       ? await access("/usr/bin/open").then(() => true, () => false)
       : platform() === "win32";
-    const env = this.#stateDir === undefined ? this.#env : {
-      ...this.#env,
+    const env = { ...this.#env, ...PI_STARTUP_ENV, ...(this.#stateDir === undefined ? {} : {
       ORBIS_STATE_DIR: this.#stateDir,
       PI_REMOTE_STATE_DIR: this.#stateDir,
-    };
+    }) };
     // L2 的新会话 id 由 Host 生成（§8.2），要带回给手机对账 runtime.online。
     const newSessionId = input.target.type === "new" ? randomUUID() : undefined;
     const planInput: Parameters<typeof buildSpawnPlan>[0] = {

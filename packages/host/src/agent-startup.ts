@@ -1,6 +1,11 @@
 import { homedir } from "node:os";
 import { isAbsolute, normalize, parse, win32 } from "node:path";
 
+/** ADR-0073: Host manages updates separately; these overrides last for one process. */
+export const CODEX_STARTUP_ARGS = ["-c", "check_for_update_on_startup=false"] as const;
+export const PI_STARTUP_ENV = { PI_SKIP_VERSION_CHECK: "1" } as const;
+export const CLAUDE_STARTUP_ENV = { DISABLE_AUTOUPDATER: "1" } as const;
+
 /** ADR-0056: a user-requested launch authorizes exactly this workspace's resources. */
 export const PI_WORKSPACE_APPROVAL_ARGS = ["--approve"] as const;
 

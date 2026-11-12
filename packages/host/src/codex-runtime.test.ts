@@ -3116,7 +3116,7 @@ describe("codexHeadWindowLaunch", () => {
     expect(script).toContain("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null");
     expect(script).toContain("Get-ChildItem");
     expect(script).toContain(`'*${sessionId}*'`);
-    expect(script).toContain(`codex resume '${sessionId}' --remote 'ws://127.0.0.1:58322'`);
+    expect(script).toContain(`codex '-c' 'check_for_update_on_startup=false' resume '${sessionId}' --remote 'ws://127.0.0.1:58322'`);
   });
 
   it("使用 app-server 的精确 CLI 入口，避免 PATH 上的旧 Codex 被 TUI 选中", () => {
@@ -3131,7 +3131,7 @@ describe("codexHeadWindowLaunch", () => {
     });
     const exactScript = Buffer.from(exact.argumentLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
     expect(exactScript).toContain(
-      `& 'C:/nvm4w/nodejs/node.exe' 'C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js' resume '${sessionId}'`,
+      `& 'C:/nvm4w/nodejs/node.exe' 'C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js' '-c' 'check_for_update_on_startup=false' resume '${sessionId}'`,
     );
     expect(exactScript).not.toContain("Get-Command codex");
   });

@@ -107,6 +107,7 @@ import { NotificationStore } from "./notification-store.js";
 import { HostRelayClient, type HostRelayState, type RelayAuthenticationError } from "./relay-client.js";
 import { browseDirectory, listPiSessions } from "./sessions.js";
 import { ActivationError, SessionSpawner } from "./spawner.js";
+import { ClaudeStartupBlocked } from "./claude-startup.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { ProviderManager, ProviderError } from "./provider-manager.js";
 import { SessionConfigurationStore, SessionConfigurationError, validateSessionConfiguration } from "./session-configuration-store.js";
@@ -2285,7 +2286,8 @@ export class HostService {
       await sendLaunch(message.launchId);
       try {
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, spawnMode: message.spawnMode ?? "tui", configuration: message.values,
+          deviceId, launchId: message.launchId, spawnMode: message.spawnMode ?? "tui", configuration: message.values,
+          ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
             await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "configuring",
               ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), spawnMode: result.spawnMode });
@@ -2297,7 +2299,8 @@ export class HostService {
         this.#invalidateCatalog();
       } catch (error) {
         // Native create may already have happened. Unknown is retained and never automatically re-created.
-        await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "unknown", error: describeError(error).slice(0, 2000) });
+        await this.#sessionConfigurations.update(deviceId, message.launchId, {
+          phase: error instanceof ClaudeStartupBlocked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
       }
       await sendLaunch(message.launchId);
     } catch (error) {
@@ -2321,6 +2324,16 @@ export class HostService {
   }
 
   async #recoverSessionLaunch(deviceId: string, launchId: string): Promise<void> {
+    const prior = await this.#sessionConfigurations.result(deviceId, launchId, launchId);
+    if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
+      const backend = await this.#configuredBackend(prior.agentKind);
+      const expectedSessionId = await this.#sessionConfigurations.expectedSessionId(deviceId, launchId);
+      // Legacy unknown records without a reserved identity cannot safely adopt an
+      // arbitrary hello: the native process may already have switched sessions.
+      const found = expectedSessionId === undefined ? undefined : backend.findLaunch?.(launchId, expectedSessionId);
+      if (found?.sessionId) await this.#sessionConfigurations.update(deviceId, launchId,
+        { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
+    }
     const record = await this.#sessionConfigurations.recover(deviceId, launchId);
     if (!record?.sessionId) return;
     try {

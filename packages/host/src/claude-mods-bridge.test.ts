@@ -418,6 +418,31 @@ describe("ClaudeModsBridge", () => {
     await expect(bridge.waitForLaunch("never", 5)).resolves.toBeUndefined();
   });
 
+  // R1: old plugins repeat ORBIS_CLAUDE_LAUNCH_ID after switching sessions. A
+  // reserved UUID remains authoritative through reconnects, expiry and Host restart.
+  it("never rebinds a configured launch to a different native session", async () => {
+    const bridge = bridgeWith();
+    const waiting = bridge.waitForLaunch("original-launch", 1_000, "original-session");
+    online(bridge, hello({ sessionId: "another-session", launchId: "original-launch" }));
+    expect(bridge.findLaunch("original-launch", "original-session")).toBeUndefined();
+    online(bridge, hello({ sessionId: "original-session", launchId: "original-launch" }));
+    await expect(waiting).resolves.toMatchObject({ sessionId: "original-session" });
+    online(bridge, hello({ sessionId: "original-session", launchId: "original-launch" }));
+    expect(bridge.findLaunch("original-launch", "original-session")).toMatchObject({ sessionId: "original-session" });
+    online(bridge, hello({ sessionId: "another-session", launchId: "original-launch" }));
+    expect(bridge.findLaunch("original-launch", "original-session")).toBeUndefined();
+    bridge.disconnect("claude:another-session");
+    online(bridge, hello({ sessionId: "another-session", launchId: "original-launch" }));
+    expect(bridge.findLaunch("original-launch", "original-session")).toBeUndefined();
+    bridge.close();
+    const restarted = bridgeWith();
+    online(restarted, hello({ sessionId: "another-session", launchId: "original-launch" }));
+    expect(restarted.findLaunch("original-launch", "original-session")).toBeUndefined();
+    online(restarted, hello({ sessionId: "original-session", launchId: "original-launch" }));
+    expect(restarted.findLaunch("original-launch", "original-session")).toMatchObject({ sessionId: "original-session" });
+    expect(restarted.findLaunch("different-launch", "original-session")).toBeUndefined();
+  });
+
   it("tells the Hook side when the TUI ran a tool or ended a turn, and when the person takes interactions back", () => {
     const finished = vi.fn();
     const turns = vi.fn();

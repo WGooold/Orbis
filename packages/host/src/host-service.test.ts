@@ -4037,6 +4037,77 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     expect(page.text).not.toContain("later edit"); expect(page.eof).toBe(true);
   });
 
+  // A preflight failure is final before opening. Even an old plugin reusing its
+  // launch token after /clear must only recover the durably reserved native UUID.
+  it.each([false, true])("settles Claude preflight failure and recovers a late configured launch without reopening (restart=%s)", async restart => {
+    const { ClaudeStartupBlocked } = await import("./claude-startup.js");
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-claude-recovery-"));
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay.json") });
+    let prepared = false;
+    let expectedSessionId: string | undefined;
+    const launchNative = vi.fn(async (request: import("./claude-launcher.js").ClaudeLaunchRequest) => {
+      expectedSessionId = request.sessionId;
+      throw prepared ? new Error("synthetic bridge timeout") : new ClaudeStartupBlocked("native login required");
+    });
+    const createHost = () => HostService.create({ relayUrl: relay!.url, ...relayBusinessHostOptions(relay!.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir: stateDir!, sessionsRoot: join(stateDir!, "pi"), reconnect: false, lan: false,
+      claude: { configDir: join(stateDir!, "claude"), launcher: { unavailable: async () => undefined, launch: launchNative,
+        sessionConfiguration: async () => ({ binding: "fixture", defaults: {}, models: [], permissions: [] }) } } });
+    host = await createHost();
+    await host.start();
+    const opened = await host.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Recovery fixture" })).device;
+    const psk = await device.pair(opened.payload);
+    await device.openChannel("relay", psk, opened.payload.hostId, opened.payload.hostId);
+    const sendRequest = (target: TestDevice, payload: unknown) => target.sendPayload(Buffer.from(JSON.stringify(payload)));
+    const response = async (id: string, phase: string) => {
+      for (let i = 0; i < 80; i++) {
+        const item = await device!.receiveMessage() as Record<string, unknown>;
+        if (item.requestId === id && item.type === "protocol.error") throw new Error(JSON.stringify(item));
+        if (item.requestId === id && item.phase === phase) return item;
+      }
+      throw new Error(`missing ${id}/${phase}`);
+    };
+    while ((await device.receiveMessage() as Record<string, unknown>).type !== "device.ready") { /* handshake */ }
+    const request = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, agentKind: "claude", cwd: stateDir,
+      binding: "fixture", revision: 0, values: {}, spawnMode: "tui" };
+    sendRequest(device, { ...request, requestId: "preflight", launchId: "preflight" });
+    expect(await response("preflight", "failed")).toMatchObject({ error: "native login required" });
+    prepared = true;
+    sendRequest(device, { ...request, requestId: "late", launchId: "late" });
+    await response("late", "unknown");
+    let descriptor = JSON.parse(await readFile(join(stateDir, "loopback.json"), "utf8"));
+    expect(expectedSessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    const hello = async (sessionId: string) => {
+      const result = await fetch(descriptor.url.replace(/^ws/u, "http") + "/v1/claude/mods/hello", { method: "POST",
+        headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ type: "hello", instanceId: "late-tui", sessionId, launchId: "late", cwd: stateDir,
+          claudeVersion: "2.1.322", bridgeVersion: "4", interactive: true,
+          capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"] }) });
+      expect(await result.json()).toMatchObject({ ok: true });
+    };
+    await hello(expectedSessionId!);
+    await hello("another-session");
+    if (restart) {
+      await host.stop();
+      host = await createHost();
+      await host.start();
+      await device.openChannel("relay", psk, opened.payload.hostId, opened.payload.hostId);
+      while ((await device.receiveMessage() as Record<string, unknown>).type !== "device.ready") { /* new Host generation */ }
+      descriptor = JSON.parse(await readFile(join(stateDir, "loopback.json"), "utf8"));
+      await hello("another-session");
+    }
+    sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "switched", launchId: "late" });
+    expect((await response("switched", "unknown")).sessionId).toBeUndefined();
+    expect(launchNative).toHaveBeenCalledTimes(2);
+    await hello(expectedSessionId!);
+    await hello(expectedSessionId!);
+    sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "check", launchId: "late" });
+    expect(await response("check", "ready")).toMatchObject({ sessionId: expectedSessionId });
+    expect(launchNative).toHaveBeenCalledTimes(2);
+  });
+
   it("carries a Claude TUI's directory, slash menu, commands and tool activity over the encrypted device channel", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-claude-host-"));
     const config = join(stateDir, "claude-config");

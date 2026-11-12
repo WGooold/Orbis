@@ -37,8 +37,46 @@ describe("recoverable configured launch", () => {
     const { path, store } = await fixture(); await store.begin("device", request);
     const restarted = new SessionConfigurationStore(path);
     expect(await restarted.result("device", "launch", "read")).toMatchObject({ phase: "unknown" });
+    expect(await restarted.result("device", "launch", "read")).not.toHaveProperty("expectedSessionId");
     expect(await restarted.recover("device", "launch")).toBeUndefined();
     expect((await restarted.begin("device", request)).execute).toBe(false);
+  });
+
+  // R1: reserve the original Claude UUID before side effects, and preserve it across restart and duplicate requests.
+  it("persists a device-private expected Claude identity without claiming native creation", async () => {
+    const { path, store } = await fixture();
+    const claudeRequest = { ...request, agentKind: "claude" as const };
+    const first = await store.begin("device", claudeRequest);
+    const expected = first.record.expectedSessionId;
+    expect(expected).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(first.record.sessionId).toBeUndefined();
+    const restarted = new SessionConfigurationStore(path);
+    expect(await restarted.expectedSessionId("device", "launch")).toBe(expected);
+    expect(await restarted.expectedSessionId("other-device", "launch")).toBeUndefined();
+    expect((await restarted.begin("device", claudeRequest)).record.expectedSessionId).toBe(expected);
+    expect((await restarted.begin("other-device", claudeRequest)).record.expectedSessionId).not.toBe(expected);
+    expect(await restarted.result("device", "launch", "read")).toMatchObject({ phase: "unknown" });
+    expect(await restarted.recover("device", "launch")).toBeUndefined();
+    await expect(restarted.update("device", "launch", { sessionId: "another-session" }))
+      .rejects.toMatchObject({ code: "launch_identity_conflict" });
+    await restarted.update("device", "launch", { sessionId: expected!, phase: "configuring" });
+    expect(await restarted.recover("device", "launch")).toMatchObject({ sessionId: expected });
+  });
+
+  // A previous Host can have stored only a launch token. Upgrading must not invent
+  // a native identity for that already-opened process or permit another create.
+  it("keeps legacy unresolved Claude launches unknown without reserving a replacement", async () => {
+    const { path, store } = await fixture();
+    const claudeRequest = { ...request, agentKind: "claude" as const };
+    await store.begin("device", claudeRequest);
+    const disk = JSON.parse(await readFile(path, "utf8"));
+    delete disk.launches[JSON.stringify(["device", "launch"])].expectedSessionId;
+    await writeFile(path, JSON.stringify(disk));
+    const restarted = new SessionConfigurationStore(path);
+    expect(await restarted.expectedSessionId("device", "launch")).toBeUndefined();
+    expect(await restarted.result("device", "launch", "read")).toMatchObject({ phase: "unknown" });
+    expect(await restarted.recover("device", "launch")).toBeUndefined();
+    expect((await restarted.begin("device", claudeRequest)).execute).toBe(false);
   });
   it("persists final preflight refusal so a delayed duplicate cannot become a new launch", async () => {
     const { path, store } = await fixture();

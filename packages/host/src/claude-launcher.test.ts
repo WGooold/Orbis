@@ -12,6 +12,10 @@ vi.mock("./claude-startup.js", async original => {
     actual.checkClaudeAuthentication(process.platform === "win32" ? `${cli}.cmd` : cli, cwd, env) };
 });
 
+vi.mock("./session-configuration-probe.js", () => ({
+  claudeSessionConfiguration: vi.fn(async (_cli, _cwd, _env, selected) => ({ defaults: selected ?? {} })),
+}));
+
 import { TerminalClaudeLauncher, posixScript, windowsClaudeConsole, windowsScript } from "./claude-launcher.js";
 
 async function writeClaudeFixture(bin: string, loggedIn: boolean) {
@@ -54,15 +58,23 @@ describe("TerminalClaudeLauncher", () => {
     expect(JSON.parse(await readFile(join(config, ".claude.json"), "utf8")).projects[cwd]).toEqual({ hasTrustDialogAccepted: true });
     expect(script).not.toContain("--dangerously-skip-permissions");
     expect(script).toContain("export ORBIS_CLAUDE_LAUNCH_ID='launch-1'");
-    expect(script).toContain(`exec '${join(bin, "claude")}' '--resume' 'abc-123' '--plugin-dir' '${pluginDir}'`);
+    expect(script).toContain(`'${join(bin, "claude")}' '--resume' 'abc-123' '--settings'`);
+    expect(script).toContain(`'--plugin-dir' '${pluginDir}'`);
+    expect(script).toContain("export DISABLE_AUTOUPDATER='1'");
     expect(script).toContain('rm -f -- "$0"');
     expect(script).toContain("[ -t 0 ] || exit 1");
     expect(script).toContain(".command.started' || exit 1");
     expect((await readdir(join(root, "state", "tmp"))).some(name => name.endsWith(".started"))).toBe(false);
 
     await writeFile(join(config, "settings.json"), JSON.stringify({ enabledPlugins: { "orbis-host-session-link@orbis-host": true } }));
-    await launcher.launch({ cwd, launchId: "launch-2" });
-    expect(await readFile(join(root, "state", "tmp", "claude-launch-2.command"), "utf8")).toContain(`exec '${join(bin, "claude")}'\n`);
+    const sessionId = "ea3d27e1-d794-4ad4-af9c-92ea81b67f03";
+    await launcher.launch({ cwd, launchId: "launch-2", sessionId });
+    const installedScript = await readFile(join(root, "state", "tmp", "claude-launch-2.command"), "utf8");
+    expect(installedScript).not.toContain("--plugin-dir");
+    expect(installedScript).toContain("claude-launch-2.settings.json");
+    // The bridge token is reused by native session switches; --session-id pins the created session itself.
+    expect(installedScript).toContain(`'--session-id' '${sessionId}'`);
+    expect(installedScript).not.toContain("--resume");
   });
 
   it("reports why it cannot open a terminal instead of guessing", async () => {
@@ -88,6 +100,23 @@ describe("TerminalClaudeLauncher", () => {
     expect(calls).toEqual(["/usr/bin/open"]);
   });
 
+  // S57 / SC81: selected permissions and project MCP startup acknowledgements
+  // share one private settings file and one launch, without persistent consent.
+  it("starts selected bypass mode without another confirmation or persistent acceptance", async () => {
+    const { root, config, env, pluginDir } = await setup();
+    await writeFile(join(root, ".mcp.json"), '{"mcpServers":{"docs":{}}}');
+    const run = vi.fn(async (_command: string, args: readonly string[]) => { await writeFile(`${args[2]!}.started`, ""); });
+    const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir, run });
+    await launcher.launch({ cwd: root, launchId: "bypass", configuration: { permissions: { mode: "bypassPermissions" } } });
+    expect(run).toHaveBeenCalledTimes(1);
+    const script = await readFile(join(root, "state/tmp/claude-bypass.command"), "utf8");
+    expect(script).toContain("'--permission-mode' 'bypassPermissions'");
+    expect(script.match(/'--settings'/gu)).toHaveLength(1);
+    expect(JSON.parse(await readFile(join(root, "state/tmp/claude-bypass.settings.json"), "utf8")))
+      .toEqual({ skipDangerousModePermissionPrompt: true, enabledMcpjsonServers: ["docs"] });
+    expect(JSON.parse(await readFile(join(config, ".claude.json"), "utf8")).bypassPermissionsModeAccepted).toBeUndefined();
+  });
+
   it("passes project MCP consent by private file and cleans up on opener failure", async () => {
     const { root, config, env, pluginDir } = await setup();
     await writeFile(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { 'name"with&quotes': {} } }));
@@ -97,7 +126,7 @@ describe("TerminalClaudeLauncher", () => {
         expect(script).not.toContain('name"with&quotes');
         expect(script).toContain("claude-mcp.settings.json");
         expect(JSON.parse(await readFile(join(root, "state/tmp/claude-mcp.settings.json"), "utf8")))
-          .toEqual({ enabledMcpjsonServers: ['name"with&quotes'] });
+          .toEqual({ skipDangerousModePermissionPrompt: true, enabledMcpjsonServers: ['name"with&quotes'] });
         throw new Error("opener failed");
       } });
     await expect(launcher.launch({ cwd: root, launchId: "mcp" })).rejects.toThrow("opener failed");
@@ -130,7 +159,7 @@ describe("TerminalClaudeLauncher", () => {
 
   it("writes cmd scripts with quoted paths for Windows", () => {
     const script = windowsScript({ cwd: "C:\\Users\\A B\\repo", claude: "C:\\bin\\claude.exe", args: ["--resume", "id"], launchId: "l", stateDir: "C:\\state 100%" });
-    expect(script.split("\r\n")).toEqual(["@echo off", 'cd /d "C:\\Users\\A B\\repo" || exit /b 1', 'set "ORBIS_CLAUDE_LAUNCH_ID=l"', 'set "ORBIS_STATE_DIR=C:\\state 100%%"', 'set "CLAUDE_CONFIG_DIR="',
+    expect(script.split("\r\n")).toEqual(["@echo off", 'cd /d "C:\\Users\\A B\\repo" || exit /b 1', 'set "ORBIS_CLAUDE_LAUNCH_ID=l"', 'set "ORBIS_STATE_DIR=C:\\state 100%%"', 'set "DISABLE_AUTOUPDATER=1"', 'set "CLAUDE_CONFIG_DIR="',
       '"C:\\bin\\claude.exe" "--resume" "id"', ""]);
     expect(posixScript({ cwd: "/r", claude: "/c", args: [], launchId: "l", stateDir: "/s" })).toMatch(/^#!\/bin\/sh\n/u);
     expect(posixScript({ cwd: "/r", claude: "/c", args: [], launchId: "l", stateDir: "/s" })).toContain("unset CLAUDE_CONFIG_DIR");

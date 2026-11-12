@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findClaudeExecutable } from "./claude-integration-install.js";
-import { checkClaudeAuthentication, claudeStartupSettings, claudeManagedSettingsPath } from "./claude-startup.js";
+import { checkClaudeAuthentication, ClaudeStartupBlocked, claudeStartupSettings, claudeManagedSettingsPath } from "./claude-startup.js";
 import { hasDesktopSession } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
 import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
+import { CLAUDE_STARTUP_ENV } from "./agent-startup.js";
 import { AGENT_LAUNCH_ENV_KEYS, agentPowerShellScript } from "./agent-command.js";
 import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 
@@ -25,6 +26,8 @@ export type ClaudeLaunchRequest = {
   cwd: string;
   /** Session to resume; absent starts a new Session in `cwd`. */
   resume?: string;
+  /** Preallocated UUID for a new session; independent of the bridge launch token. */
+  sessionId?: string;
   /** Echoed by the bridge's hello so the Host can match the TUI it opened. */
   launchId: string;
   /** Explicit local setup may show native account/onboarding UI instead of requiring login. */
@@ -86,9 +89,12 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const platform = this.#options.platform ?? process.platform;
     const env = this.#options.env ?? process.env;
     const claude = (await this.#claude())!;
+    let terminalAttempted = false;
+    try {
     const startup = await claudeStartupSettings({ cwd: request.cwd, configDir: this.#options.configDir, env, platform,
       managedSettingsPath: claudeManagedSettingsPath(platform, env) });
-    const args = [...(request.resume === undefined ? [] : ["--resume", request.resume]), ...startup.args];
+    const args = [...(request.resume !== undefined ? ["--resume", request.resume]
+      : request.sessionId === undefined ? [] : ["--session-id", request.sessionId]), ...startup.args];
     if (request.configuration?.model !== undefined) args.push("--model", request.configuration.model);
     if (request.configuration?.thinking !== undefined) args.push("--effort", request.configuration.thinking);
     if (request.configuration?.permissions?.mode !== undefined) args.push("--permission-mode", request.configuration.permissions.mode === "default" ? "manual" : request.configuration.permissions.mode);
@@ -129,6 +135,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, startedFile, env: launchEnv }), { mode: 0o700, flag: "wx" });
       await chmod(script, 0o700);
       try {
+        terminalAttempted = true;
         await run("/usr/bin/open", ["-a", "Terminal", script]);
         await waitForMacTerminalScriptStart(startedFile, "Terminal 未确认执行 Claude Code 启动脚本，请在电脑上检查终端窗口或系统提示后重试");
       }
@@ -143,6 +150,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
     try {
       const window = windowsClaudeConsole(script, request.cwd, env);
+      terminalAttempted = true;
       if (this.#options.run === undefined) {
         await openWindowsConsole(window, { env }).catch((error: unknown) => {
           throw new Error(`无法打开 Claude Code 终端窗口：${error instanceof Error ? error.message : String(error)}`, { cause: error });
@@ -152,6 +160,10 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       await unlink(script).catch(() => undefined);
       if (settingsFile) await unlink(settingsFile).catch(() => undefined);
       throw error;
+    }
+    } catch (error) {
+      if (terminalAttempted) throw error;
+      throw new ClaudeStartupBlocked(error instanceof Error ? error.message : String(error), { cause: error });
     }
   }
 
@@ -174,6 +186,7 @@ export function posixScript(input: ScriptInput): string {
     `export ORBIS_CLAUDE_LAUNCH_ID=${quote(input.launchId)}`,
     `export ORBIS_STATE_DIR=${quote(input.stateDir)}`,
     ...AGENT_LAUNCH_ENV_KEYS.flatMap(key => input.env?.[key] === undefined ? [] : [`export ${key}=${quote(input.env[key])}`]),
+    ...Object.entries(CLAUDE_STARTUP_ENV).map(([key, value]) => `export ${key}=${quote(value)}`),
     ...(input.configDir === undefined ? ["unset CLAUDE_CONFIG_DIR"] : [`export CLAUDE_CONFIG_DIR=${quote(input.configDir)}`]),
     ...(input.startedFile === undefined ? [] : ["[ -t 0 ] || exit 1", `/usr/bin/touch -- ${quote(input.startedFile)} || exit 1`]),
     "rm -f -- \"$0\"",
@@ -193,6 +206,7 @@ export function windowsScript(input: ScriptInput): string {
     `cd /d ${quote(input.cwd)} || exit /b 1`,
     `set ${quote(`ORBIS_CLAUDE_LAUNCH_ID=${input.launchId}`)}`,
     `set ${quote(`ORBIS_STATE_DIR=${input.stateDir}`)}`,
+    ...Object.entries(CLAUDE_STARTUP_ENV).map(([key, value]) => `set ${quote(`${key}=${value}`)}`),
     `set ${quote(`CLAUDE_CONFIG_DIR=${input.configDir ?? ""}`)}`,
     // A child interpreter returns to this script, so .cmd wrappers cannot skip cleanup.
     /\.(?:cmd|bat|ps1)$/iu.test(input.claude) ? `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`
