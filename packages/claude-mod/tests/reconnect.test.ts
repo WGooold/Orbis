@@ -274,6 +274,7 @@ for (const error of ["unauthorized", "stale_generation", "bridge_offline"]) {
   });
 }
 
+// Standalone native compaction must keep phone submissions queued until it completes.
 test("defers a phone submission during standalone compaction and releases it on native completion", async ($, on) => {
   const { clock, world } = setup(on);
   on("session.compact", async (_$, event) => {
@@ -282,7 +283,7 @@ test("defers a phone submission during standalone compaction and releases it on 
   });
   await $.session.start({ cwd: "/workspace", surface: "terminal", isInteractive: true });
   await clock.settle();
-  const compacting = $.session.compact({ messages: [{ role: "user", text: "existing context", toolUses: [], toolResults: [] }] });
+  const compacting = $.session.compact({ trigger: "manual", messages: [{ role: "user", text: "existing context", toolUses: [], toolResults: [] }] });
   await clock.settle();
   world.commands = [{ commandId: "during-compaction", command: { type: "user_message", text: "next task" } }];
   await clock.advance(2250);
