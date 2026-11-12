@@ -15,3 +15,9 @@ export async function testDirectory(prefix: string): Promise<string> {
 export function testDirectorySync(prefix: string): string {
   return ownedDirectory(mkdtempSync(prefix));
 }
+
+/** Windows without Developer Mode (no SeCreateSymbolicLinkPrivilege) refuses every symlink. */
+export function isSymlinkRefusal(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EPERM" || code === "EACCES" || code === "ENOSYS";
+}

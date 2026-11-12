@@ -27,7 +27,10 @@ async function writeClaudeFixture(bin: string, loggedIn: boolean) {
 
 async function setup() {
   const root = await testDirectory(join(tmpdir(), "orbis-claude-launch-"));
-  const bin = join(root, "bin");
+  // Discovery through PATH cannot be expressed on a Windows host: cliPathDirs splits by the
+  // simulated platform's separator, so `C:\…` would be cut at its drive colon. The native
+  // installer's own directory is searched without PATH and works on every host.
+  const bin = join(root, ".local", "bin");
   await mkdir(bin, { recursive: true });
   await writeClaudeFixture(bin, true);
   const pluginDir = join(root, "plugin");
@@ -35,7 +38,10 @@ async function setup() {
   await writeFile(join(pluginDir, ".claude-plugin", "plugin.json"), "{}");
   const config = join(root, "config");
   await mkdir(config, { recursive: true });
-  return { root, bin, pluginDir, config, env: { PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`, HOME: root } };
+  // A PATH entry for the simulated POSIX platform is prepended with ':' on purpose: this host
+  // may be Windows, where the drive colon makes that entry unparsable, and the same directory is
+  // still searched as `~/.local/bin`. Both hosts therefore discover the identical launcher path.
+  return { root, bin, pluginDir, config, env: { PATH: `${bin}:${process.env.PATH}`, HOME: root } };
 }
 
 describe("TerminalClaudeLauncher", () => {
@@ -90,7 +96,7 @@ describe("TerminalClaudeLauncher", () => {
 
   it("fails before opening for missing login but keeps explicit local setup reachable", async () => {
     const { root, config, env, pluginDir } = await setup();
-    await writeClaudeFixture(join(root, "bin"), false);
+    await writeClaudeFixture(join(root, ".local", "bin"), false);
     const calls: string[] = [];
     const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir,
       run: async (command, args) => { calls.push(command); await writeFile(`${args[2]!}.started`, ""); } });
