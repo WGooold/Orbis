@@ -12,7 +12,7 @@ vi.mock("./claude-startup.js", async original => {
     actual.checkClaudeAuthentication(process.platform === "win32" ? `${cli}.cmd` : cli, cwd, env) };
 });
 
-import { TerminalClaudeLauncher, posixScript, windowsScript } from "./claude-launcher.js";
+import { TerminalClaudeLauncher, posixScript, windowsClaudeConsole, windowsScript } from "./claude-launcher.js";
 
 async function writeClaudeFixture(bin: string, loggedIn: boolean) {
   const json = JSON.stringify({ loggedIn });
@@ -148,5 +148,16 @@ describe("TerminalClaudeLauncher", () => {
     expect(command).toContain("claude.cmd");
     expect(command).toContain("a^&b");
     expect(script).toContain('del /q "C:\\state\\settings.json"');
+  });
+
+  // WIN-CONSOLE-01: the window comes from the default terminal, never wt.exe, whose elevated
+  // profiles turn `cmd.exe /k <script>` into one program name. `""…""` keeps the script path
+  // whole through cmd's quote stripping, even with spaces and parentheses in the user path.
+  it("opens the Windows launch script in a cmd window through the default terminal", () => {
+    const script = "C:\\Users\\John (Work)\\.orbis\\tmp\\claude-l.cmd";
+    expect(windowsClaudeConsole(script, "D:\\my repo", { ComSpec: "C:\\Windows\\system32\\cmd.exe" })).toEqual({
+      file: "C:\\Windows\\system32\\cmd.exe", argumentLine: `/k ""${script}""`, cwd: "D:\\my repo",
+    });
+    expect(windowsClaudeConsole(script, "D:\\repo", {}).file).toBe("cmd.exe");
   });
 });

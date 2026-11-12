@@ -5,18 +5,19 @@ import { fileURLToPath } from "node:url";
 
 import { findClaudeExecutable } from "./claude-integration-install.js";
 import { checkClaudeAuthentication, claudeStartupSettings, claudeManagedSettingsPath } from "./claude-startup.js";
-import { hasDesktopSession, resolveTerminalCommand } from "./spawner.js";
+import { hasDesktopSession } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
 import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
 import { AGENT_LAUNCH_ENV_KEYS, agentPowerShellScript } from "./agent-command.js";
+import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 
 /**
  * Opens Claude Code's official TUI in a terminal window on this computer (ADR-0033 §1:
  * the phone attaches to the same native instance the person can see). There is no
  * headless fallback: a Session the Host ran without a TUI would be an Agent SDK backend.
  *
- * macOS uses Terminal.app, which every Mac has; Windows uses Windows Terminal when it is
- * installed and the console host otherwise. Other systems report unavailable instead of
+ * macOS uses Terminal.app, which every Mac has; Windows opens a console window through the
+ * system default terminal (WIN-CONSOLE-01). Other systems report unavailable instead of
  * guessing an emulator.
  */
 export type ClaudeLaunchRequest = {
@@ -141,10 +142,12 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     const script = join(scripts, `claude-${request.launchId}.cmd`);
     await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
     try {
-      const terminal = await resolveTerminalCommand(env);
-      if (terminal !== undefined) await run(terminal, ["-w", "new", "-d", request.cwd, "cmd.exe", "/k", script]);
-      // cmd.exe takes its command line verbatim: one pre-quoted argument.
-      else await run(env.ComSpec ?? "cmd.exe", ["/c", `start "Claude Code" /D "${request.cwd}" cmd.exe /k "${script}"`]);
+      const window = windowsClaudeConsole(script, request.cwd, env);
+      if (this.#options.run === undefined) {
+        await openWindowsConsole(window, { env }).catch((error: unknown) => {
+          throw new Error(`无法打开 Claude Code 终端窗口：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        });
+      } else { const launch = windowsConsoleLaunch(window, env); await run(launch.command, launch.args); }
     } catch (error) {
       await unlink(script).catch(() => undefined);
       if (settingsFile) await unlink(settingsFile).catch(() => undefined);
@@ -199,19 +202,20 @@ export function windowsScript(input: ScriptInput): string {
   ].join("\r\n");
 }
 
+/**
+ * The Windows window runs the private launch script under `cmd /k`, so a failed start stays
+ * readable. `""…""` survives cmd's quote stripping whether or not the path has spaces or
+ * characters such as `(`.
+ */
+export function windowsClaudeConsole(script: string, cwd: string, env: NodeJS.ProcessEnv): WindowsConsoleRequest {
+  return { file: env.ComSpec || env.COMSPEC || "cmd.exe", argumentLine: `/k ""${script}""`, cwd };
+}
+
+/** macOS only: `open` merely hands the script to Terminal, which still owes a start receipt. */
 function spawnDetached(command: string, args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    // `open` merely hands the script to Terminal. Its spawn event is not an
-    // opener result, and even a successful exit still needs the script receipt.
-    if (command === "/usr/bin/open") {
-      const child = spawn(command, [...args], { stdio: "ignore", timeout: 15_000 });
-      child.once("error", reject);
-      child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查 Terminal 是否可用")));
-      return;
-    }
-    const child = spawn(command, [...args], { detached: true, stdio: "ignore", windowsHide: false,
-      windowsVerbatimArguments: process.platform === "win32" && command.toLowerCase().endsWith("cmd.exe") });
+    const child = spawn(command, [...args], { stdio: "ignore", timeout: 15_000 });
     child.once("error", reject);
-    child.once("spawn", () => { child.unref(); resolve(); });
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开 macOS 终端，请检查 Terminal 是否可用")));
   });
 }

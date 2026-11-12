@@ -26,19 +26,20 @@ describe("desktop terminal shortcuts", () => {
     terminal.codex.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\User's tools\\codex.js"] });
     terminal.spawn.mockImplementation(() => {
       const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
-      queueMicrotask(() => child.emit("exit", 0));
+      queueMicrotask(() => { child.emit("exit", 0); child.emit("close", 0); });
       return child;
     });
   });
 
   afterEach(async () => { vi.unstubAllGlobals(); await rm(workspace, { recursive: true, force: true }); });
 
+  /** WIN-CONSOLE-01: the shared hidden launcher opens the window through ShellExecute. */
   function invocation(): { script: string; launcher: string; options: Record<string, unknown> } {
     const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
-    expect(program).toBe("powershell.exe");
+    expect(program).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe$/u);
     expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     const launcher = Buffer.from(args[3]!, "base64").toString("utf16le");
-    const encoded = launcher.match(/'-EncodedCommand','([A-Za-z0-9+/=]+)'/)?.[1];
+    const encoded = launcher.match(/\$orbisConsole\.Arguments = '-NoProfile -NoExit -EncodedCommand ([A-Za-z0-9+/=]+)'/u)?.[1];
     expect(encoded).toBeTruthy();
     return { script: Buffer.from(encoded!, "base64").toString("utf16le"), launcher, options };
   }
@@ -62,19 +63,19 @@ describe("desktop terminal shortcuts", () => {
         expect(script).toContain("'C:\\My Projects\\pi.js' '--approve' '-e'");
         expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
       }
-      expect(launcher).toContain("Start-Process -FilePath 'powershell.exe'");
-      expect(launcher).toContain("'-NoProfile','-NoExit','-EncodedCommand'");
-      expect(launcher).toContain(`-WorkingDirectory '${workspace.replaceAll("'", "''")}'`);
-      expect(launcher).toContain("-WindowStyle Normal -ErrorAction Stop");
-      expect(options).toMatchObject({ stdio: "ignore", windowsHide: true, cwd: workspace, timeout: 15_000 });
+      expect(launcher).toContain("$orbisConsole.FileName = 'powershell.exe'");
+      expect(launcher).toContain(`$orbisConsole.WorkingDirectory = '${workspace.replaceAll("'", "''")}'`);
+      expect(launcher).toContain("$orbisConsole.UseShellExecute = $true");
+      expect(launcher).toContain("$ErrorActionPreference = 'Stop'");
+      expect(options).toMatchObject({ windowsHide: true, timeout: 15_000 });
     }
   });
 
   it("keeps the separate Codex account setup action", async () => {
     await new DesktopRuntime(() => {}).openAgent("codex");
-    const { script, options } = invocation();
+    const { script, launcher } = invocation();
     expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
-    expect(options.cwd).toBe(homedir());
+    expect(launcher).toContain(`$orbisConsole.WorkingDirectory = '${homedir().replaceAll("'", "''")}'`);
   });
 
   it("opens Codex Desktop as a separate GUI process without a terminal window", async () => {
@@ -137,9 +138,9 @@ describe("desktop terminal shortcuts", () => {
   it("does not report success when the Windows launcher exits unsuccessfully", async () => {
     terminal.spawn.mockImplementation(() => {
       const child = new EventEmitter();
-      queueMicrotask(() => child.emit("exit", 1));
+      queueMicrotask(() => { child.emit("exit", 1); child.emit("close", 1); });
       return child;
     });
-    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui", workspace)).rejects.toThrow("无法打开终端界面");
+    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui", workspace)).rejects.toThrow("无法打开终端界面，请重试");
   });
 });

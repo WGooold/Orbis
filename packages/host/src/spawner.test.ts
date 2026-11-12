@@ -44,11 +44,10 @@ async function fakePiPrefix(root: string, layout: "npm" | "node"): Promise<strin
   return cliJs;
 }
 
-/** 造一个含 `wt.exe` 的目录并在 PATH 里带上它——开窗入口是按 PATH 探的。 */
-async function fakeTerminalPath(): Promise<string> {
-  const dir = await tempDir();
-  await writeFile(join(dir, "wt.exe"), "", "utf8");
-  return dir;
+/** Windows 有头窗口由隐藏启动器打开；解出它交给 ShellExecute 的命令行尾部。 */
+function windowsConsoleArguments(args: readonly string[]): string {
+  const launcher = Buffer.from(args.at(-1) ?? "", "base64").toString("utf16le");
+  return /\$orbisConsole\.Arguments = '([^']*)'/u.exec(launcher)?.[1] ?? "";
 }
 
 describe("buildSpawnPlan", () => {
@@ -82,7 +81,8 @@ describe("buildSpawnPlan", () => {
     expect(plan.args).toEqual(["/pi/cli.js", "--session-id", "new-uuid", "--approve", "-e", EXT, "--mode", "rpc"]);
   });
 
-  it("auto + 桌面会话 → wt.exe 的 TUI，不带 --mode rpc", () => {
+  // WIN-CONSOLE-01：经系统默认终端开窗，不调用 wt.exe（提权配置文件会把命令改写成一个程序名）。
+  it("auto + 桌面会话 → 系统默认终端里的 TUI，不带 --mode rpc", () => {
     const plan = buildSpawnPlan({
       pi: PI,
       extensionPath: EXT,
@@ -93,8 +93,9 @@ describe("buildSpawnPlan", () => {
       platform: "win32",
     });
     expect(plan.kind).toBe("tui");
-    expect(plan.command).toBe("wt.exe");
-    expect(plan.args[0]).toBe("-d");
+    expect(plan.command).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe$/u);
+    expect(plan.command).not.toMatch(/wt\.exe$/iu);
+    expect(plan.console).toMatchObject({ file: "powershell.exe", cwd: "D:/proj" });
     expect(plan.args).not.toContain("rpc");
   });
 
@@ -149,7 +150,7 @@ describe("buildSpawnPlan", () => {
       platform: "win32",
     });
     expect(plan.kind).toBe("tui");
-    expect(plan.command).toBe("wt.exe");
+    expect(plan.console?.file).toBe("powershell.exe");
   });
 
   it("显式 tui 但本机没有开窗入口时报错", () => {
@@ -165,7 +166,7 @@ describe("buildSpawnPlan", () => {
     })).toThrow(/终端窗口/u);
   });
 
-  it("tui 的命令行整体 base64 进 -EncodedCommand：wt 不再需要解析含空格的路径", () => {
+  it("tui 的命令行整体 base64 进 -EncodedCommand：含空格的路径不经过命令行解析", () => {
     const plan = buildSpawnPlan({
       pi: PI,
       extensionPath: "C:/my ext/index.ts",
@@ -176,10 +177,12 @@ describe("buildSpawnPlan", () => {
       platform: "win32",
       terminal: true,
     });
-    expect(plan.args.slice(0, 3)).toEqual(["-d", "D:/my project", "powershell"]);
-    expect(plan.args.slice(3, 6)).toEqual(["-NoProfile", "-NoExit", "-EncodedCommand"]);
-    const script = Buffer.from(plan.args[6] ?? "", "base64").toString("utf16le");
-    // 含空格的部分必须各自还是一个单一 token，靠单引号包住（cwd 走 wt 的 `-d`，不在脚本里）。
+    expect(plan.console?.cwd).toBe("D:/my project");
+    const argumentLine = windowsConsoleArguments(plan.args);
+    expect(argumentLine).toBe(plan.console?.argumentLine);
+    expect(argumentLine).toMatch(/^-NoProfile -NoExit -EncodedCommand [A-Za-z0-9+/=]+$/u);
+    const script = Buffer.from(argumentLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+    // 含空格的部分在脚本里各自是一个单引号字面量（cwd 交给 ShellExecute，不在脚本里）。
     expect(script).toContain(`'${"C:/my ext/index.ts"}'`);
     expect(script).toContain("--session-id");
     expect(script).not.toContain("rpc");
@@ -261,7 +264,8 @@ describe("resolvePiCommand", () => {
 });
 
 /** 可编程的假 ChildProcess：记下监听器与 spawn 选项，测试里手动触发 exit。 */
-function fakeSpawn(): {
+/** `launcherExit` 是 Windows 开窗启动器（只等 close）的退出码；headless 进程只看 spawn / exit。 */
+function fakeSpawn(launcherExit = 0): {
   impl: ReturnType<typeof vi.fn>;
   emitExit: (pid: number) => void;
   pids: number[];
@@ -277,9 +281,10 @@ function fakeSpawn(): {
     const child = {
       pid,
       stderr: null,
-      once: (event: string, listener: () => void) => {
+      once: (event: string, listener: (code?: number) => void) => {
         if (event === "spawn") queueMicrotask(listener);
         if (event === "exit") exits.push(listener);
+        if (event === "close") queueMicrotask(() => listener(launcherExit));
       },
       unref: () => {},
     } as unknown as ChildProcess;
@@ -327,18 +332,18 @@ describe("SessionSpawner", () => {
     const spawner2 = new SessionSpawner({
       maxRunning: 1,
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
     });
+    // 计数只覆盖 Host 能观察到退出的进程（headless）；Windows 窗口见下方 argv 用例。
+    const activate = () => spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir }, spawnMode: "headless" });
 
-    await spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
-    await expect(
-      spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } }),
-    ).rejects.toMatchObject({ code: "spawn_limit_reached" });
+    await activate();
+    await expect(activate()).rejects.toMatchObject({ code: "spawn_limit_reached" });
 
     // 进程退出后计数释放，又能拉起。
     fake.emitExit(0);
     await vi.waitFor(() => expect(spawner2.running).toHaveLength(0));
-    await spawner2.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
+    await activate();
     expect(spawner2.running).toHaveLength(1);
   });
 
@@ -352,7 +357,7 @@ describe("SessionSpawner", () => {
     const stateDir = join(dir, "rig-state");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
       stateDir,
     });
     await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
@@ -368,12 +373,13 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
     });
     const target = { type: "resume" as const, sessionId: "s-1", cwd: dir, sessionFile: join(dir, "s.jsonl") };
 
-    const first = await spawner.activate({ deviceId: "d1", target });
-    const second = await spawner.activate({ deviceId: "d1", target });
+    // 去重只依据 Host 能观察到退出的进程（headless）；Windows 窗口不计入，见 argv 用例。
+    const first = await spawner.activate({ deviceId: "d1", target, spawnMode: "headless" });
+    const second = await spawner.activate({ deviceId: "d1", target, spawnMode: "headless" });
 
     // 手机重复点同一个会话，不该在电脑上堆出第二个打开同一会话的进程。
     expect(fake.pids).toHaveLength(1);
@@ -390,7 +396,7 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
     });
 
     const a = await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } });
@@ -409,15 +415,15 @@ describe("SessionSpawner", () => {
     await writeFile(cliJs, "// fake", "utf8");
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: await fakeTerminalPath() },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
     });
     const target = { type: "resume" as const, sessionId: "s-1", cwd: dir, sessionFile: join(dir, "s.jsonl") };
 
-    await spawner.activate({ deviceId: "d1", target });
+    await spawner.activate({ deviceId: "d1", target, spawnMode: "headless" });
     fake.emitExit(0);
     await vi.waitFor(() => expect(spawner.running).toHaveLength(0));
 
-    await spawner.activate({ deviceId: "d1", target });
+    await spawner.activate({ deviceId: "d1", target, spawnMode: "headless" });
     expect(fake.pids).toHaveLength(2);
   });
 
@@ -425,11 +431,10 @@ describe("SessionSpawner", () => {
     const dir = await tempDir();
     const cliRoot = await tempDir();
     const cliJs = await fakePiPrefix(cliRoot, "npm");
-    const terminal = await fakeTerminalPath();
     const fake = fakeSpawn();
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { SESSIONNAME: "Console", APPDATA: cliRoot, PATH: terminal },
+      env: { SESSIONNAME: "Console", APPDATA: cliRoot },
     });
 
     const record = await spawner.activate({
@@ -438,32 +443,44 @@ describe("SessionSpawner", () => {
     });
     expect(record.sessionId).toBeDefined();
     expect(record.spawnMode).toBe("tui");
+    expect(record.pid).toBe(fake.pids[0]);
     const call = (fake.impl as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-    expect(call[0]).toBe("wt.exe");
+    // WIN-CONSOLE-01：隐藏的 Windows PowerShell 启动器经 ShellExecute 开窗，不调用 wt.exe。
+    expect(call[0]).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe$/u);
+    expect(call[2]).toMatchObject({ windowsHide: true, timeout: 15_000 });
+    expect((call[2] as { shell?: unknown }).shell).toBeUndefined();
     const args = call[1] as string[];
     expect(Array.isArray(args)).toBe(true);
-    // pi 的入口与全部参数都在 base64 token 里：wt 一个含空格的路径都不用解析。
-    const encoded = args[args.indexOf("-EncodedCommand") + 1] ?? "";
-    const script = Buffer.from(encoded, "base64").toString("utf16le");
+    // pi 的入口与全部参数都在内层 base64 里：一个含空格的路径都不经过命令行解析。
+    const script = Buffer.from(windowsConsoleArguments(args).split(" ").at(-1) ?? "", "base64").toString("utf16le");
     expect(script).toContain(`'${cliJs}'`);
     expect(script).toContain("-e");
-    // 计数与退出监听
-    expect(spawner.running).toHaveLength(1);
-    fake.emitExit(0);
-    await vi.waitFor(() => expect(spawner.running).toHaveLength(0));
+    // 窗口带 -NoExit，Pi 退出后仍在，不能拿来去重或计数。
+    expect(spawner.running).toHaveLength(0);
+  });
+
+  it("Windows 开窗失败报 spawn_failed，不降级为 headless", async () => {
+    const dir = await tempDir();
+    const cliRoot = await tempDir();
+    await fakePiPrefix(cliRoot, "npm");
+    const fake = fakeSpawn(1);
+    const spawner = new SessionSpawner({ spawnImpl: fake.impl as never, env: { SESSIONNAME: "Console", APPDATA: cliRoot } });
+    await expect(spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd: dir } }))
+      .rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("无法打开 Pi 终端窗口") });
+    expect(fake.impl).toHaveBeenCalledTimes(1);
+    expect(spawner.running).toHaveLength(0);
   });
 
   it("显式 tui：Host 在没有 SESSIONNAME 的会话里照样开窗", async () => {
     const dir = await tempDir();
     const cliRoot = await tempDir();
     await fakePiPrefix(cliRoot, "npm");
-    const terminal = await fakeTerminalPath();
     const fake = fakeSpawn();
     // 从服务 / 计划任务 / IDE 内部启动的 Host 没有 SESSIONNAME——`auto` 会在这里
     // 误判成无头，而手机明确要窗口时不该受影响。
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { APPDATA: cliRoot, PATH: terminal },
+      env: { APPDATA: cliRoot },
     });
 
     const record = await spawner.activate({
@@ -472,19 +489,18 @@ describe("SessionSpawner", () => {
       spawnMode: "tui",
     });
     expect(record.spawnMode).toBe("tui");
-    expect((fake.impl as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe("wt.exe");
+    expect((fake.impl as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatch(/powershell\.exe$/u);
   });
 
   it("缺省（旧 APK 不发 spawnMode）也开窗：无头不该是默认", async () => {
     const dir = await tempDir();
     const cliRoot = await tempDir();
     await fakePiPrefix(cliRoot, "npm");
-    const terminal = await fakeTerminalPath();
     const fake = fakeSpawn();
     // 旧 APK 根本不发 spawnMode，且 Host 从 IDE 内部启动、没有 SESSIONNAME。
     const spawner = new SessionSpawner({
       spawnImpl: fake.impl as never,
-      env: { APPDATA: cliRoot, PATH: terminal },
+      env: { APPDATA: cliRoot },
     });
 
     const record = await spawner.activate({
@@ -515,13 +531,14 @@ describe("SessionSpawner", () => {
   });
 
   it("缺少终端时拒绝默认有头启动，不创建 RPC 进程", async () => {
+    // Windows 总能经系统默认终端开窗；没有受支持终端入口的系统才走到这条规则。
+    hostPlatform.value = "linux";
     const dir = await tempDir();
-    const cliRoot = await tempDir();
-    await fakePiPrefix(cliRoot, "npm");
+    const pi = await fakePiPrefix(await tempDir(), "npm");
     const fake = fakeSpawn();
-    const spawner = new SessionSpawner({ spawnImpl: fake.impl as never, env: { APPDATA: cliRoot, PATH: "" } });
+    const spawner = new SessionSpawner({ spawnImpl: fake.impl as never, env: { ORBIS_PI_ENTRY: pi, PATH: "" } });
     await expect(spawner.activate({ deviceId: "phone", target: { type: "new", agentKind: "pi", cwd: dir } }))
-      .rejects.toMatchObject({ code: "spawn_failed" });
+      .rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("终端窗口") });
     expect(fake.impl).not.toHaveBeenCalled();
     expect(spawner.running).toHaveLength(0);
   });

@@ -21,6 +21,7 @@ import type { AgentKind, SpawnMode } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
 import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
 import { AGENT_LAUNCH_ENV_KEYS, agentCommandForEntry, agentInvocation, agentPowerShellScript, cliPathDirs, findExternalAgentEntries, isOrbisPiCommand, type AgentCommand } from "./agent-command.js";
+import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 
 /** 激活失败的原因码，一对一映射到 `protocol.error` 的 `code`。 */
 export type ActivationErrorCode =
@@ -101,28 +102,6 @@ export async function resolvePiCommand(env: Record<string, string | undefined> =
 }
 
 /**
- * 本机有没有可用的「开窗」入口：Windows Terminal（PATH 上的 `wt.exe`）。
- *
- * `buildSpawnPlan` 是纯函数，判不了文件是否存在，所以在 `activate` 里探一次再喂进去。
- * 显式 `tui` 找不到入口时报错；只有 `auto` 允许降级为 headless。
- */
-export async function resolveTerminalCommand(
-  env: Record<string, string | undefined> = process.env,
-): Promise<string | undefined> {
-  if (platform() !== "win32") return undefined;
-  for (const dir of pathDirs(env)) {
-    const candidate = join(dir, "wt.exe");
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // 继续找。
-    }
-  }
-  return undefined;
-}
-
-/**
  * 默认扩展路径：monorepo 里 host 包隔壁就是 pi-extension（可用 ORBIS_EXTENSION_PATH 覆盖）。
  *
  * 必须指向构建产物 `dist/index.js`：扩展包的 manifest（`pi.extensions`）注册的也是 dist，
@@ -159,13 +138,15 @@ export type SpawnPlan = {
   cwd: string;
   /** macOS 的一次性 .command 文件，由 activate 在私有目录里创建。 */
   script?: string;
+  /** Windows 新窗口里运行的内容；`command`/`args` 是打开它的隐藏启动器。 */
+  console?: WindowsConsoleRequest;
 };
 
 /**
  * 纯函数：给定目标与运行环境，算出要 spawn 的确切 argv。
  *
- * Windows 使用 Windows Terminal，macOS 使用 Terminal。显式 `tui` 无法开窗时报错；
- * `auto` 才允许在没有桌面或受支持的终端入口时使用 headless。
+ * Windows 经系统默认终端开控制台窗口（WIN-CONSOLE-01），macOS 使用 Terminal。显式
+ * `tui` 无法开窗时报错；`auto` 才允许在没有桌面或受支持的终端入口时使用 headless。
  */
 export function buildSpawnPlan(input: {
   pi: PiCommand;
@@ -230,18 +211,12 @@ export function buildSpawnPlan(input: {
     return { kind: "tui", command: "/usr/bin/open", args: ["-a", "Terminal", input.scriptFile],
       cwd: input.cwd, script: steps.join("\n") };
   }
-  // `wt -d <dir> <commandline…>`。命令行走 `-EncodedCommand`：wt 会把命令行里的引号
-  // 重新拼接，含空格的路径（cwd、会话文件）会被拆成多个 token，整条命令
-  // 甚至会被当成一个可执行文件名（0x80070002，本仓 Codex 侧已实测）。base64 的
-  // UTF-16LE 是单个 token，wt 原样透传；`-NoExit` 让窗口在 pi 退出后留着，报错不闪退。
+  // Pi 的入口与参数整体 base64 进 `-EncodedCommand`，路径里的空格和引号都不经过命令行
+  // 解析；`-NoExit` 让窗口在 pi 退出后留着，报错不闪退。窗口继承启动器的环境。
   const script = agentPowerShellScript({ command: input.pi.command, prefixArgs: [] }, piArgs, input.env);
   const encoded = Buffer.from(script, "utf16le").toString("base64");
-  return {
-    kind: "tui",
-    command: "wt.exe",
-    args: ["-d", input.cwd, "powershell", "-NoProfile", "-NoExit", "-EncodedCommand", encoded],
-    cwd: input.cwd,
-  };
+  const window: WindowsConsoleRequest = { file: "powershell.exe", argumentLine: `-NoProfile -NoExit -EncodedCommand ${encoded}`, cwd: input.cwd };
+  return { kind: "tui", ...windowsConsoleLaunch(window, input.env), cwd: input.cwd, console: window };
 }
 
 function quotePosix(value: string): string {
@@ -351,9 +326,10 @@ export class SessionSpawner {
     // 成因，所以缺省不该再是无头。开不了窗就报告错误。
     const mode = input.spawnMode ?? "tui";
     const desktop = hasDesktopSession(this.#env);
+    // Windows 总能由系统默认终端开控制台窗口，不依赖 PATH 上的 wt.exe。
     const terminal = platform() === "darwin"
       ? await access("/usr/bin/open").then(() => true, () => false)
-      : (await resolveTerminalCommand(this.#env)) !== undefined;
+      : platform() === "win32";
     const env = this.#stateDir === undefined ? this.#env : {
       ...this.#env,
       ORBIS_STATE_DIR: this.#stateDir,
@@ -379,6 +355,7 @@ export class SessionSpawner {
       return this.#activateMac(input, planInput);
     }
     const plan = buildSpawnPlan(planInput);
+    if (plan.console !== undefined) return this.#activateWindowsConsole(input, plan, plan.console, env, planInput.target.sessionId);
 
     const invocation = agentInvocation({ command: plan.command, prefixArgs: [] }, plan.args, env, platform());
     const child = this.#spawn(invocation.command, invocation.args, {
@@ -432,6 +409,24 @@ export class SessionSpawner {
       `[activate] ${new Date(record.startedAt).toISOString()} 设备=${input.deviceId} 目标=${input.target.type}`
         + ` cwd=${cwd} pid=${record.pid} 模式=${record.spawnMode}`,
     );
+    return record;
+  }
+
+  /**
+   * Windows 有头启动：启动器退出码 0 才算窗口已创建。窗口不计入 `running`：它带
+   * `-NoExit`，Pi 退出后窗口仍在，拿它去重会把已结束的会话当成仍在运行而不再拉起。
+   */
+  async #activateWindowsConsole(input: ActivateInput, plan: SpawnPlan, window: WindowsConsoleRequest,
+    env: Record<string, string | undefined>, sessionId: string): Promise<SpawnedAgent> {
+    let pid: number | undefined;
+    try { pid = await openWindowsConsole(window, { env, spawnProcess: this.#spawn }); }
+    catch (cause) { throw new ActivationError("spawn_failed", `无法打开 Pi 终端窗口：${describe(cause)}`); }
+    if (pid === undefined) throw new ActivationError("spawn_failed", "无法确认 Pi 终端窗口已打开，请在电脑上检查");
+    const record: SpawnedAgent = {
+      pid, agentKind: "pi", cwd: plan.cwd, sessionId, spawnMode: "tui", startedAt: this.#now(),
+    };
+    this.#log(`[activate] ${new Date(record.startedAt).toISOString()} 设备=${input.deviceId} 目标=${input.target.type}`
+      + ` cwd=${record.cwd} pid=${pid} 模式=tui`);
     return record;
   }
 

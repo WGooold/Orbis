@@ -146,7 +146,7 @@ The Host starting an agent CLI for one session — either continuing a session t
 L1 continues a Session by `sessionId`; L2 creates one in a device-selected directory. The Host constructs startup arguments and environment for supported backends.
 
 **Spawn mode**:
-The `auto` | `tui` | `headless` choice for how an activated session starts. `tui` is the default and requires a visible terminal window (Terminal on macOS, Windows Terminal on Windows); inability to open it is an activation error. Only `auto` may choose headless when no desktop session or supported terminal entry exists. The Host reports the mode it actually started.
+The `auto` | `tui` | `headless` choice for how an activated session starts. `tui` is the default and requires a visible terminal window (Terminal on macOS; on Windows a console window opened through the system default terminal, never `wt.exe` directly); inability to open it is an activation error. Only `auto` may choose headless when no desktop session or supported terminal entry exists. The Host reports the mode it actually started.
 
 **Directory browse**:
 A read-only listing of computer directories and regular files. The shared mobile browser selects a directory for a new session or a file for a path-addressed download. It has no root restriction and no allowlist.

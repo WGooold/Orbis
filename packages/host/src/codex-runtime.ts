@@ -72,6 +72,7 @@ import type {
 } from "./agent-backend.js";
 import { CODEX_DESKTOP_RUNTIME_ID, CODEX_RUNTIME_ID, CodexAppServer, CodexRequestError, isDesktopAppServer, type CodexCommand, type CodexServerRequest } from "./codex-daemon.js";
 import { describeError } from "./describe-error.js";
+import { openWindowsConsole, type WindowsConsoleRequest } from "./windows-console.js";
 import { prepareCodexWorkspace, codexWorkspaceTrustKey } from "./agent-startup.js";
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
@@ -157,7 +158,7 @@ export type CodexRuntimeOptions = {
   onEvent: (event: RuntimeEvent, threadId: string | undefined) => void;
   /**
    * 激活后在电脑上开有头终端窗口（官方 TUI attach 到本 app-server，双同步）。
-   * Windows 使用 wt，macOS 使用原生 Terminal；测试可注入 no-op。
+   * Windows 经系统默认终端开控制台窗口，macOS 使用原生 Terminal；测试可注入 no-op。
    */
   openHeadWindow?: (input: { sessionId: string; cwd: string; endpoint: string; codexCommand?: CodexCommand }) => void | Promise<void>;
   /** rollout 根目录（缺省 `~/.codex/sessions`）；测试注入临时目录。 */
@@ -1572,8 +1573,8 @@ export class CodexRuntime implements AgentBackend {
       `Codex 终端启动请求已受理（等待 TUI attach）：sessionId=${sessionId} cwd=${cwd} endpoint=${endpoint}`,
     );
     // 看门狗只跟「生产开窗」：endpoint 未定义（测试桩 / app-server 未就绪）或
-    // 显式关掉 HEAD 时不启。wt.exe 一启动就把窗口交给常驻 WindowsTerminal 进程后
-    // 自己立刻退出，没法靠 child.on("exit")——只能轮询真正的 codex/node TUI 进程。
+    // 显式关掉 HEAD 时不启。开窗的启动器建好窗口就退出，没法靠 child.on("exit")
+    // ——只能轮询真正的 codex/node TUI 进程。
     // Selection may complete while Terminal is opening. Never overwrite a newer binding.
     if (connection.selectedThreadId === undefined || connection.selectedThreadId === sessionId) this.#trackHeadWindow(sessionId, key);
   }
@@ -1602,8 +1603,8 @@ export class CodexRuntime implements AgentBackend {
   }
 
   /**
-   * 轮询本机进程，找出「attach 到本 app-server 的 codex TUI」。wt.exe 把窗口交给
-   * 常驻 WindowsTerminal 后自己就退了，所以只认真正的 TUI 进程（codex.exe / 跑 codex.js
+   * 轮询本机进程，找出「attach 到本 app-server 的 codex TUI」。开窗的启动器建好窗口
+   * 就退了，所以只认真正的 TUI 进程（codex.exe / 跑 codex.js
    * 的 node.exe）——它们的命令行里有 `--remote <本端点>`。powershell 宿主不算（它即便
    * 在 codex 退出后还会因 -NoExit 留着，不能拿来当「会话还活着」）。
    */
@@ -3053,8 +3054,7 @@ export class CodexRuntime implements AgentBackend {
   /**
    * 结束本机 attach 到本 app-server 的 Codex TUI 进程。
    *
-   * 两类目标（wt 把窗口交给常驻 WindowsTerminal，开窗时那个 wt.exe 早就退了，只能按
-   * 命令行认）：
+   * 两类目标（开窗的启动器建好窗口就退了，只能按命令行认）：
    * - 已 attach 的 TUI：codex.exe / node.exe 命令行同时含 `--remote <endpoint>` 与
    *   `resume <sessionId>`；
    * - 还没 attach 的等待窗口（rollout 未落盘，defaultOpenHeadWindow 里那段轮询）：
@@ -4899,7 +4899,8 @@ function normalizeItemTypes(item: Record<string, unknown>): Record<string, unkno
 }
 
 /**
- * 有头窗口的启动命令（wt + 内嵌脚本的 UTF-16LE base64 `-EncodedCommand`）。
+ * 有头窗口的内容：powershell + 内嵌脚本的 UTF-16LE base64 `-EncodedCommand`，由系统默认
+ * 终端打开（WIN-CONSOLE-01，见 windows-console.ts）。
  *
  * 内嵌脚本做三件事：等 rollout 落盘 → `codex resume --remote` attach → **codex 一退出就关窗**。
  *
@@ -4909,15 +4910,14 @@ function normalizeItemTypes(item: Record<string, unknown>): Record<string, unkno
  * 重新拉起会话都会和那只残壳并存——用户看到的就是「只拉一个会话却多出一个空窗口」。
  * 只有「连 codex 都找不到」才把窗口留在原地：这类错误一闪就没法排查。
  *
- * wt 会把带空格的 `-Command` 长字符串重拼引号（实测整条命令被当成一个可执行文件名，
- * 0x80070002），所以命令必须走 `-EncodedCommand`（单 token，wt 原样透传）。
+ * 脚本整体 base64 进 `-EncodedCommand`，路径与端点里的空格、引号都不经过命令行解析。
  */
 export function codexHeadWindowLaunch(input: {
   cwd: string;
   sessionId: string;
   endpoint: string;
   codexCommand?: CodexCommand;
-}): { command: string; args: string[] } {
+}): WindowsConsoleRequest {
   const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
   const codexInvocation = input.codexCommand === undefined
     ? "codex"
@@ -4933,21 +4933,11 @@ export function codexHeadWindowLaunch(input: {
     `until (Get-ChildItem "$env:USERPROFILE\\.codex\\sessions" -Recurse -Filter '*${input.sessionId}*' -ErrorAction SilentlyContinue)`,
     `; ${codexInvocation} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`,
     // codex 退出（正常退出 / 崩 / 连接断）= 这条会话不在电脑上了，窗口不该留。
-    // 必须显式 `exit 0`：WT 的 closeOnExit 缺省只在退出码为 0 时关窗格，
-    // 拿 codex 的退出码（`exit` 不带参数会沿用 $LASTEXITCODE）会留下一个死窗格。
+    // 必须显式 `exit 0`：默认终端是 Windows Terminal 时，closeOnExit 缺省只在退出码为 0
+    // 时关窗格，拿 codex 的退出码（`exit` 不带参数会沿用 $LASTEXITCODE）会留下一个死窗格。
     `; exit 0`,
   ].join(" ");
-  return {
-    command: "wt.exe",
-    args: [
-      "-d",
-      input.cwd,
-      "powershell",
-      "-NoProfile",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
-  };
+  return { file: "powershell.exe", argumentLine: `-NoProfile -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`, cwd: input.cwd };
 }
 
 /** Native platform window; the terminal always joins this same app-server. */
@@ -4955,17 +4945,7 @@ async function defaultOpenHeadWindow(input: { sessionId: string; cwd: string; en
   if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
   if (process.platform === "darwin") return openMacCodexTerminal(input);
   if (process.platform !== "win32") throw new Error("当前平台不支持打开 Codex 终端窗口");
-  const launch = codexHeadWindowLaunch(input);
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(launch.command, launch.args, {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: false,
-    });
-    child.once("error", reject);
-    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Windows Terminal 启动失败（${code ?? "signal"}）`)));
-    child.unref();
-  });
+  await openWindowsConsole(codexHeadWindowLaunch(input));
 }
 
 /**

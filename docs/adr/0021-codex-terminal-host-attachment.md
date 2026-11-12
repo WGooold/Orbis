@@ -157,3 +157,7 @@ An isolated real PTY test of Codex 0.166.0 confirms that the TUI broadcasts an e
 Host retains the existing next-turn `/model` and `/thinking` overrides without a settings RPC. It tracks the last native model and effort separately: unchanged values repeated by a permission update or the first successful subscription preserve those overrides. A changed native value or native confirmation of the selected value takes ownership of that field again; model and effort reconcile independently, including an explicit native null effort. Ordinary resume uses the same rule. This restores the existing selection semantics without forcing materialization or submitting a synthetic user message.
 
 Regression tests are `codex-permission-settings.test.ts` and `codex-terminal-sync.test.ts`; UI mapping and validation limits are recorded under R27 / R56 in [UI regression](../../AGENTS.md#测试). Evidence is in `.artifacts/ui-regression/20261103-codex-permission-model/`. Complete device/manual acceptance and deployment are separate from these native and adapter results.
+
+### Revision 2026-11-12: Windows terminal windows (WIN-CONSOLE-01)
+
+Windows terminal activation no longer invokes `wt.exe`; the rollout-waiting PowerShell window opens through the system default terminal. Decision, cause and pending Windows acceptance are in [ADR-0074](0074-windows-agent-console-windows.md).

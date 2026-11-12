@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { readFile, writeFile, rename, rm, stat } from "node:fs/promises";
 import { Socket } from "node:net";
 import { homedir } from "node:os";
@@ -22,6 +22,7 @@ import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl
 import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
+import { openWindowsConsole, WindowsConsoleLaunchError } from "./windows-console.js";
 import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher } from "./claude-launcher.js";
@@ -985,7 +986,6 @@ export class DesktopRuntime {
     const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
     const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
       ? await this.#codexRuntime.prepareTerminalLaunch(workingDirectory) : undefined;
-    const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
     const args = kind === "pi" ? [...cli.prefixArgs, ...PI_WORKSPACE_APPROVAL_ARGS, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, "--remote", remote.endpoint] : [...cli.prefixArgs, ...codexWorkspaceApprovalArgs(workingDirectory)];
     const command = remote?.command ?? cli.command;
     if (process.platform === "darwin") {
@@ -998,12 +998,12 @@ export class DesktopRuntime {
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");
-    const launcher = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-NoExit','-EncodedCommand',${quote(encoded)} -WorkingDirectory ${quote(workingDirectory)} -WindowStyle Normal -ErrorAction Stop`;
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(launcher, "utf16le").toString("base64")], { stdio: "ignore", windowsHide: true, cwd: workingDirectory, timeout: 15_000 });
-    await new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", code => code === 0 ? resolve() : reject(new Error("无法打开终端界面，请重试")));
-    });
+    try { await openWindowsConsole({ file: "powershell.exe", argumentLine: `-NoProfile -NoExit -EncodedCommand ${encoded}`, cwd: workingDirectory }); }
+    catch (error) {
+      if (!(error instanceof WindowsConsoleLaunchError)) throw error;
+      this.log(`无法打开终端界面：${error.message}`);
+      throw new Error("无法打开终端界面，请重试");
+    }
   }
   async openProvider(kind: string, id: string, cwd?: string): Promise<void> {
     // Validate before switching providers: a cancelled or stale workspace must not change configuration.

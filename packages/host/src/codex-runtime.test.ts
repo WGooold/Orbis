@@ -3028,22 +3028,22 @@ describe("CodexRuntime", () => {
 
 /**
  * 有头窗口的启动命令是纯拼接，不必真开窗：把 `-EncodedCommand` 解回来断言，
- * 这也正是 wt 实际收到的内容。
+ * 这也正是窗口里 powershell 实际执行的内容。
  */
 describe("codexHeadWindowLaunch", () => {
   const sessionId = "01a0a5f7-632e-7182-9269-42cf23932203";
   const launch = codexHeadWindowLaunch({ cwd: "D:/repo", sessionId, endpoint: "ws://127.0.0.1:58322" });
-  const script = Buffer.from(launch.args[launch.args.length - 1] ?? "", "base64").toString("utf16le");
+  const script = Buffer.from(launch.argumentLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
 
-  it("走 wt + -EncodedCommand（带空格的 -Command 会被 wt 重拼引号）", () => {
-    expect(launch.command).toBe("wt.exe");
-    expect(launch.args.slice(0, 3)).toEqual(["-d", "D:/repo", "powershell"]);
-    expect(launch.args).toContain("-EncodedCommand");
+  // WIN-CONSOLE-01：由系统默认终端打开，不经 wt.exe；提权配置文件会让 wt 把整条命令当成一个程序名。
+  it("在默认终端窗口里运行 powershell -EncodedCommand", () => {
+    expect(launch).toMatchObject({ file: "powershell.exe", cwd: "D:/repo" });
+    expect(launch.argumentLine).toMatch(/^-NoProfile -EncodedCommand [A-Za-z0-9+/=]+$/u);
   });
 
   it("窗口壳不带 -NoExit：codex 退出后窗口必须跟着走，不留残壳窗", () => {
-    expect(launch.args).not.toContain("-NoExit");
-    // 必须 `exit 0`：WT 的 closeOnExit 缺省只对退出码 0 关窗格。
+    expect(launch.argumentLine).not.toContain("-NoExit");
+    // 必须 `exit 0`：默认终端是 Windows Terminal 时，closeOnExit 缺省只对退出码 0 关窗格。
     expect(script.trimEnd().endsWith("exit 0")).toBe(true);
   });
 
@@ -3064,7 +3064,7 @@ describe("codexHeadWindowLaunch", () => {
         prefixArgs: ["C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js"],
       },
     });
-    const exactScript = Buffer.from(exact.args.at(-1) ?? "", "base64").toString("utf16le");
+    const exactScript = Buffer.from(exact.argumentLine.split(" ").at(-1) ?? "", "base64").toString("utf16le");
     expect(exactScript).toContain(
       `& 'C:/nvm4w/nodejs/node.exe' 'C:/nvm4w/nodejs/node_modules/@openai/codex/bin/codex.js' resume '${sessionId}'`,
     );
