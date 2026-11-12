@@ -73,3 +73,122 @@ struct HostCatalogRange {
         session.messageCount <= 100_000 && ["pi", "codex", "codexDesktop", "dsh", "claude"].contains(session.agentKind ?? "")
     }
 }
+
+
+enum HostModelPreparationError: Error { case invalid, baseline }
+struct PreparedHostModel {
+    let accepted: [String: HostDomain]
+    let absent: [String: String]
+    let resolved: Set<String>
+    let truncated: Bool
+    let catalog: HostCatalogRange?
+}
+
+/// Decode/validate atomically off the UI actor, including equal-version facts
+/// comparisons and catalog row decoding. The owner fences the resulting commit.
+actor HostModelPreparationWorker {
+    private let beforeWork: (@Sendable () -> Void)?
+    init(beforeWork: (@Sendable () -> Void)? = nil) { self.beforeWork = beforeWork }
+    private func decode<T: Decodable>(_ raw: [String: Any]) -> T? {
+        guard let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+    func snapshot(_ message: [String: Any], domains: [String: HostDomain], subscribedDomains: Set<String>,
+                  subscriptionFormat: String?, newEpoch: String) throws -> PreparedHostModel {
+        beforeWork?()
+        guard let rawDomains = message["domains"] as? [[String: Any]], let rawMissing = message["missing"] as? [[String: Any]],
+              let isTruncated = message["truncated"] as? Bool else { throw HostModelPreparationError.invalid }
+        var decoded: [String: HostDomain] = [:]
+        for source in rawDomains {
+            let raw: [String: Any]
+            do {
+                if source["delta"] != nil && subscriptionFormat != "compact-v2" { throw StateDeltas.Failure.invalid }
+                guard let expanded = try StateDeltas.expand(source, old: domains[source["domain"] as? String ?? ""], epoch: newEpoch) else { continue }
+                raw = expanded
+            } catch { throw HostModelPreparationError.baseline }
+            guard let domain: HostDomain = decode(raw), domain.valid, domain.modelEpoch == newEpoch,
+                  subscribedDomains.contains(domain.domain), decoded[domain.domain] == nil else { throw HostModelPreparationError.invalid }
+            decoded[domain.domain] = domain
+        }
+        var absent: [String: String] = [:]
+        for raw in rawMissing {
+            guard let name = raw["domain"] as? String, subscribedDomains.contains(name), decoded[name] == nil, absent[name] == nil,
+                  let reason = raw["reason"] as? String, ["no_state", "unknown_domain"].contains(reason) else { throw HostModelPreparationError.invalid }
+            absent[name] = reason
+        }
+        let unchanged = message["unchanged"] as? [String] ?? []
+        guard unchanged.allSatisfy({ subscribedDomains.contains($0) && decoded[$0] == nil && absent[$0] == nil && domains[$0]?.modelEpoch == newEpoch }) else { throw HostModelPreparationError.invalid }
+        var ranges: [String: HostCatalogRange] = [:]
+        for domain in decoded.values where domain.domain == "catalog" && domain.availability == "ready" && domain.value["sessions"] != .null {
+            guard let range = HostCatalogRange(domain: domain) else { throw HostModelPreparationError.invalid }
+            ranges[domain.domain] = range
+        }
+        var accepted: [String: HostDomain] = [:]
+        for (name, incoming) in decoded {
+            if let old = domains[name], old.modelEpoch == newEpoch {
+                if incoming.revision < old.revision { continue }
+                if incoming.revision == old.revision && (!incoming.sameFacts(as: old) || incoming.checkedAt < old.checkedAt) { continue }
+            }
+            accepted[name] = incoming
+        }
+        for name in unchanged { if let value = domains[name] { accepted[name] = value } }
+        let catalog = accepted["catalog"].flatMap { domain in ranges["catalog"] ?? HostCatalogRange(domain: domain) }
+        return PreparedHostModel(accepted: accepted, absent: absent,
+            resolved: Set(decoded.keys).union(absent.keys).union(unchanged), truncated: isTruncated, catalog: catalog)
+    }
+    func page(_ raw: [String: Any], range: HostCatalogRange, request: HostCatalogRequest) -> Result<HostCatalogRange, CatalogPageError> {
+        beforeWork?()
+        guard let page: HostJSON = decode(raw) else { return .failure(CatalogPageError(reason: "invalid_page")) }
+        if let error = page["error"].string { return .failure(CatalogPageError(reason: error)) }
+        guard page["modelEpoch"].string == request.modelEpoch, page["revision"].integer == request.revision,
+              page["snapshotId"].string == request.snapshotId, page["offset"].integer == Int64(request.offset),
+              page["totalSessions"].integer == Int64(range.totalSessions) else {
+            return .failure(CatalogPageError(reason: "snapshot_changed"))
+        }
+        guard let updated = range.appending(page, request: request) else { return .failure(CatalogPageError(reason: "invalid_page")) }
+        return .success(updated)
+    }
+}
+struct CatalogPageError: Error { let reason: String }
+
+struct PreparedSessionCatalog {
+    let sessions: [SessionSummary]
+    let index: [String: SessionSummary]
+    let changed: Bool
+}
+actor SessionCatalogPreparationWorker {
+    private let beforeWork: (@Sendable () -> Void)?
+    init(beforeWork: (@Sendable () -> Void)? = nil) { self.beforeWork = beforeWork }
+    func merge(current: [SessionSummary], incoming: [SessionSummary], completeKinds: Set<String>,
+               retained: Set<String>, cacheLoaded: Bool, identity: RuntimeSummary? = nil, replacing: Bool = false) -> PreparedSessionCatalog {
+        beforeWork?()
+        func prepare(_ sessions: [SessionSummary]) -> PreparedSessionCatalog {
+            PreparedSessionCatalog(sessions: sessions,
+                index: Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }),
+                changed: sessions != current)
+        }
+        if replacing { return prepare(incoming.sorted { $0.modifiedAt > $1.modifiedAt }) }
+        if let runtime = identity, let id = runtime.sessionId {
+            var sessions = current
+            let index = sessions.firstIndex { $0.sessionId == id }
+            var entry = index.map { sessions[$0] } ?? SessionSummary(sessionId: id, cwd: runtime.cwd, createdAt: 0, modifiedAt: 0, messageCount: 0)
+            entry.name = runtime.sessionName
+            if !runtime.cwd.isEmpty { entry.cwd = runtime.cwd }
+            entry.agentKind = runtime.agentKind; entry.hostname = runtime.hostname ?? entry.hostname
+            if let index { sessions[index] = entry } else { sessions.append(entry) }
+            return prepare(sessions)
+        }
+        var merged = Dictionary(current.filter { !completeKinds.contains($0.agentKind ?? "") || retained.contains($0.sessionId) || !cacheLoaded }
+            .map { ($0.sessionId, $0) }, uniquingKeysWith: { _, last in last })
+        for item in incoming { merged[item.sessionId] = item }
+        let sessions = merged.values.sorted { $0.modifiedAt > $1.modifiedAt }
+        return PreparedSessionCatalog(sessions: sessions, index: merged, changed: sessions != current)
+    }
+    func decode(_ rows: [[String: Any]]) -> [SessionSummary] {
+        beforeWork?()
+        return rows.compactMap { row in
+            guard let data = try? JSONSerialization.data(withJSONObject: row) else { return nil }
+            return try? JSONDecoder().decode(SessionSummary.self, from: data)
+        }
+    }
+}

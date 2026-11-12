@@ -699,6 +699,8 @@ struct StoreTests {
         #expect(host.homeRuntimes.allSatisfy { $0.agentKind == "claude" && $0.status == "running" })
         let restored = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         restored.connect(hostId: "host-1")
+        // Cold cache hydration is asynchronous; its durable contents stay the same.
+        await restored.waitForPendingEvents()
         #expect(Set(restored.sessions.map(\.sessionId)) == ["session-a", "session-b"])
         #expect(restored.sessions.allSatisfy { $0.cwd == "/repo" && $0.agentKind == "claude" })
         #expect(restored.activeConnection.homePresentation == .preparing)
@@ -725,10 +727,17 @@ struct StoreTests {
         let restored = OrbisStore(secure: secure, transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         #expect(restored.sessions.isEmpty)
         restored.connect(hostId: "host-1")
+        await restored.waitForPendingEvents()
         #expect(restored.sessions.map(\.sessionId) == ["cached"])
+        // A reconnect reuses the hydrated snapshot without flashing an empty directory.
+        restored.reconnectSelectedHost()
+        #expect(restored.sessions.map(\.sessionId) == ["cached"])
+        await restored.waitForPendingEvents()
         restored.unpair(hostId: "host-1")
+        await restored.waitForPendingEvents()
         let afterUnpair = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         afterUnpair.connect(hostId: "host-1")
+        await afterUnpair.waitForPendingEvents()
         #expect(afterUnpair.sessions.isEmpty)
     }
 
@@ -1372,6 +1381,22 @@ struct StoreTests {
         transport.acceptsSends = true
         #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
         #expect(transport.syncCommands.last?["range"] as? String == "history")
+    }
+
+    // PERF-08: queued payloads retain the ownership at admission, even when an
+    // offline/online pair reuses the same runtime and session IDs before draining.
+    @Test func queuedRuntimeEventsCannotCrossAnOwnershipBoundary() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        transport.receive?(["type": "runtime.event", "runtimeId": "a", "sequence": 1,
+            "event": ["type": "message.started", "message": ["messageId": "old", "role": "assistant",
+                "content": [["type": "text", "text": "old owner"]], "timestamp": 1]]], "msg")
+        transport.receive?(["type": "runtime.offline", "runtimeId": "a"], "ctl")
+        transport.receive?(["type": "runtime.online", "runtime": runtime("a")], "ctl")
+        await store.waitForPendingEvents()
+        #expect(store.messages.isEmpty)
+        await transport.event(["type": "message.started", "message": ["messageId": "new", "role": "assistant",
+            "content": [["type": "text", "text": "new owner"]], "timestamp": 2]])
+        #expect(store.messages.map(\.text) == ["new owner"])
     }
 
     @Test func runtimeReplacementDuringDiskCommitCannotPublishOrPersistTheOldSnapshot() async throws {

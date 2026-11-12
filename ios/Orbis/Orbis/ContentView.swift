@@ -842,11 +842,11 @@ struct HomeView: View, Equatable {
     private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
     private var selectableRuntimeIds: Set<String> {
         guard let host = currentHost else { return [] }
-        return Set(host.homeCards.filter(host.connection.homeCardIsCurrent).map(\.id))
+        return host.connection.homeSelectableRuntimeIds
     }
     private var closableRuntimeIds: Set<String> {
         guard let host = currentHost else { return [] }
-        return Set(host.homeCards.filter { host.connection.canCloseRuntime($0.id) }.map(\.id))
+        return host.connection.homeClosableRuntimeIds
     }
 
     private var selecting: Bool { !selectedRuntimeIds.isEmpty }

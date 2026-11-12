@@ -36,12 +36,16 @@ final class HostConnection: ObservableObject {
     private let replyCompletions: ReplyCompletionTracker
     @Published private(set) var pairings: [HostPairing] = []
     @Published private(set) var selectedHostId: String?
-    @Published private(set) var runtimes: [RuntimeSummary] = [] { didSet { markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
+    @Published private(set) var runtimes: [RuntimeSummary] = [] { didSet { runtimeIndex = Dictionary(runtimes.map { ($0.runtimeId, $0) }, uniquingKeysWith: { _, last in last }); markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     @Published private(set) var sessions: [SessionSummary] = [] {
-        didSet { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }); markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 }
+        didSet { markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 }
     }
     /// sessionId → 目录条目。聊天页每条消息、每次流式更新都会查询，不能线性扫描整个目录。
     private var sessionIndex: [String: SessionSummary] = [:]
+    private let sessionCatalogWorker = SessionCatalogPreparationWorker()
+    private var sessionCatalogTask: Task<Void, Never>?
+    private var sessionCatalogTaskID = UUID()
+    private var runtimeIndex: [String: RuntimeSummary] = [:]
     @Published private(set) var messages: [ChatMessage] = [] { didSet { scheduleTranscript() } }
     @Published private(set) var selectedRuntimeId: String? { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var connection: ConnectionState = .offline { didSet { markHomeMetadataChanged(); directoryViewRevision &+= 1 } }
@@ -63,20 +67,29 @@ final class HostConnection: ObservableObject {
     private var configurationTimeout: Task<Void, Never>?
     private let launchJournalRoot: URL
     private var launchJournalURL: URL { launchJournalRoot.appendingPathComponent((selectedHostId ?? "unpaired").addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + ".json") }
-    private var hasLaunchJournal: Bool { FileManager.default.fileExists(atPath: launchJournalURL.path) }
-    private func readLaunchJournal() -> [String: Any]? {
-        guard let data = try? Data(contentsOf: launchJournalURL) else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
-    private func writeLaunchJournal(_ value: [String: Any]) -> Bool {
-        do {
-            try FileManager.default.createDirectory(at: launchJournalRoot, withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: value).write(to: launchJournalURL, options: .atomic)
-            return true
-        } catch { errorMessage = L10n.tr("无法保存启动恢复记录，请重试"); return false }
+    private let localStores: HostLocalStores
+    private var launchJournal: ConfiguredLaunchJournal { localStores.journal(at: launchJournalURL) }
+    private var hasLaunchJournal: Bool { !launchJournal.loaded || launchJournal.snapshot != nil }
+    private func readLaunchJournal() -> [String: Any]? { launchJournal.snapshot }
+    private func writeLaunchJournal(_ value: [String: Any], creating: Bool = false) -> Task<Bool, Never>? {
+        let journal = launchJournal
+        guard let task = journal.update(expectedId: creating ? nil : value["launchId"] as? String, value: value) else { return nil }
+        let id = value["launchId"] as? String
+        runAsyncTransaction { [weak self] in
+            if await !task.value, self?.launchJournal === journal, journal.launchId == id {
+                self?.errorMessage = L10n.tr("无法保存启动恢复记录，请重试")
+                if self?.launching?.requestId == id {
+                    self?.launching?.unconfirmed = true
+                    self?.launching?.failure = L10n.tr("无法保存启动恢复记录，请重试")
+                }
+            }
+        }
+        return task
     }
     private func clearLaunchJournal() {
-        try? FileManager.default.removeItem(at: launchJournalURL); configuredLaunchId = nil
+        let journal = launchJournal
+        journal.update(expectedId: journal.launchId, value: nil)
+        configuredLaunchId = nil
     }
     private func startConfigurationTimeout(_ id: String) {
         configurationTimeout?.cancel()
@@ -108,6 +121,17 @@ final class HostConnection: ObservableObject {
     }
 
     private func recoverConfiguredLaunch() {
+        let journal = launchJournal, generation = connectionGeneration
+        runAsyncTransaction { [weak self] in
+            await journal.waitLoaded()
+            guard let self, !Task.isCancelled, generation == self.connectionGeneration,
+                  let saved = journal.snapshot, let id = journal.launchId,
+                  let persisted = self.writeLaunchJournal(saved), await persisted.value,
+                  !Task.isCancelled, generation == self.connectionGeneration, journal.launchId == id else { return }
+            self.restoreConfiguredLaunch()
+        }
+    }
+    private func restoreConfiguredLaunch() {
         guard sessionConfigurationSupported, let saved = readLaunchJournal(), let id = saved["launchId"] as? String,
               let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String else { return }
         configuredLaunchId = id
@@ -148,7 +172,7 @@ final class HostConnection: ObservableObject {
         let payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
             "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": sessionConfigurationValues.payload, "spawnMode": "tui"]
         let firstId = UUID().uuidString, firstCommand = UUID().uuidString
-        guard writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }) else {
+        guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
         }
         configuredLaunchId = id; activationRequestId = id; pendingActivation = "new"; activatingSessionId = "new"
@@ -160,8 +184,13 @@ final class HostConnection: ObservableObject {
         if !firstMessage.isEmpty, let runtime = selectedRuntime, let operation = ledger.operation(id) {
             guard sendWhenReady(firstMessage, delivery: nil, uploads: [], runtime: runtime, configs: [operation], id: firstId, commandId: firstCommand) else { return false }
         }
-        if transport.send(payload) { handleLedger(ledger.written(id, now: Date())) }
-        else { launching?.unconfirmed = true }
+        let generation = connectionGeneration
+        runAsyncTransaction { [weak self] in
+            guard await persisted.value, let self, !Task.isCancelled, generation == self.connectionGeneration,
+                  self.configuredLaunchId == id, self.connection == .secured else { return }
+            if self.transport.send(payload) { self.handleLedger(self.ledger.written(id, now: Date())) }
+            else { self.launching?.unconfirmed = true }
+        }
         return true
     }
     @Published private(set) var codexDesktop: CodexDesktopAttach?
@@ -303,6 +332,19 @@ final class HostConnection: ObservableObject {
         return cards.filter { !closing.contains($0.id) }
     }
     var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
+    private var homeActionsRevision = -1
+    private var selectableHomeIds: Set<String> = []
+    private var closableHomeIds: Set<String> = []
+    var homeSelectableRuntimeIds: Set<String> { prepareHomeActions(); return selectableHomeIds }
+    var homeClosableRuntimeIds: Set<String> { prepareHomeActions(); return closableHomeIds }
+    private func prepareHomeActions() {
+        guard homeActionsRevision != homeViewRevision else { return }
+        homeActionsRevision = homeViewRevision
+        let cards = homeCards
+        selectableHomeIds = Set(cards.filter(homeCardIsCurrent).map(\.id))
+        closableHomeIds = Set(cards.filter { canCloseRuntime($0.id) }.map(\.id))
+    }
+
 
     private func homeFactsComplete(_ runtime: RuntimeSummary) -> Bool {
         guard let session = runtime.sessionId, !session.isEmpty,
@@ -343,9 +385,8 @@ final class HostConnection: ObservableObject {
     }
 
     func homeCardIsCurrent(_ card: HomeRuntimeCard) -> Bool {
-        connection == .secured && card.runtime.sessionId != nil && runtimes.contains {
-            $0.runtimeId == card.id && $0.sessionId == card.runtime.sessionId && $0.agentKind == card.runtime.agentKind
-        }
+        guard connection == .secured, card.runtime.sessionId != nil, let current = runtimeIndex[card.id] else { return false }
+        return current.sessionId == card.runtime.sessionId && current.agentKind == card.runtime.agentKind
     }
     var homeRuntimesError: String? {
         guard homeRuntimesUpdating else { return nil }
@@ -458,7 +499,7 @@ final class HostConnection: ObservableObject {
     }
     private var timingsBySession: [String: [String: SessionTurnTiming]] = [:] { didSet { projectionInputRevision &+= 1 } }
     private var cachedIndexLoaded = false
-    private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int, payload: Data?)] = []
+    private var pendingEvents: [(message: [String: Any], channel: String?, bytes: Int, payload: Data?, ownership: UUID?)] = []
     private var pendingEventBytes = 0
     private var eventTask: Task<Void, Never>?
     private var backgroundTasks: [UUID: Task<Void, Never>] = [:]
@@ -530,7 +571,7 @@ final class HostConnection: ObservableObject {
     private var handledSyncRejections: [String] = []
     private var authenticatedModelEpoch: String?
     private var menuOptions = MenuOptionsLoader()
-    private let sharedSessionContent = SharedSessionContent()
+    private var sharedSessionContent = SharedSessionContentWorker()
     private var menuOptionsTimeout: Task<Void, Never>?
 
     func loadMenuOptions(runtimeId: String, name: String) {
@@ -554,8 +595,9 @@ final class HostConnection: ObservableObject {
     var didUpdatePairing: ((HostPairing) -> Void)?
     private var modelCatalogReceived = false
 
-    init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil, autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil, initialPairing: HostPairing? = nil, isolated: Bool = false, historyWorker: SessionHistoryWorker? = nil) {
+    init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil, autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil, initialPairing: HostPairing? = nil, isolated: Bool = false, historyWorker: SessionHistoryWorker? = nil, localStores: HostLocalStores? = nil) {
         self.secure = secure
+        self.localStores = localStores ?? HostLocalStores()
         self.transport = transport ?? RelayTransport()
         self.preferences = preferences
         replyCompletions = ReplyCompletionTracker(preferences: preferences, owner: initialPairing.map(FileTransfers.pairingKey) ?? "unpaired")
@@ -612,14 +654,9 @@ final class HostConnection: ObservableObject {
         hostState.didChangeCatalog = { [weak self] incoming, completeKinds in
             guard let self else { return }
             self.modelCatalogReceived = true
-            let online = Set(self.runtimes.compactMap(\.sessionId))
-            var merged = Dictionary(self.sessions.filter { item in
-                !completeKinds.contains(item.agentKind ?? "") || online.contains(item.sessionId) || self.graphs[item.sessionId] != nil ||
-                !self.cachedIndexLoaded || self.cachedSessionIds.contains(item.sessionId)
-            }.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, last in last })
-            for item in incoming { merged[item.sessionId] = item }
-            self.sessions = merged.values.sorted { $0.modifiedAt > $1.modifiedAt }
-            self.persistSessions()
+            let generation = self.connectionGeneration
+            await self.queueSessionCatalog(incoming, completeKinds: completeKinds).value
+            guard !Task.isCancelled, generation == self.connectionGeneration else { return }
             // ADR-0049 §7.5：完整目录是归档的权威状态。
             self.ledgerAuthority(OperationKinds.catalogDomain, read: nil, complete: true)
         }
@@ -733,7 +770,7 @@ final class HostConnection: ObservableObject {
                let filtered = try? JSONEncoder().encode(stored.filter { !$0.key.hasPrefix(prefix) }) {
                 preferences?.set(filtered, forKey: "orbis.interactionDrafts.v1")
             }
-            preferences?.removeObject(forKey: sessionCacheKey(host))
+            localStores.saveCatalog(nil, key: sessionCacheKey(host), preferences: preferences)
             preferences?.removeObject(forKey: lastSessionKey(host))
             historyWorker.invalidate(host: host)
             cleanupTask = Task { [historyWorker] in try? await historyWorker.remove(host: host) }
@@ -743,11 +780,14 @@ final class HostConnection: ObservableObject {
         pairings = []
         guard selectedHostId == hostId else { return }
         connectionGeneration = UUID()
+        inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
+        admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
         if let host = selectedHost { historyWorker.invalidate(host: host) }
         transport.disconnect()
         clearSyncs(); dismissBrowse(); clearActivation()
-        conversations = [:]; messages = []; runtimes = []; sessions = []; commands = [:]
+        conversations = [:]; messages = []; runtimes = []; sessions = []; sessionIndex = [:]; commands = [:]
+        loadedSessionCacheKey = nil
         homeDirectoryReceived = false; homePresentation = .preparing
         selectedRuntimeId = nil; selectedHostId = nil; activePath = nil; pathRTT = nil; connection = .offline
         currentProviders = [:]; sessionListRequest = nil; modelCatalogReceived = false; authenticatedModelEpoch = nil; connectionEvents = []
@@ -762,6 +802,8 @@ final class HostConnection: ObservableObject {
 
     func shutdown() {
         connectionGeneration = UUID()
+        inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
+        admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
         if let host = selectedHost { historyWorker.invalidate(host: host) }
         transport.disconnect()
@@ -790,6 +832,8 @@ final class HostConnection: ObservableObject {
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
         homeDirectoryReceived = false
         connectionGeneration = UUID()
+        inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
+        admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
         historyGeneration = UUID(); historyConnected = false
         historyWorker.setGeneration(historyGeneration, host: pairing)
@@ -810,13 +854,19 @@ final class HostConnection: ObservableObject {
         currentProviders = [:]; sessionListRequest = nil; modelCatalogReceived = false; authenticatedModelEpoch = nil; connectionEvents = []
         transfers.setConnection(pairing, connected: false)
         toolContent.close(); turnFileChanges.clear(); toolInventories.clear(); toolAcknowledgements = [:]; pendingAppliedBaselines = [:]
-        runtimes = []; sessions = cachedSessions(pairing); messages = []; selectedRuntimeId = nil; selectedOfflineSession = nil
+        runtimes = []; messages = []; selectedRuntimeId = nil; selectedOfflineSession = nil
+        // Reconnect keeps the already prepared catalog visible. Cold hydration is
+        // queued ahead of remote updates and never performs disk work on MainActor.
+        if loadedSessionCacheKey != sessionCacheKey(pairing) {
+            sessions = []; sessionIndex = [:]
+            _ = queueSessionCatalog([], loadKey: sessionCacheKey(pairing))
+        }
         cachedSessionIds = []; cachedIndexLoaded = false; cachedHistoryOptions = []; turnTimings = [:]; timingsBySession = [:]
         loadCachedIndex(pairing)
         conversations = [:]; liveMessageIds = [:]; unfinishedLiveMessageIds = [:]; streamingMessageIds = []; displayMessageIds = [:]; messageAliases = [:]; excludedDisplayEntries = [:]
         liveOrders = [:]; liveToolReferences = [:]; liveTools = [:]
         oldestEntries = [:]; sessionLeaves = [:]; hasOlderHistory = [:]; historyErrors = [:]; historyLoading = []
-        sharedSessionContent.clear()
+        sharedSessionContent = SharedSessionContentWorker()
         sourcePositions = [:]; appliedBaselines = [:]; retiredEpochs = [:]; graphs = [:]; runtimeEventSequences = [:]
         pendingActivation = nil; activePath = nil
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
@@ -827,7 +877,7 @@ final class HostConnection: ObservableObject {
         clearSyncs()
         transport.connect(pairing: pairing, identity: identity, receive: { [weak self] message, channel in
             guard let self, self.connectionGeneration == generation else { return }
-            self.receive(message, channel: channel)
+            self.enqueueIncoming(message, channel: channel, payload: self.transport.receivedPayload)
         }, state: { [weak self] state, error in
             guard let self, self.connectionGeneration == generation else { return }
             self.setHistoryConnection(state == .secured)
@@ -1336,7 +1386,9 @@ final class HostConnection: ObservableObject {
     }
 
     func waitForPendingEvents() async {
-        while eventTask != nil || !backgroundTasks.isEmpty || transcriptTask != nil || homeTask != nil {
+        while inboundTask != nil || sessionCatalogTask != nil || eventTask != nil || !backgroundTasks.isEmpty || transcriptTask != nil || homeTask != nil {
+            if let task = sessionCatalogTask { await task.value }
+            if let task = inboundTask { await task.value }
             if let task = eventTask { await task.value }
             for task in Array(backgroundTasks.values) { await task.value }
             if let task = transcriptTask { await task.value }
@@ -1344,11 +1396,82 @@ final class HostConnection: ObservableObject {
         }
         await cleanupTask?.value
         await transfers.waitForPendingIO()
+        await localStores.flush()
     }
 
-    private func enqueueRuntimeEvent(_ message: [String: Any], channel: String?) {
-        let payload = transport.receivedPayload
-        let cost = payload?.count ?? (try? JSONSerialization.data(withJSONObject: message).count) ?? 0
+    private var incomingMessages: [(message: [String: Any], channel: String?, payload: Data?, ownership: UUID?)] = []
+    private var incomingBytes = 0
+    private var inboundTask: Task<Void, Never>?
+    private var admittedRuntimeSessions: [String: String] = [:]
+    private var admittedModelEpoch: String?
+    private var runtimeOwnership: [String: UUID] = [:]
+
+    /// A lifecycle message may arrive while the serial inbox is awaiting a
+    /// catalog or disk operation. Fence old work immediately, before it can commit.
+    /// Only cheap identity fields are inspected here; payload validation stays in receive.
+    private func fenceIncomingOwnership(_ message: [String: Any], channel: String?) {
+        guard channel != nil,
+              (message["protocolVersion"] as? Int).map({ $0 == orbisProtocolVersion }) ?? true else { return }
+        func invalidate(_ id: String) {
+            runtimeOwnership[id] = UUID()
+            historyWriteLeases.removeValue(forKey: id)?.invalidate()
+            branchGenerations[id, default: 0] += 1
+        }
+        switch message["type"] as? String {
+        case "runtime.offline":
+            if let id = message["runtimeId"] as? String {
+                invalidate(id); admittedRuntimeSessions[id] = nil
+            }
+        case "runtime.online":
+            if let raw = message["runtime"] as? [String: Any], let id = raw["runtimeId"] as? String {
+                let session = raw["sessionId"] as? String ?? ""
+                if admittedRuntimeSessions[id] != session { invalidate(id) }
+                admittedRuntimeSessions[id] = session
+            }
+        case "device.ready":
+            guard let rows = message["runtimes"] as? [[String: Any]] else { return }
+            var next: [String: String] = [:]
+            for row in rows {
+                guard let id = row["runtimeId"] as? String, next[id] == nil else { return }
+                next[id] = row["sessionId"] as? String ?? ""
+            }
+            let epoch = message["modelEpoch"] as? String
+            let restarted = epoch != nil && admittedModelEpoch != nil && epoch != admittedModelEpoch
+            for id in Set(admittedRuntimeSessions.keys).union(next.keys)
+                where restarted || admittedRuntimeSessions[id] != next[id] { invalidate(id) }
+            admittedRuntimeSessions = next
+            if let epoch { admittedModelEpoch = epoch }
+        default: break
+        }
+    }
+
+    private func enqueueIncoming(_ message: [String: Any], channel: String?, payload: Data?) {
+        let bytes = payload?.count ?? 4096
+        // Control receipts cannot be silently discarded. Reconnect recovers their authority.
+        guard incomingMessages.count < 256, incomingBytes + bytes <= 8 * 1024 * 1024 else {
+            reconnectSelectedHost(); return
+        }
+        fenceIncomingOwnership(message, channel: channel)
+        let ownership = (message["runtimeId"] as? String).flatMap { runtimeOwnership[$0] }
+        incomingMessages.append((message, channel, payload, ownership)); incomingBytes += bytes
+        guard inboundTask == nil else { return }
+        let generation = connectionGeneration
+        inboundTask = Task { [weak self] in
+            guard let self else { return }
+            await self.launchJournal.waitLoaded()
+            while !Task.isCancelled, generation == self.connectionGeneration, !self.incomingMessages.isEmpty {
+                let item = self.incomingMessages.removeFirst()
+                self.incomingBytes -= item.payload?.count ?? 4096
+                await self.receive(item.message, channel: item.channel, payload: item.payload, ownership: item.ownership)
+                await Task.yield()
+            }
+            if generation == self.connectionGeneration { self.inboundTask = nil }
+        }
+    }
+
+    private func enqueueRuntimeEvent(_ message: [String: Any], channel: String?, payload: Data?, ownership: UUID?) {
+        guard let id = message["runtimeId"] as? String, runtimeOwnership[id] == ownership else { return }
+        let cost = payload?.count ?? 4096
         var dropped = false
         while !pendingEvents.isEmpty && (pendingEvents.count >= 256 || pendingEventBytes + cost > 4 * 1024 * 1024) {
             let index = pendingEvents.firstIndex { $0.channel != "ctl" } ?? 0
@@ -1357,7 +1480,7 @@ final class HostConnection: ObservableObject {
                let runtimeId = old.message["runtimeId"] as? String { rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史读取队列繁忙，正在重新同步。")) }
         }
         if dropped, let selectedRuntime { syncSession(selectedRuntime, force: true) }
-        pendingEvents.append((message, channel, cost, payload)); pendingEventBytes += cost
+        pendingEvents.append((message, channel, cost, payload, ownership)); pendingEventBytes += cost
         guard eventTask == nil else { return }
         let generation = historyGeneration
         eventTask = Task { [weak self] in
@@ -1368,7 +1491,9 @@ final class HostConnection: ObservableObject {
                     ?? self.pendingEvents.firstIndex { $0.channel == "history" }
                     ?? self.pendingEvents.firstIndex { $0.channel == "catchup" } ?? 0
                 let event = self.pendingEvents.remove(at: index); self.pendingEventBytes -= event.bytes
-                await self.consumeEvent(event.message, channel: event.channel, rawEnvelope: event.payload)
+                if let id = event.message["runtimeId"] as? String, self.runtimeOwnership[id] == event.ownership {
+                    await self.consumeEvent(event.message, channel: event.channel, rawEnvelope: event.payload)
+                }
                 guard generation == self.historyGeneration else { break }
                 self.dispatchSyncDemands()
                 await Task.yield()
@@ -1662,7 +1787,7 @@ final class HostConnection: ObservableObject {
 
     /// Close a home-list selection without changing the active conversation or its draft.
     func canCloseRuntime(_ id: String) -> Bool {
-        runtimes.first { $0.runtimeId == id }?.allowsRemoteClose(commands[id] ?? []) == true
+        runtimeIndex[id]?.allowsRemoteClose(commands[id] ?? []) == true
     }
 
     func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
@@ -2276,11 +2401,6 @@ final class HostConnection: ObservableObject {
 
     /// 上次从这台电脑收到的会话目录。连接或切换电脑时先显示它，等 session.list 回来再整体替换，
     /// 抽屉不必每次都从空白等待加载。provider 归属依赖实时状态，不缓存。
-    private func cachedSessions(_ host: HostPairing) -> [SessionSummary] {
-        guard let data = preferences?.data(forKey: sessionCacheKey(host)) else { return [] }
-        return (try? JSONDecoder().decode([SessionSummary].self, from: data)) ?? []
-    }
-
     private func lastSessionKey(_ host: HostPairing) -> String { "orbis.lastSession." + hostKeyPrefix(host) }
     private func saveLastSession(_ runtime: RuntimeSummary) {
         guard let host = selectedHost, let session = runtime.sessionId else { return }
@@ -2298,20 +2418,44 @@ final class HostConnection: ObservableObject {
     /// 身份领域到达就落盘，不依赖目录扫描或打开聊天记录。
     private func persistIdentity(_ runtime: RuntimeSummary) {
         guard let id = runtime.sessionId, !id.isEmpty, let kind = runtime.agentKind, !kind.isEmpty else { return }
-        var entry = sessionIndex[id] ?? SessionSummary(sessionId: id, cwd: runtime.cwd,
-            createdAt: 0, modifiedAt: 0, messageCount: 0)
-        entry.name = runtime.sessionName
-        if !runtime.cwd.isEmpty { entry.cwd = runtime.cwd }
-        entry.agentKind = kind
-        entry.hostname = runtime.hostname ?? entry.hostname
-        if entry == sessionIndex[id] { return }
-        if let index = sessions.firstIndex(where: { $0.sessionId == id }) { sessions[index] = entry }
-        else { sessions.append(entry) }
-        persistSessions()
+        _ = queueSessionCatalog([], identity: runtime)
     }
 
+    /// Catalog and identity updates retain invocation order. Only the immutable
+    /// result is installed here; merges, sorting, equality and index construction
+    /// belong to the worker. Local cache hydration enters this same queue first.
+    private var loadedSessionCacheKey: String?
+    private func queueSessionCatalog(_ incoming: [SessionSummary], completeKinds: Set<String> = [],
+                                     identity: RuntimeSummary? = nil, loadKey: String? = nil,
+                                     replacing: Bool = false) -> Task<Void, Never> {
+        let prior = sessionCatalogTask, id = UUID(), generation = connectionGeneration
+        sessionCatalogTaskID = id
+        let task = Task { [weak self] in
+            await prior?.value
+            guard let self else { return }
+            defer { if self.sessionCatalogTaskID == id { self.sessionCatalogTask = nil } }
+            guard !Task.isCancelled, generation == self.connectionGeneration else { return }
+            var rows = incoming
+            if let loadKey { rows = await self.localStores.loadCatalog(key: loadKey, preferences: self.preferences) }
+            guard !Task.isCancelled, generation == self.connectionGeneration else { return }
+            let retained = Set(self.runtimes.compactMap(\.sessionId)).union(self.graphs.keys).union(self.cachedSessionIds)
+            let prepared = await self.sessionCatalogWorker.merge(current: self.sessions, incoming: rows,
+                completeKinds: completeKinds, retained: retained, cacheLoaded: self.cachedIndexLoaded,
+                identity: identity, replacing: replacing || loadKey != nil)
+            guard !Task.isCancelled, generation == self.connectionGeneration else { return }
+            if let loadKey { self.loadedSessionCacheKey = loadKey }
+            if prepared.changed {
+                self.sessionIndex = prepared.index
+                self.sessions = prepared.sessions
+                if loadKey == nil { self.persistSessions() }
+            }
+        }
+        sessionCatalogTask = task
+        return task
+    }
     private func persistSessions() {
-        if let host = selectedHost, let data = try? JSONEncoder().encode(sessions) { preferences?.set(data, forKey: sessionCacheKey(host)) }
+        guard let host = selectedHost else { return }
+        localStores.saveCatalog(sessions, key: sessionCacheKey(host), preferences: preferences)
     }
 
     private func refreshSessions() {
@@ -2345,7 +2489,7 @@ final class HostConnection: ObservableObject {
         if connectionEvents.count > 80 { connectionEvents.removeFirst(connectionEvents.count - 80) }
     }
 
-    private func receive(_ message: [String: Any], channel: String?) {
+    private func receive(_ message: [String: Any], channel: String?, payload: Data? = nil, ownership: UUID? = nil) async {
         guard let type = message["type"] as? String else { return }
         guard channel != nil else {
             if type == "protocol.error" { errorMessage = message["message"] as? String ?? L10n.tr("中继认证失败，请重新连接。"); connection = .error }
@@ -2384,7 +2528,8 @@ final class HostConnection: ObservableObject {
             }
             return
         }
-        if hostState.consume(message) || agentState.consume(message) { return }
+        if await hostState.consume(message) { return }
+        if agentState.consume(message) { return }
         switch type {
         case "_transport.lan":
             guard let endpoints = message["endpoints"] as? [LANEndpoint], let index = pairings.firstIndex(where: { $0.hostId == selectedHostId }) else { return }
@@ -2474,15 +2619,17 @@ final class HostConnection: ObservableObject {
                 publishMessages()
                 if let selectedRuntime { agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime) }
             }
-        case "runtime.event": enqueueRuntimeEvent(message, channel: channel)
+        case "runtime.event": enqueueRuntimeEvent(message, channel: channel, payload: payload, ownership: ownership)
         case "session.list.result":
             guard !modelCatalogReceived else { return }
             guard let request = sessionListRequest, message["requestId"] as? String == request else { return }
             sessionListRequest = nil
             if let values = message["sessions"] as? [[String: Any]] {
-                let decoded: [SessionSummary] = values.compactMap(jsonDecode)
-                sessions = decoded.sorted { $0.modifiedAt > $1.modifiedAt }
-                persistSessions()
+                let generation = connectionGeneration
+                let decoded = await sessionCatalogWorker.decode(values)
+                guard !Task.isCancelled, generation == connectionGeneration else { return }
+                await queueSessionCatalog(decoded, replacing: true).value
+                guard !Task.isCancelled, generation == connectionGeneration else { return }
                 ledgerAuthority(OperationKinds.catalogDomain, read: nil, complete: true)
             }
             if let providers = message["currentProviders"] as? [[String: Any]] {
@@ -2520,12 +2667,17 @@ final class HostConnection: ObservableObject {
                 var activated = message; activated["type"] = "session.activated"; activated["requestId"] = id
                 guard var saved = readLaunchJournal() else { return }
                 saved["sessionId"] = message["sessionId"]
-                guard writeLaunchJournal(saved) else { return }
-                // Reuse the existing exact-ID handoff and waiting-send ledger only after configuration readiness.
-                receive(activated, channel: channel)
+                let generation = connectionGeneration
+                guard let persisted = writeLaunchJournal(saved), await persisted.value,
+                      !Task.isCancelled, generation == connectionGeneration, configuredLaunchId == id else { return }
+                // Reuse the existing exact-ID handoff only after the recovery identity is durable.
+                await receive(activated, channel: channel)
 
             } else if message["phase"] as? String == "absent", let saved = readLaunchJournal() {
                 let payload = saved.filter { !["firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following"].contains($0.key) }
+                let generation = connectionGeneration
+                guard let persisted = writeLaunchJournal(saved), await persisted.value,
+                      !Task.isCancelled, generation == connectionGeneration, configuredLaunchId == id else { return }
                 _ = transport.send(payload)
             } else if message["phase"] as? String == "failed" {
                 let error = message["error"] as? String ?? L10n.tr("配置未确认")
@@ -2592,16 +2744,20 @@ final class HostConnection: ObservableObject {
 
     private func consumeEvent(_ wireEnvelope: [String: Any], channel: String?, rawEnvelope wirePayload: Data?) async {
         guard let runtimeId = wireEnvelope["runtimeId"] as? String, runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
-        let envelope: [String: Any]
-        do { envelope = try sharedSessionContent.expand(wireEnvelope, epoch: sourcePositions[runtimeId]?.epoch, seq: sourcePositions[runtimeId]?.seq) }
+        let generation = historyGeneration, worker = sharedSessionContent
+        let source = sourcePositions[runtimeId], branch = branchGenerations[runtimeId] ?? 0
+        let prepared: PreparedSessionEnvelope
+        do { prepared = try await worker.expand(wireEnvelope, payload: wirePayload, epoch: source?.epoch, seq: source?.seq) }
         catch {
+            guard !Task.isCancelled, generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0 else { return }
             if let syncId = (wireEnvelope["event"] as? [String: Any])?["syncId"] as? String {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史内容基准已失效，正在重新同步。"))
             }
             if let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) { syncSession(runtime, force: true) }
             return
         }
-        let rawEnvelope = wireEnvelope["sharedContent"] == nil ? wirePayload : try? JSONSerialization.data(withJSONObject: envelope)
+        guard !Task.isCancelled, generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0 else { return }
+        let envelope = prepared.message, rawEnvelope: Data? = prepared.payload
         guard let event = envelope["event"] as? [String: Any], let type = event["type"] as? String else { return }
         let changesHome = ["runtime.metadata", "runtime.status", "interaction.requested", "interaction.snapshot",
                            "interaction.resolved", "interaction.cancelled"].contains(type)
@@ -2612,6 +2768,7 @@ final class HostConnection: ObservableObject {
             runtimeEventSequences[key] = sequence
         }
         await turnFileChanges.consume(event, runtimeId: runtimeId)
+        guard !Task.isCancelled, generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0 else { return }
         if type.hasPrefix("session.changes.") || type.hasPrefix("session.change.detail.") { return }
         toolContent.consume(event, runtimeId: runtimeId)
         toolInventories.consume(event, runtime: runtimeId)
@@ -3114,7 +3271,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func applyProjection(_ event: [String: Any], runtimeId: String) async -> Bool {
-        let generation = historyGeneration
+        let generation = historyGeneration, contentWorker = sharedSessionContent
         let branch = branchGenerations[runtimeId] ?? 0
         guard let session = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId else { return false }
         // Local history hydration can finish while a source projection is being prepared. Rebase
@@ -3142,7 +3299,9 @@ final class HostConnection: ObservableObject {
                 toolInventories.require(reference, runtime: runtimeId)
                 if liveToolReferences[runtimeId] != reference { liveToolReferences[runtimeId] = reference }
             } else if prepared.hasLive { liveToolReferences[runtimeId] = nil; liveTools[runtimeId] = nil }
-            sharedSessionContent.remember(event, runtime: runtimeId)
+            await contentWorker.remember(event, runtime: runtimeId)
+            guard !Task.isCancelled, generation == historyGeneration,
+                  branch == branchGenerations[runtimeId] ?? 0 else { return false }
             if replyCompletions.consume(event, sessionId: session) {
                 #if canImport(UIKit) && canImport(UserNotifications)
                 if preferences != nil, let hostId = selectedHostId,

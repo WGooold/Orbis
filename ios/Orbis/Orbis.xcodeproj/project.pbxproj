@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA7200010000000000000001 /* HostLocalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7200010000000000000002 /* HostLocalStorage.swift */; };
 		D06800010000000000000001 /* ProviderDialGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06810010000000000000001; };
 		C00500010000000000000001 /* CopyFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00510010000000000000001 /* CopyFeedback.swift */; };
 		C06300010000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
@@ -62,6 +63,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		AA7200010000000000000002 /* HostLocalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostLocalStorage.swift; sourceTree = "<group>"; };
 		D06810010000000000000001 /* ProviderDialGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDialGeometry.swift; sourceTree = "<group>"; };
 		C00510010000000000000001 /* CopyFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyFeedback.swift; sourceTree = "<group>"; };
 		C06310010000000000000001 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 				A00110010000000000000031 /* Notifications.swift */,
 				A00110010000000000000030 /* SessionHistory.swift */,
 				A0011001000000000000002F /* HostCatalog.swift */,
+				AA7200010000000000000002 /* HostLocalStorage.swift */,
 				A0011001000000000000002E /* AgentState.swift */,
 				A0011001000000000000002B /* ToolInventory.swift */,
 				A0011001000000000000002A /* ToolContent.swift */,
@@ -335,6 +338,7 @@
 				A00100010000000000000031 /* Notifications.swift in Sources */,
 				A00100010000000000000030 /* SessionHistory.swift in Sources */,
 				A0010001000000000000002F /* HostCatalog.swift in Sources */,
+				AA7200010000000000000001 /* HostLocalStorage.swift in Sources */,
 				A0010001000000000000002E /* AgentState.swift in Sources */,
 				A0010001000000000000002B /* ToolInventory.swift in Sources */,
 				A0010001000000000000002A /* ToolContent.swift in Sources */,

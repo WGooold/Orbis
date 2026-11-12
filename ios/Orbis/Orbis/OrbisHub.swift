@@ -51,6 +51,7 @@ final class OrbisStore: ObservableObject {
     private let preferences: UserDefaults?
     private let deviceName: String
     private let root: URL
+    private let localStores: HostLocalStores
     private let historyWorker: SessionHistoryWorker
     private let factory: (HostPairing) -> OrbisTransport
     private var connections: [String: HostConnection] = [:]
@@ -70,8 +71,9 @@ final class OrbisStore: ObservableObject {
 
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil,
          autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil,
-         transportFactory: ((HostPairing) -> OrbisTransport)? = nil) {
+         transportFactory: ((HostPairing) -> OrbisTransport)? = nil, localStores: HostLocalStores? = nil) {
         self.secure = secure; self.preferences = preferences
+        self.localStores = localStores ?? HostLocalStores()
         #if canImport(UIKit)
         self.deviceName = deviceName ?? UIDevice.current.name
         #else
@@ -105,7 +107,7 @@ final class OrbisStore: ObservableObject {
         observations.removeValue(forKey: pairing.hostId)?.cancel()
         connections.removeValue(forKey: pairing.hostId)?.shutdown(); started.remove(pairing.hostId)
         let connection = HostConnection(secure: secure, transport: factory(pairing), deviceName: deviceName,
-            autoConnect: false, preferences: preferences, transferRoot: root, initialPairing: pairing, isolated: true, historyWorker: historyWorker)
+            autoConnect: false, preferences: preferences, transferRoot: root, initialPairing: pairing, isolated: true, historyWorker: historyWorker, localStores: localStores)
         connection.didUpdatePairing = { [weak self] updated in self?.updatePairing(updated) }
         connections[pairing.hostId] = connection
         observations[pairing.hostId] = connection.objectWillChange.sink { [weak self] _ in self?.publishChanges(hostId: pairing.hostId) }

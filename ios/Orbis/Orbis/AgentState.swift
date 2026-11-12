@@ -61,6 +61,29 @@ final class SharedSessionContent {
     }
 }
 
+struct PreparedSessionEnvelope: @unchecked Sendable {
+    let message: [String: Any]
+    let payload: Data
+}
+
+/// One worker per connection generation. Only successfully committed source
+/// events enter its baseline; expansion/serialization never occupy MainActor.
+actor SharedSessionContentWorker {
+    private let content = SharedSessionContent()
+    private let beforeWork: (@Sendable () -> Void)?
+    init(beforeWork: (@Sendable () -> Void)? = nil) { self.beforeWork = beforeWork }
+    func expand(_ envelope: [String: Any], payload: Data?, epoch: String?, seq: Int64?) throws -> PreparedSessionEnvelope {
+        beforeWork?()
+        let expanded = try content.expand(envelope, epoch: epoch, seq: seq)
+        let bytes = envelope["sharedContent"] == nil ? payload : nil
+        return PreparedSessionEnvelope(message: expanded, payload: try bytes ?? JSONSerialization.data(withJSONObject: expanded))
+    }
+    func remember(_ event: [String: Any], runtime: String) {
+        beforeWork?()
+        content.remember(event, runtime: runtime)
+    }
+}
+
 /// FT-G03: independent view owners retain and release their own domain interest.
 struct ModelInterests: Equatable {
     private var values: [String: Set<String>] = [:]

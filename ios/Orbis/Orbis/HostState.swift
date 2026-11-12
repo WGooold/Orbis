@@ -194,6 +194,9 @@ struct HostDiagnosticPage: Decodable {
 final class HostState: ObservableObject {
     nonisolated static let domainNames = ["identity", "backends", "catalog", "providers", "workspaces", "files", "operations", "diagnostics", "connections", "management"]
     nonisolated static let homeDomains: Set<String> = ["identity", "backends", "catalog", "providers"]
+    private let modelWorker: HostModelPreparationWorker
+    private var modelRevision = 0
+    init(modelWorker: HostModelPreparationWorker = HostModelPreparationWorker()) { self.modelWorker = modelWorker }
     private var interests = ModelInterests()
     @Published private(set) var domains: [String: HostDomain] = [:]
     @Published private(set) var missing: [String: String] = [:]
@@ -218,7 +221,7 @@ final class HostState: ObservableObject {
     var send: (([String: Any]) -> Bool)?
     var didChangeProviders: (() -> Void)?
     var didProject: (([String: HostDomain]) -> Void)?
-    var didChangeCatalog: (([SessionSummary], Set<String>) -> Void)?
+    var didChangeCatalog: (([SessionSummary], Set<String>) async -> Void)?
     @Published private(set) var catalogRange: HostCatalogRange?
     private var catalogRequest: HostCatalogRequest?
     private var catalogTimeout: Task<Void, Never>?
@@ -474,7 +477,7 @@ final class HostState: ObservableObject {
 
     /// Called only after the transport has authenticated/decrypted the payload.
     @discardableResult
-    func consume(_ message: [String: Any]) -> Bool {
+    func consume(_ message: [String: Any]) async -> Bool {
         guard connected, let type = message["type"] as? String else { return false }
         switch type {
         case "provider.subscription.result":
@@ -489,10 +492,10 @@ final class HostState: ObservableObject {
             quota = result; finishQuota(); return true
         case "agent.state.snapshot":
             guard message["scope"] as? String == "host" else { return false }
-            consumeSnapshot(message); return true
+            await consumeSnapshot(message); return true
         case "agent.state.range.page":
             guard message["scope"] as? String == "host", message["domain"] as? String == "catalog" else { return false }
-            consumeCatalogPage(message); return true
+            await consumeCatalogPage(message); return true
         case "provider.result":
             guard let request = providerRequest, request.id == message["requestId"] as? String,
                   request.kind == message["kind"] as? String, request.hostKey == hostKey else { return true }
@@ -556,7 +559,7 @@ final class HostState: ObservableObject {
         return nil
     }
 
-    private func consumeSnapshot(_ message: [String: Any]) {
+    private func consumeSnapshot(_ message: [String: Any]) async {
         guard let id = message["requestId"] as? String, id == subscriptionId, message["scope"] as? String == "host",
               message["runtimeId"] == nil, message["sessionId"] == nil, message["agentKind"] == nil else { return }
         if subscriptionFormat != message["stateFormat"] as? String {
@@ -566,49 +569,27 @@ final class HostState: ObservableObject {
         if let error = message["error"] as? String { modelError = error; pendingDomains = []; modelTimeout?.cancel(); return }
         guard let newEpoch = message["modelEpoch"] as? String, !newEpoch.isEmpty else { rejectModel(); return }
         if retiredEpochs.contains(newEpoch) || epoch.map({ $0 != newEpoch }) == true { return }
-        guard let rawDomains = message["domains"] as? [[String: Any]], let rawMissing = message["missing"] as? [[String: Any]],
-              let isTruncated = message["truncated"] as? Bool else { rejectModel(); return }
-        var decoded: [String: HostDomain] = [:]
-        for source in rawDomains {
-            let raw: [String: Any]
-            do {
-                if source["delta"] != nil && subscriptionFormat != "compact-v2" { throw StateDeltas.Failure.invalid }
-                guard let expanded = try StateDeltas.expand(source, old: domains[source["domain"] as? String ?? ""], epoch: newEpoch) else { continue }
-                raw = expanded
-            } catch { refresh(subscribedDomains.sorted(), force: true); return }
-            guard let domain: HostDomain = decode(raw), domain.valid, domain.modelEpoch == newEpoch,
-                  subscribedDomains.contains(domain.domain), decoded[domain.domain] == nil else { rejectModel(); return }
-            decoded[domain.domain] = domain
+        let owner = hostKey, revision = modelRevision
+        let prepared: PreparedHostModel
+        do {
+            prepared = try await modelWorker.snapshot(message, domains: domains, subscribedDomains: subscribedDomains,
+                subscriptionFormat: subscriptionFormat, newEpoch: newEpoch)
+        } catch {
+            guard !Task.isCancelled, connected, owner == hostKey, id == subscriptionId, revision == modelRevision else { return }
+            if case HostModelPreparationError.baseline = error { refresh(subscribedDomains.sorted(), force: true) }
+            else { rejectModel() }
+            return
         }
-        var absent: [String: String] = [:]
-        for raw in rawMissing {
-            guard let name = raw["domain"] as? String, subscribedDomains.contains(name), decoded[name] == nil, absent[name] == nil,
-                  let reason = raw["reason"] as? String, ["no_state", "unknown_domain"].contains(reason) else { rejectModel(); return }
-            absent[name] = reason
-        }
-        let unchanged = message["unchanged"] as? [String] ?? []
-        guard unchanged.allSatisfy({ subscribedDomains.contains($0) && decoded[$0] == nil && absent[$0] == nil && domains[$0]?.modelEpoch == newEpoch }) else { rejectModel(); return }
-        for domain in decoded.values where domain.domain == "catalog" && domain.availability == "ready" && domain.value["sessions"] != .null {
-            guard HostCatalogRange(domain: domain) != nil else { rejectModel(); return }
-        }
-        // Decode every envelope before mutating anything. Lower/equal-version changes cannot roll back facts.
+        guard !Task.isCancelled, connected, owner == hostKey, id == subscriptionId, revision == modelRevision else { return }
         if epoch == nil { domains = domains.filter { $0.value.modelEpoch == newEpoch }; missing = [:] }
-        epoch = newEpoch
-        var accepted: [String: HostDomain] = [:]
-        for (name, incoming) in decoded {
-            if let old = domains[name] {
-                if incoming.revision < old.revision { continue }
-                if incoming.revision == old.revision && (!incoming.sameFacts(as: old) || incoming.checkedAt < old.checkedAt) { continue }
-            }
-            domains[name] = incoming; missing[name] = nil
-            accepted[name] = incoming
-        }
-        for (name, reason) in absent { missing[name] = reason }
-        pendingDomains.subtract(decoded.keys); pendingDomains.subtract(absent.keys); pendingDomains.subtract(unchanged)
-        truncated = isTruncated; modelError = nil
-        for name in unchanged { if let value = domains[name] { accepted[name] = value } }
-        didProject?(accepted)
-        if let catalog = accepted["catalog"] { beginCatalog(catalog) }
+        epoch = newEpoch; modelRevision &+= 1
+        let unchanged = Set(message["unchanged"] as? [String] ?? [])
+        for (name, domain) in prepared.accepted where !unchanged.contains(name) { domains[name] = domain; missing[name] = nil }
+        for (name, reason) in prepared.absent { missing[name] = reason }
+        pendingDomains.subtract(prepared.resolved)
+        truncated = prepared.truncated; modelError = nil
+        didProject?(prepared.accepted)
+        if let catalog = prepared.accepted["catalog"] { await beginCatalog(catalog, prepared: prepared.catalog) }
         if pendingDomains.isEmpty { modelTimeout?.cancel() }
     }
 
@@ -619,6 +600,7 @@ final class HostState: ObservableObject {
         diagnosticTimeout?.cancel(); diagnosticRequest = nil; diagnosticsLoading = false; diagnosticsError = error
     }
     private func cancelRequests() {
+        modelRevision &+= 1
         clearQuota()
         modelTimeout?.cancel(); providerTimeout?.cancel(); diagnosticTimeout?.cancel(); catalogTimeout?.cancel()
         catalogRequest = nil
@@ -628,19 +610,19 @@ final class HostState: ObservableObject {
         providerRequest = nil; changingProvider = false; diagnosticRequest = nil; diagnosticsLoading = false
     }
 
-    private func beginCatalog(_ domain: HostDomain) {
+    private func beginCatalog(_ domain: HostDomain, prepared: HostCatalogRange?) async {
         guard domain.availability == "ready" else { catalogRange = nil; catalogRequest = nil; catalogTimeout?.cancel(); return }
-        guard let range = HostCatalogRange(domain: domain) else { return }
+        guard let range = prepared else { return }
         if let old = catalogRange, old.error == nil, old.modelEpoch == range.modelEpoch, old.revision == range.revision,
            old.snapshotId == range.snapshotId {
-            publishCatalog(old); requestCatalogPage(); return
+            await publishCatalog(old); requestCatalogPage(); return
         }
         catalogTimeout?.cancel(); catalogRequest = nil; catalogRange = range
-        publishCatalog(range); requestCatalogPage()
+        await publishCatalog(range); requestCatalogPage()
     }
 
-    private func publishCatalog(_ range: HostCatalogRange) {
-        didChangeCatalog?(range.sessions, range.completeKinds)
+    private func publishCatalog(_ range: HostCatalogRange) async {
+        await didChangeCatalog?(range.sessions, range.completeKinds)
     }
 
     func requestCatalogPage() {
@@ -661,19 +643,21 @@ final class HostState: ObservableObject {
         }
     }
 
-    private func consumeCatalogPage(_ message: [String: Any]) {
+    private func consumeCatalogPage(_ message: [String: Any]) async {
         guard let request = catalogRequest, message["requestId"] as? String == request.id,
               let range = catalogRange, range.matches(request) else { return }
-        guard let raw = message["page"] as? [String: Any], let page: HostJSON = decode(raw) else { rejectCatalog("invalid_page"); return }
-        if let error = page["error"].string { rejectCatalog(error); return }
-        guard page["modelEpoch"].string == request.modelEpoch, page["revision"].integer == request.revision,
-              page["snapshotId"].string == request.snapshotId, page["offset"].integer == Int64(request.offset),
-              page["totalSessions"].integer == Int64(range.totalSessions), epoch == request.modelEpoch else {
-            rejectCatalog("snapshot_changed"); return
+        guard let raw = message["page"] as? [String: Any] else { rejectCatalog("invalid_page"); return }
+        let owner = hostKey
+        let prepared = await modelWorker.page(raw, range: range, request: request)
+        guard !Task.isCancelled, connected, owner == hostKey, catalogRequest?.id == request.id,
+              catalogRange?.matches(request) == true else { return }
+        guard epoch == request.modelEpoch else { rejectCatalog("snapshot_changed"); return }
+        switch prepared {
+        case .success(let updated):
+            catalogTimeout?.cancel(); catalogRequest = nil; catalogRange = updated
+            await publishCatalog(updated); requestCatalogPage()
+        case .failure(let error): rejectCatalog(error.reason)
         }
-        guard let updated = range.appending(page, request: request) else { rejectCatalog("invalid_page"); return }
-        catalogTimeout?.cancel(); catalogRequest = nil; catalogRange = updated
-        publishCatalog(updated); requestCatalogPage()
     }
 
     private func rejectCatalog(_ error: String) {
