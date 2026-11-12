@@ -6,6 +6,9 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [ADR-0077](adr/0077-cli-host-and-headless-validation.md)：CLI Host 产品化与无头运行调研；现有入口、逐后端缺口、Linux 有限证据及分阶段验证方案，提案未实现、未发布。
+- [ADR-0078](adr/0078-linux-desktop-host.md)：Linux 桌面 Host 适配；凭据、终端 / 浏览器、桌面集成、打包更新与验证门槛，提案未实现、未构建。
+
 - [QUIC 诊断复核](architecture/native-quic-peer-project-review.md)。
 
 - [原生QUIC主分支集成](../.artifacts/doc-consolidation/20261105-e76ac8711c/reports/native-quic-main-integration-20261105.md)：协议18/19版本引导修正、四承载组合、双端构建与功能回归；完整设备验收状态另列。
