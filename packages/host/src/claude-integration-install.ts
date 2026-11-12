@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { access, constants, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { agentInvocation, findExternalAgentEntries } from "./agent-command.js";
 
 /**
  * Registers the Orbis Claude Code plugin through Claude Code's own plugin CLI
@@ -23,21 +24,8 @@ export class ClaudeIntegrationError extends Error {
 }
 
 export async function findClaudeExecutable(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform,
-  home = homedir()): Promise<string | undefined> {
-  const names = platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"];
-  const directories = (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : delimiter).filter(Boolean);
-  // The native installer's default locations, which a GUI-launched Host may miss on PATH.
-  directories.push(join(home, ".local", "bin"), join(home, ".claude", "local"));
-  for (const directory of directories) {
-    for (const name of names) {
-      const candidate = join(directory, name);
-      try {
-        await access(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
-        return candidate;
-      } catch { /* try the next location */ }
-    }
-  }
-  return undefined;
+  home = platform === "win32" ? env.USERPROFILE || homedir() : env.HOME || homedir()): Promise<string | undefined> {
+  return (await findExternalAgentEntries("claude", env, platform, home))[0]?.entry;
 }
 
 export async function updateClaudeIntegration(input: {
@@ -100,12 +88,9 @@ async function expectSuccess(pending: Promise<ClaudeCommandResult>, message: str
 }
 
 const runClaude: ClaudeCommandRunner = (file, args, env) => new Promise(resolve => {
-  // A `.cmd` shim cannot be executed without a shell; arguments here are fixed, not user input.
-  const shim = process.platform === "win32" && file.toLowerCase().endsWith(".cmd");
-  const command = shim ? env.ComSpec ?? "cmd.exe" : file;
-  // /s strips the outer quotes around the complete command, retaining quotes around paths with spaces.
-  const argv = shim ? ["/d", "/s", "/c", `"${[file, ...args].map(arg => `"${arg}"`).join(" ")}"`] : [...args];
-  execFile(command, argv, { env, timeout: 60_000, windowsHide: true, windowsVerbatimArguments: shim, maxBuffer: 1024 * 1024 },
+  const invocation = agentInvocation({ command: file, prefixArgs: [] }, args, env);
+  execFile(invocation.command, invocation.args, { env, timeout: 60_000, windowsHide: true,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), maxBuffer: 1024 * 1024 },
     (error, stdout, stderr) => {
       const code = error === null ? 0 : typeof (error as NodeJS.ErrnoException & { code?: unknown }).code === "number" ? (error as unknown as { code: number }).code : 1;
       resolve({ code, stdout: String(stdout), stderr: String(stderr) });

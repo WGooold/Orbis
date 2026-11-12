@@ -3,12 +3,27 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { mergeLoginEnvironment, parseLoginEnvironment, readLoginShellEnvironment } from "./login-shell-env.js";
+import { mergeLoginEnvironment, mergeWindowsEnvironment, parseLoginEnvironment, readLoginShellEnvironment } from "./login-shell-env.js";
 
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
 describe("login shell environment", () => {
+  // SC82: GUI refresh retains explicit paths/config and adopts installer additions only.
+  it("refreshes Windows paths without changing the selected runtime or retaining conflicting Path keys", () => {
+    const target: NodeJS.ProcessEnv = { Path: '"C:\\chosen Node";C:\\Windows', USERPROFILE: "C:\\Users\\中文", CODEX_HOME: "C:\\explicit" };
+    mergeWindowsEnvironment(target, { PATH: 'c:\\WINDOWS;%USERPROFILE%\\.pi\\agent\\bin', CODEX_HOME: "C:\\registry", DSH_HOME: "C:\\dsh" });
+    expect(target.PATH).toBe("C:\\chosen Node;C:\\Windows;C:\\Users\\中文\\.pi\\agent\\bin");
+    expect(target.Path).toBeUndefined();
+    expect(target.CODEX_HOME).toBe("C:\\explicit");
+    expect(target.DSH_HOME).toBe("C:\\dsh");
+  });
+
+  it("adopts agent homes and manager context used by native launchers", () => {
+    const target: NodeJS.ProcessEnv = { PATH: "/host", CODEX_HOME: "/explicit" };
+    mergeLoginEnvironment(target, { PATH: "/tools", CODEX_HOME: "/other", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session" });
+    expect(target).toMatchObject({ CODEX_HOME: "/explicit", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session" });
+  });
   it("ignores whatever the startup files print around the environment block", () => {
     const block = ["PATH=/opt/tools/bin:/usr/bin", "PI_CODING_AGENT_DIR=/Users/a/pi agent", "MULTI=a\nb"].join("\0");
     expect(parseLoginEnvironment(`Welcome!\n__ORBIS_LOGIN_ENV__${block}\0__ORBIS_LOGIN_ENV__bye`))

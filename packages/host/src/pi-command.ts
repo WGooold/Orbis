@@ -14,13 +14,13 @@
  * - Windows：`%LOCALAPPDATA%\Orbis\bin\pi.cmd`，与 `codex.cmd` 共用用户 PATH 上的同一项，不需要提权。
  */
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import { access, lstat, mkdir, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { promisify } from "node:util";
 
 import { ensureOrbisBinOnUserPath, orbisBinDirectory } from "./codex-shim-install.js";
+import { findExternalAgentEntries } from "./agent-command.js";
 
 const execute = promisify(execFile);
 
@@ -85,32 +85,12 @@ async function isOurs(path: string): Promise<boolean> {
   return (await readFile(path, "utf8").catch(() => "")).includes(PI_COMMAND_MARK);
 }
 
-async function executable(path: string): Promise<boolean> {
-  try { await access(path, constants.X_OK); return (await lstat(path)).isFile() || (await lstat(path)).isSymbolicLink(); }
-  catch { return false; }
-}
-
 /**
  * PATH 上第一个不是我们的 `pi`。它存在就说明用户自己有 Pi（npm、Homebrew、独立二进制……），
  * Orbis 的命令必须让位。
  */
 export async function findForeignPi(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
-  const names = platform === "win32" ? ["pi.exe", "pi.cmd", "pi.bat", "pi.ps1", "pi.com"] : ["pi"];
-  const ours = new Set<string>();
-  for (const path of [piCommandScriptPath(platform), ...(platform === "darwin" ? [MAC_PI_LINK] : [])]) {
-    try { ours.add((await realpath(path)).toLowerCase()); } catch { /* 不存在 */ }
-  }
-  for (const dir of (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : delimiter).map(item => item.trim().replace(/^"|"$/g, "")).filter(Boolean)) {
-    for (const name of names) {
-      const candidate = join(dir, name);
-      if (!await executable(candidate) && !(platform === "win32" && await access(candidate).then(() => true, () => false))) continue;
-      let actual: string;
-      try { actual = (await realpath(candidate)).toLowerCase(); } catch { continue; }
-      if (ours.has(actual) || await isOurs(candidate)) continue;
-      return candidate;
-    }
-  }
-  return undefined;
+  return (await findExternalAgentEntries("pi", env, platform))[0]?.entry;
 }
 
 async function macLinkIsOurs(script: string): Promise<boolean> {

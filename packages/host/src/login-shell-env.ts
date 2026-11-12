@@ -7,14 +7,46 @@
  * 几个变量合并进来。任何一步失败都只是保持原样：超时、shell 卡在交互提示、输出不可解析都不能挡住
  * Host 启动。
  */
-import { spawn } from "node:child_process";
-import { delimiter } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { delimiter, join } from "node:path";
+import { promisify } from "node:util";
 import { userInfo } from "node:os";
+import { AGENT_LAUNCH_ENV_KEYS, cliPathDirs } from "./agent-command.js";
 
 const MARKER = "__ORBIS_LOGIN_ENV__";
 
 /** 只合并这些：其余变量（代理、语言等）Host 自己的行为不依赖，也不该被用户 shell 随意改写。 */
-const ADOPTED = ["PI_CODING_AGENT_DIR", "CLAUDE_CONFIG_DIR", "NVM_DIR", "VOLTA_HOME", "FNM_DIR", "PNPM_HOME", "BUN_INSTALL", "npm_config_prefix", "NPM_CONFIG_PREFIX"] as const;
+const ADOPTED = [...AGENT_LAUNCH_ENV_KEYS.filter(key => key !== "PATH"), "CLAUDE_CONFIG_DIR", "CODEX_INSTALL_DIR", "npm_config_prefix", "NPM_CONFIG_PREFIX"] as const;
+
+/** Append newly installed Windows locations without replacing the Host's explicit PATH order. */
+export function mergeWindowsEnvironment(target: NodeJS.ProcessEnv, registered: Record<string, string>): void {
+  for (const key of ADOPTED) if (target[key] === undefined && registered[key]) target[key] = registered[key];
+  const values = new Map(Object.entries({ ...registered, ...target }).map(([key, value]) => [key.toLowerCase(), value]));
+  const expand = (value: string) => value.replace(/%([^%]+)%/gu, (match, key: string) => values.get(key.toLowerCase()) ?? match);
+  const entries = [...cliPathDirs(target, "win32"), ...cliPathDirs({ PATH: expand(registered.PATH ?? "") }, "win32")];
+  const seen = new Set<string>();
+  target.PATH = entries.filter(entry => { const key = entry.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }).join(";");
+  for (const key of Object.keys(target)) if (key !== "PATH" && key.toLowerCase() === "path") delete target[key];
+}
+
+/** Read-only refresh: an already running Host otherwise misses installer registry updates. */
+export async function adoptWindowsEnvironment(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Promise<boolean> {
+  if (platform !== "win32") return false;
+  const names = [...new Set(ADOPTED)].map(key => `'${key}'`).join(",");
+  const script = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); $result=@{}; `
+    + `$result.PATH=([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User') -join ';'); `
+    + `foreach($name in @(${names})) { $value=[Environment]::GetEnvironmentVariable($name,'User'); `
+    + `if(!$value){$value=[Environment]::GetEnvironmentVariable($name,'Machine')}; if($value){$result[$name]=$value} }; $result|ConvertTo-Json -Compress`;
+  try {
+    const { stdout } = await promisify(execFile)(join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { env, timeout: 5000, windowsHide: true, maxBuffer: 128 * 1024 });
+    const value: unknown = JSON.parse(stdout.replace(/^\uFEFF/u, ""));
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Object.values(value).every(item => typeof item === "string")) return false;
+    mergeWindowsEnvironment(env, value as Record<string, string>);
+    return true;
+  } catch { return false; }
+}
 
 export type LoginShellOptions = {
   shell?: string;

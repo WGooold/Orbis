@@ -8,6 +8,7 @@ import { checkClaudeAuthentication, claudeStartupSettings, claudeManagedSettings
 import { hasDesktopSession, resolveTerminalCommand } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
 import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
+import { AGENT_LAUNCH_ENV_KEYS, agentPowerShellScript } from "./agent-command.js";
 
 /**
  * Opens Claude Code's official TUI in a terminal window on this computer (ADR-0033 §1:
@@ -119,11 +120,12 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       await writeFile(settingsFile, startup.args[1]!, { mode: 0o600, flag: "wx" });
       args[args.indexOf("--settings") + 1] = settingsFile;
     }
+    const configDir = config.directory;
     const run = this.#options.run ?? spawnDetached;
     if (platform === "darwin") {
       const script = join(scripts, `claude-${request.launchId}.command`);
       const startedFile = `${script}.started`;
-      await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir: config.directory, settingsFile, startedFile }), { mode: 0o700, flag: "wx" });
+      await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, startedFile, env: launchEnv }), { mode: 0o700, flag: "wx" });
       await chmod(script, 0o700);
       try {
         await run("/usr/bin/open", ["-a", "Terminal", script]);
@@ -137,7 +139,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       return;
     }
     const script = join(scripts, `claude-${request.launchId}.cmd`);
-    await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir: config.directory, settingsFile }));
+    await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
     try {
       const terminal = await resolveTerminalCommand(env);
       if (terminal !== undefined) await run(terminal, ["-w", "new", "-d", request.cwd, "cmd.exe", "/k", script]);
@@ -158,7 +160,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
 
 }
 
-type ScriptInput = { cwd: string; claude: string; args: readonly string[]; launchId: string; stateDir: string; configDir?: string | undefined; settingsFile?: string | undefined; startedFile?: string | undefined };
+type ScriptInput = { cwd: string; claude: string; args: readonly string[]; launchId: string; stateDir: string; configDir?: string | undefined; settingsFile?: string | undefined; startedFile?: string | undefined; env?: NodeJS.ProcessEnv };
 
 /** Terminal runs it in the person's login shell; it removes itself before handing over to Claude. */
 export function posixScript(input: ScriptInput): string {
@@ -168,6 +170,7 @@ export function posixScript(input: ScriptInput): string {
     `cd -- ${quote(input.cwd)} || exit 1`,
     `export ORBIS_CLAUDE_LAUNCH_ID=${quote(input.launchId)}`,
     `export ORBIS_STATE_DIR=${quote(input.stateDir)}`,
+    ...AGENT_LAUNCH_ENV_KEYS.flatMap(key => input.env?.[key] === undefined ? [] : [`export ${key}=${quote(input.env[key])}`]),
     ...(input.configDir === undefined ? ["unset CLAUDE_CONFIG_DIR"] : [`export CLAUDE_CONFIG_DIR=${quote(input.configDir)}`]),
     ...(input.startedFile === undefined ? [] : ["[ -t 0 ] || exit 1", `/usr/bin/touch -- ${quote(input.startedFile)} || exit 1`]),
     "rm -f -- \"$0\"",
@@ -180,13 +183,17 @@ export function posixScript(input: ScriptInput): string {
 export function windowsScript(input: ScriptInput): string {
   // `%` is the only character cmd still expands inside quotes; paths and ids carry no quotes.
   const quote = (value: string): string => `"${value.replaceAll("%", "%%")}"`;
+  const invocation = agentPowerShellScript({ command: input.claude, prefixArgs: [] }, input.args, input.env);
+  const encoded = Buffer.from(invocation + "; exit $LASTEXITCODE", "utf16le").toString("base64");
   return [
     "@echo off",
     `cd /d ${quote(input.cwd)} || exit /b 1`,
     `set ${quote(`ORBIS_CLAUDE_LAUNCH_ID=${input.launchId}`)}`,
     `set ${quote(`ORBIS_STATE_DIR=${input.stateDir}`)}`,
     `set ${quote(`CLAUDE_CONFIG_DIR=${input.configDir ?? ""}`)}`,
-    `${[input.claude, ...input.args].map(quote).join(" ")}`,
+    // A child interpreter returns to this script, so .cmd wrappers cannot skip cleanup.
+    /\.(?:cmd|bat|ps1)$/iu.test(input.claude) ? `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`
+      : [input.claude, ...input.args].map(quote).join(" "),
     ...(input.settingsFile === undefined ? [] : ['set "ORBIS_CLAUDE_EXIT=%ERRORLEVEL%"', `del /q ${quote(input.settingsFile)}`, "exit /b %ORBIS_CLAUDE_EXIT%"]),
     "",
   ].join("\r\n");

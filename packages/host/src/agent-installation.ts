@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { AgentKind } from "@orbis/protocol";
 import { agentKind } from "./provider-manager.js";
 import { DSH_VERSION } from "./dsh-client.js";
+import { findExternalAgentEntries, resolveAgentPackage } from "./agent-command.js";
 import { createAgentDownloadMeter, createAgentDownloadTracker, defaultNpmCacheDir, npmCacheInflightBytes, planAgentDownload, type AgentDownloadPlan, type AgentDownloadPlanOptions, type AgentDownloadProgress } from "./agent-download-plan.js";
 
 /** 测试注入：默认用真实计划（npm 解析闭包 + 问体积），测试用假计划避开网络。 */
@@ -107,7 +108,8 @@ export function installationSource(entry: string | undefined, root: string): Age
   if (!entry) return "unknown";
   if (within(root, entry)) return "managed";
   const normalized = entry.replaceAll("\\", "/").toLowerCase();
-  if (normalized.includes("/node_modules/") && !/\/(\.pnpm|pnpm|\.volta|volta|\.bun)\//.test(normalized)) return "npm";
+  if (normalized.includes("/node_modules/") && !/\/(\.pnpm|pnpm|\.volta|volta|\.bun|yarn|cellar)\//.test(normalized)
+    && !normalized.includes("/install/releases/")) return "npm";
   return "custom";
 }
 
@@ -346,11 +348,13 @@ export async function fetchNpmLatestVersion(packageName: string, signal?: AbortS
 
 export async function queryAgentStatus(kind: InstallableAgentKind, root: string, local: LocalAgent, checkLatest = false): Promise<AgentInstallStatus> {
   const installations = await listManagedAgentInstallations(kind, root);
-  const status: AgentInstallStatus = { ...local, kind, package: agentPackages[kind], updateAvailable: false, installationSource: installationSource(local.entry, root), installations, copies: [] };
-  if (status.installationSource === "npm" && local.entry) {
+  const packageEntry = local.entry && installationSource(local.entry, root) !== "managed" && (kind === "pi" || kind === "dsh")
+    ? (await resolveAgentPackage(kind, local.entry))?.entry ?? local.entry : local.entry;
+  const status: AgentInstallStatus = { ...local, kind, package: agentPackages[kind], updateAvailable: false, installationSource: installationSource(packageEntry, root), installations, copies: [] };
+  if (status.installationSource === "npm" && packageEntry) {
     const suffix = join("node_modules", agentPackages[kind], agentEntries[kind]);
-    const prefix = resolve(resolve(local.entry).slice(0, -suffix.length));
-    if (!resolve(local.entry).toLowerCase().endsWith(sep + suffix.toLowerCase()) || await exists(join(prefix, "package.json"))) status.installationSource = "custom";
+    const prefix = resolve(resolve(packageEntry).slice(0, -suffix.length));
+    if (!resolve(packageEntry).toLowerCase().endsWith(sep + suffix.toLowerCase()) || await exists(join(prefix, "package.json"))) status.installationSource = "custom";
   }
   if (checkLatest) {
     const latest = await fetchNpmLatestVersion(agentPackages[kind]);
@@ -369,6 +373,7 @@ export async function queryAgentStatus(kind: InstallableAgentKind, root: string,
 /** Enumerate CLI copies in PATH order, including npm packages whose entry is missing.
  * Windows standalone Codex installs expose codex.exe, not an npm JS entry. */
 export async function findAgentCopies(kind: InstallableAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Promise<{ entry: string; version?: string }[]> {
+  if (kind === "pi" || kind === "dsh") return findExternalAgentEntries(kind, env, platform);
   const roots = (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : ":").map(value => value.trim().replace(/^"|"$/g, "")).filter(Boolean);
   const nativeCodex = platform === "win32" && (kind === "codex" || kind === "codexDesktop");
   if (nativeCodex) {

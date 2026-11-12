@@ -137,4 +137,16 @@ describe("TerminalClaudeLauncher", () => {
     expect(windowsScript({ cwd: "C:\\repo", claude: "C:\\claude.exe", args: [], launchId: "l", stateDir: "C:\\state",
       configDir: "C:\\config 100%" })).toContain('set "CLAUDE_CONFIG_DIR=C:\\config 100%%"');
   });
+
+  // SC82: a .cmd child must return so private startup settings are removed.
+  it("starts Windows script launchers through the shared invocation and retains cleanup", () => {
+    const script = windowsScript({ cwd: "C:\\work", claude: "C:\\用户 Tools\\claude.cmd", args: ["--model", "a&b"],
+      launchId: "l", stateDir: "C:\\state", settingsFile: "C:\\state\\settings.json" });
+    const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)/u.exec(script)![1]!;
+    const command = Buffer.from(encoded, "base64").toString("utf16le");
+    expect(command).toContain("System.Diagnostics.ProcessStartInfo");
+    expect(command).toContain("claude.cmd");
+    expect(command).toContain("a^&b");
+    expect(script).toContain('del /q "C:\\state\\settings.json"');
+  });
 });

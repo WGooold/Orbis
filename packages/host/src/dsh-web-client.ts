@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
-import { record, resolveDshCommand, type JsonObject } from "./dsh-client.js";
+import { dshPackageEntry, record, resolveDshCommand, type JsonObject } from "./dsh-client.js";
 import type { PiCommand } from "./spawner.js";
 
 type RemoteFailure = { code: string; message: string; details: JsonObject };
@@ -119,8 +119,11 @@ export class DshWebClient implements DshWebConnection {
     base.search = "";
     base.hash = "";
     if (!base.pathname.endsWith("/")) base.pathname += "/";
-    const cliEntry = options.cliEntry ?? options.cli?.prefixArgs[0] ?? (options.protocol ? undefined : (await resolveDshCommand(env)).prefixArgs[0]);
-    if (!options.protocol && !cliEntry) throw new Error("DSH Web requires the installed DSH CLI protocol libraries");
+    const cli = options.cli ?? (options.protocol || options.cliEntry ? undefined : await resolveDshCommand(env));
+    // Keep older service descriptors (Node + JS) readable, but never use a shell
+    // flag or an arbitrary launcher directory as the protocol package location.
+    const cliEntry = options.cliEntry ?? (cli ? dshPackageEntry(cli) : undefined);
+    if (!options.protocol && !cliEntry) throw new Error("无法定位此 DeepSeek 启动器对应的协议库，请将 ORBIS_DSH_ENTRY 指向同一安装的 dsh 包入口");
     const protocol = options.protocol ?? await loadDshWebProtocol(cliEntry!);
     const client = new DshWebClient(base, options.cookie ?? env.ORBIS_DSH_WEB_COOKIE ?? "", protocol, options);
     try {

@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { record, resolveDshCommand } from "./dsh-client.js";
 import type { PiCommand } from "./spawner.js";
 import { dshWebLaunchEnvironment } from "./dsh-web-provider.js";
+import { agentInvocation, stopAgentProcess } from "./agent-command.js";
 
 export interface DshWebService {
   /** Private launch URL, including the process token. Never include it in logs. */
@@ -82,7 +83,8 @@ async function readDescriptor(path: string, home: string): Promise<Descriptor | 
   let url: string;
   try { url = validateDshWebUrl(stored.url); } catch { return; }
   if (!await authenticated(url, 3_000)) return;
-  return { version: 1, owner: "orbis", home, pid: Number(stored.pid), url, cli: { command: cli.command, prefixArgs: cli.prefixArgs } };
+  return { version: 1, owner: "orbis", home, pid: Number(stored.pid), url, cli: { command: cli.command, prefixArgs: cli.prefixArgs,
+    ...(typeof cli.packageEntry === "string" ? { packageEntry: cli.packageEntry } : {}) } };
 }
 
 const handle = (url: string, cli?: PiCommand): DshWebService => ({ url, ...(cli ? { cli } : {}), stop: async () => {} });
@@ -145,10 +147,16 @@ export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cl
     // Never kill a recycled descriptor PID, another Host, or an externally started Web service.
     if (process.platform !== "win32" || current.pid === process.pid) throw new Error("无法安全识别 DeepSeek Web 进程，请手动重启");
     const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      `Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess`],
+      `$owners = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction Stop | Select-Object -ExpandProperty OwningProcess; `
+      + `foreach ($owner in $owners) { $ancestor = [int]$owner; $seen = @{}; `
+      + `while ($ancestor -gt 0 -and !$seen.ContainsKey($ancestor)) { $seen[$ancestor] = $true; Write-Output $ancestor; `
+      + `$item = Get-CimInstance Win32_Process -Filter "ProcessId=$ancestor" -ErrorAction Stop; $ancestor = [int]$item.ParentProcessId } }`],
     { windowsHide: true, timeout: 10_000 });
     if (!stdout.trim().split(/\s+/).includes(String(current.pid))) throw new Error("DeepSeek Web 进程记录已失效，请手动重启");
-    process.kill(current.pid);
+    // The recorded root may now be a package-manager launcher. Its authenticated
+    // listening descendant must be in that exact tree before terminating it.
+    await execute(join(env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(current.pid), "/T", "/F"],
+      { windowsHide: true, timeout: 10_000 });
     const stoppedBy = Math.min(deadline, Date.now() + 10_000);
     while ((alive(current.pid) || await existsPort(port)) && Date.now() < stoppedBy) await delay(100);
     if (alive(current.pid) || await existsPort(port)) throw new Error("DeepSeek Web 尚未退出或端口未释放，请稍后重试");
@@ -201,7 +209,9 @@ async function startLocalService(home: string, env: NodeJS.ProcessEnv, options: 
   let child: ChildProcess;
   let failed = false;
   try {
-    child = spawn(cli.command, [...cli.prefixArgs, "--profile", "web", "--host", "127.0.0.1", "--port", String(port), "--no-open"], {
+    const invocation = agentInvocation(cli, ["--profile", "web", "--host", "127.0.0.1", "--port", String(port), "--no-open"], env);
+    child = spawn(invocation.command, invocation.args, {
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       detached: true, windowsHide: true, cwd: homedir(), env: dshWebLaunchEnvironment(env), stdio: ["ignore", output.fd, output.fd],
     });
     child.once("error", () => { failed = true; });
@@ -228,7 +238,7 @@ async function startLocalService(home: string, env: NodeJS.ProcessEnv, options: 
     // Only a service that has never been published is ours to terminate.
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-      child.kill();
+      await stopAgentProcess(child, env);
       await Promise.race([exited, delay(3_000)]);
     }
     throw error;

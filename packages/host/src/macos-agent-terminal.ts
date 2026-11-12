@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { AGENT_LAUNCH_ENV_KEYS } from "./agent-command.js";
 
 /** Opening a private .command file needs no Terminal Apple Events/Automation consent. */
 export async function openMacAgentTerminal(input: { stateDir: string; cwd: string; command: string; args: readonly string[]; env: NodeJS.ProcessEnv; confirmStart?: boolean; unsetEnv?: readonly string[] }): Promise<void> {
@@ -12,7 +13,7 @@ export async function openMacAgentTerminal(input: { stateDir: string; cwd: strin
   const startedFile = `${file}.started`;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   // Deliberately do not copy credentials or the entire Host environment into a file.
-  const environment = ["PATH", "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_CODING_AGENT_DIR", "PI_OFFLINE", "CODEX_HOME"]
+  const environment = [...AGENT_LAUNCH_ENV_KEYS, "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE"]
     .flatMap(key => input.env[key] === undefined ? [] : [`${key}=${input.env[key]}`]);
   const script = ["#!/bin/sh", `cd -- ${quote(input.cwd)} || exit 1`, 'rm -f -- "$0"',
     ...(input.confirmStart ? [`[ -t 0 ] || exit 1`, `/usr/bin/touch -- ${quote(startedFile)}`] : []),

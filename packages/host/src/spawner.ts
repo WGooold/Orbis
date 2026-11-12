@@ -12,7 +12,7 @@
 import { spawn } from "node:child_process";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,6 +20,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AgentKind, SpawnMode } from "@orbis/protocol";
 import { orbisEnvironment } from "@orbis/protocol";
 import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
+import { AGENT_LAUNCH_ENV_KEYS, agentCommandForEntry, agentInvocation, agentPowerShellScript, cliPathDirs, findExternalAgentEntries, isOrbisPiCommand, type AgentCommand } from "./agent-command.js";
 
 /** 激活失败的原因码，一对一映射到 `protocol.error` 的 `code`。 */
 export type ActivationErrorCode =
@@ -37,25 +38,14 @@ export class ActivationError extends Error {
   }
 }
 
-export type PiCommand = {
-  command: string;
-  /** 前置参数：Windows 上用 node 直接跑 pi 的 JS 入口（见 `resolvePiCommand`）。 */
-  prefixArgs: string[];
-};
+export type PiCommand = AgentCommand;
 
 /**
  * PATH 里的目录，按出现顺序。Windows 上变量名可能是 `Path` 而不是 `PATH`，两种都收；
  * 条目本身偶尔带引号（用户手改过 PATH），去掉再拼。
  */
 function pathDirs(env: Record<string, string | undefined>): string[] {
-  const raw = env.PATH ?? env.Path ?? env.path;
-  if (raw === undefined) return [];
-  const dirs: string[] = [];
-  for (const entry of raw.split(delimiter)) {
-    const dir = entry.trim().replace(/^"|"$/gu, "");
-    if (dir.length > 0) dirs.push(dir);
-  }
-  return dirs;
+  return cliPathDirs(env, platform());
 }
 
 /**
@@ -78,12 +68,15 @@ export async function resolveNodePackageCli(
   const roots = pathDirs(env);
   if (env.APPDATA !== undefined) roots.push(join(env.APPDATA, "npm"));
   for (const root of roots) {
-    const candidate = join(root, "node_modules", ...segments);
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // 这一个前缀没装，看下一个。
+    const candidates = [join(root, "node_modules", ...segments),
+      ...(platform() !== "win32" && basename(root) === "bin" ? [join(dirname(root), "lib", "node_modules", ...segments)] : [])];
+    for (const candidate of candidates) {
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+        // 这一个前缀没装，看下一个。
+      }
     }
   }
   return undefined;
@@ -92,30 +85,19 @@ export async function resolveNodePackageCli(
 /**
  * 解析 `pi` 的启动命令。
  *
- * Windows 上 npm 全局装的是 `pi.cmd`，而 Node ≥ 18 spawn `.cmd` 必须经 shell——
- * 那会违反 §8.4 的「禁止 shell」。所以优先定位 pi 的 JS 入口用 node 直接拉；
- * 找不到入口就明确报错，不悄悄退回 shell。
+ * 保留用户的稳定 launcher、解释器和 PATH 顺序。Windows 脚本在调用边界
+ * 通过 agentInvocation 显式交给解释器，手机参数仍然作为 argv 数据传入。
  */
 export async function resolvePiCommand(env: Record<string, string | undefined> = process.env): Promise<PiCommand> {
-  if (env.ORBIS_PI_ENTRY) {
-    await access(env.ORBIS_PI_ENTRY);
-    return { command: process.execPath, prefixArgs: [env.ORBIS_PI_ENTRY] };
-  }
-  if (platform() !== "win32") return { command: "pi", prefixArgs: [] };
-  const entry = await resolveNodePackageCli(env, [
-    "@earendil-works",
-    "pi-coding-agent",
-    "dist",
-    "bundle",
-    "cli.js",
-  ]);
+  const entry = env.ORBIS_PI_ENTRY || (await findExternalAgentEntries("pi", env, platform()))[0]?.entry;
   if (entry === undefined) {
     throw new ActivationError(
       "spawn_failed",
-      "未找到 pi 的 JS 入口（PATH 与 %APPDATA%\\npm 下都没有 node_modules\\@earendil-works\\pi-coding-agent）。请确认已全局安装 pi。",
+      "未找到 Pi 启动入口，请检查原有 pi 命令的安装位置或在 Orbis 中安装 Pi。",
     );
   }
-  return { command: process.execPath, prefixArgs: [entry] };
+  if (await isOrbisPiCommand(entry)) throw new ActivationError("spawn_failed", "Pi 入口指向 Orbis 终端转发命令，请选择实际安装入口");
+  return agentCommandForEntry(entry, env, platform());
 }
 
 /**
@@ -234,7 +216,7 @@ export function buildSpawnPlan(input: {
   }
   if (hostPlatform === "darwin") {
     if (input.scriptFile === undefined) throw new ActivationError("spawn_failed", "缺少 Pi 终端启动文件");
-    const environment = ["PATH", "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_CODING_AGENT_DIR", "PI_OFFLINE"]
+    const environment = [...AGENT_LAUNCH_ENV_KEYS, "ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE"]
       .flatMap(key => input.env?.[key] === undefined ? [] : [`${key}=${input.env[key]}`]);
     const steps = [
       "#!/bin/sh",
@@ -252,7 +234,7 @@ export function buildSpawnPlan(input: {
   // 重新拼接，含空格的路径（cwd、会话文件）会被拆成多个 token，整条命令
   // 甚至会被当成一个可执行文件名（0x80070002，本仓 Codex 侧已实测）。base64 的
   // UTF-16LE 是单个 token，wt 原样透传；`-NoExit` 让窗口在 pi 退出后留着，报错不闪退。
-  const script = ["&", quotePowerShell(input.pi.command), ...piArgs.map(quotePowerShell)].join(" ");
+  const script = agentPowerShellScript({ command: input.pi.command, prefixArgs: [] }, piArgs, input.env);
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   return {
     kind: "tui",
@@ -260,11 +242,6 @@ export function buildSpawnPlan(input: {
     args: ["-d", input.cwd, "powershell", "-NoProfile", "-NoExit", "-EncodedCommand", encoded],
     cwd: input.cwd,
   };
-}
-
-/** PowerShell 单引号字面量：内部的 `'` 双写。 */
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/gu, "''")}'`;
 }
 
 function quotePosix(value: string): string {
@@ -403,7 +380,9 @@ export class SessionSpawner {
     }
     const plan = buildSpawnPlan(planInput);
 
-    const child = this.#spawn(plan.command, plan.args, {
+    const invocation = agentInvocation({ command: plan.command, prefixArgs: [] }, plan.args, env, platform());
+    const child = this.#spawn(invocation.command, invocation.args, {
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       cwd,
       detached: true,
       shell: false,

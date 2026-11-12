@@ -8,7 +8,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const hostPlatform = vi.hoisted(() => ({ value: "win32" as NodeJS.Platform }));
@@ -64,6 +64,7 @@ describe("buildSpawnPlan", () => {
     expect(plan.kind).toBe("headless");
     expect(plan.command).toBe("node");
     expect(plan.args).toEqual(["/pi/cli.js", "--session", "D:/proj/.jsonl", "--approve", "-e", EXT, "--mode", "rpc"]);
+    expect(plan.script).toBeUndefined();
     expect(plan.cwd).toBe("D:/proj");
   });
 
@@ -247,15 +248,15 @@ describe("resolvePiCommand", () => {
     expect(inPath).not.toBe(inAppData);
 
     const command = await resolvePiCommand({
-      PATH: [nodeRoot, join(appData, "npm")].join(delimiter),
+      PATH: [nodeRoot, join(appData, "npm")].join(";"),
       APPDATA: appData,
     });
     expect(command.prefixArgs).toEqual([inPath]);
   });
 
-  it("找不到入口时明确报错，不悄悄退回 shell", async () => {
+  it("找不到入口时明确报错，不交给另一个 PATH 猜测", async () => {
     const root = await tempDir();
-    await expect(resolvePiCommand({ APPDATA: join(root, "empty") })).rejects.toThrow(/pi 的 JS 入口/u);
+    await expect(resolvePiCommand({ APPDATA: join(root, "empty"), USERPROFILE: root })).rejects.toThrow(/Pi 启动入口/u);
   });
 });
 
@@ -608,7 +609,8 @@ describe.runIf(process.platform === "darwin")("macOS phone activation", () => {
       queueMicrotask(() => child.emit("close", 1));
       return child;
     });
-    const spawner = new SessionSpawner({ spawnImpl: launcher as never, env: {} });
+    const pi = await fakePiPrefix(dir, "npm");
+    const spawner = new SessionSpawner({ spawnImpl: launcher as never, env: { ORBIS_PI_ENTRY: pi } });
     await expect(spawner.activate({ deviceId: "phone", target: { type: "new", agentKind: "pi", cwd: dir } }))
       .rejects.toMatchObject({ code: "spawn_failed", message: expect.stringContaining("终端") });
     expect(launcher).toHaveBeenCalledTimes(1);

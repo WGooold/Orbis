@@ -1,19 +1,26 @@
 /** DeepSeek Harness 0.1.7 ACP v1, over an owned Windows Node subprocess. */
 import { spawn, type ChildProcess } from "node:child_process";
-import { access } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolveNodePackageCli, type PiCommand } from "./spawner.js";
+import type { PiCommand } from "./spawner.js";
+import { agentCommandForEntry, agentInvocation, findExternalAgentEntries, resolveAgentPackage, stopAgentProcess } from "./agent-command.js";
 
 export const DSH_VERSION = "0.1.7-rc.1";
 export type JsonObject = Record<string, unknown>;
 export const record = (value: unknown): JsonObject => value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 
-export async function resolveDshCommand(env: NodeJS.ProcessEnv = process.env): Promise<PiCommand> {
-  const entry = env.ORBIS_DSH_ENTRY ?? await resolveNodePackageCli(env, ["@deepseek-ai", "dsh", "lib", "bin.js"]);
+export async function resolveDshCommand(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): Promise<PiCommand> {
+  const entry = env.ORBIS_DSH_ENTRY || (await findExternalAgentEntries("dsh", env, platform))[0]?.entry;
   if (!entry) throw new Error(`未找到 DeepSeek Harness，请安装 @deepseek-ai/dsh@${DSH_VERSION}，或设置 ORBIS_DSH_ENTRY`);
-  await access(entry);
-  return { command: process.execPath, prefixArgs: [entry] };
+  const cli = await agentCommandForEntry(entry, env, platform);
+  const bin = await resolveAgentPackage("dsh", entry, env, platform);
+  return { ...cli, ...(bin ? { packageEntry: bin.entry } : {}) };
+}
+
+/** Older descriptors store Node + JS; newer ones keep the package path independently. */
+export function dshPackageEntry(cli: PiCommand): string | undefined {
+  const legacyEntry = cli.prefixArgs[0];
+  return cli.packageEntry ?? (legacyEntry && /\.[cm]?js$/iu.test(legacyEntry) ? legacyEntry : undefined);
 }
 
 export type DshRequest = {
@@ -59,9 +66,9 @@ export class DshAcpClient implements DshConnection {
           if (Buffer.byteLength(line) > 16 * 1024 * 1024) throw new Error("ACP frame too large");
           this.#receive(JSON.parse(line));
         }
-        catch { this.#fail("DSH 返回了无效的 ACP 消息"); child.kill(); return; }
+        catch { this.#fail("DSH 返回了无效的 ACP 消息"); void stopAgentProcess(child); return; }
       }
-      if (Buffer.byteLength(buffered) > 16 * 1024 * 1024) { this.#fail("DSH ACP 消息超过 16 MiB"); child.kill(); }
+      if (Buffer.byteLength(buffered) > 16 * 1024 * 1024) { this.#fail("DSH ACP 消息超过 16 MiB"); void stopAgentProcess(child); }
     });
     child.stderr!.on("data", (chunk: Buffer) => { this.#tail = (this.#tail + chunk.toString("utf8")).slice(-2000); });
     child.stdin!.on("error", (error: Error) => this.#fail(`DSH 输入管道关闭：${error.message}`));
@@ -71,7 +78,10 @@ export class DshAcpClient implements DshConnection {
 
   static async create(options: { cli?: PiCommand; cwd?: string; env?: NodeJS.ProcessEnv; patches?: string[]; timeoutMs?: number } = {}): Promise<DshAcpClient> {
     const cli = options.cli ?? await resolveDshCommand(options.env);
-    const child = spawn(cli.command, [...cli.prefixArgs, "--profile", "acp", ...(options.patches ?? []).flatMap(path => ["--patch", path])], {
+    const invocation = agentInvocation(cli, ["--profile", "acp", ...(options.patches ?? []).flatMap(path => ["--patch", path])], options.env);
+    const child = spawn(invocation.command, invocation.args, {
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options.env === undefined ? {} : { env: options.env }),
@@ -164,7 +174,7 @@ export class DshAcpClient implements DshConnection {
       // ACP has no shutdown request. Its official launcher quiesces on stdin EOF.
       child.stdin?.end();
       for (let i = 0; i < 150 && !exited(); i++) await delay(100);
-      if (!exited()) child.kill();
+      if (!exited()) await stopAgentProcess(child);
       for (let i = 0; i < 30 && !exited(); i++) await delay(100);
       if (!exited()) throw new Error("DSH 子进程未退出");
       this.#fail("DSH 已停止");

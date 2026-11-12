@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { SessionConfigurationCatalog, SessionConfigurationValues } from "@orbis/protocol";
 import type { PiCommand } from "./spawner.js";
 import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
+import { agentInvocation, stopAgentProcess } from "./agent-command.js";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -11,7 +12,10 @@ const objects = (value: unknown): Obj[] => Array.isArray(value) ? value.map(obje
 /** A short native read, without a prompt or persistent session. No credential values leave this process. */
 async function probe(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv,
   requests: Obj[], response: (value: Obj) => boolean): Promise<Obj[]> {
-  const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const invocation = agentInvocation({ command, prefixArgs: [] }, args, env);
+  const child = spawn(invocation.command, invocation.args, { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    detached: process.platform !== "win32",
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
   const results: Obj[] = [];
   try {
     return await new Promise<Obj[]>((resolve, reject) => {
@@ -46,7 +50,7 @@ async function probe(command: string, args: string[], cwd: string, env: NodeJS.P
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) await new Promise<void>(resolve => {
       const timer = setTimeout(() => { child.kill("SIGKILL"); }, 2000);
       child.once("exit", () => { clearTimeout(timer); resolve(); });
-      child.kill("SIGTERM");
+      void stopAgentProcess(child, env, process.platform !== "win32" || /\.(?:cmd|bat|ps1)$/iu.test(command));
     });
   }
 }

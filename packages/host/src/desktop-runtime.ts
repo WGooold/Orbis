@@ -28,7 +28,7 @@ import { TerminalClaudeLauncher } from "./claude-launcher.js";
 import { PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
-import { adoptLoginShellEnvironment } from "./login-shell-env.js";
+import { adoptLoginShellEnvironment, adoptWindowsEnvironment } from "./login-shell-env.js";
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
 import { existsSync } from "node:fs";
@@ -43,6 +43,7 @@ import { codexOfficial, type CodexPreferences } from "./provider-codex.js";
 import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
 import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
 import { usageTemplate } from "./provider-usage-templates.js";
+import { agentCommandForEntry, agentInvocation, agentPowerShellScript, resolveAgentPackage } from "./agent-command.js";
 
 const execute = promisify(execFile);
 
@@ -168,6 +169,7 @@ export class DesktopRuntime {
   async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     await adoptLoginShellEnvironment(line => this.log(line));
+    await adoptWindowsEnvironment();
     // DMG / portable installs have no installer hook. Register before Relay activation as well.
     await this.#ensureClaudeIntegration(settings);
     await this.#detectClaude();
@@ -203,8 +205,14 @@ export class DesktopRuntime {
         : [active, shared, configured];
       // 用户自己装的 Pi 优先：终端里敲 `pi` 跑的是它，扩展登记的也是它的配置，Host 不能另用一份。
       // Host 自己的安装只在用户没有 Pi 时才派上用场。
-      if (kind === "pi") ordered.unshift((await findAgentCopies("pi", process.env))[0]?.entry);
-      const entry = await firstExisting(ordered);
+      if (kind === "pi") {
+        const userEntry = (await findAgentCopies("pi", process.env))[0]?.entry;
+        if (configured && installationSource(configured, managed) !== "managed") ordered.splice(1, 0, userEntry);
+        else ordered.unshift(userEntry);
+      }
+      // An explicit external choice must report its own failure, not silently
+      // select another installation. Managed records may still expire after cleanup.
+      const entry = kind !== "codex" && configured && installationSource(configured, managed) !== "managed" ? configured : await firstExisting(ordered);
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
       if (kind === "codex" && entry && entry !== selectedCodex) await this.#syncCodexSelection(entry);
@@ -248,6 +256,7 @@ export class DesktopRuntime {
   }
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
+    await adoptWindowsEnvironment();
     await this.#environment(settings);
     await this.#detectClaude();
     const managed = this.#managedRoot();
@@ -257,15 +266,17 @@ export class DesktopRuntime {
       const local: LocalAgent = { installed: false, installedButBroken: false, ...(entry ? { entry } : {}) };
       try {
         if (entry) {
-          const cli = kind === "codex" ? codexCommandForEntry(entry) : { command: process.execPath, prefixArgs: [entry] };
-          const { stdout, stderr } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+          const cli = kind === "codex" ? codexCommandForEntry(entry) : await agentCommandForEntry(entry);
+          const invocation = agentInvocation(cli, ["--version"]);
+          const { stdout, stderr } = await execute(invocation.command, invocation.args, { timeout: 10_000, windowsHide: true, maxBuffer: 64_000,
+            ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
           const version = extractAgentVersion(stdout + "\n" + stderr);
           if (!version) throw new Error("no version");
           local.installed = true; local.version = version;
         }
       } catch {
         local.installedButBroken = true;
-        local.error = "发现安装但无法运行，请检查 Node 版本，或重新安装修复";
+        local.error = "发现安装但无法运行，请检查原有启动命令及其运行环境，或重新安装修复";
       }
       let status: AgentInstallStatus;
       try { status = await queryAgentStatus(kind, managed, local, checkLatest); }
@@ -693,11 +704,15 @@ export class DesktopRuntime {
       }
       const current = this.#detected.get(kind);
       const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] || current?.entry;
+      const packageEntry = entry && (selected === "pi" || selected === "dsh")
+        ? (await resolveAgentPackage(selected, entry))?.entry ?? entry : entry;
       const result: AgentInstallResult = await installAgentPackage(selected, version, managed, signal, progress => {
         // The desktop operation completes only after the persistent backend has adopted the new version.
         if (progress.stage !== "done") this.#agentInstallProgress(progress);
       },
-        mode === "current" && entry && installationSource(entry, managed) !== "managed" ? { existingEntry: entry } : {});
+        mode === "current" && packageEntry && installationSource(packageEntry, managed) !== "managed" ? { existingEntry: packageEntry } : {});
+      // npm updated the selected installation in place; retain the user's stable launcher.
+      if (mode === "current" && entry && packageEntry !== entry) result.entry = entry;
       this.#installationCommitted = true;
       if (selected === "codex") await this.#syncCodexSelection(result.entry);
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
@@ -706,7 +721,7 @@ export class DesktopRuntime {
         this.#agentInstallProgress({ kind: selected, stage: "restarting", version: result.version });
         try {
           const env = await this.#providers.environment("dsh");
-          result.restarted = await restartDshWebServiceAfterUpdate(env, { command: process.execPath, prefixArgs: [result.entry] });
+          result.restarted = await restartDshWebServiceAfterUpdate(env, await resolveDshCommand({ ...env, ORBIS_DSH_ENTRY: result.entry }));
           if (result.restarted) {
             const service = await ensureDshWebService(env);
             const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
@@ -733,9 +748,9 @@ export class DesktopRuntime {
     let status = this.#detected.get(selected);
     if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
     const mode = status?.installationSource === "npm" ? "current" : "managed";
-    // pnpm、Volta、Bun 管理的 Pi 只能用它们自己更新；Host 另装一份也不会被用上（用户自己的 Pi 优先）。
-    if (selected === "pi" && status?.installed && status.installationSource === "custom") {
-      throw new Error("这份 Pi 由 pnpm、Volta 或 Bun 管理，请用它们自己的更新命令更新");
+    // Native installers and package managers own their launchers and update channels.
+    if ((selected === "pi" || selected === "dsh") && status?.installed && status.installationSource === "custom") {
+      throw new Error("这份 Agent 使用外部安装入口，请通过原安装器或包管理器更新");
     }
     return this.install(selected, "latest", mode);
   }
@@ -978,7 +993,8 @@ export class DesktopRuntime {
         env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir }, ...(kind === "codex" ? { unsetEnv: ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] } : {}) });
       return;
     }
-    const script = `${kind === "codex" ? "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; " : ""}& ${[command, ...args].map(quote).join(" ")}`;
+    const script = (kind === "codex" ? "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; " : "")
+      + agentPowerShellScript({ command, prefixArgs: [] }, args);
     // A detached Node child with ignored stdio has no usable console on some
     // Windows hosts. Let Windows create the visible terminal with its own input.
     const encoded = Buffer.from(script, "utf16le").toString("base64");

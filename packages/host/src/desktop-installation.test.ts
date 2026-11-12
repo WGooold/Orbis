@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +59,20 @@ async function fixture() {
 }
 
 describe("desktop Agent installation commands", () => {
+  // SC82: explicit user launchers win over automatic discovery, including failure reporting.
+  it("uses a native Pi choice for version detection and does not silently replace a broken choice", async () => {
+    const { runtime, root } = await fixture();
+    const selected = process.execPath;
+    expect((await runtime.detect({ piEntry: selected })).find(status => status.kind === "pi"))
+      .toMatchObject({ installed: true, entry: selected, version: process.versions.node, installationSource: "custom" });
+    await expect(runtime.updateAgent("pi")).rejects.toThrow("原安装器或包管理器");
+    expect(installation.run).not.toHaveBeenCalled();
+    const missing = join(root, "removed-launcher");
+    expect((await runtime.detect({ piEntry: missing })).find(status => status.kind === "pi"))
+      .toMatchObject({ installed: false, installedButBroken: true, entry: missing });
+    await runtime.close();
+  });
+
   it.each([true, false])("manually restarts or starts the managed DSH server (running=%s)", async running => {
     const { runtime, prefix } = await fixture();
     vi.stubEnv("ORBIS_DSH_ENTRY", join(prefix, "node_modules", agentPackages.dsh, agentEntries.dsh));
@@ -249,7 +263,8 @@ describe("desktop Agent installation commands", () => {
     web.restart.mockImplementation(() => new Promise(resolve => { restarted = resolve; }));
     const pending = runtime.updateAgent("dsh");
     await vi.waitFor(() => expect(web.restart).toHaveBeenCalled());
-    expect(web.restart).toHaveBeenCalledWith(expect.objectContaining({ DSH_HOME: join(root, "dsh"), ORBIS_DSH_ENTRY: entry }), { command: process.execPath, prefixArgs: [entry] });
+    expect(web.restart.mock.calls[0]?.[0]).toMatchObject({ DSH_HOME: join(root, "dsh"), ORBIS_DSH_ENTRY: entry });
+    expect(web.restart.mock.calls[0]?.[1]).toEqual({ command: process.execPath, prefixArgs: [entry], packageEntry: await realpath(entry) });
     expect(events.filter(event => event.event === "agentInstall").map(event => event.stage)).toEqual(["restarting"]);
     // A close/cancel arriving after commit must wait for adoption, rather than leave old code running.
     runtime.cancelInstall();

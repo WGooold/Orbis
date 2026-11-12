@@ -74,10 +74,12 @@ describe("shared DSH Web lifecycle", () => {
     const url = await web();
     await mkdir(join(directory, "cache"));
     const path = join(directory, "cache", "orbis-web.json");
-    const descriptor = JSON.stringify({ version: 1, owner: "orbis", home: directory, pid: process.pid, url, cli: cli() });
+    // SC82: restart/reconnect must retain the selected installation's protocol location.
+    const selected = { ...cli(), packageEntry: join(directory, "selected", "lib", "bin.js") };
+    const descriptor = JSON.stringify({ version: 1, owner: "orbis", home: directory, pid: process.pid, url, cli: selected });
     await writeFile(path, descriptor);
     const service = await findDshWebService({ DSH_HOME: directory });
-    expect(service).toMatchObject({ url, cli: cli() });
+    expect(service).toMatchObject({ url, cli: selected });
     await service!.stop();
     expect(await readFile(path, "utf8")).toBe(descriptor);
     expect((await fetch(url, { redirect: "manual" })).status).toBe(303);

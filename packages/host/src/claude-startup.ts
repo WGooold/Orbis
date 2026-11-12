@@ -4,17 +4,16 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { claudeWorkspaceTrustRoot } from "./claude-workspace-trust.js";
 import { CLAUDE_MARKETPLACE, CLAUDE_PLUGIN } from "./claude-integration-install.js";
+import { agentInvocation } from "./agent-command.js";
 
 const execute = promisify(execFile);
 
 /** Only read readiness. Never log native account data or manufacture login/consent. */
 export async function checkClaudeAuthentication(cli: string, cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
   let stdout: string;
-  const shim = process.platform === "win32" && cli.toLowerCase().endsWith(".cmd");
-  const command = shim ? env.ComSpec ?? "cmd.exe" : cli;
-  const args = shim ? ["/d", "/s", "/c", `""${cli}" auth status --json"`] : ["auth", "status", "--json"];
-  try { ({ stdout } = await execute(command, args, { cwd, env, timeout: 10_000, maxBuffer: 128 * 1024,
-    windowsHide: true, windowsVerbatimArguments: shim })); }
+  const invocation = agentInvocation({ command: cli, prefixArgs: [] }, ["auth", "status", "--json"], env);
+  try { ({ stdout } = await execute(invocation.command, invocation.args, { cwd, env, timeout: 10_000, maxBuffer: 128 * 1024,
+    windowsHide: true, ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) })); }
   catch (error) {
     const output = typeof (error as { stdout?: unknown }).stdout === "string" ? (error as { stdout: string }).stdout : "";
     try { if (JSON.parse(output)?.loggedIn === false) throw new Error("Claude 尚未完成账号授权，请先连接供应商账号后重试；未打开等待登录的终端"); }

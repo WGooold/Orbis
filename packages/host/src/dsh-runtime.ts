@@ -13,7 +13,7 @@ import {
   type SessionConfigurationCatalog,
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
-import { DshAcpClient, DshUnconfirmedError, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
+import { DshAcpClient, DshUnconfirmedError, dshPackageEntry, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
@@ -123,8 +123,10 @@ export class DshAcpRuntime implements AgentBackend {
   }
 
   static async create(env?: NodeJS.ProcessEnv): Promise<DshAcpRuntime> {
-    const cli = await resolveDshCommand();
-    const history = await openDshHistory(cli.prefixArgs[0]!);
+    const cli = await resolveDshCommand(env);
+    const entry = dshPackageEntry(cli);
+    if (!entry) throw new Error("无法定位此 DeepSeek 启动器对应的历史协议库，请检查原安装入口");
+    const history = await openDshHistory(entry);
     try { return new DshAcpRuntime(await DshAcpClient.create({ cli, ...(env ? { env } : {}) }), history); }
     catch (error) { await history.close(); throw error; }
   }
@@ -687,7 +689,8 @@ export class DshRuntime implements AgentBackend {
     try {
       if (applyProvider) await applyDshWebProvider(client, env);
       const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
-      const decoder = cli.prefixArgs[0] ? await loadDshStreamDecoder(cli.prefixArgs[0]) : undefined;
+      const entry = dshPackageEntry(cli);
+      const decoder = entry ? await loadDshStreamDecoder(entry) : undefined;
       return new DshRuntime(client, decoder, { coalesceMs: STREAM_COALESCE_MS });
     } catch (error) { await client.stop(); throw error; }
   }
