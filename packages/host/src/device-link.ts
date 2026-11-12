@@ -255,6 +255,12 @@ export class DeviceLink {
   #probeTimer: NodeJS.Timeout | undefined;
   #probeCounter = 0;
   #closed = false;
+  /**
+   * 中继回报对端已不在的路径（`device_offline`）。中继不通知设备掉线，会话仍是 ready，
+   * 探针会每轮换回一条回绝；对端在这条路上发来任何帧（重连后的 HS1 等）前不再探测它。
+   * 会话、出口与选路保持不动，原因见 host-service 处理 `device_offline` 的注释。
+   */
+  readonly #absentPeers = new Set<PathKind>();
 
   constructor(options: DeviceLinkOptions) {
     this.#options = options;
@@ -383,6 +389,7 @@ export class DeviceLink {
   detach(kind: PathKind): void {
     this.#sinks.delete(kind);
     this.#sessions.delete(kind);
+    this.#absentPeers.delete(kind);
     this.#muxes.get(kind)?.stop();
     this.#muxes.delete(kind);
     this.#loseSyncDeliveries(kind);
@@ -397,6 +404,7 @@ export class DeviceLink {
   handle(kind: PathKind, envelope: EnvelopeV2, lanVersion?: DeviceProtocolVersion): boolean {
     const sink = this.#sinks.get(kind);
     if (sink === undefined) return false;
+    this.#absentPeers.delete(kind);
     // 片先拼回整条信封：解密、序号检查、`ch` 校验都只认完整信封——片层自己什么都不判
     // （见 `piece.ts`），否则就会存在第二份合法性真相。
     const complete = this.#reassembler.accept(envelope);
@@ -444,6 +452,13 @@ export class DeviceLink {
       return true;
     }
     this.#options.onPayload?.(outcome.payload, outcome.frame === "bin" ? "bin" : "data", kind);
+    return true;
+  }
+
+  /** 记下对端已不在 `kind` 上；返回这是否开启了一段新的缺席（同一段内重复回报返回 `false`）。 */
+  markPeerAbsent(kind: PathKind): boolean {
+    if (this.#absentPeers.has(kind)) return false;
+    this.#absentPeers.add(kind);
     return true;
   }
 
@@ -761,6 +776,7 @@ export class DeviceLink {
       if (now - pending.sentAt > PROBE_TIMEOUT_MS) this.#pending.delete(key);
     }
     for (const kind of this.#readyPaths()) {
+      if (this.#absentPeers.has(kind)) continue;
       const token = Buffer.alloc(8);
       token.writeBigUInt64BE(BigInt(this.#probeCounter++));
       const payload = Buffer.concat([Buffer.from([PROBE_TAG_HOST]), token]);

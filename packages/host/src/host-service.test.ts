@@ -55,6 +55,7 @@ import { type RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessHostOptions, restartBusinessHostQUIC } from "./fixtures/relay-business-transport.js";
 
 import { HostService, channelForDeviceMessage } from "./host-service.js";
+import { HostRelayClient } from "./relay-client.js";
 import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
@@ -412,6 +413,15 @@ class TestDevice {
       socket.send(JSON.stringify({ type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: this.credential }));
       await this.openChannel("relay", pskRoot, hostId, hostId);
     } catch (error) { socket.close(); throw error; }
+  }
+
+  /** 中继掉线后重新连上：socket 打开即认证并发 HS1，与 App 的 socket.open 一致。 */
+  async reconnectRelay(pskRoot: Buffer, hostId: string): Promise<void> {
+    const socket = new WebSocket(await relayBusinessDeviceURL(this.relayURL));
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+    this.#install("relay", socket);
+    socket.send(JSON.stringify({ type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: this.credential }));
+    await this.openChannel("relay", pskRoot, hostId, hostId);
   }
 
   get active(): PathKind | undefined {
@@ -903,6 +913,42 @@ describe("host end-to-end over relay", () => {
     device.sendCommand("pi-handover-sync", "after-applied", { ...request, syncId: "after-applied" });
     expect(await readMatching(device, message => (message.event as Record<string, unknown>)?.type === "session.snapshot"))
       .toMatchObject({ event: { syncId: "after-applied", source: { epoch: "handover-source", seq: 0 } } });
+  });
+
+  // 易错点：中继不通知手机掉线，Host 的 RTT 探针持续换回 device_offline，日志每 10 秒刷一行。
+  // 覆盖真实中继往返：掉线后停探、只报一次；手机重连发 HS1 后恢复探测与业务下发；再掉线重新报一次。
+  it("pauses Relay probes for a phone that left the Relay and resumes them after it reconnects", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-offline-probe-")); relay = await startRelay(stateDir);
+    const logs: string[] = [];
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, reconnect: false, lan: false, probeIntervalMs: 20, log: line => logs.push(line) });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    const { pskRoot, payload: { hostId } } = paired;
+    await device.openChannel("relay", pskRoot, hostId, hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const sent = vi.spyOn(HostRelayClient.prototype, "send");
+    const pings = (): number => sent.mock.calls.filter(([envelope]) => envelope.hdr.k === "ping" && envelope.hdr.to === device!.deviceId).length;
+    const offlineLogs = (): number => logs.filter(line => line.includes(`设备 ${device!.deviceId} 不在中继上`)).length;
+    try {
+      await vi.waitFor(() => expect(pings()).toBeGreaterThan(2));
+      device.closePath("relay");
+      await vi.waitFor(() => expect(offlineLogs()).toBe(1));
+      const pausedAt = pings();
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(pings()).toBe(pausedAt);
+      expect(offlineLogs()).toBe(1);
+      expect(logs.filter(line => line.includes("不在中继上")).at(-1)).toBe(`设备 ${device.deviceId} 不在中继上`);
+
+      await device.reconnectRelay(pskRoot, hostId);
+      await vi.waitFor(() => expect(pings()).toBeGreaterThan(pausedAt + 2));
+      const descriptor = host.loopback!.descriptor!;
+      runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+        metadata: { runtimeId: "pi-offline-probe", name: "probe", cwd: stateDir, status: "idle", sessionId: "s" } });
+      await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+
+      device.closePath("relay");
+      await vi.waitFor(() => expect(offlineLogs()).toBe(2));
+    } finally { sent.mockRestore(); }
   });
 
   it("recovers independent notification state and device dismissals over encrypted relay sockets", async () => {

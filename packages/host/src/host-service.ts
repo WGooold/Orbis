@@ -168,8 +168,6 @@ export function channelForDeviceMessage(message: {
   return "ctl";
 }
 
-/** 同一台设备的离线回绝在这个窗口内只报一次（见 `#shouldReportOfflineDevice`）。 */
-const OFFLINE_DEVICE_REPORT_INTERVAL_MS = 10_000;
 /** 水位告警的节流窗口，与 relay 的 `MUX_WARN_INTERVAL_MS` 同一判据。 */
 const BULK_WARN_INTERVAL_MS = 10_000;
 
@@ -640,8 +638,6 @@ export class HostService {
   readonly #interactionIds = new Map<string, Set<string>>();
   readonly #bootstrapReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #notificationChecks = new Map<string, number>();
-  /** 同一台设备的离线回绝只报一次的时间戳（详见 `#shouldReportOfflineDevice`）。 */
-  readonly #offlineDeviceReportedAt = new Map<string, number>();
   #persistChain: Promise<void> = Promise.resolve();
   /**
    * 会话目录的短 TTL 缓存与「正在扫」占位（见 `#catalogWithCache`）。
@@ -1463,13 +1459,14 @@ export class HostService {
         // （v2 分片是端到端加密的，中继取不到），只能靠中继交回的 `hdr.to` 定位。
         if (code === "device_offline" && targetDeviceId !== undefined) {
           const failed = this.#downloads.failDeviceTransfers(targetDeviceId, code);
-          // 分片泵在收到第一条回绝前已经排了一窗，后续只是余波：只报一次。
-          //
           // 这里**不能**动这条路本身（detach/摘可用性）：detach 会连同该路径的 E2E 会话
           // 一起清掉，而 APP 侧只会在 socket 重开或收到 host.online 时重新握手——它以为
           // 自己连着，于是 Host 后续广播全部静默丢掉，手机就冻在「运行中」。
-          if (failed > 0 || this.#shouldReportOfflineDevice(targetDeviceId)) {
-            this.#options.log?.(`设备 ${targetDeviceId} 不在中继上：终止 ${failed} 条下载`);
+          // 只标记对端缺席：停掉这条路的 RTT 探针（否则每两秒换回一条回绝），
+          // 日志每段离线只报一次；手机在中继上重新发来任何帧即解除。
+          const freshAbsence = this.#links.get(targetDeviceId)?.markPeerAbsent("relay") ?? false;
+          if (failed > 0 || freshAbsence) {
+            this.#options.log?.(`设备 ${targetDeviceId} 不在中继上${failed > 0 ? `：终止 ${failed} 条下载` : ""}`);
           }
           return;
         }
@@ -2869,20 +2866,6 @@ export class HostService {
     const next = known === undefined ? Date.now() : known + 1;
     this.#eventSequences.set(key, next);
     return next;
-  }
-
-  /**
-   * 同一台设备的离线回绝在短窗口内只报一次。
-   *
-   * 分片泵在收到第一条回绝之前已经排了一整窗，收场动作只能在第一条回绝时生效；
-   * 剩下的是余波，如果逐条落日志，一次断线的 88MB 下载就能把 Host 日志刷成十几 MB。
-   */
-  #shouldReportOfflineDevice(deviceId: string): boolean {
-    const now = Date.now();
-    const last = this.#offlineDeviceReportedAt.get(deviceId);
-    if (last !== undefined && now - last < OFFLINE_DEVICE_REPORT_INTERVAL_MS) return false;
-    this.#offlineDeviceReportedAt.set(deviceId, now);
-    return true;
   }
 
   #requireLink(deviceId: string): DeviceLink {

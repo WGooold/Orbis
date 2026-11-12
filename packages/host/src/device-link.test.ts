@@ -675,6 +675,26 @@ describe("DeviceLink", () => {
     } finally { now.mockRestore(); h.link.close(); }
   });
 
+  // 易错点：中继不通知设备掉线，relay 会话停在 ready，探针每两秒换回一条 device_offline、
+  // Host 日志每 10 秒刷一行。缺席只停该路探针、每段只报一次，手机重连发 HS1 后恢复。
+  it("对端在中继缺席时停探该路，每段缺席只报一次，重新握手后恢复", () => {
+    const h = harness({ pskRoot: randomKey() });
+    try {
+      h.handshake("lan"); h.handshake("relay");
+      expect(h.link.markPeerAbsent("relay")).toBe(true);
+      expect(h.link.markPeerAbsent("relay")).toBe(false);
+      h.link.probeNow();
+      expect(h.outbox.map(entry => entry.kind)).toEqual(["lan"]);
+      expect(h.link.paths).toContain("relay");
+      h.outbox.length = 0;
+      h.handshake("relay");
+      h.outbox.length = 0;
+      h.link.probeNow();
+      expect(h.outbox.map(entry => entry.kind).sort()).toEqual(["lan", "relay"]);
+      expect(h.link.markPeerAbsent("relay")).toBe(true);
+    } finally { h.link.close(); }
+  });
+
   it("单路径也定时采样并仅公告当前路径，断开后停止探测", async () => {
     const harnessed = harness({ pskRoot: randomKey(), probeIntervalMs: 10 });
     try {
