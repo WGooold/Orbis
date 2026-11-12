@@ -118,6 +118,10 @@ struct ConfigLedgerTests {
         #expect(host.errorMessage == "模型切换未完成：未知模型")
         #expect(host.pendingSends.items.first?.state == .failed("模型切换未完成，消息未发送"))
         #expect(fixture.transport.userMessages.isEmpty)
+        #expect(host.sessionConfigFailure("a")?.value == "model-b")
+        #expect(host.sessionConfigFailure("a")?.message == "未知模型")
+        #expect(host.executeSlash("model", args: "model-b"))
+        #expect(host.sessionConfigFailure("a") == nil)
     }
 
     @Test func messagesSentBeforeConfirmationWaitAndThenSubmit() async throws {
@@ -141,6 +145,17 @@ struct ConfigLedgerTests {
         #expect(fixture.transport.configCommands.count == 2)
         #expect((fixture.transport.configCommands.last?["command"] as? [String: Any])?["args"] as? String == "model-c")
         #expect(status(host) == "深度模型·切换中")
+    }
+
+    // SC84: a late failure belongs to the original session, not a replacement
+    // session which happens to reuse the same runtime card and configuration panel.
+    @Test func lateFailureDoesNotOfferRetryInReplacementSession() async throws {
+        let fixture = await setup(); let host = fixture.host
+        _ = host.executeSlash("model", args: "model-b")
+        await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "a", "sessionId": "replacement",
+            "name": "Agent", "cwd": "/repo", "status": "idle"]])
+        try await fixture.transport.result(ok: false, error: "old session failure")
+        #expect(host.sessionConfigFailure("a") == nil)
     }
 
     @Test func disconnectShowsUnconfirmedAndAnUnchangedConfigFailsAfterReconnect() async throws {

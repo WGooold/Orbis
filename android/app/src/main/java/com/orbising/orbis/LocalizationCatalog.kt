@@ -635,6 +635,9 @@ internal object LocalizationCatalog {
         "子代理 · {0} 项" to "Subagents · {0}",
         "子代理 · {0} 项 · 清单不完整" to "Subagents · {0} · Incomplete list",
         "子代理 · {0} 项 · 状态待核对" to "Subagents · {0} · Status unconfirmed",
+        "子代理尚未结束，暂不能关闭会话。" to "Subagents are still active. This session cannot be closed yet.",
+        "子代理清单不完整，暂不能关闭会话。" to "The subagent list is incomplete. This session cannot be closed yet.",
+        "子代理状态待核对，暂不能关闭会话。" to "Subagent status is unconfirmed. This session cannot be closed yet.",
         "子任务 · {0} 项" to "Subtasks · {0}",
         "子任务状态待核对" to "Subtask status needs checking",
         "子任务运行中" to "Subtasks running",
@@ -772,11 +775,11 @@ internal object LocalizationCatalog {
         "已显示完整差异" to "Full diff displayed",
         "已暂停" to "Paused",
         "已暂停，{0}" to "Paused, {0}",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "已暂停，可在下载页面继续" to "Paused. Resume from Downloads.",
         "已暂停，可重新发送（{0}%）" to "Paused. You can send again ({0}%).",
         "已有会话需要重新打开。" to "Existing sessions must be reopened.",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "已核对" to "Checked",
         "已淘汰 " to "Evicted ",
         "已清空较早内容，当前只保留最近读取的 2 MiB。" to "Earlier content cleared. Only the most recent 2 MiB is kept.",
@@ -924,11 +927,11 @@ internal object LocalizationCatalog {
         "握手尚未完成，收到 ping" to "Received ping before handshake completed",
         "握手认证失败" to "Handshake authentication failed",
         "搜索会话或目录" to "Search sessions or folders",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "搜索历史与分支" to "Search history and branches",
         "搜索消息、分支或书签" to "Search messages, branches or bookmarks",
         "搜索目录或会话" to "Search folders or sessions",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "搜索结果" to "Search results",
         "撤回" to "Withdraw",
         "撤回排队消息" to "Withdraw queued message",
@@ -1022,6 +1025,7 @@ internal object LocalizationCatalog {
         "显示投影版本不匹配（Host：{0}），请更新 App" to "Presentation version mismatch (Host: {0}). Update the app.",
         "显示更多工具（剩余 {0} 项）" to "Show more tools ({0} remaining)",
         "显示：{0}" to "Showing: {0}",
+        "暂不可关闭" to "Cannot close yet",
         "暂不可用" to "Unavailable",
         "暂停" to "Pause",
         "暂无下载" to "No downloads yet",
@@ -1075,12 +1079,12 @@ internal object LocalizationCatalog {
         "未知（{0}）" to "Unknown ({0})",
         "未确认" to "Unconfirmed",
         "未确认是否送达" to "Delivery unconfirmed",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "未统计" to "Not measured",
         "未能确认送达，可以重新发送" to "Delivery could not be confirmed. You can send again.",
         "未获取到 Git 分支" to "Git branch not available",
         "未记录目录" to "Folder not recorded",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "未连接" to "Not connected",
         "未连接到电脑" to "Not connected to computer",
         "未连接到电脑，连接恢复后可重试。" to "Not connected to the computer. Retry after reconnecting.",
@@ -1227,12 +1231,12 @@ internal object LocalizationCatalog {
         "此轮未保存可比较的文件版本。" to "No comparable file versions were saved for this turn.",
         "此部分内容已无法恢复" to "This content cannot be recovered",
         "没有{0}会话" to "No {0}sessions",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "没有匹配的会话" to "No matching sessions",
         "没有匹配的命令" to "No matching commands",
         "没有匹配的节点" to "No matching nodes",
         "没有可读取的会话" to "No readable sessions",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "没有已归档的会话" to "No archived sessions",
         "没有找到匹配的目录或会话" to "No matching folders or sessions",
         "没有文件" to "No files",
@@ -1379,12 +1383,12 @@ internal object LocalizationCatalog {
         "端到端加密已连接" to "Connected with end-to-end encryption",
         "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
         "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
         "第 {0} 轮" to "Turn {0}",
         "等待" to "Waiting",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "等待{0}切换" to "Waiting for {0} switch",
         "等待中" to "Waiting",
         "等待任务完成后归档" to "Waiting for the task to finish before archiving",
@@ -1531,12 +1535,12 @@ internal object LocalizationCatalog {
         "资源" to "Resources",
         "跟随手机" to "Follow phone language",
         "跟随系统" to "Follow system",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "跟随输出" to "Follow output",
         "路由" to "Routing",
         "跳到最新消息" to "Jump to latest message",
         "跳转失败：{0}" to "Navigation failed: {0}",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "跳转未送达：当前会话没有提供 /tree 命令" to "Navigation not sent: this session does not offer /tree",
         "跳过权限检查" to "Bypass permission checks",
         "轮次差异已超过电脑端保留期限" to "The computer's retention period for this turn's diff has expired",
@@ -1683,12 +1687,12 @@ internal object LocalizationCatalog {
         "重新扫描" to "Scan again",
         "重新核对" to "Check again",
         "重新读取" to "Reload",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "重新读取文件清单" to "Reload file list",
         "重新连接" to "Reconnect",
         "重置 " to "Resets ",
         "重置 {0}" to "Resets {0}",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "重置时间：" to "Resets at: ",
         "重试" to "Retry",
         "重试上传" to "Retry upload",

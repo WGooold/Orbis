@@ -33,6 +33,7 @@ import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutati
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
+import { CodexTaskRegistry } from "./codex-task-registry.js";
 import { readCodexTurnConfiguration } from "./codex-turn-configuration.js";
 import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
 
@@ -354,6 +355,8 @@ export class CodexRuntime implements AgentBackend {
   #server: CodexAppServer;
   /** 活跃 thread 表。codex 的 thread/resume 返回完整 turns，激活即拿到历史。 */
   readonly #threads = new Map<string, ThreadState>();
+  readonly #taskRegistries = new WeakMap<CodexAppServer, CodexTaskRegistry>();
+  readonly #taskChecks = new WeakMap<ThreadState, Promise<void>>();
   readonly #capabilitiesSignatures = new WeakMap<ThreadState, string>();
   readonly #sourcePublishTimers = new Map<ThreadState, ReturnType<typeof setTimeout>>();
   /** 审批窗口（键 = 独立生成的手机 requestId）。超时按接口对应的拒绝格式回复。 */
@@ -2846,6 +2849,7 @@ export class CodexRuntime implements AgentBackend {
       });
       await this.#waitForReconcile(thread);
       this.#refreshTurnConfiguration(thread);
+      await this.#checkTaskRegistry(thread);
     })();
     const tracked = checking.catch(error => {
       this.#options.log?.(`Codex 源端核对失败（thread=${thread.id}）：${describeError(error)}`);
@@ -2855,6 +2859,22 @@ export class CodexRuntime implements AgentBackend {
     });
     thread.nativeCheckPromise = tracked;
     return tracked;
+  }
+
+  #checkTaskRegistry(thread: ThreadState): Promise<void> {
+    const pending = this.#taskChecks.get(thread);
+    if (pending) return pending;
+    const server = this.#server;
+    let registry = this.#taskRegistries.get(server);
+    if (!registry) {
+      registry = new CodexTaskRegistry((method, params) => server.request(method, params));
+      this.#taskRegistries.set(server, registry);
+    }
+    const checking = thread.tasks.reconcile(() => registry!.read(thread.id)).then(tasks => {
+      if (tasks && this.#server === server && this.#threads.get(thread.id) === thread) this.#emit(thread.id, { type: "execution.tasks", tasks });
+    }).finally(() => this.#taskChecks.delete(thread));
+    this.#taskChecks.set(thread, checking);
+    return checking;
   }
 
   /**

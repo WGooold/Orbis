@@ -98,6 +98,33 @@ struct QuitLedgerTests {
         #expect(host.errorMessage == nil)
     }
 
+    // SC82: a mixed selection submits only permitted quits, explains the blocked
+    // task state, and allows an explicit retry after a complete terminal inventory.
+    @Test(arguments: [RuntimeCloseBlockReason.activeTasks, .incompleteTasks, .unconfirmedTasks])
+    func mixedCloseReportsTaskRestrictionWithoutHidingTheBlockedRuntime(_ reason: RuntimeCloseBlockReason) async throws {
+        let (host, transport, fixture) = await setup(); defer { withExtendedLifetime(fixture) {} }
+        func publishTasks(confirmed: Bool) async {
+            await transport.emit(["type": "runtime.online", "runtime": [
+                "runtimeId": "a", "sessionId": "session-a", "name": "Agent", "cwd": "/repo", "status": "idle",
+                "backgroundTasks": ["availability": confirmed || reason == .activeTasks ? "ready" : "unknown",
+                    "truncated": !confirmed && reason == .incompleteTasks,
+                    "items": [["id": "child", "title": "检查代码", "kind": "agent",
+                        "status": !confirmed && reason == .activeTasks ? "running" : "completed"]]]
+            ]])
+        }
+        await publishTasks(confirmed: false)
+        #expect(!host.canCloseRuntime("a"))
+        #expect(host.closeRuntimes(["a", "b"]) == ["b"])
+        #expect(host.closingRuntimeIds == ["b"])
+        #expect(host.errorMessage == reason.message)
+        let quits = transport.sent.filter { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }
+        #expect(quits.compactMap { $0["runtimeId"] as? String } == ["b"])
+        #expect(host.runtimes.contains { $0.runtimeId == "a" })
+        await publishTasks(confirmed: true)
+        #expect(host.canCloseRuntime("a"))
+        #expect(host.closeRuntimes(["a"]) == ["a"])
+    }
+
     @Test func explicitRejectionRestoresTheCardWithItsReason() async throws {
         let (host, transport, fixture) = await setup(); defer { withExtendedLifetime(fixture) {} }
         _ = host.closeRuntimes(["a", "b"])

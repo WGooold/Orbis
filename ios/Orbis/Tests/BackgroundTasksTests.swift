@@ -9,6 +9,29 @@ struct BackgroundTasksTests {
     private func tasks(_ status: String = "running", availability: String = "ready") -> BackgroundTaskInventory {
         BackgroundTaskInventory(availability: availability, items: [BackgroundTask(id: "child", title: "检查代码", kind: "Explore", status: status)], truncated: false)
     }
+    // SC82: explain the actual close restriction, including completed tasks in a partial
+    // inventory, without changing the existing quit capability or main input phase.
+    @Test func closeRestrictionsHaveSpecificReasonsAndClearWhenTasksAreConfirmed() {
+        var runtime = RuntimeSummary(runtimeId: "r", name: "Agent", cwd: "/repo", status: "idle")
+        #expect(runtime.remoteCloseBlockReason([]) == .unavailableCommand)
+        #expect(runtime.remoteCloseBlockReason([quit]) == nil)
+        for status in ["pending", "running", "waiting"] {
+            runtime.backgroundTasks = tasks(status)
+            #expect(runtime.remoteCloseBlockReason([quit]) == .activeTasks)
+        }
+        runtime.backgroundTasks = tasks("completed", availability: "unknown")
+        #expect(runtime.remoteCloseBlockReason([quit]) == .unconfirmedTasks)
+        runtime.backgroundTasks?.truncated = true
+        #expect(runtime.remoteCloseBlockReason([quit]) == .incompleteTasks)
+        // Task evidence explains the restriction even if the Host also withdraws /quit.
+        #expect(runtime.remoteCloseBlockReason([]) == .incompleteTasks)
+        for status in ["idle", "completed", "failed", "killed"] {
+            runtime.backgroundTasks = tasks(status)
+            #expect(runtime.remoteCloseBlockReason([quit]) == nil)
+            #expect(runtime.remoteCloseBlockReason([]) == .unavailableCommand)
+        }
+        #expect(runtime.status == "idle")
+    }
     @Test func backgroundWorkNeverChangesMainInputPhaseAndBlocksQuit() {
         var runtime = RuntimeSummary(runtimeId: "r", name: "Claude", cwd: "/repo", status: "idle", backgroundTasks: tasks())
         #expect(runtime.status == "idle")

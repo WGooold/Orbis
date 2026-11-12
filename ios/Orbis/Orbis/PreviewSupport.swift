@@ -549,10 +549,18 @@ private final class PreviewTransport: OrbisTransport {
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 if name == "execution", keyboardStream, runtime == "preview-codex" { value["phase"] = "running" }
+                if ProcessInfo.processInfo.arguments.contains("--preview-current-turn"), runtime == "preview-codex" {
+                    if name == "execution" { value["phase"] = "running" }
+                    if name == "model", !ProcessInfo.processInfo.arguments.contains("--preview-old-turn-host") {
+                        value["currentTurnSupported"] = true
+                        value["currentTurn"] = ["turnId": "preview-turn", "model": ["provider": "openai", "id": "gpt-5.3", "name": "GPT-5.3"], "thinkingLevel": "medium"]
+                    }
+                }
                 if name == "execution", runtime == "preview-codex", ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") {
-                    value["tasks"] = ["availability": "ready", "truncated": false, "items": [
-                        ["id": "review", "title": "检查代码", "kind": "Explore", "status": "running"],
-                        ["id": "tests", "title": "运行测试", "kind": "general-purpose", "status": "running", "parentId": "review"]
+                    let partial = ProcessInfo.processInfo.arguments.contains("--preview-background-incomplete")
+                    value["tasks"] = ["availability": partial ? "unknown" : "ready", "truncated": partial, "items": [
+                        ["id": "review", "title": "检查代码", "kind": "Explore", "status": partial ? "completed" : "running"],
+                        ["id": "tests", "title": "运行测试", "kind": "general-purpose", "status": partial ? "completed" : "running", "parentId": "review"]
                     ]]
                 }
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,

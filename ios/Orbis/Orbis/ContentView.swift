@@ -778,9 +778,12 @@ struct HomeView: View, Equatable {
                     }
                 }
             }
-            .onChange(of: closableRuntimeIds) { _, ids in
+            .onChange(of: selectableRuntimeIds) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
                 if let active = closeSwipeRuntimeId, !ids.contains(active) { resetCloseSwipes() }
+            }
+            .onChange(of: closableRuntimeIds) { _, ids in
+                armedCloseRuntimeIds.formIntersection(ids)
             }
             .onChange(of: currentHost?.homeCards.map(\.id) ?? []) { _, ids in
                 for id in ids where exitingCards[id] != nil || (swipeTranslations[id] ?? 0) < 0 {
@@ -837,6 +840,10 @@ struct HomeView: View, Equatable {
     }
 
     private var currentHost: HostSnapshot? { store.hosts.first { $0.hostId == store.selectedHostId } }
+    private var selectableRuntimeIds: Set<String> {
+        guard let host = currentHost else { return [] }
+        return Set(host.homeCards.filter(host.connection.homeCardIsCurrent).map(\.id))
+    }
     private var closableRuntimeIds: Set<String> {
         guard let host = currentHost else { return [] }
         return Set(host.homeCards.filter { host.connection.canCloseRuntime($0.id) }.map(\.id))
@@ -909,19 +916,20 @@ struct HomeView: View, Equatable {
                     guard value.translation.width < -abs(value.translation.height),
                           let card = host.homeCards.first(where: {
                               runtimeCardFrames[$0.id]?.contains(start) == true
-                          }), host.connection.homeCardIsCurrent(card), host.connection.canCloseRuntime(card.id) else { return }
+                          }), host.connection.homeCardIsCurrent(card) else { return }
                     closeSwipeRuntimeId = card.id
                 }
                 guard let id = closeSwipeRuntimeId,
                       let card = host.homeCards.first(where: { $0.id == id }),
-                      host.connection.homeCardIsCurrent(card), host.connection.canCloseRuntime(card.id) else { return }
+                      host.connection.homeCardIsCurrent(card) else { return }
                 let width = runtimeCardFrames[id]?.width ?? 0
                 let threshold = width * 0.4
                 let horizontal = value.translation.width
                 swipingRuntimeIds.insert(id)
                 let wasArmed = armedCloseRuntimeIds.contains(id)
                 let disarmThreshold = threshold * 0.96
-                let armed = threshold > 0 && (wasArmed ? horizontal <= -disarmThreshold : horizontal <= -threshold)
+                let armed = host.connection.canCloseRuntime(id) && threshold > 0 &&
+                    (wasArmed ? horizontal <= -disarmThreshold : horizontal <= -threshold)
                 if armed && !armedCloseRuntimeIds.contains(id) { OrbisHaptics.commit() }
                 swipeTranslations[id] = min(0, max(-width, horizontal < -threshold ? -threshold + (horizontal + threshold) * 0.4 : horizontal))
                 if armed { armedCloseRuntimeIds.insert(id) }
@@ -938,9 +946,14 @@ struct HomeView: View, Equatable {
                 var closing = false
                 if let host = currentHost,
                    let card = host.homeCards.first(where: { $0.id == id }),
-                   host.connection.homeCardIsCurrent(card), threshold > 0,
-                   armedCloseRuntimeIds.contains(id), value.translation.width <= -(threshold * 0.96) {
-                    closing = !beginClose([id], host: host).isEmpty
+                   host.connection.homeCardIsCurrent(card), threshold > 0 {
+                    let canClose = host.connection.canCloseRuntime(id)
+                    let committed = armedCloseRuntimeIds.contains(id) && value.translation.width <= -(threshold * 0.96)
+                    // A deliberate blocked swipe reaches the same threshold, explains why,
+                    // and rebounds without arming, hiding the card, or sending quit.
+                    if committed || (!canClose && value.translation.width <= -threshold) {
+                        closing = !beginClose([id], host: host).isEmpty
+                    }
                 }
                 if !closing { armedCloseRuntimeIds.remove(id) }
                 if !closing {
@@ -952,14 +965,14 @@ struct HomeView: View, Equatable {
     }
 
     private func toggleSelection(_ id: String) {
-        guard closableRuntimeIds.contains(id) else { return }
+        guard selectableRuntimeIds.contains(id) else { return }
         OrbisHaptics.selectionChanged()
         if selectedRuntimeIds.contains(id) { selectedRuntimeIds.remove(id) }
         else { selectedRuntimeIds.insert(id) }
     }
 
     private func beginSelection(_ id: String) {
-        guard closableRuntimeIds.contains(id) else { return }
+        guard selectableRuntimeIds.contains(id) else { return }
         if !selectedRuntimeIds.contains(id) { OrbisHaptics.beginSelection() }
         selectedRuntimeIds.insert(id)
     }
@@ -974,7 +987,7 @@ struct HomeView: View, Equatable {
 
     @discardableResult private func beginClose(_ ids: Set<String>, host: HostSnapshot) -> Set<String> {
         let cards = host.homeCards
-        let submitted = store.closeRuntimes(hostId: host.hostId, runtimeIds: ids.intersection(closableRuntimeIds))
+        let submitted = store.closeRuntimes(hostId: host.hostId, runtimeIds: ids.intersection(selectableRuntimeIds))
         for (index, card) in cards.enumerated() where submitted.contains(card.id) {
             let exit = ExitingCard(card: card, index: index)
             exitingCards[card.id] = exit
@@ -1028,23 +1041,26 @@ struct HomeView: View, Equatable {
         let translation = swipeTranslations[runtime.runtimeId] ?? 0
         let cardWidth = runtimeCardFrames[runtime.runtimeId]?.width ?? 0
         let reveal = min(cardWidth, max(0, -translation))
-        let armed = armedCloseRuntimeIds.contains(runtime.runtimeId) || exitingCards[runtime.runtimeId] != nil
+        let canClose = host.connection.canCloseRuntime(runtime.runtimeId)
+        let armed = (canClose && armedCloseRuntimeIds.contains(runtime.runtimeId)) || exitingCards[runtime.runtimeId] != nil
         return HStack(spacing: 0) {
             ZStack(alignment: .trailing) {
                 if !selecting {
                     HStack(spacing: 12) {
-                        OrbisMotionText(armed ? L10n.tr("松手关闭") : L10n.tr("关闭"))
+                        OrbisMotionText(armed ? L10n.tr("松手关闭") : canClose ? L10n.tr("关闭") : L10n.tr("暂不可关闭"))
                             .font(.orbisLabel(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                             .frame(width: 100, alignment: .trailing)
                         ZStack {
-                            Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                            Image(systemName: canClose || armed ? "xmark" : "lock").font(.system(size: 16, weight: .semibold))
                                 .frame(width: 28, height: 28)
                                 .neuSurface(inset: !armed, radius: 14, intensity: 0.4, concentric: false)
                             Circle().stroke(OrbisPalette(scheme).secondary.opacity(0.2), lineWidth: 2)
                                 .frame(width: 34, height: 34)
+                                .opacity(canClose || armed ? 1 : 0)
                             Circle().trim(from: 0, to: min(1, reveal / max(1, cardWidth * 0.4)))
                                 .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
                                 .frame(width: 34, height: 34).rotationEffect(.degrees(-90))
+                                .opacity(canClose || armed ? 1 : 0)
                         }.scaleEffect(armed ? 1.12 : 1)
                             .animation(reduceMotion ? nil : .orbisPop, value: armed)
                     }.foregroundStyle(armed ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
@@ -1067,15 +1083,14 @@ struct HomeView: View, Equatable {
                         #endif
                     }
                 } label: {
-                    HomeCardContent(card: card, selected: selected,
-                        selecting: selecting && host.connection.canCloseRuntime(runtime.runtimeId)).equatable()
+                    HomeCardContent(card: card, selected: selected, selecting: selecting).equatable()
                 }.buttonStyle(OrbisSelectionButtonStyle(selected: selected, selecting: selecting, padding: OrbisRadius.cardPadding + 4))
                     .offset(x: translation)
                     .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(runtime.runtimeId) })
                     .accessibilityIdentifier("home-runtime-\(runtime.runtimeId)")
                     .accessibilityAddTraits(selected ? .isSelected : [])
                     .accessibilityActions {
-                        if host.connection.canCloseRuntime(runtime.runtimeId) { Button(L10n.tr("选择会话")) { beginSelection(runtime.runtimeId) } }
+                        Button(L10n.tr("选择会话")) { beginSelection(runtime.runtimeId) }
                     }
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("home-session-content")) } action: {

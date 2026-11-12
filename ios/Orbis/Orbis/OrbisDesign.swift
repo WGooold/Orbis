@@ -465,12 +465,15 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
         let accent = OrbisPalette(scheme).accent
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
-            .background(OrbisTouchOrigin { touchOrigin = $0 })
-            .overlay {
+            // Keep the opaque selection material below the label and above the surface.
+            // Expand through the surface padding without changing content geometry.
+            .background {
                 OrbisSelectionFill(selected: selected, origin: touchOrigin,
                                    radius: parent?.innerRadius ?? radius, color: accent)
+                    .padding(-padding)
             }
+            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
+            .background(OrbisTouchOrigin { touchOrigin = $0 })
             .contentShape(shape)
             .overlay { if !enabled { shape.strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
     }

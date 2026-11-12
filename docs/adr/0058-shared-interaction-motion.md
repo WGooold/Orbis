@@ -93,6 +93,9 @@
 | SC78 | 权限页分类切换仅更新当前选项区；草稿选择跨类别保留，固定应用按钮提交并退场，取消丢弃待选值 |
 | SC79 | 新建卡片模型使用独立整行，深度与权限拥有独立固定槽位；权限组合不参与卡片宽度计算，入口沿用配置选择面板 |
 | SC80 | 各 Agent 模型与深度复用共用配置弹层、提交退场和配置账本；无本轮事实的非 Codex 会话明确显示所选值，Claude effort 使用深度入口及既有失败重试 |
+| SC82 | iOS 首页多选与左滑反馈独立于关闭准入；受限会话左滑显示锁和短状态，达到关闭距离后回弹并说明原因，混合关闭保留受限会话的选择；共用选中填色位于文字下方 |
+| SC83 | Codex 完整子代理清单核对：原生能力、分页、嵌套、读取竞争与断线回退 |
+| SC84 | iOS 顶栏模型与深度面板对齐本轮／下轮事实、保存状态、失败重试与草稿保持 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

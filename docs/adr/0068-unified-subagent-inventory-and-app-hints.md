@@ -41,7 +41,7 @@ Claude 已有独立于主回合的后台任务库存；Codex / Desktop 与 DSH �
 | 后端 | 来源与边界 |
 | --- | --- |
 | Claude | 沿用 Mods `agent.list` 的完整库存与代次核对，复用公共合并逻辑。 |
-| Codex / Desktop | 共用原生协作条目、子代理活动条目及带父身份的子线程记录；这些是部分事实。协作调用自己的完成状态不作为子代理终态。 |
+| Codex / Desktop | 共用原生协作条目、子代理活动条目及带父身份的子线程记录；这些是部分事实。SC83 在原生祖先过滤能力已证实后核对完整后代目录。协作调用自己的完成状态不作为子代理终态。 |
 | DSH Web | 使用原生目录中带 `origin=subagent` 与父身份的子会话记录；运行 / 空闲是已知线程事实，不推断完成，消失后保留为未知。 |
 | Pi 或无来源后端 | 接受相同模型；没有可靠子代理清单时保持未知，不把通用工具调用当作子代理。 |
 
@@ -52,6 +52,10 @@ Claude 已有独立于主回合的后台任务库存；Codex / Desktop 与 DSH �
 双端复用现有任务折叠区与稳定任务身份，显示短标题、状态和已知父子关系；首页 / 目录汇总已知活动。部分清单显示“不完整”，失联清单显示“待核对 / 最后已知”；首次未知且没有任务的空清单不显示多余告警。
 
 主回合 phase、输入 / 停止准入与子代理活动分别表达。子代理库存不把主回合强制改为 running；未观察到任务的空库存不覆盖后端原有关闭能力。有已知任务时沿用既有库存安全检查与原生 capability 的共同准入。任务区保持只读，本次不增加子 transcript、按任务取消或模型选择操作。
+
+2026-11-12，SC82（S33 / M06 / M10）：iOS 首页长按多选与左滑反馈独立于关闭准入。受限卡片左滑显示“暂不可关闭”与锁，达到关闭距离后回弹并按任务活动、清单不完整或状态待核对说明原因；批量关闭仅提交可关闭项，未提交项保持选中。实际关闭继续由 App 与 Host 核对。共用选择填色移至文字下方，保持卡片内容可见。实现见 [ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)、[Models.swift](../../ios/Orbis/Orbis/Models.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift) 与 [OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift)；回归见 [BackgroundTasksTests.swift](../../ios/Orbis/Tests/BackgroundTasksTests.swift)、[QuitLedgerTests.swift](../../ios/Orbis/Tests/QuitLedgerTests.swift) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。30 项核心测试、4 项手势 UI 测试及修正选择填色后的 4 项共用选择 UI 测试通过；文字被覆盖的首次像素断言失败与修复后截图保留在[验证记录](../../.artifacts/ios-subagent-card-gestures-20261112/verification.json)。后续 SC83／SC84 的构建、安装和验收状态见下方记录。
+
+2026-11-12，SC83（S33）：Codex／Desktop 通过原生 `thread/list` 的互斥过滤拒绝证明祖先过滤能力，再分页读取未归档和已归档后代，核对完整父链以及两次读取的成员一致性。重连重新协商；读取期间的任务变化撤销本次结果，目录缺少已知任务时继续保留部分状态。原生 `idle`／`notLoaded` 不覆盖本次连接已确认的完成状态，活动状态与失联仍撤回终态保证。实现及易错边界见 [codex-task-registry.ts](../../packages/host/src/codex-task-registry.ts)、[codex-task-registry.test.ts](../../packages/host/src/codex-task-registry.test.ts)、[codex-agent-tasks.ts](../../packages/host/src/codex-agent-tasks.ts) 与 [codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)。239 项 Host 定向回归、最近发布版本 v0.1.19 的协议／合并实现互通及重连回退验证通过。新版 Host 本机安装后，指定真实会话读回 4 个 completed 子代理、`availability=ready`、`truncated=false`；读回检查未关闭会话。源码、自动验证、本机安装与待用户验收分别见[汇总](../../.artifacts/ios-session-completeness-20261112/verification.json)。
 
 ## Alternatives and consequences
 

@@ -344,6 +344,7 @@ struct AgentProjection {
             guard domain.availability == "ready" else {
                 if name == "execution" {
                     result.runtime.status = "unknown"; result.runtime.compactionPhase = nil
+                    result.runtime.executionTurnId = nil
                     result.runtime.backgroundTasks?.availability = "unknown"
                     result.runtime.backgroundTasks?.truncated = false
                 }
@@ -361,6 +362,7 @@ struct AgentProjection {
             case "execution":
                 guard let phase = value["phase"].string, ["idle", "running", "waiting_local_interaction"].contains(phase) else { return nil }
                 result.runtime.status = phase
+                result.runtime.executionTurnId = value["turn"]["turnId"].string
                 result.runtime.compactionPhase = value["compaction"]["phase"].string
                 if value["tasks"] != .null {
                     guard let tasks: BackgroundTaskInventory = value["tasks"].decoded(), tasks.valid else { return nil }
@@ -370,6 +372,12 @@ struct AgentProjection {
                         items: result.runtime.backgroundTasks?.items ?? [], truncated: false)
                 }
             case "model":
+                if value["currentTurn"] != .null {
+                    guard let current: RuntimeTurnConfiguration = value["currentTurn"].decoded(), !current.turnId.isEmpty else { return nil }
+                    result.runtime.currentTurnConfiguration = current
+                } else { result.runtime.currentTurnConfiguration = nil }
+                result.runtime.currentTurnConfigurationSupported = value["currentTurnSupported"].bool
+                result.runtime.modelSelection = value["selection"].decoded()
                 if value == .null { if complete { result.runtime.model = nil; result.runtime.thinkingLevel = nil } }
                 else {
                     guard let model: RuntimeModelInfo = value.decoded(), !model.provider.isEmpty, !model.id.isEmpty else { return nil }

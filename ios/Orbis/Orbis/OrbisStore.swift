@@ -1603,8 +1603,18 @@ final class HostConnection: ObservableObject {
 
     /// 切换中再次选择：只记下最新一次，前一次结束后只在它与确认值不同时再提交。
     private var configSelections: [String: (value: String, label: String)] = [:]
+    private var configFailures: [String: SessionConfigFailure] = [:]
+    private var configOperationSessions: [String: String] = [:]
+
+    func sessionConfigFailure(_ runtimeId: String) -> SessionConfigFailure? {
+        guard let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }),
+              let failure = configFailures[runtimeId], failure.sessionId == runtime.sessionId else { return nil }
+        return failure
+    }
 
     private func submitConfig(_ runtime: RuntimeSummary, setting: String, value: String, label: String) -> Bool {
+        configFailures.removeValue(forKey: runtime.runtimeId)
+        objectWillChange.send()
         let target = OperationKinds.configTarget(runtimeId: runtime.runtimeId, setting: setting)
         if ledger.active(target: target) != nil {
             configSelections[target] = (value, label); objectWillChange.send(); return true
@@ -1616,8 +1626,12 @@ final class HostConnection: ObservableObject {
                                      basis: ledgerBasis(OperationKinds.modelDomain(runtime.runtimeId)),
                                      payload: .config(runtimeId: runtime.runtimeId, setting: setting, value: value, label: label), written: false, now: Date())
         guard creation == .created else { return false }
+        configOperationSessions[id] = runtime.sessionId ?? ""
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "slash.execute", "name": setting, "args": value]) else {
+            configOperationSessions.removeValue(forKey: id)
             ledger.remove(id); handleLedger([])
+            configFailures[runtime.runtimeId] = SessionConfigFailure(setting: setting, value: value,
+                message: L10n.tr("操作未送达，请连接后重试。"), sessionId: runtime.sessionId)
             errorMessage = L10n.tr("操作未送达，请连接后重试。"); return false
         }
         handleLedger(ledger.written(id, now: Date()))
@@ -1626,7 +1640,14 @@ final class HostConnection: ObservableObject {
 
     /// 前一次切换结束：最新一次选择与确认值不同就再提交。
     private func configSettled(_ op: AppLedger.Operation) {
-        guard case .config(let runtimeId, let setting, _, _) = op.payload else { return }
+        guard case .config(let runtimeId, let setting, let value, _) = op.payload else { return }
+        let session = configOperationSessions.removeValue(forKey: op.opId)
+        guard let current = runtimes.first(where: { $0.runtimeId == runtimeId }), session == (current.sessionId ?? "") else { return }
+        if case .rejected(let rejection) = op.phase {
+            configFailures[runtimeId] = SessionConfigFailure(setting: setting, value: value,
+                message: rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason,
+                sessionId: runtimes.first { $0.runtimeId == runtimeId }?.sessionId)
+        } else { configFailures.removeValue(forKey: runtimeId) }
         let target = OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)
         guard let next = configSelections.removeValue(forKey: target), let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }),
               OperationKinds.confirmedValue(runtime, setting: setting) != next.value else { return }
@@ -1650,9 +1671,9 @@ final class HostConnection: ObservableObject {
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
-            guard canCloseRuntime(runtime.runtimeId) else {
+            if let reason = runtime.remoteCloseBlockReason(commands[runtime.runtimeId] ?? []) {
                 agentState.subscribe(runtime: runtime, force: true)
-                errorMessage = L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")
+                errorMessage = reason.message
                 continue
             }
             if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
@@ -2663,7 +2684,9 @@ final class HostConnection: ObservableObject {
            let index = runtimes.firstIndex(where: { $0.runtimeId == runtimeId }) {
             let previous = runtimes[index]
             let fields = metadata.filter { key, _ in
-                let owned: String? = ["status": "execution", "model": "model", "thinkingLevel": "model", "contextUsage": "context", "permissionManagement": "permissions"][key]
+                let owned: String? = ["status": "execution", "model": "model", "thinkingLevel": "model",
+                    "currentTurnConfiguration": "model", "currentTurnConfigurationSupported": "model", "modelSelection": "model",
+                    "contextUsage": "context", "permissionManagement": "permissions"][key]
                 return owned.map { !agentState.owns($0, runtimeId: runtimeId) } ?? true
             }
             let next = reprojectRuntime(mergeRuntime(previous, metadata: fields))
@@ -3257,6 +3280,8 @@ final class HostConnection: ObservableObject {
     }
 
     private func invalidateConversation(_ runtimeId: String) {
+        configFailures.removeValue(forKey: runtimeId)
+        for setting in OperationKinds.configSettings { configSelections.removeValue(forKey: OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)) }
         if runtimeId == selectedRuntimeId { turnFileChanges.clear() }
         historyWriteLeases.removeValue(forKey: runtimeId)?.invalidate()
         branchGenerations[runtimeId, default: 0] += 1

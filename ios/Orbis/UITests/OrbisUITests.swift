@@ -52,6 +52,9 @@ final class OrbisUITests: XCTestCase {
             card.swipeLeft()
             XCTAssertTrue(card.exists)
             XCTAssertFalse(app.buttons["关闭选中会话"].exists)
+            XCTAssertTrue(app.staticTexts["子代理尚未结束，暂不能关闭会话。"].waitForExistence(timeout: 3))
+            app.buttons["关闭错误提示"].tap()
+            XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
             card.tap()
             let toggle = app.buttons["background-tasks-toggle"]
             XCTAssertTrue(toggle.waitForExistence(timeout: 5))
@@ -70,6 +73,57 @@ final class OrbisUITests: XCTestCase {
             capture("background-tasks-\(dark ? "dark" : "light")", app: app)
             app.terminate()
         }
+    }
+
+    // SC82: a partial inventory of completed tasks must still allow selection and
+    // swipe feedback; mixed close leaves the blocked card selected and closes only Pi.
+    func testHomeSubagentCardsRemainSelectableAndBlockedSwipesExplainWhy() {
+        let app = launch("home", arguments: ["--preview-background-tasks", "--preview-background-incomplete", "--preview-reduce-motion"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        let pi = app.buttons["home-runtime-preview-pi"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["子代理 2 项，清单不完整"].waitForExistence(timeout: 3))
+        let originalFrame = card.frame
+        let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.30, dy: 0)))
+        XCTAssertFalse(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].exists)
+        waitForX(card, originalFrame.minX, operation: "short blocked swipe")
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].waitForExistence(timeout: 3))
+        XCTAssertTrue(card.exists)
+        waitForX(card, originalFrame.minX, operation: "blocked swipe rebound")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
+        capture("home-subagent-blocked-swipe", app: app)
+        app.buttons["关闭错误提示"].tap()
+        XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
+
+        card.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertTrue(card.isSelected)
+        XCTAssertEqual(card.frame, originalFrame)
+        // Accessibility text can remain present underneath an opaque selection fill.
+        // Check rendered title pixels so an empty-looking selected card cannot pass.
+        XCTAssertGreaterThan(inkPixels(app.staticTexts["对齐移动端的使用体验"].firstMatch), 100)
+        pi.tap()
+        XCTAssertTrue(app.staticTexts["已选择 2 项"].waitForExistence(timeout: 3))
+        app.buttons["关闭选中会话"].tap()
+        XCTAssertTrue(pi.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(card.exists)
+        XCTAssertTrue(card.isSelected)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].exists)
+        XCTAssertGreaterThan(inkPixels(app.staticTexts["对齐移动端的使用体验"].firstMatch), 100)
+        capture("home-subagent-mixed-close-retains-selection", app: app)
+        app.buttons["关闭错误提示"].tap()
+        XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
+        app.buttons["退出多选"].tap()
+        card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    private func waitForX(_ element: XCUIElement, _ x: CGFloat, operation: String) {
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(element.frame.minX - x) <= 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed, operation)
     }
 
     // S34–38 / SC54–59: exercise the production root controls and local-only
@@ -861,30 +915,64 @@ final class OrbisUITests: XCTestCase {
         capture("new-session-local-draft", app: app)
     }
 
-    /// V12 r27 / ADR-0049 §6.7：选择模型后立即显示所选值并带“切换中”，确认前不声称已生效；顶栏不位移（V05）。
+    /// SC84: saving keeps the confirmed model and a separate progress mark; header geometry and send prerequisites remain stable.
     func testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader() {
-        let app = launch("chat", arguments: ["--preview-model-switch"])
+        let app = launch("chat", arguments: ["--preview-reduce-motion"])
         let title = app.descendants(matching: .any)["chat-title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 8))
         let before = title.frame
-        // 夹具在聊天页出现约 3 秒后发起切换；电脑端只回执、不改模型，选择停在“切换中”。
-        RunLoop.current.run(until: Date().addingTimeInterval(4.5))
-        XCTAssertEqual(title.frame.minY, before.minY, accuracy: 1)
-        XCTAssertEqual(title.frame.height, before.height, accuracy: 1)
-        capture("model-switching-header", app: app)
         // V10 r27 / §6.2：切换中发送的消息立即出现并清空输入，标明在等模型切换。
         let text = "等模型切好再发"
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         composer.tap(); composer.typeText(text)
+        // Start the real operation after keyboard setup, so slow device automation
+        // cannot exhaust its unchanged 15-second confirmation deadline beforehand.
+        title.tap(); app.buttons["session-config-model"].tap()
+        let choice = app.buttons["session-config-option-model-a"]
+        if !choice.isHittable { app.scrollViews["session-model-configuration"].swipeUp() }
+        choice.tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForNonExistence(timeout: 3))
+        XCTAssertEqual(title.frame.minY, before.minY, accuracy: 1)
+        XCTAssertEqual(title.frame.height, before.height, accuracy: 1)
+        capture("model-switching-header", app: app)
         app.buttons["发送消息"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
         XCTAssertTrue(app.staticTexts["等待模型切换"].waitForExistence(timeout: 1))
         XCTAssertEqual((composer.value as? String)?.contains(text), false)
         capture("model-switching-waiting-send", app: app)
         title.tap()
-        let fact = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "默认模型（切换中）")).firstMatch
+        let fact = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "默认模型，保存中")).firstMatch
         XCTAssertTrue(fact.waitForExistence(timeout: 3))
         capture("model-switching-facts", app: app)
+    }
+
+    // SC84: real header/sheet interaction preserves unsent input, separates this
+    // turn from the next choice, and safely falls back with an older Host.
+    func testSessionModelPanelSeparatesTurnsAndPreservesDraft() {
+        for legacy in [false, true] {
+            let args = ["--preview-current-turn", "--preview-reduce-motion"] + (legacy ? ["--preview-old-turn-host"] : [])
+            let app = launch("chat", arguments: args)
+            let title = app.descendants(matching: .any)["chat-title"].firstMatch
+            let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 8))
+            composer.tap(); composer.typeText("keep config draft")
+            title.tap()
+            XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.staticTexts["session-current-model"].label, legacy ? "模型未确认" : "GPT-5.3")
+            XCTAssertEqual(app.staticTexts["session-selected-model"].label, "GPT-5.4")
+            XCTAssertTrue(app.staticTexts["本轮使用"].exists)
+            XCTAssertTrue(app.staticTexts["下轮使用"].exists)
+            capture(legacy ? "session-config-old-host" : "session-config-current-next", app: app)
+            app.buttons["session-config-model"].tap()
+            let option = app.buttons["session-config-option-model-a"]
+            if !option.isHittable { app.scrollViews["session-model-configuration"].swipeUp() }
+            XCTAssertTrue(option.waitForExistence(timeout: 5)); option.tap()
+            XCTAssertTrue(app.staticTexts["模型与深度"].waitForNonExistence(timeout: 3))
+            XCTAssertEqual(composer.value as? String, "keep config draft")
+            XCTAssertTrue((title.value as? String)?.contains(legacy ? "模型未确认" : "GPT-5.3") == true)
+            XCTAssertTrue((title.value as? String)?.contains("保存中") == true)
+            app.terminate()
+        }
     }
 
     /// V10 r27 / ADR-0049 §6.1–§6.2：附件还在上传时发送，气泡立即出现并带着附件（缩略图、文件名、进度），
@@ -3053,6 +3141,8 @@ final class OrbisUITests: XCTestCase {
         app.buttons["关闭通知"].firstMatch.tap()
         XCTAssertFalse(app.staticTexts["模型服务等待恢复，电脑端会继续核对。"].waitForExistence(timeout: 2))
         app.buttons["chat-title"].tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+        app.buttons["会话信息"].tap()
         XCTAssertTrue(app.staticTexts["模型与上下文"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["high"].exists)
         XCTAssertTrue(app.staticTexts["本轮耗时"].exists)
