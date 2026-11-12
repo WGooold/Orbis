@@ -427,6 +427,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun uploadsOf(messageId: String): List<String> = active()?.uploadsOf(messageId).orEmpty()
 
     fun retryLaunch() { active()?.retryLaunch() }
+    fun canAbandonConfiguredLaunch(requestId: String): Boolean = active()?.canAbandonConfiguredLaunch(requestId) == true
     fun abandonConfiguredLaunch(): String? = active()?.abandonConfiguredLaunch()
 
     fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =

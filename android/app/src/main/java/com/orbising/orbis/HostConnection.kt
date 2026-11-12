@@ -869,12 +869,15 @@ internal class HostConnection(
         return sent
     }
 
+    fun canAbandonConfiguredLaunch(requestId: String): Boolean = mutableState.value.launching
+        ?.takeIf { it.requestId == requestId }?.canAbandonConfiguredLaunch(configuredLaunchId) == true
+
     /** Explicitly stop waiting after an uncertain launch; never infer that its native TUI is gone. */
     fun abandonConfiguredLaunch(): String? {
         val saved = configuredLaunchJournal.snapshot ?: return null
         val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return null
         val launch = mutableState.value.launching?.takeIf { it.requestId == id } ?: return null
-        if (launch.failure == null && !launch.unconfirmed) return null
+        if (!launch.canAbandonConfiguredLaunch(id)) return null
         if (configuredLaunchJournal.update(id) { null } == null) return null
         val firstId = saved["firstMessageId"]?.jsonPrimitive?.contentOrNull
         updateState { it.abandonConfiguredLaunchState(id, firstId) }

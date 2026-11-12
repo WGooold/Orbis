@@ -25,6 +25,10 @@ internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject 
     put("permissions", buildJsonObject { permissions.forEach { (key, value) -> put(key, value) } })
 }
 
+/** LAUNCH-WAIT-01: only the matching local journal can release a configured launch. */
+internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): Boolean =
+    requestId == journalLaunchId && (failure != null || unconfirmed)
+
 /** Leaving an uncertain page preserves its ledger identity; reopening must not attempt to create it again. */
 internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long): RemoteState {
     if (launching != null) return this

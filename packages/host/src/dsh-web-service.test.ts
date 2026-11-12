@@ -142,6 +142,41 @@ describe("shared DSH Web lifecycle", () => {
     expect(() => process.kill(descriptor.pid, 0)).not.toThrow();
   });
 
+  // DSH-STATE-01: publishing an external launcher must preserve both the exact
+  // current invocation and the package entry used by released Hosts' decoders.
+  it("publishes a legacy-readable package entry and restores the original launcher on reconnect", async () => {
+    const directory = await home();
+    const env = { ...process.env, DSH_HOME: directory, ORBIS_DSH_WEB_URL: "" };
+    const selected = { ...cli(), packageEntry: join(directory, "selected", "lib", "bin.js") };
+    const service = await ensureDshWebService(env, { cli: selected, port: 0 });
+    const path = join(directory, "cache", "orbis-web.json");
+    const text = await readFile(path, "utf8");
+    const descriptor = JSON.parse(text) as { pid: number; cli: unknown; launchCli: unknown };
+    childPids.push(descriptor.pid);
+    expect(descriptor.cli).toEqual({ command: process.execPath, prefixArgs: [selected.packageEntry] });
+    expect(descriptor.launchCli).toEqual(selected);
+    expect(service.cli).toEqual(selected);
+    await service.stop();
+    expect(await findDshWebService(env)).toMatchObject({ url: service.url, cli: selected });
+    expect(await ensureDshWebService(env, { cli: { command: "missing-executable", prefixArgs: [] } }))
+      .toMatchObject({ url: service.url, cli: selected });
+    expect(await readFile(path, "utf8")).toBe(text);
+  });
+
+  // A damaged new field must not silently select the legacy fallback interpreter.
+  it("rejects a malformed recorded launcher without changing a running service", async () => {
+    const directory = await home();
+    const url = await web();
+    await mkdir(join(directory, "cache"));
+    const path = join(directory, "cache", "orbis-web.json");
+    const text = JSON.stringify({ version: 1, owner: "orbis", home: directory, pid: process.pid, url,
+      cli: cli(), launchCli: { command: "selected-launcher", prefixArgs: "invalid" } });
+    await writeFile(path, text);
+    expect(await findDshWebService({ DSH_HOME: directory })).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe(text);
+    expect((await fetch(url, { redirect: "manual" })).status).toBe(303);
+  });
+
   it("refuses to spawn beside an occupied Web port without a valid owned descriptor", async () => {
     const directory = await home();
     const url = await web();

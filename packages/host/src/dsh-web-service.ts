@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { record, resolveDshCommand } from "./dsh-client.js";
+import { dshPackageEntry, record, resolveDshCommand } from "./dsh-client.js";
 import type { PiCommand } from "./spawner.js";
 import { dshWebLaunchEnvironment } from "./dsh-web-provider.js";
 import { agentInvocation, stopAgentProcess } from "./agent-command.js";
@@ -78,7 +78,9 @@ async function readDescriptor(path: string, home: string): Promise<Descriptor | 
   }
   if (stored.version !== 1 || stored.owner !== "orbis" || stored.home !== home
     || !Number.isSafeInteger(stored.pid) || Number(stored.pid) <= 0 || !alive(Number(stored.pid)) || typeof stored.url !== "string") return;
-  const cli = record(stored.cli);
+  // DSH-STATE-01: keep the executable launcher separate from the version-1
+  // Node + package-entry descriptor consumed by released Hosts.
+  const cli = record(stored.launchCli === undefined ? stored.cli : stored.launchCli);
   if (typeof cli.command !== "string" || !Array.isArray(cli.prefixArgs) || !cli.prefixArgs.every(value => typeof value === "string")) return;
   let url: string;
   try { url = validateDshWebUrl(stored.url); } catch { return; }
@@ -224,9 +226,13 @@ async function startLocalService(home: string, env: NodeJS.ProcessEnv, options: 
       if (printed && await authenticated(printed, 3_000)) {
         if (child.pid === undefined) throw new Error("DeepSeek Web 启动失败");
         const descriptor: Descriptor = { version: 1, owner: "orbis", home, pid: child.pid, url: validateDshWebUrl(printed), cli };
+        const packageEntry = dshPackageEntry(cli);
+        const stored = packageEntry && cli.prefixArgs[0] !== packageEntry
+          ? { ...descriptor, cli: { command: process.execPath, prefixArgs: [packageEntry] }, launchCli: cli }
+          : descriptor;
         const temporary = `${path}.${randomUUID()}.tmp`;
         const file = await open(temporary, "wx", 0o600);
-        try { await file.writeFile(JSON.stringify(descriptor)); } finally { await file.close(); }
+        try { await file.writeFile(JSON.stringify(stored)); } finally { await file.close(); }
         await rename(temporary, path);
         child.unref();
         return handle(descriptor.url, cli);

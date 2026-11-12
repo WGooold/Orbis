@@ -3,6 +3,7 @@
 package com.orbising.orbis
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,6 +39,21 @@ class LaunchLedgerTest {
         """{"type":"runtime.online","runtime":{"runtimeId":"rt-$sessionId","sessionId":"$sessionId","name":"Agent","cwd":"/repo/app","status":"idle"}}""")
 
     private fun newSession(state: RemoteState) = launch(state, mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo/app"))
+
+    // LAUNCH-WAIT-01: legacy/resume launches have no configured journal; only
+    // a matching uncertain or failed configured launch may expose abandonment.
+    @Test fun abandonmentAvailabilityRequiresTheMatchingUnresolvedJournal() {
+        val (state, id) = newSession(setup())
+        val pending = state.launching!!
+        assertFalse(pending.canAbandonConfiguredLaunch(id))
+        for (unresolved in listOf(pending.copy(unconfirmed = true), pending.copy(failure = "launch failed"))) {
+            assertFalse(unresolved.canAbandonConfiguredLaunch(null))
+            assertFalse(unresolved.canAbandonConfiguredLaunch("different-launch"))
+            assertTrue(unresolved.canAbandonConfiguredLaunch(id))
+        }
+        val resumed = launch(setup(), mapOf("type" to "resume", "sessionId" to "s1", "agentKind" to "codex")).first.launching!!
+        assertFalse(resumed.copy(unconfirmed = true).canAbandonConfiguredLaunch(null))
+    }
 
     // S51 / SC73: a runtime can be visible during native setup; only the matching
     // configured-ready result is allowed to bind and release waiting first messages.

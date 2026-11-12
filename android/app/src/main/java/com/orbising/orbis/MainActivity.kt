@@ -2447,7 +2447,9 @@ internal fun ChatScreen(
             launch?.takeIf { it.failure != null || it.unconfirmed }?.let { failed ->
                 Box(Modifier.align(Alignment.TopCenter)) {
                     LaunchNotice(failed, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
-                        onAbandon = { model.abandonConfiguredLaunch()?.let(onAbandonLaunch) })
+                        onAbandon = if (model.canAbandonConfiguredLaunch(failed.requestId)) {
+                            { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
+                        } else null)
                 }
             }
             state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }?.let { projection ->
