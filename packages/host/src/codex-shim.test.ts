@@ -19,17 +19,20 @@ describe("Codex Windows shim", () => {
     root = undefined;
   });
 
-  it("uses the persisted selection for offline and parameterized launches", async () => {
+  // Both npm and irm selections must survive Host shutdown without running an exe through Node.
+  it.each(["codex.js", "codex.exe"])("uses the persisted %s selection for offline and parameterized launches", async filename => {
     root = await mkdtemp(join(tmpdir(), "orbis-shim-choice-"));
     vi.stubEnv("ORBIS_AGENT_INSTALL_ROOT", root);
     vi.stubEnv("ORBIS_CODEX_ENTRY", join(root, "stale.js"));
-    const entry = join(root, "codex", "bin", "codex.js");
+    const entry = join(root, "codex", "bin", filename);
+    const command = filename.endsWith(".js") ? process.execPath : entry;
+    const prefixArgs = filename.endsWith(".js") ? [entry] : [];
     await mkdir(dirname(entry), { recursive: true });
     await writeFile(entry, "");
     await saveCodexSelection(entry);
     expect(JSON.parse(await readFile(join(root, "codex-selection.json"), "utf8")).entry).toBe(entry);
     vi.stubEnv("ORBIS_CODEX_ENTRY", "");
-    expect((await resolveCodexCommand()).prefixArgs).toEqual([entry]);
+    expect(await resolveCodexCommand()).toEqual({ command, prefixArgs });
     vi.stubEnv("ORBIS_CODEX_ENTRY", join(root, "stale.js"));
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Host offline")));
     vi.stubEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop");
@@ -42,8 +45,8 @@ describe("Codex Windows shim", () => {
     await runCodexShim([]);
     expect(childProcess.spawn).toHaveBeenCalledTimes(2);
     for (const call of childProcess.spawn.mock.calls) expect(call[2].env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBeUndefined();
-    for (const args of [[entry, "login"], [entry]]) {
-      expect(childProcess.spawn.mock.calls.shift()?.slice(0, 2)).toEqual([process.execPath, args]);
+    for (const args of [[...prefixArgs, "login"], prefixArgs]) {
+      expect(childProcess.spawn.mock.calls.shift()?.slice(0, 2)).toEqual([command, args]);
     }
   });
   it("only routes an argument-free invocation to Host", () => {

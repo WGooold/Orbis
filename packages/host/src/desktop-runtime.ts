@@ -9,7 +9,7 @@ import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolve
 import QRCode from "qrcode";
 import type { AgentStateRangeRequest } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
-import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
+import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
@@ -256,7 +256,8 @@ export class DesktopRuntime {
       const local: LocalAgent = { installed: false, installedButBroken: false, ...(entry ? { entry } : {}) };
       try {
         if (entry) {
-          const { stdout, stderr } = await execute(process.execPath, [entry, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+          const cli = kind === "codex" ? codexCommandForEntry(entry) : { command: process.execPath, prefixArgs: [entry] };
+          const { stdout, stderr } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
           const version = extractAgentVersion(stdout + "\n" + stderr);
           if (!version) throw new Error("no version");
           local.installed = true; local.version = version;
@@ -302,9 +303,10 @@ export class DesktopRuntime {
           terminalNeedsElevation: shim.needsElevation === true };
         if (local.installed && entry) {
           try {
+            const command = codexCommandForEntry(entry);
             const [cli, server] = await Promise.all([
-              execute(process.execPath, [entry, "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
-              execute(process.execPath, [entry, "app-server", "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
+              execute(command.command, [...command.prefixArgs, "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
+              execute(command.command, [...command.prefixArgs, "app-server", "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
             ]);
             status.terminalCompatible = /--remote\b/u.test(cli.stdout + cli.stderr) && /--listen\b/u.test(server.stdout + server.stderr);
           } catch { status.terminalCompatible = false; }
@@ -737,8 +739,9 @@ export class DesktopRuntime {
     if (this.#desired || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
     await this.#checkExistingHost();
     const copies = await findAgentCopies("codex", process.env);
-    if (!copies.some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前 npm 安装中找到");
-    const { stdout, stderr } = await execute(process.execPath, [entry, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+    if (!copies.some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前安装中找到");
+    const cli = codexCommandForEntry(entry);
+    const { stdout, stderr } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
     const version = extractAgentVersion(stdout + "\n" + stderr);
     if (!version) throw new Error("Codex 入口无法运行");
     await saveCodexSelection(entry);

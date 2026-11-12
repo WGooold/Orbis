@@ -9,8 +9,8 @@
  * - Desktop mode uses `codex app-server proxy` to join an existing daemon through
  *   its control socket. The proxy's official stdio stream carries newline-delimited
  *   JSON frames. The Host owns only the proxy connection, never the daemon.
- * - `.cmd` 禁令：Windows 上全局安装的 `codex` 是 `.cmd`，spawn 必须经 shell；所以和
- *   pi 一样定位 JS 入口用 node 直接拉（见 `resolveCodexCommand`）。
+ * - Windows npm 的 `.cmd` 入口需要 shell，因此用 Node 直接拉包内 JS；官方独立安装的
+ *   `codex.exe` 直接启动，两种入口共用检测和选中记录（见 `resolveCodexCommand`）。
  * - 线格式是**不带 `jsonrpc:"2.0"` 键**的 JSON-RPC：请求 `{id, method, params}`、
  *   响应 `{id, result|error}`、通知 `{method, params}`；服务端请求带 id，需要回帧。
  * - 握手：`initialize`（clientInfo）→ 通知 `initialized`。之后 thread/*、turn/* 才可用。
@@ -25,7 +25,7 @@ import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 
-import { resolveNodePackageCli } from "./spawner.js";
+import { findAgentCopies } from "./agent-installation.js";
 import { readCodexSelection } from "./codex-selection.js";
 import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
 import { resolveCodexTerminalServer } from "./codex-terminal-server.js";
@@ -570,34 +570,31 @@ export type CodexCommand = {
   prefixArgs: string[];
 };
 
+/** Detection, compatibility probes and launches must use the same interpreter. */
+export function codexCommandForEntry(entry: string): CodexCommand {
+  return /\.(?:m?js|cjs)$/iu.test(entry)
+    ? { command: process.execPath, prefixArgs: [entry] }
+    : { command: entry, prefixArgs: [] };
+}
+
 /**
- * 解析 `codex` 的启动命令（与 `resolvePiCommand` 同一套思路）。
- * Windows 上全局安装的是 `codex.cmd`（spawn 必须经 shell，违反「禁止 shell」），
- * 定位 npm 包里的 `bin/codex.js` 用 node 直接拉；非 Windows 直接用 PATH 上的 `codex`。
- *
- * 入口按 **PATH 顺序**找（见 `resolveNodePackageCli`），不是只认 `%APPDATA%\npm`：
- * 用 nvm-windows 时 PATH 里更靠前的 `C:\nvm4w\nodejs` 下往往还装着另一个副本，只认
- * `%APPDATA%\npm` 会让 Host 跑起旧的那份，于是「APP 里的 codex 能选的模型」和终端
- * 里的对不上——两边其实是两个不同版本的 codex。
+ * Windows 按 PATH 顺序解析 npm JS 与官方独立 exe，再检查安装器默认位置；
+ * 所选入口与 Host 检测、版本验证、终端 shim 共用，保留默认副本损坏时的错误。
+ * 非 Windows 没有已选入口时仍使用 PATH 上的 `codex`。
  */
-export async function resolveCodexCommand(env: Record<string, string | undefined> = process.env): Promise<CodexCommand> {
+export async function resolveCodexCommand(env: Record<string, string | undefined> = process.env, targetPlatform: NodeJS.Platform = platform()): Promise<CodexCommand> {
   if (env === process.env && !env.ORBIS_CODEX_ENTRY) {
     const selected = await readCodexSelection();
     if (selected) env = { ...env, ORBIS_CODEX_ENTRY: selected };
   }
-  if (env.ORBIS_CODEX_ENTRY) {
-    const { access } = await import("node:fs/promises");
-    await access(env.ORBIS_CODEX_ENTRY);
-    return { command: process.execPath, prefixArgs: [env.ORBIS_CODEX_ENTRY] };
-  }
-  if (platform() !== "win32") return { command: "codex", prefixArgs: [] };
-  const entry = await resolveNodePackageCli(env, ["@openai", "codex", "bin", "codex.js"]);
+  if (!env.ORBIS_CODEX_ENTRY && targetPlatform !== "win32") return { command: "codex", prefixArgs: [] };
+  const entry = env.ORBIS_CODEX_ENTRY || (await findAgentCopies("codex", env, targetPlatform))[0]?.entry;
   if (entry === undefined) {
-    throw new Error(
-      "未找到 codex 的 JS 入口（PATH 与 %APPDATA%\\npm 下都没有 node_modules\\@openai\\codex）。请确认已全局安装 codex-cli。",
-    );
+    throw new Error("未找到 Codex CLI，请使用官方安装程序或 npm 安装 Codex。");
   }
-  return { command: process.execPath, prefixArgs: [entry] };
+  const { access } = await import("node:fs/promises");
+  await access(entry);
+  return codexCommandForEntry(entry);
 }
 
 function describeJsonRpcError(error: unknown): string {

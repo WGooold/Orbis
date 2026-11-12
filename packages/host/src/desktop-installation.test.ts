@@ -96,6 +96,23 @@ describe("desktop Agent installation commands", () => {
     await runtime.close();
   });
 
+  // Use a real native executable on every test platform. Feeding its binary to Node must fail;
+  // direct execution reports its version, persists the entry and keeps managed updates available.
+  it("detects and preserves a native Codex entry across refresh without treating it as npm", async () => {
+    const { runtime, root } = await fixture();
+    const entry = process.execPath;
+    expect((await runtime.detect({ codexEntry: entry })).find(status => status.kind === "codex"))
+      .toMatchObject({ installed: true, installedButBroken: false, entry, version: process.versions.node, installationSource: "custom", terminalCompatible: false });
+    expect(await readCodexSelection()).toBe(entry);
+    expect(await resolveCodexCommand()).toEqual({ command: entry, prefixArgs: [] });
+    expect((await runtime.detect()).find(status => status.kind === "codex"))
+      .toMatchObject({ installed: true, entry, version: process.versions.node });
+    installation.run.mockResolvedValue({ entry: join(root, "managed", "codex.js"), version: "2.0.0" });
+    await runtime.updateAgent("codex");
+    expect(installation.run.mock.calls[0]?.[5]).toEqual({});
+    await runtime.close();
+  });
+
   it("surfaces a machine PATH that needs one elevation so Settings can offer the repair", async () => {
     const { runtime } = await fixture();
     shim.status.mockResolvedValue({ state: "repair", detail: "系统 PATH 里的 nvm codex 抢先于 Orbis", needsElevation: true });
