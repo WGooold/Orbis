@@ -58,6 +58,34 @@ afterEach(async () => {
 });
 
 describe("DeepSeek Web runtime adapter", () => {
+  // DSH-ACCOUNT-03: activation must await native profile initialization even when
+  // the App skipped configuration discovery; read-only session following must not initialize it.
+  it.each(["new", "resume", "live", "configuration"] as const)("prepares account defaults before %s", async mode => {
+    const f = discoveryFixture();
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-account-")); roots.push(cwd);
+    const inherited = f.request.getMockImplementation()!;
+    const initial = { default: { provider: "deepseek-official", model: "deepseek-flash" },
+      groups: [{ id: "deepseek-account", models: [{ id: "account-model" }] }] };
+    const confirmed = { ...initial, default: { provider: "deepseek-account", model: "account-model" } };
+    const initialization = deferred<void>(); let prepared = false;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/modelCatalog") return prepared ? confirmed : initial;
+      if (method === "session/initializeDefaultModel") { await initialization.promise; prepared = true; return; }
+      if (method === "session/create") { expect(prepared).toBe(true); return { sessionId: "account-session" }; }
+      return inherited(method, args);
+    });
+    f.list([{ ...f.live("account-session", mode === "live"), cwd }]);
+    await f.runtime.start();
+    expect(f.request.mock.calls.some(([method]) => method === "session/initializeDefaultModel")).toBe(false);
+    const operation = mode === "configuration" ? f.runtime.sessionConfiguration()
+      : f.runtime.activate(mode === "new" ? { type: "new", cwd } : { type: "resume", sessionId: "dsh:account-session" });
+    await vi.waitFor(() => expect(f.request).toHaveBeenCalledWith("session/initializeDefaultModel", {}));
+    expect(f.request.mock.calls.some(([method]) => method === "session/create")).toBe(false);
+    initialization.resolve();
+    if (mode === "configuration") expect(await operation).toMatchObject({ defaults: { model: JSON.stringify(confirmed.default) } });
+    else expect(await operation).toMatchObject({ sessionId: "dsh:account-session" });
+  });
+
   // S56 / SC80: bind request/header to turn/start; a lastUsed projection alone can be stale.
   it("keeps request facts separate from next selection across active changes and snapshots", async () => {
     const f = discoveryFixture(); f.list([f.live("configuration", true)]); await f.runtime.start();

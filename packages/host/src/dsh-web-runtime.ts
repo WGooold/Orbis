@@ -21,7 +21,7 @@ import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
 import { dshUserQuestionInteraction, dshUserQuestionAnswer } from "./dsh-user-questions.js";
 import { dshPermissionManagement } from "./permission-management.js";
 import { ActivationError } from "./spawner.js";
-import { applyDshWebProvider } from "./dsh-web-provider.js";
+import { applyDshWebProvider, prepareDshWebModelCatalog } from "./dsh-web-provider.js";
 import { DshWebDiscovery, type DshLiveSession } from "./dsh-web-discovery.js";
 
 type Obj = Record<string, unknown>;
@@ -374,6 +374,7 @@ export class DshWebRuntime implements AgentBackend {
       const current = this.#sessions.get(target.sessionId);
       if (current && !current.closing) {
         return this.#ensureWorkspace(current.cwd).then(async () => {
+          await prepareDshWebModelCatalog(this.#client);
           if (context?.configuration) await this.#configureLaunch(current.id, context.configuration);
           return { sessionId: target.sessionId, spawnMode: "headless" as const };
         });
@@ -392,6 +393,7 @@ export class DshWebRuntime implements AgentBackend {
     if (target.type === "new") {
       cwd = target.cwd;
       if (!isAbsolute(cwd) || !(await stat(cwd).then(info => info.isDirectory(), () => false))) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
+      await prepareDshWebModelCatalog(this.#client);
       const workspaceId = await this.#ensureWorkspace(cwd);
       const created = object(await this.#client.request("session/create", { request: { workspaceId } }));
       id = typeof created.sessionId === "string" ? created.sessionId : "";
@@ -403,6 +405,7 @@ export class DshWebRuntime implements AgentBackend {
       const item = (await this.#catalogRows(false, true)).find(value => value.sessionId === target.sessionId);
       if (!item) throw new ActivationError("session_not_found", "找不到这个 DeepSeek Web 会话");
       cwd = item.cwd; createdAt = item.createdAt; title = item.name;
+      await prepareDshWebModelCatalog(this.#client);
       const workspaceId = await this.#ensureWorkspace(cwd);
       await this.#client.request("session/create", { request: { sessionId: id, workspaceId } });
     }
@@ -1550,7 +1553,7 @@ export class DshWebRuntime implements AgentBackend {
     } catch (error) { if (generation === session.modelGeneration && this.#sessions.get(publicId(session.id)) === session) this.#report(`无法读取 DeepSeek Web 模型目录：${textOf(error)}`, publicId(session.id), "dsh.models"); }
   }
   async sessionConfiguration(): Promise<SessionConfigurationCatalog> {
-    const catalog = object(await this.#client.request("session/modelCatalog", {}));
+    const catalog = await prepareDshWebModelCatalog(this.#client);
     const permissions = dshPermissionOptions(await this.#client.request("permissionPresets/catalog", {})) ?? [];
     const fallback = object(catalog.default);
     const modelValue = typeof fallback.provider === "string" && typeof fallback.model === "string"

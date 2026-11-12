@@ -22,6 +22,18 @@ export function dshWebLaunchEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessE
   return launch;
 }
 
+/** DSH-ACCOUNT-01: a fresh Web profile can inherit an API-key default after account login in another profile. */
+export async function prepareDshWebModelCatalog(client: DshWebConnection): Promise<Record<string, unknown>> {
+  const catalog = record(await client.request("session/modelCatalog", {}));
+  const groups = (Array.isArray(catalog.groups) ? catalog.groups : []).map(record);
+  const available = (provider: string) => groups.some(group => group.id === provider && Array.isArray(group.models) && group.models.length > 0);
+  if (record(catalog.default).provider !== "deepseek-official" || available("deepseek-official") || !available("deepseek-account")) return catalog;
+  // Use DSH's own credential check and profile persistence. An unavailable model
+  // listing alone cannot prove that a configured API key should be replaced.
+  await client.request("session/initializeDefaultModel", {});
+  return record(await client.request("session/modelCatalog", {}));
+}
+
 function includes(actual: unknown, expected: unknown): boolean {
   if (Array.isArray(expected)) return Array.isArray(actual) && actual.length === expected.length && expected.every((item, index) => includes(actual[index], item));
   if (expected !== null && typeof expected === "object") return Object.entries(expected).every(([key, value]) => includes(record(actual)[key], value));
