@@ -5,6 +5,8 @@
 #include <QProcess>
 #include <QSettings>
 #include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QPointer>
 #include <QTimer>
 #include <QVariantList>
 #include <QHash>
@@ -35,6 +37,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool verificationRequired READ verificationRequired NOTIFY changed)
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(bool exiting READ exiting NOTIFY changed)
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
     Q_PROPERTY(bool desiredRunning READ desiredRunning NOTIFY changed)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)
@@ -85,7 +88,9 @@ public:
     bool activated() const { return !m_credential.isEmpty(); }
     bool verificationRequired() const { return m_verificationRequired; }
     bool registrationAvailable() const { return m_registrationAvailable; }
-    bool busy() const { return m_busy > 0; }
+    bool busy() const { return m_busy > 0 || m_exiting || m_updating; }
+    bool exiting() const { return m_exiting; }
+    bool exitApproved() const { return m_exitApproved; }
     bool bridgeReady() const { return m_bridgeReady; }
     bool autoStart() const { return m_settings.value("autoStart", false).toBool(); }
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
@@ -153,6 +158,12 @@ public:
     Q_INVOKABLE void copyDiagnostics();
     Q_INVOKABLE void checkUpdates();
     Q_INVOKABLE void updateHost();
+    Q_INVOKABLE void confirmHostUpdate();
+    Q_INVOKABLE void requestExit();
+    Q_INVOKABLE void confirmExit();
+    Q_INVOKABLE void cancelExit();
+    void requestInstallerExit();
+    void deferStartup() { m_deferStartup = true; }
     Q_INVOKABLE void openDownloads();
     Q_INVOKABLE void openDataDirectory();
     Q_INVOKABLE void clearMessage();
@@ -171,10 +182,20 @@ signals:
     void providerInfoReady(const QString &title, const QString &text);
     void providerSaved();
     void notification(const QString &title, const QString &body);
+    void exitConfirmationRequested();
+    void updateConfirmationRequested();
+    void exitReady();
+    void installerConfirmationRequested();
+    void exitCancelled();
+    void exitFailed();
 private:
     friend class HostActivationTest;
+    friend class HostExitTest;
     using Callback = std::function<void(const QJsonValue &)>;
     void launchBridge();
+    void beginExit(const QString &installer = {});
+    void finishExit();
+    void failExit(const QString &message);
     void command(const QString &method, const QJsonObject &params = {}, Callback done = {});
     void receiveLine(const QJsonObject &line);
     void api(const QString &endpoint, const QJsonObject &body, Callback done);
@@ -197,6 +218,16 @@ private:
     QString m_runtimeRoot, m_dataDir, m_hostStateDir, m_credentialDir;
     QSettings m_settings;
     QProcess m_bridge;
+    QProcess m_exitWorker;
+    QTimer m_exitDeadline;
+    QByteArray m_exitOutput;
+    QString m_exitInstaller, m_exitError;
+    bool m_exiting = false, m_updating = false, m_exitApproved = false, m_exitWorkerDone = false;
+    bool m_automaticIntegrations = true;
+    bool m_deferStartup = false;
+    int m_updateGeneration = 0;
+    QList<QPointer<QNetworkReply>> m_updateReplies;
+    std::function<bool(const QString &)> m_installLauncher;
     QNetworkAccessManager m_network;
     QTimer m_tick;
     QByteArray m_stdout;

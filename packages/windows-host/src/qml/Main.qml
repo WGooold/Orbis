@@ -258,7 +258,11 @@ ApplicationWindow {
         })
         return updates.join("、")
     }
-    onClosing: function(close) { if (trayAvailable) { close.accepted = false; window.hide() } }
+    onClosing: function(close) {
+        close.accepted = false
+        if (trayAvailable && !host.exiting) window.hide()
+        else host.requestExit()
+    }
 
     component Field: TextField {
         property bool marksProviderDirty: true
@@ -1083,6 +1087,55 @@ ApplicationWindow {
             }
         }
     }
+    // HOST-EXIT-01 / HOST-UPDATE-01 share the same confirmation and asynchronous cleanup.
+    SoftDialog {
+        id: exitDialog; objectName: "hostExitDialog"; title: "退出 Orbis？"
+        anchors.centerIn: parent; modal: true; width: 500
+        closePolicy: Popup.CloseOnEscape
+        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web 和 Codex 桌面桥接）将关闭，正在运行的任务会中断。" }
+        footer: SoftDialogButtons {
+            ActionButton { objectName: "cancelHostExit"; text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { objectName: "confirmHostExit"; text: "停止并退出"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: exitDialog.accept(); onRejected: exitDialog.reject()
+        }
+        onAccepted: host.confirmExit()
+        onRejected: host.cancelExit()
+    }
+    SoftDialog {
+        id: installerExitDialog; objectName: "installerExitDialog"; title: "停止后台并安装新版 Host？"
+        anchors.centerIn: parent; modal: true; width: 500; closePolicy: Popup.CloseOnEscape
+        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web 和 Codex 桌面桥接）将关闭，正在运行的任务会中断。" }
+        footer: SoftDialogButtons {
+            ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { text: "停止并安装"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: installerExitDialog.accept(); onRejected: installerExitDialog.reject()
+        }
+        onAccepted: host.confirmExit()
+        onRejected: host.cancelExit()
+    }
+    SoftDialog {
+        id: hostUpdateDialog; objectName: "hostUpdateDialog"; title: "安装新版 Host？"
+        anchors.centerIn: parent; modal: true; width: 500
+        closePolicy: Popup.CloseOnEscape
+        ColumnLayout { width: parent.width; spacing: 12
+            Hint { text: "下载完成后将断开手机连接，停止 Host 管理的后台并退出。DeepSeek Web 和 Codex 桌面桥接中的任务会中断。"; Layout.fillWidth: true }
+            Hint { visible: Qt.platform.os === "osx"; text: "退出后会打开更新包，请将新版拖入 Applications 替换。"; Layout.fillWidth: true }
+        }
+        footer: SoftDialogButtons {
+            ActionButton { objectName: "cancelHostUpdate"; text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { objectName: "confirmHostUpdate"; text: "下载并更新"; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: hostUpdateDialog.accept(); onRejected: hostUpdateDialog.reject()
+        }
+        onAccepted: host.confirmHostUpdate()
+    }
+    SoftDialog {
+        id: exitProgressDialog; objectName: "hostExitProgressDialog"; title: "正在停止相关后台…"
+        anchors.centerIn: parent; modal: true; width: 420; closePolicy: Popup.NoAutoClose
+        RowLayout { width: parent.width; spacing: 12
+            BusyIndicator { running: host.exiting }
+            Hint { text: "正在保存状态并关闭后台任务"; Layout.fillWidth: true }
+        }
+    }
     SoftDialog {
         id: appDownloadDialog
         title: "Orbis Android"
@@ -1508,7 +1561,16 @@ ApplicationWindow {
     }
     Connections {
         target: host
-        function onChanged() { if (host.qr.length > 0 && !pairDialog.visible) pairDialog.open(); if (host.qr.length === 0 && pairDialog.visible) pairDialog.close() }
+        function onExitConfirmationRequested() { window.showNormal(); window.raise(); window.requestActivate(); exitDialog.open() }
+        function onUpdateConfirmationRequested() { hostUpdateDialog.open() }
+        function onInstallerConfirmationRequested() { window.showNormal(); window.raise(); window.requestActivate(); installerExitDialog.open() }
+        function onExitReady() { exitProgressDialog.close() }
+        function onChanged() {
+            if (host.exiting) { if (!exitProgressDialog.visible) exitProgressDialog.open() }
+            else exitProgressDialog.close()
+            if (!host.exiting && host.qr.length > 0 && !pairDialog.visible) pairDialog.open()
+            if (host.qr.length === 0 && pairDialog.visible) pairDialog.close()
+        }
         function onProviderDraftReady(draft) {
             window.loadingProviderDraft = true
             if (!providerDialog.visible) { presetSearch.text = ""; presetExpanded.checked = draft.create === true && (!draft.presetId || draft.presetId === "custom") }

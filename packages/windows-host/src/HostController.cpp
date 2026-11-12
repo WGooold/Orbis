@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QUrlQuery>
 #include <QVersionNumber>
+#include <QUuid>
 #include <QCryptographicHash>
 #include <QtConcurrentRun>
 
@@ -46,6 +47,45 @@ static bool validRelay(const QString &value) {
 HostController::HostController(QString runtimeRoot, QString dataDir, QString hostStateDir, QString credentialDir, bool automaticIntegrations, QObject *parent)
     : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
+    m_automaticIntegrations = automaticIntegrations;
+    m_installLauncher = [](const QString &path) {
+#ifdef Q_OS_MACOS
+        return QProcess::startDetached("open", {path});
+#else
+        return QProcess::startDetached(path, {"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/ORBISHOSTCLOSED=1", "/ORBISRELAUNCH=1"});
+#endif
+    };
+    m_exitDeadline.setSingleShot(true);
+    connect(&m_exitDeadline, &QTimer::timeout, this, [this] {
+        m_exitError = "后台收尾超时，请重试；尚未安装更新";
+        m_exitWorker.kill();
+    });
+    connect(&m_exitWorker, &QProcess::started, this, [this] {
+        const QJsonObject request{{"bridgePid", double(m_bridge.processId())}, {"runtimeRoot", m_runtimeRoot},
+            {"stateDir", m_hostStateDir}, {"integrations", m_automaticIntegrations}, {"externalDsh", !dshWebUrl().trimmed().isEmpty()}};
+        m_exitWorker.write(QJsonDocument(request).toJson(QJsonDocument::Compact) + '\n');
+    });
+    connect(&m_exitWorker, &QProcess::readyReadStandardOutput, this, [this] {
+        m_exitOutput += m_exitWorker.readAllStandardOutput();
+        int newline;
+        while ((newline = m_exitOutput.indexOf('\n')) >= 0) {
+            const auto result = QJsonDocument::fromJson(m_exitOutput.left(newline)).object();
+            m_exitOutput.remove(0, newline + 1);
+            if (result.value("event") == "ready") {
+                if (m_bridge.state() == QProcess::Running) { command("shutdown"); m_bridge.closeWriteChannel(); }
+                m_exitWorker.write("proceed\n"); m_exitWorker.closeWriteChannel();
+            } else if (result.value("event") == "done") m_exitWorkerDone = true;
+            else if (result.value("event") == "error") m_exitError = result.value("message").toString();
+        }
+    });
+    connect(&m_exitWorker, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) failExit("无法启动后台收尾程序，请修复 Host 安装后重试");
+    });
+    connect(&m_exitWorker, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
+        m_exitDeadline.stop();
+        if (code == 0 && status == QProcess::NormalExit && m_exitWorkerDone) finishExit();
+        else failExit(m_exitError.isEmpty() ? "后台收尾失败，请重试；尚未安装更新" : m_exitError);
+    });
     QDir().mkpath(m_dataDir);
     if (m_credentialDir.isEmpty()) m_credentialDir = m_dataDir;
     QDir().mkpath(m_credentialDir);
@@ -75,7 +115,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
             detectAgents(true);
             checkUpdatesInternal(false);
-            if (activated() && m_settings.value("runHost", true).toBool()) startHost();
+            if (!m_deferStartup && activated() && m_settings.value("runHost", true).toBool()) startHost();
             emit changed();
         });
     });
@@ -118,7 +158,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
 HostController::~HostController() { shutdown(); }
 int HostController::pairSeconds() const { return int(qMax<qint64>(0, (m_pairExpires - QDateTime::currentMSecsSinceEpoch() + 999) / 1000)); }
 void HostController::launchBridge() {
-    if (m_bridge.state() != QProcess::NotRunning) return;
+    if (m_shutdown || m_exiting || m_bridge.state() != QProcess::NotRunning) return;
     QString node = m_runtimeRoot + "/node/node";
 #ifdef Q_OS_WIN
     node = m_runtimeRoot + "/node/node.exe";
@@ -148,6 +188,7 @@ QStringList HostController::checkingProviderIds() const {
     return ids;
 }
 void HostController::command(const QString &method, const QJsonObject &params, Callback done) {
+    if (m_exiting && method != "shutdown") return;
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return; }
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
@@ -704,56 +745,119 @@ void HostController::refreshDeviceUpdateIndicators() {
 }
 
 void HostController::updateHost() {
+    if (m_exiting || m_updating) return;
     if (m_updateInstallerUrl.isEmpty() || m_updateChecksumUrl.isEmpty()) { checkUpdates(); return; }
+    emit updateConfirmationRequested();
+}
+void HostController::confirmHostUpdate() {
+    if (m_exiting || m_updating || !hostUpdateAvailable()) return;
+    m_updating = true;
+    const auto generation = ++m_updateGeneration;
+    const auto checksumUrl = m_updateChecksumUrl;
+    const auto installerUrl = m_updateInstallerUrl;
+    const auto updateVersion = m_updateVersion;
     setMessage("正在下载 Host 更新 " + m_updateVersion + "…");
     QNetworkRequest installerRequest{QUrl(m_updateInstallerUrl)};
     installerRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
     installerRequest.setTransferTimeout(120000);
     auto *installerReply = m_network.get(installerRequest);
-    connect(installerReply, &QNetworkReply::finished, this, [this, installerReply] {
+    m_updateReplies = {installerReply};
+    connect(installerReply, &QNetworkReply::finished, this, [this, installerReply, generation, checksumUrl, installerUrl, updateVersion] {
+        if (generation != m_updateGeneration) { installerReply->deleteLater(); return; }
         const auto installer = installerReply->readAll();
         const auto error = installerReply->error();
         const auto errorText = installerReply->errorString();
         const auto status = installerReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         installerReply->deleteLater();
         if (error != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300)) || installer.isEmpty()) {
+            m_updating = false;
             setMessage("Host 更新下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
         }
-        QNetworkRequest checksumRequest{QUrl(m_updateChecksumUrl)};
+        QNetworkRequest checksumRequest{QUrl(checksumUrl)};
         checksumRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
         checksumRequest.setTransferTimeout(15000);
         auto *checksumReply = m_network.get(checksumRequest);
-        connect(checksumReply, &QNetworkReply::finished, this, [this, checksumReply, installer] {
+        m_updateReplies = {checksumReply};
+        connect(checksumReply, &QNetworkReply::finished, this, [this, checksumReply, installer, generation, installerUrl, updateVersion] {
+            if (generation != m_updateGeneration) { checksumReply->deleteLater(); return; }
             const auto checksumText = QString::fromUtf8(checksumReply->readAll()).trimmed();
             const auto error = checksumReply->error();
             const auto errorText = checksumReply->errorString();
             const auto status = checksumReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             checksumReply->deleteLater();
             if (error != QNetworkReply::NoError || (status != 0 && (status < 200 || status >= 300))) {
+                m_updating = false;
                 setMessage("Host 更新校验文件下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
             }
             const auto expected = checksumText.section(QRegularExpression("\\s+"), 0, 0).toLower();
-            const auto actual = QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex().toLower();
-            if (expected.size() != 64 || expected != actual) { setMessage("Host 更新校验失败，已取消安装"); return; }
-            const auto path = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(
+            const auto directory = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath("orbis-update-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+            const auto path = QDir(directory).filePath(
 #ifdef Q_OS_MACOS
-                QUrl(m_updateInstallerUrl).fileName()
+                QUrl(installerUrl).fileName()
 #else
-                QString("OrbisHost-%1-setup.exe").arg(m_updateVersion)
+                QString("OrbisHost-%1-setup.exe").arg(updateVersion)
 #endif
             );
-            QFile file(path); if (!file.open(QIODevice::WriteOnly) || file.write(installer) != installer.size()) { setMessage("无法保存 Host 更新安装包"); return; }
-            file.close();
-#ifdef Q_OS_MACOS
-            if (!QProcess::startDetached("open", {path})) { setMessage("无法打开 Host 更新磁盘映像"); return; }
-            setMessage("更新包已校验并打开。请退出 Host 后，将新版拖入 Applications 完成更新");
-#else
-            setMessage("更新包已校验，Host 即将退出并安装 " + m_updateVersion);
-            if (!QProcess::startDetached(path, {"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS"})) { setMessage("无法启动 Host 更新安装器"); return; }
-            QTimer::singleShot(500, qApp, &QCoreApplication::quit);
-#endif
+            // Hashing and committing a large installer must not block confirmation or window input.
+            auto *verified = new QFutureWatcher<QString>(this);
+            connect(verified, &QFutureWatcher<QString>::finished, this, [this, verified, generation, path] {
+                const auto error = verified->result(); verified->deleteLater();
+                if (generation != m_updateGeneration) { QFile::remove(path); return; }
+                m_updating = false;
+                if (!error.isEmpty()) { setMessage(error); return; }
+                beginExit(path);
+            });
+            verified->setFuture(QtConcurrent::run([installer, expected, directory, path]() -> QString {
+                const auto actual = QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex().toLower();
+                if (expected.size() != 64 || expected != actual) return "Host 更新校验失败，已取消安装";
+                QSaveFile file(path);
+                if (!QDir().mkpath(directory) || !file.open(QIODevice::WriteOnly) || file.write(installer) != installer.size() || !file.commit())
+                    return "无法保存 Host 更新安装包";
+                return {};
+            }));
         });
     });
+}
+void HostController::requestExit() {
+    if (!m_exiting) emit exitConfirmationRequested();
+}
+void HostController::requestInstallerExit() {
+    if (!m_exiting && !m_updating) emit installerConfirmationRequested();
+    else emit exitCancelled();
+}
+void HostController::cancelExit() { if (!m_exiting) emit exitCancelled(); }
+void HostController::confirmExit() {
+    if (m_exiting) return;
+    ++m_updateGeneration; m_updating = false;
+    for (const auto &reply : m_updateReplies) if (reply) reply->abort();
+    m_updateReplies.clear();
+    beginExit();
+}
+void HostController::beginExit(const QString &installer) {
+    if (m_exiting || m_exitWorker.state() != QProcess::NotRunning) return;
+    m_exiting = true; m_shutdown = true; m_tick.stop();
+    m_exitInstaller = installer; m_exitError.clear(); m_exitOutput.clear(); m_exitWorkerDone = false;
+    setMessage("正在停止相关后台…");
+    m_exitWorker.setProcessEnvironment(m_bridge.processEnvironment());
+    m_exitWorker.setProgram(m_bridge.program());
+    m_exitWorker.setArguments({m_runtimeRoot + "/packages/host/dist/desktop-shutdown.js"});
+    m_exitDeadline.start(60000);
+    m_exitWorker.start();
+}
+void HostController::failExit(const QString &message) {
+    m_exitDeadline.stop(); m_exiting = false; m_shutdown = false; m_updating = false;
+    m_exitInstaller.clear(); m_tick.start();
+    // Reopen only the bridge after partial cleanup; the user explicitly resumes connections.
+    if (m_bridge.state() == QProcess::NotRunning) { m_deferStartup = true; m_state = "stopped"; launchBridge(); }
+    setMessage(message);
+    emit exitFailed();
+}
+void HostController::finishExit() {
+    if (!m_exitInstaller.isEmpty()) {
+        if (!m_installLauncher(m_exitInstaller)) { failExit("无法打开更新安装包，请重试"); return; }
+    }
+    m_exitApproved = true;
+    emit exitReady();
 }
 void HostController::openDownloads() { QDesktopServices::openUrl(QUrl("https://orbising.com/")); }
 void HostController::openDataDirectory() { QDesktopServices::openUrl(QUrl::fromLocalFile(m_dataDir)); }

@@ -1,4 +1,5 @@
 #include "HostController.h"
+#include "ExitGuard.h"
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QCryptographicHash>
@@ -9,6 +10,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
+#include <QPointer>
 #include <QMenu>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -64,6 +66,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"data-dir", "Isolated desktop settings directory", "path"});
     parser.addOption({"host-state-dir", "Isolated Host identity directory", "path"});
     parser.addOption({"tray", "Start in the system tray"});
+    parser.addOption({"prepare-update", "Confirm stopping managed backgrounds before an installer proceeds"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
     parser.addOption({"smoke-motion", "Check intermediate sidebar and metric motion in the isolated smoke window"});
     parser.addOption({"smoke-appearance", "Check all four appearance palettes in isolated settings"});
@@ -71,6 +74,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
+    parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
     parser.process(app);
     const auto sharedDataDir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).absolutePath();
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = sharedDataDir;
@@ -84,6 +88,13 @@ int main(int argc, char *argv[]) {
     QLockFile lock(dataDir + "/desktop.lock"); lock.setStaleLockTime(0);
     if (!lock.tryLock(100)) {
         QLocalSocket other; other.connectToServer(serverName);
+        if (parser.isSet("prepare-update")) {
+            if (!other.waitForConnected(2000)) return 20;
+            other.write("prepare-update\n"); other.waitForBytesWritten(1000);
+            QByteArray result = other.readAll();
+            while (!result.contains('\n') && other.waitForReadyRead(180000)) result += other.readAll();
+            return result.trimmed() == "ready" ? 0 : 20;
+        }
         if (other.waitForConnected(2000)) { other.write("activate\n"); other.waitForBytesWritten(1000); }
         return 0;
     }
@@ -100,6 +111,7 @@ int main(int argc, char *argv[]) {
     QString hostStateDir = parser.value("host-state-dir");
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
+    if (parser.isSet("prepare-update")) controller.deferStartup();
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
     engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
@@ -120,9 +132,29 @@ int main(int argc, char *argv[]) {
     auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     if (!window) return 4;
     auto show = [window] { window->showNormal(); window->raise(); window->requestActivate(); };
-    QObject::connect(&instance, &QLocalServer::newConnection, &app, [&instance, show] {
-        while (auto *socket = instance.nextPendingConnection()) { show(); socket->disconnectFromServer(); socket->deleteLater(); }
+    QPointer<QLocalSocket> installerClient;
+    const auto replyInstaller = [&](const QByteArray &reply) {
+        if (installerClient) { installerClient->write(reply + '\n'); installerClient->flush(); installerClient->disconnectFromServer(); installerClient.clear(); }
+    };
+    QObject::connect(&instance, &QLocalServer::newConnection, &app, [&] {
+        while (auto *socket = instance.nextPendingConnection()) {
+            QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
+            const auto receive = [&, socket] {
+                if (socket->bytesAvailable() > 1024) { socket->disconnectFromServer(); return; }
+                if (!socket->canReadLine()) return;
+                const auto command = socket->readLine().trimmed();
+                if (command == "prepare-update") {
+                    if (installerClient || controller.exitApproved()) { socket->write("busy\n"); socket->disconnectFromServer(); return; }
+                    installerClient = socket; controller.requestInstallerExit();
+                } else { show(); socket->disconnectFromServer(); }
+            };
+            QObject::connect(socket, &QLocalSocket::readyRead, &app, receive);
+            if (socket->canReadLine()) receive();
+        }
     });
+    QObject::connect(&controller, &HostController::exitReady, &app, [&] { replyInstaller("ready"); });
+    QObject::connect(&controller, &HostController::exitCancelled, &app, [&] { replyInstaller("cancelled"); if (parser.isSet("prepare-update")) app.exit(20); });
+    QObject::connect(&controller, &HostController::exitFailed, &app, [&] { replyInstaller("failed"); });
     QSystemTrayIcon tray(QIcon(":/src/assets/orbis.png"));
     QMenu menu;
     menu.addAction("打开 Orbis", &app, show);
@@ -131,12 +163,16 @@ int main(int argc, char *argv[]) {
     menu.addAction("开始连接", &controller, &HostController::startHost);
     menu.addAction("暂停连接", &controller, &HostController::stopHost);
     menu.addSeparator();
-    menu.addAction("退出 Orbis", &app, &QApplication::quit);
+    menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
     tray.setContextMenu(&menu); tray.setToolTip("Orbis Host");
     if (QSystemTrayIcon::isSystemTrayAvailable()) { app.setQuitOnLastWindowClosed(false); tray.show(); }
     QObject::connect(&tray, &QSystemTrayIcon::activated, &app, [show](QSystemTrayIcon::ActivationReason reason) { if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) show(); });
     QObject::connect(&controller, &HostController::notification, &tray, [&tray](const QString &title, const QString &body) { tray.showMessage(title, body, QSystemTrayIcon::Information, 4000); });
     QObject::connect(&app, &QApplication::aboutToQuit, &controller, &HostController::shutdown);
+    ExitGuard exitGuard([&] { return parser.isSet("smoke-test") || controller.exitApproved(); }, [&] { controller.requestExit(); });
+    app.installEventFilter(&exitGuard);
+    QObject::connect(&controller, &HostController::exitReady, &app, &QCoreApplication::quit);
+    if (parser.isSet("prepare-update")) QTimer::singleShot(0, &controller, &HostController::requestInstallerExit);
     if (parser.isSet("tray") && QSystemTrayIcon::isSystemTrayAvailable() && !parser.isSet("smoke-test")) window->hide();
     QString smokeModelUrl;
     int smokePiModelCount = 0;
@@ -503,6 +539,39 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(4000, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
                     app.exit(0);
+                });
+            } else if (parser.isSet("smoke-exit")) {
+                controller.requestExit();
+                QTimer::singleShot(500, &app, [&] {
+                    auto *dialog = window->findChild<QObject *>("hostExitDialog");
+                    if (!dialog || !dialog->property("visible").toBool() || controller.exiting()) { app.exit(60); return; }
+                    if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".exit.png");
+                    QMetaObject::invokeMethod(dialog, "reject");
+                    controller.updateConfirmationRequested();
+                });
+                QTimer::singleShot(1100, &app, [&] {
+                    auto *dialog = window->findChild<QObject *>("hostUpdateDialog");
+                    if (!dialog || !dialog->property("visible").toBool() || controller.exiting()) { app.exit(61); return; }
+                    if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".update.png");
+                    QMetaObject::invokeMethod(dialog, "reject");
+                    controller.requestInstallerExit();
+                });
+                QTimer::singleShot(1700, &app, [&] {
+                    auto *dialog = window->findChild<QObject *>("installerExitDialog");
+                    if (!dialog || !dialog->property("visible").toBool() || controller.exiting()) { app.exit(62); return; }
+                    if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".installer.png");
+                    QMetaObject::invokeMethod(dialog, "reject");
+                });
+                QTimer::singleShot(2200, &app, [&] {
+                    if (controller.exiting() || controller.exitApproved()) { app.exit(63); return; }
+                    controller.requestExit();
+                    QTimer::singleShot(500, &app, [&] {
+                        auto *dialog = window->findChild<QObject *>("hostExitDialog");
+                        if (!dialog || !dialog->property("visible").toBool()) { app.exit(64); return; }
+                        QMetaObject::invokeMethod(dialog, "accept");
+                    });
+                    // Exercise the real Quit path after cleanup, including QML's close handler.
+                    QTimer::singleShot(20000, &app, [&] { app.exit(65); });
                 });
             } else QTimer::singleShot(parser.isSet("smoke-motion") ? 2300 : 1800, &app, [&] { app.exit(0); });
         });
