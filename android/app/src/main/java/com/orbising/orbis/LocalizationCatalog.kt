@@ -1120,6 +1120,8 @@ internal object LocalizationCatalog {
         "本轮耗时" to "Turn duration",
         "本轮耗时 %.1f 秒" to "Turn duration %.1f s",
         "权限" to "Permissions",
+        "权限设置尚未确认，请稍后重试" to "Permissions are unconfirmed. Try again shortly.",
+        "权限设置正在保存，请稍后重试" to "Permission settings are being saved. Try again shortly.",
         "权限模式" to "Permission mode",
         "权限设置未发送：中继服务器当前离线" to "Permission update not sent: relay is offline",
         "权限配置存在问题" to "Permission configuration has a problem",
@@ -1787,6 +1789,8 @@ internal object LocalizationCatalog {
         "还有 {0} 个文件" to "{0} more file",
     )
     val hostExact: Set<String> = setOf(
+        "权限设置尚未确认，请稍后重试",
+        "权限设置正在保存，请稍后重试",
         "Claude Code 报告的权限模式",
         "不可信操作先询问",
         "不申请审批",

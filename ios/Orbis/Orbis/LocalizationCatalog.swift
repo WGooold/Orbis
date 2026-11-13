@@ -1090,6 +1090,8 @@ enum LocalizationCatalog {
         "本轮耗时": "Turn duration",
         "本轮耗时 %.1f 秒": "Turn duration %.1f s",
         "权限": "Permissions",
+        "权限设置尚未确认，请稍后重试": "Permissions are unconfirmed. Try again shortly.",
+        "权限设置正在保存，请稍后重试": "Permission settings are being saved. Try again shortly.",
         "权限模式": "Permission mode",
         "权限设置未发送：中继服务器当前离线": "Permission update not sent: relay is offline",
         "权限配置存在问题": "Permission configuration has a problem",
@@ -1749,6 +1751,8 @@ enum LocalizationCatalog {
         "还有 {0} 个文件": "{0} more file",
     ]
     static let hostExact: Set<String> = [
+        "权限设置尚未确认，请稍后重试",
+        "权限设置正在保存，请稍后重试",
         "Claude Code 报告的权限模式",
         "不可信操作先询问",
         "不申请审批",

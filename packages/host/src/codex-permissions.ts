@@ -1,6 +1,21 @@
 import type { RuntimePermissions, RuntimeSlashCommand } from "@orbis/protocol";
 import { object } from "./codex-interactions.js";
 
+/** SC85: confirm the selected next-turn setting from Codex's saved settings.
+ * Directory scope and other native normalization do not gate the selection or current turn.
+ */
+export function codexPermissionSelectionMatches(settings: Record<string, unknown>, name: string, value: string): boolean {
+  const sandbox = object(settings.sandboxPolicy ?? settings.sandbox);
+  switch (name) {
+    case "sandbox": return sandbox.type === value;
+    case "network": return sandbox.type === "externalSandbox" ? sandbox.networkAccess === value
+      : typeof sandbox.networkAccess === "boolean" && sandbox.networkAccess === (value === "enabled");
+    case "approvals": return settings.approvalPolicy === value;
+    case "approval-reviewer": return settings.approvalsReviewer === value;
+    default: return false;
+  }
+}
+
 export const CODEX_PERMISSION_COMMANDS: readonly RuntimeSlashCommand[] = [
   { name: "sandbox", description: "文件访问范围", source: "builtin", argument: { kind: "select", required: true, options: [
     { value: "readOnly", label: "只读", description: "允许读取文件；写入需要额外授权。" },
