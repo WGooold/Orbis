@@ -140,3 +140,27 @@ MARKDOWN-LIVE-01（S11 / M04 / V09）纳入本轮后台呈现决策，修复提�
 验证记录：Android 专项单测 32/32，两个受测快照的设备回归分别为 18/18、9/9；并行聊天分卡合入后，受影响的 3 项行资源 / 投影测试与编译通过。iOS 合并后核心 46/46，受测快照界面 4/4；语言缓存和持续目录发布的最后补充由核心专项与最终编译覆盖。受测包、最终源码及各轮边界分别记录，原始失败保留；真机安装与体感待用户验证。
 
 2026-11-10 S18 / SC72：Android 非当前电脑的菜单快照补回 `e2eReady`，首页与侧边栏切换菜单据各电脑自身的加密连接状态显示在线 / 离线，切换选择保留其他电脑的状态。实现见 `HomeUiSnapshot.kt`，回归见 `HomeUiSnapshotTest.kt`；新增两项用例在修复前失败，修复后连同既有首页发布与目录缓存回归 12/12 通过。首次失败、构建、包校验与安装验收状态见[本次证据](../../.artifacts/android-host-switcher-status-20261110/verification.json)；待用户安装验证。
+
+### 2026-11-14：iOS 整页弹入 / 弹出的主线程占用（PERF-10，待用户验证）
+
+沿用 M14 / ADR-0054 的整页导航与动效参数，保持业务事实、同步与乐观操作的既有拥有者。2026-11-13 起整页过渡由 SwiftUI 在主线程逐帧驱动，主线程任何一段占用都直接丢帧。Time Profiler（`31ee24a`，长会话夹具）显示每次再次进入聊天约 240ms 主线程占用：聊天页 `.task` 订阅 AgentState 后发布，强制在入场前同步排版整页（约 40ms）；返回优先级偏好在每层整页上逐视图合并（约 13ms）；滑入途中会话同步回包触发 store 发布，整树重算约 37ms。另发现返回键路径的既有缺陷：静止页面在同一次更新内被设为移动层并动画偏移，层从未读取过偏移，动画被直接应用，页面不滑出即消失。
+
+- 入场在新层出现后的下一帧开始，页面已建好并画在起点；返回键先以移动层静止画一帧再走同一滑出，拖动中途接管。
+- 页面初始化工作经 `orbisTaskAfterArrival` 在入场结束后开始，聊天页的 AgentState 兴趣与工作分支轮询改用它；离开仍取消。
+- 页面运动期间 `OrbisStore.holdScreenPublications` 暂缓 Host 发布，静止后合并发布一次；事实不变，运动中新建的页面仍读当前状态。每个运动阶段重新计时，动画阶段上限 1s、手指拖动 5s，防止结束事件丢失时界面冻结。
+- 返回优先级改为页面层持有的引用（`OrbisBackPriorityClaim`），只由手势读取；下载页选择仍先消耗右滑。
+- 消息锚点改用 `onGeometryChange`；空闲复制反馈清除不再发布；调色板外观改为缓存，默认值变化时失效；`session.snapshot` 的去重指纹与字节预算由内容 worker 准备。
+- 评估后未采用：把滑动改为内置 offset / opacity。实验构建中滑动帧仍在主线程渲染（SwiftUI AsyncRenderer 仅 2 次采样），且会失去取消弹簧的逐帧夹取。
+
+实现见 [PageNavigation.swift](../../ios/Orbis/Orbis/PageNavigation.swift)、[OrbisHub.swift](../../ios/Orbis/Orbis/OrbisHub.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[AgentState.swift](../../ios/Orbis/Orbis/AgentState.swift)。回归见 [PageTransitionWorkTests.swift](../../ios/Orbis/Tests/PageTransitionWorkTests.swift)、[CopyFeedbackTests.swift](../../ios/Orbis/Tests/CopyFeedbackTests.swift)，以及 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift) 的 `testPageMotionKeepsFramesDuringChatEntryAndReturn`（应用内显示链接记录每次运动的帧数与长间隔，帧预算仅在 `ORBIS_PERFORMANCE_REGRESSION=1` 的设备基线断言）与 `testDownloadSelectionConsumesBackSwipeBeforeReturning`。
+
+验证（iOS 27.0 模拟器 Orbis iOS Standard 2，Debug；对照为 `9c073a2` 加同一测量探针，条件一致）：
+
+| 运动 | 对照（3 次） | PERF-10（3 次） |
+| --- | --- | --- |
+| 首次进入滑入 | 8–14 帧，长间隔 3–5，最长 176–286ms | 20–21 帧，长间隔 1，最长 25–105ms |
+| 再次进入滑入 | 10–14 帧，长间隔 4–7，最长 49–69ms；起滑 142–219ms | 19–21 帧，长间隔 0–2，最长 17–36ms；起滑 146–175ms |
+| 返回键 | 0 帧（未滑出） | 14 帧，长间隔 0 |
+| 右滑返回 | 长间隔 3–8，最长 43–54ms | 长间隔 0 / 0 / 7，最长 17 / 17 / 39ms |
+
+Swift 491/491；导航界面回归 18/18，探针用例 3/3。`testChatDownloadsReturnToSameChat` 在对照与本分支同样失败于 `XCTAssertFalse(composer.exists)`（iOS 27 快照列出 SwiftUI 已隐藏子树，见 ADR-0054 2026-11-13），为既有失败，断言保留。未覆盖：真机与渲染服务器合成开销、实时会话持续发布；右滑在第三次迭代两轮均出现长间隔，原因未确认。证据见 [.artifacts/ios-page-transition-perf-20261114](../../.artifacts/ios-page-transition-perf-20261114/) 与基线 [.artifacts/ios-page-transition-jank-20261113](../../.artifacts/ios-page-transition-jank-20261113/)。部署未进行；真机体感待用户验证。

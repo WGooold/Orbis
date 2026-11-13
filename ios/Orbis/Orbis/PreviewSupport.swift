@@ -961,6 +961,63 @@ struct PageReturnReport: View {
     }
 }
 
+/// PERF-10: frame pacing of one page motion, from a main-thread display link. A push records how
+/// long its page took to build before the slide started (`startMs`), then only the slide; a drag
+/// or return records from its start. A stalled main thread shows as a gap longer than 1.5 frames.
+@MainActor
+final class PageMotionProbe: NSObject, ObservableObject {
+    static let shared = PageMotionProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--measure-page-motion")
+    @Published private(set) var report = "idle"
+    private var link: CADisplayLink?
+    private var began: TimeInterval = 0
+    private var startMs: Double = 0
+    private var last: CFTimeInterval = 0
+    private var frames = 0
+    private var long = 0
+    private var maxGap: CFTimeInterval = 0
+    private var count = 0
+    func flight(_ flying: Bool) {
+        guard Self.enabled else { return }
+        if flying {
+            guard link == nil else { return }
+            began = ProcessInfo.processInfo.systemUptime; startMs = 0
+            resetFrames()
+            let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        } else {
+            guard let link else { return }
+            link.invalidate(); self.link = nil; count += 1
+            report = String(format: "count=%d;startMs=%.1f;frames=%d;long=%d;maxGapMs=%.1f",
+                            count, startMs, frames, long, maxGap * 1000)
+            NSLog("OrbisPageMotion %@", report)
+        }
+    }
+    func animationStarted() {
+        guard Self.enabled, link != nil else { return }
+        startMs = (ProcessInfo.processInfo.systemUptime - began) * 1000
+        resetFrames()
+    }
+    private func resetFrames() { last = 0; frames = 0; long = 0; maxGap = 0 }
+    @objc private func tick(_ link: CADisplayLink) {
+        if last > 0 {
+            let gap = link.timestamp - last
+            maxGap = max(maxGap, gap)
+            if gap > (link.targetTimestamp - link.timestamp) * 1.5 { long += 1 }
+        }
+        last = link.timestamp; frames += 1
+    }
+}
+
+struct PageMotionReport: View {
+    @ObservedObject private var probe = PageMotionProbe.shared
+    var body: some View {
+        Text(probe.report).font(.system(size: 10))
+            .accessibilityIdentifier("page-motion-metrics").allowsHitTesting(false)
+    }
+}
+
 /// Opt-in fixture diagnostics. The draw callback measures app rendering, not source-sync latency
 /// or the display's physical presentation time. No message text or identity is recorded.
 @MainActor

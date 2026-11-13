@@ -3054,7 +3054,7 @@ final class HostConnection: ObservableObject {
         }
         if type == "session.snapshot" {
             await applySnapshot(event, runtimeId: runtimeId, rawEnvelope: rawEnvelope,
-                responseBytes: wirePayload?.count ?? (try? JSONSerialization.data(withJSONObject: wireEnvelope, options: [.withoutEscapingSlashes]).count) ?? 65536)
+                fingerprint: prepared.snapshotFingerprint, responseBytes: prepared.snapshotWireBytes ?? 65536)
         } else if type == "session.patch" {
             // A complete contiguous source transaction commits before its projection is visible.
             if let source = event["source"] as? [String: Any], let epoch = source["epoch"] as? String,
@@ -3107,21 +3107,22 @@ final class HostConnection: ObservableObject {
         publishMessages()
     }
 
-    private func applySnapshot(_ event: [String: Any], runtimeId: String, rawEnvelope: Data?, responseBytes: Int) async {
+    /// `fingerprint` is `sessionSnapshotFingerprint(event)`, prepared off the UI actor (PERF-10).
+    private func applySnapshot(_ event: [String: Any], runtimeId: String, rawEnvelope: Data?, fingerprint: String?, responseBytes: Int) async {
         let generation = historyGeneration
         guard let syncId = event["syncId"] as? String else { return }
         let pending = pendingSyncs[syncId]
         if pending == nil, let receipt = snapshotReceipts[syncId], receipt.runtimeId == runtimeId,
            receipt.sessionId == event["sessionId"] as? String,
            runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId == receipt.sessionId,
-           sessionSnapshotFingerprint(event) == receipt.fingerprint {
+           fingerprint == receipt.fingerprint {
             acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied"); return
         }
         if pending == nil, toolAcknowledgements[syncId]?.runtimeId == runtimeId,
            let candidate = snapshotCandidates[syncId], candidate.runtimeId == runtimeId,
            candidate.sessionId == event["sessionId"] as? String,
            runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId == candidate.sessionId,
-           sessionSnapshotFingerprint(event) == candidate.fingerprint { return }
+           fingerprint == candidate.fingerprint { return }
         guard pending?.runtimeId == runtimeId, pending?.sessionId == event["sessionId"] as? String,
               let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }), runtime.sessionId == pending?.sessionId else {
             acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
@@ -3155,7 +3156,7 @@ final class HostConnection: ObservableObject {
             rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史来源已经改变，请刷新会话。"))
             return
         }
-        if let fingerprint = sessionSnapshotFingerprint(event) {
+        if let fingerprint {
             snapshotCandidates[syncId] = SessionSnapshotReceipt(runtimeId: runtimeId, sessionId: pending.sessionId, fingerprint: fingerprint)
         }
         if event["selection"] as? String == "unchanged" {

@@ -57,7 +57,13 @@ struct ContentView: View {
             } else {
                 // The root and every full page stay mounted under the page above them, so a
                 // return reveals the real source (ADR-0054 / M14).
-                OrbisPageHost(stack: navigation, rootCovered: drawerOpen && surfaceWidth < 600) {
+                // Store changes wait while a page moves, so no whole-page update lands between the
+                // transition's frames (PERF-10). Each phase re-arms the safety limit; a finger drag
+                // always ends in a release or cancel, so it may hold longer.
+                OrbisPageHost(stack: navigation, rootCovered: drawerOpen && surfaceWidth < 600,
+                              onFlight: { [store] phase in
+                                  store.holdScreenPublications(phase != nil, limit: phase == .dragging ? .seconds(5) : .seconds(1))
+                              }) {
                     rootPages
                 } page: { page in
                     pageView(page)
@@ -185,6 +191,7 @@ struct ContentView: View {
         #if DEBUG
         .overlay(alignment: .topLeading) { if ChatEntryProbe.enabled { ChatEntryReport() } }
         .overlay(alignment: .bottomLeading) { if PageReturnProbe.enabled { PageReturnReport() } }
+        .overlay(alignment: .bottom) { if PageMotionProbe.enabled { PageMotionReport() } }
         .overlay(alignment: .bottomTrailing) { if AccessibilityReachProbe.enabled { AccessibilityReachReport() } }
         #endif
     }

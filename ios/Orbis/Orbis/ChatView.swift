@@ -175,7 +175,9 @@ struct ChatView: View {
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
                 if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
             }
-            .task(id: runtime.runtimeId) {
+            // Subscriptions start once the page has arrived; publishing them inside the entrance
+            // forced the whole chat to lay out between its frames (PERF-10).
+            .orbisTaskAfterArrival(id: runtime.runtimeId) {
                 agent.setInterest(runtime: runtime, owner: "chat", domains: AgentState.chatDomains)
                 defer { agent.setInterest(runtime: runtime, owner: "chat", domains: []) }
                 store.refreshWorkingBranch()

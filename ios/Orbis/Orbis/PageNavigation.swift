@@ -73,8 +73,18 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         case .entering, .expanding: settleNow()
         default: break
         }
-        if motion.movingID != top.id { orbisWithoutAnimation { motion.prepare(top.id, phase: .settling, offset: 0) } }
-        settle(top.id, back: true, velocity: 0)
+        // A dragged or settling page already draws as the moving layer and slides from where it is.
+        guard motion.movingID != top.id else { settle(top.id, back: true, velocity: 0); return }
+        // A resting page first draws once as the moving layer at rest (no visible change). Its
+        // layer has never read the offset, so an animated offset set in the same update applied at
+        // once: the page vanished without its slide and the return completed in zero frames.
+        orbisWithoutAnimation { motion.prepare(top.id, phase: .settling, offset: 0) }
+        let token = motion.token
+        Task { @MainActor [weak self] in
+            await MotionLayoutFrames.wait(frames: 1)
+            guard let self, self.motion.token == token, self.motion.movingID == top.id else { return }
+            self.settle(top.id, back: true, velocity: 0)
+        }
     }
 
     /// Removes the top page at once, without a transition.
@@ -86,10 +96,26 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
 
     // MARK: Layer callbacks
 
+    /// A prepared entrance starts one display frame after its layer appears, once the page has been
+    /// built, laid out and drawn at the starting position. Building the page is the heaviest step of
+    /// a push; an animation started before it would lose its opening frames to that work (PERF-10).
+    fileprivate func appeared(_ id: UUID) {
+        guard motion.movingID == id, motion.phase == .entering || motion.phase == .expanding else { return }
+        let token = motion.token
+        Task { @MainActor [weak self] in
+            await MotionLayoutFrames.wait(frames: 1)
+            guard let self, self.motion.token == token else { return }
+            self.arrive(id)
+        }
+    }
+
     /// Starts a prepared entrance once its layer is mounted at the starting position.
-    fileprivate func arrive(_ id: UUID) {
+    private func arrive(_ id: UUID) {
         guard motion.movingID == id else { return }
         let token = motion.token
+        #if DEBUG
+        PageMotionProbe.shared.animationStarted()
+        #endif
         switch motion.phase {
         case .entering:
             withAnimation(InteractionMotion.pageEnter, completionCriteria: .logicallyComplete) {
@@ -119,6 +145,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         motion.movingID = id
         motion.phase = .dragging
         motion.offset = distance > width ? width + (distance - width) * 0.18 : distance
+        motion.noteFlight()
     }
 
     fileprivate func release(_ id: UUID, velocity: CGFloat) {
@@ -138,6 +165,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         motion.token += 1
         let token = motion.token
         motion.phase = back ? .returning : .settling
+        motion.noteFlight()
         #if DEBUG
         if back { PageReturnProbe.shared.begin() }
         #endif
@@ -209,6 +237,10 @@ final class OrbisPageMotion {
     @ObservationIgnored fileprivate var frame: CGRect = .zero
     @ObservationIgnored fileprivate var reduceMotion = false
     @ObservationIgnored fileprivate var token = 0
+    /// Told the phase each time a motion enters one (nil once it rests), so screen publications can
+    /// wait for it (PERF-10). Repeated drag moves are not reported.
+    @ObservationIgnored fileprivate var onFlight: ((Phase?) -> Void)?
+    @ObservationIgnored private var reported: Phase = .idle
 
     fileprivate func prepare(_ id: UUID, phase: Phase, offset: CGFloat = 0, origin: CGRect? = nil) {
         token += 1
@@ -217,6 +249,7 @@ final class OrbisPageMotion {
         self.offset = offset
         self.origin = origin
         expansion = origin == nil ? 1 : 0
+        noteFlight()
     }
 
     fileprivate func reset() {
@@ -226,6 +259,17 @@ final class OrbisPageMotion {
         offset = 0
         expansion = 1
         origin = nil
+        noteFlight()
+    }
+
+    fileprivate func noteFlight() {
+        guard phase != reported else { return }
+        let started = reported == .idle, ended = phase == .idle
+        reported = phase
+        onFlight?(ended ? nil : phase)
+        #if DEBUG
+        if started || ended { PageMotionProbe.shared.flight(!ended) }
+        #endif
     }
 
     fileprivate func layout(frame: CGRect, insets: EdgeInsets) {
@@ -248,6 +292,8 @@ struct OrbisPageHost<Page: Hashable, Root: View, PageContent: View>: View {
     @ObservedObject var stack: OrbisPageStack<Page>
     /// The root is also unreachable while something outside the host covers it (the phone drawer).
     var rootCovered = false
+    /// Called with each phase a page moves through and nil once it rests (PERF-10).
+    var onFlight: ((OrbisPageMotion.Phase?) -> Void)? = nil
     @ViewBuilder let root: () -> Root
     @ViewBuilder let page: (Page) -> PageContent
     @Environment(\.orbisReduceMotion) private var reduceMotion
@@ -276,7 +322,7 @@ struct OrbisPageHost<Page: Hashable, Root: View, PageContent: View>: View {
             stack.motion.layout(frame: geometry.frame, insets: geometry.insets)
             insets = geometry.insets
         }
-        .onAppear { stack.motion.reduceMotion = reduceMotion }
+        .onAppear { stack.motion.reduceMotion = reduceMotion; stack.motion.onFlight = onFlight }
         .onChange(of: reduceMotion) { _, reduced in stack.motion.reduceMotion = reduced }
     }
 
@@ -302,7 +348,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
     let unreachable: Bool
     @State private var horizontalDrag: Bool?
     @State private var suppressTaps = false
-    @State private var backPriority: OrbisBackPriority?
+    /// Read only by the swipe; a selection inside the page claims it without re-rendering the page.
+    @State private var backClaim = OrbisBackPriorityClaim()
     @GestureState private var gestureActive = false
 
     func body(content: Content) -> some View {
@@ -313,7 +360,10 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
         // continuous, and handing it the top after a return changes no pixel.
         let reveal: CGFloat = source ? motion.sourceProgress : (isTop ? 1 : 0)
         let busy = moving && (motion.phase == .returning || motion.phase == .expanding)
+        let entering = moving && (motion.phase == .entering || motion.phase == .expanding)
         content
+            .environment(\.orbisPageEntering, entering)
+            .environment(\.orbisBackPriorityClaim, backClaim)
             .environment(\.orbisVisible, !unreachable || source)
             .disabled(suppressTaps)
             .clipShape(PageExpansionShape(origin: moving ? motion.origin : nil,
@@ -326,7 +376,6 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
             .allowsHitTesting(isTop && !busy)
             .orbisAccessibilitySubtree(hidden: unreachable)
             .simultaneousGesture(drag, including: isTop && id != nil ? .all : .subviews)
-            .onPreferenceChange(OrbisBackPriorityKey.self) { backPriority = $0 }
             .onChange(of: gestureActive) { _, active in
                 // System interruptions may cancel a gesture without calling onEnded.
                 guard !active, horizontalDrag != nil, let id else { return }
@@ -334,7 +383,7 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
                 releaseTaps()
                 stack.cancelDrag(id)
             }
-            .onAppear { if let id { stack.arrive(id) } }
+            .onAppear { if let id { stack.appeared(id) } }
     }
 
     private var drag: some Gesture {
@@ -351,7 +400,7 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
                 // when this horizontal drag ends.
                 suppressTaps = true
                 // A selection consumes the swipe instead of previewing another page.
-                if backPriority != nil { return }
+                if backClaim.action != nil { return }
                 stack.drag(id, translation: value.translation.width)
             }
             .onEnded { value in
@@ -360,8 +409,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
                 releaseTaps()
                 guard horizontal, let id else { return }
                 let velocity = (value.predictedEndTranslation.width - value.translation.width) / 0.2
-                if let backPriority {
-                    if value.translation.width + velocity * 0.15 > stack.motion.width / 3 { backPriority.action() }
+                if let action = backClaim.action {
+                    if value.translation.width + velocity * 0.15 > stack.motion.width / 3 { action() }
                     return
                 }
                 stack.release(id, velocity: velocity)
@@ -443,7 +492,35 @@ private struct HorizontalBounds: Shape {
     }
 }
 
+private struct OrbisPageEnteringKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    /// True while this page's own entrance is in flight, including its first frame at the start.
+    var orbisPageEntering: Bool {
+        get { self[OrbisPageEnteringKey.self] }
+        set { self[OrbisPageEnteringKey.self] = newValue }
+    }
+}
+
+/// `task(id:)` that waits until the page has arrived. Setup started inside the entrance (state
+/// subscriptions, polling) publishes between its frames and forces whole-page work (PERF-10).
+/// A page shown without an entrance starts at once; leaving still cancels the task.
+private struct TaskAfterArrival<ID: Equatable>: ViewModifier {
+    @Environment(\.orbisPageEntering) private var entering
+    let id: ID
+    let action: @MainActor () async -> Void
+    func body(content: Content) -> some View {
+        content.task(id: entering ? nil : id) {
+            guard !entering else { return }
+            await action()
+        }
+    }
+}
+
 extension View {
+    func orbisTaskAfterArrival<ID: Equatable>(id: ID, _ action: @escaping @MainActor () async -> Void) -> some View {
+        modifier(TaskAfterArrival(id: id, action: action))
+    }
+
     /// A subtree that stays mounted while unreachable (a covered page, an inactive tab). Hiding
     /// alone does not stop an ancestor's explicit visibility from exposing descendants, so a
     /// hidden subtree also drops its children. Only the arguments change, so identity is kept.
