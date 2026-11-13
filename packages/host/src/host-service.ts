@@ -1033,6 +1033,32 @@ export class HostService {
     this.#broadcastDeviceReady();
   }
 
+  /** Attach the terminal Codex backend once its app-server is ready, so Relay connectivity never waits for it. */
+  attachCodexRuntime(runtime: CodexRuntime): void {
+    if (runtime.kind !== "codex") return;
+    const existing = this.#backends.find(backend => backend.kind === "codex");
+    if (existing !== undefined && existing !== runtime) this.detachCodexRuntime(existing as CodexRuntime);
+    this.#options.codexRuntime = runtime;
+    this.#attachCodexBackend(runtime);
+    runtime.markStarted();
+    this.#options.log?.(`Codex 后端已就绪（runtimeId=${runtime.runtimeId}）`);
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Remove the terminal Codex backend (paused or being replaced). Terminal sessions go offline. */
+  detachCodexRuntime(runtime: CodexRuntime): void {
+    const index = this.#backends.indexOf(runtime);
+    if (index < 0 || runtime.kind !== "codex") return;
+    runtime.onMetadataChange = undefined;
+    runtime.onOffline = undefined;
+    runtime.onArchiveChange = undefined;
+    this.#backends.splice(index, 1);
+    if (this.#options.codexRuntime === runtime) this.#options.codexRuntime = undefined;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
   /** Attach a newly connected desktop proxy and immediately publish its capability. */
   attachCodexDesktopRuntime(runtime: CodexRuntime): void {
     const existing = this.#backends.find(backend => backend.kind === "codexDesktop");

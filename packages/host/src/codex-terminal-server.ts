@@ -18,6 +18,10 @@ export type CodexTerminalServerOptions = {
   log?: (line: string) => void;
   fetch?: (url: string, init?: RequestInit) => Promise<Response>;
   run?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  /** Host 暂停或切换版本时取消在途下载；已发布的缓存不受影响。 */
+  signal?: AbortSignal;
+  /** 下载进度（字节）。只用于界面提示，不参与完整性校验。 */
+  onProgress?: (received: number, total: number) => void;
 };
 
 const execute = promisify(execFile);
@@ -115,16 +119,23 @@ async function prepare(destination: string, version: string, target: string, pla
   const temporary = await mkdtemp(`${destination}.tmp-`);
   try {
     const archive = join(temporary, "package.tar.gz");
-    const download = await fetchResponse(assetUrl, { signal: AbortSignal.timeout(180_000) });
+    const request = options.signal === undefined
+      ? AbortSignal.timeout(180_000)
+      : AbortSignal.any([AbortSignal.timeout(180_000), options.signal]);
+    const download = await fetchResponse(assetUrl, { signal: request });
     if (!download.ok || !download.body) throw new Error(`Codex ${version} 终端服务包下载失败（HTTP ${download.status}）`);
-    const digest = createHash("sha256"); let bytes = 0;
+    const digest = createHash("sha256"); let bytes = 0; let reported = 0;
     const meter = new Transform({ transform(chunk: Buffer, _encoding, done) {
       bytes += chunk.length;
       if (bytes > expectedSize) { done(new Error("Codex 终端服务包完整性校验失败：下载体积超出发布值")); return; }
-      digest.update(chunk); done(null, chunk);
+      digest.update(chunk);
+      // 整包约 130 MB：按 1 MB 粒度上报就足够驱动界面，不必每个分片都发一次。
+      if (bytes - reported >= 1024 * 1024) { reported = bytes; options.onProgress?.(bytes, expectedSize); }
+      done(null, chunk);
     } });
     await pipeline(Readable.fromWeb(download.body as import("node:stream/web").ReadableStream<Uint8Array>), meter,
       createWriteStream(archive, { flags: "wx", mode: 0o600 }));
+    options.onProgress?.(bytes, expectedSize);
     if (bytes !== asset.size || `sha256:${digest.digest("hex")}` !== asset.digest) throw new Error("Codex 终端服务包完整性校验失败");
     const listing = await executeCommand("tar", ["-tzf", archive]);
     const names = listing.stdout.split(/\r?\n/u).filter(Boolean);

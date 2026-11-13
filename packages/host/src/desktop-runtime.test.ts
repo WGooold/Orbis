@@ -8,6 +8,7 @@ import { createRelayServer } from "../../relay/src/index.js";
 import { RegistrationAuthority } from "../../relay/src/registration.js";
 import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
+import { CodexAppServer } from "./codex-daemon.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -253,6 +254,40 @@ describe("desktop Host lifecycle", () => {
       expect(await readFile(join(state, "host.json"), "utf8")).toBe(hostBefore);
       expect(await readFile(join(state, "devices.json"), "utf8")).toBe(devicesBefore);
     } finally { await runtime.close(); await relay?.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // SC75 follow-up: preparing the terminal Codex backend may download the matching official
+  // server package (>100 MB). It must never hold the Relay connection: before this change a
+  // phone could only see "正在准备" while the Host was actually still downloading.
+  it("connects the Relay before the terminal Codex backend is ready", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-codex-prepare-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const create = vi.spyOn(CodexAppServer, "create").mockImplementation(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      throw new Error("Codex 0.169.0 官方终端发布包不可用（HTTP 404）");
+    });
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: true, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      // The start resolves with the Relay online, before the delayed preparation failure lands.
+      expect(events).toContainEqual({ event: "state", state: "connected" });
+      expect(events).toContainEqual(expect.objectContaining({ event: "codexTerminal", state: "preparing" }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "codexTerminal", state: "error",
+        message: expect.stringContaining("官方终端发布包不可用") })), { timeout: 5_000 });
+      const connectedAt = events.findIndex(event => event.event === "state" && event.state === "connected");
+      const failedAt = events.findIndex(event => event.event === "codexTerminal" && event.state === "error");
+      expect(connectedAt).toBeGreaterThanOrEqual(0);
+      expect(connectedAt).toBeLessThan(failedAt);
+      // A failed preparation is reported, not retried silently or masked by a state change.
+      expect(events.filter(event => event.event === "state").at(-1)).toMatchObject({ state: "connected" });
+    } finally {
+      create.mockRestore();
+      await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("returns to activation if a previously connected Host is refused during reconnect", async () => {

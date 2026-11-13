@@ -227,6 +227,8 @@ void HostController::resumeAfterChange() {
 void HostController::clearRunningFacts() {
     // A paused Host has released its DeepSeek Desktop connection; its lifecycle reports again on the next start.
     m_backends.clear(); m_runtimeCount = 0; m_dshDesktop.clear();
+    // 终端 Codex 的准备属于这一次运行：停了就不再有“正在准备”。
+    m_codexTerminal.clear();
     QVariantList devices;
     for (const auto &entry : m_devices) { auto device = entry.toMap(); device.insert("path", "offline"); devices.append(device); }
     m_devices = devices;
@@ -291,6 +293,23 @@ void HostController::receiveLine(const QJsonObject &line) {
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
+        // 终端 Codex 后端在后台准备（可能要下配套包）：只影响 Codex 会话何时出现，
+        // 中继连接与手机可用性早已就绪，所以这里既不进 busy 也不碰 m_state。
+        else if (event == "codexTerminal") {
+            const auto state = line.value("state").toString();
+            QVariantMap terminal{{ "state", state }};
+            if (line.contains("message")) terminal.insert("message", line.value("message").toString());
+            if (line.contains("download")) {
+                const auto download = line.value("download").toObject();
+                terminal.insert("receivedBytes", download.value("receivedBytes").toDouble());
+                terminal.insert("totalBytes", download.value("totalBytes").toDouble());
+            }
+            m_codexTerminal = terminal;
+            if (state == "ready") appendLog("Codex 终端接入已就绪");
+            else if (state == "error") appendLog("Codex 终端接入失败：" + line.value("message").toString());
+            emit changed();
+            return;
+        }
         else if (event == "dshDesktop") { m_dshDesktop = line.value("status").toObject().toVariantMap(); }
         // The open may wait for the user to quit a Desktop Orbis did not open, so it reports beside the command queue.
         else if (event == "dshDesktopOpen") {

@@ -161,3 +161,23 @@ Regression tests are `codex-permission-settings.test.ts` and `codex-terminal-syn
 ### Revision 2026-11-12: Windows terminal windows (WIN-CONSOLE-01)
 
 Windows terminal activation no longer invokes `wt.exe`; the rollout-waiting PowerShell window opens through the system default terminal. Decision, cause and pending Windows acceptance are in [ADR-0074](0074-windows-agent-console-windows.md).
+
+### Revision 2026-11-13: Terminal backend preparation off the connection path
+
+SC75 placed the version-matched official server package ahead of the Relay
+connection: `DesktopRuntime.#connect` awaited `CodexAppServer.create`, which on a
+first run or after any Codex CLI upgrade downloads the release asset (133 MB gz,
+327 MB unpacked). A phone could not connect during that window and the Host UI
+showed only a fallback state. The download is now prepared after the Relay is
+connected: `HostService` attaches the terminal backend through
+`attachCodexRuntime` once the package validates and the app-server handshakes, so
+codex sessions appear a little later while everything else is already reachable.
+Preparation reports `codexTerminal` events (`preparing` with real byte progress,
+`ready`, `error`), is cancelled by `stop()`, and leaves no staging directory
+behind. A failure is reported rather than silently falling back to the
+`vscode`-sourced CLI entry, and the existing source semantics are unchanged.
+Implementation: `desktop-runtime.ts`, `host-service.ts`,
+`codex-terminal-server.ts`; Host UI: `HostController.cpp` and `Main.qml`.
+Regressions: `codex-terminal-server.test.ts` (progress ordering, abort leaves no
+publication) and `desktop-runtime.test.ts` (Relay reaches `connected` before the
+delayed preparation fails).

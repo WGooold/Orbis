@@ -161,4 +161,28 @@ describe("source-aware Codex terminal server", () => {
     expect(await readdir(join(h.cache, "codex-terminal-server", "0.167.0"))).toEqual(["aarch64-apple-darwin.tmp-other"]);
     expect(await readFile(join(other, "keep.txt"), "utf8")).toBe("owned elsewhere");
   });
+
+  // The Host prepares this package off the connection path, so the UI needs real byte counts
+  // to show what is taking time, and pausing must cancel the transfer instead of orphaning it.
+  it("reports download progress and cancels an aborted download without publishing", async () => {
+    const h = await fixture();
+    const progress: { received: number; total: number }[] = [];
+    await resolveCodexTerminalServer(cli, { ...h.options, onProgress: (received, total) => progress.push({ received, total }) });
+    expect(progress.at(-1)).toEqual({ received: h.asset.size, total: h.asset.size });
+    expect(progress.every(entry => entry.total === h.asset.size)).toBe(true);
+    expect(progress.every((entry, index) => index === 0 || entry.received >= progress[index - 1]!.received)).toBe(true);
+
+    const aborted = await fixture();
+    const controller = new AbortController();
+    aborted.fetch.mockImplementation(async (url, init) => {
+      if (url.startsWith("https://api.github.com/")) return Response.json(aborted.release);
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    const pending = resolveCodexTerminalServer(cli, { ...aborted.options, signal: controller.signal });
+    await vi.waitFor(() => expect(aborted.fetch).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(await readdir(join(aborted.cache, "codex-terminal-server", "0.167.0"))).toEqual([]);
+    await expect(readFile(join(aborted.destination, "codex-package.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

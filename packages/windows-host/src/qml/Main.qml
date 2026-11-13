@@ -66,6 +66,8 @@ ApplicationWindow {
     /** Whether a phone can use this Agent through the running Host right now. */
     function agentReachable(agent) {
         if (!agent.installed || agent.broken || !window.hostOnline) return false
+        // Codex 的后端在后台准备时手机还用不了它；其余 Agent 不受影响。
+        if (agent.kind === "codex" && window.codexTerminalPreparing) return false
         var backend = window.backendFor(agent.kind)
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
@@ -75,8 +77,17 @@ ApplicationWindow {
         if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
         if (window.hostLinking) return "正在连接"
         if (!window.hostOnline) return "连接后手机可用"
+        // Codex 终端服务端在后台准备（首次安装或 CLI 升级后要约一百多 MB），不挡连接。
+        if (agent.kind === "codex" && window.codexTerminalPreparing) return window.codexTerminalProgressText()
         if (!window.agentReachable(agent)) return "手机暂不可用"
         return sessions > 0 ? "手机上 " + sessions + " 个会话" : "手机可用"
+    }
+    readonly property var codexTerminalState: host.codexTerminal || ({})
+    readonly property bool codexTerminalPreparing: window.codexTerminalState.state === "preparing"
+    function codexTerminalProgressText() {
+        var received = Number(window.codexTerminalState.receivedBytes || 0)
+        var total = Number(window.codexTerminalState.totalBytes || 0)
+        return total > 0 ? "准备中 " + Math.floor(Math.min(1, received / total) * 100) + "%" : "正在准备"
     }
     function openOverviewAgent(kind) {
         if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
@@ -334,8 +345,8 @@ ApplicationWindow {
     }
     /** 下载已用秒数：npm 不给在途字节，单个大包期间百分比不动，靠它证明“还在下”。 */
     property int downloadSeconds: 0
-    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 ? window.downloadSeconds + 1 : 0 }
-    Connections { target: host; function onChanged() { if (host.downloadReceived < 0) window.downloadSeconds = 0 } }
+    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0 || window.codexTerminalPreparing; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 || window.codexTerminalPreparing ? window.downloadSeconds + 1 : 0 }
+    Connections { target: host; function onChanged() { if (host.downloadReceived < 0 && !window.codexTerminalPreparing) window.downloadSeconds = 0 } }
     /** 下载进度条：知道总大小就给百分比，不知道就只报已下字节 + 一段来回走的色块。 */
     component DownloadBar: ColumnLayout {
         property string label: ""
@@ -857,9 +868,10 @@ ApplicationWindow {
                                                 SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
                                                 MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
                                                 StatusDot {
-                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint
-                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking
-                                                    syncing: !agentRow.modelData.broken && window.hostLinking
+                                                    readonly property bool preparing: agentRow.modelData.kind === "codex" && window.codexTerminalPreparing
+                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || preparing ? Theme.warning : Theme.inkFaint
+                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking && !preparing
+                                                    syncing: !agentRow.modelData.broken && (window.hostLinking || preparing)
                                                 }
                                             }
                                         }
@@ -880,6 +892,15 @@ ApplicationWindow {
                                     }
                                 }
                                 DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstalling; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true; Layout.topMargin: 6 }
+                                // 终端接入的配套包不在启动关键路径上：手机已经能连，这里只显示它还差多少。
+                                DownloadBar {
+                                    visible: window.codexTerminalPreparing && window.codexTerminalState.receivedBytes > 0
+                                    label: "Codex 终端接入"
+                                    received: window.codexTerminalState.receivedBytes || 0
+                                    total: window.codexTerminalState.totalBytes || 0
+                                    Layout.fillWidth: true; Layout.topMargin: 6
+                                }
+                                Hint { visible: window.codexTerminalState.state === "error"; text: "Codex 终端接入未就绪，Codex 会话暂时不可用"; Layout.fillWidth: true; Layout.topMargin: 6 }
                             }
                         }
                     }

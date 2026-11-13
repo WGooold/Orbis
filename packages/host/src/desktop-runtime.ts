@@ -11,6 +11,7 @@ import { hostRecoveryProof, type AgentStateRangeRequest } from "@orbis/protocol"
 import { HostService } from "./host-service.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
+import { resolveCodexTerminalServer } from "./codex-terminal-server.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
@@ -126,6 +127,8 @@ export class DesktopRuntime {
   #service: HostService | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
+  /** 终端接入的准备（可能是一次上百 MB 的下载）：与中继连接和手机可用性无关，可随时取消。 */
+  #codexPrepare: AbortController | undefined;
   #codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   #dshRuntime: DshRuntime | undefined;
   /** DeepSeek Harness Desktop entry (ADR-0076); its app and backend stay owned by Desktop. */
@@ -510,12 +513,6 @@ export class DesktopRuntime {
     this.#emit({ event: "state", state: "connecting" });
     try {
       await this.#checkExistingHost();
-      if (settings.codexEnabled) {
-        try {
-          this.#codex = await CodexAppServer.create({ log: line => this.log(line), onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host") });
-          this.#codexRuntime = new CodexRuntime({ server: this.#codex, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
-        } catch (error) { this.log(`Codex 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
-      }
 
       // Codex Desktop is independent of the optional terminal backend. The Host only opens
       // it after an App session request; an already attached instance is reused by the lifecycle.
@@ -595,7 +592,13 @@ export class DesktopRuntime {
         }),
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
-        ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
+        // 终端 Codex 后端在后台接入（见 #prepareCodex）。启动时它可能还没就绪：
+        // 这里只给接入点，不等待它，否则一次下载就能把手机挡在中继外面。
+        codexLaunch: (request: { cwd: string }) => {
+          const runtime = this.#codexRuntime;
+          if (runtime === undefined) throw new Error("Codex 后端正在准备，请稍后重试");
+          return runtime.prepareTerminalLaunch(request.cwd);
+        },
         ensureCodexDesktop: () => desktopLifecycle.ensureReady(),
         codexDesktopLaunchable,
         codexDesktopStatus: () => desktopLifecycle.status,
@@ -640,6 +643,8 @@ export class DesktopRuntime {
       }
       this.#dshDesktopLifecycle?.watch();
       this.status();
+      // 中继已经连上、手机已经可用；Codex 后端（可能要先下载配套包）在后台接。
+      if (settings.codexEnabled) void this.#prepareCodex(settings);
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
     } catch (error) {
@@ -660,6 +665,58 @@ export class DesktopRuntime {
         this.#retry = setTimeout(() => { void this.#connect(); }, delay);
       }
     } finally { this.#starting = false; settleAttempt(); }
+  }
+
+  /**
+   * 后台准备终端 Codex 后端：先验证 / 必要时下载与所选 CLI 版本匹配的官方服务端包，
+   * 再拉起 app-server 并挂到已经在跑的服务上。
+   *
+   * 这一段永远不挡中继连接：首次安装或 CLI 升级后它可能要下上百 MB，
+   * 但它只影响 Codex 会话何时出现，不影响手机连得上、连得快。
+   */
+  async #prepareCodex(settings: DesktopSettings): Promise<void> {
+    const controller = new AbortController();
+    this.#codexPrepare = controller;
+    const report = (download?: { receivedBytes: number; totalBytes: number }): void => {
+      this.#emit({ event: "codexTerminal", state: "preparing", ...(download === undefined ? {} : { download }) });
+    };
+    report();
+    try {
+      const server = await CodexAppServer.create({
+        log: line => this.log(line),
+        onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host"),
+        resolveTerminalServer: (cli, options = {}) => resolveCodexTerminalServer(cli, {
+          ...options, signal: controller.signal,
+          onProgress: (receivedBytes, totalBytes) => report({ receivedBytes, totalBytes }),
+        }),
+      });
+      // 这次接入可能已经因为暂停或改设置而作废：不留没人要的后台进程。
+      if (this.#desired !== settings || controller.signal.aborted) { await server.stop().catch(() => undefined); return; }
+      const runtime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
+      this.#codex = server;
+      this.#codexRuntime = runtime;
+      // 服务可能已经停掉（暂停正在收尾），那就只收自己的进程。
+      const service = this.#service;
+      if (service === undefined) { await this.#stopCodex(); return; }
+      service.attachCodexRuntime(runtime);
+      this.#emit({ event: "codexTerminal", state: "ready" });
+    } catch (error) {
+      if (controller.signal.aborted || this.#desired !== settings) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`Codex 暂不可用：${message}`);
+      this.#emit({ event: "codexTerminal", state: "error", message });
+    } finally {
+      if (this.#codexPrepare === controller) this.#codexPrepare = undefined;
+    }
+  }
+
+  /** 停止终端 Codex 后端（app-server 子进程与它的 runtime）。 */
+  async #stopCodex(): Promise<void> {
+    const codex = this.#codex; const codexRuntime = this.#codexRuntime;
+    this.#codex = undefined; this.#codexRuntime = undefined;
+    const service = this.#service;
+    if (service !== undefined && codexRuntime !== undefined) service.detachCodexRuntime(codexRuntime);
+    await (codexRuntime ? codexRuntime.stop() : codex?.stop())?.catch(error => this.log(String(error)));
   }
 
   async #requireActivation(settings: DesktopSettings): Promise<void> {
@@ -1121,12 +1178,13 @@ export class DesktopRuntime {
   }
 
   async #dispose(): Promise<void> {
+    // 取消在途的终端接入准备：先放掉订阅，下载和 app-server 拉起都会自己收尾。
+    const prepare = this.#codexPrepare; this.#codexPrepare = undefined; prepare?.abort();
     const service = this.#service; this.#service = undefined;
     // The desktop drops running facts when paused; the next service must announce its status again.
     this.#lastStatus = "";
     await service?.stop().catch(error => this.log(String(error)));
-    const codex = this.#codex; const codexRuntime = this.#codexRuntime; this.#codex = undefined; this.#codexRuntime = undefined;
-    await (codexRuntime ? codexRuntime.stop() : codex?.stop())?.catch(error => this.log(String(error)));
+    await this.#stopCodex();
     const desktopLifecycle = this.#codexDesktopLifecycle;
     this.#codexDesktopLifecycle = undefined;
     await desktopLifecycle?.stop().catch(error => this.log(String(error)));
