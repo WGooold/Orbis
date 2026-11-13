@@ -8,7 +8,7 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     targets: [
         .target(name: "OrbisCore", path: "Orbis", exclude: [
-            "en.lproj", "zh-Hans.lproj", "InteractionMotion.swift", "OrbisApp.swift", "ContentView.swift", "PairingScannerView.swift", "OrbisDesign.swift",
+            "en.lproj", "zh-Hans.lproj", "InteractionMotion.swift", "PageNavigation.swift", "OrbisApp.swift", "ContentView.swift", "PairingScannerView.swift", "OrbisDesign.swift",
             "MathFragment.swift", "PreviewSupport.swift", "ToolDetailView.swift", "TurnFileChangesView.swift", "DownloadView.swift", "InteractionView.swift", "SessionViews.swift", "ChatView.swift", "StatusViews.swift", "HistoryBranchView.swift", "Info.plist", "Assets.xcassets"
         ], resources: [.copy("MathResources")], linkerSettings: [.linkedLibrary("sqlite3")]),
         .testTarget(name: "OrbisCoreTests", dependencies: ["OrbisCore"], path: "Tests", resources: [.copy("Fixtures")])

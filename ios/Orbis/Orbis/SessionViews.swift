@@ -737,6 +737,9 @@ struct SessionDraftView: View {
             .accessibilityElement(children: .contain).accessibilityIdentifier("session-draft")
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
             .onAppear {
+                // The home list is lazy and keeps this card's state under its fixed id, so a card
+                // reopened after closing would come back still cancelling and never rise.
+                cancelling = false; risen = false
                 text = owner.draft(for: draftRuntime)
                 let rememberedPath = owner.draft(for: pathRuntime)
                 if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
