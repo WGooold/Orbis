@@ -97,6 +97,7 @@ Status: accepted（第 2 节全部场景已实现并自动验证；第 8 节记�
 ## 7. 未验证与交付状态
 
 - 实现：已完成（第 2 节全部场景）。部署：未部署，未替换本机正在运行的 Host。自动验证：见第 6 节。用户验收：**待用户验证**。
+- 候选安装包（2026-11-13）：由 `ee40d57` 经共享打包入口构建的 `OrbisHost-0.1.19-ee40d57-macos-arm64.dmg`（arm64 Release，ad-hoc 签名、未公证，116926205 字节，SHA-256 `ed5fedf0b16a0d07081491ae248383410357cbb844fb12366e4683d80d0ca0be`），打包 23 个阶段全部通过（含原生测试、打包后冒烟、线协议兼容、dmg 校验），已上传到 Orbis-QA Release `cand-ee40d57` 并下载回读核对哈希。人工回归登记为 QA 提交 `SB-63ec35126593` / 任务 `AT-7c704b3472fb4dc6`（[Orbis-QA #21](https://github.com/WGooold/Orbis-QA/issues/21)），安装步骤见该 Issue 评论。Windows 安装包未构建：候选分支未推送，Windows 节点取不到该提交。
 - 真实网络与系统条件未覆盖：133 MB 下载的限速、断网与中途暂停；真实 `claude plugin` 命令耗时；钥匙串锁定时的授权框；DSH 锁被另一个 Host 占用。
 - Windows 构建、Windows 安装、真实手机连接与视觉验收**待用户验证**。
 
