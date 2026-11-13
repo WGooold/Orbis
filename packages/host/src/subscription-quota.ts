@@ -21,7 +21,14 @@ async function credentialFile(path: string): Promise<Obj> {
     throw new ProviderError("无法读取本机登录凭据，请在 CLI 中重新登录");
   }
 }
+// A QA build is re-signed for every candidate, so macOS asks for keychain access
+// each launch. ORBIS_NO_KEYCHAIN=1 keeps isolated runs on the credential files.
+const keychainDisabled = (): boolean => {
+  const value = (process.env.ORBIS_NO_KEYCHAIN ?? "").toLowerCase();
+  return value === "1" || value === "true";
+};
 async function keychain(service: string, account: string): Promise<Obj | undefined> {
+  if (keychainDisabled()) return undefined;
   try {
     const { stdout } = await execute("/usr/bin/security", ["find-generic-password", "-s", service, "-a", account, "-w"], { timeout: 8_000, maxBuffer: 256_000 });
     return object(JSON.parse(stdout));

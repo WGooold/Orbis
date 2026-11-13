@@ -1,5 +1,6 @@
 #include "../CredentialStore.h"
 #include <QFile>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -25,6 +26,21 @@ private slots:
         QString error;
         QVERIFY(CredentialStore::load(path, &error).isEmpty());
         QVERIFY(!error.isEmpty());
+    }
+    // 隔离测试：QA 构建每次重新签名，钥匙串会反复要求人工授权，因此允许改存文件。
+    void isolatedRunsCanSkipTheKeychain() {
+        QTemporaryDir temp;
+        const auto path = temp.path() + "/activation.dat";
+        qputenv("ORBIS_NO_KEYCHAIN", "1");
+        const QJsonObject value{{"credential", "isolated-secret"}, {"email", "qa@qq.com"}};
+        QString error;
+        QVERIFY2(CredentialStore::save(path, value, &error), qPrintable(error));
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto plain = file.readAll(); file.close();
+        QCOMPARE(QJsonDocument::fromJson(plain).object(), value);
+        QCOMPARE(CredentialStore::load(path, &error), value);
+        QVERIFY(CredentialStore::clear(path, &error));
+        QVERIFY(!QFile::exists(path));
+        qunsetenv("ORBIS_NO_KEYCHAIN");
     }
     void updatedCredentialsReplacePreviousValue() {
         QTemporaryDir temp;

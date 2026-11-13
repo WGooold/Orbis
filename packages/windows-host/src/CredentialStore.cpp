@@ -9,6 +9,15 @@
 #include <wincrypt.h>
 #endif
 
+#include <QtGlobal>
+
+// QA 构建每次重新签名后，macOS 会为钥匙串条目重新要求人工授权；隔离测试
+// 用 ORBIS_NO_KEYCHAIN=1 把激活凭据存在激活文件旁边，不碰钥匙串与 DPAPI。
+static bool plainFileStore() {
+    const auto value = qgetenv("ORBIS_NO_KEYCHAIN");
+    return value == "1" || value == "true";
+}
+
 #ifdef Q_OS_MACOS
 #include <Security/Security.h>
 
@@ -82,6 +91,20 @@ static QByteArray keychainRead(const QString &path, const QByteArray &reference,
 #endif
 
 bool CredentialStore::save(const QString &path, const QJsonObject &value, QString *error) {
+    if (plainFileStore()) {
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) {
+            if (error) *error = QStringLiteral("无法保存激活凭据：") + file.errorString();
+            return false;
+        }
+        file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        const auto plain = QJsonDocument(value).toJson(QJsonDocument::Compact);
+        if (file.write(plain) != plain.size() || !file.commit()) {
+            if (error) *error = QStringLiteral("无法保存激活凭据：") + file.errorString();
+            return false;
+        }
+        return true;
+    }
 #ifdef Q_OS_WIN
     QByteArray plain = QJsonDocument(value).toJson(QJsonDocument::Compact);
     DATA_BLOB input{DWORD(plain.size()), reinterpret_cast<BYTE *>(plain.data())}, encrypted{};
@@ -108,6 +131,10 @@ bool CredentialStore::save(const QString &path, const QJsonObject &value, QStrin
 bool CredentialStore::clear(const QString &path, QString *error) {
     QFile file(path);
     if (!file.exists()) return true;
+    if (plainFileStore()) {
+        if (!file.remove()) { if (error) *error = file.errorString(); return false; }
+        return true;
+    }
 #ifdef Q_OS_MACOS
     if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return false; }
     const auto reference = file.readAll();
@@ -124,6 +151,12 @@ QJsonObject CredentialStore::load(const QString &path, QString *error) {
     QFile file(path);
     if (!file.exists()) return {};
     if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return {}; }
+    if (plainFileStore()) {
+        QJsonParseError parseError;
+        const auto value = QJsonDocument::fromJson(file.readAll(), &parseError).object();
+        if (parseError.error != QJsonParseError::NoError && error) *error = QStringLiteral("激活凭据已损坏，请重新验证邮箱");
+        return value;
+    }
 #ifdef Q_OS_WIN
     QByteArray encrypted = file.readAll();
     DATA_BLOB input{DWORD(encrypted.size()), reinterpret_cast<BYTE *>(encrypted.data())}, plain{};
