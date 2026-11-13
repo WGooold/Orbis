@@ -20,14 +20,14 @@ import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
-import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
+import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl, type DshWebServiceStage } from "./dsh-web-service.js";
 import { DshWebClient } from "./dsh-web-client.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
 import { resolvePiCommand, defaultExtensionPath } from "./spawner.js";
 import { openWindowsConsole, WindowsConsoleLaunchError } from "./windows-console.js";
 import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
-import { TerminalClaudeLauncher } from "./claude-launcher.js";
+import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
 import { CLAUDE_MIN_VERSION, claudeVersionRequirement, readClaudeVersion } from "./claude-version.js";
 import { CODEX_STARTUP_ARGS, PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
@@ -122,6 +122,16 @@ async function terminalWorkspace(cwd: string | undefined): Promise<string> {
 export class DesktopRuntime {
   readonly #stateDir: string;
   #claudeIntegrationInstalled = false;
+  /**
+   * HOST-PREP-04：自动登记 Claude Code 插件（最多 4 个 `claude` 子命令，每个 60 s）在后台进行，
+   * 不再挡 Host 核心就绪与中继连接。任务本身从不 reject。
+   */
+  #claudeIntegrationTask: Promise<void> | undefined;
+  #claudeIntegrationAbort: AbortController | undefined;
+  /** HOST-PREP-06：本地路由在后台启动；会读取 Codex 配置的入口先等它。从不 reject。 */
+  #routing: Promise<void> = Promise.resolve();
+  /** HOST-LANE-01：每次暂停加一。暂停可以越过在途的 start，start 在挂上 #desired 之前据此放弃。 */
+  #lifecycleGeneration = 0;
   #claudeDetection: Promise<void> | undefined;
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
@@ -183,14 +193,18 @@ export class DesktopRuntime {
 
   async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
+    // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
     await adoptLoginShellEnvironment(line => this.log(line));
     await adoptWindowsEnvironment();
-    // DMG / portable installs have no installer hook. Register before Relay activation as well.
-    await this.#ensureClaudeIntegration(settings);
+    // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
+    // it may run four `claude` commands, and the desktop must not look frozen meanwhile.
+    this.#ensureClaudeIntegration(settings);
     this.#scheduleClaudeDetection();
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
-    try { await this.#providers.startRouting(); }
-    catch (error) { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); }
+    // HOST-PREP-06: routing binds a port and rewrites Codex configuration; it has no time limit, so it
+    // no longer holds initialization. Codex launches wait for it; a failure stays visible in the log.
+    this.#routing = this.#providers.startRouting()
+      .catch(error => { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); });
     this.#poll = setInterval(() => this.status(), 2_000);
     this.#poll.unref();
     this.#usage.start();
@@ -371,7 +385,8 @@ export class DesktopRuntime {
     const cli = await findClaudeExecutable(process.env);
     const status = { event: "claudeStatus", installed: cli !== undefined, minimumVersion: CLAUDE_MIN_VERSION };
     if (!cli) { this.#emit({ ...status, compatible: false }); return; }
-    this.#emit({ ...status, compatible: false });
+    // 已找到可执行文件，但版本还没读回来：仍是“检测中”，不能先报一个“不兼容”。
+    this.#emit({ ...status, compatible: false, detecting: true });
     try {
       const version = await readClaudeVersion(cli, process.env);
       const error = claudeVersionRequirement(version);
@@ -452,13 +467,13 @@ export class DesktopRuntime {
     if (!enabled) await removeMacPiCommand();
   }
 
-  async setClaudeIntegration(enabled: boolean, allowMissing = false): Promise<void> {
+  async setClaudeIntegration(enabled: boolean, allowMissing = false, signal?: AbortSignal): Promise<void> {
     const pluginDir = fileURLToPath(new URL("../../claude-mod/", import.meta.url));
     if (!/[\\/]runtime[\\/]packages[\\/]claude-mod[\\/]?$/u.test(pluginDir)) {
       this.log("开发运行时不改动 Claude Code 配置；打包后的 Orbis Host 才会登记 Claude Code 插件");
       return;
     }
-    const result = await updateClaudeIntegration({ pluginDir, uninstall: !enabled });
+    const result = await updateClaudeIntegration({ pluginDir, uninstall: !enabled, ...(signal === undefined ? {} : { signal }) });
     if (result === "claude_not_found") {
       if (enabled && !allowMissing) throw new Error("没有找到 Claude Code（claude 命令）；请先安装 Claude Code 再开启");
       return;
@@ -468,13 +483,64 @@ export class DesktopRuntime {
       : "已从本机 Claude Code 卸载 Orbis 插件");
   }
 
-  async #ensureClaudeIntegration(settings: Pick<DesktopSettings, "claudeIntegrationEnabled">): Promise<void> {
-    if (settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled) return;
-    // Missing Claude Code or a failed plugin command must not prevent Host from opening.
-    await this.setClaudeIntegration(true, true).catch(error => this.log(`登记 Claude Code 插件失败：${error instanceof Error ? error.message : String(error)}`));
+  /**
+   * The settings switch. A user choice supersedes automatic registration still in flight: both
+   * run the same `claude plugin` commands, which must not interleave.
+   */
+  async configureClaudeIntegration(enabled: boolean): Promise<void> {
+    if (enabled) {
+      await this.#claudeIntegrationTask;
+      if (this.#claudeIntegrationInstalled) return;
+    } else {
+      this.#claudeIntegrationAbort?.abort();
+      await this.#claudeIntegrationTask;
+    }
+    await this.setClaudeIntegration(enabled);
+    // An explicit choice that succeeded replaces whatever the automatic run last reported (such as a failure).
+    this.#emit({ event: "preparation", kind: "claude", state: "idle" });
+  }
+
+  /**
+   * HOST-PREP-04: automatic registration runs beside the Host. Missing Claude Code or a failed plugin
+   * command must not prevent the Host from opening or connecting; the result is reported as an event.
+   */
+  #ensureClaudeIntegration(settings: Pick<DesktopSettings, "claudeIntegrationEnabled">): void {
+    if (settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled || this.#claudeIntegrationTask !== undefined) return;
+    const abort = this.#claudeIntegrationAbort = new AbortController();
+    this.#emit({ event: "preparation", kind: "claude", state: "preparing" });
+    const task: Promise<void> = this.setClaudeIntegration(true, true, abort.signal).then(() => {
+      this.#emit({ event: "preparation", kind: "claude", state: this.#claudeIntegrationInstalled ? "ready" : "idle" });
+    }, (error: unknown) => {
+      if (abort.signal.aborted) { this.#emit({ event: "preparation", kind: "claude", state: "idle" }); return; }
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`登记 Claude Code 插件失败：${message}`);
+      this.#emit({ event: "preparation", kind: "claude", state: "error", message });
+    }).finally(() => {
+      if (this.#claudeIntegrationTask === task) this.#claudeIntegrationTask = undefined;
+      if (this.#claudeIntegrationAbort === abort) this.#claudeIntegrationAbort = undefined;
+    });
+    this.#claudeIntegrationTask = task;
+  }
+
+  /**
+   * Host-opened Claude Code waits for registration still in flight. Without it, the launcher would add
+   * a one-off `--plugin-dir` while the installed plugin appears underneath: one TUI, two bridges.
+   */
+  async #claudeIntegrationSettled(): Promise<void> { await this.#claudeIntegrationTask; }
+
+  #claudeLauncher(): ClaudeLauncher {
+    const terminal = new TerminalClaudeLauncher({ stateDir: this.#stateDir, configDir: claudeConfigDir(process.env.CLAUDE_CONFIG_DIR) });
+    return {
+      unavailable: () => terminal.unavailable(),
+      launch: async request => { await this.#claudeIntegrationSettled(); await terminal.launch(request); },
+      sessionConfiguration: cwd => terminal.sessionConfiguration(cwd),
+    };
   }
 
   async start(settings: DesktopSettings): Promise<void> {
+    // HOST-LANE-01: a pause no longer queues behind this start. One that lands before the Host is
+    // marked running cancels it here; one that lands later abandons the attempt through #desired.
+    const generation = this.#lifecycleGeneration;
     settings.relayUrl = validateDesktopRelay(settings.relayUrl);
     if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
     if (this.#desired) throw new Error("Host 已在运行，请先暂停连接");
@@ -489,7 +555,8 @@ export class DesktopRuntime {
       // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
       await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
     }
-    await this.#ensureClaudeIntegration(settings);
+    this.#ensureClaudeIntegration(settings);
+    if (generation !== this.#lifecycleGeneration) return;
     this.#desired = settings;
     this.#attempt = 0;
     await this.#connect();
@@ -543,10 +610,8 @@ export class DesktopRuntime {
         },
       });
 
-      if (settings.dshEnabled) {
-        try { this.#dshRuntime = await DshRuntime.create(await this.#providers.environment("dsh")); }
-        catch (error) { this.log(`DeepSeek Harness 暂不可用：${error instanceof Error ? error.message : String(error)}`); }
-      }
+      // HOST-PREP-05: the DeepSeek Web backend (local service lock up to 60 s, Web handshake 15 s)
+      // is attached after the Relay is online, like the terminal Codex backend; see #prepareDsh.
       let dshLaunchable = false;
       try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
       catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
@@ -599,13 +664,14 @@ export class DesktopRuntime {
         // 这里只给接入点，不等待它，否则一次下载就能把手机挡在中继外面。
         codexLaunch: (request: { cwd: string }) => {
           const runtime = this.#codexRuntime;
-          if (runtime === undefined) throw new Error("Codex 后端正在准备，请稍后重试");
+          // The terminal shim falls back to the standalone CLI either way; the log should still say why.
+          if (runtime === undefined) throw new Error(!settings.codexEnabled ? "Codex 终端接入未启用"
+            : this.#codexPrepare !== undefined ? "Codex 后端正在准备，请稍后重试" : "Codex 终端接入未就绪");
           return runtime.prepareTerminalLaunch(request.cwd);
         },
         ensureCodexDesktop: () => desktopLifecycle.ensureReady(),
         codexDesktopLaunchable,
         codexDesktopStatus: () => desktopLifecycle.status,
-        ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
         dshLaunchable,
@@ -614,7 +680,7 @@ export class DesktopRuntime {
         ensureDshDesktopRuntime: () => connectDshDesktop(),
         recoverDshDesktopRuntime: () => connectDshDesktop(true),
         onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
-        claude: {},
+        claude: { launcher: this.#claudeLauncher() },
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
         // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。
@@ -646,8 +712,9 @@ export class DesktopRuntime {
       }
       this.#dshDesktopLifecycle?.watch();
       this.status();
-      // 中继已经连上、手机已经可用；Codex 后端（可能要先下载配套包）在后台接。
+      // 中继已经连上、手机已经可用；Codex 后端（可能要先下载配套包）与 DeepSeek Web 后端在后台接。
       if (settings.codexEnabled) void this.#prepareCodex(settings);
+      if (settings.dshEnabled) void this.#prepareDsh(settings, service);
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
     } catch (error) {
@@ -681,10 +748,13 @@ export class DesktopRuntime {
     const controller = new AbortController();
     this.#codexPrepare = controller;
     const report = (download?: { receivedBytes: number; totalBytes: number }): void => {
-      this.#emit({ event: "codexTerminal", state: "preparing", ...(download === undefined ? {} : { download }) });
+      this.#emit({ event: "preparation", kind: "codex", state: "preparing", ...(download === undefined ? {} : { download }) });
     };
     report();
     try {
+      // The app-server reads Codex configuration that local routing may still be rewriting.
+      await this.#routing;
+      if (this.#desired !== settings || controller.signal.aborted) return;
       const server = await CodexAppServer.create({
         log: line => this.log(line),
         onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host"),
@@ -702,14 +772,33 @@ export class DesktopRuntime {
       const service = this.#service;
       if (service === undefined) { await this.#stopCodex(); return; }
       service.attachCodexRuntime(runtime);
-      this.#emit({ event: "codexTerminal", state: "ready" });
+      this.#emit({ event: "preparation", kind: "codex", state: "ready" });
     } catch (error) {
       if (controller.signal.aborted || this.#desired !== settings) return;
       const message = error instanceof Error ? error.message : String(error);
       this.log(`Codex 暂不可用：${message}`);
-      this.#emit({ event: "codexTerminal", state: "error", message });
+      this.#emit({ event: "preparation", kind: "codex", state: "error", message });
     } finally {
       if (this.#codexPrepare === controller) this.#codexPrepare = undefined;
+    }
+  }
+
+  /**
+   * HOST-PREP-05: start or reuse the DeepSeek Web backend after the Relay is online. The service's own
+   * DSH slot deduplicates this with the automatic recovery and with a phone that opens DeepSeek first.
+   */
+  async #prepareDsh(settings: DesktopSettings, service: HostService): Promise<void> {
+    this.#emit({ event: "preparation", kind: "dsh", state: "preparing" });
+    try {
+      const runtime = await service.prepareDshRuntime();
+      if (this.#desired !== settings) return;
+      this.#emit({ event: "preparation", kind: "dsh", state: runtime?.isReady() ? "ready" : "idle" });
+    } catch (error) {
+      if (this.#desired !== settings) return;
+      const message = error instanceof Error ? error.message : String(error);
+      // A phone that opens DeepSeek later starts it on demand, so this is not the last chance.
+      this.log(`DeepSeek Harness 暂不可用：${message}`);
+      this.#emit({ event: "preparation", kind: "dsh", state: "error", message });
     }
   }
 
@@ -1108,9 +1197,14 @@ export class DesktopRuntime {
     const env = await this.#providers.environment("dsh");
     if (env.ORBIS_DSH_WEB_URL?.trim()) throw new Error("当前使用手动配置的 DeepSeek Web 服务，请在其启动位置重启，并更新启动链接");
     const cli = await resolveDshCommand(env);
-    const restarted = await restartDshWebServiceAfterUpdate(env, cli);
-    const service = await ensureDshWebService(env, { cli });
+    // HOST-ACTIVITY-04: a restart can wait a minute for another starter's lock. Each stage is reported
+    // so the desktop names what it is waiting for instead of one unchanging line.
+    const stage = (value: DshWebServiceStage | "connecting" | "applying"): void => { this.#emit({ event: "dshServer", stage: value }); };
+    const restarted = await restartDshWebServiceAfterUpdate(env, cli, stage);
+    const service = await ensureDshWebService(env, { cli, onStage: stage });
+    stage("connecting");
     const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
+    stage("applying");
     try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
     this.log(restarted ? "DSH Server 已重启，请从 Host 重新打开网页工作台" : "DSH Server 未运行，已启动，请从 Host 打开网页工作台");
   }
@@ -1143,11 +1237,11 @@ export class DesktopRuntime {
     }
     if (kind === "claude") {
       const workingDirectory = await terminalWorkspace(cwd);
-      const launcher = new TerminalClaudeLauncher({ stateDir: this.#stateDir, configDir: claudeConfigDir(process.env.CLAUDE_CONFIG_DIR) });
-      await launcher.launch({ cwd: workingDirectory, launchId: randomUUID(), setup: mode === "setup" });
+      await this.#claudeLauncher().launch({ cwd: workingDirectory, launchId: randomUUID(), setup: mode === "setup" });
       return;
     }
     if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");
+    if (kind === "codex") await this.#routing;
     const workingDirectory = kind === "pi" || mode === "tui" ? await terminalWorkspace(cwd) : homedir();
     const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
     const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
@@ -1199,6 +1293,7 @@ export class DesktopRuntime {
     await dshDesktop?.stop().catch(error => this.log(String(error)));
   }
   async stop(): Promise<void> {
+    this.#lifecycleGeneration += 1;
     this.#desired = undefined;
     if (this.#retry) clearTimeout(this.#retry);
     await this.#dispose();
@@ -1231,10 +1326,11 @@ export class DesktopRuntime {
 
   async close(): Promise<void> {
     this.#dshDesktopOpenAbort?.abort();
+    this.#claudeIntegrationAbort?.abort();
     this.cancelInstall();
     await this.#installationTask?.catch(() => {});
     if (this.#poll) clearInterval(this.#poll);
-    await Promise.all([this.#usage.close(), this.stop(), this.#claudeDetection]);
+    await Promise.all([this.#usage.close(), this.stop(), this.#claudeDetection, this.#claudeIntegrationTask, this.#routing]);
     await this.#providers.closeRouting();
   }
   cancelInstall(): void {

@@ -45,8 +45,14 @@ class HostController : public QObject {
      * 否则按钮变灰、点击无效，用户看不出是在工作还是已经卡死。空表示空闲。
      */
     Q_PROPERTY(QVariantMap activity READ activity NOTIFY changed)
+    /** HOST-LANE-01: every operation in flight, by kind. Commands now overlap, so a control reads its own kind here. */
+    Q_PROPERTY(QStringList activityKinds READ activityKinds NOTIFY changed)
     /** 现在点“开始连接”无效的原因；空表示可以点。 */
     Q_PROPERTY(QString connectionBlockReason READ connectionBlockReason NOTIFY changed)
+    /** HOST-ACTIVITY-05: the saved activation is still being read from the system key store. */
+    Q_PROPERTY(bool credentialsLoading READ credentialsLoading NOTIFY changed)
+    /** HOST-ACTIVITY-05: a key store operation has been waiting long enough that macOS is likely asking the user. */
+    Q_PROPERTY(bool awaitingSystemAuthorization READ awaitingSystemAuthorization NOTIFY changed)
     /** Claude Code 版本检测进行中：此时“未安装”只代表还没测完。 */
     Q_PROPERTY(bool claudeDetecting READ claudeDetecting NOTIFY changed)
     Q_PROPERTY(bool exiting READ exiting NOTIFY changed)
@@ -73,8 +79,10 @@ class HostController : public QObject {
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
     Q_PROPERTY(QVariantMap codexDesktop READ codexDesktop NOTIFY changed)
-    /** 终端 Codex 后端的后台准备（{state, message, download}）：state 为 preparing / ready / error。 */
+    /** 终端 Codex 后端的后台准备（{state, message, receivedBytes, totalBytes}）：state 为 preparing / error；就绪后为空。 */
     Q_PROPERTY(QVariantMap codexTerminal READ codexTerminal NOTIFY changed)
+    /** HOST-PREP-01/04/05: background preparation per kind ("codex", "claude", "dsh"); a kind is absent once ready. */
+    Q_PROPERTY(QVariantMap preparations READ preparations NOTIFY changed)
     /** ADR-0076 DSH-DESKTOP-01: DeepSeek Desktop attach tier of the running Host ({state, reason, version}); empty while paused. */
     Q_PROPERTY(QVariantMap dshDesktop READ dshDesktop NOTIFY changed)
     /** DSH-DESKTOP-09: the Host UI open of DeepSeek Desktop: "idle", "opening", or "waiting" for the user to quit an instance Orbis did not open. */
@@ -119,7 +127,10 @@ public:
     bool identityReplaceable() const { return m_bridgeReady && !activated() && (m_registrationRefused || !m_email.isEmpty()); }
     bool busy() const { return m_busy > 0 || m_activationIO > 0 || m_relaySelectionPending || m_exiting || m_updating; }
     QVariantMap activity() const;
+    QStringList activityKinds() const;
     QString connectionBlockReason() const;
+    bool credentialsLoading() const { return m_credentialsLoading; }
+    bool awaitingSystemAuthorization() const { return m_systemAuthorizationWait; }
     bool claudeDetecting() const { return m_claudeDetecting; }
     bool exiting() const { return m_exiting; }
     bool exitApproved() const { return m_exitApproved; }
@@ -141,7 +152,8 @@ public:
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
     QVariantMap codexDesktop() const { return m_codexDesktop; }
-    QVariantMap codexTerminal() const { return m_codexTerminal; }
+    QVariantMap codexTerminal() const { return m_preparations.value("codex").toMap(); }
+    QVariantMap preparations() const { return m_preparations; }
     QVariantMap dshDesktop() const { return m_dshDesktop; }
     QString dshDesktopOpen() const { return m_dshDesktopOpen; }
     QString agentInstallKind() const { return m_agentInstallKind; }
@@ -248,11 +260,17 @@ private:
     void failExit(const QString &message);
     /** Queues one bridge request and returns its id, or -1 when it was not sent. */
     int command(const QString &method, const QJsonObject &params = {}, Callback done = {});
-    /**
-     * The bridge answers requests strictly in queue order (cancelInstall excepted), so `next`
-     * runs once every request queued so far has settled, successfully or not.
-     */
+    /** `next` runs once every request queued so far has settled, successfully or not (in any order). */
     void afterQueuedCommands(std::function<void()> next);
+    bool hasPendingUpTo(int last) const;
+    void runSettled();
+    /** Replaces the in-flight text of `method` (a restart that reports its stages). */
+    void updateActivity(const QString &method, const QString &text);
+    void beginActivationIO();
+    void endActivationIO();
+    /** HOST-ACTIVITY-05: reads the saved activation on the credential worker instead of the UI thread. */
+    void loadStoredActivation();
+    void afterStoredActivation(std::function<void()> next);
     /** HOST-LIVE-01: pauses a running Host before a change it cannot apply live; false when it was not running. */
     bool pauseForChange();
     void resumeAfterChange();
@@ -285,7 +303,12 @@ private:
     QString m_runtimeRoot, m_dataDir, m_hostStateDir, m_credentialDir;
     QSettings m_settings;
     QThreadPool m_activationPool;
-    int m_activationIO = 0, m_activationGeneration = 0;
+    int m_activationIO = 0, m_activationGeneration = 0, m_activationIOGeneration = 0;
+    bool m_credentialsLoading = false, m_systemAuthorizationWait = false;
+    QList<std::function<void()>> m_afterStoredActivation;
+    using CredentialLoader = std::function<QJsonObject(const QString &, QString *)>;
+    /** Test seam: replaces CredentialStore::load for the initial read; set before construction. */
+    static inline CredentialLoader s_credentialLoader;
     bool m_relaySelectionPending = false;
     QProcess m_bridge;
     QProcess m_exitWorker;
@@ -302,7 +325,8 @@ private:
     QTimer m_tick;
     QByteArray m_stdout;
     QHash<int, Callback> m_pending;
-    QHash<int, std::function<void()>> m_settled;
+    /** afterQueuedCommands continuations: each waits until no request up to its id is pending. */
+    QList<QPair<int, std::function<void()>>> m_settled;
     QHash<int, QString> m_methods;
     QHash<int, QJsonObject> m_requestParams;
     /** 按提交顺序记录每个在途请求的可读说明，界面只展示最靠前的那条。 */
@@ -314,8 +338,8 @@ private:
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
     QVariantMap m_codexDesktop, m_dshDesktop;
-    /** 终端 Codex 后端的准备进度（可能是一次上百 MB 的下载，但不阻塞中继连接）。 */
-    QVariantMap m_codexTerminal;
+    /** 后台准备进度，按 kind 存放（Codex 可能是一次上百 MB 的下载，但都不阻塞中继连接）。 */
+    QVariantMap m_preparations;
     QString m_dshDesktopOpen = "idle";
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;

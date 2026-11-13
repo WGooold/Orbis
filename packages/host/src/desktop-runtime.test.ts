@@ -14,6 +14,7 @@ import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
 import { HostService } from "./host-service.js";
+import { ProviderManager } from "./provider-manager.js";
 import type { DshConnection } from "./dsh-client.js";
 
 describe("desktop Host lifecycle", () => {
@@ -90,6 +91,9 @@ describe("desktop Host lifecycle", () => {
     try {
       await vi.waitFor(() => expect(claudeVersion.readClaudeVersion).toHaveBeenCalled());
       await vi.waitFor(() => expect(initialized).toBe(true));
+      // ADR-0081 review: the executable is found but its version is still being read. That is still
+      // detection, not an incompatible install; the desktop showed 需升级 for the whole probe.
+      expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ installed: true, detecting: true });
       finish("2.1.322");
       await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "claudeStatus", version: "2.1.322", compatible: true })));
     } finally { finish?.("2.1.322"); await pending; await runtime.close(); await rm(root, { recursive: true, force: true }); }
@@ -102,7 +106,7 @@ describe("desktop Host lifecycle", () => {
     try {
       await runtime.initialize(enabled === undefined ? {} : { claudeIntegrationEnabled: enabled });
       if (enabled === false) expect(install).not.toHaveBeenCalled();
-      else expect(install).toHaveBeenCalledWith(true, true);
+      else expect(install).toHaveBeenCalledWith(true, true, expect.any(AbortSignal));
     } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 
@@ -113,7 +117,67 @@ describe("desktop Host lifecycle", () => {
     const install = vi.spyOn(runtime, "setClaudeIntegration").mockRejectedValue(new Error("plugin command failed"));
     try {
       await expect(runtime.initialize()).resolves.toHaveProperty("hostId");
-      expect(events).toContainEqual({ event: "log", message: "登记 Claude Code 插件失败：plugin command failed" });
+      await vi.waitFor(() => expect(events).toContainEqual({ event: "log", message: "登记 Claude Code 插件失败：plugin command failed" }));
+      expect(events).toContainEqual({ event: "preparation", kind: "claude", state: "error", message: "plugin command failed" });
+    } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // HOST-PREP-04 (ADR-0081 §5-1): plugin registration may run four `claude` commands of up to 60 s
+  // each. It used to finish before initialize answered and again before start connected the Relay.
+  it("answers initialize and connects the Relay while Claude plugin registration is still running", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-background-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    let signal: AbortSignal | undefined;
+    const install = vi.spyOn(runtime, "setClaudeIntegration").mockImplementation((_enabled, _missing, received) => {
+      signal = received;
+      return new Promise<void>((_resolve, reject) => received?.addEventListener("abort", () => reject(received.reason)));
+    });
+    try {
+      await expect(runtime.initialize()).resolves.toHaveProperty("hostId");
+      expect(events).toContainEqual({ event: "preparation", kind: "claude", state: "preparing" });
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false });
+      expect(events).toContainEqual({ event: "state", state: "connected" });
+      // Registration still in flight: start reused it instead of running the commands a second time.
+      expect(install).toHaveBeenCalledTimes(1);
+      expect(signal?.aborted).toBe(false);
+      // Closing the Host cancels the registration rather than leaving `claude` subprocesses behind.
+      await runtime.close();
+      expect(signal?.aborted).toBe(true);
+      expect(events.at(-1)).not.toMatchObject({ event: "preparation", kind: "claude", state: "error" });
+    } finally { install.mockRestore(); await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("lets the settings switch supersede an automatic registration still in flight", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-switch-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const calls: [boolean, boolean][] = [];
+    const install = vi.spyOn(runtime, "setClaudeIntegration").mockImplementation(async (enabled, missing = false, signal) => {
+      calls.push([enabled, missing]);
+      if (signal) await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    });
+    try {
+      await runtime.initialize();
+      // Turning the integration off cancels the automatic run first; the two never run `claude plugin` at once.
+      await runtime.configureClaudeIntegration(false);
+      expect(calls).toEqual([[true, true], [false, false]]);
+    } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("clears a failed automatic registration once the settings switch succeeds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-claude-retry-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const install = vi.spyOn(runtime, "setClaudeIntegration").mockRejectedValueOnce(new Error("plugin command failed")).mockResolvedValue(undefined);
+    try {
+      await runtime.initialize();
+      await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ event: "preparation", kind: "claude", state: "error" }));
+      await runtime.configureClaudeIntegration(true);
+      // Without this the desktop kept showing "插件未登记" after the user fixed it from Settings.
+      expect(events.at(-1)).toEqual({ event: "preparation", kind: "claude", state: "idle" });
     } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 
@@ -275,11 +339,11 @@ describe("desktop Host lifecycle", () => {
         piIntegrationEnabled: false, claudeIntegrationEnabled: false });
       // The start resolves with the Relay online, before the delayed preparation failure lands.
       expect(events).toContainEqual({ event: "state", state: "connected" });
-      expect(events).toContainEqual(expect.objectContaining({ event: "codexTerminal", state: "preparing" }));
-      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "codexTerminal", state: "error",
+      expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "preparing" }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "error",
         message: expect.stringContaining("官方终端发布包不可用") })), { timeout: 5_000 });
       const connectedAt = events.findIndex(event => event.event === "state" && event.state === "connected");
-      const failedAt = events.findIndex(event => event.event === "codexTerminal" && event.state === "error");
+      const failedAt = events.findIndex(event => event.event === "preparation" && event.kind === "codex" && event.state === "error");
       expect(connectedAt).toBeGreaterThanOrEqual(0);
       expect(connectedAt).toBeLessThan(failedAt);
       // A failed preparation is reported, not retried silently or masked by a state change.
@@ -329,6 +393,73 @@ describe("desktop Host lifecycle", () => {
     }
   });
 
+  // HOST-LANE-01 (ADR-0081 §5-2): a pause is no longer queued behind start. One that arrives while start
+  // is still preparing must cancel it; one that arrives mid-handshake must not wait for the Relay timeout.
+  it("lets a pause cancel a start that has not connected yet", async () => {
+    const server = new WebSocketServer({ port: 0 });
+    await new Promise<void>(resolve => server.once("listening", resolve));
+    const port = (server.address() as AddressInfo).port;
+    let connections = 0;
+    // The Relay accepts the socket but never confirms the runtime: a start would wait 25 s for it.
+    server.on("connection", () => { connections += 1; });
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-preempt-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const settings = { relayUrl: `ws://127.0.0.1:${port}`, credential: "orbis_host_" + "A".repeat(43), lanPort: 0,
+      codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+    try {
+      // Before the Host is marked running: the start gives up without opening a connection.
+      const early = runtime.start({ ...settings });
+      await runtime.stop();
+      await early;
+      expect(connections).toBe(0);
+      expect(events.filter(event => event.event === "state").map(event => event.state)).toEqual(["stopped"]);
+
+      // Mid-handshake: the pause returns at once, and the abandoned start settles quietly.
+      const late = runtime.start({ ...settings });
+      await vi.waitFor(() => expect(connections).toBe(1));
+      const paused = Date.now();
+      await runtime.stop();
+      expect(Date.now() - paused).toBeLessThan(2_000);
+      await expect(late).resolves.toBeUndefined();
+      expect([...events].reverse().find(event => event.event === "state")?.state).toBe("stopped");
+      // The pause really released the attempt: a new start is accepted.
+      const again = runtime.start({ ...settings });
+      await vi.waitFor(() => expect(connections).toBe(2));
+      await runtime.stop(); await again;
+    } finally {
+      await runtime.close();
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // HOST-PREP-06 (ADR-0081 §5-4): local routing has no time limit. It no longer holds initialize, but
+  // the terminal Codex backend still waits for it because the app-server reads the configuration it rewrites.
+  it("initializes before local routing settles and starts Codex only after it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-routing-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    let routed!: () => void;
+    vi.spyOn(ProviderManager.prototype, "startRouting").mockImplementation(() => new Promise<void>(resolve => { routed = resolve; }));
+    const create = vi.spyOn(CodexAppServer, "create").mockRejectedValue(new Error("synthetic Codex failure"));
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      await expect(runtime.initialize({ claudeIntegrationEnabled: false })).resolves.toHaveProperty("hostId");
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: true, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      expect(events).toContainEqual({ event: "state", state: "connected" });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(create).not.toHaveBeenCalled();
+      routed();
+      await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    } finally { routed?.(); await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("stays stopped when an already-cancelled connection attempt fails afterwards", async () => {
     // 第一次连接立刻失败，让运行时空转进入重试；第二次挂住，代表“正在连接中被用户暂停”。
     const server = new WebSocketServer({ port: 0 });
@@ -370,16 +501,19 @@ describe("desktop Host lifecycle", () => {
 
   it.each(["backend", "service"] as const)("resumes after a pause that abandoned a retry while it created its %s", async gate => {
     // HOST-LIVE-01: the desktop pauses around a settings or Agent change and resumes right away.
-    // A retry abandoned mid-start must unwind first: the resume must not report a running Host, the
-    // abandoned service must not read the released Codex Desktop lifecycle, and a DSH backend that the
-    // abandoned attempt created after the pause must be disposed instead of being overwritten.
+    // An abandoned attempt must unwind first: the resume must not report a running Host, the abandoned
+    // service must not read the released Codex Desktop lifecycle, and a DSH backend the abandoned run
+    // created after the pause must be disposed instead of being attached or overwriting the resumed one.
+    // HOST-PREP-05 moved the DSH prestart after the Relay connection, so "backend" pauses a connected run
+    // while its background DeepSeek start is still in flight; the pause must not wait for that start.
     const server = new WebSocketServer({ port: 0 });
     await new Promise<void>(resolve => server.once("listening", resolve));
     const port = (server.address() as AddressInfo).port;
     let connections = 0;
     server.on("connection", socket => {
       connections += 1;
-      if (connections === 1) { socket.close(); return; }
+      // "service" first lets one attempt fail so that the paused attempt is a retry, as before.
+      if (gate === "service" && connections === 1) { socket.close(); return; }
       socket.once("message", raw => {
         const auth = JSON.parse(raw.toString());
         socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: auth.protocolVersion, runtimeId: auth.runtime.runtimeId }));
@@ -394,12 +528,11 @@ describe("desktop Host lifecycle", () => {
     };
     const stale = fakeDsh(); const resumedDsh = fakeDsh();
     let release: () => void = () => {};
-    let retryHeld = false;
-    const hold = async (): Promise<void> => { retryHeld = true; await new Promise<void>(resolve => { release = resolve; }); };
-    vi.spyOn(DshRuntime, "create")
-      .mockRejectedValueOnce(new Error("first attempt has no DSH"))
-      .mockImplementationOnce(async () => { if (gate === "backend") await hold(); return stale.runtime; })
-      .mockResolvedValueOnce(resumedDsh.runtime);
+    let held = false;
+    const hold = async (): Promise<void> => { held = true; await new Promise<void>(resolve => { release = resolve; }); };
+    const create = vi.spyOn(DshRuntime, "create");
+    if (gate === "backend") create.mockImplementationOnce(async () => { await hold(); return stale.runtime; });
+    create.mockResolvedValue(resumedDsh.runtime);
     const createService = HostService.create.bind(HostService);
     vi.spyOn(HostService, "create")
       .mockImplementationOnce(createService)
@@ -411,14 +544,18 @@ describe("desktop Host lifecycle", () => {
       { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     try {
       await runtime.start({ ...settings });
-      await vi.waitFor(() => expect(retryHeld).toBe(true), { timeout: 4_000 });
+      await vi.waitFor(() => expect(held).toBe(true), { timeout: 4_000 });
+      const paused = Date.now();
       await runtime.stop();
+      expect(Date.now() - paused).toBeLessThan(2_000);
       const resumed = runtime.start({ ...settings });
       setTimeout(() => release(), 100);
       await resumed;
       expect([...events].reverse().find(event => event.event === "state")?.state).toBe("connected");
-      expect(stale.client.stop).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(events).toContainEqual({ event: "preparation", kind: "dsh", state: "ready" }));
+      if (gate === "backend") await vi.waitFor(() => expect(stale.client.stop).toHaveBeenCalledTimes(1));
       expect(resumedDsh.client.stop).not.toHaveBeenCalled();
+      // The abandoned "service" retry never reached the Relay; the abandoned "backend" run had connected.
       expect(connections).toBe(2);
     } finally {
       await runtime.close();

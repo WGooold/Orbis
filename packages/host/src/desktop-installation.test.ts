@@ -81,12 +81,14 @@ describe("desktop Agent installation commands", () => {
   });
 
   it.each([true, false])("manually restarts or starts the managed DSH server (running=%s)", async running => {
-    const { runtime, prefix } = await fixture();
+    const { runtime, prefix, events } = await fixture();
     vi.stubEnv("ORBIS_DSH_ENTRY", join(prefix, "node_modules", agentPackages.dsh, agentEntries.dsh));
     vi.stubEnv("ORBIS_DSH_WEB_URL", "");
     web.restart.mockResolvedValue(running);
     await runtime.restartDshServer();
-    expect(web.restart).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ command: process.execPath }));
+    expect(web.restart).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ command: process.execPath }), expect.any(Function));
+    // HOST-ACTIVITY-04: the desktop reads each stage of a restart that may wait on a lock.
+    expect(events.filter(event => event.event === "dshServer").map(event => event.stage)).toEqual(["connecting", "applying"]);
     expect(web.ensure).toHaveBeenCalledOnce();
     expect(web.apply).toHaveBeenCalledOnce();
     expect(web.stop).toHaveBeenCalled();

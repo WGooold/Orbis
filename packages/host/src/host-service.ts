@@ -1054,7 +1054,7 @@ export class HostService {
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     this.#backends.splice(index, 1);
-    if (this.#options.codexRuntime === runtime) this.#options.codexRuntime = undefined;
+    if (this.#options.codexRuntime === runtime) delete this.#options.codexRuntime;
     this.#invalidateCatalog();
     this.#broadcastDeviceReady();
   }
@@ -1374,6 +1374,14 @@ export class HostService {
     return this.#ensureDshRuntime(true, kind);
   }
 
+  /**
+   * HOST-PREP-05: the desktop's DSH prestart, run after the Relay is online. It shares the slot with
+   * recovery and App requests, so a single Web service connection is started however they interleave.
+   */
+  prepareDshRuntime(): Promise<DshRuntime | undefined> {
+    return this.#ensureDshRuntime(false, "dsh");
+  }
+
   #scheduleDshRecovery(kind: DshKind = "dsh"): void {
     const slot = this.#dsh[kind];
     if (!(kind === "dsh" ? this.#options.recoverDshRuntime : this.#options.recoverDshDesktopRuntime) || this.#providerFactsClosing || this.#serviceClosed) return;
@@ -1647,15 +1655,27 @@ export class HostService {
       this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
     }
 
-    for (const kind of DSH_KINDS) {
-      try { await this.#dsh[kind].runtime?.start(); }
-      catch (error) { this.#options.log?.(`${kind === "dsh" ? "DeepSeek Web" : "DeepSeek Desktop"} 会话发现暂时失败，将自动重试：${describeError(error)}`); }
-    }
     await relay.start();
     this.#modelLifecycle = "running";
-    for (const kind of DSH_KINDS) this.#scheduleDshRecovery(kind);
+    // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
+    // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
+    // prestarted backend settled, so it cannot open a second connection beside one still starting.
+    for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
     this.refreshHostFacts();
     void this.refreshProviderFacts();
+  }
+
+  async #startDshBackend(kind: DshKind): Promise<void> {
+    const runtime = this.#dsh[kind].runtime;
+    if (runtime === undefined || this.#providerFactsClosing || this.#serviceClosed) return;
+    try { await runtime.start(); }
+    catch (error) {
+      this.#options.log?.(`${kind === "dsh" ? "DeepSeek Web" : "DeepSeek Desktop"} 会话发现暂时失败，将自动重试：${describeError(error)}`);
+      return;
+    }
+    if (this.#providerFactsClosing || this.#serviceClosed) return;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   async stop(): Promise<void> {
@@ -1671,7 +1691,8 @@ export class HostService {
     this.#bootstrapReplayTimers.clear();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
-    for (const kind of DSH_KINDS) await this.#dsh[kind].starting?.catch(() => {});
+    // HOST-PREP-05: a DeepSeek start still in flight (a Web service lock may take a minute) does not hold
+    // the pause. Its pending attach sees #providerFactsClosing and stops the runtime it receives.
     this.#toolContentService.close();
     await this.#fileChangeTurns.close();
     await this.#fileChanges.close();

@@ -25,7 +25,8 @@ export type CodexTerminalServerOptions = {
 };
 
 const execute = promisify(execFile);
-const preparing = new Map<string, Promise<{ command: string; prefixArgs: string[] }>>();
+type Preparation = { promise: Promise<{ command: string; prefixArgs: string[] }>; signal: AbortSignal | undefined };
+const preparing = new Map<string, Preparation>();
 type Run = NonNullable<CodexTerminalServerOptions["run"]>;
 const run: Run = (command, args) => execute(command, args, {
   timeout: 60_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, env: codexTerminalEnvironment(),
@@ -49,12 +50,36 @@ export async function resolveCodexTerminalServer(cli: CodexTerminalServerCommand
   if (!architecture || !system) throw new Error(`Codex 终端服务包不支持 ${platform}/${arch}`);
   const target = `${architecture}-${system}`;
   const destination = resolve(options.root ?? agentInstallRoot(), "codex-terminal-server", version, target);
-  const pending = preparing.get(destination);
-  if (pending) return pending;
-  const preparation = prepare(destination, version, target, platform, executeCommand, options);
+  for (let pending = preparing.get(destination); pending !== undefined; pending = preparing.get(destination)) {
+    try { return await untilAborted(pending.promise, options.signal); }
+    catch (error) {
+      // A paused Host cancels its own preparation. A caller that joined it (the resumed Host) was not
+      // cancelled: start a fresh preparation instead of reporting the other caller's abort as a failure.
+      if (options.signal?.aborted || pending.signal?.aborted !== true) throw error;
+      if (preparing.get(destination) === pending) preparing.delete(destination);
+    }
+  }
+  const promise = prepare(destination, version, target, platform, executeCommand, options);
+  const preparation: Preparation = { promise, signal: options.signal };
   preparing.set(destination, preparation);
-  try { return await preparation; }
+  try { return await promise; }
   finally { if (preparing.get(destination) === preparation) preparing.delete(destination); }
+}
+
+/** Waits for a shared preparation, but lets this caller stop waiting when its own signal aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolvePromise, reject) => {
+    const abort = (): void => { reject(signal.reason); };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(value => { signal.removeEventListener("abort", abort); resolvePromise(value); },
+      (error: unknown) => { signal.removeEventListener("abort", abort); reject(error); });
+  });
+}
+
+function withCallerSignal(timeoutMs: number, signal: AbortSignal | undefined): AbortSignal {
+  return signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -103,7 +128,7 @@ async function prepare(destination: string, version: string, target: string, pla
   const assetName = `codex-app-server-package-${target}.tar.gz`;
   const assetUrl = `https://github.com/openai/codex/releases/download/${tag}/${assetName}`;
   const response = await fetchResponse(`https://api.github.com/repos/openai/codex/releases/tags/${encodeURIComponent(tag)}`, {
-    headers: { accept: "application/vnd.github+json", "user-agent": "orbis-host" }, signal: AbortSignal.timeout(30_000),
+    headers: { accept: "application/vnd.github+json", "user-agent": "orbis-host" }, signal: withCallerSignal(30_000, options.signal),
   });
   if (!response.ok) throw new Error(`Codex ${version} 官方终端发布包不可用（HTTP ${response.status}）`);
   const release = object(await response.json());
@@ -119,10 +144,7 @@ async function prepare(destination: string, version: string, target: string, pla
   const temporary = await mkdtemp(`${destination}.tmp-`);
   try {
     const archive = join(temporary, "package.tar.gz");
-    const request = options.signal === undefined
-      ? AbortSignal.timeout(180_000)
-      : AbortSignal.any([AbortSignal.timeout(180_000), options.signal]);
-    const download = await fetchResponse(assetUrl, { signal: request });
+    const download = await fetchResponse(assetUrl, { signal: withCallerSignal(180_000, options.signal) });
     if (!download.ok || !download.body) throw new Error(`Codex ${version} 终端服务包下载失败（HTTP ${download.status}）`);
     const digest = createHash("sha256"); let bytes = 0; let reported = 0;
     const meter = new Transform({ transform(chunk: Buffer, _encoding, done) {
@@ -137,6 +159,8 @@ async function prepare(destination: string, version: string, target: string, pla
       createWriteStream(archive, { flags: "wx", mode: 0o600 }));
     options.onProgress?.(bytes, expectedSize);
     if (bytes !== asset.size || `sha256:${digest.digest("hex")}` !== asset.digest) throw new Error("Codex 终端服务包完整性校验失败");
+    // Unpacking ~330 MB is the next long step; a paused Host does not need it.
+    options.signal?.throwIfAborted();
     const listing = await executeCommand("tar", ["-tzf", archive]);
     const names = listing.stdout.split(/\r?\n/u).filter(Boolean);
     if (names.length === 0 || names.some(name => name.startsWith("/") || /^[A-Za-z]:/u.test(name)
@@ -144,6 +168,7 @@ async function prepare(destination: string, version: string, target: string, pla
     const unpacked = join(temporary, "unpacked"); await mkdir(unpacked);
     await executeCommand("tar", ["-xzf", archive, "-C", unpacked]);
     await validate(unpacked, version, target, platform, executeCommand);
+    options.signal?.throwIfAborted();
     try { await rename(unpacked, destination); }
     catch (error) {
       // A separate Host may win publication. Verify its complete directory and keep it.

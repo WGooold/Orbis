@@ -142,6 +142,26 @@ describe("shared DSH Web lifecycle", () => {
     expect(() => process.kill(descriptor.pid, 0)).not.toThrow();
   });
 
+  // HOST-ACTIVITY-04 (ADR-0081 §5-6): a start can wait up to a minute for another starter's lock. The
+  // desktop names each stage instead of showing one unchanging line, so the stages must be reported.
+  it("reports waiting for another starter's lock, then starting", async () => {
+    const directory = await home();
+    const env = { ...process.env, DSH_HOME: directory, ORBIS_DSH_WEB_URL: "" };
+    const lock = join(directory, "cache", "orbis-web.json.lock");
+    await mkdir(join(directory, "cache"), { recursive: true });
+    // A live owner (this test process) holds the lock until the test releases it.
+    await writeFile(lock, JSON.stringify({ pid: process.pid, id: "other-starter" }));
+    const stages: string[] = [];
+    const pending = ensureDshWebService(env, { cli: cli(), port: 0, onStage: stage => stages.push(stage) });
+    await delay(300);
+    expect(stages).toEqual(["waiting"]);
+    await rm(lock);
+    const service = await pending;
+    childPids.push((JSON.parse(await readFile(join(directory, "cache", "orbis-web.json"), "utf8")) as { pid: number }).pid);
+    expect(stages).toEqual(["waiting", "starting"]);
+    await service.stop();
+  });
+
   // DSH-STATE-01: publishing an external launcher must preserve both the exact
   // current invocation and the package entry used by released Hosts' decoders.
   it("publishes a legacy-readable package entry and restores the original launcher on reconnect", async () => {
