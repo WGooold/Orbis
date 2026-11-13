@@ -1,5 +1,5 @@
 // MATH-01: boundaries and actual KaTeX compilation for the reported formulas.
-import test from 'node:test';
+import {test} from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
