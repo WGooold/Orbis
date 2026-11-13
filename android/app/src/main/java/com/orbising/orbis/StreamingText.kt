@@ -205,6 +205,7 @@ internal fun StreamingMarkdownText(
     modifier: Modifier,
     style: TextStyle,
     textAlign: TextAlign,
+    registerWithCursor: Boolean = true,
 ) {
     val cursor = LocalRevealCursor.current
     val path = LocalRevealPath.current
@@ -215,7 +216,7 @@ internal fun StreamingMarkdownText(
     val filters = remember(density.density) {
         Array(8) { BlurMaskFilter(6 * density.density * (it + 1) / 8, BlurMaskFilter.Blur.NORMAL) }
     }
-    if (cursor != null) {
+    if (cursor != null && registerWithCursor) {
         val length = text.length
         SideEffect { cursor.register(path, length) }
         DisposableEffect(cursor, path) { onDispose { cursor.unregister(path) } }

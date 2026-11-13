@@ -3,6 +3,38 @@ import Foundation
 import SwiftUI
 import UIKit
 
+/// MATH-01: offline production renderer fixture for both themes, tables and streamed completion.
+struct MathRenderingPreview: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    @State private var completed = false
+    private var source: String {
+        #"""
+        **相邻变化** \(\Delta S=S_B-S_A\) 与参考值。
+
+        \[
+        \begin{aligned}\text{相邻变化：}\quad &\hat d_t=g_\theta(X_t)-g_\theta(X_{t-1})\\
+        \text{相对基线：}\quad &\hat R_t=g_\theta(X_t)-g_\theta(X_0)\end{aligned}
+        \]
+
+        | 方式 | 公式 |
+        |---|---|
+        | 加权分 | \(\sum w_i R_i/15+|x|\) |
+
+        \[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]
+
+        """# + (completed ? #"完整 \(\frac{a}{b}\)，回退 \(\unknownCommand{x}\)"# : #"未完成 \(\frac{a}"#)
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Button("Complete") { completed = true }.accessibilityIdentifier("math-complete")
+                MarkdownMessage(text: source, streaming: !completed).environmentObject(store.transfers)
+            }.padding(20)
+        }.background(OrbisPalette(scheme).base).foregroundStyle(OrbisPalette(scheme).text)
+    }
+}
+
 /// Uses production buttons with no network or navigation, for cancellation and frame review.
 struct ActionFeedbackPreview: View {
     @Environment(\.colorScheme) private var scheme

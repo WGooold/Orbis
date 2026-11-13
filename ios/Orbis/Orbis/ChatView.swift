@@ -1249,7 +1249,7 @@ private struct RevealRenderer: TextRenderer {
     }
 }
 
-private extension Text {
+extension Text {
     /// iOS 17 has no text renderer; streamed text simply appears there.
     @ViewBuilder func reveal(_ clock: RevealClock, base: Int, now: TimeInterval) -> some View {
         if #available(iOS 18.0, *) { textRenderer(RevealRenderer(clock: clock, base: base, now: now)) }
@@ -1302,7 +1302,7 @@ struct MarkdownMessage: View {
             #endif
             let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : renderTime
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(rows) { row in rowView(row, clock: visibleClock, now: now) }
+                ForEach(rows) { row in rowView(row, html: prepared?.mathHTML[row.id], clock: visibleClock, now: now) }
             }
         }.font(.orbisBody()).textSelection(.enabled)
             .task(id: text) {
@@ -1338,7 +1338,7 @@ struct MarkdownMessage: View {
             }
     }
 
-    @ViewBuilder private func rowView(_ row: MarkdownRow, clock: RevealClock, now: TimeInterval) -> some View {
+    @ViewBuilder private func rowView(_ row: MarkdownRow, html: String?, clock: RevealClock, now: TimeInterval) -> some View {
         let p = OrbisPalette(scheme)
         switch row.kind {
         case .spacer: Spacer().frame(height: 2)
@@ -1349,26 +1349,33 @@ struct MarkdownMessage: View {
         case .quote(let value):
             HStack(alignment: .top, spacing: 10) {
                 Capsule().fill(p.accent.opacity(0.6)).frame(width: 3)
-                Text(value).reveal(clock, base: row.base, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base, now: now, color: p.secondary)
                     .foregroundStyle(p.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }.fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let value):
-            Text(value).reveal(clock, base: row.base, now: now)
+            mathOrText(value, html: html, clock: clock, base: row.base, now: now, size: level <= 2 ? OrbisTextSize.title : OrbisTextSize.body, bold: true)
                 .font(level <= 2 ? .orbisTitle() : .orbisBody(.semibold))
                 .padding(.top, 4).accessibilityAddTraits(.isHeader)
         case .task(let checked, let value):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 OrbisActionSymbol(systemName: checked ? "checkmark.square.fill" : "square").orbisIconBaseline(OrbisTextSize.body)
-                Text(value).reveal(clock, base: row.base, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base, now: now)
             }
         case .bullet(let indent, let value):
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Text("•").reveal(clock, base: row.base, now: now)
-                Text(value).reveal(clock, base: row.base + 1, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base + 1, now: now)
             }.padding(.leading, CGFloat(min(indent, 12)) * 6)
         case .text(let value):
-            Text(value).reveal(clock, base: row.base, now: now)
+            mathOrText(value, html: html, clock: clock, base: row.base, now: now)
         }
+    }
+    @ViewBuilder private func mathOrText(_ value: AttributedString, html: String?, clock: RevealClock, base: Int, now: TimeInterval,
+        size: CGFloat = OrbisTextSize.body, bold: Bool = false, color: Color? = nil) -> some View {
+        if let html {
+            MathFragment(html: html, source: value, size: size, bold: bold, color: color ?? OrbisPalette(scheme).text,
+                clock: clock, base: base, now: now)
+        } else { Text(value).reveal(clock, base: base, now: now) }
     }
 }
 
@@ -1505,6 +1512,7 @@ struct PermissionsView: View {
 }
 
 private struct MarkdownTableView: View {
+    @Environment(\.colorScheme) private var scheme
     let section: MarkdownTextSection
     var body: some View {
         ScrollView(.horizontal) {
@@ -1512,7 +1520,7 @@ private struct MarkdownTableView: View {
                 ForEach(Array(section.rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow(alignment: .top) {
                         ForEach(Array((section.rows.first ?? []).indices), id: \.self) { column in
-                            Text(rowIndex < section.inlineRows.count && column < section.inlineRows[rowIndex].count ? section.inlineRows[rowIndex][column] : AttributedString(""))
+                            cell(row: rowIndex, column: column)
                                 .font(.orbisLabel(rowIndex == 0 ? .semibold : .regular))
                                 .frame(width: 150, alignment: alignment(column)).padding(10)
                                 .frame(maxHeight: .infinity, alignment: .top)
@@ -1523,6 +1531,13 @@ private struct MarkdownTableView: View {
                 }
             }
         }.neuSurface(inset: true, radius: 12, intensity: 0.4).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).textSelection(.enabled)
+    }
+    @ViewBuilder private func cell(row: Int, column: Int) -> some View {
+        let value = row < section.inlineRows.count && column < section.inlineRows[row].count ? section.inlineRows[row][column] : AttributedString("")
+        if row < section.mathRows.count, column < section.mathRows[row].count, let html = section.mathRows[row][column] {
+            MathFragment(html: html, source: value, size: OrbisTextSize.label, bold: row == 0, color: OrbisPalette(scheme).text,
+                alignment: alignment(column) == .center ? "center" : alignment(column) == .trailing ? "right" : "left")
+        } else { Text(value) }
     }
     private func alignment(_ column: Int) -> Alignment {
         let markers = section.text.components(separatedBy: "|")

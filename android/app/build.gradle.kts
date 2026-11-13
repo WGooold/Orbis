@@ -1,8 +1,39 @@
+import org.gradle.api.file.FileSystemOperations
+import javax.inject.Inject
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+// Register generated assets through the variant API so merge, lint and packaging
+// all depend on the current shared files, including on symlink-free checkouts.
+abstract class PrepareMathAssets : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourceDirectory: DirectoryProperty
+    @get:OutputDirectory
+    abstract val outputDirectory: DirectoryProperty
+    @get:Inject
+    abstract val fileSystemOperations: FileSystemOperations
+
+    @TaskAction
+    fun copyAssets() {
+        fileSystemOperations.sync {
+            from(sourceDirectory) { into("math") }
+            into(outputDirectory)
+        }
+    }
+}
+
+androidComponents.onVariants { variant ->
+    val prepare = tasks.register<PrepareMathAssets>("prepare${variant.name.replaceFirstChar { it.uppercaseChar() }}MathAssets") {
+        sourceDirectory.set(rootProject.layout.projectDirectory.dir("../shared/math"))
+        outputDirectory.set(layout.buildDirectory.dir("generated/math-assets/${variant.name}"))
+    }
+    variant.sources.assets?.addGeneratedSourceDirectory(prepare, PrepareMathAssets::outputDirectory)
 }
 
 android {
@@ -59,6 +90,7 @@ android {
 
     // 桌面单测与设备测试共用同一份夹具：两个源集互相看不见对方，各存一份拷贝必然漂移。
     sourceSets {
+        getByName("test").resources.srcDir("../../shared")
         getByName("test").java.srcDir("src/sharedTest/java")
         getByName("androidTest").java.srcDir("src/sharedTest/java")
     }
@@ -93,6 +125,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("org.commonmark:commonmark:0.24.0")
+    implementation("org.mozilla:rhino:1.7.15")
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.24.0")
     implementation("org.commonmark:commonmark-ext-gfm-strikethrough:0.24.0")
     implementation("org.commonmark:commonmark-ext-task-list-items:0.24.0")

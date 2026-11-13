@@ -428,6 +428,24 @@ final class OrbisUITests: XCTestCase {
         app.launch()
         return app
     }
+
+    // MATH-01: native paragraph/table hosts must size real offline math and survive completion.
+    func testMathRenderingUsesOfflineFragmentsAndKeepsStreamFallback() {
+        for dark in [false, true] {
+            let app = launch("math", dark: dark, arguments: ["--preview-reduce-motion"])
+            XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 15))
+            let all = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                app.webViews.count >= 4 && app.webViews.allElementsBoundByIndex.allSatisfy { $0.frame.height > 10 }
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [all], timeout: 15), .completed)
+            capture(dark ? "math-dark" : "math-light", app: app)
+            app.buttons["math-complete"].tap()
+            let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.webViews.count >= 5 }, object: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [completed], timeout: 15), .completed)
+            capture(dark ? "math-completed-dark" : "math-completed-light", app: app)
+            app.terminate()
+        }
+    }
     private func waitUntilEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
         return XCTWaiter().wait(for: [enabled], timeout: timeout) == .completed

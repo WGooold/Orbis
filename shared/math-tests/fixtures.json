@@ -1,0 +1,142 @@
+[
+  {
+    "name": "inline",
+    "source": "保留 \\(S_A\\)、$S_B$ 和 \\(\\Delta S=S_B-S_A\\)。",
+    "count": 3
+  },
+  {
+    "name": "display",
+    "source": "\\[\\sum_{i=1}^{6} w_iR_i/15\\]",
+    "count": 1
+  },
+  {
+    "name": "multiline",
+    "source": "\\[\\begin{aligned}\\text{相邻变化：}\\quad &\\hat d_t=g_\\theta(X_t)-g_\\theta(X_{t-1})\\\\\n\\text{相对基线：}\\quad &\\hat R_t=g_\\theta(X_t)-g_\\theta(X_0)\\end{aligned}\\]",
+    "count": 1
+  },
+  {
+    "name": "matrix",
+    "source": "$$\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}$$",
+    "count": 1
+  },
+  {
+    "name": "cases",
+    "source": "$$f(x)=\\begin{cases}x^2 & x>0\\\\0 & x\\leq0\\end{cases}$$",
+    "count": 1
+  },
+  {
+    "name": "bare AMS",
+    "source": "\\begin{align}a&=b\\\\c&=d\\end{align}",
+    "count": 1
+  },
+  {
+    "name": "table pipes",
+    "source": "| Name | Formula |\n|---|---|\n| a | \\(\\lvert x\\rvert + |y|\\) |",
+    "count": 1
+  },
+  {
+    "name": "currency",
+    "source": "Price $5 and $10; USD $100; $100$; $2x+1$",
+    "count": 1
+  },
+  {
+    "name": "inline code",
+    "source": "`\\(x\\)` and ``$x$``",
+    "count": 0
+  },
+  {
+    "name": "fenced code",
+    "source": "```latex\n\\[x\\]\n```",
+    "count": 0
+  },
+  {
+    "name": "math fence",
+    "source": "```math\n\\frac{a}{b}\n```",
+    "count": 1
+  },
+  {
+    "name": "indented code",
+    "source": "    \\(x\\)\n\t$x$",
+    "count": 0
+  },
+  {
+    "name": "escaped",
+    "source": "\\\\(x\\\\) and \\$x\\$",
+    "count": 0
+  },
+  {
+    "name": "destinations",
+    "source": "[x](https://example.test/$x$)\n[x]: https://example.test/$x$",
+    "count": 0
+  },
+  {
+    "name": "raw HTML",
+    "source": "<code>$x$</code> <a href=\"$x$\">\\(x\\)</a>",
+    "count": 0
+  },
+  {
+    "name": "pending",
+    "source": "before \\(\\frac{a}\n\n**following**",
+    "count": 0
+  },
+  {
+    "name": "nested list",
+    "source": "- outer\n    - inner \\(x^2\\)",
+    "count": 1
+  },
+  {
+    "name": "quoted block",
+    "source": "> \\[\n> \\frac{a}{b}\n> \\]",
+    "count": 1
+  },
+  {
+    "name": "nested fenced code",
+    "source": "- item\n    ```latex\n    \\(x\\)\n    ```",
+    "count": 0
+  },
+  {
+    "name": "quoted math fence",
+    "source": "> ```math\n> \\frac{a}{b}\n> ```",
+    "count": 1
+  },
+  {
+    "name": "comparison text",
+    "source": "a < b and \\(x\\) > c",
+    "count": 1
+  },
+  {
+    "name": "all command families",
+    "source": "\\[\\sqrt[3]{x}+\\lim_{n\\to\\infty}\\prod_{i=1}^n a_i+\\mathbf{x}+\\mathcal{F}+\\mathbb{R}+\\overline{x}+\\underbrace{a+b}_{n}+\\left\\langle\\frac{x}{y}\\right\\rangle\\]",
+    "count": 1
+  },
+  {
+    "name": "gather equation",
+    "source": "\\begin{gather}a=b\\\\c=d\\end{gather}",
+    "count": 1
+  },
+  {
+    "name": "bare URL destination",
+    "source": "https://example.test/$x$ and mailto:a$x$@example.test",
+    "count": 0
+  },
+  {
+    "name": "quoted indented code",
+    "source": ">     \\(x\\)",
+    "count": 0
+  },
+  {
+    "name": "unfinished HTML block",
+    "source": "<div>\n\\(x\\)",
+    "count": 0
+  },
+  {
+    "name": "HTML comment containing brackets",
+    "source": "<!-- > \\(x\\) -->",
+    "count": 0
+  },
+  {
+    "name": "math following nested fence",
+    "source": "- item\n    ```latex\n    \\(x\\)\n    ```\n\n\\(y\\)",
+    "count": 1
+  }
+]

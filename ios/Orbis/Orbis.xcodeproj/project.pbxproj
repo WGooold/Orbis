@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F08000010000000000000003 /* MathResources in Resources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000003; };
+		F08000010000000000000002 /* MathFragment.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000002; };
+		F08000010000000000000001 /* MathMarkup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000001; };
 		AA7200010000000000000001 /* HostLocalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7200010000000000000002 /* HostLocalStorage.swift */; };
 		D06800010000000000000001 /* ProviderDialGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06810010000000000000001; };
 		F06900010000000000000001 /* ReadReconcileSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06900010000000000000002 /* ReadReconcileSchedule.swift */; };
@@ -64,6 +67,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		F08010010000000000000003 /* MathResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = MathResources; sourceTree = "<group>"; };
+		F08010010000000000000002 /* MathFragment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathFragment.swift; sourceTree = "<group>"; };
+		F08010010000000000000001 /* MathMarkup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathMarkup.swift; sourceTree = "<group>"; };
 		AA7200010000000000000002 /* HostLocalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostLocalStorage.swift; sourceTree = "<group>"; };
 		D06810010000000000000001 /* ProviderDialGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDialGeometry.swift; sourceTree = "<group>"; };
 		F06900010000000000000002 /* ReadReconcileSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadReconcileSchedule.swift; sourceTree = "<group>"; };
@@ -196,6 +202,9 @@
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
+				F08010010000000000000003 /* MathResources */,
+				F08010010000000000000002 /* MathFragment.swift */,
+				F08010010000000000000001 /* MathMarkup.swift */,
 				C05810010000000000000001 /* MotionGeometry.swift */,
 				C00510010000000000000001 /* CopyFeedback.swift */,
 				C03710010000000000000001 /* QuotaCoinGeometry.swift */,
@@ -299,6 +308,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A0010001000000000000000C /* Assets.xcassets in Resources */,
+				F08000010000000000000003 /* MathResources in Resources */,
 				C06300010000000000000003 /* InfoPlist.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -355,6 +365,8 @@
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
+				F08000010000000000000002 /* MathFragment.swift in Sources */,
+				F08000010000000000000001 /* MathMarkup.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
 				C00500010000000000000001 /* CopyFeedback.swift in Sources */,
 				C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */,
