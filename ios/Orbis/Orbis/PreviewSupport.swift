@@ -980,6 +980,67 @@ struct ChatEntryReport: View {
         }.font(.system(size: 12)).allowsHitTesting(false)
     }
 }
+
+/// M14: what assistive technologies can reach. XCUITest's snapshot also lists subtrees SwiftUI
+/// hides from accessibility (inactive root tabs, pages covered by another page), so UI tests read
+/// this walk of the key window's accessibility containers instead. Each line is
+/// `identifier|label` of one reachable element.
+enum AccessibilityReachProbe {
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-accessibility-reach")
+
+    @MainActor static func reachable() -> [String] {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows).first(where: \.isKeyWindow) else { return [] }
+        var lines: [String] = []
+        var budget = 4_000
+        walk(window, into: &lines, budget: &budget)
+        return lines
+    }
+
+    @MainActor private static func walk(_ item: Any, into lines: inout [String], budget: inout Int) {
+        guard budget > 0, let object = item as? NSObject else { return }
+        budget -= 1
+        if object.accessibilityElementsHidden { return }
+        if let view = object as? UIView, view.isHidden || view.alpha < 0.01 { return }
+        if object.isAccessibilityElement {
+            // SwiftUI's accessibility nodes answer the selector without declaring the protocol.
+            let selector = NSSelectorFromString("accessibilityIdentifier")
+            let identifier = object.responds(to: selector)
+                ? (object.perform(selector)?.takeUnretainedValue() as? String ?? "") : ""
+            if identifier != "accessibility-reach" { lines.append(identifier + "|" + (object.accessibilityLabel ?? "")) }
+            return
+        }
+        if let elements = object.accessibilityElements {
+            for element in elements { walk(element, into: &lines, budget: &budget) }
+            return
+        }
+        let count = object.accessibilityElementCount()
+        if count > 0 && count != NSNotFound {
+            for index in 0..<count {
+                if let element = object.accessibilityElement(at: index) { walk(element, into: &lines, budget: &budget) }
+            }
+            return
+        }
+        if let view = object as? UIView {
+            for subview in view.subviews { walk(subview, into: &lines, budget: &budget) }
+        }
+    }
+}
+
+struct AccessibilityReachReport: View {
+    @State private var report = ""
+    var body: some View {
+        Text(" ").font(.system(size: 1)).frame(width: 1, height: 1)
+            .accessibilityIdentifier("accessibility-reach").accessibilityValue(report)
+            .allowsHitTesting(false)
+            .task {
+                while !Task.isCancelled {
+                    report = AccessibilityReachProbe.reachable().joined(separator: "\n")
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
+    }
+}
 #endif
 
 #if DEBUG

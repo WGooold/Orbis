@@ -462,6 +462,20 @@ final class OrbisUITests: XCTestCase {
     }
     /// Lets a short state transition (the capsule's 0.16 s fade) settle before a screenshot.
     private func settle() { _ = XCTWaiter().wait(for: [XCTestExpectation(description: "settle")], timeout: 0.5) }
+    /// M14: a covered page stays mounted under the top page, and XCUITest's snapshot lists it
+    /// even though SwiftUI hides it from accessibility. These read what assistive technologies
+    /// reach instead (`--probe-accessibility-reach`); `key` is "identifier|" or "|label".
+    private func reachable(_ app: XCUIApplication, _ key: String) -> Bool {
+        let lines = ((app.staticTexts["accessibility-reach"].value as? String) ?? "").split(separator: "\n")
+        return lines.contains { key.hasSuffix("|") ? $0.hasPrefix(key) : $0.hasSuffix(key) }
+    }
+    private func waitReachable(_ app: XCUIApplication, _ key: String, _ expected: Bool,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(3)
+        while reachable(app, key) != expected && Date() < deadline { settle() }
+        let report = (app.staticTexts["accessibility-reach"].value as? String) ?? "<no probe>"
+        XCTAssertEqual(reachable(app, key), expected, "\(key) reachable in:\n\(report.prefix(1500))", file: file, line: line)
+    }
     private func waitForY(_ element: XCUIElement, _ y: CGFloat, operation: String) {
         let position = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             element.exists && abs(element.frame.minY - y) <= 1
@@ -1569,7 +1583,7 @@ final class OrbisUITests: XCTestCase {
         capture("slash-menu", app: slash)
     }
     func testChatSwipeBackReboundsThenReturnsHome() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.55))
@@ -1577,7 +1591,8 @@ final class OrbisUITests: XCTestCase {
                     thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.55)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertTrue(composer.isHittable)
-        XCTAssertFalse(app.buttons["打开会话目录"].isHittable)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         capture("chat-swipe-rebounded", app: app)
         start.press(forDuration: 0.05,
                     thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.55)),
@@ -1588,6 +1603,7 @@ final class OrbisUITests: XCTestCase {
     }
     // V21 / M14: returning from chat keeps the previously scrolled home card stationary.
     func testScrolledHomeKeepsCardPositionAfterChatReturn() {
+        XCUIDevice.shared.orientation = .portrait
         let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
         let list = app.scrollViews["home-session-list"]
         XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 8))
@@ -1609,7 +1625,9 @@ final class OrbisUITests: XCTestCase {
                                                        dy: before.midY / app.frame.height)).tap()
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
         // The root stays live under chat; its updated sessions must be present on return.
-        app.buttons["preview-list-insert"].tap()
+        let insert = app.buttons["preview-list-insert"]
+        insert.tap()
+        XCTAssertEqual(insert.value as? String, "1", "the synthetic update must actually be dispatched underneath chat")
         settle()
         // On iPad the persistent session directory occupies the left side; begin
         // the back gesture inside the chat surface rather than in that sidebar.
@@ -1904,7 +1922,7 @@ final class OrbisUITests: XCTestCase {
     }
 
     func testFullPageReturnBudgetAndNestedSourceReentry() {
-        let app = launch("home", arguments: ["--measure-page-return"])
+        let app = launch("home", arguments: ["--measure-page-return", "--probe-accessibility-reach"])
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
         for (index, entry) in ["root-tab-settings", "home-downloads"].enumerated() {
             app.buttons[entry].tap()
@@ -1920,7 +1938,7 @@ final class OrbisUITests: XCTestCase {
             downloads.tap()
             returnWithoutSettling(app, count: count)
             XCTAssertTrue(downloads.isHittable)
-            XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
+            waitReachable(app, "chat-composer|", false)
         }
         returnWithoutSettling(app, count: 6)
         XCTAssertTrue(app.buttons["历史与分支"].isHittable)
@@ -1971,7 +1989,7 @@ final class OrbisUITests: XCTestCase {
     }
 
     func testNestedPagesSwipeBackOneLevelAtATime() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("nested page draft")
@@ -1989,32 +2007,35 @@ final class OrbisUITests: XCTestCase {
         swipeBack()
         XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "保留")
-        XCTAssertFalse(composer.exists)
+        waitReachable(app, "history-downloads|", true)
+        waitReachable(app, "chat-composer|", false)
         capture("nested-downloads-return-history", app: app)
         swipeBack()
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue((composer.value as? String)?.contains("nested page draft") == true)
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         capture("nested-history-return-chat", app: app)
     }
 
     // ADR-0054 / M14: settings and the home downloads page slide back to home like the chat.
     func testSettingsAndDownloadsSwipeBack() {
-        let app = launch("home")
+        let app = launch("home", arguments: ["--probe-accessibility-reach"])
         let directory = app.buttons["打开会话目录"]
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
         for (entry, page) in [("home-downloads", "")] {
             app.buttons[entry].tap()
             let opened = page.isEmpty ? app.staticTexts["下载"] : app.descendants(matching: .any)[page].firstMatch
             XCTAssertTrue(opened.waitForExistence(timeout: 3))
-            XCTAssertTrue(directory.waitForNonExistence(timeout: 3))
+            waitReachable(app, "download-path|", true)
+            waitReachable(app, "|打开会话目录", false)
             let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
             // A short drag rebounds and stays on the page.
             start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.6)),
                         withVelocity: .slow, thenHoldForDuration: 0.3)
             XCTAssertTrue(opened.exists)
-            // The rebounding page may still show the home preview beneath it, which takes no taps.
-            XCTAssertFalse(directory.exists && directory.isHittable)
+            // The rebounding page still covers the live home beneath it, which stays unreachable.
+            waitReachable(app, "|打开会话目录", false)
             // Past a third of the width it returns home, and home takes taps at once.
             start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
                         withVelocity: .slow, thenHoldForDuration: 0.1)
@@ -2115,14 +2136,17 @@ final class OrbisUITests: XCTestCase {
 
     // M14: history and branch browsing is a page above the same chat, so a right swipe returns there.
     func testHistorySwipeBackReturnsToChat() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let historyButton = app.buttons["历史与分支"]
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(historyButton.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("历史前的草稿")
         historyButton.tap()
         XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        XCTAssertFalse(composer.exists)
+        waitReachable(app, "history-downloads|", true)
+        waitReachable(app, "chat-composer|", false)
+        // The covered chat must not keep the keyboard.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
@@ -2133,7 +2157,8 @@ final class OrbisUITests: XCTestCase {
                     withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue(historyButton.exists)
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         XCTAssertTrue((composer.value as? String)?.contains("历史前的草稿") == true)
         capture("history-swipe-back-to-chat", app: app)
         historyButton.tap()

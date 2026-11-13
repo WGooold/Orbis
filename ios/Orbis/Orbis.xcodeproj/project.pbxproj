@@ -59,6 +59,7 @@
 		A0010001000000000000003A /* TurnFileChangesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000003A /* TurnFileChangesView.swift */; };
 		C05800010000000000000001 /* MotionGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000001 /* MotionGeometry.swift */; };
 		C05800010000000000000002 /* InteractionMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05810010000000000000002 /* InteractionMotion.swift */; };
+		C07100010000000000000001 /* PageNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C07110010000000000000001 /* PageNavigation.swift */; };
 		C03300010000000000000001 /* HomePullRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03310010000000000000001 /* HomePullRefresh.swift */; };
         C06400010000000000000001 = {isa = PBXBuildFile; fileRef = C06410010000000000000001; };
 /* End PBXBuildFile section */
@@ -120,6 +121,7 @@
 		A0011001000000000000003A /* TurnFileChangesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnFileChangesView.swift; sourceTree = "<group>"; };
 		C05810010000000000000001 /* MotionGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotionGeometry.swift; sourceTree = "<group>"; };
 		C05810010000000000000002 /* InteractionMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionMotion.swift; sourceTree = "<group>"; };
+		C07110010000000000000001 /* PageNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageNavigation.swift; sourceTree = "<group>"; };
 		C03310010000000000000001 /* HomePullRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePullRefresh.swift; sourceTree = "<group>"; };
         C06410010000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/RelayQUICDeviceTests.swift; sourceTree = SOURCE_ROOT; };
         C06410010000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = OrbisTransportTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -200,6 +202,7 @@
 				C00510010000000000000001 /* CopyFeedback.swift */,
 				C03710010000000000000001 /* QuotaCoinGeometry.swift */,
 				C05810010000000000000002 /* InteractionMotion.swift */,
+				C07110010000000000000001 /* PageNavigation.swift */,
 				C03310010000000000000001 /* HomePullRefresh.swift */,
 				A00110010000000000000020 /* OrbisDesign.swift */,
                 D06810010000000000000001 /* ProviderDialGeometry.swift */,
@@ -359,6 +362,7 @@
 				C00500010000000000000001 /* CopyFeedback.swift in Sources */,
 				C03700010000000000000001 /* QuotaCoinGeometry.swift in Sources */,
 				C05800010000000000000002 /* InteractionMotion.swift in Sources */,
+				C07100010000000000000001 /* PageNavigation.swift in Sources */,
 				C03300010000000000000001 /* HomePullRefresh.swift in Sources */,
 				A00100010000000000000020 /* OrbisDesign.swift in Sources */,
                 D06800010000000000000001 /* ProviderDialGeometry.swift in Sources */,

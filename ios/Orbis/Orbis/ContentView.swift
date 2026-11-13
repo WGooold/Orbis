@@ -21,7 +21,6 @@ struct ContentView: View {
     @State private var rootOpacity = 1.0
     @State private var rootOffset: CGFloat = 0
     @State private var rootTransition = 0
-    @State private var draftOrigin: CGRect?
     @State private var surfaceWidth: CGFloat = 390
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
@@ -56,14 +55,16 @@ struct ContentView: View {
             if store.pairings.isEmpty {
                 PairingEntryView(onCancel: nil, onCode: store.pair)
             } else {
-                // Every layer stays mounted below the pages above it: a return, a push and a
-                // covered page all resolve to the real instance with its reading position and
-                // updates. Nothing is captured or rebuilt (ADR-0054 / M14).
-                OrbisMountedLayer(hidden: rootCovered) { rootPages }
-                    .modifier(OrbisSourceRevealEffect(reveal: navigation.reveal, layerIndex: -1))
-                    .accessibilityHidden(rootCovered)
-                    .allowsHitTesting(navigation.pages.isEmpty)
-                pageLayers
+                // The root and every full page stay mounted under the page above them, so a
+                // return reveals the real source (ADR-0054 / M14).
+                OrbisPageHost(stack: navigation, rootCovered: drawerOpen && surfaceWidth < 600) {
+                    rootPages
+                } page: { page in
+                    pageView(page)
+                        .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .foregroundStyle(OrbisPalette(scheme).text)
+                        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                }
             }
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -184,6 +185,7 @@ struct ContentView: View {
         #if DEBUG
         .overlay(alignment: .topLeading) { if ChatEntryProbe.enabled { ChatEntryReport() } }
         .overlay(alignment: .bottomLeading) { if PageReturnProbe.enabled { PageReturnReport() } }
+        .overlay(alignment: .bottomTrailing) { if AccessibilityReachProbe.enabled { AccessibilityReachReport() } }
         #endif
     }
 
@@ -222,38 +224,12 @@ struct ContentView: View {
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 
-    /// One mounted layer per page. Only the top layer takes input; the layer beneath is the
-    /// return source and takes the same compression and scrim a source preview used to.
-    /// Each layer keeps its own hosting controller so a covered page leaves the accessible tree.
-    @ViewBuilder private var pageLayers: some View {
-        let top = navigation.pages.count - 1
-        ForEach(Array(navigation.pages.enumerated()), id: \.offset) { index, page in
-            OrbisMountedLayer(hidden: index != top) {
-                pageView(page)
-                    .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .foregroundStyle(OrbisPalette(scheme).text)
-                    .background {
-                        if !expanding(page) { OrbisPalette(scheme).base.ignoresSafeArea() }
-                    }
-                    .modifier(OrbisPageTransition(onBack: commitBack, reveal: navigation.reveal,
-                                                  layerIndex: index, isTop: index == top,
-                                                  entrance: navigation.entranceIndex == index && !expanding(page),
-                                                  returnRequests: navigation.returnRequests))
-            }
-            .modifier(OrbisSourceRevealEffect(reveal: navigation.reveal, layerIndex: index))
-            .allowsHitTesting(index == top)
-        }
-    }
-
     @ViewBuilder private func pageView(_ page: AppPage) -> some View {
         switch page {
         case .chat:
             if let runtime = store.selectedRuntime {
                 ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
                     .id(localSessionKey(host: store.selectedHost, runtime: runtime))
-                    .modifier(OrbisDraftExpansion(origin: draftOrigin, reveal: navigation.reveal,
-                                                  sourceIndex: navigation.pages.firstIndex(of: .chat) ?? 0,
-                                                  onComplete: { draftOrigin = nil }))
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
         case .status: ConnectionStatusView(onBack: back)
@@ -263,18 +239,12 @@ struct ContentView: View {
         }
     }
 
-    /// The draft already grows its own rectangle from the card; it must not slide as well.
-    private func expanding(_ page: AppPage) -> Bool { page == .chat && draftOrigin != nil }
-
-    /// The mounted root is below a full page or the phone drawer and must not be reachable.
-    private var rootCovered: Bool { !navigation.pages.isEmpty || (drawerOpen && surfaceWidth < 600) }
-
     private func rootContent<Content: View>(_ tab: RootTab, @ViewBuilder content: () -> Content) -> some View {
-        let active = displayedRoot == tab && navigation.pages.isEmpty
-        return content().environment(\.orbisVisible, active).opacity(displayedRoot == tab ? 1 : 0)
+        let active = displayedRoot == tab
+        // The page host already withdraws a covered root; a tab only narrows that further.
+        return content().modifier(RootTabVisibility(active: active)).opacity(active ? 1 : 0)
             .allowsHitTesting(active && rootOpacity == 1)
-            .accessibilityElement(children: .contain)
-            .accessibilityHidden(displayedRoot != tab || rootCovered)
+            .orbisAccessibilitySubtree(hidden: !active)
     }
 
     private func switchRoot(_ next: RootTab) {
@@ -300,11 +270,12 @@ struct ContentView: View {
             draftNoticeToken += 1; let token = draftNoticeToken
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if token == draftNoticeToken { withAnimation(reduceMotion ? nil : InteractionMotion.exit) { draftNotice = false } } }
         }, onDraftSubmitted: { launch, origin in
-            draftOrigin = origin
-            newSessionOpen = false
+            // The card stays in the live home until the growing page has covered it, so the
+            // list outside the rectangle does not move while the page expands (S35 / M27).
             if store.selectedRuntime != nil {
-                var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
-                withTransaction(transaction) { navigation.replace(with: [.chat]) }
+                navigation.replace(with: [.chat], entrance: .expand(origin)) { newSessionOpen = false }
+            } else {
+                newSessionOpen = false
             }
         }, onSelection: { homeSelecting = $0 }, onDirectory: { setDrawer(true) }, onSettings: { rootTab = .settings },
                  onDownloads: { push(.downloads) },
@@ -335,10 +306,8 @@ struct ContentView: View {
                           onUnpair: { confirmUnpair($0) }).equatable()
     }
 
-    /// A page's own back control runs the same slide as a swipe, so both reveal the same source.
+    /// A page's own back control runs the same slide as a released swipe and reveals the same source.
     private func back() { navigation.requestBack() }
-    /// The returning layer has finished sliding out; the path must change without a second transition.
-    private func commitBack() { navigation.back() }
     private func push(_ page: AppPage) { navigation.push(page) }
     private func setDrawer(_ open: Bool) {
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
@@ -357,72 +326,11 @@ struct ContentView: View {
     }
 }
 
-/// Keep one hosting controller (and its scroll, draft and reading state) per layer while
-/// excluding a covered layer from native accessibility enumeration. `accessibilityHidden`
-/// alone leaves descendants visible to automation, so a covered layer drops its UIKit subtree.
-///
-/// The hosted root must keep one type across updates. Assigning an `AnyView` rebuilt the page
-/// on every path change and showed the base colour for a frame; a typed root lets SwiftUI diff
-/// the layer it already has.
-private struct OrbisMountedLayer<Content: View>: UIViewControllerRepresentable {
-    let hidden: Bool
-    @ViewBuilder var content: Content
-
-    func makeUIViewController(context: Context) -> Controller {
-        Controller(root: LayerRoot(content: content, environment: context.environment))
-    }
-
-    func updateUIViewController(_ controller: Controller, context: Context) {
-        controller.host.rootView = LayerRoot(content: content, environment: context.environment)
-        controller.accessibilityContainer.covered = hidden
-        controller.host.view.accessibilityElementsHidden = hidden
-    }
-
-    final class Controller: UIViewController {
-        let host: UIHostingController<LayerRoot<Content>>
-        let accessibilityContainer = RootAccessibilityView()
-
-        init(root: LayerRoot<Content>) {
-            host = UIHostingController(rootView: root)
-            super.init(nibName: nil, bundle: nil)
-        }
-        required init?(coder: NSCoder) { nil }
-
-        override func loadView() {
-            view = accessibilityContainer
-            view.backgroundColor = .clear
-            addChild(host)
-            host.view.backgroundColor = .clear
-            host.view.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(host.view)
-            NSLayoutConstraint.activate([
-                host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                host.view.topAnchor.constraint(equalTo: view.topAnchor),
-                host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-            ])
-            host.didMove(toParent: self)
-        }
-    }
-
-    final class RootAccessibilityView: UIView {
-        var covered = false {
-            didSet { accessibilityElementsHidden = covered }
-        }
-        override var accessibilityElements: [Any]? {
-            get { covered ? [] : super.accessibilityElements }
-            set { super.accessibilityElements = newValue }
-        }
-    }
-}
-
-/// One hosting controller cannot inherit SwiftUI environment from the view that embeds it, so
-/// the embedding context is copied in. Keeping this a concrete type (rather than an `AnyView`)
-/// is what lets an update reuse the layer instead of rebuilding it.
-private struct LayerRoot<Content: View>: View {
-    let content: Content
-    let environment: EnvironmentValues
-    var body: some View { content.environment(\.self, environment) }
+/// A root tab animates only while it is the displayed tab of a root the page host shows.
+private struct RootTabVisibility: ViewModifier {
+    @Environment(\.orbisVisible) private var shown
+    let active: Bool
+    func body(content: Content) -> some View { content.environment(\.orbisVisible, shown && active) }
 }
 
 /// 会话目录抽屉。关闭时在主页左侧（左 40% 宽度内）起手向右横拖即把抽屉拉出；打开时在抽屉
@@ -613,304 +521,6 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     private func close() {
         withAnimation(reduceMotion ? nil : .orbisDrag) { isOpen = false; offset = nil }
-    }
-}
-
-/// Owns the page path and the state every mounted layer shares, so new routes cannot forget
-/// swipe-back setup. There is no capture: the source page stays mounted under the top page.
-@MainActor
-final class OrbisPageStack<Page: Hashable>: ObservableObject {
-    @Published private(set) var pages: [Page]
-    /// Bumped by a page's back control so the top layer runs the same slide as a swipe.
-    @Published private(set) var returnRequests = 0
-    /// Reveal progress of the layer being returned or entered, shared with the layer below it.
-    let reveal = OrbisSourceReveal()
-    /// Index of a page that still has to slide in from the trailing edge. Only read while the
-    /// layers are built; the entry is replayed by the transition that owns it.
-    private(set) var entranceIndex: Int?
-
-    init(_ pages: [Page] = []) { self.pages = pages }
-
-    func push(_ page: Page) {
-        entranceIndex = pages.count
-        pages.append(page)
-    }
-
-    func requestBack() { if !pages.isEmpty { returnRequests += 1 } }
-
-    /// A returning layer calls this once it has slid out, so the path changes without a
-    /// second transition. Callers that clear the path directly keep the default (instant).
-    func back() { if !pages.isEmpty { pages.removeLast() } }
-
-    func replace(with pages: [Page]) {
-        let keepsPrefix = pages.count > self.pages.count && Array(pages.prefix(self.pages.count)) == self.pages
-        entranceIndex = keepsPrefix ? pages.count - 1 : nil
-        self.pages = pages
-    }
-}
-
-/// Reveal progress of the layer below the one that is returning or entering. `fromIndex` is
-/// that returning layer's index (-1 for the root), nil while nothing is in motion.
-@MainActor
-final class OrbisSourceReveal: ObservableObject {
-    @Published private(set) var fromIndex: Int?
-    @Published private(set) var progress: CGFloat = 1
-
-    func begin(from index: Int) { fromIndex = index; progress = 0 }
-    func update(_ value: CGFloat) { progress = min(1, max(0, value)) }
-    func end(at value: CGFloat) { progress = min(1, max(0, value)) }
-    func clear() { fromIndex = nil; progress = 1 }
-}
-
-/// The source layer takes the compression and scrim a source preview used to carry (M14),
-/// while staying the live, mounted page it is.
-private struct OrbisSourceRevealEffect: ViewModifier {
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var scheme
-    @ObservedObject var reveal: OrbisSourceReveal
-    let layerIndex: Int
-
-    func body(content: Content) -> some View {
-        let isSource = reveal.fromIndex == layerIndex + 1
-        let progress = isSource ? reveal.progress : 1
-        let compression = 1 - progress
-        content
-            .overlay {
-                if isSource, compression > 0 {
-                    OrbisPalette(scheme).scrim.opacity(0.34 * compression).ignoresSafeArea().allowsHitTesting(false)
-                }
-            }
-            .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
-                         y: reduceMotion ? 1 : 1 + 0.008 * compression,
-                         anchor: .leading)
-    }
-}
-
-/// Every full page uses the same transition (M14). The layer below stays mounted, so a return
-/// reveals the live source; a pushed page slides in over it and compresses it the same way.
-
-struct OrbisPageTransition: ViewModifier {
-    @Environment(\.orbisReduceMotion) private var reduceMotion
-    @EnvironmentObject private var overlay: OrbisOverlay
-    /// Called once the page has slid out: the path must then change without a second transition.
-    let onBack: () -> Void
-    /// Shared progress of the layer being returned or entered.
-    let reveal: OrbisSourceReveal
-    let layerIndex: Int
-    let isTop: Bool
-    /// This layer was just pushed and still has to slide in from the trailing edge.
-    let entrance: Bool
-    let returnRequests: Int
-    @State private var offset: CGFloat = 0
-    @State private var horizontalDrag: Bool?
-    @State private var containerWidth: CGFloat = 390
-    @State private var returning = false
-    @State private var suppressTaps = false
-    @State private var settleID = UUID()
-    @State private var backPriority: OrbisBackPriority?
-    @State private var entranceScheduled = false
-    @State private var entranceApplied = false
-    @GestureState private var gestureActive = false
-
-    private var awaitingEntrance: Bool { entrance && !entranceApplied }
-
-    func body(content: Content) -> some View {
-        content
-            // The page waits at the trailing edge from its first frame. Hiding it until the
-            // entrance starts left the uncompressed source alone on screen for a frame.
-            .offset(x: awaitingEntrance ? containerWidth : max(0, offset))
-            .disabled(suppressTaps)
-            .allowsHitTesting(!returning)
-            .onAppear {
-                // Latch the decision: a draft entry clears its origin afterwards and must not
-                // start a slide once the card has already grown into the page.
-                if !entrance { entranceApplied = true }
-            }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-                containerWidth = width
-                startEntrance()
-            }
-            .simultaneousGesture(gesture)
-            .onPreferenceChange(OrbisBackPriorityKey.self) { backPriority = $0 }
-            .onChange(of: gestureActive) { _, active in
-                // System interruptions may cancel a gesture without calling onEnded.
-                if !active && horizontalDrag != nil && !returning {
-                    horizontalDrag = nil
-                    releaseTaps()
-                    settle(back: false, velocity: 0)
-                }
-            }
-            .onChange(of: returnRequests) { _, _ in
-                // The page's own back control runs the swipe's committed path, so the same
-                // source layer is revealed for the same duration.
-                guard isTop, !returning, offset == 0 else { return }
-                reveal.begin(from: layerIndex)
-                settle(back: true, velocity: 0)
-            }
-            .onDisappear {
-                returning = false; suppressTaps = false; settleID = UUID()
-                entranceScheduled = true; entranceApplied = true
-                clearReveal()
-            }
-    }
-
-    private var gesture: some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .global)
-            .updating($gestureActive) { _, active, _ in active = true }
-            .onChanged { value in
-                guard !returning, isTop else { return }
-                if horizontalDrag == nil {
-                    horizontalDrag = overlay.menu == nil && overlay.dialog == nil && value.translation.width > abs(value.translation.height) * 1.5
-                    settleID = UUID()
-                }
-                guard horizontalDrag == true else { return }
-                // Simultaneous recognition preserves scrolling, but a Button under
-                // the finger must not also fire when this horizontal drag ends.
-                suppressTaps = true
-                // A selection or modal must not preview a different page.
-                if backPriority != nil { return }
-                if reveal.fromIndex != layerIndex { reveal.begin(from: layerIndex) }
-                let distance = max(0, value.translation.width)
-                let next = distance > containerWidth ? containerWidth + (distance - containerWidth) * 0.18 : distance
-                offset = next
-                reveal.update(next / max(1, containerWidth))
-            }
-            .onEnded { value in
-                let horizontal = horizontalDrag == true
-                horizontalDrag = nil
-                releaseTaps()
-                guard horizontal && !returning else { return }
-                let velocity = (value.predictedEndTranslation.width - value.translation.width) / 0.2
-                if backPriority != nil {
-                    if value.translation.width + velocity * 0.15 > containerWidth / 3 { backPriority?.action() }
-                    clearReveal()
-                    return
-                }
-                settle(back: offset + velocity * 0.15 > containerWidth / 3, velocity: velocity)
-            }
-    }
-
-    private func releaseTaps() {
-        // Keep controls disabled through the current touch-up's action dispatch.
-        DispatchQueue.main.async { suppressTaps = false }
-    }
-
-    /// A pushed page enters the way Android's host does: it starts one width to the right and
-    /// slides in while the source layer recovers from the preview compression. The width waits
-    /// for a layout pass because a sibling animation (a closing drawer) can report an
-    /// intermediate one, and the page must never come to rest offscreen.
-    private func startEntrance() {
-        guard awaitingEntrance, !entranceScheduled, containerWidth > 0 else { return }
-        entranceScheduled = true
-        // Take the trailing edge without moving: the page already renders there, so the slide
-        // starts from that edge and the source starts compressing in the same turn.
-        offset = containerWidth
-        entranceApplied = true
-        guard !reduceMotion else { return }
-        reveal.begin(from: layerIndex)
-        DispatchQueue.main.async {
-            guard !self.returning, self.horizontalDrag == nil else { return }
-            withAnimation(InteractionMotion.pageEnter) {
-                self.offset = 0
-                self.reveal.end(at: 1)
-            } completion: { self.clearReveal() }
-        }
-    }
-
-    private func clearReveal() {
-        if reveal.fromIndex == layerIndex { reveal.clear() }
-    }
-
-    private func settle(back: Bool, velocity: CGFloat) {
-        let id = UUID()
-        settleID = id
-        returning = back
-        #if DEBUG
-        if back { PageReturnProbe.shared.begin() }
-        #endif
-        let target = back ? containerWidth : 0
-        let distance = target - offset
-        let initialVelocity = abs(distance) > 1 ? max(-8, min(8, velocity / distance)) : 0
-        let isSource = reveal.fromIndex == layerIndex
-        let finish = {
-            guard settleID == id else { return }
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            guard back && returning else {
-                withTransaction(transaction) { if isSource { reveal.clear() } }
-                return
-            }
-            // Consume this completion before handing navigation back to the source.
-            settleID = UUID()
-            // At progress 1 the source effect is already identity; clearing it changes no pixel.
-            withTransaction(transaction) { onBack(); if isSource { reveal.clear() } }
-            #if DEBUG
-            PageReturnProbe.shared.committed()
-            #endif
-        }
-        // The source is live but not yet interactive. Do not leave the page on screen waiting
-        // for a spring to finish oscillating offscreen after the visible move is done.
-        if reduceMotion || (back && offset >= containerWidth) {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                offset = target
-                if isSource { reveal.end(at: back ? 1 : 0) }
-            }
-            finish()
-        } else {
-            let animation = back ? InteractionMotion.pageReturn : .orbisSwipeBack(velocity: Double(initialVelocity))
-            withAnimation(animation, completionCriteria: back ? .logicallyComplete : .removed) {
-                offset = target
-                if isSource { reveal.end(at: back ? 1 : 0) }
-            } completion: { finish() }
-        }
-    }
-}
-
-/// The submitted card keeps its identity while its rectangle grows into the chat page. The
-/// root below stays live, so the area outside the rectangle is the real home, dimmed and
-/// compressed the same way a return source is (M14).
-private struct OrbisDraftExpansion: ViewModifier {
-    @Environment(\.orbisReduceMotion) private var reduced
-    let origin: CGRect?
-    let reveal: OrbisSourceReveal
-    let sourceIndex: Int
-    let onComplete: () -> Void
-    @State private var progress: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        GeometryReader { proxy in
-            content
-                .clipShape(DraftExpansionShape(origin: origin.map { $0.offsetBy(dx: -proxy.frame(in: .global).minX, dy: -proxy.frame(in: .global).minY) }, progress: origin == nil ? 1 : progress))
-                .allowsHitTesting(origin == nil || progress == 1)
-        }.onAppear { start() }
-    }
-
-    private func start() {
-        guard origin != nil else { progress = 1; return }
-        if reduced { progress = 1; onComplete(); return }
-        reveal.begin(from: sourceIndex)
-        withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32)) {
-            progress = 1
-            reveal.end(at: 1)
-        } completion: {
-            onComplete()
-            if reveal.fromIndex == sourceIndex { reveal.clear() }
-        }
-    }
-}
-
-private struct DraftExpansionShape: Shape {
-    let origin: CGRect?
-    var progress: CGFloat
-    var animatableData: CGFloat { get { progress } set { progress = newValue } }
-    func path(in rect: CGRect) -> Path {
-        guard let origin else { return Path(rect) }
-        let t = min(1, max(0, progress))
-        let frame = CGRect(x: origin.minX * (1 - t), y: origin.minY * (1 - t),
-            width: origin.width + (rect.width - origin.width) * t, height: origin.height + (rect.height - origin.height) * t)
-        return Path(roundedRect: frame, cornerRadius: 24 * (1 - t))
     }
 }
 
