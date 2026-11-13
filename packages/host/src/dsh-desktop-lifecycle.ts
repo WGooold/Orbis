@@ -53,6 +53,10 @@ export class DshDesktopLifecycle {
   #installation: DshDesktopInstallation | undefined;
   #ensuring: Promise<DshRuntime> | undefined;
   #attached = false;
+  #runtime: DshRuntime | undefined;
+  #connecting: Promise<DshRuntime> | undefined;
+  #probeRevision = 0;
+  readonly #abort = new AbortController();
   #watcher: NodeJS.Timeout | undefined;
   #stopped = false;
 
@@ -61,6 +65,7 @@ export class DshDesktopLifecycle {
   get status(): DshDesktopAttach { return this.#status; }
 
   #set(state: DshDesktopAttach["state"], reason: string, version = this.#installation?.version ?? null): void {
+    if (this.#stopped) return;
     const next = { state, reason: clip(reason), version };
     if (this.#status.state === next.state && this.#status.reason === next.reason && this.#status.version === next.version) return;
     this.#status = next;
@@ -68,6 +73,8 @@ export class DshDesktopLifecycle {
   }
 
   #env(): NodeJS.ProcessEnv { return this.#options.env?.() ?? process.env; }
+
+  #assertActive(): void { if (this.#stopped) throw new Error("Orbis 正在退出"); }
 
   async #find(): Promise<DshDesktopInstallation | undefined> {
     const platform = this.#options.platform ?? process.platform;
@@ -85,21 +92,26 @@ export class DshDesktopLifecycle {
 
   /** Refresh the user-visible tier without launching or connecting. */
   async probe(): Promise<void> {
-    if (this.#attached) return;
+    if (this.#stopped || this.#attached || this.#ensuring || this.#connecting) return;
+    const revision = ++this.#probeRevision;
+    const current = (): boolean => !this.#stopped && !this.#attached && revision === this.#probeRevision;
     if (!supportsDshDesktop(this.#options.platform ?? process.platform)) { this.#set("unsupported", `${PRODUCT} 只支持 Windows 与 macOS`, null); return; }
     let installation: DshDesktopInstallation | undefined;
     try { installation = await this.#find(); }
-    catch (error) { this.#set("error", `无法查询 ${PRODUCT} 安装位置：${text(error)}`, null); return; }
+    catch (error) { if (current()) this.#set("error", `无法查询 ${PRODUCT} 安装位置：${text(error)}`, null); return; }
+    if (!current()) return;
     if (installation === undefined) { this.#set("notInstalled", this.#options.explicitPath?.() ? `所选位置不是有效的 ${PRODUCT} 安装` : `未找到 ${PRODUCT} 安装`, null); return; }
     // A failed recovery or an incompatible version is more specific than the process tier.
     if (this.#status.state === "incompatible" && this.#status.version === installation.version) return;
     const endpoint = await (this.#options.readEndpoint ?? (value => readDshDesktopEndpoint(this.#options.stateDir, value)))(installation).catch(() => undefined);
+    if (!current()) return;
     if (endpoint !== undefined) { if (this.#status.state !== "error") this.#set("closed", `${PRODUCT} 已打开，正在接入`); return; }
     // Orbis's own launch is running before it reports its endpoint; it is not someone else's instance.
     if (pendingDshDesktopLaunch(this.#options.stateDir) !== undefined) { this.#set("closed", `正在打开 ${PRODUCT}`); return; }
     let running = false;
     try { running = await (this.#options.isRunning ?? (value => isDshDesktopRunning(value, this.#options.platform ?? process.platform, this.#env())))(installation); }
-    catch (error) { this.#set("error", `无法查询 ${PRODUCT} 进程：${text(error)}`); return; }
+    catch (error) { if (current()) this.#set("error", `无法查询 ${PRODUCT} 进程：${text(error)}`); return; }
+    if (!current()) return;
     if (running) this.#set("running", DSH_DESKTOP_OPEN_FROM_ORBIS);
     else this.#set("closed", `${PRODUCT} 未打开`);
   }
@@ -112,10 +124,20 @@ export class DshDesktopLifecycle {
     this.#watcher.unref();
   }
 
-  async #connect(installation: DshDesktopInstallation, endpoint: DshDesktopEndpoint): Promise<DshRuntime> {
+  #connect(installation: DshDesktopInstallation, endpoint: DshDesktopEndpoint): Promise<DshRuntime> {
+    this.#assertActive();
+    if (this.#runtime?.isReady()) return Promise.resolve(this.#runtime);
+    return this.#connecting ??= this.#connectOnce(installation, endpoint).finally(() => { this.#connecting = undefined; });
+  }
+
+  async #connectOnce(installation: DshDesktopInstallation, endpoint: DshDesktopEndpoint): Promise<DshRuntime> {
+    ++this.#probeRevision;
     try {
       const library = await (this.#options.prepareProtocol ?? (value => prepareDshDesktopProtocol(value.archive, join(this.#options.stateDir, "dsh-desktop-protocol"))))(installation);
+      this.#assertActive();
       const runtime = await (this.#options.connect ?? (value => DshRuntime.connectDesktop(value)))({ url: endpoint.url, packageEntry: library.packageEntry });
+      if (this.#stopped) { await runtime.stop().catch(() => {}); this.#assertActive(); }
+      this.#runtime = runtime;
       this.#attached = true;
       this.#set("attached", `已接入 ${PRODUCT}${installation.version ? ` ${installation.version}` : ""}`);
       return runtime;
@@ -129,9 +151,10 @@ export class DshDesktopLifecycle {
   /** Orbis's launch, joined with any launch already running for this state directory (Host UI open, another request). */
   async #launch(installation: DshDesktopInstallation): Promise<DshDesktopEndpoint> {
     try {
+      this.#assertActive();
       this.#set("closed", `正在打开 ${PRODUCT}`);
-      return await (pendingDshDesktopLaunch(this.#options.stateDir) ?? (this.#options.launch ?? (value => launchDshDesktop(value, this.#options.stateDir, { env: this.#env(),
-        ...(this.#options.launchTimeoutMs === undefined ? {} : { timeoutMs: this.#options.launchTimeoutMs }) })))(installation));
+      return await (this.#options.launch ?? (value => launchDshDesktop(value, this.#options.stateDir, { env: this.#env(), signal: this.#abort.signal,
+        ...(this.#options.launchTimeoutMs === undefined ? {} : { timeoutMs: this.#options.launchTimeoutMs }) })))(installation);
     } catch (error) {
       if (error instanceof DshDesktopRunningElsewhereError) this.#set("running", error.message);
       else this.#set("error", text(error));
@@ -144,41 +167,56 @@ export class DshDesktopLifecycle {
     if (this.#stopped || !supportsDshDesktop(this.#options.platform ?? process.platform)) return undefined;
     if (this.#ensuring) return this.#ensuring.catch(() => undefined);
     const installation = this.#installation ?? await this.#find().catch(() => undefined);
-    if (installation === undefined) return undefined;
+    if (this.#stopped || installation === undefined) return undefined;
     const endpoint = await (this.#options.readEndpoint ?? (value => readDshDesktopEndpoint(this.#options.stateDir, value)))(installation).catch(() => undefined);
-    if (endpoint === undefined) return undefined;
+    if (this.#stopped || endpoint === undefined) return undefined;
     return this.#connect(installation, endpoint);
   }
 
   /** Attach for an explicit App request: reuse Orbis's Desktop, or open Desktop when it is closed. */
   ensure(): Promise<DshRuntime> {
+    ++this.#probeRevision;
     return this.#ensuring ??= this.#ensure().finally(() => { this.#ensuring = undefined; });
   }
 
   async #ensure(): Promise<DshRuntime> {
-    if (this.#stopped) throw new Error("Orbis 正在退出");
+    this.#assertActive();
     if (!supportsDshDesktop(this.#options.platform ?? process.platform)) { this.#set("unsupported", `${PRODUCT} 只支持 Windows 与 macOS`, null); throw new Error(this.#status.reason); }
     const installation = await this.#find();
-    if (installation === undefined) { await this.probe(); throw new Error(this.#status.reason); }
+    this.#assertActive();
+    if (installation === undefined) {
+      this.#set("notInstalled", this.#options.explicitPath?.() ? `所选位置不是有效的 ${PRODUCT} 安装` : `未找到 ${PRODUCT} 安装`, null);
+      throw new Error(this.#status.reason);
+    }
     const existing = await (this.#options.readEndpoint ?? (value => readDshDesktopEndpoint(this.#options.stateDir, value)))(installation).catch(() => undefined);
+    this.#assertActive();
     if (existing !== undefined) return this.#connect(installation, existing);
     // Never start a second instance against the single-instance lock, and never stop the user's instance.
     if (pendingDshDesktopLaunch(this.#options.stateDir) === undefined
       && await (this.#options.isRunning ?? (value => isDshDesktopRunning(value, this.#options.platform ?? process.platform, this.#env())))(installation).catch(() => false)) {
-      await this.probe(); throw new DshDesktopRunningElsewhereError(this.#status.reason);
+      this.#assertActive();
+      this.#set("running", DSH_DESKTOP_OPEN_FROM_ORBIS);
+      throw new DshDesktopRunningElsewhereError(this.#status.reason);
     }
-    return this.#connect(installation, await this.#launch(installation));
+    this.#assertActive();
+    const endpoint = await this.#launch(installation);
+    this.#assertActive();
+    return this.#connect(installation, endpoint);
   }
 
   /** Orbis's connection ended; Desktop itself may still be running. */
   noteOffline(reason: string): void {
+    if (this.#stopped) return;
     this.#attached = false;
+    this.#runtime = undefined;
     this.#set("error", `${PRODUCT} 连接已断开：${reason}`);
     void this.probe().catch(() => {});
   }
 
   stop(): void {
     this.#stopped = true;
+    this.#abort.abort();
+    ++this.#probeRevision;
     clearInterval(this.#watcher);
     this.#watcher = undefined;
   }
@@ -202,32 +240,42 @@ export type DshDesktopOpenOptions = Pick<DshDesktopLifecycleOptions,
  * @returns "revealed" for Orbis's running instance, "opened" once Orbis's launch reported its endpoint.
  */
 export async function openDshDesktopFromHost(options: DshDesktopOpenOptions): Promise<"revealed" | "opened"> {
+  const assertActive = (): void => { if (options.signal?.aborted) throw new Error(`已取消打开 ${PRODUCT}`); };
+  assertActive();
   const platform = options.platform ?? process.platform;
   const env = options.env?.() ?? process.env;
   if (!supportsDshDesktop(platform)) throw new Error(`${PRODUCT} 只支持 Windows 与 macOS`);
   const explicitPath = options.explicitPath?.();
   const installation = await (options.findInstallation ?? (() => findDshDesktopInstallation({ platform, env, ...(explicitPath === undefined ? {} : { explicitPath }) })))();
+  assertActive();
   if (installation === undefined) throw new Error(`未找到 ${PRODUCT} 安装`);
-  if (await (options.readEndpoint ?? (value => readDshDesktopEndpoint(options.stateDir, value)))(installation).catch(() => undefined) !== undefined) {
+  const existing = await (options.readEndpoint ?? (value => readDshDesktopEndpoint(options.stateDir, value)))(installation).catch(() => undefined);
+  assertActive();
+  if (existing !== undefined) {
     await (options.reveal ?? (value => revealDshDesktop(value, { env })))(installation);
+    assertActive();
     return "revealed";
   }
   if (pendingDshDesktopLaunch(options.stateDir) === undefined) {
     const isRunning = options.isRunning ?? (value => isDshDesktopRunning(value, platform, env));
-    if (await isRunning(installation).catch(() => false)) {
+    const running = await isRunning(installation).catch(() => false);
+    assertActive();
+    if (running) {
       options.onWaiting?.(true);
       try {
         const deadline = Date.now() + (options.exitWaitMs ?? 10 * 60_000);
         // A failed process query keeps waiting: opening beside a running Desktop only hands off to it.
         while (await isRunning(installation).catch(() => true)) {
-          if (options.signal?.aborted) throw new Error(`已停止等待 ${PRODUCT} 退出`);
+          assertActive();
           if (Date.now() >= deadline) throw new DshDesktopRunningElsewhereError();
           await delay(options.exitPollMs ?? 2_000, undefined, options.signal === undefined ? {} : { signal: options.signal }).catch(() => {});
         }
       } finally { options.onWaiting?.(false); }
     }
   }
-  await (pendingDshDesktopLaunch(options.stateDir) ?? (options.launch ?? (value => launchDshDesktop(value, options.stateDir, { env,
-    ...(options.launchTimeoutMs === undefined ? {} : { timeoutMs: options.launchTimeoutMs }) })))(installation));
+  assertActive();
+  await (options.launch ?? (value => launchDshDesktop(value, options.stateDir, { env, ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.launchTimeoutMs === undefined ? {} : { timeoutMs: options.launchTimeoutMs }) })))(installation);
+  assertActive();
   return "opened";
 }

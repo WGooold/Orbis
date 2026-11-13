@@ -6,8 +6,9 @@ import { CODEX_DESKTOP_BUNDLE_ID } from "./codex-desktop-macos.js";
 /** Orbis 交给桌面版的变量；macOS 的 `open` 不转交调用方环境，只能逐个用 `--env` 带过去。 */
 const DESKTOP_ENV_KEYS = ["CODEX_CLI_PATH", "ORBIS_CODEX_WRAPPER_NODE", "ORBIS_CODEX_WRAPPER_SCRIPT", "ORBIS_CODEX_DESKTOP_ENDPOINT"] as const;
 
-function runOpen(args: readonly string[], failure: string): Promise<void> {
-  const child = spawn("/usr/bin/open", args, { stdio: ["ignore", "ignore", "pipe"], cwd: homedir(), timeout: 15_000 });
+function runOpen(args: readonly string[], failure: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const child = spawn("/usr/bin/open", args, { ...(signal ? { signal } : {}), stdio: ["ignore", "ignore", "pipe"], cwd: homedir(), timeout: 15_000 });
   let stderr = "";
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-2_000); });
@@ -39,11 +40,12 @@ export async function openCodexDesktopThread(threadId: string, hostId: string): 
  * versioned ChatGPT.exe directly gives the taskbar an executable shortcut and
  * its embedded icon; that shortcut can break after a Store update.
  */
-export async function launchCodexDesktopApp(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function launchCodexDesktopApp(env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (process.platform === "darwin") {
     // 应用已经在跑时 `open` 只是把它带到前台，`--env` 不会改变它的环境。
     const forwarded = DESKTOP_ENV_KEYS.flatMap(key => env[key]?.trim() ? ["--env", `${key}=${env[key]!.trim()}`] : []);
-    await runOpen(["-b", CODEX_DESKTOP_BUNDLE_ID, ...forwarded], "无法打开 Codex 桌面版");
+    await runOpen(["-b", CODEX_DESKTOP_BUNDLE_ID, ...forwarded], "无法打开 Codex 桌面版", signal);
     return;
   }
   const script = String.raw`
@@ -81,7 +83,7 @@ public static class OrbisDesktopActivation {
 [OrbisDesktopActivation]::Open($appId) | Out-Null
 `;
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-    stdio: ["ignore", "ignore", "pipe"], windowsHide: true, cwd: homedir(), timeout: 15_000, env,
+    stdio: ["ignore", "ignore", "pipe"], windowsHide: true, cwd: homedir(), timeout: 15_000, env, ...(signal ? { signal } : {}),
   });
   let stderr = "";
   child.stderr?.setEncoding("utf8");
