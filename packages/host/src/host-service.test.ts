@@ -11,7 +11,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +35,7 @@ import {
   type PairingQrPayload,
 } from "@orbis/e2e";
 import {
-  applyStateDelta, type AgentStateDomainSnapshot,
+  applyStateDelta, type AgentStateDomainSnapshot, type CatalogQueryPage,
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
   RelayToDeviceMessageSchema,
@@ -698,6 +698,7 @@ describe("device model channel routing", () => {
     expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain: "execution" }], missing: [{ domain: "live" }] })).toBe("msg");
     expect(channelForDeviceMessage({ type: "agent.state.snapshot", scope: "host", missing: [{ domain: "execution" }] })).toBe("msg");
     expect(channelForDeviceMessage({ type: "agent.state.range.page" })).toBe("msg");
+    expect(channelForDeviceMessage({ type: "session.catalog.page" })).toBe("msg");
   });
 });
 
@@ -1827,6 +1828,16 @@ describe("host end-to-end over relay", () => {
     device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: "content-format", scope: "agent",
       runtimeId: "runtime", stateFormat: "compact-v2", domains: ["identity"], subscribe: true }));
     await readMatching(device, message => message.requestId === "content-format");
+    // FT-G07 remains a deployed client without history-interest negotiation.
+    if (scenario === "FT-G08") {
+    device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: 19, requestId: "history-format" }));
+    expect(await readMatching(device, message => message.requestId === "history-format"))
+      .toMatchObject({ type: "session.history.capabilities", format: "v1", maxPageBytes: 65536 });
+    device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-interest",
+      runtimeId: "runtime", sessionId: "session" }));
+    expect(await readMatching(device, message => message.requestId === "history-interest"))
+      .toMatchObject({ type: "session.history.interest.result", accepted: true });
+    }
     device.sendCommand("runtime", "content-sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
     const request = await runtime.next();
     const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
@@ -1848,6 +1859,67 @@ describe("host end-to-end over relay", () => {
     expect(patch.sharedContent).toEqual(fixture.wirePatch.sharedContent);
     const delta = (patch.sharedContent as { liveDelta: { operations: Parameters<typeof applyStateDelta>[1] } }).liveDelta;
     expect(applyStateDelta(fixture.initial.event.live, delta.operations)).toEqual(fixture.patch.event.live);
+    if (scenario === "FT-G08") {
+      device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-close",
+        runtimeId: null, sessionId: null }));
+      expect(await readMatching(device, message => message.requestId === "history-close")).toMatchObject({ accepted: true });
+      const next = structuredClone(fixture.patch.event);
+      next.source.seq = 3; next.baseSeq = 2; next.seq = 3; next.checkpointId = "checkpoint-3";
+      runtime.publish(3, next);
+      runtime.publish(4, { type: "message.delta", messageId: "stream", delta: "hidden legacy body" });
+      // A backend FIFO barrier proves the hidden patch was processed. Control replies and
+      // notifications remain allowed; none may contain chat content after closing interest.
+      device.sendCommand("runtime", "history-barrier", { type: "stop" });
+      expect(await runtime.next()).toMatchObject({ commandId: "history-barrier" });
+      runtime.publish(5, { type: "command.result", commandId: "history-barrier", ok: true });
+      for (;;) {
+        const message = await device.receiveMessage();
+        expect(["session.patch", "message.delta"]).not.toContain((message.event as RuntimeEvent | undefined)?.type);
+        if ((message.event as { commandId?: string } | undefined)?.commandId === "history-barrier") break;
+      }
+      // msg and ctl have independent scheduling: also inspect delayed msg frames.
+      for (;;) {
+        const incoming = await device.nextIncoming(200).catch(() => undefined);
+        if (!incoming) break;
+        if ("payload" in incoming) expect(["session.patch", "message.delta"]).not.toContain(JSON.parse(incoming.payload.toString()).event?.type);
+      }
+      device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-reopen",
+        runtimeId: "runtime", sessionId: "session" }));
+      expect(await readMatching(device, message => message.requestId === "history-reopen")).toMatchObject({ accepted: true });
+      next.source.seq = 4; next.baseSeq = 3; next.seq = 4; next.checkpointId = "checkpoint-4";
+      runtime.publish(6, next);
+      expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch"))
+        .toMatchObject({ event: { seq: 4 } });
+      runtime.publish(7, { type: "message.delta", messageId: "stream", delta: "visible legacy body" });
+      expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "message.delta"))
+        .toMatchObject({ event: { delta: "visible legacy body" } });
+    }
+  });
+
+  // FT-G12-COMPAT-01 / ADR-0064: bounded history is a Host transaction option, not a
+  // field that can be sent through an unchanged released adapter's strict parser.
+  it("FT-G12 strips history transaction limits before dispatching to an adapter", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-history-adapter-wire-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "history-adapter", sessionId: "session", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    device.sendCommand("history-adapter", "history-window", { type: "session.sync", sessionId: "session", syncId: "history-window",
+      range: "history", targetLeafId: "entry-9", beforeEntryId: "entry-4", maxEntries: 30,
+      historyWindow: { format: "v1", maxBytes: 65536, maxDeliveries: 2 } });
+    const baseline = await runtime.next();
+    expect(baseline.command).toMatchObject({ type: "session.sync", range: "preview" });
+    const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
+    runtime.publish(1, { ...fixture.initial.event, syncId: (baseline.command as { syncId: string }).syncId });
+    const forwarded = await runtime.next();
+    expect(forwarded.command).toMatchObject({ type: "session.sync", sessionId: "session", range: "history",
+      targetLeafId: "entry-9", beforeEntryId: "entry-4", maxEntries: 30 });
+    expect(forwarded.command).not.toHaveProperty("historyWindow");
   });
 
   // FT-G06-WIRE: exercise negotiated patches through real encrypted delivery,
@@ -1882,6 +1954,88 @@ describe("host end-to-end over relay", () => {
     const recovered = await readMatching(device, message => message.requestId === "delta-recovery");
     expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.value).toEqual(reconstructed);
     expect((recovered.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
+  });
+
+  // FT-G11-WIRE: source invalidation publishes without another phone poll;
+  // a lost publication then reconciles the actual old applied revision.
+  it("FT-G11 reconciles a missed catalog publication over encrypted delivery", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-catalog-read-wire-")); relay = await startRelay(stateDir);
+    const sessionsRoot = join(stateDir, "sessions"), group = join(sessionsRoot, "repo");
+    await mkdir(group, { recursive: true });
+    const writeSession = async (n: number, name = `Session ${n} ${"title ".repeat(28)}`) => {
+      const id = `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      const path = join(group, `${id}.jsonl`);
+      await writeFile(path, JSON.stringify({ type: "session", version: 3, id,
+        name, cwd: "/repo/" + "workspace/".repeat(20) }) + "\n");
+      // This scenario changes a title only. Concurrent file writes otherwise create mtime
+      // ties and Date round-tripping can move the renamed row, testing a different workload.
+      const time = new Date(Date.UTC(2026, 10, 7, 0, 0, n));
+      await utimes(path, time, time);
+    };
+    await Promise.all(Array.from({ length: 180 }, (_, n) => writeSession(n)));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const read = (id: string, known: unknown[] = [], compact = true) => device!.sendData(JSON.stringify({ type: "agent.state.request",
+      protocolVersion: PROTOCOL_VERSION, requestId: id, scope: "host", domains: ["catalog"], subscribe: true, known,
+      ...(compact ? { stateFormat: "compact-v2" } : {}) }));
+    read("catalog-before");
+    const initial = await readMatching(device, message => message.requestId === "catalog-before");
+    const before = (initial.domains as AgentStateDomainSnapshot[])[0]!;
+    expect((before.value as { sessions: unknown[]; nextCursor: string | null }).sessions.length).toBeLessThan(180);
+    expect((before.value as { nextCursor: string | null }).nextCursor).toBeTruthy();
+    expect(Buffer.byteLength(JSON.stringify(initial))).toBeLessThan(32 * 1024);
+    const firstSession = ((before.value as { sessions: Array<{ sessionId: string }> }).sessions[0]!);
+    const firstSessionNumber = Number(firstSession.sessionId.slice(-12));
+    const firstSessionPath = join(group, `${firstSession.sessionId}.jsonl`);
+    const firstSessionMtime = (await stat(firstSessionPath)).mtime;
+    await writeSession(firstSessionNumber, "Renamed without changing directory order");
+    await utimes(firstSessionPath, firstSessionMtime, firstSessionMtime);
+    await host.reloadProviderConfiguration("pi", {});
+    const published = await readMatching(device, message => message.requestId === "catalog-before" && message.update === true);
+    const current = (published.domains as AgentStateDomainSnapshot[])[0]!;
+    const value = current.delta ? applyStateDelta(before.value, current.delta.operations) : current.value;
+    expect((value as { sessions: Array<{ sessionId: string; name?: string }> }).sessions.find(session => session.sessionId === firstSession.sessionId)?.name)
+      .toBe("Renamed without changing directory order");
+    read("catalog-after-loss", [{ domain: "catalog", modelEpoch: before.modelEpoch, revision: before.revision }]);
+    const recovered = await readMatching(device, message => message.requestId === "catalog-after-loss");
+    const delta = (recovered.domains as AgentStateDomainSnapshot[])[0]!;
+    expect(delta.delta?.baseRevision).toBe(before.revision);
+    expect(applyStateDelta(before.value, delta.delta!.operations)).toEqual(value);
+    expect(Buffer.byteLength(JSON.stringify(recovered))).toBeLessThan(4_096);
+    const collect = async (domain: Record<string, unknown>): Promise<unknown[]> => {
+      let cursor = domain.nextCursor as string | null; let offset = (domain.sessions as unknown[]).length;
+      const sessions = [...domain.sessions as unknown[]]; let pageNumber = 0;
+      while (cursor) {
+        const requestId = `catalog-range-${pageNumber++}`;
+        device!.sendData(JSON.stringify({ type: "agent.state.range.request", protocolVersion: PROTOCOL_VERSION, requestId,
+          scope: "host", domain: "catalog", cursor, limit: 200 }));
+        const response = await readMatching(device!, message => message.requestId === requestId);
+        const page = response.page as { offset: number; sessions: unknown[]; nextCursor: string | null };
+        expect(page.offset).toBe(offset);
+        expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(32 * 1024);
+        sessions.push(...page.sessions); offset += page.sessions.length; cursor = page.nextCursor;
+      }
+      return sessions;
+    };
+    expect(await collect(value as Record<string, unknown>)).toHaveLength(180);
+    read("catalog-old-peer", [], false);
+    const legacy = await readMatching(device, message => message.requestId === "catalog-old-peer");
+    expect((legacy.domains as AgentStateDomainSnapshot[])[0]!.delta).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(legacy))).toBeLessThan(32 * 1024);
+    expect(await collect((legacy.domains as AgentStateDomainSnapshot[])[0]!.value as Record<string, unknown>)).toHaveLength(180);
+    device.sendData(JSON.stringify({ type: "session.catalog.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "query-capability" }));
+    expect(await readMatching(device, message => message.requestId === "query-capability"))
+      .toMatchObject({ type: "session.catalog.capabilities", format: "v1" });
+    const query = { text: "Renamed without changing directory order", agentKind: "pi", archived: false, provider: "all" };
+    device.sendData(JSON.stringify({ type: "session.catalog.query", protocolVersion: PROTOCOL_VERSION, requestId: "query-global", format: "v1",
+      query, cursor: null, limit: 100 }));
+    const result = await readMatching(device, message => message.requestId === "query-global");
+    expect(result).toMatchObject({ type: "session.catalog.page", query, page: { offset: 0, totalSessions: 1,
+      sessions: [{ sessionId: firstSession.sessionId }], nextCursor: null, complete: true } });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
   });
 
   // FT-G05-WIRE: options travel only in requested bounded pages, invocation is
@@ -3241,6 +3395,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(legacyCatalog.totalSessions).toBe(1);
       expect(legacyCatalog.nextCursor).toBeNull();
       expect(JSON.stringify(legacyDomains.get("backends")!.value)).not.toContain("dshDesktop");
+      // Catalog query support and Desktop visibility are independent capabilities.
+      sendRequest(device, { type: "session.catalog.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "catalog-capabilities" });
+      await until(message => message.requestId === "catalog-capabilities");
+      const queryCatalog = async (requestId: string) => {
+        sendRequest(device!, { type: "session.catalog.query", protocolVersion: PROTOCOL_VERSION, requestId, format: "v1",
+          query: { text: "", agentKind: null, archived: false, provider: "all" }, cursor: null, limit: 100 });
+        return await until(message => message.requestId === requestId) as unknown as CatalogQueryPage;
+      };
+      const filteredQuery = await queryCatalog("filtered-query");
+      expect(filteredQuery.page.sessions.map(row => row.sessionId)).toEqual(["dsh:shared"]);
+      expect(filteredQuery.page.totalSessions).toBe(1);
       // The released App never hears Desktop runtime traffic.
       desktop.client.onEvent?.({ type: "emit", event: "api-session/added", args: [desktop.row("desktop-only")] });
       web.client.onEvent?.({ type: "emit", event: "api-session/added", args: [web.row("web-only")] });
@@ -3264,6 +3429,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const upgraded = await hostState("full-host", known);
       const catalog = (upgraded.domains as AgentStateDomainSnapshot[]).find(domain => domain.domain === "catalog")!.value as { sessions: Array<{ sessionId: string; agentKind: string }> };
       expect(catalog.sessions.map(session => [session.sessionId, session.agentKind])).toEqual(expect.arrayContaining([["dsh:shared", "dsh"], ["dsh-desktop:shared", "dshDesktop"]]));
+      const fullQuery = await queryCatalog("full-query");
+      expect(fullQuery.page.sessions.map(row => [row.sessionId, row.agentKind])).toEqual(expect.arrayContaining([["dsh:shared", "dsh"], ["dsh-desktop:shared", "dshDesktop"]]));
 
       // The same native id reaches only the entry that owns the public id.
       sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh-desktop:shared", commandId: "desktop-send",

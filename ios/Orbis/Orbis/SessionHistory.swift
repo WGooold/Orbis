@@ -296,6 +296,7 @@ struct SessionSyncTransaction {
     let leaf: String?
     let command: [String: Any]
     let known: SessionAppliedBaseline?
+    let historyPrefetch: SessionHistoryPrefetch?
     var attempts = 1
     var pendingNotices = 0
     var firstSentAt: Date

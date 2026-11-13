@@ -567,6 +567,7 @@ data class RemoteState(
     val agentStateReads: Map<String, AgentStateRead> = emptyMap(),
     val agentCatalogRange: AgentCatalogRange? = null,
     val agentCatalogRangeRequest: AgentCatalogRangeRequest? = null,
+    val catalogQuery: CatalogQueryResult? = null,
     /** 只能由经过认证的 device.ready 建立或替换。 */
     val agentModelEpoch: String? = null,
     val retiredAgentModelEpochs: Set<String> = emptySet(),
@@ -683,6 +684,8 @@ data class PendingSessionSync(
     val knownState: SessionAppliedState? = null,
     /** Client-local read identity; applies to preview/history/catchup, never sent on the wire. */
     val historyOperationId: String? = null,
+    /** Fixed auto-reservation budget carried through local and remote page transitions. */
+    val historyPrefetch: SessionHistoryPrefetch? = null,
     /** Immutable refresh demand captured at task creation. */
     val demandGeneration: Long? = null,
     /** 协调者回过 `session.sync.pending` 的次数（ADR-0037 §3）；用于给"重新计时"设上限。 */
@@ -947,6 +950,15 @@ internal fun RemoteState.failSessionSync(
             ).copy(isChatSyncing = false, chatSyncError = null)),
         )
     }
+    if (pending.historyPrefetch != null) {
+        val operationId = pending.historyOperationId
+        val stopped = operationId?.let { spendPrefetchAttempts(it, pending.attempts) } ?: this
+        val released = stopped.finishRemoteHistoryRead(commandId, HistoryReadPhase.CANCELLED).releaseHistoryRequest(commandId)
+        return released.copy(
+            pendingCommands = released.pendingCommands - commandId,
+            sessionSyncCommands = released.sessionSyncCommands - commandId,
+        )
+    }
     val released = finishRemoteHistoryRead(commandId, HistoryReadPhase.FAILED, message).releaseHistoryRequest(commandId)
     val deterministic = isDeterministicSessionSyncFailure(code)
     val blockTarget = syncTargetKey(pending.runtimeId, pending.requestTargetLeafId ?: pending.targetLeafId)
@@ -1060,15 +1072,6 @@ private fun RuntimeSummary.sessionView(runtimeId: String): RuntimeSessionView? =
 }
 
 
-internal fun initialSessionSyncRange(
-    conversation: RuntimeConversation?,
-    knownLeafId: String?,
-): String = if (conversation?.hasLiveSnapshot != true || knownLeafId == null) {
-    "preview"
-} else {
-    "catchup"
-}
-
 /**
  * Invalidates only the selected Runtime's display snapshot. The next loader pass requests a
  * fresh preview while preserving the current messages until the replacement arrives.
@@ -1149,11 +1152,6 @@ internal fun RemoteState.requestBranchRefresh(runtimeId: String): RemoteState {
         )),
     ).reconcileHistoryReads()
 }
-
-internal fun shouldStartBranchCatchUpImmediately(
-    conversation: RuntimeConversation?,
-    hasInMemoryGraph: Boolean,
-): Boolean = hasInMemoryGraph && conversation?.hasLiveSnapshot == true
 
 private fun RuntimeSummary.isSyncPending(
     selectedRuntimeId: String?,
@@ -2763,6 +2761,20 @@ class RelayReducer(
                 if (snapshot.selection == "unchanged") {
                     val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
                     return state.completeUnchangedSessionSync(id, snapshot, sequenceKey, sequence)
+                }
+                if (pending.historyPrefetch != null) {
+                    val commandId = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                    val rows = committed?.entries ?: snapshot.entries
+                    val success = state.ownsSessionSnapshot(commandId, runtimeId, snapshot.sessionId, snapshot.syncId,
+                        responseTargetLeafId, snapshot.range, snapshot.beforeEntryId) &&
+                        (rows.isNotEmpty() && rows.first().entryId != pending.beforeEntryId || rows.isEmpty() && snapshot.hasOlder == false && snapshot.complete == true) &&
+                        snapshot.rangeStatus in setOf("complete", "older_available", "limit_reached")
+                    if (!success) return state.failSessionSync(commandId, "history_window_not_advancing")
+                    val released = state.finishRemoteHistoryRead(commandId,
+                        if (rows.isEmpty()) SessionReadPhase.END_REACHED else SessionReadPhase.SUCCEEDED)
+                    return released.copy(sessionSyncCommands = released.sessionSyncCommands - commandId,
+                        pendingCommands = released.pendingCommands - commandId,
+                        lastSequence = released.lastSequence + (sequenceKey to maxOf(released.lastSequence[sequenceKey] ?: -1L, sequence)))
                 }
                 val liveLeafId = state.runtimes[runtimeId]?.sessionLeafId
                 val isHistory = pending.range == "history"

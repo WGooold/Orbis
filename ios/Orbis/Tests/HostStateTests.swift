@@ -72,6 +72,31 @@ struct HostStateTests {
         #expect(state.domains["diagnostics"]?.value["records"].integer == 12)
     }
 
+    // FT-G11-ASYNC-01: query rows must finish the store's asynchronous catalog commit
+    // before consume returns; loading/error-only publications do not re-commit rows.
+    @Test func catalogQueryWaitsForAsynchronousStorePublication() async throws {
+        let (state, sent) = setup()
+        state.negotiateCatalogReadFormat()
+        await state.consume(["type": "session.catalog.capabilities", "format": "v1", "requestId": sent.last["requestId"]!])
+        state.setCatalogVisible(true)
+        let request = sent.last
+        var committed: [String] = []
+        state.didChangeCatalog = { rows, completeKinds in
+            await Task.yield()
+            #expect(completeKinds.isEmpty)
+            committed.append(contentsOf: rows.map(\.sessionId))
+        }
+        let response: [String: Any] = ["type": "session.catalog.page", "format": "v1", "requestId": request["requestId"]!, "query": request["query"]!,
+            "page": ["modelEpoch": "model-a", "revision": 1, "snapshotId": "snapshot", "offset": 0, "totalSessions": 1,
+                     "sessions": [session("query-row")], "nextCursor": NSNull(), "complete": true, "truncated": false],
+            "directoryCount": 1, "previewsComplete": true, "providers": [], "unknownProvider": false, "providersTruncated": false]
+        await state.consume(response)
+        #expect(committed == ["query-row"])
+        await state.consume(response)
+        #expect(committed == ["query-row"])
+        state.setConnection(pairing(), connected: false)
+    }
+
     @Test func subscriptionQuotaIsScopedToHostProviderAndRequest() async throws {
         let (state, sent) = setup()
         state.loadProviders("claude")
@@ -354,18 +379,52 @@ struct HostStateTests {
     private func session(_ id: String) -> [String: Any] {
         ["sessionId": id, "cwd": "/repo", "createdAt": 1, "modifiedAt": 2, "messageCount": 1, "agentKind": "pi"]
     }
-    private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog") async {
+    private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog", requestNext: Bool = true) async {
         let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
         await state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": [domain("catalog", revision: revision, value: ["totalSessions": 2, "sessions": [session("first")],
                 "snapshotId": snapshotId, "nextCursor": "cursor-" + snapshotId, "truncated": false,
                 "backends": [["kind": "pi", "ready": true, "complete": true, "sessions": 2]]])], "missing": [], "truncated": false])
+        // Existing range fixtures explicitly model viewport demand.
+        if requestNext { state.setCatalogVisible(true); state.loadNextCatalogPage() }
     }
     private func catalogPage(_ request: [String: Any], snapshot: String = "catalog", revision: Int = 1,
                              offset: Int = 1, sessions: [[String: Any]], cursor: String? = nil) -> [String: Any] {
         ["type": "agent.state.range.page", "requestId": request["requestId"]!, "scope": "host", "domain": "catalog",
          "page": ["modelEpoch": "model-a", "revision": revision, "snapshotId": snapshot, "offset": offset,
                   "totalSessions": 2, "sessions": sessions, "nextCursor": cursor as Any? ?? NSNull(), "complete": true, "truncated": false]]
+    }
+
+    @Test func closedCatalogAndCommittedPageDoNotDownloadTheRemainder() async {
+        let (state, sent) = setup()
+        await catalog(state, sent, requestNext: false)
+        #expect(!sent.values.contains { $0["type"] as? String == "agent.state.range.request" })
+        state.setCatalogVisible(true)
+        #expect(!sent.values.contains { $0["type"] as? String == "agent.state.range.request" })
+        state.loadNextCatalogPage()
+        let request = sent.last
+        state.setCatalogVisible(false)
+        await state.consume(catalogPage(request, sessions: [session("late")]))
+        #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
+        #expect(sent.values.filter { $0["type"] as? String == "agent.state.range.request" }.count == 1)
+    }
+
+    // SC-06: the version read is the same logical request as its single retry;
+    // refresh ticks cannot replace its identity or extend its deadline.
+    @Test func catalogVersionReadMergesTicksAndRetriesTheOriginalRequestOnce() {
+        let (state, sent) = setup()
+        let original = sent.last, count = sent.values.count
+        state.refresh()
+        #expect(sent.values.count == count)
+        let clock = Date()
+        state.advanceModelRead(now: clock.addingTimeInterval(21)); #expect(sent.values.count == count)
+        state.advanceModelRead(now: clock.addingTimeInterval(26))
+        #expect(sent.values.count == count + 1)
+        #expect(sent.last["requestId"] as? String == original["requestId"] as? String)
+        state.advanceModelRead(now: clock.addingTimeInterval(46))
+        #expect(state.pendingDomains.isEmpty)
+        #expect(state.modelError != nil)
+        state.advanceModelRead(now: clock.addingTimeInterval(90)); #expect(sent.values.count == count + 1)
     }
 
     @Test func catalogPagesAccumulateFixedSnapshotBeforeAllowingPruning() async throws {

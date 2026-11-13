@@ -49,6 +49,52 @@ struct SessionHistoryWork: Equatable {
     var committedPageHits = 0
 }
 
+/// Budget owned by one automatically reserved history window. Retries share the same byte/page
+/// allowance; each retry is bounded against the largest legal page before it is sent.
+struct SessionHistoryPrefetch: Equatable {
+    static let maxEntries = 60
+    static let maxResponseBytes = 128 * 1024
+    static let maxPages = 4
+    static let hardResponseBytes = 64 * 1024
+
+    let scopeId: String
+    let targetLeafId: String?
+    var beforeEntryId: String? = nil
+    var entries = 0
+    var responseBytes = 0
+    var responsePages = 0
+    var paused = false
+
+    var nextMaxEntries: Int { min(30, max(0, Self.maxEntries - entries)) }
+    var nextMaxBytes: Int { min(Self.hardResponseBytes, max(0, Self.maxResponseBytes - responseBytes)) }
+    var maxAttempts: Int {
+        min(4 - responsePages, nextMaxBytes < 8192 ? 0 : max(0, (Self.maxResponseBytes - responseBytes) / nextMaxBytes))
+    }
+    var canContinue: Bool { !paused && entries < Self.maxEntries && responseBytes < Self.maxResponseBytes &&
+        responsePages < Self.maxPages && maxAttempts > 0 }
+
+    func addingCachedEntries(_ count: Int) -> SessionHistoryPrefetch {
+        var next = self; next.entries = min(Self.maxEntries, entries + max(0, count)); return next
+    }
+
+    func addingResponse(entries count: Int, jsonBytes: Int, attempts: Int) -> SessionHistoryPrefetch {
+        var next = self
+        next.entries = min(Self.maxEntries, entries + max(0, count))
+        next.responseBytes = min(Self.maxResponseBytes, responseBytes + max(0, jsonBytes) + nextMaxBytes * max(0, attempts - 1))
+        next.responsePages = min(Self.maxPages, responsePages + max(1, attempts))
+        return next
+    }
+
+    func spendingFailedAttempts(_ attempts: Int) -> SessionHistoryPrefetch {
+        var next = self
+        next.paused = true
+        let sent = min(max(0, attempts), maxAttempts)
+        next.responseBytes = min(Self.maxResponseBytes, responseBytes + nextMaxBytes * sent)
+        next.responsePages = min(Self.maxPages, responsePages + sent)
+        return next
+    }
+}
+
 struct SessionHistorySummary: Equatable {
     let sessionId: String
     let epoch: String?

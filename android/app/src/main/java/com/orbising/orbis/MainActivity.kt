@@ -394,6 +394,9 @@ internal fun RemoteApp(
                 onCloseRuntimes = model::closeRuntimesOn,
                 onOpenDownloads = { cancelLaunchIntro(); allDownloadsOpen = true },
                 onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
+                onCatalogVisibility = model::setCatalogVisible,
+                onNextCatalogPage = model::loadNextCatalogPage,
+                onCatalogQuery = model::setCatalogQuery,
                 onRetryHome = model::refreshHome,
             )
         }
@@ -458,6 +461,9 @@ internal fun RemoteApp(
                     },
                     onSetArchived = model::setSessionArchivedOn,
                     onRequestProviders = model::refreshProviderFacts,
+                    onCatalogVisibility = model::setCatalogVisible,
+                    onNextCatalogPage = model::loadNextCatalogPage,
+                    onCatalogQuery = model::setCatalogQuery,
                 )
             },
         ) { rootHomeContent() }
@@ -515,7 +521,10 @@ internal fun RemoteApp(
                                 newSessionCwd = cwd; newSessionOpen = true
                             },
                             onSetArchived = model::setSessionArchivedOn, preparedCatalog = homeUi?.catalog,
-                            onRequestProviders = model::refreshProviderFacts, permanent = true)
+                            onRequestProviders = model::refreshProviderFacts, permanent = true,
+                            onCatalogVisibility = model::setCatalogVisible,
+                            onNextCatalogPage = model::loadNextCatalogPage,
+                            onCatalogQuery = model::setCatalogQuery)
                     }
                     HomeTabBar(homeTab, onSelect = { tab ->
                         cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
@@ -743,6 +752,9 @@ internal fun RuntimeListScreen(
     onAddHost: () -> Unit = {},
     onOpenStatus: () -> Unit = {},
     onRequestProviders: () -> Unit = {},
+    onCatalogVisibility: (String?, Boolean) -> Unit = { _, _ -> },
+    onNextCatalogPage: (String?) -> Unit = {},
+    onCatalogQuery: (String?, CatalogQuery) -> Unit = { _, _ -> },
     onRetryHome: () -> Unit = {},
     launchIntro: LaunchState? = null,
     onLaunchPresented: (String) -> Unit = {},
@@ -1204,6 +1216,7 @@ internal fun RuntimeListScreen(
                     state = state, hosts = hosts, isOpen = drawerState.isOpen, preparedCatalog = preparedCatalog,
                     onSelectHost = onSelectHost, onUnpairHost = onUnpairHost, onAddHost = onAddHost,
                     onSetArchived = onSetArchived, onRequestProviders = onRequestProviders,
+                    onCatalogVisibility = onCatalogVisibility, onNextCatalogPage = onNextCatalogPage, onCatalogQuery = onCatalogQuery,
                     onOpenSession = { host, session -> scope.launch { drawerState.close() }; onOpenSession(host, session) },
                     onOpenHistory = onOpenHistory,
                     onNewSession = { host, cwd -> scope.launch { drawerState.close() }; onNewSession(host, cwd) },
@@ -1736,11 +1749,15 @@ internal fun ChatScreen(
     }
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            model.reconcileChat(runtimeId)
-            while (isActive) {
-                delay(15_000)
+            val historyHost = state.hostId
+            model.setHistoryWindowVisible(historyHost, runtimeId, true)
+            try {
                 model.reconcileChat(runtimeId)
-            }
+                while (isActive) {
+                    delay(15_000)
+                    model.reconcileChat(runtimeId)
+                }
+            } finally { model.setHistoryWindowVisible(historyHost, runtimeId, false) }
         }
     }
     fun loadHistoryPage() {

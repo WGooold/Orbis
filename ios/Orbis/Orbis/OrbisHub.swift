@@ -155,6 +155,7 @@ final class OrbisStore: ObservableObject {
 
     func selectHost(_ hostId: String) {
         guard connections[hostId] != nil else { return }
+        if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
@@ -303,6 +304,10 @@ final class OrbisStore: ObservableObject {
     func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool { activeConnection.moveHistory(to: option, fallbackText: fallbackText) }
     func respond(_ request: InteractionRequest, response: [String: Any]) -> Bool { activeConnection.respond(request, response: response) }
     func refresh() { activeConnection.refresh() }
+    func reconcileCatalog() { activeConnection.reconcileCatalog() }
+    func reconcileHistoryWindow() { activeConnection.reconcileHistoryWindow() }
+    func resumeForeground() { activeConnection.resumeForeground() }
+    func setHistoryWindowVisible(_ visible: Bool) { activeConnection.setHistoryWindowVisible(visible) }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
     func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }

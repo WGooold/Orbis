@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		AA7200010000000000000001 /* HostLocalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7200010000000000000002 /* HostLocalStorage.swift */; };
 		D06800010000000000000001 /* ProviderDialGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06810010000000000000001; };
+		F06900010000000000000001 /* ReadReconcileSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = F06900010000000000000002 /* ReadReconcileSchedule.swift */; };
 		C00500010000000000000001 /* CopyFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00510010000000000000001 /* CopyFeedback.swift */; };
 		C06300010000000000000001 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
 		C06300010000000000000002 /* LocalizationCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000002; };
@@ -65,6 +66,7 @@
 /* Begin PBXFileReference section */
 		AA7200010000000000000002 /* HostLocalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostLocalStorage.swift; sourceTree = "<group>"; };
 		D06810010000000000000001 /* ProviderDialGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDialGeometry.swift; sourceTree = "<group>"; };
+		F06900010000000000000002 /* ReadReconcileSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadReconcileSchedule.swift; sourceTree = "<group>"; };
 		C00510010000000000000001 /* CopyFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyFeedback.swift; sourceTree = "<group>"; };
 		C06310010000000000000001 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
 		C06310010000000000000002 /* LocalizationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationCatalog.swift; sourceTree = "<group>"; };
@@ -166,6 +168,7 @@
 				A0011001000000000000000F /* EnvelopePieces.swift */,
 				A0011001000000000000002C /* ToolDetailView.swift */,
 				A0011001000000000000002D /* HostState.swift */,
+				F06900010000000000000002 /* ReadReconcileSchedule.swift */,
 				A00110010000000000000036 /* TransferIO.swift */,
 				A00110010000000000000039 /* TurnFileChanges.swift */,
 				A0011001000000000000003A /* TurnFileChangesView.swift */,
@@ -326,6 +329,7 @@
 				A0010001000000000000000D /* EnvelopePieces.swift in Sources */,
 				A0010001000000000000002C /* ToolDetailView.swift in Sources */,
 				A0010001000000000000002D /* HostState.swift in Sources */,
+				F06900010000000000000001 /* ReadReconcileSchedule.swift in Sources */,
 				A00100010000000000000036 /* TransferIO.swift in Sources */,
 				A00100010000000000000039 /* TurnFileChanges.swift in Sources */,
 				A0010001000000000000003A /* TurnFileChangesView.swift in Sources */,

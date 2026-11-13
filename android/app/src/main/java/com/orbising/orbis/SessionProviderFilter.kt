@@ -16,16 +16,18 @@ internal fun codexProviderOptions(
     currentProvider: String?,
     agentKind: String = "codex",
     language: AppLanguage = AppLocalization.language,
+    knownProviders: List<String> = emptyList(),
+    hasUnknownProvider: Boolean = false,
 ): List<CodexProviderOption> {
     val rows = tree.flatMap { it.directories }.flatMap { it.sessions }.filter { it.agentKind == agentKind }
     return buildList {
         add(CodexProviderOption(CURRENT_CODEX_PROVIDER, currentProvider?.let { L10n.format("{0}（当前使用）", listOf(it), language) }
             ?: L10n.format("当前 provider（尚未获取）", language = language)))
         add(CodexProviderOption(ALL_CODEX_PROVIDERS, L10n.format("全部 provider", language = language)))
-        rows.mapNotNull { it.modelProvider }.distinct().sorted().filter { it != currentProvider }.forEach {
+        (rows.mapNotNull { it.modelProvider } + knownProviders).distinct().sorted().filter { it != currentProvider }.forEach {
             add(CodexProviderOption(providerFilterKey(it), it))
         }
-        if (rows.any { it.modelProvider == null }) add(CodexProviderOption(UNKNOWN_CODEX_PROVIDER, L10n.format("未知 provider", language = language)))
+        if (hasUnknownProvider || rows.any { it.modelProvider == null }) add(CodexProviderOption(UNKNOWN_CODEX_PROVIDER, L10n.format("未知 provider", language = language)))
     }
 }
 

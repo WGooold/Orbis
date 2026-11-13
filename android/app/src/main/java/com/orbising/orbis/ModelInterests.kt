@@ -11,7 +11,7 @@ internal val CHAT_AGENT_MODEL_DOMAINS = listOf("delivery", "model", "context", "
 internal val HOME_HOST_MODEL_DOMAINS = listOf("identity", "backends", "catalog", "providers")
 
 internal fun AgentStateRead.matchesInterest(wanted: List<String>, now: Long): Boolean =
-    domains == wanted.toSet() && now - sentAt < 14_000
+    domains == wanted.toSet() && (now - sentAt < 14_000 || scope == "host" && "catalog" in pendingDomains && now - sentAt < 45_000)
 
 internal fun AgentStateRead.needsLegacyRetry(message: JsonObject): Boolean {
     if (stateFormat !in setOf("compact-v1", "compact-v2")) return false

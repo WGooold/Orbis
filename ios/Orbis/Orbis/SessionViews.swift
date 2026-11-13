@@ -77,15 +77,22 @@ private final class DirectoryViewport: ObservableObject {
 /// Observes the existing native pan; never replaces its delegate or takes the gesture.
 private struct DirectoryViewportObserver: UIViewRepresentable {
     let viewport: DirectoryViewport
-    func makeUIView(context: Context) -> Observer { Observer(viewport: viewport) }
-    func updateUIView(_ view: Observer, context: Context) { view.attach() }
+    var needMore: () -> Void
+    func makeUIView(context: Context) -> Observer { Observer(viewport: viewport, needMore: needMore) }
+    func updateUIView(_ view: Observer, context: Context) {
+        view.needMore = needMore; view.attach()
+        DispatchQueue.main.async { [weak view] in view?.checkForMore() }
+    }
     static func dismantleUIView(_ view: Observer, coordinator: ()) { view.detach() }
 
     final class Observer: UIView {
         let viewport: DirectoryViewport
         private weak var scroll: UIScrollView?
         private var displayLink: CADisplayLink?
-        init(viewport: DirectoryViewport) { self.viewport = viewport; super.init(frame: .zero); isUserInteractionEnabled = false }
+        var needMore: () -> Void
+        init(viewport: DirectoryViewport, needMore: @escaping () -> Void) {
+            self.viewport = viewport; self.needMore = needMore; super.init(frame: .zero); isUserInteractionEnabled = false
+        }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func didMoveToWindow() { super.didMoveToWindow(); attach() }
         func attach() {
@@ -117,9 +124,15 @@ private struct DirectoryViewportObserver: UIViewRepresentable {
             }
         }
         @objc private func checkIdle() {
+            checkForMore()
             guard let scroll, !scroll.isTracking && !scroll.isDragging && !scroll.isDecelerating else { return }
             displayLink?.invalidate(); displayLink = nil
             viewport.interactionChanged(false)
+        }
+        func checkForMore() {
+            guard let scroll, window != nil, scroll.bounds.height > 0,
+                  scroll.contentOffset.y + scroll.bounds.height + 200 >= scroll.contentSize.height else { return }
+            needMore()
         }
     }
 }
@@ -136,6 +149,11 @@ struct SessionDirectoryState: Equatable {
     /// 展开目录里是否显示预览之外的较早会话；换目录时复位。
     var showAllSessions = false
     var showAllDirectories = false
+    var networkQuery: CatalogQuery {
+        CatalogQuery(text: String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256)), agentKind: kind,
+            archived: archived, provider: kind == "codex" || kind == "codexDesktop" ? providerKey : "all",
+            directory: showAllSessions ? expandedPath.map(catalogDirectoryId) : nil)
+    }
 }
 
 struct SessionDrawerView: View, Equatable {
@@ -160,7 +178,8 @@ struct SessionDrawerView: View, Equatable {
     private var request: SessionDirectoryFilter {
         SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
             kind: state.kind, archived: state.archived, provider: state.providerKey,
-            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language))
+            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language),
+            queryRevision: store.hostState.catalogQueryRevision)
     }
     private var projection: SessionDirectoryProjection? {
         incomingProjection?.filter.sameView(as: request) == true ? incomingProjection : nil
@@ -263,7 +282,13 @@ struct SessionDrawerView: View, Equatable {
                     }
                 }.padding(.top, 4).padding(.bottom, 16)
                     .coordinateSpace(name: "directory-viewport-content")
-                    .background(DirectoryViewportObserver(viewport: viewport))
+                    .background(DirectoryViewportObserver(viewport: viewport) {
+                        guard let result = store.hostState.catalogQuery else { store.hostState.loadNextCatalogPage(); return }
+                        guard result.query == state.networkQuery else { return }
+                        if searching || state.showAllSessions || !result.previewsComplete {
+                            store.hostState.loadNextCatalogPage()
+                        }
+                    })
                     .animation(reduceMotion ? nil : InteractionMotion.panel, value: "\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.query)")
             }
             // As in the transcript, let the scroll view resolve shrinking content itself.
@@ -285,10 +310,16 @@ struct SessionDrawerView: View, Equatable {
             }
             .task(id: request) {
                 let filter = request, source = catalog
-                let next = await directoryWorker.resolve(catalog: source, filter: filter)
+                let facets = store.hostState.catalogQuery.flatMap { $0.query.agentKind == state.kind ? $0 : nil }
+                let next = await directoryWorker.resolve(catalog: source, filter: filter,
+                    knownProviders: facets?.providers ?? [], hasUnknown: facets?.unknownProvider == true)
                 guard !Task.isCancelled else { return }
                 incomingProjection = next
                 if !viewport.scrolling { resolveExpansion() }
+            }
+            .task(id: state.networkQuery) {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+                store.hostState.setCatalogQuery(state.networkQuery)
             }
             .onChange(of: viewport.scrolling) { _, active in if !active { resolveExpansion() } }
             .onDisappear { selectedSessionIds = [] }
@@ -392,7 +423,9 @@ struct SessionDrawerView: View, Equatable {
 
     private func directoryGroup(_ directory: SessionDirectory, selectedIds: Set<String>) -> some View {
         let expanded = state.expandedPath == directory.path
-        let hidden = directory.sessions.count - directorySessionPreviewLimit
+        let facts = store.hostState.catalogQuery.flatMap { $0.query == state.networkQuery ? $0 : nil }
+        let total = max(directory.sessions.count, facts?.directoryTotals[directory.path] ?? 0)
+        let hidden = total - directorySessionPreviewLimit
         let visible = expanded && (state.showAllSessions || searching || hidden <= 0) ? directory.sessions : Array(directory.sessions.prefix(directorySessionPreviewLimit))
         return VStack(spacing: 0) {
             OrbisMotionButton { toggle(directory.path) } label: {
@@ -401,12 +434,12 @@ struct SessionDrawerView: View, Equatable {
                         .foregroundStyle(expanded ? OrbisPalette(scheme).text : OrbisPalette(scheme).secondary)
                     Text(directoryTitle(directory.path).isEmpty ? L10n.tr("未记录目录") : directoryTitle(directory.path)).font(.orbisLabel(.semibold)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("\(directory.sessions.count)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    Text("\(total)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                     Image(systemName: "chevron.right").font(.system(size: 16))
                         .rotationEffect(.degrees(expanded ? 90 : 0)).animation(reduceMotion ? nil : .orbisCollapse, value: expanded)
                 }.padding(.horizontal, 8).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(DirectoryRowStyle())
-                .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
+                .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, total))
                 .accessibilityIdentifier("drawer-directory-" + directory.path)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: { viewport.record("directory:" + directory.path, frame: $0) }
             OrbisCollapse(expanded: expanded) {
@@ -420,7 +453,7 @@ struct SessionDrawerView: View, Equatable {
                     if hidden > 0 && !searching {
                         OrbisMotionButton { state.showAllSessions.toggle() } label: {
                             HStack(spacing: 4) {
-                                Text(state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("查看全部 {0} 条", directory.sessions.count))
+                                Text(state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("查看全部 {0} 条", total))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Image(systemName: state.showAllSessions ? "chevron.up" : "chevron.right")
                             }.font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).accent).frame(minHeight: 48).contentShape(Rectangle())

@@ -729,6 +729,7 @@ class RelayClient internal constructor(
         range: String? = null,
         knownState: SessionAppliedState? = null,
         commandId: String = UUID.randomUUID().toString(),
+        historyPrefetch: SessionHistoryPrefetch? = null,
     ): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "session.sync")
         put("sessionId", sessionId)
@@ -738,6 +739,9 @@ class RelayClient internal constructor(
         beforeEntryId?.let { put("beforeEntryId", it) }
         maxEntries?.let { put("maxEntries", it) }
         range?.let { put("range", it) }
+        historyPrefetch?.let { budget -> put("historyWindow", buildJsonObject {
+            put("format", "v1"); put("maxBytes", budget.nextMaxBytes); put("maxDeliveries", budget.maxAttempts)
+        }) }
         knownState?.let { known -> put("knownState", buildJsonObject {
             put("epoch", known.epoch)
             put("seq", known.seq)

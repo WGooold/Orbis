@@ -4,6 +4,49 @@ import Testing
 
 @Suite("Canonical session history")
 struct SessionHistoryTests {
+    @Test func automaticHistoryReservationStopsAtEntryByteAndRetryPageBudgets() {
+        let empty = SessionHistoryPrefetch(scopeId: "window", targetLeafId: "leaf")
+        #expect(empty.nextMaxEntries == 30)
+        #expect(empty.maxAttempts == 2)
+        let first = empty.addingResponse(entries: 24, jsonBytes: 28 * 1024, attempts: 1)
+        #expect(first.entries == 24)
+        #expect(first.responseBytes == 28 * 1024)
+        #expect(first.responsePages == 1)
+        #expect(first.maxAttempts == 1)
+        let second = first.addingResponse(entries: 24, jsonBytes: 28 * 1024, attempts: 1)
+        #expect(second.entries == 48)
+        #expect(second.canContinue)
+        let full = second.addingCachedEntries(12)
+        #expect(full.entries == 60)
+        #expect(!full.canContinue)
+        let failed = SessionHistoryPrefetch(scopeId: "retry", targetLeafId: "leaf").spendingFailedAttempts(2)
+        #expect(failed.responsePages == 2)
+        #expect(failed.responseBytes == 2 * SessionHistoryPrefetch.hardResponseBytes)
+        #expect(!failed.canContinue)
+    }
+
+    @Test func automaticHistoryReadKeepsItsFixedTargetAndBudgetOwner() throws {
+        let generation = UUID()
+        let owner = SessionReadOwner(hostKey: "host", deviceId: "device", historyKey: "runtime",
+            sessionId: "session", branchGeneration: 3, cacheEpoch: "epoch", connectionGeneration: generation, selected: true)
+        let budget = SessionHistoryPrefetch(scopeId: "window", targetLeafId: "leaf")
+        var reads = SessionReadOperations()
+        let accepted = reads.begin(kind: .prefetch, owner: owner, targetLeafId: "leaf", beforeEntryId: "edge",
+            historyPrefetch: budget, id: "prefetch")
+        #expect(accepted.operationId == "prefetch")
+        #expect(reads.owns("prefetch", current: owner))
+        let bound = reads.bindRemote("prefetch", commandId: "wire", current: owner)
+        #expect(bound)
+        reads.recordPrefetchResponse("prefetch", entries: 20, jsonBytes: 12_000, attempts: 2)
+        #expect(reads.operations["prefetch"]?.targetLeafId == "leaf")
+        #expect(reads.operations["prefetch"]?.beforeEntryId == "edge")
+        #expect(reads.operations["prefetch"]?.historyPrefetch?.responseBytes == 12_000 + SessionHistoryPrefetch.hardResponseBytes)
+        #expect(reads.operations["prefetch"]?.historyPrefetch?.responsePages == 2)
+        #expect(reads.operations["prefetch"]?.prefetchNetworkCommitted == true)
+        reads.finish("prefetch", phase: .cancelled)
+        #expect(!reads.owns("prefetch", current: owner))
+    }
+
     // Canonical/live decoding must not block the UI actor or bring retired aliases back.
     @Test @MainActor func chatSourceProjectionRunsOffMainAndReconcilesAliasesAtomically() async {
         let gate = DispatchSemaphore(value: 0)
