@@ -181,3 +181,10 @@ Implementation: `desktop-runtime.ts`, `host-service.ts`,
 Regressions: `codex-terminal-server.test.ts` (progress ordering, abort leaves no
 publication) and `desktop-runtime.test.ts` (Relay reaches `connected` before the
 delayed preparation fails).
+
+Follow-up (same day, ADR-0081 §8): the event is now the shared
+`preparation{kind:"codex"}` used for every background preparation. A caller that
+joined a preparation another caller cancelled (a pause followed by a resume)
+restarts it instead of reporting that abort as its own failure, the release-API
+request and the unpack/publish steps honour the same cancellation, and the
+app-server starts only after local routing has applied the Codex configuration.
