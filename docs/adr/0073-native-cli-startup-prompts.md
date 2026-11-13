@@ -57,6 +57,8 @@ S57／SC81：Host 发起的原生启动关闭可验证的启动更新检查，�
 
 Windows 执行后记录系统、终端、安装方式及实际 CLI 版本，保留命令、握手、退出与清理证据。当前无 Windows 原生通过结论；部署与用户安装验收待完成。
 
+2026-11-13 Windows CI 修复：合并 `cf4ab52` 的 cmd 内嵌引号修复，保留真实 `%*` 参数与 RPC stdin 往返断言；Claude 模拟 POSIX 启动通过用户原生安装目录发现夹具，POSIX npm 布局与 Windows 排除断言分别执行。桌面安装生命周期测试隔离机器注册表／登录 shell 环境刷新，继续核对 DSH 重启完成、供应商同步与准确启动参数；符号链接权限跳过仅限 Windows。相关 8 文件在 macOS 本机 116 项通过、1 项 Windows 原生用例跳过，完整类型检查与定向 lint 通过。首次 Windows CI 的 4 文件／10 项失败、后续验证与边界见 [本次证据](../../.artifacts/windows-ci-20261113/verification.json)。Windows 修复后 CI、部署和用户验收尚未完成。
+
 实现指针：`packages/host/src/agent-startup.ts`、`spawner.ts`、`claude-launcher.ts`、`codex-terminal-macos.ts`、`codex-runtime.ts`、`codex-shim.ts`、`desktop-runtime.ts`、`macos-agent-terminal.ts`。
 
 Claude 首次提示跳过参数的原生证据：`.artifacts/claude-bypass-consent-20261112/verification.json`。本次审查及修复证据：`.artifacts/native-cli-startup-review-20261112/verification.json` 与 `fixes/verification.json`。4 项旧测试断言已按新增启动参数／临时 settings 更新；修复后的相关 Node 用例 540 项通过、2 项 Windows 原生用例跳过，Android 相关单测及原失败复现共 30 项通过。类型与 lint 检查通过，本地化及 plist 沿用同源码静态检查证据。Claude 迟到恢复身份误绑、Android 结束等待遗留发送账本两项回归均已修复，决策与测试指针见 ADR-0072。原始失败证据保留；上述验证范围内未发现剩余回归，Windows 原生及完整跨版本矩阵仍待验证。尚未部署，待用户验证。

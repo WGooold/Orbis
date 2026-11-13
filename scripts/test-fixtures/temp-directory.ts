@@ -19,5 +19,5 @@ export function testDirectorySync(prefix: string): string {
 /** Windows without Developer Mode (no SeCreateSymbolicLinkPrivilege) refuses every symlink. */
 export function isSymlinkRefusal(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "EPERM" || code === "EACCES" || code === "ENOSYS";
+  return process.platform === "win32" && (code === "EPERM" || code === "EACCES" || code === "ENOSYS");
 }
