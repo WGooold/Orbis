@@ -22,7 +22,6 @@ struct ContentView: View {
     @State private var rootOffset: CGFloat = 0
     @State private var rootTransition = 0
     @State private var draftOrigin: CGRect?
-    @State private var draftSnapshot: UIView?
     @State private var surfaceWidth: CGFloat = 390
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
@@ -233,7 +232,9 @@ struct ContentView: View {
                 pageView(page)
                     .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
                     .foregroundStyle(OrbisPalette(scheme).text)
-                    .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                    .background {
+                        if !expanding(page) { OrbisPalette(scheme).base.ignoresSafeArea() }
+                    }
                     .modifier(OrbisPageTransition(onBack: commitBack, reveal: navigation.reveal,
                                                   layerIndex: index, isTop: index == top,
                                                   entrance: navigation.entranceIndex == index && !expanding(page),
@@ -250,7 +251,9 @@ struct ContentView: View {
             if let runtime = store.selectedRuntime {
                 ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
                     .id(localSessionKey(host: store.selectedHost, runtime: runtime))
-                    .modifier(OrbisDraftExpansion(origin: draftOrigin, snapshot: draftSnapshot, onComplete: { draftOrigin = nil; draftSnapshot = nil }))
+                    .modifier(OrbisDraftExpansion(origin: draftOrigin, reveal: navigation.reveal,
+                                                  sourceIndex: navigation.pages.firstIndex(of: .chat) ?? 0,
+                                                  onComplete: { draftOrigin = nil }))
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
         case .status: ConnectionStatusView(onBack: back)
@@ -297,7 +300,7 @@ struct ContentView: View {
             draftNoticeToken += 1; let token = draftNoticeToken
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if token == draftNoticeToken { withAnimation(reduceMotion ? nil : InteractionMotion.exit) { draftNotice = false } } }
         }, onDraftSubmitted: { launch, origin in
-            draftOrigin = origin; draftSnapshot = currentScreenSnapshot()
+            draftOrigin = origin
             newSessionOpen = false
             if store.selectedRuntime != nil {
                 var transaction = Transaction(animation: nil); transaction.disablesAnimations = true
@@ -855,30 +858,35 @@ struct OrbisPageTransition: ViewModifier {
     }
 }
 
-@MainActor private func currentScreenSnapshot() -> UIView? {
-    let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        .flatMap(\.windows).first { $0.isKeyWindow }
-    return window?.snapshotView(afterScreenUpdates: false)
-}
-
-/// The submitted card keeps its identity while its rectangle grows into the chat page.
+/// The submitted card keeps its identity while its rectangle grows into the chat page. The
+/// root below stays live, so the area outside the rectangle is the real home, dimmed and
+/// compressed the same way a return source is (M14).
 private struct OrbisDraftExpansion: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
     let origin: CGRect?
-    let snapshot: UIView?
+    let reveal: OrbisSourceReveal
+    let sourceIndex: Int
     let onComplete: () -> Void
     @State private var progress: CGFloat = 0
+
     func body(content: Content) -> some View {
         GeometryReader { proxy in
-            ZStack {
-                if origin != nil && progress < 1, let snapshot { SnapshotUnderlay(view: snapshot).ignoresSafeArea().accessibilityHidden(true) }
-                content.clipShape(DraftExpansionShape(origin: origin.map { $0.offsetBy(dx: -proxy.frame(in: .global).minX, dy: -proxy.frame(in: .global).minY) }, progress: origin == nil ? 1 : progress))
-                    .allowsHitTesting(origin == nil || progress == 1)
-            }
-        }.onAppear {
-            guard origin != nil else { progress = 1; return }
-            if reduced { progress = 1; onComplete(); return }
-            withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32)) { progress = 1 } completion: { onComplete() }
+            content
+                .clipShape(DraftExpansionShape(origin: origin.map { $0.offsetBy(dx: -proxy.frame(in: .global).minX, dy: -proxy.frame(in: .global).minY) }, progress: origin == nil ? 1 : progress))
+                .allowsHitTesting(origin == nil || progress == 1)
+        }.onAppear { start() }
+    }
+
+    private func start() {
+        guard origin != nil else { progress = 1; return }
+        if reduced { progress = 1; onComplete(); return }
+        reveal.begin(from: sourceIndex)
+        withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.32)) {
+            progress = 1
+            reveal.end(at: 1)
+        } completion: {
+            onComplete()
+            if reveal.fromIndex == sourceIndex { reveal.clear() }
         }
     }
 }
@@ -893,25 +901,6 @@ private struct DraftExpansionShape: Shape {
         let frame = CGRect(x: origin.minX * (1 - t), y: origin.minY * (1 - t),
             width: origin.width + (rect.width - origin.width) * t, height: origin.height + (rect.height - origin.height) * t)
         return Path(roundedRect: frame, cornerRadius: 24 * (1 - t))
-    }
-}
-
-/// A still of the page below, shown only while a pushed page is being swiped back.
-private struct SnapshotUnderlay: UIViewRepresentable {
-    let view: UIView
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
-        container.isUserInteractionEnabled = false
-        container.addSubview(view)
-        view.frame = container.bounds
-        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        return container
-    }
-    func updateUIView(_ container: UIView, context: Context) {
-        if view.superview !== container {
-            container.addSubview(view)
-            view.frame = container.bounds
-        }
     }
 }
 
