@@ -35,6 +35,16 @@ class QrPairingTest {
         ).lanEndpoints)
     }
 
+    // 手动输入是粘贴整段载荷，常见尾随换行和首尾空格，必须与扫码等价。
+    @Test
+    fun `manually pasted payloads accept surrounding whitespace`() {
+        val key = Crypto.toBase64Url(ByteArray(32) { 2 })
+        val pasted = "\n  " + """{"v":2,"relayUrl":"wss://relay.example.com","code":"PAIR1234",
+            "hostId":"host","hostName":"computer","hostPub":"$key","psk":"$key","exp":9999999999999}""" + "\n\n"
+        assertEquals("PAIR1234", parsePairingQrV2(pasted)?.code)
+        assertEquals("host", parsePairingQrV2(pasted)?.hostId)
+    }
+
     @Test
     fun `rejects malformed or public cleartext pairing payloads`() {
         assertNull(parsePairingQrPayload("not-json"))
