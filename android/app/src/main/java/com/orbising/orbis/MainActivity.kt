@@ -618,6 +618,7 @@ private fun PairingScreen(
 ) {
     var scannerOpen by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
+    var manualPairingOpen by remember { mutableStateOf(false) }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -666,6 +667,12 @@ private fun PairingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !pairingInProgress,
             )
+            NeumorphTextButton(
+                text = L10n.tr("手动输入配对载荷"),
+                onClick = { scanError = null; manualPairingOpen = true },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !pairingInProgress,
+            )
             Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
                 if (pairingInProgress) CircularProgressIndicator(Modifier.size(24.dp))
                 else Text(error ?: scanError.orEmpty(), color = MaterialTheme.colorScheme.error,
@@ -673,25 +680,30 @@ private fun PairingScreen(
             }
         }
     }
+    // 扫码与手动粘贴走同一条校验与连接路径。
+    fun handlePairingPayload(raw: String) {
+        val v2 = parsePairingQrV2(raw)
+        if (v2 == null) {
+            val v1 = parsePairingQrPayload(raw)
+            scanError = if (v1 == null) L10n.tr("二维码无效或不是 Orbis 配对二维码")
+            else L10n.tr("这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair")
+        } else {
+            scanError = null
+            clearError()
+            pair(v2.relayUrl, v2.code, raw)
+        }
+        manualPairingOpen = false
+        scannerOpen = false
+    }
+    if (manualPairingOpen) {
+        ManualPairingDialog(
+            onPayload = { raw -> handlePairingPayload(raw) },
+            onDismiss = { manualPairingOpen = false },
+        )
+    }
     if (scannerOpen) {
         QrScannerDialog(
-            onPayload = { raw ->
-                // v2 二维码带 E2E 材料（hostPub + psk），优先；v1 只能填表单但无法完成 E2E 配对。
-                val v2 = parsePairingQrV2(raw)
-                if (v2 == null) {
-                    val v1 = parsePairingQrPayload(raw)
-                    if (v1 == null) {
-                        scanError = L10n.tr("二维码无效或不是 Orbis 配对二维码")
-                    } else {
-                        scanError = L10n.tr("这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair")
-                    }
-                } else {
-                    scanError = null
-                    clearError()
-                    pair(v2.relayUrl, v2.code, raw)
-                }
-                scannerOpen = false
-            },
+            onPayload = { raw -> handlePairingPayload(raw) },
             onDismiss = { scannerOpen = false },
         )
     }
