@@ -359,28 +359,31 @@ struct ContentView: View {
 
 /// Keep one hosting controller (and its scroll, draft and reading state) per layer while
 /// excluding a covered layer from native accessibility enumeration. `accessibilityHidden`
-/// alone leaves descendants visible to automation, so a covered layer drops its UIKit
-/// subtree instead.
+/// alone leaves descendants visible to automation, so a covered layer drops its UIKit subtree.
+///
+/// The hosted root must keep one type across updates. Assigning an `AnyView` rebuilt the page
+/// on every path change and showed the base colour for a frame; a typed root lets SwiftUI diff
+/// the layer it already has.
 private struct OrbisMountedLayer<Content: View>: UIViewControllerRepresentable {
     let hidden: Bool
     @ViewBuilder var content: Content
 
     func makeUIViewController(context: Context) -> Controller {
-        Controller(content: AnyView(content.environment(\.self, context.environment)))
+        Controller(root: LayerRoot(content: content, environment: context.environment))
     }
 
     func updateUIViewController(_ controller: Controller, context: Context) {
-        controller.host.rootView = AnyView(content.environment(\.self, context.environment))
+        controller.host.rootView = LayerRoot(content: content, environment: context.environment)
         controller.accessibilityContainer.covered = hidden
         controller.host.view.accessibilityElementsHidden = hidden
     }
 
     final class Controller: UIViewController {
-        let host: UIHostingController<AnyView>
+        let host: UIHostingController<LayerRoot<Content>>
         let accessibilityContainer = RootAccessibilityView()
 
-        init(content: AnyView) {
-            host = UIHostingController(rootView: content)
+        init(root: LayerRoot<Content>) {
+            host = UIHostingController(rootView: root)
             super.init(nibName: nil, bundle: nil)
         }
         required init?(coder: NSCoder) { nil }
@@ -411,6 +414,15 @@ private struct OrbisMountedLayer<Content: View>: UIViewControllerRepresentable {
             set { super.accessibilityElements = newValue }
         }
     }
+}
+
+/// One hosting controller cannot inherit SwiftUI environment from the view that embeds it, so
+/// the embedding context is copied in. Keeping this a concrete type (rather than an `AnyView`)
+/// is what lets an update reuse the layer instead of rebuilding it.
+private struct LayerRoot<Content: View>: View {
+    let content: Content
+    let environment: EnvironmentValues
+    var body: some View { content.environment(\.self, environment) }
 }
 
 /// 会话目录抽屉。关闭时在主页左侧（左 40% 宽度内）起手向右横拖即把抽屉拉出；打开时在抽屉
@@ -704,8 +716,9 @@ struct OrbisPageTransition: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .opacity(awaitingEntrance ? 0 : 1)
-            .offset(x: max(0, offset))
+            // The page waits at the trailing edge from its first frame. Hiding it until the
+            // entrance starts left the uncompressed source alone on screen for a frame.
+            .offset(x: awaitingEntrance ? containerWidth : max(0, offset))
             .disabled(suppressTaps)
             .allowsHitTesting(!returning)
             .onAppear {
@@ -783,27 +796,24 @@ struct OrbisPageTransition: ViewModifier {
     }
 
     /// A pushed page enters the way Android's host does: it starts one width to the right and
-    /// springs in while the source layer recovers from the preview compression. The width is
-    /// read on the next layout pass, because a sibling animation (a closing drawer) can report
-    /// an intermediate one; the page must never come to rest offscreen.
+    /// slides in while the source layer recovers from the preview compression. The width waits
+    /// for a layout pass because a sibling animation (a closing drawer) can report an
+    /// intermediate one, and the page must never come to rest offscreen.
     private func startEntrance() {
         guard awaitingEntrance, !entranceScheduled, containerWidth > 0 else { return }
         entranceScheduled = true
+        // Take the trailing edge without moving: the page already renders there, so the slide
+        // starts from that edge and the source starts compressing in the same turn.
+        offset = containerWidth
+        entranceApplied = true
+        guard !reduceMotion else { return }
+        reveal.begin(from: layerIndex)
         DispatchQueue.main.async {
-            guard !self.reduceMotion else {
-                self.entranceApplied = true
-                return
-            }
-            self.offset = self.containerWidth
-            self.entranceApplied = true
-            self.reveal.begin(from: self.layerIndex)
-            DispatchQueue.main.async {
-                guard !self.returning, self.horizontalDrag == nil else { return }
-                withAnimation(InteractionMotion.pageEnter) {
-                    self.offset = 0
-                    self.reveal.end(at: 1)
-                } completion: { self.clearReveal() }
-            }
+            guard !self.returning, self.horizontalDrag == nil else { return }
+            withAnimation(InteractionMotion.pageEnter) {
+                self.offset = 0
+                self.reveal.end(at: 1)
+            } completion: { self.clearReveal() }
         }
     }
 
