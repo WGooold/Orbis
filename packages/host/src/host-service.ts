@@ -162,7 +162,7 @@ export function channelForDeviceMessage(message: {
       .concat(message.unchanged ?? []);
     if (domains.length > 0 && domains.every(domain => domain === "execution")) return "ctl";
   }
-  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
+  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "session.catalog.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
   if (eventType === "session.tool.content.page" || eventType === "session.change.detail.page") return "bulk";
@@ -336,6 +336,8 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
+  readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null>();
+  readonly #catalogQueryDevices = new Set<string>();
   /**
    * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
    *
@@ -668,7 +670,9 @@ export class HostService {
    * 目录变化很慢、拉取很贵，而手机端会反复请求——不收敛就会互相堆叠。
    */
   #catalogCache: { at: number; sessions: AgentSessionSummary[] } | undefined;
-  #catalogInFlight: Promise<AgentSessionSummary[]> | undefined;
+  #catalogRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  #catalogRefreshFirstAt = 0;
+  #catalogInFlight: { epoch: number; promise: Promise<AgentSessionSummary[]> } | undefined;
   #catalogEpoch = 0;
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
@@ -745,6 +749,8 @@ export class HostService {
       dispatch: (runtimeId, commandId, command) => {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         const forwarded = { ...command };
+        // Window limits belong to the Host/device transaction; deployed adapters retain their strict command schema.
+        delete forwarded.historyWindow;
         if (!scope || !this.#conversationState.hasBaseline(scope)) delete forwarded.knownState;
         const recovered = scope ? this.#conversationState.recover(scope, forwarded) : undefined;
         if (recovered) {
@@ -903,7 +909,8 @@ export class HostService {
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
-    this.#compactState = new CompactStateModel(agentStateRegistry);
+    this.#compactState = new CompactStateModel(agentStateRegistry,
+      value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND)));
     this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
@@ -1229,12 +1236,11 @@ export class HostService {
       scope,
       identity,
       stateFormat: request.stateFormat,
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, !this.#showsDshDesktop(deviceId)) } : {}),
+      projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(known === undefined ? {} : { known }),
     })) {
-      if (scope.kind === "host") for (const domain of part.domains) {
-        if (domain.value !== null) domain.value = this.#projectHostDomain(deviceId, scope, domain.domain, domain.value) as typeof domain.value;
-      }
       this.#sendToDevice(deviceId, part);
     }
   }
@@ -1630,6 +1636,7 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
@@ -1659,6 +1666,8 @@ export class HostService {
     this.#lan = undefined;
     for (const link of this.#links.values()) link.close();
     this.#links.clear();
+    this.#historyInterests.clear();
+    this.#catalogQueryDevices.clear();
     await this.#loopback?.stop();
     this.#loopback = undefined;
     await this.#relay?.stop();
@@ -1756,6 +1765,8 @@ export class HostService {
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
+    this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
@@ -1893,6 +1904,41 @@ export class HostService {
       if (message.type === "session.launch" || message.type === "session.launch.read") {
         this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
       } else void this.#handleSessionConfiguration(deviceId, message);
+      return;
+    }
+    if (message.type === "session.catalog.capabilities.request") {
+      this.#catalogQueryDevices.add(deviceId);
+      this.#sendToDevice(deviceId, { type: "session.catalog.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1" }); return;
+    }
+    if (message.type === "session.catalog.query") {
+      if (!this.#catalogQueryDevices.has(deviceId)) return;
+      const link = this.#links.get(deviceId);
+      void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
+        if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
+        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#showsDshDesktop(deviceId) ? undefined : "dshDesktop"), protocolVersion: PROTOCOL_VERSION };
+        if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
+          this.#sendToDevice(deviceId, { type: "protocol.error",
+            requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
+        }
+        this.#sendToDevice(deviceId, response);
+      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
+      return;
+    }
+    if (message.type === "session.history.capabilities.request") {
+      this.#historyInterests.set(deviceId, null);
+      this.#sendToDevice(deviceId, { type: "session.history.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1", maxPageBytes: 65536 });
+      return;
+    }
+    if (message.type === "session.history.interest") {
+      const scope = message.runtimeId === null ? undefined : this.#agentFacts.scopeOf(message.runtimeId);
+      const accepted = this.#historyInterests.has(deviceId) && (message.runtimeId === null ||
+        scope?.kind === "agent" && scope.key.sessionId === message.sessionId);
+      if (accepted) this.#historyInterests.set(deviceId, message.runtimeId === null ? null :
+        { runtimeId: message.runtimeId, sessionId: message.sessionId! });
+      this.#sendToDevice(deviceId, { type: "session.history.interest.result", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, accepted });
       return;
     }
     if (message.type === "transport.fields.read") {
@@ -2229,20 +2275,28 @@ export class HostService {
     }
     const epoch = this.#catalogEpoch;
     if (this.#catalogInFlight !== undefined) {
-      const sessions = await this.#catalogInFlight;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      const flight = this.#catalogInFlight;
+      const sessions = await flight.promise;
+      if (flight.epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       return { sessions, cached: true };
     }
     const task = this.#collectCatalogs(epoch);
-    this.#catalogInFlight = task;
+    const flight = { epoch, promise: task };
+    this.#catalogInFlight = flight;
     try {
       const sessions = await task;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      if (epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       this.#catalogCache = { at: Date.now(), sessions };
       this.refreshHostFacts();
       return { sessions, cached: false };
     } finally {
-      if (this.#catalogInFlight === task) this.#catalogInFlight = undefined;
+      if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
     }
   }
 
@@ -2300,7 +2354,20 @@ export class HostService {
   #invalidateCatalog(): void {
     this.#catalogEpoch += 1;
     this.#catalogCache = undefined;
-    this.#catalogInFlight = undefined;
+    // FT-G11: source invalidation must publish without waiting for a periodic
+    // phone read. Coalesce bursts, bounded by the first invalidation's deadline.
+    if (this.#serviceClosed || this.#providerFactsClosing ||
+        !(this.#compactStateSubscriptions?.interestedInCatalog() || this.#agentStateSubscriptions?.interestedInCatalog())) return;
+    const now = Date.now();
+    if (this.#catalogRefreshTimer === undefined) this.#catalogRefreshFirstAt = now;
+    clearTimeout(this.#catalogRefreshTimer);
+    this.#catalogRefreshTimer = setTimeout(() => {
+      this.#catalogRefreshTimer = undefined;
+      if (this.#serviceClosed || this.#providerFactsClosing ||
+          !(this.#compactStateSubscriptions.interestedInCatalog() || this.#agentStateSubscriptions.interestedInCatalog())) return;
+      void this.#catalogWithCache().catch(error => this.#options.log?.(`目录聚合失败：${describeError(error)}`));
+    }, Math.max(0, Math.min(250, this.#catalogRefreshFirstAt + 1_000 - now)));
+    this.#catalogRefreshTimer.unref();
   }
 
   async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
@@ -2657,6 +2724,8 @@ export class HostService {
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
+    this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
@@ -2915,8 +2984,15 @@ export class HostService {
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
     const hidden = hiddenFromLegacy(message);
-    if (message.type === "runtime.event" && (message.event.type === "session.patch" || message.event.type === "session.snapshot")) {
+    const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
+      "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
+    if (message.type === "runtime.event" && chatEvent) {
+      const scope = this.#agentFacts.scopeOf(message.runtimeId);
+      const sessionId = "sessionId" in message.event ? message.event.sessionId : scope?.kind === "agent" ? scope.key.sessionId : undefined;
       for (const [deviceId, link] of this.#links) {
+        const interest = this.#historyInterests.get(deviceId);
+        if (this.#historyInterests.has(deviceId) &&
+            (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
         if (hidden && !this.#showsDshDesktop(deviceId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }

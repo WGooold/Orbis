@@ -347,6 +347,23 @@ internal class HostConnection(
     private val sessionLoads = SessionLoadQueue()
     private val historyPageSize = 30
     private val previewPageSize = 30
+    private val automaticHistoryLock = Any()
+    private val automaticHistoryProgress = mutableMapOf<String, SessionHistoryPrefetch>()
+    @Volatile private var historyWindowRequestId: String? = null
+    @Volatile private var historyWindowSupported = false
+    @Volatile private var visibleHistoryRuntimeId: String? = null
+    @Volatile private var historyInterestTarget: String? = null
+    @Volatile private var historyInterestRequestId: String? = null
+    private val historyReconcileSchedules = java.util.concurrent.ConcurrentHashMap<String, ReadReconcileSchedule>()
+
+    private fun historyReconcileSchedule(runtimeId: String): ReadReconcileSchedule = historyReconcileSchedules.getOrPut(
+        "$runtimeId\u0000${mutableState.value.runtimes[runtimeId]?.sessionId ?: ""}"
+    ) { ReadReconcileSchedule() }
+
+    fun reconcileRuntime(runtimeId: String) {
+        if (visibleHistoryRuntimeId == runtimeId && mutableState.value.selectedRuntimeId == runtimeId &&
+            historyReconcileSchedule(runtimeId).claim(System.currentTimeMillis())) refreshRuntime(runtimeId)
+    }
     private val notificationSyncJobs = mutableMapOf<String, Job>()
     private val sentChangeRequests = mutableSetOf<String>()
     private data class ChangeWindow(val runtimeId: String, val sessionId: String, val epoch: String?,
@@ -531,6 +548,8 @@ internal class HostConnection(
             while (true) {
                 delay(1_000)
                 try {
+                    catalogReads.tick()
+                    advanceCatalogModelRead()
                     relayStateLock.withLock { runSessionSyncScheduler() }
                 } catch (error: CancellationException) {
                     throw error
@@ -545,7 +564,28 @@ internal class HostConnection(
     // 这些消息是设备级 E2E 载荷，与 runtime.command 共用同一条密文 data 通道。
 
     /** 拉取电脑上的全部会话索引，合并进侧栏目录（连接建立后自动调一次）。 */
+    private var catalogFallbackJob: Job? = null
+
     fun refreshSessions() {
+        val current = mutableState.value
+        if (current.agentStateSnapshots.values.any { it.scope == "host" && it.domains["catalog"]?.availability == "ready" }) {
+            refreshHostModel()
+            return
+        }
+        if (catalogFallbackJob?.isActive == true) return
+        val connectionGeneration = generation
+        val paired = device
+        // FT-G11: prefer one model authority. A truly old/unresponsive Host gets
+        // the legacy read after the bounded model wait, not a duplicate bootstrap.
+        catalogFallbackJob = scope.launch {
+            delay(20_000)
+            if (connectionGeneration != generation || paired != device) return@launch
+            if (mutableState.value.agentStateSnapshots.values.none { it.scope == "host" && it.domains["catalog"]?.availability == "ready" })
+                requestLegacySessions()
+        }
+    }
+
+    private fun requestLegacySessions() {
         val requestId = UUID.randomUUID().toString()
         sendSessionPayload(
             requestId = requestId,
@@ -578,8 +618,23 @@ internal class HostConnection(
 
     /** Reads replace the scope's interest; cached versions remain available for reopening. */
     fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) {
-        requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force)
+        catalogReads.retryFailed()
+        val reset = "catalog" in domains && mutableState.value.agentCatalogRange?.error != null
+        if (reset) {
+            catalogPageWanted = catalogVisible; catalogRecovered = false
+            updateState { it.copy(agentCatalogRange = null, agentCatalogRangeRequest = null) }
+        }
+        directoryReconcile.started(System.currentTimeMillis())
+        requestModel("host", (HOME_HOST_MODEL_DOMAINS + domains).distinct(), force = force || reset)
         if ("catalog" in domains) requestCatalogPage()
+    }
+
+    private val directoryReconcile = ReadReconcileSchedule()
+
+    fun reconcileHostModel() {
+        val current = mutableState.value
+        if (current.connection != RelayConnection.ONLINE || !current.e2eReady) return
+        if (directoryReconcile.claim(System.currentTimeMillis())) refreshHostModel()
     }
 
     fun refreshAgentModel(runtimeId: String, force: Boolean = false) {
@@ -599,7 +654,7 @@ internal class HostConnection(
             return
         }
         refreshSessions()
-        refreshHostModel(force = true)
+        refreshHostModel()
         current.runtimes.keys.forEach { refreshAgentModel(it, force = true) }
     }
 
@@ -626,7 +681,7 @@ internal class HostConnection(
         updateState { it.copy(agentStateRequests = it.agentStateRequests - existingReads.keys + requestId,
             agentStateReads = it.agentStateReads - existingReads.keys + (requestId to read)) }
         val snapshot = current.agentStateSnapshots[key]
-        val sent = relay.sendDeviceMessage(buildJsonObject {
+        val body = buildJsonObject {
             put("type", "agent.state.request")
             put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", requestId)
@@ -642,7 +697,9 @@ internal class HostConnection(
                     add(buildJsonObject { put("domain", domain.domain); put("modelEpoch", domain.modelEpoch); put("revision", domain.revision) })
                 }
             })
-        })
+        }
+        val sent = relay.sendDeviceMessage(body)
+        if (sent && modelScope == "host" && "catalog" in domains) catalogModelRead = CatalogModelRead(requestId, body, now)
         if (!sent) updateState { it.failHomeRead(requestId, L10n.tr("会话读取未能发送，请重试")).copy(
             agentStateRequests = it.agentStateRequests - requestId, error = "Model read could not use an authenticated channel") }
         if (sent && modelScope == "agent") scope.launch {
@@ -655,29 +712,115 @@ internal class HostConnection(
         }
     }
 
-    /** Continue a fixed catalog snapshot without mixing versions or pruning omitted pages. */
-    private fun requestCatalogPage() {
+    @Volatile private var catalogVisible = false
+    private data class CatalogModelRead(val id: String, val body: JsonObject, val started: Long, val retried: Boolean = false)
+    @Volatile private var catalogModelRead: CatalogModelRead? = null
+    private fun advanceCatalogModelRead() {
+        val read = catalogModelRead ?: return
         val current = mutableState.value
-        if (current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
+        val owner = current.agentStateReads[read.id]
+        if (owner == null || "catalog" !in owner.pendingDomains || !current.e2eReady) {
+            if (catalogModelRead === read) catalogModelRead = null
+            return
+        }
+        val elapsed = System.currentTimeMillis() - read.started
+        fun failed() = updateState { state ->
+            if (state.agentStateReads[read.id]?.pendingDomains?.contains("catalog") != true) state else {
+                val previous = state.agentStateSnapshots[owner.key]
+                val snapshot = previous?.copy(requestId = read.id, error = "catalog_timeout")
+                    ?: AgentStateSnapshotView(owner.key, "host", read.id, error = "catalog_timeout")
+                state.copy(agentStateRequests = state.agentStateRequests - read.id,
+                    agentStateReads = state.agentStateReads + (read.id to owner.copy(pendingDomains = emptySet())),
+                    agentStateSnapshots = state.agentStateSnapshots + (owner.key to snapshot))
+            }
+        }
+        if (elapsed >= 45_000) { if (catalogModelRead === read) catalogModelRead = null; failed(); return }
+        if (elapsed >= 25_000 && !read.retried && catalogModelRead === read) {
+            catalogModelRead = read.copy(retried = true)
+            if (!relay.sendDeviceMessage(read.body)) { catalogModelRead = null; failed() }
+        }
+    }
+    private var catalogQuery = CatalogQuery()
+    private val catalogReads by lazy {
+        CatalogViewReads(relay::sendDeviceMessage, { result, rows ->
+            updateState { state ->
+                val merged = if (rows.isEmpty()) state.sessions else state.sessions + rows.associate { entry ->
+                    val prior = state.sessions[entry.sessionId]
+                    entry.sessionId to entry.copy(hasHistoryCache = prior?.hasHistoryCache == true, cachedDisplayName = prior?.cachedDisplayName)
+                }
+                state.copy(catalogQuery = result, sessions = merged)
+            }
+            if (rows.isNotEmpty()) scheduleSessionCatalogSave()
+        })
+    }
+
+    fun setCatalogQuery(query: CatalogQuery) {
+        catalogQuery = query
+        catalogReads.setView(query.takeIf { catalogVisible })
+    }
+    @Volatile private var catalogPageWanted = false
+    private var catalogPageJob: Job? = null
+    private var catalogRecovered = false
+
+    fun setCatalogVisible(visible: Boolean) {
+        if (visible && !catalogVisible) catalogRecovered = false
+        catalogVisible = visible
+        catalogReads.setView(catalogQuery.takeIf { visible })
+        if (!visible) {
+            catalogPageWanted = false; catalogPageJob?.cancel()
+            updateState { it.copy(agentCatalogRangeRequest = null) }
+        }
+    }
+
+    fun loadNextCatalogPage() {
+        if (!catalogVisible) return
+        if (catalogReads.supported) { catalogReads.needMore(); return }
+        catalogPageWanted = true
+        requestCatalogPage()
+    }
+
+    /** Continue only a demanded page; the UI requests another when its viewport needs it. */
+    private fun requestCatalogPage() {
+        if (catalogReads.supported) return
+        val current = mutableState.value
+        if (!catalogVisible || current.connection != RelayConnection.ONLINE || current.hostId.isNullOrBlank() || !current.e2eReady) return
         val range = current.agentCatalogRange ?: return
         if (range.error != null) {
+            if (range.error != "snapshot_changed" || catalogRecovered) { catalogPageWanted = false; return }
+            catalogRecovered = true
             updateState { it.copy(agentCatalogRange = null, agentCatalogRangeRequest = null) }
             requestModel("host", listOf("catalog"), force = true)
             return
         }
+        if (!catalogPageWanted || current.agentCatalogRangeRequest != null) return
         val cursor = range.nextCursor ?: return
         val now = System.currentTimeMillis()
-        if (current.agentCatalogRangeRequest?.let { now - it.sentAt < 15_000 } == true) return
         val request = AgentCatalogRangeRequest(UUID.randomUUID().toString(), cursor, range.modelEpoch,
             range.revision, range.snapshotId, range.sessions.size, now)
         updateState { if (it.agentCatalogRange == range) it.copy(agentCatalogRangeRequest = request) else it }
         if (mutableState.value.agentCatalogRangeRequest != request) return
-        val sent = relay.sendDeviceMessage(buildJsonObject {
+        catalogPageWanted = false
+        val body = buildJsonObject {
             put("type", "agent.state.range.request"); put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", request.requestId); put("scope", "host"); put("domain", "catalog")
             put("cursor", cursor); put("limit", 200)
-        })
-        if (!sent) updateState { if (it.agentCatalogRangeRequest == request) it.copy(agentCatalogRangeRequest = null) else it }
+        }
+        if (!relay.sendDeviceMessage(body)) { failCatalogPage(request, "send_failed"); return }
+        catalogPageJob?.cancel()
+        catalogPageJob = scope.launch {
+            delay(20_000)
+            if (mutableState.value.agentCatalogRangeRequest != request || !catalogVisible) return@launch
+            delay(5_000)
+            if (mutableState.value.agentCatalogRangeRequest != request || !catalogVisible) return@launch
+            if (!relay.sendDeviceMessage(body)) { failCatalogPage(request, "send_failed"); return@launch }
+            delay(20_000)
+            failCatalogPage(request, "timeout")
+        }
+    }
+
+    private fun failCatalogPage(request: AgentCatalogRangeRequest, error: String) {
+        updateState { if (it.agentCatalogRangeRequest != request) it else it.copy(agentCatalogRangeRequest = null,
+            agentCatalogRange = it.agentCatalogRange?.copy(error = error)) }
     }
 
     /**
@@ -1255,13 +1398,20 @@ internal class HostConnection(
     }
 
     fun loadOlderHistory(runtimeId: String? = mutableState.value.selectedRuntimeId): HistoryReadAcceptance {
+        runtimeId?.let(::cancelAutomaticHistoryReads)
+        return loadOlderHistory(runtimeId, null)
+    }
+
+    private fun loadOlderHistory(runtimeId: String?, automatic: SessionHistoryPrefetch?): HistoryReadAcceptance {
         val key = runtimeId ?: return HistoryReadAcceptance(rejection = L10n.tr("没有选中的历史窗口"))
         val pairedDevice = device ?: return HistoryReadAcceptance(rejection = L10n.tr("设备尚未配对"))
+        if (automatic != null && !automatic.canContinue) return HistoryReadAcceptance()
         val operationId = UUID.randomUUID().toString()
         var acceptance = HistoryReadAcceptance()
-        updateState { state -> state.beginHistoryRead(key, operationId).also { acceptance = it.acceptance }.state }
+        updateState { state -> state.beginHistoryRead(key, operationId, automatic).also { acceptance = it.acceptance }.state }
         if (acceptance.operationId == null || acceptance.merged) return acceptance
         val operation = mutableState.value.historyReads[operationId] ?: return acceptance
+        if (automatic != null) synchronized(automaticHistoryLock) { automaticHistoryProgress[automatic.scopeId] = automatic }
         val kind = mutableState.value.runtimes[key]?.agentKind ?: mutableState.value.sessions[operation.sessionId]?.agentKind
         val probe = HistoryLoadProbe.start(kind ?: "offline", operation.sessionId, operation.beforeEntryId, "history",
             leafId = operation.leafId, cacheEpoch = operation.cacheEpoch)
@@ -1275,15 +1425,19 @@ internal class HostConnection(
                 probe?.mark("cache_read_begin")
                 val (page, cacheEpoch) = synchronized(sessionGraphStore) {
                     sessionGraphStore.readBranch(pairedDevice, operation.sessionId,
-                        leafId = operation.leafId, beforeEntryId = operation.beforeEntryId, maxEntries = historyPageSize) to
+                        leafId = operation.leafId, beforeEntryId = operation.beforeEntryId,
+                        maxEntries = automatic?.nextMaxEntries ?: historyPageSize) to
                         sessionGraphStore.cacheEpoch(pairedDevice, operation.sessionId)
                 }
                 currentCoroutineContext().ensureActive()
                 probe?.mark("cache_read_end", "entries=${page.entries.size} status=${page.status}")
                 var appliedPhase: HistoryReadPhase? = null
                 updateState { state ->
-                    val next = if (device == pairedDevice) state.applyLocalHistoryRead(operationId, page, cacheEpoch) else state
+                    var next = if (device == pairedDevice) state.applyLocalHistoryRead(operationId, page, cacheEpoch) else state
                     appliedPhase = next.historyReads[operationId]?.phase
+                    if (automatic != null && appliedPhase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED)) {
+                        next = next.recordPrefetchCachePage(operationId, page.entries.size)
+                    }
                     next
                 }
                 when (appliedPhase) {
@@ -1291,12 +1445,24 @@ internal class HostConnection(
                     HistoryReadPhase.END_REACHED -> probe?.mark("local_exhausted")
                     else -> Unit
                 }
-                if (!mutableState.value.ownsHistoryRead(operationId)) return@launch
+                if (!mutableState.value.ownsHistoryRead(operationId)) {
+                    if (automatic != null && appliedPhase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED)) {
+                        val progress = mutableState.value.sessionReads[operationId]?.historyPrefetch?.copy(
+                            beforeEntryId = page.entries.firstOrNull()?.entryId ?: automatic.beforeEntryId,
+                            paused = !page.hasOlder || page.entries.isEmpty())
+                        if (progress != null) {
+                            synchronized(automaticHistoryLock) { automaticHistoryProgress[progress.scopeId] = progress }
+                            mutableState.value.runtimes[key]?.let { startAutomaticHistoryPrefetch(it, progress) }
+                        }
+                    }
+                    return@launch
+                }
                 relayStateLock.withLock {
                     if (!mutableState.value.ownsHistoryRead(operationId)) return@withLock
                     val runtime = mutableState.value.runtimes[key]
                     if (runtime == null || mutableState.value.connection != RelayConnection.ONLINE || !mutableState.value.e2eReady) {
-                        updateState { it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, L10n.tr("本地历史存在缺口，请连接后重试")) }
+                        updateState { if (automatic == null) it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, L10n.tr("本地历史存在缺口，请连接后重试"))
+                            else it.finishHistoryRead(operationId, HistoryReadPhase.CANCELLED) }
                     } else {
                         probe?.mark("remote_requested")
                         requestHistoryRange(pairedDevice, runtime, operation)
@@ -1307,7 +1473,8 @@ internal class HostConnection(
                 throw error
             } catch (error: Exception) {
                 probe?.mark("cache_read_error", "type=${error::class.simpleName}")
-                updateState { it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, L10n.tr("历史缓存读取失败：{0}", error.message)) }
+                updateState { if (automatic == null) it.finishHistoryRead(operationId, HistoryReadPhase.FAILED, L10n.tr("历史缓存读取失败：{0}", error.message))
+                    else it.finishHistoryRead(operationId, HistoryReadPhase.CANCELLED) }
             } finally {
                 // A transferred page is owned by its REMOTE phase, not this local worker.
                 updateState { state -> if (state.historyReads[operationId]?.phase == HistoryReadPhase.LOCAL)
@@ -1322,6 +1489,78 @@ internal class HostConnection(
         return acceptance
     }
 
+    private fun automaticHistoryScope(runtime: RuntimeSummary): String? {
+        val state = mutableState.value
+        val session = runtime.sessionId ?: return null
+        return listOf(state.hostId ?: "", state.deviceId ?: "", runtime.runtimeId, session,
+            (state.sessionBranchGenerations[runtime.runtimeId] ?: 0).toString(), state.sessionGraphs[session]?.cacheEpoch ?: "",
+            state.sessionHistory[runtime.runtimeId]?.oldestEntryId ?: "").joinToString("\u0000")
+    }
+
+    private fun startAutomaticHistoryPrefetch(runtime: RuntimeSummary, continued: SessionHistoryPrefetch? = null) {
+        val state = mutableState.value
+        if (visibleHistoryRuntimeId != runtime.runtimeId || !historyWindowSupported || !shouldConnect || state.connection != RelayConnection.ONLINE || !state.e2eReady ||
+            state.selectedRuntimeId != runtime.runtimeId || state.selectedOfflineSessionId != null ||
+            state.sessionHistory[runtime.runtimeId]?.hasOlder != true) return
+        val scopeId = automaticHistoryScope(runtime) ?: return
+        if (continued != null && continued.scopeId != scopeId) return
+        if (state.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId } ||
+            state.sessionReads.values.any { it.historyKey == runtime.runtimeId && it.phase.active &&
+                it.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH) }) return
+        val progress = synchronized(automaticHistoryLock) {
+            continued ?: state.sessionReads.values.lastOrNull { it.historyPrefetch?.scopeId == scopeId &&
+                it.phase in setOf(SessionReadPhase.FAILED, SessionReadPhase.CANCELLED) }?.historyPrefetch?.takeIf { it.paused }
+                ?: automaticHistoryProgress[scopeId] ?: SessionHistoryPrefetch(scopeId,
+                state.sessionHistory[runtime.runtimeId]?.leafId ?: runtime.sessionLeafId,
+                beforeEntryId = state.sessionHistory[runtime.runtimeId]?.oldestEntryId)
+        }
+        if (progress.canContinue) loadOlderHistory(runtime.runtimeId, progress)
+    }
+
+    private fun cancelAutomaticHistoryReads(runtimeId: String) {
+        updateState { state ->
+            val operations = state.sessionReads.values.filter { it.historyKey == runtimeId &&
+                it.kind == SessionReadKind.PREFETCH && it.phase.active }.map { it.operationId }.toSet()
+            val ids = state.sessionSyncCommands.filterValues { it.historyOperationId in operations }.keys
+            val stopped = operations.fold(state) { next, id ->
+                val task = state.sessionSyncCommands.values.firstOrNull { it.historyOperationId == id }
+                val spent = next.spendPrefetchAttempts(id, task?.attempts ?: 0)
+                spent.sessionReads[id]?.historyPrefetch?.let { budget ->
+                    synchronized(automaticHistoryLock) { automaticHistoryProgress[budget.scopeId] = budget }
+                }
+                spent.finishHistoryRead(id, SessionReadPhase.CANCELLED)
+            }
+            stopped.copy(sessionSyncCommands = stopped.sessionSyncCommands - ids, pendingCommands = stopped.pendingCommands - ids)
+        }
+    }
+
+    fun setHistoryWindowVisible(runtimeId: String, visible: Boolean) {
+        if (visible) {
+            visibleHistoryRuntimeId = runtimeId
+            mutableState.value.runtimes[runtimeId]?.let(::startAutomaticHistoryPrefetch)
+        } else if (visibleHistoryRuntimeId == runtimeId) {
+            visibleHistoryRuntimeId = null
+            cancelAutomaticHistoryReads(runtimeId)
+        }
+        sendHistoryInterest()
+    }
+
+    private fun sendHistoryInterest() {
+        if (!historyWindowSupported || !mutableState.value.e2eReady) return
+        val state = mutableState.value
+        val runtime = visibleHistoryRuntimeId?.takeIf { it == state.selectedRuntimeId }?.let { state.runtimes[it] }
+            ?.takeIf { it.sessionId != null }
+        val target = runtime?.let { "${it.runtimeId}\u0000${it.sessionId}" } ?: "closed"
+        if (historyInterestTarget == target) return
+        val requestId = UUID.randomUUID().toString()
+        if (relay.sendDeviceMessage(buildJsonObject {
+            put("type", "session.history.interest"); put("protocolVersion", PROTOCOL_VERSION)
+            put("requestId", requestId)
+            put("runtimeId", runtime?.runtimeId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+            put("sessionId", runtime?.sessionId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+        })) { historyInterestTarget = target; historyInterestRequestId = requestId }
+    }
+
     private fun requestHistoryRange(
         pairedDevice: DeviceCredential,
         runtime: RuntimeSummary,
@@ -1332,67 +1571,14 @@ internal class HostConnection(
             runtime.runtimeId, operation.sessionId, UUID.randomUUID().toString(), range = "history",
             targetLeafId = operation.leafId, beforeEntryId = operation.beforeEntryId, viewLeafId = operation.leafId,
             branchGeneration = operation.branchGeneration, connectionGeneration = generation,
-            historyOperationId = operation.operationId,
+            historyOperationId = operation.operationId, historyPrefetch = operation.historyPrefetch,
         )
         sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
         updateState { state -> if (state.historyReads[operation.operationId]?.phase == HistoryReadPhase.LOCAL)
             state.finishHistoryRead(operation.operationId, HistoryReadPhase.FAILED, L10n.tr("历史请求未能加入同步队列，请重试")) else state }
     }
-    private fun startBranchCatchUp(
-        pairedDevice: DeviceCredential,
-        runtime: RuntimeSummary,
-        fixedTarget: String? = runtime.sessionLeafId,
-        completedRange: PendingSessionSync? = null,
-    ) {
-        val sessionId = runtime.sessionId ?: return
-        if (runCatching { prepareSessionCache(pairedDevice, sessionId, runtime.agentKind) }.getOrElse {
-                reportSessionLoadFailure(runtime.runtimeId, it)
-                return
-            }) return
-        val current = mutableState.value
-        if (device != pairedDevice || !shouldConnect || current.runtimes[runtime.runtimeId]?.sessionId != sessionId ||
-            runtime.runtimeId in current.sessionSyncFailures) return
-        if (sessionRangeFailureKey(runtime.runtimeId, "catchup") in current.sessionRangeFailures) return
-        if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId && it.range == "catchup" }) return
-        var acceptance = SessionReadAcceptance()
-        updateState { it.beginSessionRead(runtime.runtimeId, SessionReadKind.CATCHUP,
-            UUID.randomUUID().toString(), fixedTarget).also { start -> acceptance = start.acceptance }.state }
-        val operationId = acceptance.operationId ?: return
-        val operation = mutableState.value.sessionReads[operationId] ?: return
-        val targetLeafId = operation.leafId
-        if (targetLeafId == null) {
-            updateState { it.finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED) }
-            return
-        }
-        val (gap, cacheEpoch) = try {
-            synchronized(sessionGraphStore) {
-                sessionGraphStore.planCatchUp(pairedDevice, sessionId, targetLeafId) to
-                    sessionGraphStore.cacheEpoch(pairedDevice, sessionId)
-            }
-        } catch (error: Exception) {
-            failLocalSessionRead(operationId, error)
-            return
-        }
-        updateState { it.observeCatchupCoverage(operationId, completedRange, gap, cacheEpoch) }
-        if (gap == null) {
-            if (mutableState.value.sessionReads[operationId]?.phase != SessionReadPhase.SUCCEEDED) return
-            val latest = mutableState.value.runtimes[runtime.runtimeId]
-            if (latest?.sessionId == sessionId && latest.sessionLeafId != targetLeafId)
-                scheduleSessionGraphLoad(pairedDevice, listOf(latest))
-            return
-        }
-        if (!mutableState.value.ownsHistoryRead(operationId)) return
-        val pending = PendingSessionSync(
-            runtimeId = runtime.runtimeId, sessionId = sessionId, syncId = UUID.randomUUID().toString(),
-            range = "catchup", targetLeafId = targetLeafId, knownLeafId = gap.knownLeafId,
-            requestTargetLeafId = gap.targetLeafId, viewLeafId = runtime.sessionLeafId,
-            branchGeneration = operation.branchGeneration,
-            connectionGeneration = generation, historyOperationId = operationId,
-        )
-        sendSessionSync(pairedDevice, newSessionSyncCommandId(), pending)
-    }
-
     private fun sendSessionSync(pairedDevice: DeviceCredential, commandId: String, pending: PendingSessionSync) {
+        sendHistoryInterest()
         val agentKind = mutableState.value.runtimes[pending.runtimeId]?.agentKind
             ?: mutableState.value.sessions[pending.sessionId]?.agentKind
         if (prepareSessionCache(pairedDevice, pending.sessionId, agentKind)) return
@@ -1433,6 +1619,9 @@ internal class HostConnection(
                             operationId, SessionReadPhase.FAILED, L10n.tr("本地首屏存在缺口，等待源端恢复"),
                         )
                     }
+                }
+                if (mutableState.value.sessionReads[operationId]?.phase == SessionReadPhase.SUCCEEDED) {
+                    startAutomaticHistoryPrefetch(runtime)
                 }
             } catch (error: CancellationException) {
                 updateState { it.finishHistoryRead(operationId, SessionReadPhase.CANCELLED) }
@@ -2501,6 +2690,27 @@ internal class HostConnection(
                     }
                 }
                 val incomingRead = incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull?.let { mutableState.value.agentStateReads[it] }
+                if (interactiveChannel != null && incomingMessage != null && catalogReads.consume(incomingMessage)) {
+                    if (catalogReads.supported) {
+                        catalogPageWanted = false; catalogPageJob?.cancel()
+                        updateState { it.copy(agentCatalogRangeRequest = null) }
+                    }
+                    continue
+                }
+                if (interactiveChannel != null && historyInterestRequestId != null && incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull == historyInterestRequestId) {
+                    if (incomingMessage?.get("accepted")?.jsonPrimitive?.booleanOrNull != true) historyInterestTarget = null
+                    historyInterestRequestId = null
+                    continue
+                }
+                if (interactiveChannel != null && historyWindowRequestId != null && incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull == historyWindowRequestId) {
+                    historyWindowSupported = incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "session.history.capabilities" &&
+                        incomingMessage?.get("format")?.jsonPrimitive?.contentOrNull == "v1" &&
+                        incomingMessage?.get("maxPageBytes")?.jsonPrimitive?.intOrNull == 65536
+                    historyWindowRequestId = null
+                    sendHistoryInterest()
+                    if (historyWindowSupported) mutableState.value.selectedRuntimeId?.let { mutableState.value.runtimes[it] }?.let(::startAutomaticHistoryPrefetch)
+                    continue
+                }
                 if (interactiveChannel != null && incomingMessage != null && incomingRead?.needsLegacyRetry(incomingMessage) == true) {
                     if (incomingRead.stateFormat == "compact-v2") preferDeltaState = false else preferCompactState = false
                     if (incomingRead.scope == "host") refreshHostModel(force = true)
@@ -2539,7 +2749,7 @@ internal class HostConnection(
                 if (sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "session.snapshot") {
                     // 单帧失败不能让消费协程死掉（scope 里的未捕获异常会崩进程）。
                     runCatching {
-                        handleSessionSnapshotPayload(payload, currentGeneration)
+                        handleSessionSnapshotPayload(payload, currentGeneration, interactive.payload.toByteArray(Charsets.UTF_8).size)
                         if (incomingMessage != null && wireRuntime != null) {
                             val applied = mutableState.value.conversations[wireRuntime]
                             if (applied != null && applied.revision != wirePrevious?.revision)
@@ -2662,6 +2872,17 @@ internal class HostConnection(
                                         }
                                     }
                                 }
+                                if (incomingRead?.scope == "host" && messageType == "agent.state.snapshot" &&
+                                    incomingMessage?.get("scope")?.jsonPrimitive?.contentOrNull == "host" &&
+                                    ((incomingMessage["domains"] as? JsonArray)?.any {
+                                        (it as? JsonObject)?.get("domain")?.jsonPrimitive?.contentOrNull == "catalog"
+                                    } == true || (incomingMessage["unchanged"] as? JsonArray)?.any {
+                                        it.jsonPrimitive.contentOrNull == "catalog"
+                                    } == true) &&
+                                    next.agentStateSnapshots[incomingRead.key]?.let { snapshot ->
+                                        snapshot.requestId == incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull &&
+                                            snapshot.error == null && "catalog" in snapshot.domains
+                                    } == true) directoryReconcile.confirmed(System.currentTimeMillis())
                                 if (interactiveChannel != null && messageType == "provider.result" &&
                                     previous.agentProviders.requestId != null &&
                                     previous.agentProviders.requestId == message?.get("requestId")?.jsonPrimitive?.contentOrNull &&
@@ -2702,6 +2923,8 @@ internal class HostConnection(
                     }
                     if (incomingMessage != null && wireRuntime != null) {
                         val applied = mutableState.value.conversations[wireRuntime]
+                        if (applied?.sourceEpoch != null && applied.sourceReady && applied.sourceSeq != wirePrevious?.sourceSeq)
+                            historyReconcileSchedule(wireRuntime).confirmed(System.currentTimeMillis())
                         if (applied != null && applied.revision != wirePrevious?.revision)
                             sharedSessionContent.remember(incomingMessage, applied.sourceEpoch, applied.sourceSeq)
                     }
@@ -2710,6 +2933,14 @@ internal class HostConnection(
                     // Host 已上线：自动拉一次全量会话索引刷新侧栏
                     // （spec §8 L1 的前提——手机得先知道有哪些会话可继续）。重连后也会重新拉。
                     if (deviceReadyArrived && currentGeneration == generation) {
+                        catalogReads.connect()
+                        historyWindowSupported = false
+                        historyInterestTarget = null
+                        historyWindowRequestId = UUID.randomUUID().toString()
+                        relay.sendDeviceMessage(buildJsonObject {
+                            put("type", "session.history.capabilities.request"); put("protocolVersion", PROTOCOL_VERSION)
+                            put("requestId", historyWindowRequestId!!)
+                        })
                         menuOptions.cancel()
                         sharedSessionContent.clear()
                         preferCompactState = true
@@ -2745,6 +2976,8 @@ internal class HostConnection(
                                 sessionEvent?.get("type")?.jsonPrimitive?.contentOrNull == "runtime.metadata"
                             }
                         changedRuntimeId?.let { refreshAgentModel(it) }
+                        mutableState.value.agentCatalogRange?.let { catalogReads.sourceChanged(it.modelEpoch, it.revision) }
+                        if (!catalogReads.supported && catalogVisible) catalogPageWanted = true
                         requestCatalogPage()
                     }
                     // 调度器故障不能拖垮整个帧消费循环：丢帧只该让这一轮重传，不该让 App 崩。
@@ -2924,7 +3157,7 @@ internal class HostConnection(
      * suspends the connection's single event consumer so later deltas cannot overtake the snapshot;
      * SQLite work still runs off the main thread because that consumer uses Dispatchers.IO.
      */
-    private suspend fun handleSessionSnapshotPayload(payload: String, connectionGeneration: Int) {
+    private suspend fun handleSessionSnapshotPayload(payload: String, connectionGeneration: Int, responseBytes: Int) {
         val decoded = runCatching {
             val outer = messageJson.parseToJsonElement(payload).jsonObject
             val event = outer["event"]?.jsonObject ?: error("session_event_missing")
@@ -2975,6 +3208,10 @@ internal class HostConnection(
             }
             if (expectedResponseTarget != null && expectedResponseTarget != responseTargetLeafId) {
                 updateState { it.failSessionSync(pendingCommandId, L10n.tr("Session 响应目标不匹配，请重试")) }
+                return@withLock
+            }
+            if (pending.historyPrefetch != null && responseBytes > pending.historyPrefetch.nextMaxBytes) {
+                updateState { it.failSessionSync(pendingCommandId, "history_window_byte_limit") }
                 return@withLock
             }
             // Keep the ownership check and the SQLite transaction in the same critical
@@ -3036,6 +3273,17 @@ internal class HostConnection(
                     .getOrElse { latest.copy(error = L10n.tr("收到无效的 Session 历史快照")) }
                     .also { next = it }
             }
+            if (pending.historyPrefetch != null && pending.historyOperationId != null &&
+                pendingCommandId !in next.sessionSyncCommands &&
+                next.sessionReads[pending.historyOperationId]?.phase in setOf(SessionReadPhase.SUCCEEDED, SessionReadPhase.END_REACHED)) {
+                updateState { latest -> latest.recordPrefetchResponse(pending.historyOperationId,
+                    snapshot.entries.size, responseBytes, pending.attempts).also { next = it } }
+                next.sessionReads[pending.historyOperationId]?.historyPrefetch?.copy(
+                    beforeEntryId = snapshot.entries.firstOrNull()?.entryId ?: pending.beforeEntryId,
+                    paused = snapshot.hasOlder != true || snapshot.entries.isEmpty())?.let { progress ->
+                    synchronized(automaticHistoryLock) { automaticHistoryProgress[progress.scopeId] = progress }
+                }
+            }
             probe?.mark("snapshot_applied", "accepted=${pendingCommandId !in next.sessionSyncCommands} loading=${next.sessionHistory[runtimeId]?.loading} error=${next.conversations[runtimeId]?.chatSyncError != null}")
             flushToolRequests()
             // ADR-0037 §4：先落库再回执。Host 只有收到它才会把这次事务当作 committed。
@@ -3045,17 +3293,14 @@ internal class HostConnection(
                 }
             }
             val runtime = next.runtimes[runtimeId]
-            if (runtime != null && runtime.sessionId == pending.sessionId &&
-                pending.branchGeneration == (next.sessionBranchGenerations[runtimeId] ?: 0) &&
-                snapshot.rangeStatus in setOf(null, "complete", "older_available", "limit_reached")) {
-                // Finish the fixed logical target, reusing any suffix a preview/history already
-                // committed. Only after coverage reaches it may a newer live tail start a round.
-                val fixedTarget = pending.targetLeafId.takeIf { pending.range == "catchup" }
-                if (fixedTarget != null && !sessionGraphStore.hasContinuousCoverage(pairedDevice, pending.sessionId, fixedTarget)) {
-                    startBranchCatchUp(pairedDevice, runtime, fixedTarget, completedRange = pending)
-                } else {
-                    startBranchCatchUp(pairedDevice, runtime)
-                }
+            if (pending.range == "preview" && pendingCommandId !in next.sessionSyncCommands &&
+                next.appliedSessionState(runtimeId) != null) historyReconcileSchedule(runtimeId).confirmed(System.currentTimeMillis())
+            if (runtime != null && pendingCommandId !in next.sessionSyncCommands && pending.range == "preview") {
+                startAutomaticHistoryPrefetch(runtime)
+            } else if (runtime != null && pending.historyPrefetch != null && pending.historyOperationId != null &&
+                next.sessionReads[pending.historyOperationId]?.phase == SessionReadPhase.SUCCEEDED) {
+                val progress = synchronized(automaticHistoryLock) { automaticHistoryProgress[pending.historyPrefetch.scopeId] }
+                if (snapshot.hasOlder == true && progress != null) startAutomaticHistoryPrefetch(runtime, progress)
             }
             if (previous.sessions != next.sessions) {
                 scheduleSessionCatalogSave()
@@ -3366,9 +3611,10 @@ internal class HostConnection(
                 runtimeId = pending.runtimeId, sessionId = pending.sessionId, syncId = pending.syncId,
                 knownLeafId = pending.knownLeafId, targetLeafId = pending.requestTargetLeafId,
                 beforeEntryId = pending.beforeEntryId,
-                maxEntries = if (pending.range == "history") historyPageSize else previewPageSize,
+                maxEntries = pending.historyPrefetch?.nextMaxEntries ?: if (pending.range == "history") historyPageSize else previewPageSize,
                 range = pending.range, commandId = commandId,
                 knownState = pending.knownState,
+                historyPrefetch = pending.historyPrefetch,
             ) }.getOrNull()
             // A temporary lack of path consumes an attempt; the bounded policy owns retry timing.
             Log.i(RELOAD_TRACE_TAG, "session.sync.send syncId=${pending.syncId} range=${pending.range} attempt=${pending.attempts} sent=${sent != null}")
@@ -3397,9 +3643,6 @@ internal class HostConnection(
                 ?: continue
             val sessionId = runtime.sessionId ?: continue
             if (runtime.runtimeId != mutableState.value.selectedRuntimeId) {
-                val recovery = mutableState.value.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
-                if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
-                else startBranchCatchUp(pairedDevice, runtime)
                 continue
             }
             prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
@@ -3429,8 +3672,6 @@ internal class HostConnection(
                 if (current.sessionSyncCommands.values.any { it.runtimeId == runtime.runtimeId }) return@withLock
                 val recovery = current.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
                 if (recovery != null) sendSessionSync(pairedDevice, newSessionSyncCommandId(), recovery)
-                else if (current.conversations[runtime.runtimeId]?.hasLiveSnapshot == true)
-                    startBranchCatchUp(pairedDevice, current.runtimes[runtime.runtimeId] ?: runtime)
             }
         }
     }

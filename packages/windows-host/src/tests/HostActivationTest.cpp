@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QScopeGuard>
+#include <QSemaphore>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -413,6 +414,57 @@ private slots:
         controller.receiveLine({{"event", "state"}, {"state", "connected"}});
         QTest::qWait(300);
         QCOMPARE(requests("/v1/registration/host-key").size(), 1);
+    }
+
+    void hostKeyRecoveryWaitsForRejectedCredentialPersistence_data() {
+        QTest::addColumn<bool>("running");
+        QTest::newRow("paused") << false;
+        QTest::newRow("running") << true;
+    }
+    void hostKeyRecoveryWaitsForRejectedCredentialPersistence() {
+        // HOST-ACT-17: Relay policy can arrive before a slow secure-store invalidation. Once that
+        // write settles, recover immediately without the polling timer; only a running Host resumes,
+        // and its actual bridge start must receive the replacement credential for this Relay.
+        QFETCH(bool, running);
+        m_hostKeyRecovery = true;
+        QTemporaryDir temp;
+        const auto cleanup = qScopeGuard([&] { clearCredentials(temp.path()); });
+        authenticationBridge(temp.path());
+        const auto path = temp.path() + "/activation.dat";
+        QVERIFY(CredentialStore::save(path, activation("")));
+        HostController controller(temp.path(), temp.path(), temp.path() + "/state", temp.path(), false);
+        QTRY_VERIFY(controller.m_nextId > 1 && !controller.busy()); controller.m_tick.stop();
+        controller.m_settings.setValue("runHost", running);
+        controller.m_bridgeReady = true; controller.m_hostPub = "pub-one";
+        controller.m_desiredRunning = running;
+        QSemaphore entered, release;
+        bool held = true;
+        const auto drain = qScopeGuard([&] {
+            if (held) release.release();
+            controller.m_activationPool.waitForDone();
+        });
+        controller.m_activationPool.start([&] { entered.release(); release.acquire(); });
+        QVERIFY(entered.tryAcquire(1, 5000));
+        controller.receiveLine({{"event", "state"}, {"state", "error"}, {"activationRequired", true}});
+        QTRY_VERIFY(controller.m_hostKeyRecovery);
+        QCOMPARE(controller.m_activationIO, 1);
+        QVERIFY(requests("/v1/registration/recovery-challenge").isEmpty());
+        release.release(); held = false;
+        QTRY_VERIFY_WITH_TIMEOUT(controller.activated(), 3000);
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.m_credential, QString("orbis_host_recovered"));
+        QCOMPARE(CredentialStore::load(path).value("credential").toString(), QString("orbis_host_recovered"));
+        QCOMPARE(requests("/v1/registration/recovery-challenge").size(), 1);
+        QCOMPARE(controller.desiredRunning(), running);
+        const auto startsPath = temp.path() + "/packages/host/dist/starts.jsonl";
+        if (running) {
+            QTRY_VERIFY(QFile::exists(startsPath));
+            const auto starts = contents(startsPath).trimmed().split('\n');
+            QCOMPARE(starts.size(), 1);
+            const auto params = QJsonDocument::fromJson(starts.first()).object();
+            QCOMPARE(params.value("relayUrl").toString(), relayUrl());
+            QCOMPARE(params.value("credential").toString(), QString("orbis_host_recovered"));
+        } else QVERIFY(!QFile::exists(startsPath));
     }
 
     void unrestorableHostActivatesAsANewComputer() {

@@ -4,7 +4,7 @@ enum SessionReadPhase: String {
     case queued, local, remote, waiting, succeeded, endReached, failed, cancelled, superseded
     var active: Bool { [.queued, .local, .remote, .waiting].contains(self) }
 }
-enum SessionReadKind: String { case firstPage, source, history, catchup }
+enum SessionReadKind: String { case firstPage, source, history, prefetch, catchup }
 
 /// A window and its source namespace, distinct from both connection and wire transaction IDs.
 struct SessionReadOwner: Equatable {
@@ -30,6 +30,8 @@ struct SessionReadOperation: Identifiable {
     var lastCommandId: String?
     var error: String?
     var lastGap: SessionCatchupGap?
+    var historyPrefetch: SessionHistoryPrefetch?
+    var prefetchNetworkCommitted = false
 }
 struct SessionReadAcceptance {
     let operationId: String?
@@ -69,10 +71,10 @@ struct SessionReadOperations {
         let owner = operation.owner
         guard owner.hostKey == current.hostKey, owner.deviceId == current.deviceId, owner.historyKey == current.historyKey,
               owner.sessionId == current.sessionId, owner.branchGeneration == current.branchGeneration else { return false }
-        if operation.kind == .history || operation.kind == .catchup || operation.kind == .firstPage && owner.cacheEpoch != nil {
+        if operation.kind == .history || operation.kind == .prefetch || operation.kind == .catchup || operation.kind == .firstPage && owner.cacheEpoch != nil {
             guard owner.cacheEpoch == current.cacheEpoch else { return false }
         }
-        if operation.kind == .history || operation.kind == .firstPage { guard current.selected else { return false } }
+        if operation.kind == .history || operation.kind == .prefetch || operation.kind == .firstPage { guard current.selected else { return false } }
         if operation.phase == .remote || ([.source, .catchup].contains(operation.kind) && [.queued, .waiting].contains(operation.phase)) {
             guard owner.connectionGeneration == current.connectionGeneration else { return false }
         }
@@ -84,6 +86,7 @@ struct SessionReadOperations {
         demands[historyKey] = next; return next
     }
     mutating func begin(kind: SessionReadKind, owner: SessionReadOwner, targetLeafId: String?, beforeEntryId: String? = nil,
+                        historyPrefetch: SessionHistoryPrefetch? = nil,
                         id: String = UUID().uuidString, now: Date = Date()) -> SessionReadAcceptance {
         reconcile(owner)
         if let existing = latest(historyKey: owner.historyKey, kind: kind), existing.phase.active {
@@ -92,10 +95,11 @@ struct SessionReadOperations {
         guard !owner.sessionId.isEmpty, !owner.hostKey.isEmpty, operations.values.filter({ $0.phase.active }).count < activeLimit else {
             return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("会话读取归属无效或任务已满"))
         }
-        if kind == .history, beforeEntryId == nil { return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("历史首屏尚未就绪")) }
+        if [.history, .prefetch].contains(kind), beforeEntryId == nil { return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("历史首屏尚未就绪")) }
         let operation = SessionReadOperation(id: id, kind: kind, owner: owner, targetLeafId: targetLeafId, beforeEntryId: beforeEntryId,
             demandGeneration: demands[owner.historyKey] ?? 0, startedAt: now,
-            phase: kind == .history || kind == .firstPage ? .local : .queued)
+            phase: kind == .history || kind == .prefetch || kind == .firstPage ? .local : .queued,
+            historyPrefetch: historyPrefetch)
         guard ownerValid(operation, current: owner), operations[id] == nil else { return SessionReadAcceptance(operationId: nil, merged: false, rejection: L10n.tr("读取归属已经失效")) }
         operations[id] = operation; order.append(id); prune()
         return SessionReadAcceptance(operationId: id, merged: false, rejection: nil)
@@ -123,10 +127,10 @@ struct SessionReadOperations {
             finish(id, phase: .succeeded); return .apply(page)
         }
         if page.complete && !page.hasOlder && page.entries.isEmpty && page.status == .complete {
-            finish(id, phase: operation.kind == .history ? .endReached : .succeeded); return .apply(page)
+            finish(id, phase: [.history, .prefetch].contains(operation.kind) ? .endReached : .succeeded); return .apply(page)
         }
         operations[id]?.phase = .waiting
-        if operation.kind == .history, let boundary = operation.beforeEntryId { return .requestHistory(before: boundary, target: operation.targetLeafId) }
+        if [.history, .prefetch].contains(operation.kind), let boundary = operation.beforeEntryId { return .requestHistory(before: boundary, target: operation.targetLeafId) }
         return .requestSource
     }
     mutating func committedRemoteResult(_ id: String, commandId: String, page: SessionHistoryPage,
@@ -151,24 +155,35 @@ struct SessionReadOperations {
             finish(id, phase: .succeeded); return .apply(page)
         }
         guard page.displayComplete, page.status == .complete || page.status == .olderAvailable else { finish(id, phase: .failed, error: L10n.tr("历史范围或显示结果不完整")); return .none }
-        if operation.kind == .history, page.entries.first?.entryId == operation.beforeEntryId { finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none }
+        if [.history, .prefetch].contains(operation.kind), page.entries.first?.entryId == operation.beforeEntryId { finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none }
         if page.entries.isEmpty && (!page.complete || page.hasOlder) { finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none }
-        finish(id, phase: page.entries.isEmpty && operation.kind == .history ? .endReached : .succeeded)
+        finish(id, phase: page.entries.isEmpty && [.history, .prefetch].contains(operation.kind) ? .endReached : .succeeded)
         return .apply(page)
+    }
+    mutating func recordPrefetchResponse(_ id: String, entries: Int, jsonBytes: Int, attempts: Int) {
+        guard let current = operations[id]?.historyPrefetch else { return }
+        operations[id]?.historyPrefetch = current.addingResponse(entries: entries, jsonBytes: jsonBytes, attempts: attempts)
+        operations[id]?.prefetchNetworkCommitted = true
+    }
+    mutating func recordPrefetchCachePage(_ id: String, entries: Int) {
+        guard let current = operations[id]?.historyPrefetch else { return }
+        operations[id]?.historyPrefetch = current.addingCachedEntries(entries)
+        operations[id]?.prefetchNetworkCommitted = false
     }
     mutating func finish(_ id: String, phase: SessionReadPhase, error: String? = nil) {
         guard !phase.active, operations[id]?.phase.active == true else { return }
         operations[id]?.phase = phase; operations[id]?.error = error; operations[id]?.commandId = nil; prune()
     }
     mutating func cancelForeground(except historyKey: String? = nil) {
-        for id in order where operations[id]?.owner.historyKey != historyKey && [.firstPage, .history].contains(operations[id]?.kind) { finish(id, phase: .cancelled) }
+        for id in order where operations[id]?.owner.historyKey != historyKey && [.firstPage, .history, .prefetch].contains(operations[id]?.kind) { finish(id, phase: .cancelled) }
     }
     mutating func recoverLate(_ id: String, commandId: String, current: SessionReadOwner, newId: String = UUID().uuidString) -> String? {
         guard let old = operations[id], old.phase == .failed, old.lastCommandId == commandId, operations[newId] == nil,
               operations.values.filter({ $0.phase.active }).count < activeLimit, latest(historyKey: old.owner.historyKey, kind: old.kind)?.id == id,
               ownerValid(old, current: current), old.owner.connectionGeneration == current.connectionGeneration else { return nil }
         var recovery = SessionReadOperation(id: newId, kind: old.kind, owner: old.owner, targetLeafId: old.targetLeafId,
-            beforeEntryId: old.beforeEntryId, demandGeneration: old.demandGeneration, startedAt: Date(), phase: .remote)
+            beforeEntryId: old.beforeEntryId, demandGeneration: old.demandGeneration, startedAt: Date(), phase: .remote,
+            historyPrefetch: old.historyPrefetch, prefetchNetworkCommitted: old.prefetchNetworkCommitted)
         recovery.commandId = commandId; recovery.lastCommandId = commandId
         operations[newId] = recovery; order.append(newId); prune(); return newId
     }

@@ -145,6 +145,21 @@ internal fun ingestSessionSnapshot(
     // Leave rejected/unknown boundaries to the reducer; neither can modify persistent rows.
     if (!gate.cacheAllowed) return CommittedSessionBatch(emptyList())
     val cacheOnly = pending.range != "preview"
+    if (pending.historyPrefetch != null) {
+        require(snapshot.entries.size <= pending.historyPrefetch.nextMaxEntries) { "history_window_count_exceeded" }
+        require(snapshot.rangeStatus in setOf("complete", "older_available", "limit_reached")) { "history_window_range_invalid" }
+        val boundaryId = requireNotNull(pending.beforeEntryId)
+        val boundary = store.readEntries(device, snapshot.sessionId, listOf(boundaryId)).singleOrNull()
+        requireNotNull(boundary) { "history_window_boundary_missing" }
+        var parent: String? = null
+        snapshot.entries.forEachIndexed { index, entry ->
+            if (index > 0) require(entry.parentId == parent) { "history_window_gap" }
+            require(entry.entryId != boundaryId) { "history_window_not_advancing" }
+            parent = entry.entryId
+        }
+        require(parent == boundary.parentId) { "history_window_boundary_gap" }
+        require(snapshot.entries.isNotEmpty() || snapshot.hasOlder == false) { "history_window_not_advancing" }
+    }
     val observed = if (cacheOnly) null else
         (pending.targetLeafId ?: snapshot.targetLeafId ?: snapshot.cursor.leafId)?.takeIf { id ->
             snapshot.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)

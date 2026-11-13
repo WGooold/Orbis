@@ -19,6 +19,13 @@ vi.mock("./dsh-web-client.js", () => ({ DshWebClient: { connect: web.connect } }
 vi.mock("./dsh-web-provider.js", async original => ({
   ...await original<typeof import("./dsh-web-provider.js")>(), applyDshWebProvider: web.apply,
 }));
+// Installation lifecycle tests own their PATH; the runner's registry/login shell must not
+// select a different Node or Agent. Environment merging is covered by login-shell-env.test.ts.
+vi.mock("./login-shell-env.js", async original => ({
+  ...await original<typeof import("./login-shell-env.js")>(),
+  adoptLoginShellEnvironment: vi.fn().mockResolvedValue(false),
+  adoptWindowsEnvironment: vi.fn().mockResolvedValue(false),
+}));
 import { agentEntries, agentPackages } from "./agent-installation.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
 import { resolveCodexCommand } from "./codex-daemon.js";

@@ -140,7 +140,8 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
         }
         var updated = task.copy(slow = elapsed >= SLOW_AFTER_MS)
         val retryDelay = RETRY_DELAY_MS.getOrNull(task.attempts - 1)
-        if (retryDelay != null && now - task.sentAt >= retryDelay) {
+        val attemptLimit = task.historyPrefetch?.maxAttempts ?: (RETRY_DELAY_MS.size + 1)
+        if (task.attempts < attemptLimit && retryDelay != null && now - task.sentAt >= retryDelay) {
             updated = updated.copy(attempts = task.attempts + 1, sentAt = now)
             send += SessionSyncDispatch(id, updated)
         }

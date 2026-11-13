@@ -4,9 +4,26 @@ import { z } from "zod";
 import {
   AgentKeySchema, AgentStateRequestSchema, AgentStateSnapshotSchema, DiagnosticRecordSchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema, agentKeyId, domainStateConfirmsAbsence, domainStateSchema,
-  HostProviderSummarySchema,
+  HostProviderSummarySchema, CatalogQueryRequestSchema,
 } from "./agent-state.js";
-import { PROTOCOL_VERSION } from "./index.js";
+import { DeviceE2ePayloadSchema, RelayToDeviceMessageSchema, PROTOCOL_VERSION } from "./index.js";
+
+// SC-07: query capability is independent from compact-v2; deployed strict ranges
+// cannot silently reinterpret query fields or accept an unsupported format.
+describe("catalog query negotiation", () => {
+  it("keeps query routing, limits and legacy range shapes distinct", () => {
+    const request = { type: "session.catalog.query", protocolVersion: PROTOCOL_VERSION, requestId: "q", format: "v1",
+      query: { text: "needle", agentKind: null, archived: false, provider: "all" }, cursor: null, limit: 100 };
+    expect(DeviceE2ePayloadSchema.safeParse(request).success).toBe(true);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...request, format: "v2" }).success).toBe(false);
+    expect(DeviceE2ePayloadSchema.safeParse({ ...request, limit: 201 }).success).toBe(false);
+    expect(CatalogQueryRequestSchema.safeParse({ ...request, protocolVersion: undefined }).success).toBe(false);
+    expect(DeviceE2ePayloadSchema.safeParse({ type: "agent.state.range.request", protocolVersion: PROTOCOL_VERSION,
+      requestId: "old", scope: "host", domain: "catalog", query: request.query }).success).toBe(false);
+    expect(RelayToDeviceMessageSchema.safeParse({ type: "session.catalog.capabilities", protocolVersion: PROTOCOL_VERSION,
+      requestId: "cap", format: "v1" }).success).toBe(true);
+  });
+});
 
 const source = { producer: "adapter" as const, sourceId: "codex:1", sourceEpoch: "epoch-a", sourceRevision: 3 };
 const noticeSchema = domainStateSchema(z.array(z.strictObject({ id: z.string(), message: z.string() })));

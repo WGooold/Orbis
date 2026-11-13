@@ -139,14 +139,26 @@ struct ContentView: View {
         }
         #endif
         .onChange(of: rootTab) { _, next in switchRoot(next) }
-        .onChange(of: store.selectedHostId) { _, _ in overlay.dismissMenu() }
+        .onChange(of: store.selectedHostId) { _, _ in
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
+            overlay.dismissMenu()
+        }
+        .onChange(of: surfaceWidth) { _, width in
+            store.hostState.setCatalogVisible((drawerOpen || width >= 600) && scenePhase == .active)
+        }
         .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
+            store.setHistoryWindowVisible(scenePhase == .active && pages.last == .chat)
             overlay.dismissMenu()
             // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
             if !pages.contains(.chat) { store.stopFollowingLaunch() }
         }
-        .onChange(of: drawerOpen) { _, _ in overlay.dismissMenu() }
+        .onChange(of: drawerOpen) { _, open in
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible((open || surfaceWidth >= 600) && scenePhase == .active)
+            overlay.dismissMenu()
+        }
         .onChange(of: store.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
             if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
@@ -164,9 +176,20 @@ struct ContentView: View {
             rootTab = .chat; displayedRoot = .chat
             navigation.replace(with: [.chat])
         }
+        .task(id: scenePhase) {
+            store.hostState.setCatalogQuery(directoryState.networkQuery)
+            store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
+            store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                store.reconcileCatalog()
+                store.reconcileHistoryWindow()
+                do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
+            }
+        }
         .onChange(of: scenePhase) { old, new in
             if new != .active { store.toolContent.close() }
-            if old == .background && new == .active { store.refresh() }
+            if old == .background && new == .active { store.resumeForeground() }
         }
         .overlay {
             if store.isPairing {

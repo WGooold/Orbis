@@ -308,6 +308,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun refreshProviderFacts() = active()?.refreshProviderModel()
     fun refreshHostModel(domains: List<String> = HOME_HOST_MODEL_DOMAINS, force: Boolean = false) = active()?.refreshHostModel(domains, force)
+    fun setCatalogVisible(hostId: String?, visible: Boolean) { hostId?.let { connectionFor(it)?.setCatalogVisible(visible) } }
+    fun loadNextCatalogPage(hostId: String?) { hostId?.let { connectionFor(it)?.loadNextCatalogPage() } }
+    fun setCatalogQuery(hostId: String?, query: CatalogQuery) { hostId?.let { connectionFor(it)?.setCatalogQuery(query) } }
 
     fun setAgentModelInterest(hostId: String?, runtimeId: String, owner: String, domains: List<String>) {
         if (hostId != null) connectionFor(hostId)?.setAgentModelInterest(runtimeId, owner, domains)
@@ -317,14 +320,17 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         if (hostId != null) connectionFor(hostId)?.setMenuOptionInterest(runtimeId, name)
     }
 
+    fun setHistoryWindowVisible(hostId: String?, runtimeId: String, visible: Boolean) {
+        if (hostId != null) connectionFor(hostId)?.setHistoryWindowVisible(runtimeId, visible)
+    }
+
     /** 前台和定期核对按领域重读；聊天与通知仍保留各自事务和恢复水位。 */
     suspend fun reconcileModels() = withContext(Dispatchers.Default) {
         // The lifecycle caller waits for this pass before its next tick. Model reads can
         // take the state-writer/encryption locks; keep that work away from IME/layout.
-        synchronized(lock) { connections.values.toList() }.forEach { connection ->
-            connection.refreshHostModel()
-            connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
-        }
+        val connection = active() ?: return@withContext
+        connection.reconcileHostModel()
+        connection.state.value.runtimes.keys.forEach { connection.refreshAgentModel(it) }
     }
 
     /** Retain the originating Host while the lifecycle refresh leaves Main. */
@@ -332,7 +338,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val connection = active() ?: return
         withContext(Dispatchers.Default) {
             connection.syncNotifications(runtimeId)
-            connection.refreshRuntime(runtimeId)
+            connection.reconcileRuntime(runtimeId)
             connection.refreshWorkingBranch(runtimeId)
         }
     }

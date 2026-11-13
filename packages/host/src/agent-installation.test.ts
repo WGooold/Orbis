@@ -156,11 +156,19 @@ describe("Agent download and installation lifecycle", () => {
     expect(await listManagedAgentInstallations("codex", join(root, "managed"))).toEqual([]);
   });
 
-  it("finds POSIX npm global copies through the bin directory on PATH", async () => {
+  // A POSIX PATH cannot be expressed on a Windows host: cliPathDirs splits by the requested
+  // platform's separator, so a drive-letter path is always cut at its colon.
+  it.skipIf(process.platform === "win32")("finds POSIX npm global copies through the bin directory on PATH", async () => {
     const root = await fixture(); const prefix = join(root, "nvm", "v22");
     const entry = await fakePackage(join(prefix, "lib"), "pi", "1.4.0");
     await mkdir(join(prefix, "bin"), { recursive: true });
     expect(await findAgentCopies("pi", { PATH: join(prefix, "bin") }, "darwin")).toEqual([{ entry, version: "1.4.0" }]);
+  });
+
+  it("does not treat a POSIX lib layout as a Windows installation", async () => {
+    const root = await fixture(); const prefix = join(root, "nvm", "v22");
+    await fakePackage(join(prefix, "lib"), "pi", "1.4.0");
+    await mkdir(join(prefix, "bin"), { recursive: true });
     expect(await findAgentCopies("pi", { PATH: join(prefix, "bin") }, "win32")).toEqual([]);
   });
 
