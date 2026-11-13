@@ -39,7 +39,7 @@ Status: accepted（完整设备与手动门禁按验证记录，不把实施等�
 
 ### 4. 实现约束
 
-iOS OrbisPageStack 管理路径与来源快照，OrbisPageTransition 提供共用过渡；Android OrbisPageHost 统一 SwipeBackLayer、系统返回与页面活跃状态。网络和配对结果由原业务模型确认。
+iOS OrbisPageStack 管理路径与进行中的唯一运动，OrbisPageHost 让首页与各层整页常驻并提供共用过渡；Android OrbisPageHost 统一 SwipeBackLayer、系统返回与页面活跃状态。网络和配对结果由原业务模型确认。
 
 ## Verification
 
@@ -67,14 +67,12 @@ iOS 确认退场采用 180ms ease-out，取消沿用质量 1 / 刚度 260 / 阻�
 
 2026-11-03：应用内实测与最终专项支持修复；完整 iOS 全量受外接盘中断和共享设备残留锁阻塞，Android 深色按压反馈及其他全量失败保留，完整人工与最终动效帧尚未验收。测试入口与证据见 [测试规则](../../AGENTS.md#测试)、[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift) 和 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。
 
-## 2026-11-13：iOS 整页全部常驻，返回来源不再是静帧（已实施，待用户验证）
+## 2026-11-13：iOS 整页全部常驻，返回露出真实来源（已实施，用户已验证）
 
-iOS 整页导航改为常驻层容器，与 Android OrbisPageHost 一致：首页与每一层整页同时挂载，最上层接收输入，下一层是返回来源。右滑返回、返回键和嵌套返回露出的都是真实页面实例，阅读位置、输入草稿与期间的更新随之保留；交换单页的旧实现（透明 NavigationStack 下只常驻根页面）被替换，页面返回不再取用任何截图。层级顺序即推入顺序，路径增删由 `OrbisPageStack` 管理，路径变化本身不再驱动转场。
+iOS 整页导航与 Android OrbisPageHost 对齐：首页与每一层整页挂载在同一棵 SwiftUI 树中，最上层接收输入，下一层就是返回来源。右滑、返回键与逐层返回露出的都是真实页面实例，阅读位置、输入草稿与期间更新均保留；页面不再截图，也不再逐层单独承托（早先逐层 `UIHostingController` 的方案在每次刷新时重设根视图，造成推入与返回闪屏、来源页重排，已整体移除）。被覆盖页面不接收点按、不进入辅助功能、不保留键盘焦点；拖动时只有移动层与其来源层读取运动状态，页面内容不随每帧重算。
 
-动效与手势沿用 ADR-0058 参数：推入使用与返回同一组弹簧（`.orbisSwipeBack(velocity: 0)`，新增 `InteractionMotion.pageEnter`），来源层同步恢复压缩与 0.34 遮罩；右滑过程、三分之一提交阈值、180ms 退出与取消弹簧保持原值；页面自己的返回控件走与手势相同的提交路径，不再有第二段系统动画。草稿卡片进入会话的形状过渡同样改为活的：增长中的页面在矩形外露出真实首页，首页按来源预览的压缩与遮罩处理，卡片自身所在的矩形被增长的页面覆盖，因此不会再出现“卡片还开着”的旧画面。iOS 至此不再对任何页面取静帧。
+动效按交互稿与 Android：推入 320ms `--ease-page`（`InteractionMotion.pageEnter`，无回弹），来源同步左移 24pt 并压暗至 0.34；右滑跟手，三分之一屏宽（含速度投影）提交，180ms 滑出；取消沿用 r40 弹簧，位移每帧夹在起点；返回键走同一提交路径。草稿卡片启动会话时，页面从卡片矩形长满整屏（含安全区，圆角 24→0），矩形外为渐暗的真实首页；卡片被覆盖后才收起，首页列表不跳动。iPad 上宿主按内容栏水平裁切，来源左移不压到常驻目录。实现见 [PageNavigation.swift](../../ios/Orbis/Orbis/PageNavigation.swift) 与 [ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)。
 
-每层各自保留一个承托控制器，被覆盖的页面从原生无障碍枚举中移除（`accessibilityHidden` 对显式无障碍子树不可靠，此前是被覆盖根页面出现在 XCUITest 树中的原因）。推入时的层宽在下一帧读取，兄弟动画（如正在关闭的抽屉）可能先报出中间宽度；层宽变化不得让页面停在屏外。
+iOS 27 的 XCUITest 快照会列出 SwiftUI 已隐藏的子树（包括未选中的根标签页），被覆盖页面的不可达改由 `--probe-accessibility-reach` 遍历辅助功能容器的结果断言（[PreviewSupport.swift](../../ios/Orbis/Orbis/PreviewSupport.swift)），同时断言最上层可达、进入历史后键盘收起。
 
-验证（iOS 27.0 模拟器，Orbis iOS Standard 2）：`testNestedPagesSwipeBackOneLevelAtATime`、`testHistorySwipeBackReturnsToChat`、`testChatSwipeBackReboundsThenReturnsHome`、`testSettingsAndDownloadsSwipeBack`、`testAddComputerPageReboundsAndSwipesBack`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection`、`testSlashPickerStaysAboveKeyboard`、`testScrolledHomeKeepsCardPositionAfterChatReturn`、`testOptionalEdgeBackKeepsExistingIOSNavigation`、`testChatReturnImmediatelyAcceptsCardEntry` 与 `testEmptyDraftStartsWithoutAFirstMessage`（草稿卡片进入会话）通过（10/11，草稿形状单独一轮 9/9 + 1/1 通过）。既有失败保留：`testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`:1140 修复前后同一断言（先前记录为既有失败）；`testFullPageReturnBudgetAndNestedSourceReentry`:1882 仍按“根标签切换会产生一次页面返回”的旧预期断言，该预期自根标签改造后失效。Swift 482 项单元测试通过。未覆盖：草稿形状过渡中间帧的观感（本机录屏未取到可用帧）、iPad 常驻目录布局与真机手感；`testScrolledHomeKeepsCardPositionAfterChatReturn` 在 iPad 上仍有 fixture 派发失败。证据见 [.artifacts/nested-live-layers-20261113](../../.artifacts/nested-live-layers-20261113/)。部署：iPad Air 11-inch (M2) 更新安装 Debug 0.1.2(3)，保留原有数据与配对（二进制 sha256 `4efffa13…d95001`，记录见证据目录 `ipad/verification.json`）。用户验收：待用户验证。
-
-2026-11-13 修复：层内容经 `AnyView` 承托，路径每次变化都重设各层 `rootView` 并重建即将露出的页面，返回与推入时出现一帧底色与重新布局。承托根改为具体类型（`LayerRoot<Content>`）以复用同一层，推入页从第一帧就停在右缘而非先隐藏，入场改用与退场同族的缓动曲线（原 `swipeBack` 弹簧阻尼比 0.74，过冲被 `max(0, offset)` 夹住后表现为回弹）。六项导航 UI 测试通过；单条竖切录帧显示底色帧只出现在应用启动阶段，推入与返回过程中为零。真机手感仍待用户验证。证据见 [.artifacts/flash-fix-20261113](../../.artifacts/flash-fix-20261113/)。
+验证（iOS 27.0 模拟器，Orbis iOS Standard 2）：构建通过；`testAddComputerPageReboundsAndSwipesBack`、`testChatReturnImmediatelyAcceptsRepeatedCardEntry`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection`、`testEmptyDraftStartsWithoutAFirstMessage`、`testOptionalEdgeBackKeepsExistingIOSNavigation`、`testScrolledHomeKeepsCardPositionAfterChatReturn`、`testSlashPickerStaysAboveKeyboard` 通过；`testChatSwipeBackReboundsThenReturnsHome`、`testNestedPagesSwipeBackOneLevelAtATime`、`testHistorySwipeBackReturnsToChat`、`testSettingsAndDownloadsSwipeBack` 改用可达性断言后 4/4 通过。未重跑：`testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`（既有失败）与 `testFullPageReturnBudgetAndNestedSourceReentry`（根标签旧预期已失效）；中间帧录屏未取。证据见 [.artifacts/live-page-host-20261113](../../.artifacts/live-page-host-20261113/)。部署：用户以 Xcode 从本分支工作树安装到 iPad。用户验收：2026-11-13 iPad 手动验证通过。
