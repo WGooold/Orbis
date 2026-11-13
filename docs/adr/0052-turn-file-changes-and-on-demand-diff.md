@@ -43,6 +43,8 @@ DSH 原生能力有三个已确认的限制。以下解释统一 Host 口径的�
 
 顶层助手轮次使用稳定身份，以已确认起点和终点的净变化统计文件；原生工具归属与工作区时间窗观察分别声明，覆盖限制随结果保存。
 
+工作区快照只把已确认变化的文件计入概况和清单。扫描截断造成的单侧缺席或文件读取失败不构成变更证据，仍以 partial / reasons 保留采集缺口；双侧已捕获的真实变化继续展示。实现和扫描截断回归见 [TurnFileChangeService](../../packages/host/src/turn-file-change-service.ts) 及[测试](../../packages/host/src/turn-file-change-service.test.ts)。
+
 ### §3 Host 统一采集、保存和计算
 
 Host 统一管理轮次、冻结版本、差异计算与保留。Codex 使用已接收的原生轮次 diff，其他后端保存有界起止快照；来源缺失按 partial / unavailable 表达。读取固定版本，采集和比较保持工作区原状并受预算约束。
