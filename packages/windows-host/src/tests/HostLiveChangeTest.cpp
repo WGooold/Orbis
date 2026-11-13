@@ -136,6 +136,36 @@ private slots:
         QVERIFY(!host.activated()); QVERIFY(!host.desiredRunning());
         QTRY_COMPARE(host.state(), QString("stopped"));
     }
+    // A grayed-out button has to say why: every guard in startHost() now has a readable reason,
+    // and a pending command names itself so "nothing happened" is distinguishable from "working".
+    void activityNamesTheBlockedAction() {
+        auto &host = *m_host;
+        // 内核未就绪：以前界面写“已暂停”，按钮也是灰的，没有任何原因。
+        QVERIFY(!host.bridgeReady());
+        QCOMPARE(host.connectionBlockReason(), QString("Host 核心正在启动"));
+        host.m_bridgeReady = true;
+        QCOMPARE(host.connectionBlockReason(), QString("请先激活这台电脑"));
+        host.m_credential = "orbis_host_fixture";
+        host.m_activationIO = 1;
+        QCOMPARE(host.connectionBlockReason(), QString("正在读取激活信息"));
+        host.m_activationIO = 0;
+        host.m_relaySelectionPending = true;
+        QCOMPARE(host.connectionBlockReason(), QString("正在切换中继服务器"));
+        host.m_relaySelectionPending = false;
+        host.m_agentInstallStage = "downloading";
+        QCOMPARE(host.connectionBlockReason(), QString("正在安装 Agent，完成后会自动连接"));
+        host.m_agentInstallStage.clear();
+        QCOMPARE(host.connectionBlockReason(), QString());
+
+        // 在途命令会说出自己在做什么，结束后立刻清空。
+        QTRY_VERIFY_WITH_TIMEOUT(methods(root()).contains("initialize"), 10000);
+        QTRY_VERIFY_WITH_TIMEOUT(!host.busy(), 10000);
+        host.detectAgents(true);
+        QCOMPARE(host.activity().value("kind").toString(), QString("agents"));
+        QCOMPARE(host.activity().value("text").toString(), QString("正在检查 Agent 更新"));
+        QTRY_VERIFY_WITH_TIMEOUT(!host.busy(), 10000);
+        QVERIFY(host.activity().isEmpty());
+    }
     void pausedHostDropsRunningFacts() {
         auto &host = *m_host;
         connectHost(host, root());

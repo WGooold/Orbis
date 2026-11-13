@@ -364,6 +364,9 @@ export class DesktopRuntime {
   }
 
   async #detectClaude(): Promise<void> {
+    // 先声明“还在测”，否则 Host 界面会把尚未测完的版本当成“未安装”，
+    // 用户看到的是“Claude Code 不能用”，而实际只是检测还没回来。
+    this.#emit({ event: "claudeStatus", detecting: true });
     // Claude uses its native installer and settings, outside the managed npm Agents.
     const cli = await findClaudeExecutable(process.env);
     const status = { event: "claudeStatus", installed: cli !== undefined, minimumVersion: CLAUDE_MIN_VERSION };

@@ -40,6 +40,15 @@ class HostController : public QObject {
     /** HOST-ACT-16: the Relay will not restore this Host ID (or its mailbox may be out of reach); a new identity always can be activated. */
     Q_PROPERTY(bool identityReplaceable READ identityReplaceable NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    /**
+     * 当前进行中的操作（{kind, text}）。busy 只说明“有事在做”，这个说明“在做什么”：
+     * 否则按钮变灰、点击无效，用户看不出是在工作还是已经卡死。空表示空闲。
+     */
+    Q_PROPERTY(QVariantMap activity READ activity NOTIFY changed)
+    /** 现在点“开始连接”无效的原因；空表示可以点。 */
+    Q_PROPERTY(QString connectionBlockReason READ connectionBlockReason NOTIFY changed)
+    /** Claude Code 版本检测进行中：此时“未安装”只代表还没测完。 */
+    Q_PROPERTY(bool claudeDetecting READ claudeDetecting NOTIFY changed)
     Q_PROPERTY(bool exiting READ exiting NOTIFY changed)
     Q_PROPERTY(bool exitApproved READ exitApproved NOTIFY exitReady)
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
@@ -109,6 +118,9 @@ public:
     bool registrationAvailable() const { return m_registrationAvailable; }
     bool identityReplaceable() const { return m_bridgeReady && !activated() && (m_registrationRefused || !m_email.isEmpty()); }
     bool busy() const { return m_busy > 0 || m_activationIO > 0 || m_relaySelectionPending || m_exiting || m_updating; }
+    QVariantMap activity() const;
+    QString connectionBlockReason() const;
+    bool claudeDetecting() const { return m_claudeDetecting; }
     bool exiting() const { return m_exiting; }
     bool exitApproved() const { return m_exitApproved; }
     bool bridgeReady() const { return m_bridgeReady; }
@@ -293,6 +305,10 @@ private:
     QHash<int, std::function<void()>> m_settled;
     QHash<int, QString> m_methods;
     QHash<int, QJsonObject> m_requestParams;
+    /** 按提交顺序记录每个在途请求的可读说明，界面只展示最靠前的那条。 */
+    QHash<int, QPair<QString, QString>> m_activity;
+    QList<int> m_activityOrder;
+    bool m_claudeDetecting = false;
     int m_draftGeneration = 0;
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;

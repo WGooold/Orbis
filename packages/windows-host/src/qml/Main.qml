@@ -72,6 +72,8 @@ ApplicationWindow {
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
     function agentPhoneState(agent, sessions) {
+        // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。
+        if (window.activityKind === "agents") return "检测中"
         if (!agent.installed) return "未安装"
         if (agent.kind === "dshDesktop" && host.dshDesktopOpen === "waiting") return "等待退出"
         if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
@@ -83,11 +85,22 @@ ApplicationWindow {
         return sessions > 0 ? "手机上 " + sessions + " 个会话" : "手机可用"
     }
     readonly property var codexTerminalState: host.codexTerminal || ({})
+    // 进行中的操作来自 host.activity（桥命令逐个登记），是所有按钮变灰的统一原因。
+    readonly property var activity: host.activity || ({})
+    readonly property string activityKind: window.activity.kind || ""
+    readonly property string activityText: window.activity.text || ""
     readonly property bool codexTerminalPreparing: window.codexTerminalState.state === "preparing"
     function codexTerminalProgressText() {
         var received = Number(window.codexTerminalState.receivedBytes || 0)
         var total = Number(window.codexTerminalState.totalBytes || 0)
         return total > 0 ? "准备中 " + Math.floor(Math.min(1, received / total) * 100) + "%" : "正在准备"
+    }
+    /** Claude 检测未完成时不能用“未安装”当结论；这与 Host 侧的 detecting 对齐。 */
+    function claudeStateText() {
+        if (host.claudeDetecting) return "检测中"
+        if (!host.claudeInstalled) return "尚未安装"
+        if (host.claudeCompatible) return "可用"
+        return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
         if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
@@ -296,6 +309,8 @@ ApplicationWindow {
     }
     function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
+        // 内核还没就绪时不要说“已暂停”：用户会以为 Host 自己停了。
+        if (!host.bridgeReady) return "正在启动 Host 核心"
         if (host.resumePending) return "完成后自动恢复"
         if (!host.activated && host.bridgeReady) return "未激活"
         return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
@@ -803,6 +818,14 @@ ApplicationWindow {
                                         spacing: 4; Layout.preferredWidth: 180; Layout.maximumWidth: 220
                                         Heading { text: host.hostName || "这台电脑"; elide: Text.ElideRight; Layout.fillWidth: true }
                                         MotionText { objectName: "overviewLinkState"; text: window.stateText(); color: window.hostOnline ? Theme.success : host.state === "error" && !host.resumePending ? Theme.danger : Theme.inkMuted; font.pixelSize: Theme.label; Layout.fillWidth: true }
+                                        // 按钮变灰时能读到这里在做什么：没有这句就只能看到“点了没反应”。
+                                        RowLayout {
+                                            objectName: "overviewActivity"
+                                            visible: window.activityText.length > 0
+                                            spacing: 6; Layout.fillWidth: true
+                                            BusyIndicator { running: visible; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
+                                            Label { text: window.activityText; color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        }
                                     }
                                     ConnectionLine { Layout.fillWidth: true; Layout.minimumWidth: 60 }
                                     ColumnLayout {
@@ -824,10 +847,16 @@ ApplicationWindow {
                                         objectName: "overviewConnection"
                                         text: host.desiredRunning || host.resumePending ? "暂停连接" : "开始连接"
                                         primary: window.nextStep === "connect"
-                                        enabled: !host.busy && !host.resumePending
+                                        enabled: !host.resumePending && (host.desiredRunning || host.connectionBlockReason.length === 0)
+                                        loading: window.activityKind === "connect"
                                         onClicked: { if (host.desiredRunning) host.stopHost(); else host.startHost() }
+                                        // 点不了的时候给出原因，而不是只把按钮变灰。
+                                        ToolTip.visible: !enabled && hoverHandler.hovered && host.connectionBlockReason.length > 0
+                                        ToolTip.text: host.connectionBlockReason
+                                        ToolTip.delay: 200
+                                        HoverHandler { id: hoverHandler }
                                     }
-                                    ActionButton { objectName: "overviewPair"; text: "添加手机"; symbol: "add"; primary: window.nextStep === "pair"; enabled: window.hostOnline && !host.busy; onClicked: host.pair() }
+                                    ActionButton { objectName: "overviewPair"; text: "添加手机"; symbol: "add"; primary: window.nextStep === "pair"; enabled: window.hostOnline && !host.busy; loading: window.activityKind === "pair"; onClicked: host.pair() }
                                 }
                             }
                         }
@@ -941,7 +970,7 @@ ApplicationWindow {
 
                     ColumnLayout {
                         visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
-                        RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy; onClicked: host.detectAgents(true) } }
+                        RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy; loading: window.activityKind === "agents"; onClicked: host.detectAgents(true) } }
                         RowLayout { Layout.fillWidth: true
                             ActionButton { text: "全部更新到最新（" + host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken).length + "）"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => !a.installed || a.updateAvailable || a.installedButBroken); onClicked: window.showAgentBatch() }
                             Item { Layout.fillWidth: true }
@@ -982,7 +1011,7 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth: true
                                     Heading { text: "Claude Code"; color: Theme.agentClaude }
                                     Item { Layout.fillWidth: true }
-                                    Hint { text: !host.claudeInstalled ? "尚未安装" : host.claudeCompatible ? "可用" : host.claudeVersion ? "需升级" : "版本未确认"; color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
+                                    Hint { text: window.claudeStateText(); color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
                                 }
                                 Hint { visible: !!host.claudeMinimumVersion; text: "当前 " + (host.claudeVersion || "—") + "，最低 " + host.claudeMinimumVersion; Layout.fillWidth: true }
                                 Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
@@ -993,7 +1022,9 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent…"; Layout.fillWidth: true }
+                        // 以前这里写死“正在检测 Agent…”，但 busy 也包含激活、切中继、保存供应商；
+                        // 统一读活动文案，并只在 Agent 页保留（其余页由概览、对话框自己负责）。
+                        Hint { visible: window.activityText.length > 0 && !host.agentInstalling; text: window.activityText; Layout.fillWidth: true }
                     }
 
                     ColumnLayout {

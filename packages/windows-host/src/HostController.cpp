@@ -139,6 +139,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
+        // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
+        m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false;
         // The relaunched core starts paused; a change that was waiting to resume the old one no longer applies.
         m_settled.clear(); m_resumePending = false; m_relaySelectionPending = false; clearRunningFacts();
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
@@ -188,6 +190,54 @@ void HostController::launchBridge() {
 static bool isProviderBackgroundRequest(const QString &method) {
     return method == "provider.check" || method == "provider.models";
 }
+/**
+ * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
+ * 目的只有一个：按钮因为 busy 变灰时，用户能读到“正在做什么”。
+ */
+static QPair<QString, QString> activityFor(const QString &method, const QJsonObject &params) {
+    if (method == "initialize") return { "core", "正在启动 Host 核心" };
+    if (method == "start") return { "connect", "正在连接中继" };
+    if (method == "stop") return { "connect", "正在暂停连接" };
+    if (method == "detect") return { "agents", params.value("checkLatest").toBool() ? "正在检查 Agent 更新" : "正在检测 Agent" };
+    if (method == "pair") return { "pair", "正在生成二维码" };
+    if (method == "activate") return { "activation", "正在激活这台电脑" };
+    if (method == "requestCode") return { "activation", "正在发送验证码" };
+    if (method == "replaceIdentity") return { "activation", "正在重新登记这台电脑" };
+    if (method == "restartDshServer") return { "dsh", "正在重启 DSH Server" };
+    if (method == "activateInstallation") return { "agents", "正在切换 Agent 版本" };
+    if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
+    if (method == "rename") return { "host", "正在保存电脑名称" };
+    if (method.startsWith("provider.")) {
+        if (method == "provider.save") return { "provider", "正在保存供应商" };
+        if (method == "provider.saveCodexPreferences") return { "provider", "正在保存通用配置" };
+        if (method == "provider.switch") return { "provider", "正在切换供应商" };
+        if (method == "provider.remove") return { "provider", "正在删除供应商" };
+        if (method == "provider.open") return { "provider", "正在打开供应商" };
+        if (method == "provider.copy") return { "provider", "正在复制供应商" };
+        if (method == "provider.piDefault") return { "provider", "正在保存默认供应商" };
+        return { "provider", "正在读取供应商配置" };
+    }
+    return {};
+}
+QVariantMap HostController::activity() const {
+    if (m_activityOrder.isEmpty()) return {};
+    const auto entry = m_activity.value(m_activityOrder.first());
+    if (entry.first.isEmpty() && entry.second.isEmpty()) return {};
+    return { { "kind", entry.first }, { "text", entry.second } };
+}
+/**
+ * 与 startHost() 的守卫逐条对应，只用于告诉用户“现在为什么点了没用”。
+ * m_desiredRunning 表示已经在跑，不算阻塞。
+ */
+QString HostController::connectionBlockReason() const {
+    if (m_exiting) return "正在退出";
+    if (!m_bridgeReady) return "Host 核心正在启动";
+    if (m_activationIO > 0) return "正在读取激活信息";
+    if (m_relaySelectionPending) return "正在切换中继服务器";
+    if (!activated()) return "请先激活这台电脑";
+    if (agentInstalling()) return "正在安装 Agent，完成后会自动连接";
+    return {};
+}
 QStringList HostController::checkingProviderIds() const {
     QStringList ids;
     for (auto it = m_methods.cbegin(); it != m_methods.cend(); ++it) {
@@ -202,6 +252,8 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
     if (!isProviderBackgroundRequest(method)) ++m_busy;
+    const auto activity = activityFor(method, params);
+    if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
     m_bridge.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
     emit changed();
     return id;
@@ -240,6 +292,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         auto callback = m_pending.take(id); auto method = m_methods.take(id); m_requestParams.remove(id);
         auto settled = m_settled.take(id);
         if (!isProviderBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
+        if (m_activity.remove(id)) m_activityOrder.removeAll(id);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
@@ -317,6 +370,8 @@ void HostController::receiveLine(const QJsonObject &line) {
             if (line.contains("error")) setMessage(line.value("error").toString());
         }
         else if (event == "claudeStatus") {
+            // 检测进行中时“未安装”只代表还没测完，界面不能把它当成结论。
+            m_claudeDetecting = line.value("detecting").toBool(false);
             m_claudeInstalled = line.value("installed").toBool();
             m_claudeCompatible = line.value("compatible").toBool(m_claudeInstalled);
             m_claudeVersion = line.value("version").toString();
