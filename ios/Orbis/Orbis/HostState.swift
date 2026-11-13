@@ -192,6 +192,12 @@ struct HostDiagnosticPage: Decodable {
 /// partial/missing/unavailable publications never masquerade as an empty, current inventory.
 @MainActor
 final class HostState: ObservableObject {
+    private var directoryReconcile = ReadReconcileSchedule()
+
+    func reconcile(now: Date = Date()) {
+        guard connected, directoryReconcile.claim(now) else { return }
+        refresh()
+    }
     nonisolated static let domainNames = ["identity", "backends", "catalog", "providers", "workspaces", "files", "operations", "diagnostics", "connections", "management"]
     nonisolated static let homeDomains: Set<String> = ["identity", "backends", "catalog", "providers"]
     private let modelWorker: HostModelPreparationWorker
@@ -225,6 +231,42 @@ final class HostState: ObservableObject {
     @Published private(set) var catalogRange: HostCatalogRange?
     private var catalogRequest: HostCatalogRequest?
     private var catalogTimeout: Task<Void, Never>?
+    private var catalogVisible = false
+    private var catalogPageWanted = false
+    private var catalogRecovered = false
+    private var viewQuery = CatalogQuery()
+    @Published private(set) var catalogQuery: CatalogQueryResult?
+    private(set) var catalogQueryRevision = UUID()
+    // Query decoding is synchronous; consume drains these rows into the async,
+    // generation-fenced store publication before the authenticated read completes.
+    private var catalogQueryRows: [SessionSummary] = []
+    var didChangeCatalogQuery: (() -> Void)?
+    private lazy var queryReads = CatalogViewReads(send: { [weak self] in self?.send?($0) ?? false }, publish: { [weak self] result, rows in
+        guard let self else { return }
+        self.catalogQuery = result; self.catalogQueryRevision = UUID()
+        if !rows.isEmpty { self.catalogQueryRows = rows }
+        self.didChangeCatalogQuery?()
+    })
+
+    func setCatalogQuery(_ query: CatalogQuery) {
+        viewQuery = query
+        queryReads.setView(catalogVisible ? query : nil)
+    }
+    func negotiateCatalogReadFormat() { queryReads.connect() }
+
+    func setCatalogVisible(_ visible: Bool) {
+        if visible && !catalogVisible { catalogRecovered = false }
+        catalogVisible = visible
+        queryReads.setView(visible ? viewQuery : nil)
+        if !visible { catalogPageWanted = false; catalogTimeout?.cancel(); catalogRequest = nil }
+    }
+
+    func loadNextCatalogPage() {
+        guard catalogVisible else { return }
+        if queryReads.supported { queryReads.needMore(); return }
+        catalogPageWanted = true
+        requestCatalogPage()
+    }
 
     private var hostId: String?
     private var epoch: String?
@@ -234,6 +276,10 @@ final class HostState: ObservableObject {
     private var subscriptionId: String?
     private var subscribedDomains: Set<String> = []
     private var modelTimeout: Task<Void, Never>?
+    private var modelReadStarted: Date?
+    private var modelReadRetried = false
+    private var modelReadBody: [String: Any]?
+    private var modelReadWanted: Set<String> = []
     private var providerRequest: (id: String, kind: String, hostKey: String)?
     private var providerTimeout: Task<Void, Never>?
     private var quotaRequest: (id: String, kind: String, providerId: String, hostKey: String)?
@@ -248,6 +294,7 @@ final class HostState: ObservableObject {
         let changedHost = hostKey != key
         guard changedHost || self.connected != connected else { return }
         cancelRequests()
+        queryReads.disconnect()
         self.connected = connected
         hostKey = key; hostId = pairing?.hostId
         // Keep the last facts visible while offline on the same computer, but never actionable.
@@ -255,12 +302,13 @@ final class HostState: ObservableObject {
             domains = [:]; missing = [:]; truncated = false
             retiredEpochs = []; interests = ModelInterests()
             catalogRange = nil
+            catalogQuery = nil
             diagnosticPage = nil; providerNotice = nil; providerError = nil; diagnosticsError = nil
         }
         epoch = nil
         preferDeltaState = true
         modelError = nil
-        if connected { refresh() }
+        if connected { queryReads.connect(); refresh() }
     }
 
     @discardableResult
@@ -285,8 +333,15 @@ final class HostState: ObservableObject {
 
     func refresh(_ requested: [String] = Array(HostState.homeDomains), force: Bool = false) {
         guard connected else { modelError = L10n.tr("请先连接已配对的电脑"); return }
+        queryReads.retryFailed()
         let wanted = Set(requested).intersection(Self.domainNames)
-        subscribedDomains = Self.homeDomains.union(interests.domains).union(wanted)
+        let nextDomains = Self.homeDomains.union(interests.domains).union(wanted)
+        let nextFormat: String? = preferDeltaState ? "compact-v2" : nil
+        if !force, wanted == modelReadWanted, nextFormat == subscriptionFormat,
+           nextDomains == subscribedDomains, pendingDomains.contains("catalog"),
+           let started = modelReadStarted, Date().timeIntervalSince(started) < 45 { return }
+        directoryReconcile.started(Date())
+        subscribedDomains = nextDomains
         let id = UUID().uuidString
         subscriptionId = id; pendingDomains = subscribedDomains; modelError = nil
         // Retain only current view interests, carrying applied versions for the retained domains.
@@ -303,10 +358,26 @@ final class HostState: ObservableObject {
         guard send?(request) == true else {
             subscriptionId = nil; pendingDomains = []; modelError = L10n.tr("状态读取未发送，请重新连接"); return
         }
+        modelReadStarted = Date(); modelReadRetried = false; modelReadBody = request; modelReadWanted = wanted
         modelTimeout = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
-            guard let self, self.subscriptionId == id, !self.pendingDomains.isEmpty else { return }
-            self.pendingDomains = []; self.modelError = L10n.tr("状态读取超时，请重新读取")
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+                guard let self, self.subscriptionId == id, !self.pendingDomains.isEmpty else { return }
+                self.advanceModelRead()
+            }
+        }
+    }
+
+    func advanceModelRead(now: Date = Date()) {
+        guard !pendingDomains.isEmpty, let started = modelReadStarted, let body = modelReadBody,
+              body["requestId"] as? String == subscriptionId else { return }
+        let elapsed = now.timeIntervalSince(started)
+        if elapsed >= 45 || elapsed >= 20 && !pendingDomains.contains("catalog") {
+            pendingDomains = []; modelError = L10n.tr("状态读取超时，请重新读取"); modelTimeout?.cancel(); return
+        }
+        if elapsed >= 25 && !modelReadRetried {
+            modelReadRetried = true
+            if send?(body) != true { pendingDomains = []; modelError = L10n.tr("状态读取未发送，请重新连接"); modelTimeout?.cancel() }
         }
     }
 
@@ -479,6 +550,12 @@ final class HostState: ObservableObject {
     @discardableResult
     func consume(_ message: [String: Any]) async -> Bool {
         guard connected, let type = message["type"] as? String else { return false }
+        if queryReads.consume(message) {
+            let rows = catalogQueryRows; catalogQueryRows = []
+            if queryReads.supported { catalogRequest = nil; catalogTimeout?.cancel(); catalogPageWanted = false }
+            if !rows.isEmpty { await didChangeCatalog?(rows, []) }
+            return true
+        }
         switch type {
         case "provider.subscription.result":
             guard let request = quotaRequest, request.id == message["requestId"] as? String,
@@ -509,12 +586,12 @@ final class HostState: ObservableObject {
                 let notice = (message["notice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 providerNotice = providerRemovalCount > 0 ? L10n.tr("已移除 {0} 个供应商。", providerRemovalCount) + (notice ?? "") : notice
                 providerRemovalCount = 0
-                refresh(["providers"]); didChangeProviders?()
+                refresh(["providers"], force: true); didChangeProviders?()
             }
             return true
         case "provider.changed":
             clearQuota(for: message["kind"] as? String)
-            refresh(["providers"]); didChangeProviders?(); return true
+            refresh(["providers"], force: true); didChangeProviders?(); return true
         case "diagnostics.page":
             guard diagnosticRequest != nil, diagnosticRequest == message["requestId"] as? String else { return true }
             if let error = message["error"] as? String { finishDiagnostics(error: error); return true }
@@ -590,6 +667,7 @@ final class HostState: ObservableObject {
         truncated = prepared.truncated; modelError = nil
         didProject?(prepared.accepted)
         if let catalog = prepared.accepted["catalog"] { await beginCatalog(catalog, prepared: prepared.catalog) }
+        if prepared.accepted["catalog"] != nil { directoryReconcile.confirmed(Date()) }
         if pendingDomains.isEmpty { modelTimeout?.cancel() }
     }
 
@@ -611,6 +689,7 @@ final class HostState: ObservableObject {
     }
 
     private func beginCatalog(_ domain: HostDomain, prepared: HostCatalogRange?) async {
+        queryReads.sourceChanged(epoch: domain.modelEpoch, revision: domain.revision)
         guard domain.availability == "ready" else { catalogRange = nil; catalogRequest = nil; catalogTimeout?.cancel(); return }
         guard let range = prepared else { return }
         if let old = catalogRange, old.error == nil, old.modelEpoch == range.modelEpoch, old.revision == range.revision,
@@ -626,19 +705,27 @@ final class HostState: ObservableObject {
     }
 
     func requestCatalogPage() {
-        guard connected, catalogRequest == nil, let range = catalogRange,
+        if queryReads.supported { return }
+        guard connected, catalogVisible, catalogPageWanted, catalogRequest == nil, let range = catalogRange,
               range.error == nil, let cursor = range.nextCursor else { return }
         let request = HostCatalogRequest(id: UUID().uuidString, cursor: cursor, modelEpoch: range.modelEpoch,
                                          revision: range.revision, snapshotId: range.snapshotId, offset: range.sessions.count)
         catalogRequest = request
-        guard send?(["type": "agent.state.range.request", "protocolVersion": orbisProtocolVersion,
-                     "requestId": request.id, "scope": "host", "domain": "catalog", "cursor": cursor, "limit": 200]) == true else {
+        catalogPageWanted = false
+        let body: [String: Any] = ["type": "agent.state.range.request", "protocolVersion": orbisProtocolVersion,
+                     "requestId": request.id, "scope": "host", "domain": "catalog", "cursor": cursor, "limit": 200]
+        guard send?(body) == true else {
             rejectCatalog(L10n.tr("目录分页请求未发送，请重新连接")); return
         }
         catalogTimeout?.cancel()
         catalogTimeout = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
-            guard let self, self.catalogRequest?.id == request.id else { return }
+            do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
+            guard let self, self.catalogVisible, self.catalogRequest?.id == request.id else { return }
+            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+            guard self.catalogVisible, self.catalogRequest?.id == request.id else { return }
+            guard self.send?(body) == true else { self.rejectCatalog("send_failed"); return }
+            do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
+            guard self.catalogRequest?.id == request.id else { return }
             self.rejectCatalog(L10n.tr("目录分页读取超时，请刷新重试"))
         }
     }
@@ -655,6 +742,7 @@ final class HostState: ObservableObject {
         switch prepared {
         case .success(let updated):
             catalogTimeout?.cancel(); catalogRequest = nil; catalogRange = updated
+            if catalogVisible { catalogPageWanted = true }
             await publishCatalog(updated); requestCatalogPage()
         case .failure(let error): rejectCatalog(error.reason)
         }
@@ -663,6 +751,10 @@ final class HostState: ObservableObject {
     private func rejectCatalog(_ error: String) {
         catalogTimeout?.cancel(); catalogRequest = nil
         catalogRange?.error = error
+        if error == "snapshot_changed", catalogVisible, !catalogRecovered {
+            catalogRecovered = true; catalogPageWanted = true
+            refresh(["catalog"], force: true)
+        }
     }
     private func decode<T: Decodable>(_ raw: [String: Any]) -> T? {
         guard let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }

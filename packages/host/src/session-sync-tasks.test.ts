@@ -39,6 +39,44 @@ function harness(synchronous = false, options: Partial<ConstructorParameters<typ
 }
 
 describe("SessionSyncTasks", () => {
+  // FT-G12-COMPAT-02: released adapters may return 64 KiB–1 MiB pages. Ordinary
+  // reads preserve them; only negotiated historyWindow requests tighten this cap.
+  it.each(["preview", "history", "catchup"] as const)("preserves a released adapter's larger %s page", range => {
+    const h = harness();
+    h.manager.request("a", "runtime", "command", request("legacy", range)); h.manager.tick();
+    const event = { ...snapshot(h.dispatches[0]!.id), range, entries: [{ entryId: "leaf", parentId: null,
+      type: "message", timestamp: "1", data: { text: "x".repeat(128 * 1024) } }] };
+    h.manager.handleEvent("runtime", event);
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.payload.byteLength).toBeGreaterThan(64 * 1024);
+    expect(JSON.parse(h.sends[0]!.payload.toString()).event).toEqual({ ...event, syncId: "legacy" });
+    expect(h.manager.stats("a").reservedBytes).toBeGreaterThan(h.sends[0]!.payload.byteLength);
+  });
+
+  // ADR-0069: Host enforces exact final-envelope bytes and does not replay more reserved pages
+  // than the client could afford, even if ACK was lost or the request is duplicated.
+  it("bounds reserved history responses and preserves the nearest boundary suffix", () => {
+    const h = harness();
+    const command = { ...request("window", "history"), targetLeafId: "e4", beforeEntryId: "e4",
+      historyWindow: { format: "v1" as const, maxBytes: 8192, maxDeliveries: 1 } };
+    h.manager.request("a", "runtime", "command", command); h.manager.tick();
+    const entries = [1, 2, 3].map(n => ({ entryId: `e${n}`, parentId: n === 1 ? null : `e${n - 1}`,
+      type: "message", timestamp: "1", data: { text: "界".repeat(1100) } }));
+    h.manager.handleEvent("runtime", { ...snapshot(h.dispatches[0]!.id), range: "history", mode: "prepend",
+      cursor: { leafId: "e4" }, targetLeafId: "e4", beforeEntryId: "e4", entries, hasOlder: false });
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.payload.byteLength).toBeLessThanOrEqual(8192);
+    expect(JSON.parse(h.sends[0]!.payload.toString()).event).toMatchObject({
+      entries: entries.slice(1), hasOlder: true, complete: false, rangeStatus: "older_available", beforeEntryId: "e4",
+    });
+    h.sends[0]!.done(true); h.time(31_000);
+    h.manager.request("a", "runtime", "command", command); h.manager.tick();
+    expect(h.error).toHaveBeenLastCalledWith("a", "command", "session_sync_retry_exhausted");
+    expect(h.sends).toHaveLength(1);
+    h.manager.request("a", "runtime", "command", { ...command, historyWindow: { ...command.historyWindow, maxDeliveries: 2 } });
+    expect(h.error).toHaveBeenLastCalledWith("a", "command", "session_sync_id_conflict");
+  });
   it.each(["history", "catchup"] as const)("rebuilds Host state privately before %s without changing the device request", async range => {
     // DSH-SYNC-09：Host重启后先取完整preview；只把原range交给原设备，迟到的内部回应不再生效。
     let needsBaseline = true;

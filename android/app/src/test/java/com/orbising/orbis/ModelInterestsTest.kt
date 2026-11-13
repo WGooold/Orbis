@@ -10,6 +10,16 @@ import kotlinx.serialization.json.jsonObject
 /** FT-G03: prevent sticky broad subscriptions after a view closes, including a
  * close within the ordinary refresh throttle; independent owners remain active. */
 class ModelInterestsTest {
+    // SC-06: periodic demand must not replace the original catalog read during its
+    // one-retry window; settled reads return to the ordinary refresh throttle.
+    @Test fun `pending catalog version reads merge through the original deadline`() {
+        val read = AgentStateRead("host", "host", setOf("catalog"), sentAt = 0)
+        assertTrue(read.matchesInterest(listOf("catalog"), 25_000))
+        assertTrue(read.matchesInterest(listOf("catalog"), 44_999))
+        assertFalse(read.matchesInterest(listOf("catalog"), 45_000))
+        assertFalse(read.copy(pendingDomains = emptySet()).matchesInterest(listOf("catalog"), 25_000))
+        assertFalse(read.matchesInterest(listOf("catalog", "providers"), 25_000))
+    }
     // FT-G04: only an explicit unsupported read format or unconfirmed response
     // retries in the released shape; business failures remain real failures.
     @Test fun `compact selection can fall back once without masking real errors`() {

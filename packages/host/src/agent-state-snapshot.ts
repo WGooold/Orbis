@@ -1,6 +1,6 @@
 import {
-  AgentStateDomainSchema, DeviceStateDomainSchema, HostStateDomainSchema, PROTOCOL_VERSION,
-  type AgentStateDomainSnapshot, type AgentStateSnapshot, type RelayToDeviceMessage,
+  AgentStateDomainSchema, DeviceStateDomainSchema, HostStateDomainSchema, PROTOCOL_VERSION, stateDelta,
+  type AgentStateDomainSnapshot, type AgentStateSnapshot, type RelayToDeviceMessage, type DomainState,
 } from "@orbis/protocol";
 
 import type { AgentStateRegistry, StateScope } from "./agent-state-registry.js";
@@ -35,6 +35,9 @@ export type AgentStateSnapshotInput = {
   readonly known?: readonly { domain: string; modelEpoch: string; revision: number }[];
   readonly update?: boolean;
   readonly stateFormat?: "compact-v1" | "compact-v2" | undefined;
+  readonly catalogBaseline?: (modelEpoch: string, revision: number) => DomainState<unknown> | undefined;
+  /** Apply the device view before measuring or diffing a response. Baselines use that same view. */
+  readonly projectValue?: (domain: string, value: unknown) => unknown;
 };
 
 export type AgentStateSnapshotMessage = Extract<RelayToDeviceMessage, { type: "agent.state.snapshot" }>;
@@ -89,9 +92,23 @@ export function buildAgentStateSnapshot(input: AgentStateSnapshotInput): AgentSt
       completeness: entry.state.completeness,
       source: entry.state.source,
       checkedAt: entry.state.checkedAt,
-      value: entry.state.value,
+      value: (input.projectValue ? input.projectValue(entry.domain, entry.state.value) : entry.state.value) as AgentStateDomainSnapshot["value"],
       projectionComplete: true,
     };
+    // FT-G11: conditional reads use the exact applied version just like updates.
+    // A different source or evicted baseline retains the full recovery contract.
+    const known = input.known?.find(item => item.domain === entry.domain);
+    if (input.stateFormat === "compact-v2" && input.scope.kind === "host" && entry.domain === "catalog" && known) {
+      const baseline = input.catalogBaseline?.(known.modelEpoch, known.revision);
+      if (baseline && baseline.modelEpoch === entry.state.modelEpoch && baseline.revision < entry.state.revision &&
+          baseline.availability === "ready" && entry.state.availability === "ready" &&
+          baseline.source.producer === entry.state.source.producer && baseline.source.sourceId === entry.state.source.sourceId &&
+          baseline.source.sourceEpoch === entry.state.source.sourceEpoch) {
+        const operations = stateDelta(baseline.value, snapshot.value);
+        const delta = operations && { baseRevision: baseline.revision, operations };
+        if (delta && byteLength(delta) < byteLength(snapshot.value) * 0.8) { snapshot.delta = delta; snapshot.value = null; }
+      }
+    }
     const size = byteLength(snapshot);
     if (bytes + size > budget) { truncated = true; break; }
     bytes += size;

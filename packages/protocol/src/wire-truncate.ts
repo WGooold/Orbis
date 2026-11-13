@@ -11,8 +11,11 @@
 
 /** 单字段上限（ADR-0038 §3）。 */
 export const WIRE_FIELD_LIMIT_BYTES = 64 * 1024;
-/** 单条 Entry 上限：等于页预算，使一条大条目最多独占一页，不会顶到 1MB 兜底。 */
-export const WIRE_ENTRY_LIMIT_BYTES = 256 * 1024;
+/**
+ * 单条 Entry 线路投影上限。History snapshot 同时携带 canonical entry 与显示投影，
+ * 因此给正文预留约一半的 64 KiB hard page，避免同一正文在两种表示中翻倍后越界。
+ */
+export const WIRE_ENTRY_LIMIT_BYTES = 24 * 1024;
 /** 递归深度上限：原生 data 可能嵌套很深，超过就当普通值处理。 */
 const MAX_DEPTH = 8;
 

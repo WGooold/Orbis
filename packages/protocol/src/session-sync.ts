@@ -18,7 +18,9 @@ export type SessionSyncSnapshot = Omit<Extract<RuntimeEvent, { type: "session.sn
   checkpoint?: SessionCheckpoint;
 };
 export const SESSION_SYNC_DEFAULT_MAX_ENTRIES = 30;
-export const SESSION_SYNC_PAGE_BYTES = 512 * 1024;
+export const SESSION_SYNC_TARGET_PAGE_BYTES = 32 * 1024;
+export const SESSION_SYNC_PAGE_BYTES = 64 * 1024;
+/** Independent ceiling for explicit session.entry.request full-content reads. */
 export const SESSION_SYNC_MAX_BYTES = 1024 * 1024;
 // A runtime.event wrapper has routing fields and a runtime ID (up to 256 Unicode characters).
 export const SESSION_SYNC_WRAPPER_BYTES = 4096;
@@ -237,12 +239,15 @@ export function selectPreparedSessionSync(
     }
     const nextSnapshot = response(next, nextTimings);
     const size = bytes(nextSnapshot);
-    if (size > SESSION_SYNC_PAGE_BYTES && selected.length > 0) break;
-    if (size > SESSION_SYNC_MAX_BYTES) throw new Error("session_entry_too_large");
+    if (size > SESSION_SYNC_PAGE_BYTES) {
+      if (selected.length > 0) break;
+      throw new Error("session_entry_too_large");
+    }
+    if (size > SESSION_SYNC_TARGET_PAGE_BYTES && selected.length > 0) break;
     selected = next;
     timings = nextTimings;
     snapshot = nextSnapshot;
-    if (size > SESSION_SYNC_PAGE_BYTES) break;
+    if (size > SESSION_SYNC_TARGET_PAGE_BYTES) break;
   }
   // Never label a truncated suffix as a complete incremental recovery. Existing cache-hole
   // paging can fill the ancestors of a bounded recovery snapshot without changing live state.
