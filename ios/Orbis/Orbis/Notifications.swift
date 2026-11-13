@@ -261,59 +261,56 @@ final class ReplyCompletionTracker {
 #if canImport(UIKit) && canImport(UserNotifications)
 import UIKit
 import UserNotifications
+import Network
 
 @MainActor
 final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
-    private static var pairings: [HostPairing] = []
-    private static var currentToken: String?
+    #if DEBUG
+    static let pushEnvironment = "sandbox"
+    #else
+    static let pushEnvironment = "production"
+    #endif
+    static let pushRegistration = PushRegistrationCoordinator(environment: pushEnvironment,
+        loadRetired: { try await Task.detached { try SecureStore.shared.pendingPushRemovals() }.value },
+        saveRetired: { values in try await Task.detached { try SecureStore.shared.savePendingPushRemovals(values) }.value })
+    private static var authorizationRevision = 0
+    private var pushNetwork: NWPathMonitor?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = ReplyCompletionNotifications.shared
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") || $0.hasPrefix("--push-lifecycle-probe=") }) { return true }
+        #endif
+        let network = NWPathMonitor()
+        network.pathUpdateHandler = { path in
+            if path.status == .satisfied { Task { @MainActor in Self.registerForPushIfAllowed() } }
+        }
+        network.start(queue: DispatchQueue(label: "orbis.push.reachability"))
+        pushNetwork = network
         return true
     }
     static func updatePairings(_ value: [HostPairing]) {
-        let nextIds = Set(value.map { $0.hostId })
-        if let currentToken {
-            for old in pairings where !nextIds.contains(old.hostId) { register(nil, pairing: old) }
-            for pairing in value { register(currentToken, pairing: pairing) }
-        }
-        pairings = value
+        pushRegistration.updatePairings(value)
     }
     static func registerForPushIfAllowed() {
+        authorizationRevision += 1
+        let revision = authorizationRevision
         Task {
             let settings = await UNUserNotificationCenter.current().notificationSettings()
-            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
-            UIApplication.shared.registerForRemoteNotifications()
+            guard revision == authorizationRevision else { return }
+            let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+            pushRegistration.setAuthorizationAllowed(allowed)
+            pushRegistration.refresh()
+            if allowed { UIApplication.shared.registerForRemoteNotifications() }
         }
     }
     nonisolated func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         Task { @MainActor in
-            Self.currentToken = token
-            for pairing in Self.pairings { Self.register(token, pairing: pairing) }
+            Self.pushRegistration.receiveToken(token)
         }
     }
     nonisolated func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         // APNs may be unavailable in simulator or misconfigured signing; local notifications remain independent.
-    }
-    private static func register(_ token: String?, pairing: HostPairing) {
-        guard var components = URLComponents(string: pairing.relay.relayUrl), components.scheme == "wss" else { return }
-        components.scheme = "https"
-        components.path = "/v1/push/register"
-        guard let url = components.url else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(pairing.relay.credential)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token as Any? ?? NSNull()])
-        Task {
-            for attempt in 0..<3 {
-                do {
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    if let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) { return }
-                } catch { }
-                if attempt < 2 { try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 4)) }
-            }
-        }
     }
 }
 
@@ -322,7 +319,7 @@ final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
 @MainActor
 final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = ReplyCompletionNotifications()
-    static let remoteWake = Notification.Name("orbis.remoteWake")
+    static let remoteOpens = PushNotificationOpenQueue()
     private var requesting = false
     func prepare() {
         let center = UNUserNotificationCenter.current()
@@ -335,9 +332,7 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
                 _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
                 status = await center.notificationSettings()
             }
-            if status.authorizationStatus == .authorized || status.authorizationStatus == .provisional {
-                OrbisAppDelegate.registerForPushIfAllowed()
-            }
+            OrbisAppDelegate.registerForPushIfAllowed()
             requesting = false
         }
     }
@@ -354,12 +349,8 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        let payload = info["orbis"] as? [String: Any]
-        let hostId = payload?["hostId"] as? String
-        guard let hostId, !hostId.isEmpty, hostId.count <= 128,
-              ["task-completed", "approval-requested"].contains(payload?["category"] as? String ?? "") else { completionHandler(); return }
         Task { @MainActor in
-            NotificationCenter.default.post(name: Self.remoteWake, object: nil, userInfo: ["hostId": hostId])
+            Self.remoteOpens.receive(info)
             completionHandler()
         }
     }

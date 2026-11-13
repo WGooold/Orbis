@@ -250,7 +250,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       { deviceId: device.deviceId, name: device.name, ...(device.hostId === undefined ? {} : { hostId: device.hostId }) },
     ]),
   );
-  const pushTokens = new Map<string, { deviceId: string; hostId: string; token: string }>();
+  const pushTokens = new Map<string, { deviceId: string; hostId: string; token: string; environment?: "sandbox" | "production" }>();
   const pushStateFile = options.stateFile ? `${options.stateFile}.push.json` : undefined;
   if (pushStateFile) {
     try {
@@ -259,7 +259,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       for (const item of state.tokens) {
         if (item && typeof item === "object" && typeof item.deviceId === "string" && typeof item.hostId === "string" &&
           typeof item.token === "string" && /^[a-fA-F0-9]{64,200}$/u.test(item.token)) {
-          pushTokens.set(item.deviceId, { deviceId: item.deviceId, hostId: item.hostId, token: item.token });
+          pushTokens.set(item.deviceId, { deviceId: item.deviceId, hostId: item.hostId, token: item.token,
+            ...(item.environment === "sandbox" || item.environment === "production" ? { environment: item.environment } : {}) });
         }
       }
     } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
@@ -278,6 +279,14 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     return pending;
   };
   const apns = options.apns ? new APNsSender(options.apns) : undefined;
+  // APNS-L02: serialize mutation + persistence + rollback, not network delivery.
+  // A failed older write must never roll a more recent registration back.
+  let pushMutation = Promise.resolve();
+  const mutatePush = <T>(operation: () => Promise<T>): Promise<T> => {
+    const pending = pushMutation.then(operation);
+    pushMutation = pending.then(() => {}, () => {});
+    return pending;
+  };
   if (options.stateFile) {
     try {
       const persisted = JSON.parse(await readFile(options.stateFile, "utf8")) as {
@@ -326,6 +335,15 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     ...(options.adminStateFile || options.stateFile ? { stateFile: options.adminStateFile ?? `${options.stateFile}.admin.json` } : {}),
     ...(options.trustProxy === undefined ? {} : { trustProxy: options.trustProxy }),
   });
+  const isPushDevice = (deviceId: string, hostId: string): boolean => !admin.isDisabled(hostId) &&
+    [...devicesByCredential.values()].some(device => device.deviceId === deviceId && device.hostId === hostId);
+  // Device revocation is authoritative even if the separate push file survived
+  // a crash, restore, or older deployment. Do not revive orphaned destinations.
+  const restoredPushCount = pushTokens.size;
+  for (const [id, target] of pushTokens) {
+    if (!isPushDevice(id, target.hostId)) pushTokens.delete(id);
+  }
+  if (pushTokens.size !== restoredPushCount) await persistPushTokens();
   const bandwidth = await RelayBandwidth.create({
     ...(options.bandwidthStateFile || options.stateFile ? { stateFile: options.bandwidthStateFile ?? `${options.stateFile}.bandwidth.json` } : {}),
   });
@@ -345,7 +363,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     const candidate = hashCredential(authorization.slice("Bearer ".length));
     return timingSafeEqual(adminTokenHash, candidate);
   };
-  const revokeDevice = async (deviceId: string): Promise<void> => {
+  const revokeDevice = (deviceId: string): Promise<void> => mutatePush(async () => {
     const removed = [...devicesByCredential].filter(([, device]) => device.deviceId === deviceId);
     const previousPush = pushTokens.get(deviceId);
     for (const [hash, device] of devicesByCredential) {
@@ -362,7 +380,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     for (const device of devices) {
       if (device.deviceId === deviceId) device.socket.close(4003, "device revoked");
     }
-  };
+  });
 
   const server: HttpServer = createServer((request, response) => {
     void (async () => {
@@ -372,22 +390,37 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const value = request.headers.authorization;
         return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : undefined;
       };
-      if (request.method === "POST" && path === "/v1/push/register") {
-        if (!apns) throw new HttpError(503, "push_unavailable");
+      if (request.method === "GET" && path === "/v1/push/config") {
         const bearer = pushBearer();
         const device = bearer ? devicesByCredential.get(hashCredential(bearer).toString("hex")) : undefined;
-        if (!device?.hostId) throw new HttpError(401, "unauthorized");
-        const body = await readJson(request) as { token?: unknown };
+        if (!device?.hostId || admin.isDisabled(device.hostId)) throw new HttpError(401, "unauthorized");
+        if (!options.apns) throw new HttpError(503, "push_unavailable");
+        jsonResponse(response, 200, { version: 1, environment: options.apns.environment }); return;
+      }
+      if (request.method === "POST" && path === "/v1/push/register") {
+        const bearer = pushBearer();
+        const hash = bearer ? hashCredential(bearer).toString("hex") : undefined;
+        if (!hash || !devicesByCredential.get(hash)?.hostId) throw new HttpError(401, "unauthorized");
+        const body = await readJson(request) as { token?: unknown; environment?: unknown };
         if (!body || (body.token !== null && (typeof body.token !== "string" || !/^[a-fA-F0-9]{64,200}$/u.test(body.token)))) throw new HttpError(400, "invalid_token");
-        const previous = pushTokens.get(device.deviceId);
-        if (body.token === null) pushTokens.delete(device.deviceId);
-        else pushTokens.set(device.deviceId, { deviceId: device.deviceId, hostId: device.hostId, token: body.token as string });
-        try { await persistPushTokens(); }
-        catch (error) {
-          if (previous) pushTokens.set(device.deviceId, previous); else pushTokens.delete(device.deviceId);
-          await persistPushTokens().catch(() => {});
-          throw error;
-        }
+        if (body.environment !== undefined && body.environment !== "sandbox" && body.environment !== "production") throw new HttpError(400, "invalid_environment");
+        if (body.token !== null && !apns) throw new HttpError(503, "push_unavailable");
+        if (body.token !== null && body.environment !== undefined && body.environment !== options.apns?.environment) throw new HttpError(409, "push_environment_mismatch");
+        await mutatePush(async () => {
+          // Authentication may have been revoked while the request body arrived.
+          const device = devicesByCredential.get(hash);
+          if (!device?.hostId || admin.isDisabled(device.hostId)) throw new HttpError(401, "unauthorized");
+          const previous = pushTokens.get(device.deviceId);
+          if (body.token === null) pushTokens.delete(device.deviceId);
+          else pushTokens.set(device.deviceId, { deviceId: device.deviceId, hostId: device.hostId,
+            token: (body.token as string).toLowerCase(), environment: options.apns!.environment });
+          try { await persistPushTokens(); }
+          catch (error) {
+            if (previous) pushTokens.set(device.deviceId, previous); else pushTokens.delete(device.deviceId);
+            await persistPushTokens().catch(() => {});
+            throw error;
+          }
+        });
         jsonResponse(response, 204); return;
       }
       if (request.method === "POST" && path === "/v1/push/wake") {
@@ -402,22 +435,35 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const registeredHost = bearer ? options.registration?.hostForCredential(bearer) : undefined;
         if (!bearer || authenticatedHost?.credentialHash !== hashCredential(bearer).toString("hex") || registeredHost !== undefined && registeredHost !== body.hostId) throw new HttpError(401, "unauthorized");
         if (!authenticatedHost || authenticatedHost.socket.readyState !== WebSocket.OPEN) throw new HttpError(409, "host_not_connected");
+        if (admin.isDisabled(body.hostId)) throw new HttpError(401, "unauthorized");
         const hint = { category: body.category as "task-completed" | "approval-requested", eventId: body.eventId, hostId: body.hostId };
         const sent: string[] = [];
         const failed: string[] = [];
-        let removedStaleToken = false;
+        const deliveries = new Map<string, Promise<"sent" | "invalid-token">>();
         await Promise.all([...new Set(body.deviceIds as string[])].map(async deviceId => {
           const target = pushTokens.get(deviceId);
-          if (!target || target.hostId !== body.hostId) return;
+          if (!target || target.hostId !== body.hostId || !isPushDevice(deviceId, target.hostId) ||
+            target.environment !== undefined && target.environment !== options.apns?.environment) return;
           try {
-            const result = await apns.send(target.token, hint);
-            if (result === "invalid-token") { pushTokens.delete(deviceId); removedStaleToken = true; }
+            // Reinstall/re-pair may leave two device IDs for one app installation.
+            // Deliver once without deleting either authenticated pairing.
+            let delivery = deliveries.get(target.token);
+            if (!delivery) { delivery = apns.send(target.token, hint); deliveries.set(target.token, delivery); }
+            const result = await delivery;
+            if (result === "invalid-token") {
+              await mutatePush(async () => {
+                // Object identity also protects a newer registration of the same token.
+                if (pushTokens.get(deviceId) !== target) return;
+                pushTokens.delete(deviceId);
+                try { await persistPushTokens(); }
+                catch (error) { pushTokens.set(deviceId, target); throw error; }
+              });
+            }
             else sent.push(deviceId);
           } catch {
             failed.push(deviceId);
           }
         }));
-        if (removedStaleToken) await persistPushTokens();
         jsonResponse(response, failed.length === 0 ? 200 : 502, { sent, failed }); return;
       }
       if (request.method === "POST" && path === "/v1/admin/login") {
@@ -518,8 +564,10 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           runtimes.get(hostId)?.socket.close(4003, "host disabled");
           for (const device of devices) if (device.hostId === hostId) device.socket.close(4003, "host disabled");
           for (const [key, pairing] of pairingCodes) if (pairing.hostId === hostId) pairingCodes.delete(key);
-          for (const [deviceId, token] of pushTokens) if (token.hostId === hostId) pushTokens.delete(deviceId);
-          await persistPushTokens();
+          await mutatePush(async () => {
+            for (const [deviceId, token] of pushTokens) if (token.hostId === hostId) pushTokens.delete(deviceId);
+            await persistPushTokens();
+          });
         }
         jsonResponse(response, 204);
         return;

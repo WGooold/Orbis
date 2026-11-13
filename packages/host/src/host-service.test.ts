@@ -1865,6 +1865,7 @@ describe("host end-to-end over relay", () => {
       expect(await readMatching(device, message => message.requestId === "history-close")).toMatchObject({ accepted: true });
       const next = structuredClone(fixture.patch.event);
       next.source.seq = 3; next.baseSeq = 2; next.seq = 3; next.checkpointId = "checkpoint-3";
+      next.live.messages[0].finished = true;
       runtime.publish(3, next);
       runtime.publish(4, { type: "message.delta", messageId: "stream", delta: "hidden legacy body" });
       // A backend FIFO barrier proves the hidden patch was processed. Control replies and
@@ -1886,6 +1887,13 @@ describe("host end-to-end over relay", () => {
       device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-reopen",
         runtimeId: "runtime", sessionId: "session" }));
       expect(await readMatching(device, message => message.requestId === "history-reopen")).toMatchObject({ accepted: true });
+      // FT-G12-RESUME-01: the App reconciles after its current interest is accepted.
+      // A reply that finished while hidden must be recoverable without another live event.
+      device.sendCommand("runtime", "history-resume", { type: "session.sync", sessionId: "session", syncId: "history-resume",
+        range: "preview", knownState: { epoch: "source", seq: 2, head: { leafId: "entry-1" } } });
+      expect(await readMatching(device, message => (message.event as { syncId?: string } | undefined)?.syncId === "history-resume"))
+        .toMatchObject({ event: { type: "session.snapshot", source: { epoch: "source", seq: 3 }, selection: "state",
+          live: { messages: [{ finished: true }] } } });
       next.source.seq = 4; next.baseSeq = 3; next.seq = 4; next.checkpointId = "checkpoint-4";
       runtime.publish(6, next);
       expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.patch"))
