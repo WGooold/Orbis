@@ -77,7 +77,7 @@ import { CODEX_STARTUP_ARGS, prepareCodexWorkspace, codexWorkspaceTrustKey } fro
 import { localHostname } from "./sessions.js";
 import { codexDecline, object, prepareCodexInteraction, type CodexInteraction } from "./codex-interactions.js";
 import { CodexAsyncInputs, codexAsyncQuestionText, codexQuestionReplyText } from "./codex-async-input.js";
-import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
+import { CODEX_PERMISSION_COMMANDS, codexErrorMessage, codexPermissionSelectionMatches, codexPermissionUpdate, codexPermissions } from "./codex-permissions.js";
 import { codexPermissionManagement } from "./permission-management.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
@@ -119,15 +119,6 @@ const TERMINAL_LAUNCH_TTL_MS = 30 * 60 * 1_000;
  * `/quit` 请求进程自己退出，这里等价的是「关掉电脑上那个 TUI 窗口」，手机侧表现一致：
  * 该 runtime 下线。
  */
-function permissionPatchMatches(actual: Record<string, unknown>, patch: Record<string, unknown>): boolean {
-  return Object.entries(patch).every(([key, value]) => {
-    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-      return permissionPatchMatches(object(actual[key]), object(value));
-    }
-    return JSON.stringify(actual[key]) === JSON.stringify(value);
-  });
-}
-
 const CODEX_SLASH_COMMANDS: readonly RuntimeSlashCommand[] = [
   ...CODEX_PERMISSION_COMMANDS,
   { name: "model", description: "Select the model for this Codex session", source: "builtin", argument: { kind: "text", required: true, hint: "<model-id>" } },
@@ -307,6 +298,10 @@ type ThreadState = {
   /** 模型显示名（`model/list` 的 displayName，如 "GPT-5.5"）；APP 优先用它而不是美化 id。 */
   modelName: string | undefined;
   permissions: RuntimePermissions | undefined;
+  permissionSettingsRevision?: number;
+  permissionRecoveryPromise?: Promise<void>;
+  permissionRecoveryAt?: number;
+  permissionWritePromise?: Promise<unknown>;
   approvalItems: Map<string, Record<string, unknown>>;
   asyncInputs: CodexAsyncInputs;
   tasks: CodexAgentTasks;
@@ -361,11 +356,12 @@ export class CodexRuntime implements AgentBackend {
   readonly #observedSettings = new Map<string, RuntimePermissions>();
   readonly #effectiveSettings = new Map<string, Record<string, unknown>>();
   readonly #permissionUpdates = new Map<string, {
-    patch: Record<string, unknown>;
+    name: string;
+    value: string;
     resolve: () => void;
     reject: (error: Error) => void;
   }>();
-  readonly #permissionUnconfirmed = new Map<string, Record<string, unknown>>();
+  readonly #permissionUnconfirmed = new Map<string, { name: string; value: string }>();
   #started = false;
   #eventSink: ((event: RuntimeEvent, threadId: string | undefined) => void) | undefined;
   /**
@@ -588,6 +584,7 @@ export class CodexRuntime implements AgentBackend {
       }
       for (const pending of this.#permissionUpdates.values()) pending.reject(new Error("Codex 已断开，无法确认权限设置"));
       this.#permissionUpdates.clear();
+      this.#permissionUnconfirmed.clear();
       this.#effectiveSettings.clear();
       this.#observedSettings.clear();
       for (const timer of this.#sourcePublishTimers.values()) clearTimeout(timer);
@@ -759,8 +756,9 @@ export class CodexRuntime implements AgentBackend {
    */
   #applyNativeSettings(thread: ThreadState, value: unknown): void {
     const settings = object(value);
+    thread.permissionSettingsRevision = (thread.permissionSettingsRevision ?? 0) + 1;
     const uncertain = this.#permissionUnconfirmed.get(thread.id);
-    if (uncertain && permissionPatchMatches(settings, uncertain)) {
+    if (uncertain && codexPermissionSelectionMatches(settings, uncertain.name, uncertain.value)) {
       this.#permissionUnconfirmed.delete(thread.id);
       this.#scheduleQueue(thread);
     }
@@ -812,7 +810,9 @@ export class CodexRuntime implements AgentBackend {
       currentTurnConfiguration: this.#currentTurnConfiguration(thread),
       ...(contextUsage === undefined ? {} : { contextUsage }),
       permissions: thread.permissions ?? { sandbox: "unknown", approvalPolicy: "unknown" },
-      permissionManagement: codexPermissionManagement(thread.permissions, this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || thread.sessionChanging === true || this.#desktopClientProtected.has(thread.id)),
+      permissionManagement: codexPermissionManagement(thread.permissions, this.#permissionUnconfirmed.has(thread.id)
+        ? "权限设置尚未确认，请稍后重试"
+        : this.#permissionUpdates.has(thread.id) || thread.permissionWritePromise !== undefined || thread.sessionChanging === true || this.#desktopClientProtected.has(thread.id)),
     };
   }
 
@@ -1202,7 +1202,7 @@ export class CodexRuntime implements AgentBackend {
   #inputState(thread: ThreadState): RuntimeInputState {
     return { phase: this.#statusOf(thread), compacting: thread.compactStartPending || thread.activity.compaction !== "unavailable" && thread.activity.compaction.phase === "running",
       starting: thread.turnStartPending, stopping: thread.stopping === true, closing: thread.closing === true,
-      mutating: this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || this.#desktopClientProtected.has(thread.id) || thread.sessionChanging === true,
+      mutating: this.#permissionUpdates.has(thread.id) || this.#permissionUnconfirmed.has(thread.id) || thread.permissionWritePromise !== undefined || this.#desktopClientProtected.has(thread.id) || thread.sessionChanging === true,
       reconciling: thread.nativeMutationPromise === undefined && (thread.reconcilePromise !== undefined || !thread.sourceReady),
       offline: this.#threads.get(thread.id) !== thread, queueDepth: thread.queue.length };
   }
@@ -1688,6 +1688,7 @@ export class CodexRuntime implements AgentBackend {
     this.#setCompaction(thread, "unavailable");
     thread.asyncInputs.close("owner_closed");
     this.#permissionUpdates.get(threadId)?.reject(new Error(reason));
+    this.#permissionUnconfirmed.delete(threadId);
     this.#effectiveSettings.delete(threadId);
     for (const [requestId, approval] of this.#approvals) {
       if (approval.threadId !== threadId) continue;
@@ -1703,6 +1704,7 @@ export class CodexRuntime implements AgentBackend {
     // Release only once that request has settled, so it cannot reattach a closed view.
     void (async () => {
       try { await thread.tuiAttachPromise; } catch { /* The subscription may still have succeeded. */ }
+      if (thread.permissionRecoveryPromise) await thread.permissionRecoveryPromise;
       if (!this.#threads.has(threadId)) await this.#server.request("thread/unsubscribe", { threadId });
     })().catch(error => {
       this.#options.log?.(`Codex 会话解除订阅失败（thread=${threadId}）：${describeError(error)}`);
@@ -2055,6 +2057,12 @@ export class CodexRuntime implements AgentBackend {
         if (command.messageId && thread.observedPhoneMessages.has(command.messageId)) {
           this.#commandResult(thread.id, commandId, false, "message_id_conflict", "message_id_conflict"); return true;
         }
+        const permissionError = this.#permissionInputError(thread);
+        if (permissionError) {
+          void this.#recoverPermissions(thread);
+          this.#commandResult(thread.id, commandId, false, permissionError, "failure");
+          return true;
+        }
         const decision = messageInputDecision(this.#inputState(thread), command.delivery);
         if (decision.action === "reject") {
           this.#commandResult(thread.id, commandId, false, decision.error, "failure");
@@ -2128,6 +2136,7 @@ export class CodexRuntime implements AgentBackend {
         return true;
       }
       case "session.sync": {
+        if (thread !== undefined) void this.#recoverPermissions(thread);
         const publish = () => {
           try {
             if (thread === undefined || this.#threads.get(thread.id) !== thread) throw new Error("session_not_found");
@@ -2482,29 +2491,38 @@ export class CodexRuntime implements AgentBackend {
   async #updatePermissions(thread: ThreadState, name: string, value: string, commandId?: string): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let registered = false;
-    let patch: Record<string, unknown> | undefined;
+    const selection = { name, value };
     let awaitingNative = false;
+    let written: Promise<unknown> | undefined;
     try {
       if (configurationMutationError(this.#inputState(thread)) !== undefined || thread.nativeMutationPromise !== undefined) {
         throw new Error("会话配置正在更新或恢复，请稍后重试");
       }
       if (this.#permissionUpdates.has(thread.id)) throw new Error("权限设置正在应用，请等待电脑确认");
       const settings = this.#effectiveSettings.get(thread.id) ?? {};
-      patch = codexPermissionUpdate(name, value, settings);
+      const patch = codexPermissionUpdate(name, value, settings);
       // app-server intentionally emits no settings notification for an unchanged value.
-      if (permissionPatchMatches({ ...settings, sandboxPolicy: settings.sandboxPolicy ?? settings.sandbox }, patch)) {
+      if (codexPermissionSelectionMatches(settings, name, value)) {
         this.#commandResult(thread.id, commandId, true);
         return;
       }
       const confirmed = new Promise<void>((resolve, reject) => {
-        this.#permissionUpdates.set(thread.id, { patch: patch!, resolve, reject });
+        this.#permissionUpdates.set(thread.id, { ...selection, resolve, reject });
         registered = true;
         timer = setTimeout(() => reject(new Error("未收到有效权限确认，请刷新会话检查结果")), 15_000);
         timer.unref();
       });
       this.#commandResult(thread.id, commandId, true, undefined, "pending");
-      // The RPC acknowledges a write; only the settings notification establishes effective state.
-      const written = this.#server.request("thread/settings/update", { threadId: thread.id, ...patch });
+      // Confirm saved next-turn settings; the active turn keeps its original execution permissions.
+      written = this.#server.request("thread/settings/update", { threadId: thread.id, ...patch });
+      thread.permissionWritePromise = written;
+      void written.finally(() => {
+        if (thread.permissionWritePromise !== written) return;
+        delete thread.permissionWritePromise;
+        if (this.#threads.get(thread.id) === thread && !this.#permissionUpdates.has(thread.id)) {
+          this.#publishMetadataEvent(thread); this.#scheduleQueue(thread);
+        }
+      }).catch(() => undefined);
       awaitingNative = true;
       await Promise.all([written, confirmed]);
       awaitingNative = false;
@@ -2514,12 +2532,55 @@ export class CodexRuntime implements AgentBackend {
       // An explicit native refusal is final; transport loss or a missing effective
       // notification cannot release queued work under an unknown permission set.
       const uncertain = awaitingNative && /timeout|timed out|未收到|断开|closed|socket|ECONN|connection/i.test(describeError(error));
-      if (uncertain && patch) this.#permissionUnconfirmed.set(thread.id, patch);
+      if (uncertain && this.#threads.get(thread.id) === thread) {
+        this.#permissionUnconfirmed.set(thread.id, selection);
+        // Wait for the write RPC to settle before checking; a read is never a retry of the write.
+        void written?.catch(() => undefined).then(() => this.#recoverPermissions(thread));
+      }
       this.#commandResult(thread.id, commandId, false, `权限设置未确认：${describeError(error)}`, uncertain ? "unconfirmed" : "failure");
     } finally {
       if (timer) clearTimeout(timer);
       if (registered) { this.#permissionUpdates.delete(thread.id); this.#publishMetadataEvent(thread); this.#scheduleQueue(thread); }
     }
+  }
+
+  #permissionInputError(thread: ThreadState): string | undefined {
+    return this.#permissionUnconfirmed.has(thread.id) ? "权限设置尚未确认，请稍后重试"
+      : this.#permissionUpdates.has(thread.id) || thread.permissionWritePromise ? "权限设置正在保存，请稍后重试" : undefined;
+  }
+
+  /** SC85: recover a lost confirmation by reading saved next-turn settings.
+   * No directory comparisons, permission writes or message replays; newer notifications win.
+   */
+  #recoverPermissions(thread: ThreadState): Promise<void> {
+    if (thread.permissionRecoveryPromise) return thread.permissionRecoveryPromise;
+    const selection = this.#permissionUnconfirmed.get(thread.id);
+    if (!selection || this.#threads.get(thread.id) !== thread || this.#permissionUpdates.has(thread.id) || thread.permissionWritePromise
+      || thread.closing || this.#desktopClientProtected.has(thread.id)
+      || Date.now() - (thread.permissionRecoveryAt ?? 0) < 1_000) return Promise.resolve();
+    const server = this.#server, revision = thread.permissionSettingsRevision;
+    thread.permissionRecoveryAt = Date.now();
+    const recovery = (async () => {
+      try {
+        const settings = object(await server.request("thread/resume", { threadId: thread.id }, 8_000));
+        const permissions = codexPermissions(settings);
+        if (this.#server !== server || this.#threads.get(thread.id) !== thread || thread.closing
+          || this.#permissionUnconfirmed.get(thread.id) !== selection || thread.permissionSettingsRevision !== revision
+          || object(settings.thread).id !== thread.id || !permissions) return;
+        this.#effectiveSettings.set(thread.id, settings);
+        this.#observedSettings.set(thread.id, permissions);
+        thread.permissions = permissions;
+        // The completed write is now reconciled against native saved settings, even
+        // if another native client selected a different value. Do not replay the write.
+        this.#permissionUnconfirmed.delete(thread.id);
+        this.#applyNativeSettings(thread, settings);
+        this.#publishMetadataEvent(thread);
+        this.#scheduleQueue(thread);
+      } catch { /* Retain uncertainty; a later native notification or explicit refresh can recover. */ }
+      finally { delete thread.permissionRecoveryPromise; }
+    })();
+    thread.permissionRecoveryPromise = recovery;
+    return recovery;
   }
 
   #executeDynamicSlash(
@@ -3152,12 +3213,12 @@ export class CodexRuntime implements AgentBackend {
     try {
       await this.#runNativeMutation(thread, async () => {
         const state = { ...this.#inputState(thread), starting: false, queueDepth: 0, reconciling: !thread.sourceReady || thread.reconcilePromise !== undefined };
-        if (!canDispatchMessage(state)) throw new Error("runtime_busy");
+        if (!canDispatchMessage(state)) throw new Error(this.#permissionInputError(thread) ?? "runtime_busy");
         if (this.beforeFileChangeTurn) {
           await this.beforeFileChangeTurn(this.runtimeIdFor(thread.id));
           captureStarted = true;
         }
-        if (this.#threads.get(thread.id) !== thread || !canDispatchMessage({ ...this.#inputState(thread), starting: false, queueDepth: 0, reconciling: !thread.sourceReady || thread.reconcilePromise !== undefined })) throw new Error("runtime_busy");
+        if (this.#threads.get(thread.id) !== thread || !canDispatchMessage({ ...this.#inputState(thread), starting: false, queueDepth: 0, reconciling: !thread.sourceReady || thread.reconcilePromise !== undefined })) throw new Error(this.#permissionInputError(thread) ?? "runtime_busy");
         ++thread.reconcileGeneration;
         thread.turnInProgress = true;
         this.#publishMetadataEvent(thread);
@@ -3439,7 +3500,7 @@ export class CodexRuntime implements AgentBackend {
         this.#observedSettings.set(threadId, permissions);
         this.#effectiveSettings.set(threadId, settings);
         const pending = this.#permissionUpdates.get(threadId);
-        if (pending && permissionPatchMatches(settings, pending.patch)) pending.resolve();
+        if (pending && codexPermissionSelectionMatches(settings, pending.name, pending.value)) pending.resolve();
       }
     }
     if ((method === "thread/archived" || method === "thread/unarchived") && typeof threadId === "string") {

@@ -67,6 +67,21 @@ struct PendingSendTests {
         #expect(outbox.item("idle")?.state == .failed("电脑端拒绝了这条消息"))
     }
 
+    // SC85: a permission-confirmation failure preserves retryable input and its real
+    // reason, including follow-up and steer messages on an otherwise idle runtime.
+    @Test func permissionFailuresKeepDraftsWithoutClaimingTheSessionIsRunning() {
+        for reason in ["权限设置尚未确认，请稍后重试", "权限设置正在保存，请稍后重试"] {
+            for delivery in [nil, "followUp", "steer"] as [String?] {
+                var outbox = PendingSendOutbox(); outbox.add(send("permission", delivery: delivery))
+                outbox.commandResult("c-permission", ok: false, status: "failure", error: reason, now: start)
+                reconcile(&outbox, revision: 1)
+                #expect(outbox.item("permission")?.state == .failed(L10n.tr(reason)))
+                #expect(outbox.item("permission")?.text == "text permission")
+                #expect(outbox.item("permission")?.delivery == delivery)
+            }
+        }
+    }
+
     @Test func commandResultsDistinguishRejectionFromUnknownDelivery() {
         var outbox = PendingSendOutbox()
         outbox.add(send("ok")); outbox.add(send("busy")); outbox.add(send("lost")); outbox.add(send("sending"))

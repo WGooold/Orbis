@@ -80,6 +80,9 @@ struct LocalizationTests {
     }
 
     @Test func hostUiCopyIsLocalizedWithoutInterpretingPermissionsOrDynamicValues() {
+        // SC85: permission recovery uses the same localized reason on controls and failed sends.
+        #expect(L10n.hostText("权限设置尚未确认，请稍后重试", language: .english) == "Permissions are unconfirmed. Try again shortly.")
+        #expect(L10n.hostText("权限设置正在保存，请稍后重试", language: .english) == "Permission settings are being saved. Try again shortly.")
         #expect(L10n.hostSummary("工作区可写 · 按需询问", language: .english) == "Workspace write, Ask when needed")
         #expect(L10n.hostText("Select the model for this Codex session", language: .chinese) == "选择此 Codex 会话的模型")
         let path = "/工作区可写/设置 {1}/file.swift 100% 🧪"

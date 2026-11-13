@@ -20,6 +20,8 @@ Clients send `permissions.update { settingId, value }`. The backend validates cu
 
 Codex uses native thread settings; DSH uses its advertised permission command and resulting Session projection. Changes apply to the addressed Session. DSH's `user-approval` context remains native model input, with human delivery represented separately.
 
+SC85: Codex permission display follows saved native thread settings; execution adopts them on the next turn. Confirmation checks the selected option, without comparing directory lists or waiting for the active turn's permissions to change. After a lost confirmation, Host reads native settings once the write settles and reconciles to the returned selection. Failed or stale reads retain uncertainty; later native updates or explicit refresh can recover. Rejected messages keep their input and show the permission reason rather than a running-session error.
+
 Codex selection reconciliation follows [ADR-0061](0061-codex-selection-and-native-settings-reconciliation.md): permission patches preserve next-turn model / effort selections, and genuine native changes synchronize per field. The pre-input subscription evidence is in [ADR-0021](0021-codex-terminal-host-attachment.md#revision-2026-11-03-model-selection-before-the-first-input).
 
 The permission page uses the typed contract. Raw metadata remains available for diagnostics, while native Slash commands retain their general menu role.
@@ -27,5 +29,7 @@ The permission page uses the typed contract. Raw metadata remains available for 
 Localization follows [ADR-0063](0063-mobile-app-language.md), S27 / R62: clients translate known interface templates at presentation time and preserve opaque arguments, identities and execution semantics.
 
 ## Consequences and verification
+
+SC85 implementation and regression: [Codex permission settings](../../packages/host/src/codex-permission-settings.test.ts), [iOS pending sends](../../ios/Orbis/Tests/PendingSendTests.swift), [Android pending sends](../../android/app/src/test/java/com/orbising/orbis/PendingSendsTest.kt). Reproduction and executed checks: [.artifacts/permission-confirmation-20261113](../../.artifacts/permission-confirmation-20261113/). Deployment and user acceptance remain pending.
 
 [根部测试约束](../../AGENTS.md#测试)；[Tests](../../ios/Orbis/Tests)；[orbis](../../android/app/src/test/java/com/orbising/orbis)；[src](../../packages/host/src)。

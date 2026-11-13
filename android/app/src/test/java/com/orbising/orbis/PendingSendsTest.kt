@@ -59,6 +59,21 @@ class PendingSendsTest {
         assertEquals(PendingSendState.Failed("电脑端拒绝了这条消息"), pending["idle"]?.state)
     }
 
+    // SC85: keep rejected input retryable with its permission reason for every
+    // delivery mode; an idle snapshot must not erase the draft or label it running.
+    @Test fun `permission failures keep drafts without claiming the session is running`() {
+        listOf("权限设置尚未确认，请稍后重试", "权限设置正在保存，请稍后重试").forEach { reason ->
+            listOf(null, "followUp", "steer").forEach { delivery ->
+                val pending = outbox(send("permission", delivery = delivery))
+                    .withCommandResult("c-permission", CommandResult(false, "failure", error = reason), start)
+                    .observe(revision = 1).first
+                assertEquals(PendingSendState.Failed(L10n.tr(reason)), pending["permission"]?.state)
+                assertEquals("text permission", pending["permission"]?.text)
+                assertEquals(delivery, pending["permission"]?.delivery)
+            }
+        }
+    }
+
     @Test fun `command results distinguish rejection from unknown delivery`() {
         var pending = outbox(send("ok"), send("busy"), send("lost"), send("sending"))
         pending = pending.withCommandResult("c-ok", CommandResult(true, "pending"), start)
