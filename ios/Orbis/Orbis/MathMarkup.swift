@@ -23,7 +23,16 @@ struct MathMarkup {
 enum MathResources {
     static var root: URL? {
         #if SWIFT_PACKAGE
-        Bundle.module.url(forResource: "MathResources", withExtension: nil)
+        // 资源目录在仓库里是软链接（shared/math）。有些 SwiftPM 工具链把它原样拷进
+        // 资源包，链接就悬空了；这时退回源码树，测试仍能在任何机器上跑。
+        let bundled = Bundle.module.url(forResource: "MathResources", withExtension: nil)
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("MathResources")
+        let file = FileManager.default
+        if let bundled, file.fileExists(atPath: bundled.appendingPathComponent("core.js").path) {
+            return bundled
+        }
+        return file.fileExists(atPath: source.appendingPathComponent("core.js").path) ? source : bundled
         #else
         Bundle.main.url(forResource: "MathResources", withExtension: nil)
         #endif

@@ -29,6 +29,27 @@ class SessionModelConfigurationInstrumentedTest {
     @Test fun runningSelectionIsSeparatedAndComposerDraftSurvives() = exercise(false)
     @Test fun narrowLargeTextKeepsCurrentModelAndChangeEntryAccessible() = exercise(true)
 
+    // SC86: the production sheet must not label an unchanged selection as a future switch.
+    @Test fun unchangedAgentSelectionsHaveOnlyOneConfigurationSection() {
+        val model = RuntimeModelInfo("p", "model", "Model")
+        val runtime = RuntimeSummary("r", "Agent", "/fixture", "running", "s", agentKind = "pi", model = model,
+            thinkingLevel = "high", executionTurnId = "turn",
+            currentTurnConfiguration = RuntimeTurnConfiguration("turn", model, "high", true))
+        val displayed = mutableStateOf(RemoteState(e2eReady = true, runtimes = mapOf("r" to runtime)))
+        compose.setContent { OrbisTheme {
+            SessionModelConfigurationSheet(displayed.value, "r", {}, null, {}, { _, _ -> null }, {})
+        } }
+        for (kind in listOf("pi", "codex", "claude", "dsh")) {
+            compose.runOnIdle { displayed.value = displayed.value.copy(runtimes = mapOf("r" to runtime.copy(agentKind = kind))) }
+            compose.onNodeWithTag("session-current-model").assertTextEquals("Model")
+            compose.onNodeWithTag("session-selected-model").assertDoesNotExist()
+            compose.onNodeWithText("下轮使用").assertDoesNotExist()
+            compose.onNodeWithText("后续选择").assertDoesNotExist()
+            compose.onAllNodesWithText("high").assertCountEquals(1)
+        }
+        capture("unchanged")
+    }
+
     // S56 / SC80: reuse the same sheet for unsupported agents and Claude's native effort command.
     @Test fun selectionOnlySheetRoutesClaudeEffortWithoutAnUnknownCurrentSection() {
         val runtime = RuntimeSummary("r", "Claude Code", "/fixture", "running", "s", agentKind = "claude",

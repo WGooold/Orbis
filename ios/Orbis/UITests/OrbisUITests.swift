@@ -1035,6 +1035,19 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // SC86: an unchanged running selection must not create a next-turn section.
+    func testUnchangedSessionModelPanelShowsOneConfiguration() {
+        let app = launch("chat", arguments: ["--preview-current-turn", "--preview-unchanged-turn", "--preview-reduce-motion"])
+        let title = app.descendants(matching: .any)["chat-title"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 8)); title.tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["session-current-model"].label, "GPT-5.4")
+        XCTAssertFalse(app.staticTexts["session-selected-model"].exists)
+        XCTAssertFalse(app.staticTexts["下轮使用"].exists)
+        XCTAssertFalse(app.staticTexts["后续选择"].exists)
+        capture("session-config-unchanged", app: app)
+    }
+
     /// V10 r27 / ADR-0049 §6.1–§6.2：附件还在上传时发送，气泡立即出现并带着附件（缩略图、文件名、进度），
     /// 输入框清空；上传完成后正文与附件一起提交，权威行替换本地行。
     func testSendingWhileUploadingShowsTheAttachmentInTheBubbleAndSubmitsTogether() {
