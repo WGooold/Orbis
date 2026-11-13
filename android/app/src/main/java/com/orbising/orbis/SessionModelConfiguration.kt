@@ -60,8 +60,15 @@ internal fun RemoteState.sessionModelPresentation(runtimeId: String): SessionMod
         if (different) { if (runtime.isCodex || runtime.agentKind == "claude") "下轮使用" else "后续选择" }
         else "当前所选")
     val selectedLabel = runtime.model?.let(::modelLabel)
+    // Request facts may omit the catalog label (Pi/Claude). Only the exact
+    // provider/id can supply a fallback name; preserve a genuinely different request.
+    val currentLabel = current?.model?.let { actual ->
+        actual.name?.takeIf(String::isNotBlank)
+            ?: runtime.model?.takeIf { it.provider == actual.provider && it.id == actual.id }?.let(::modelLabel)
+            ?: modelLabel(actual)
+    }
     return SessionModelPresentation(
-        model = if (showTurn) current?.model?.let(::modelLabel) ?: L10n.tr("模型未确认")
+        model = if (showTurn) currentLabel ?: L10n.tr("模型未确认")
             else if (active && selectedLabel != null) L10n.tr("所选：{0}", selectedLabel) else selectedLabel,
         thinking = if (showTurn) current?.thinkingLevel else runtime.thinkingLevel,
         indicator = indicator, current = current, active = active, supportsCurrent = supportsCurrent, selectionTitle = selectionTitle,
@@ -87,7 +94,7 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
             if (presentation.active && presentation.supportsCurrent && (runtime.isCodex || presentation.current?.model != null)) {
                 Text(L10n.tr("本轮使用"), style = MaterialTheme.typography.labelMedium)
                 val current = presentation.current
-                Text(current?.model?.let(::modelLabel) ?: L10n.tr("模型未确认"), Modifier.testTag("session-current-model"))
+                Text(presentation.model ?: L10n.tr("模型未确认"), Modifier.testTag("session-current-model"))
                 if (current?.thinkingKnown == true) Text(current.thinkingLevel ?: L10n.tr("默认深度"))
             }
             presentation.selectionTitle?.let { title ->

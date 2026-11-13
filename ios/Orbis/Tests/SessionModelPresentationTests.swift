@@ -30,6 +30,7 @@ struct SessionModelPresentationTests {
                 value.status = status
                 let view = SessionModelPresentation.make(runtime: value, connected: true)
                 #expect(view.showsCurrent && view.indicator == nil && view.selectionTitle == nil)
+                #expect(view.model == "Display name" && view.current?.model?.name == nil)
             }
             value.thinkingLevel = "low"
             let changed = SessionModelPresentation.make(runtime: value, connected: true)
@@ -39,6 +40,9 @@ struct SessionModelPresentationTests {
             #expect(SessionModelPresentation.make(runtime: value, connected: true).selectionTitle == nil)
             value.model = RuntimeModelInfo(provider: "other-provider", id: id, name: "Display name")
             #expect(SessionModelPresentation.make(runtime: value, connected: true).indicator != nil)
+            #expect(SessionModelPresentation.make(runtime: value, connected: true).model == id)
+            value.model = RuntimeModelInfo(provider: provider, id: "next-model", name: "Next model")
+            #expect(SessionModelPresentation.make(runtime: value, connected: true).model == id)
             value.model = value.currentTurnConfiguration?.model
             value.currentTurnConfiguration?.thinkingKnown = false
             value.currentTurnConfiguration?.thinkingLevel = nil
@@ -50,6 +54,19 @@ struct SessionModelPresentationTests {
             #expect(SessionModelPresentation.make(runtime: value, connected: true).selectionTitle == nil)
             value.status = "idle"
             #expect(SessionModelPresentation.make(runtime: value, connected: true).selectionTitle == "当前所选")
+        }
+    }
+    @Test func piCatalogNameDoesNotAlternateWithTheResponseIdAcrossTurns() {
+        var value = runtime("pi")
+        value.model = RuntimeModelInfo(provider: "deepseek", id: "deepseek-flash", name: "DeepSeek V4.1 Flash")
+        for turnId in ["first", "second", "third"] {
+            value.executionTurnId = turnId
+            value.currentTurnConfiguration = RuntimeTurnConfiguration(turnId: turnId,
+                model: RuntimeModelInfo(provider: "deepseek", id: "deepseek-flash", name: nil), thinkingLevel: "high", thinkingKnown: true)
+            for status in ["running", "waiting_local_interaction", "idle"] {
+                value.status = status
+                #expect(SessionModelPresentation.make(runtime: value, connected: true).model == "DeepSeek V4.1 Flash")
+            }
         }
     }
     @Test func currentAndNextRemainIndependentThroughSaveFailureAndRevert() {

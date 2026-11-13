@@ -27,6 +27,27 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  // SC86: the selection has a catalog name and command alias; request facts keep
+  // the resolved ID without a name. Clients must use that identity to fill labels.
+  it("keeps an unchanged Claude alias distinct from the resolved request identity", () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge);
+    const send = (event: unknown) => bridge.receiveEvent(current.runtimeId, current.generation, event);
+    const last = () => events.flatMap(event => event.type === "runtime.metadata" ? [event.metadata] : []).at(-1)!;
+    try {
+      send({ type: "session.state", state: { model: "claude-opus-5-5", modelName: "Opus 5.5", modelSetting: "opus", effort: "high" } });
+      for (const turnId of ["first", "second"]) {
+        send({ type: "turn.start", turnId, startedAt: 100 });
+        send({ type: "session.state", state: { currentTurnConfiguration: { turnId,
+          model: { provider: "claude-code", id: "claude-opus-5-5" }, thinkingLevel: "high" } } });
+        expect(last()).toMatchObject({ model: { provider: "claude-code", id: "claude-opus-5-5", name: "Opus 5.5" },
+          modelSelection: { model: "opus" }, currentTurnConfiguration: { model: { provider: "claude-code", id: "claude-opus-5-5" }, thinkingLevel: "high" } });
+        expect(last().currentTurnConfiguration?.model?.name).toBeUndefined();
+        send({ type: "turn.complete", turnId });
+      }
+    } finally { bridge.close(); }
+  });
   // S56 / SC80: the shared model domain retains request facts through alias changes/reconnect.
   it("separates native request configuration from selection and ignores stale reports", () => {
     const events: RuntimeEvent[] = [];

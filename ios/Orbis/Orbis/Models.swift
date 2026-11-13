@@ -324,7 +324,13 @@ struct SessionModelPresentation {
         else { indicator = nil }
         let showTurn = runtime.status != "idle" && supported && (codex || current?.model != nil)
         let selected = runtime.model.map { $0.name ?? $0.id }
-        return Self(model: showTurn ? current?.model.map { $0.name ?? $0.id } ?? L10n.tr("模型未确认") :
+        // Pi/Claude request facts can omit the catalog label. Reuse it only for
+        // the exact same provider/id; a next selection cannot rename this request.
+        let currentLabel = current?.model.map { actual in
+            actual.name ?? (actual.provider == runtime.model?.provider && actual.id == runtime.model?.id
+                ? runtime.model?.name : nil) ?? actual.id
+        }
+        return Self(model: showTurn ? currentLabel ?? L10n.tr("模型未确认") :
                         (active ? selected.map { L10n.tr("所选：{0}", $0) } : selected),
                     thinking: showTurn ? current?.thinkingLevel : runtime.thinkingLevel, indicator: indicator, current: current,
                     active: active, showsCurrent: showsCurrent, selectionTitle: selectionTitle)

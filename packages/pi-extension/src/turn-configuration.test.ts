@@ -7,7 +7,7 @@ describe("Pi native turn configuration", () => {
   // SC86: native message.model and context.model.id have the same identity;
   // a friendly label and provider/id command encoding do not mean a pending change.
   it("keeps unchanged selection and response identities comparable across repeated turns", () => {
-    const selection = runtimeContextSnapshot({ model: { provider: "deepseek", id: "deepseek-flash", name: "DeepSeek Flash" }, thinkingLevel: "high" });
+    const selection = runtimeContextSnapshot({ model: { provider: "deepseek", id: "deepseek-flash", name: "DeepSeek V4.1 Flash" }, thinkingLevel: "high" });
     expect(selection.modelSelection).toEqual({ model: "deepseek/deepseek-flash", thinking: "high" });
     for (const turnId of ["first", "second"]) {
       const current = piTurnConfiguration(turnId, { role: "assistant", provider: "deepseek", model: "deepseek-flash", thinkingLevel: "high" });

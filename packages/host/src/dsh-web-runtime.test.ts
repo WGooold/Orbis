@@ -87,6 +87,28 @@ describe("DeepSeek Web runtime adapter", () => {
   });
 
   // S56 / SC80: bind request/header to turn/start; a lastUsed projection alone can be stale.
+  // SC86: DeepSeek Web already resolves both sides through the same catalog.
+  it("uses the same catalog name for unchanged DeepSeek request and selection", async () => {
+    const f = discoveryFixture();
+    const inherited = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/modelCatalog"
+      ? Promise.resolve({ default: { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" },
+        groups: [{ id: "deepseek-official", models: [{ id: "deepseek-flash", name: "DeepSeek V4.1 Flash" }] }] })
+      : inherited(method, args));
+    f.list([f.live("same-configuration", true)]); await f.runtime.start();
+    const metadata = () => f.runtime.directoryEntries()[0]!;
+    await vi.waitFor(() => expect(metadata().model?.name).toBe("DeepSeek V4.1 Flash"));
+    const selection = { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" };
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 1,
+      records: [
+        { event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } },
+        { event: { seq: 1, time: 1001, type: "request/header", data: { header: { config: selection } } } },
+      ], projections: { asOfSeq: 1, values: { modelSelection: { lastUsed: selection, next: selection } } } });
+    expect(metadata().currentTurnConfiguration?.model).toEqual(metadata().model);
+    expect(metadata().currentTurnConfiguration?.model?.name).toBe("DeepSeek V4.1 Flash");
+    expect(metadata().currentTurnConfiguration?.thinkingLevel).toBe(metadata().thinkingLevel);
+  });
+
   it("keeps request facts separate from next selection across active changes and snapshots", async () => {
     const f = discoveryFixture(); f.list([f.live("configuration", true)]); await f.runtime.start();
     const follow = f.follows()[0]!;

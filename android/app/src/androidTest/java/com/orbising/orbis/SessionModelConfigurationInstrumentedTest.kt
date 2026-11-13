@@ -34,7 +34,7 @@ class SessionModelConfigurationInstrumentedTest {
         val model = RuntimeModelInfo("p", "model", "Model")
         val runtime = RuntimeSummary("r", "Agent", "/fixture", "running", "s", agentKind = "pi", model = model,
             thinkingLevel = "high", executionTurnId = "turn",
-            currentTurnConfiguration = RuntimeTurnConfiguration("turn", model, "high", true))
+            currentTurnConfiguration = RuntimeTurnConfiguration("turn", model.copy(name = null), "high", true))
         val displayed = mutableStateOf(RemoteState(e2eReady = true, runtimes = mapOf("r" to runtime)))
         compose.setContent { OrbisTheme {
             SessionModelConfigurationSheet(displayed.value, "r", {}, null, {}, { _, _ -> null }, {})

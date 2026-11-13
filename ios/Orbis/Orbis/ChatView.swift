@@ -1683,7 +1683,7 @@ private struct SessionModelConfigurationView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if presentation.showsCurrent {
                         Text(L10n.tr("本轮使用")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        Text(presentation.current?.model.map { $0.name ?? $0.id } ?? L10n.tr("模型未确认"))
+                        Text(presentation.model ?? L10n.tr("模型未确认"))
                             .font(.orbisBody(.semibold)).accessibilityIdentifier("session-current-model")
                         if presentation.current?.thinkingKnown == true {
                             Text(presentation.current?.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
