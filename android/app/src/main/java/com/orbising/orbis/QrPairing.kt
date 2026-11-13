@@ -60,7 +60,7 @@ data class PairingDetails(
 
 internal fun parsePairingQrPayload(raw: String): PairingDetails? {
     val payload = runCatching {
-        pairingJson.decodeFromString<PairingQrPayload>(raw)
+        pairingJson.decodeFromString<PairingQrPayload>(raw.trim())
     }.getOrNull() ?: return null
     if (payload.version != 1 || !isSupportedRelayUrl(payload.relayUrl)) return null
     if (!payload.code.matches(Regex("^[A-Z0-9_-]{4,128}$"))) return null
@@ -85,7 +85,7 @@ data class PairingQrV2(
 
 internal fun parsePairingQrV2(raw: String): PairingQrV2? {
     val payload = runCatching {
-        pairingJson.decodeFromString<PairingQrV2Payload>(raw)
+        pairingJson.decodeFromString<PairingQrV2Payload>(raw.trim())
     }.getOrNull() ?: return null
     if (payload.v != 2 || !isSupportedRelayUrl(payload.relayUrl)) return null
     if (!payload.code.matches(Regex("^[A-Z0-9_-]{4,128}$"))) return null
@@ -163,6 +163,44 @@ fun QrScannerDialog(
             }
         },
         confirmButton = { NeumorphTextButton(text = L10n.tr("取消"), onClick = onDismiss) },
+    )
+}
+
+/**
+ * 没有相机或扫不了码时（例如另一台手机在测、二维码不在手边），
+ * 直接粘贴电脑端 `orbis pair --print-payload` 输出的载荷即可。
+ */
+@Composable
+fun ManualPairingDialog(
+    onPayload: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf("") }
+    val trimmed = text.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(L10n.tr("手动输入配对载荷")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(L10n.tr("在电脑上运行 orbis pair --print-payload，把整段内容粘贴到这里（与二维码内容相同）。"))
+                NeumorphTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text(L10n.tr("pairing payload")) },
+                    minLines = 4,
+                    maxLines = 8,
+                )
+            }
+        },
+        dismissButton = { NeumorphTextButton(text = L10n.tr("取消"), onClick = onDismiss) },
+        confirmButton = {
+            NeumorphTextButton(
+                text = L10n.tr("连接"),
+                onClick = { onPayload(trimmed) },
+                enabled = trimmed.isNotEmpty(),
+            )
+        },
     )
 }
 
