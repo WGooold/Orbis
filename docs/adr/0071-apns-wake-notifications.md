@@ -18,3 +18,16 @@ Apple Developer 中需为 `com.orbising.orbis.ios` App ID 启用 Push Notificati
 ## 实现与验证入口
 
 APNs sender、Relay 注册/唤醒接口：[packages/relay/src/apns.ts](../../packages/relay/src/apns.ts)、[packages/relay/src/index.ts](../../packages/relay/src/index.ts)；Host 语义边缘触发：[packages/host/src/host-service.ts](../../packages/host/src/host-service.ts)；iOS 注册：[ios/Orbis/Orbis/Notifications.swift](../../ios/Orbis/Orbis/Notifications.swift)。配置实际可用性和签名结果必须用真实 .p8、Apple Developer profile、真机分别验证；单测不证明 APNs 服务端投递或 Apple capability 生效。
+
+## 生命周期修订（2026-11-13）
+
+- APNS-L01／L02：Relay 串行提交 token 变更、持久化与失败回滚；请求体接收后重新校验配对凭据。设备撤销及停用优先于旧推送文件；APNs 旧请求的失败响应不得删除更新后的注册。同一 Host 的同一 token 在一次 wake 中只投递一次。
+- APNS-L03–L08：iOS 按完整配对端点协调注册。每次进程启动等待新的 APNs 回调；新增、删除、替换 Host 配对与通知权限变化分别对账。离线解除配对的清理任务保存在 Keychain，重启后继续；前台及网络恢复重新对账。旧请求结束后才提交新意图，暂时失败采用有上限的退避间隔。
+- APNS-L09／L10：Host 对同一完成或审批事件保留有界去重记录。APNs 提醒有效期为五分钟，collapse ID 包含 Host 与事件类别；永久失效的目的地被清理，提供者认证错误与暂时失败保留注册。连接关闭及 GOAWAY 后重新建立传输。
+- APNS-L11：通知点击先保存 Host，再由界面订阅消费；冷启动不依赖瞬时广播。
+- APNS-L12／L14：新版 App 注册前访问已认证的 `/v1/push/config`，仅在版本与 sandbox／production 环境匹配后上传 token；旧 Relay 返回 404 时停用远程注册。清理请求独立执行。新版 Relay 保留旧 App 的 token-only 格式与 version 1 状态文件兼容；HTTP 重定向不携带凭据继续请求。
+- APNS-L13：模拟器使用独立 QA App ID、随机 Keychain 命名空间与合成配对，实际执行重启、卸载／重装、全新安装和系统通知注入。注入成功不代表 Apple APNs 投递成功。
+
+回归入口：[PushRegistrationTests.swift](../../ios/Orbis/Tests/PushRegistrationTests.swift)、[PushLifecycleProbe.swift](../../ios/Orbis/DeviceTests/PushLifecycleProbe.swift)、[push-lifecycle.test.ts](../../packages/relay/src/push-lifecycle.test.ts)、[apns-transport.test.ts](../../packages/relay/src/apns-transport.test.ts)、[push-wake.test.ts](../../packages/host/src/push-wake.test.ts)。
+
+自动验证与首次失败证据保存在 `.artifacts/apns-lifecycle-20261113/`：`reinstall-5/summary.json` 记录模拟器实际安装生命周期，`compatibility/` 使用 v0.1.19 原始 Relay／协议源码与新版 Swift HTTP 客户端验证回退及同版正对照。实现、自动验证、部署和人工验收分别记录；本次未部署，真实 APNs 投递及真机权限／重装路径待用户验证。

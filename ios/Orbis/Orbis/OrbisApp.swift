@@ -13,6 +13,10 @@ struct OrbisApp: App {
         OrbisAppearance.migrate()
         AppLocalization.shared.configure()
         #if DEBUG
+        if PushLifecycleProbe.phase != nil {
+            _store = StateObject(wrappedValue: OrbisStore(secure: SecureStore(testNamespace: PushLifecycleProbe.scope), autoConnect: false, preferences: nil))
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--preview-reset-design") {
             UserDefaults.standard.set("mist", forKey: "orbis.appearance")
             UserDefaults.standard.set("light", forKey: "orbis.colorMode")
@@ -35,7 +39,9 @@ struct OrbisApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--preview-screen=math") {
+            if PushLifecycleProbe.phase != nil {
+                PushLifecycleProbeView()
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=math") {
                 MathRenderingPreview().environmentObject(store)
                     .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : .light)
             } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=disclosure") {
@@ -62,7 +68,7 @@ struct OrbisApp: App {
             .environment(\.locale, AppLocalization.shared.locale)
             .environment(\.layoutDirection, .leftToRight)
             .task { prepareReplyNotifications() }
-            .onChange(of: store.pairings.isEmpty) { _, _ in prepareReplyNotifications() }
+            .onChange(of: store.pairings) { _, _ in prepareReplyNotifications() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications() }
             }
@@ -77,7 +83,6 @@ struct OrbisApp: App {
         OrbisAppDelegate.updatePairings(store.pairings)
         if !store.pairings.isEmpty {
             ReplyCompletionNotifications.shared.prepare()
-            OrbisAppDelegate.registerForPushIfAllowed()
         }
     }
     private var preferredScheme: ColorScheme? {

@@ -22,6 +22,7 @@ import { PiToolContentReader } from "./pi-tool-content-reader.js";
 import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inventory.js";
 import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
+import { PushWakeReceipts } from "./push-wake.js";
 
 import {
   E2eError,
@@ -3014,7 +3015,9 @@ export class HostService {
     this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, event));
   }
 
+  readonly #pushWakeReceipts = new PushWakeReceipts();
   #wakeOfflineDevices(category: "task-completed" | "approval-requested", eventId: string): void {
+    if (!this.#pushWakeReceipts.observe(category, eventId)) return;
     const deviceIds = this.#store.devices.filter(device => !device.revoked && this.#links.get(device.deviceId)?.active === undefined)
       .map(device => device.deviceId);
     if (deviceIds.length === 0 || this.#relay?.state !== "connected") return;
