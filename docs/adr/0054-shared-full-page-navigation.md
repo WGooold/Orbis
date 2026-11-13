@@ -66,3 +66,13 @@ iOS 已复现返回首页后卡片仍短暂不可操作，另复现短拖结束�
 iOS 确认退场采用 180ms ease-out，取消沿用质量 1 / 刚度 260 / 阻尼 24 的弹簧；Android 沿用既有 180ms。减少动画与已屏外情况直接交接，横拖由容器管理按钮按压和 touch-up。即时性交接通过应用内单调时钟记录，自动化调度预算为 300ms。
 
 2026-11-03：应用内实测与最终专项支持修复；完整 iOS 全量受外接盘中断和共享设备残留锁阻塞，Android 深色按压反馈及其他全量失败保留，完整人工与最终动效帧尚未验收。测试入口与证据见 [测试规则](../../AGENTS.md#测试)、[OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift) 和 `.artifacts/ui-regression/20261103-ios-return-response/summary.md`。
+
+## 2026-11-13：iOS 整页全部常驻，返回来源不再是静帧（已实施，待用户验证）
+
+iOS 整页导航改为常驻层容器，与 Android OrbisPageHost 一致：首页与每一层整页同时挂载，最上层接收输入，下一层是返回来源。右滑返回、返回键和嵌套返回露出的都是真实页面实例，阅读位置、输入草稿与期间的更新随之保留；交换单页的旧实现（透明 NavigationStack 下只常驻根页面）被替换，页面返回不再取用任何截图。层级顺序即推入顺序，路径增删由 `OrbisPageStack` 管理，路径变化本身不再驱动转场。
+
+动效与手势沿用 ADR-0058 参数：推入使用与返回同一组弹簧（`.orbisSwipeBack(velocity: 0)`，新增 `InteractionMotion.pageEnter`），来源层同步恢复压缩与 0.34 遮罩；右滑过程、三分之一提交阈值、180ms 退出与取消弹簧保持原值；页面自己的返回控件走与手势相同的提交路径，不再有第二段系统动画。草稿卡片形变仍以进入瞬间的静帧补齐矩形外区域，暂未改动。
+
+每层各自保留一个承托控制器，被覆盖的页面从原生无障碍枚举中移除（`accessibilityHidden` 对显式无障碍子树不可靠，此前是被覆盖根页面出现在 XCUITest 树中的原因）。推入时的层宽在下一帧读取，兄弟动画（如正在关闭的抽屉）可能先报出中间宽度；层宽变化不得让页面停在屏外。
+
+验证（iOS 27.0 模拟器，Orbis iOS Standard 2）：`testNestedPagesSwipeBackOneLevelAtATime`、`testHistorySwipeBackReturnsToChat`、`testChatSwipeBackReboundsThenReturnsHome`、`testSettingsAndDownloadsSwipeBack`、`testAddComputerPageReboundsAndSwipesBack`、`testDraftSurvivesBackNavigationAndSlashRequiresSelection`、`testSlashPickerStaysAboveKeyboard`、`testScrolledHomeKeepsCardPositionAfterChatReturn`、`testOptionalEdgeBackKeepsExistingIOSNavigation`、`testChatReturnImmediatelyAcceptsCardEntry` 通过（10/11）。既有失败保留：`testNewSessionEntersChatAtOnceAndFailureOffersRetryInPlace`:1140 修复前后同一断言（先前记录为既有失败）；`testFullPageReturnBudgetAndNestedSourceReentry`:1882 仍按“根标签切换会产生一次页面返回”的旧预期断言，该预期自根标签改造后失效。Swift 482 项单元测试通过。未覆盖：iPad 常驻目录布局与真机手感；`testScrolledHomeKeepsCardPositionAfterChatReturn` 在 iPad 上仍有 fixture 派发失败。证据见 [.artifacts/nested-live-layers-20261113](../../.artifacts/nested-live-layers-20261113/)。用户验收：待用户验证。

@@ -135,6 +135,8 @@ enum InteractionMotion {
     static let dismiss = Animation.easeIn(duration: 0.18)
     /// A committed page return ends with the visible slide, never a spring's invisible tail.
     static let pageReturn = Animation.easeOut(duration: 0.18)
+    /// A pushed page enters on the same spring the return uses, matching Android's host.
+    static let pageEnter = Animation.orbisSwipeBack(velocity: 0)
     static let send = Animation.linear(duration: MotionGeometry.sendDuration)
     static let toolbar = Animation.easeInOut(duration: 0.26)
     static func dialSettle(distance: Double) -> Animation {

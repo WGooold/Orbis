@@ -32,6 +32,9 @@ struct ContentView: View {
     @State private var draftNoticeToken = 0
     @State private var newSessionCwd: String?
     @StateObject private var overlay = OrbisOverlay()
+    #if DEBUG
+    @State private var previewListOperationCount = 0
+    #endif
 
     init() {
         #if DEBUG
@@ -51,51 +54,19 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Group {
-                if store.pairings.isEmpty {
-                    PairingEntryView(onCancel: nil, onCode: store.pair)
-                } else {
-                    OrbisMountedRoot(hidden: rootCovered) { rootPages }
-                        .modifier(OrbisRootRevealEffect(reveal: navigation.rootReveal))
-                        .accessibilityHidden(rootCovered)
-                        .allowsHitTesting(navigation.pages.isEmpty)
-                }
+            if store.pairings.isEmpty {
+                PairingEntryView(onCancel: nil, onCode: store.pair)
+            } else {
+                // Every layer stays mounted below the pages above it: a return, a push and a
+                // covered page all resolve to the real instance with its reading position and
+                // updates. Nothing is captured or rebuilt (ADR-0054 / M14).
+                OrbisMountedLayer(hidden: rootCovered) { rootPages }
+                    .modifier(OrbisSourceRevealEffect(reveal: navigation.reveal, layerIndex: -1))
+                    .accessibilityHidden(rootCovered)
+                    .allowsHitTesting(navigation.pages.isEmpty)
+                pageLayers
             }
-            NavigationStack(path: $navigation.pages) {
-                Color.clear
-                    .orbisTransparentNavigationContainer()
-                    .toolbar(.hidden, for: .navigationBar)
-                    .navigationDestination(for: AppPage.self) { page in
-                        Group {
-                            switch page {
-                            case .chat:
-                                if let runtime = store.selectedRuntime {
-                                    ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
-                                        .id(localSessionKey(host: store.selectedHost, runtime: runtime))
-                                        .modifier(OrbisDraftExpansion(origin: draftOrigin, snapshot: draftSnapshot, onComplete: { draftOrigin = nil; draftSnapshot = nil }))
-                                } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
-                            case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
-                            case .status: ConnectionStatusView(onBack: back)
-                            case .providers: AgentProvidersView(onBack: back)
-                            case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
-                            case .downloads: DownloadsView(onBack: back)
-                            }
-                        }
-                        .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .foregroundStyle(OrbisPalette(scheme).text)
-                        .background(OrbisPalette(scheme).base.ignoresSafeArea())
-                        .toolbar(.hidden, for: .navigationBar)
-                        .modifier(OrbisPageTransition(onBack: back,
-                                                      rootReveal: navigation.isRootPage(page) ? navigation.rootReveal : nil,
-                                                      underlay: { navigation.underlay(below: page) }))
-                        .orbisTransparentNavigationContainer()
-                    }
-                }
-            .toolbar(.hidden, for: .navigationBar)
-            .allowsHitTesting(!navigation.pages.isEmpty)
         }
-        // The actual root stays mounted below the transparent navigation stack. Pushes,
-        // swipe-back and the back button reveal this live home with its list offset and updates.
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .environmentObject(store.transfers)
         .environmentObject(store.toolInventories)
@@ -128,10 +99,17 @@ struct ContentView: View {
             if ProcessInfo.processInfo.arguments.contains("--preview-viewport-controls") {
                 HStack(spacing: 2) {
                     ForEach(["insert", "promote", "remove"], id: \.self) { operation in
-                        Button(operation) { PreviewViewportUpdates.changeList?(operation) }
+                        Button {
+                            guard let change = PreviewViewportUpdates.changeList else { return }
+                            change(operation)
+                            previewListOperationCount += 1
+                        } label: {
+                            Text(operation).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                        }
                             .accessibilityIdentifier("preview-list-" + operation)
+                            .accessibilityValue(String(previewListOperationCount))
                     }
-                }.font(.system(size: 10)).padding(.top, 60)
+                }.buttonStyle(.plain).font(.system(size: 10)).padding(.top, 60).padding(.trailing, 12)
             }
             if ProcessInfo.processInfo.arguments.contains("--preview-home-refresh-probe") {
                 PreviewHomeRefreshReport()
@@ -245,6 +223,46 @@ struct ContentView: View {
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 
+    /// One mounted layer per page. Only the top layer takes input; the layer beneath is the
+    /// return source and takes the same compression and scrim a source preview used to.
+    /// Each layer keeps its own hosting controller so a covered page leaves the accessible tree.
+    @ViewBuilder private var pageLayers: some View {
+        let top = navigation.pages.count - 1
+        ForEach(Array(navigation.pages.enumerated()), id: \.offset) { index, page in
+            OrbisMountedLayer(hidden: index != top) {
+                pageView(page)
+                    .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundStyle(OrbisPalette(scheme).text)
+                    .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                    .modifier(OrbisPageTransition(onBack: commitBack, reveal: navigation.reveal,
+                                                  layerIndex: index, isTop: index == top,
+                                                  entrance: navigation.entranceIndex == index && !expanding(page),
+                                                  returnRequests: navigation.returnRequests))
+            }
+            .modifier(OrbisSourceRevealEffect(reveal: navigation.reveal, layerIndex: index))
+            .allowsHitTesting(index == top)
+        }
+    }
+
+    @ViewBuilder private func pageView(_ page: AppPage) -> some View {
+        switch page {
+        case .chat:
+            if let runtime = store.selectedRuntime {
+                ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
+                    .id(localSessionKey(host: store.selectedHost, runtime: runtime))
+                    .modifier(OrbisDraftExpansion(origin: draftOrigin, snapshot: draftSnapshot, onComplete: { draftOrigin = nil; draftSnapshot = nil }))
+            } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
+        case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
+        case .status: ConnectionStatusView(onBack: back)
+        case .providers: AgentProvidersView(onBack: back)
+        case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
+        case .downloads: DownloadsView(onBack: back)
+        }
+    }
+
+    /// The draft already grows its own rectangle from the card; it must not slide as well.
+    private func expanding(_ page: AppPage) -> Bool { page == .chat && draftOrigin != nil }
+
     /// The mounted root is below a full page or the phone drawer and must not be reachable.
     private var rootCovered: Bool { !navigation.pages.isEmpty || (drawerOpen && surfaceWidth < 600) }
 
@@ -314,7 +332,10 @@ struct ContentView: View {
                           onUnpair: { confirmUnpair($0) }).equatable()
     }
 
-    private func back() { navigation.back() }
+    /// A page's own back control runs the same slide as a swipe, so both reveal the same source.
+    private func back() { navigation.requestBack() }
+    /// The returning layer has finished sliding out; the path must change without a second transition.
+    private func commitBack() { navigation.back() }
     private func push(_ page: AppPage) { navigation.push(page) }
     private func setDrawer(_ open: Bool) {
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
@@ -333,10 +354,11 @@ struct ContentView: View {
     }
 }
 
-/// Keep one hosting controller (and its scroll/draft state) while excluding a covered
-/// root from native accessibility enumeration. Hidden SwiftUI descendants alone can
-/// remain visible to automation when mounted beside a NavigationStack.
-private struct OrbisMountedRoot<Content: View>: UIViewControllerRepresentable {
+/// Keep one hosting controller (and its scroll, draft and reading state) per layer while
+/// excluding a covered layer from native accessibility enumeration. `accessibilityHidden`
+/// alone leaves descendants visible to automation, so a covered layer drops its UIKit
+/// subtree instead.
+private struct OrbisMountedLayer<Content: View>: UIViewControllerRepresentable {
     let hidden: Bool
     @ViewBuilder var content: Content
 
@@ -579,58 +601,68 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     }
 }
 
-/// Owns navigation and source previews together, so new routes cannot forget swipe-back setup.
+/// Owns the page path and the state every mounted layer shares, so new routes cannot forget
+/// swipe-back setup. There is no capture: the source page stays mounted under the top page.
 @MainActor
 final class OrbisPageStack<Page: Hashable>: ObservableObject {
-    @Published var pages: [Page] {
-        didSet { snapshots = snapshots.filter { $0.key < pages.count } }
-    }
-    private var snapshots: [Int: UIView] = [:]
-    /// Not published: a root page's return drives only the live root's effect, not the whole screen.
-    let rootReveal = OrbisRootReveal()
+    @Published private(set) var pages: [Page]
+    /// Bumped by a page's back control so the top layer runs the same slide as a swipe.
+    @Published private(set) var returnRequests = 0
+    /// Reveal progress of the layer being returned or entered, shared with the layer below it.
+    let reveal = OrbisSourceReveal()
+    /// Index of a page that still has to slide in from the trailing edge. Only read while the
+    /// layers are built; the entry is replayed by the transition that owns it.
+    private(set) var entranceIndex: Int?
 
     init(_ pages: [Page] = []) { self.pages = pages }
 
-    func isRootPage(_ page: Page) -> Bool { pages.first == page }
-
     func push(_ page: Page) {
-        if !pages.isEmpty { snapshots[pages.count] = currentScreenSnapshot() }
+        entranceIndex = pages.count
         pages.append(page)
     }
 
+    func requestBack() { if !pages.isEmpty { returnRequests += 1 } }
+
+    /// A returning layer calls this once it has slid out, so the path changes without a
+    /// second transition. Callers that clear the path directly keep the default (instant).
     func back() { if !pages.isEmpty { pages.removeLast() } }
 
     func replace(with pages: [Page]) {
-        snapshots.removeAll()
+        let keepsPrefix = pages.count > self.pages.count && Array(pages.prefix(self.pages.count)) == self.pages
+        entranceIndex = keepsPrefix ? pages.count - 1 : nil
         self.pages = pages
     }
-
-    @ViewBuilder func underlay(below page: Page) -> some View {
-        let index = pages.lastIndex(of: page) ?? 0
-        if let snapshot = snapshots[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
-        else { Color.clear }
-    }
 }
 
-/// Return progress of the page directly above the live root: nil while none is being revealed,
-/// 0 while the page still covers the root and 1 once it has left.
+/// Reveal progress of the layer below the one that is returning or entering. `fromIndex` is
+/// that returning layer's index (-1 for the root), nil while nothing is in motion.
 @MainActor
-final class OrbisRootReveal: ObservableObject {
-    @Published var progress: CGFloat?
+final class OrbisSourceReveal: ObservableObject {
+    @Published private(set) var fromIndex: Int?
+    @Published private(set) var progress: CGFloat = 1
+
+    func begin(from index: Int) { fromIndex = index; progress = 0 }
+    func update(_ value: CGFloat) { progress = min(1, max(0, value)) }
+    func end(at value: CGFloat) { progress = min(1, max(0, value)) }
+    func clear() { fromIndex = nil; progress = 1 }
 }
 
-/// The live root takes the same compression and scrim as a nested page's source preview (M14).
-private struct OrbisRootRevealEffect: ViewModifier {
+/// The source layer takes the compression and scrim a source preview used to carry (M14),
+/// while staying the live, mounted page it is.
+private struct OrbisSourceRevealEffect: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    @ObservedObject var reveal: OrbisRootReveal
+    @ObservedObject var reveal: OrbisSourceReveal
+    let layerIndex: Int
 
     func body(content: Content) -> some View {
-        let compression = 1 - (reveal.progress ?? 1)
+        let isSource = reveal.fromIndex == layerIndex + 1
+        let progress = isSource ? reveal.progress : 1
+        let compression = 1 - progress
         content
             .overlay {
-                if let progress = reveal.progress {
-                    OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea().allowsHitTesting(false)
+                if isSource, compression > 0 {
+                    OrbisPalette(scheme).scrim.opacity(0.34 * compression).ignoresSafeArea().allowsHitTesting(false)
                 }
             }
             .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
@@ -639,106 +671,78 @@ private struct OrbisRootRevealEffect: ViewModifier {
     }
 }
 
-extension View {
-    /// The root is mounted below the NavigationStack, so its pages must not paint the
-    /// container's opaque system background where that root should show through.
-    @ViewBuilder func orbisTransparentNavigationContainer() -> some View {
-        if #available(iOS 18.0, *) { containerBackground(.clear, for: .navigation) }
-        else { background(LegacyNavigationContainerClearing()) }
-    }
-}
+/// Every full page uses the same transition (M14). The layer below stays mounted, so a return
+/// reveals the live source; a pushed page slides in over it and compresses it the same way.
 
-/// iOS 17 has no navigation container background: clear the UIKit views between this page
-/// and its UINavigationController, leaving everything outside the stack untouched.
-private struct LegacyNavigationContainerClearing: UIViewRepresentable {
-    func makeUIView(context: Context) -> ClearingView { ClearingView() }
-    func updateUIView(_ view: ClearingView, context: Context) { view.clearContainer() }
-
-    final class ClearingView: UIView {
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            isUserInteractionEnabled = false
-            backgroundColor = .clear
-        }
-        required init?(coder: NSCoder) { nil }
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            clearContainer()
-        }
-        func clearContainer() {
-            guard window != nil else { return }
-            var responder: UIResponder? = next
-            while let current = responder, !(current is UINavigationController) { responder = current.next }
-            guard let container = (responder as? UINavigationController)?.view else { return }
-            var view = superview
-            while let current = view {
-                current.backgroundColor = .clear
-                if current === container { break }
-                view = current.superview
-            }
-        }
-    }
-}
-
-/// Every pushed full page uses the same transition (M14). Root returns reveal the live
-/// root mounted below the stack; nested returns use a noninteractive source preview.
-struct OrbisPageTransition<Underlay: View>: ViewModifier {
+struct OrbisPageTransition: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @EnvironmentObject private var overlay: OrbisOverlay
+    /// Called once the page has slid out: the path must then change without a second transition.
     let onBack: () -> Void
-    /// Set for the page directly above the live root, which is revealed instead of a preview.
-    let rootReveal: OrbisRootReveal?
-    @ViewBuilder let underlay: () -> Underlay
+    /// Shared progress of the layer being returned or entered.
+    let reveal: OrbisSourceReveal
+    let layerIndex: Int
+    let isTop: Bool
+    /// This layer was just pushed and still has to slide in from the trailing edge.
+    let entrance: Bool
+    let returnRequests: Int
     @State private var offset: CGFloat = 0
     @State private var horizontalDrag: Bool?
     @State private var containerWidth: CGFloat = 390
     @State private var returning = false
     @State private var suppressTaps = false
-    @State private var revealing = false
     @State private var settleID = UUID()
     @State private var backPriority: OrbisBackPriority?
+    @State private var entranceScheduled = false
+    @State private var entranceApplied = false
     @GestureState private var gestureActive = false
 
-    private var progress: CGFloat { max(0, min(1, offset / max(1, containerWidth))) }
-    private var compression: CGFloat { 1 - progress }
+    private var awaitingEntrance: Bool { entrance && !entranceApplied }
 
     func body(content: Content) -> some View {
-        ZStack {
-            if revealing && rootReveal == nil {
-                underlay()
-                    .overlay { OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea() }
-                    .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
-                                 y: reduceMotion ? 1 : 1 + 0.008 * compression,
-                                 anchor: .leading)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+        content
+            .opacity(awaitingEntrance ? 0 : 1)
+            .offset(x: max(0, offset))
+            .disabled(suppressTaps)
+            .allowsHitTesting(!returning)
+            .onAppear {
+                // Latch the decision: a draft entry clears its origin afterwards and must not
+                // start a slide once the card has already grown into the page.
+                if !entrance { entranceApplied = true }
             }
-            content.offset(x: max(0, offset))
-                .disabled(suppressTaps)
-                .allowsHitTesting(!returning)
-        }
-        .background((revealing && rootReveal != nil ? Color.clear : OrbisPalette(scheme).base).ignoresSafeArea())
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-        .simultaneousGesture(gesture)
-        .onPreferenceChange(OrbisBackPriorityKey.self) { backPriority = $0 }
-        .onChange(of: gestureActive) { _, active in
-            // System interruptions may cancel a gesture without calling onEnded.
-            if !active && horizontalDrag != nil && !returning {
-                horizontalDrag = nil
-                releaseTaps()
-                settle(back: false, velocity: 0)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                containerWidth = width
+                startEntrance()
             }
-        }
-        .onDisappear { returning = false; suppressTaps = false; settleID = UUID(); rootReveal?.progress = nil }
+            .simultaneousGesture(gesture)
+            .onPreferenceChange(OrbisBackPriorityKey.self) { backPriority = $0 }
+            .onChange(of: gestureActive) { _, active in
+                // System interruptions may cancel a gesture without calling onEnded.
+                if !active && horizontalDrag != nil && !returning {
+                    horizontalDrag = nil
+                    releaseTaps()
+                    settle(back: false, velocity: 0)
+                }
+            }
+            .onChange(of: returnRequests) { _, _ in
+                // The page's own back control runs the swipe's committed path, so the same
+                // source layer is revealed for the same duration.
+                guard isTop, !returning, offset == 0 else { return }
+                reveal.begin(from: layerIndex)
+                settle(back: true, velocity: 0)
+            }
+            .onDisappear {
+                returning = false; suppressTaps = false; settleID = UUID()
+                entranceScheduled = true; entranceApplied = true
+                clearReveal()
+            }
     }
 
     private var gesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
-                guard !returning else { return }
+                guard !returning, isTop else { return }
                 if horizontalDrag == nil {
                     horizontalDrag = overlay.menu == nil && overlay.dialog == nil && value.translation.width > abs(value.translation.height) * 1.5
                     settleID = UUID()
@@ -749,11 +753,11 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                 suppressTaps = true
                 // A selection or modal must not preview a different page.
                 if backPriority != nil { return }
-                revealing = true
+                if reveal.fromIndex != layerIndex { reveal.begin(from: layerIndex) }
                 let distance = max(0, value.translation.width)
                 let next = distance > containerWidth ? containerWidth + (distance - containerWidth) * 0.18 : distance
                 offset = next
-                rootReveal?.progress = max(0, min(1, next / max(1, containerWidth)))
+                reveal.update(next / max(1, containerWidth))
             }
             .onEnded { value in
                 let horizontal = horizontalDrag == true
@@ -763,6 +767,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                 let velocity = (value.predictedEndTranslation.width - value.translation.width) / 0.2
                 if backPriority != nil {
                     if value.translation.width + velocity * 0.15 > containerWidth / 3 { backPriority?.action() }
+                    clearReveal()
                     return
                 }
                 settle(back: offset + velocity * 0.15 > containerWidth / 3, velocity: velocity)
@@ -772,6 +777,35 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
     private func releaseTaps() {
         // Keep controls disabled through the current touch-up's action dispatch.
         DispatchQueue.main.async { suppressTaps = false }
+    }
+
+    /// A pushed page enters the way Android's host does: it starts one width to the right and
+    /// springs in while the source layer recovers from the preview compression. The width is
+    /// read on the next layout pass, because a sibling animation (a closing drawer) can report
+    /// an intermediate one; the page must never come to rest offscreen.
+    private func startEntrance() {
+        guard awaitingEntrance, !entranceScheduled, containerWidth > 0 else { return }
+        entranceScheduled = true
+        DispatchQueue.main.async {
+            guard !self.reduceMotion else {
+                self.entranceApplied = true
+                return
+            }
+            self.offset = self.containerWidth
+            self.entranceApplied = true
+            self.reveal.begin(from: self.layerIndex)
+            DispatchQueue.main.async {
+                guard !self.returning, self.horizontalDrag == nil else { return }
+                withAnimation(InteractionMotion.pageEnter) {
+                    self.offset = 0
+                    self.reveal.end(at: 1)
+                } completion: { self.clearReveal() }
+            }
+        }
+    }
+
+    private func clearReveal() {
+        if reveal.fromIndex == layerIndex { reveal.clear() }
     }
 
     private func settle(back: Bool, velocity: CGFloat) {
@@ -784,34 +818,38 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
         let target = back ? containerWidth : 0
         let distance = target - offset
         let initialVelocity = abs(distance) > 1 ? max(-8, min(8, velocity / distance)) : 0
+        let isSource = reveal.fromIndex == layerIndex
         let finish = {
             guard settleID == id else { return }
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
             guard back && returning else {
-                withTransaction(transaction) { revealing = false; rootReveal?.progress = nil }
+                withTransaction(transaction) { if isSource { reveal.clear() } }
                 return
             }
             // Consume this completion before handing navigation back to the source.
             settleID = UUID()
-            // At progress 1 the root effect is already identity; clearing it changes no pixel.
-            withTransaction(transaction) { onBack(); rootReveal?.progress = nil }
+            // At progress 1 the source effect is already identity; clearing it changes no pixel.
+            withTransaction(transaction) { onBack(); if isSource { reveal.clear() } }
             #if DEBUG
             PageReturnProbe.shared.committed()
             #endif
         }
-        // The preview is noninteractive. Do not leave it on screen waiting for
-        // a spring to finish oscillating offscreen after the visible page is gone.
+        // The source is live but not yet interactive. Do not leave the page on screen waiting
+        // for a spring to finish oscillating offscreen after the visible move is done.
         if reduceMotion || (back && offset >= containerWidth) {
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            withTransaction(transaction) { offset = target; rootReveal?.progress = back ? 1 : 0 }
+            withTransaction(transaction) {
+                offset = target
+                if isSource { reveal.end(at: back ? 1 : 0) }
+            }
             finish()
         } else {
             let animation = back ? InteractionMotion.pageReturn : .orbisSwipeBack(velocity: Double(initialVelocity))
             withAnimation(animation, completionCriteria: back ? .logicallyComplete : .removed) {
                 offset = target
-                rootReveal?.progress = back ? 1 : 0
+                if isSource { reveal.end(at: back ? 1 : 0) }
             } completion: { finish() }
         }
     }
