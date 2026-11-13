@@ -97,6 +97,7 @@
 | SC83 | Codex 完整子代理清单核对：原生能力、分页、嵌套、读取竞争与断线回退 |
 | SC84 | iOS 顶栏模型与深度面板对齐本轮／下轮事实、保存状态、失败重试与草稿保持 |
 | SC85 | Codex 权限显示跟随原生已保存选项，实际执行下一轮生效；目录差异不阻塞确认，回执丢失后读取原生设置恢复；发送失败保留输入并显示权限原因 |
+| SC86 | 四家 Agent 的模型面板在本轮与所选模型、深度均确认相同时仅显示本轮；确认差异才显示下轮／后续选择，未知事实保留“当前所选” |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

@@ -1021,7 +1021,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(app.staticTexts["session-current-model"].label, legacy ? "模型未确认" : "GPT-5.3")
             XCTAssertEqual(app.staticTexts["session-selected-model"].label, "GPT-5.4")
             XCTAssertTrue(app.staticTexts["本轮使用"].exists)
-            XCTAssertTrue(app.staticTexts["下轮使用"].exists)
+            XCTAssertTrue(app.staticTexts[legacy ? "当前所选" : "下轮使用"].exists)
             capture(legacy ? "session-config-old-host" : "session-config-current-next", app: app)
             app.buttons["session-config-model"].tap()
             let option = app.buttons["session-config-option-model-a"]

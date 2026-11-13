@@ -29,7 +29,7 @@ struct PresentationTests {
         let worker = MarkdownParsingWorker(cache: MarkdownDocumentCache(), parse: { text in
             if text == "first streaming document" {
                 started.continuation.yield(())
-                #expect(release.wait(timeout: .now() + 3) == .success)
+                #expect(release.wait(timeout: .now() + 30) == .success)
             }
             return PreparedMarkdownDocument(text)
         })

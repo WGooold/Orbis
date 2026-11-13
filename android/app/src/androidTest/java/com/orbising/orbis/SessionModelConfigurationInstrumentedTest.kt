@@ -93,7 +93,8 @@ class SessionModelConfigurationInstrumentedTest {
             compose.onNode(hasSetTextAction()).performTextInput("保留这段草稿")
             compose.onNodeWithTag("session-model-entry").performClick()
             compose.onNodeWithTag("session-current-model").assertTextEquals("Model A")
-            compose.onNodeWithTag("session-selected-model").assertTextEquals("Model A")
+            compose.onNodeWithTag("session-selected-model").assertDoesNotExist()
+            compose.onNodeWithText("下轮使用").assertDoesNotExist()
             compose.onNodeWithText("模型", substring = false).performScrollTo().performClick()
             // A synchronous transport refusal keeps the sheet open and the draft intact.
             compose.runOnIdle { sendAccepted = false }
@@ -127,7 +128,8 @@ class SessionModelConfigurationInstrumentedTest {
             val sheet = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "turn-config-sheet-$large.png")
             sheet.outputStream().use { compose.onNodeWithTag("session-model-configuration").captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
             compose.runOnIdle { displayed.value = displayed.value.copy(runtimes = mapOf("r" to runtime)) }
-            compose.onNodeWithTag("session-selected-model").assertTextEquals("Model A")
+            compose.onNodeWithTag("session-selected-model").assertDoesNotExist()
+            compose.onNodeWithText("下轮使用").assertDoesNotExist()
             compose.onNodeWithText("模型", substring = false).performScrollTo().performClick()
             // Choosing the already confirmed value closes through the same success path.
             compose.runOnIdle { sendAccepted = true }

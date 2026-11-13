@@ -1689,11 +1689,12 @@ private struct SessionModelConfigurationView: View {
                             Text(presentation.current?.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
                         }
                     }
-                    Text(L10n.tr(presentation.showsCurrent ? (store.agentKind(runtime) == "codex" || store.agentKind(runtime) == "claude" ? "下轮使用" : "后续选择") : "当前所选"))
-                        .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                    Text(runtime.model.map { $0.name ?? $0.id } ?? L10n.tr("未确认"))
-                        .font(.orbisBody(.semibold)).accessibilityIdentifier("session-selected-model")
-                    Text(runtime.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
+                    if let title = presentation.selectionTitle {
+                        Text(title).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        Text(runtime.model.map { $0.name ?? $0.id } ?? L10n.tr("未确认"))
+                            .font(.orbisBody(.semibold)).accessibilityIdentifier("session-selected-model")
+                        Text(runtime.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
+                    }
                     if let failure = store.sessionConfigFailure(runtime.runtimeId) {
                         Text(failure.message).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).error)
                         OrbisActionButton(title: L10n.tr("重试")) { select(failure.setting, failure.value) }.disabled(!store.canSend)

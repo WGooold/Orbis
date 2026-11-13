@@ -295,6 +295,7 @@ struct SessionModelPresentation {
     let current: RuntimeTurnConfiguration?
     let active: Bool
     let showsCurrent: Bool
+    let selectionTitle: String?
 
     static func make(runtime: RuntimeSummary, connected: Bool, modelReady: Bool = true, executionReady: Bool = true,
                      progress: [(label: String, mark: String)] = [], failed: Bool = false) -> Self {
@@ -308,6 +309,13 @@ struct SessionModelPresentation {
             different = actual.id != selected.id || actual.provider != selected.provider ||
                 (current?.thinkingKnown == true && current?.thinkingLevel != nil && current?.thinkingLevel != runtime.thinkingLevel)
         } else { different = false }
+        let showsCurrent = active && supported && (codex || current?.model != nil)
+        // SC86: a running turn alone is not a pending change. Hide duplicate
+        // selections only when both native identity and depth are confirmed equal.
+        let same = current?.model != nil && runtime.model != nil && !different &&
+            current?.thinkingKnown == true && current?.thinkingLevel == runtime.thinkingLevel
+        let selectionTitle: String? = showsCurrent && same ? nil :
+            L10n.tr(different ? (codex || runtime.agentKind == "claude" ? "下轮使用" : "后续选择") : "当前所选")
         let indicator: String?
         if progress.contains(where: { L10n.matches($0.mark, source: "未确认") }) { indicator = L10n.tr("未确认") }
         else if !progress.isEmpty { indicator = L10n.tr("保存中") }
@@ -319,7 +327,7 @@ struct SessionModelPresentation {
         return Self(model: showTurn ? current?.model.map { $0.name ?? $0.id } ?? L10n.tr("模型未确认") :
                         (active ? selected.map { L10n.tr("所选：{0}", $0) } : selected),
                     thinking: showTurn ? current?.thinkingLevel : runtime.thinkingLevel, indicator: indicator, current: current,
-                    active: active, showsCurrent: active && supported && (codex || current?.model != nil))
+                    active: active, showsCurrent: showsCurrent, selectionTitle: selectionTitle)
     }
 }
 

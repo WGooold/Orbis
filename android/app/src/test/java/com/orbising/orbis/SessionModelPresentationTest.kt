@@ -15,6 +15,37 @@ class SessionModelPresentationTest {
     private fun state(runtime: RuntimeSummary = runtime()) = RemoteState(hostId = "h", e2eReady = true, runtimes = mapOf("r" to runtime))
     private fun presentation(runtime: RuntimeSummary) = state(runtime).sessionModelPresentation("r")
 
+    // SC86: compare native identity, not display names or opaque selection encodings.
+    @Test fun unchangedConfigurationsDoNotShowFutureSelectionsAcrossAgents() {
+        for ((kind, provider, id, option) in listOf(
+            listOf("pi", "deepseek", "deepseek-flash", "deepseek/deepseek-flash"),
+            listOf("codex", "openai", "gpt-6.1-sol", "gpt-6.1-sol"),
+            listOf("claude", "claude-code", "claude-opus-5-5", "opus"),
+            listOf("dsh", "deepseek-official", "deepseek-flash", """{"provider":"deepseek-official","model":"deepseek-flash"}"""))) {
+            val actual = RuntimeModelInfo(provider, id)
+            val current = RuntimeTurnConfiguration("turn", actual, "high", true)
+            val value = runtime().copy(agentKind = kind, model = actual.copy(name = "Display name"), thinkingLevel = "high",
+                modelSelection = SessionConfigurationValues(option, "high"), currentTurnConfiguration = current)
+            for (status in listOf("running", "waiting_local_interaction")) {
+                val view = presentation(value.copy(status = status))
+                assertNotNull(view.current); assertNull(view.indicator); assertNull(view.selectionTitle)
+            }
+            val changed = presentation(value.copy(thinkingLevel = "low"))
+            assertEquals(if (kind in listOf("codex", "claude")) "下轮使用" else "后续选择", changed.selectionTitle)
+            assertNotNull(changed.indicator)
+            assertNull(presentation(value).selectionTitle)
+            assertNotNull(presentation(value.copy(model = actual.copy(provider = "other-provider"))).indicator)
+            val unknown = value.copy(currentTurnConfiguration = current.copy(thinkingLevel = null, thinkingKnown = false))
+            assertNull(presentation(unknown).indicator)
+            assertEquals("当前所选", presentation(unknown).selectionTitle)
+            val default = value.copy(currentTurnConfiguration = current.copy(thinkingLevel = null))
+            assertEquals("当前所选", presentation(default).selectionTitle)
+            assertNull(presentation(default.copy(thinkingLevel = null)).selectionTitle)
+            assertEquals("当前所选", presentation(value.copy(status = "idle")).selectionTitle)
+            assertEquals("当前所选", presentation(value.copy(currentTurnConfiguration = null)).selectionTitle)
+        }
+    }
+
     // S56 / SC80: unsupported/legacy adapters report selection, never a guessed current turn.
     @Test fun unsupportedAdaptersHaveAnExplicitSelectionWithoutAnEndlessUnknown() {
         for (kind in listOf("pi", "claude", "dsh")) {
