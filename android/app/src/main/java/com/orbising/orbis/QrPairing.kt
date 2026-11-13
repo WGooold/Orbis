@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.annotation.SuppressLint
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -130,9 +131,36 @@ fun QrScannerDialog(
     var hasPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
+    var error by remember { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> hasPermission = granted }
+    // 电脑屏幕上的二维码、别人转发到聊天里的截图都用这条路：不用对着屏幕扫。
+    val scanner = remember {
+        BarcodeScanning.getClient(
+            BarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build(),
+        )
+    }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        error = null
+        executor.execute {
+            val image = runCatching { InputImage.fromFilePath(context, uri) }.getOrNull()
+            val read = image?.let { input ->
+                runCatching { com.google.android.gms.tasks.Tasks.await(scanner.process(input)) }.getOrNull()
+            }
+            val raw = read?.firstNotNullOfOrNull { it.rawValue }
+            ContextCompat.getMainExecutor(context).execute {
+                if (raw != null) onPayloadUpdated(raw) else error = "这张图片里没有找到二维码"
+            }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { scanner.close(); executor.shutdown() }
+    }
 
     LaunchedEffect(Unit) {
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
@@ -142,23 +170,35 @@ fun QrScannerDialog(
         onDismissRequest = onDismiss,
         title = { Text(L10n.tr("扫描配对二维码")) },
         text = {
-            if (hasPermission) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (hasPermission) {
                     QrCameraPreview(
                         context = context,
                         lifecycleOwner = lifecycleOwner,
                         onPayload = onPayloadUpdated,
                     )
-
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                } else {
                     Text(L10n.tr("相机权限未开启"))
                     NeumorphActionButton(
                         onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
                         text = L10n.tr("允许相机权限"),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                }
+                Text(
+                    L10n.tr("也可以直接从相册里选一张二维码截图"),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center,
+                )
+                NeumorphActionButton(
+                    onClick = {
+                        imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    text = L10n.tr("从相册选图"),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (error != null) {
+                    Text(error ?: "", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
                 }
             }
         },
