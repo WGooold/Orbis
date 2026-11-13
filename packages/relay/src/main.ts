@@ -27,6 +27,8 @@ const relay = await createRelayServer({
   quicHistoryStreamsEnabled: process.env["ORBIS_RELAY_QUIC_HISTORY_STREAMS"] === "1",
   quicHostEnabled: process.env.ORBIS_QUIC_HOST_ENABLED === "1",
   ...(process.env.ORBIS_RELAY_BULK_BYTES_PER_SECOND === undefined ? {} : { bulkBytesPerSecond: Number(process.env.ORBIS_RELAY_BULK_BYTES_PER_SECOND) }),
+  // 隔离 QA 环境希望配对码长期有效；默认仍是 5 分钟。
+  ...(process.env.ORBIS_PAIRING_TTL_MS === undefined ? {} : { pairingTtlMs: Number(process.env.ORBIS_PAIRING_TTL_MS) }),
   port,
   host: process.env.HOST ?? "0.0.0.0",
   runtimeCredentials: runtimeCredential ? [runtimeCredential] : [],
