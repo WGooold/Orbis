@@ -11,6 +11,7 @@ import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./deskt
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
 import { HostService } from "./host-service.js";
 import type { DshConnection } from "./dsh-client.js";
 
@@ -141,6 +142,37 @@ describe("desktop Host lifecycle", () => {
     expect((await loadDeviceStore(state)).devices[0]?.revoked).toBe(true);
     await expect(runtime.renameDevice("phone", "old phone")).rejects.toThrow("设备不存在");
     await runtime.close();
+  });
+  // DSH-DESKTOP-09: opening DeepSeek Desktop may wait for the user to quit an instance Orbis did not open. It must
+  // not hold the serialized desktop command queue; its progress reaches the Host UI as events.
+  it("returns from opening DeepSeek Desktop at once and reports the wait as events", async () => {
+    const state = await mkdtemp(join(tmpdir(), "orbis-desktop-dsh-open-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => { events.push(event); }, state);
+    let release = (): void => {};
+    const open = vi.spyOn(dshDesktopLifecycle, "openDshDesktopFromHost").mockImplementation(async options => {
+      options.onWaiting?.(true);
+      await new Promise<void>(resolve => { release = resolve; });
+      options.onWaiting?.(false);
+      return "opened";
+    });
+    const states = () => events.filter(event => event.event === "dshDesktopOpen").map(event => event.state);
+    try {
+      await runtime.openAgent("dshDesktop");
+      expect(states()).toEqual(["opening", "waiting"]);
+      // A second click while waiting keeps the same open.
+      await runtime.openAgent("dshDesktop");
+      expect(open).toHaveBeenCalledOnce();
+      release();
+      await vi.waitFor(() => expect(states()).toEqual(["opening", "waiting", "opening", "idle"]));
+      expect(events.at(-1)).toEqual({ event: "dshDesktopOpen", state: "idle" });
+      open.mockRejectedValueOnce(new Error("未找到 DeepSeek 桌面版安装"));
+      await runtime.openAgent("dshDesktop");
+      await vi.waitFor(() => expect(events.at(-1)).toEqual({ event: "dshDesktopOpen", state: "idle", error: "未找到 DeepSeek 桌面版安装" }));
+    } finally {
+      await runtime.close();
+      await rm(state, { recursive: true, force: true });
+    }
   });
   it("requires TLS for public registration and rejects credentials embedded in URLs", () => {
     expect(validateDesktopRelay("wss://example.com/relay/")).toBe("wss://example.com/relay");

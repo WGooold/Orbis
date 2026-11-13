@@ -236,7 +236,7 @@ int main(int argc, char *argv[]) {
                 });
             }
             QList<QRectF> launchBounds;
-            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh"}) {
+            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
                 if (!button || !button->isVisible()) { app.exit(44); return; }
                 const auto bounds = button->mapRectToScene(button->boundingRect());
@@ -256,7 +256,7 @@ int main(int argc, char *argv[]) {
                 const auto bounds = button->mapRectToScene(button->boundingRect());
                 return qAbs(content.center().x() - bounds.center().x()) <= 1.0;
             };
-            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh"})
+            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"})
                 if (!contentIsCentered(findVisualItem(window->contentItem(), name))) { app.exit(56); return; }
             if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif
@@ -593,7 +593,7 @@ int main(int argc, char *argv[]) {
             else if (parser.isSet("smoke-guide")) {
                 // HOST-GUIDE-01: in every overview step only that step's controls carry the accent.
                 // Bridge events are synthetic and pass through the real reducer; nothing is activated or paired.
-                static const QStringList kinds{"pi", "codex", "codexDesktop", "claude", "dsh"};
+                static const QStringList kinds{"pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop"};
                 auto item = [&](const QString &name) { return findVisualItem(window->contentItem(), name); };
                 // Helpers outlive this block inside the timers: they hold each other by value.
                 auto accented = [item](const QString &name) { auto *found = item(name); return found && found->isVisible() && found->property("primary").toBool(); };
@@ -611,7 +611,7 @@ int main(int argc, char *argv[]) {
                     controller.smokeAgents({
                         QVariantMap{{"kind", "pi"}, {"installed", true}, {"version", "0.70.0"}},
                         QVariantMap{{"kind", "codex"}, {"installed", true}, {"desktopInstalled", true}, {"version", "0.130.0"}},
-                        QVariantMap{{"kind", "dsh"}, {"installed", false}}});
+                        QVariantMap{{"kind", "dsh"}, {"installed", false}, {"desktopInstalled", true}}});
                     controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.300"}, {"minimumVersion", "2.1.287"}});
                     QTimer::singleShot(600, &app, [&, item, anyAgentAccented, step, shot] {
                         if (step() != "activate") { qWarning() << "guide step" << step(); app.exit(66); return; }
@@ -640,7 +640,8 @@ int main(int argc, char *argv[]) {
                             return QJsonObject{{"kind", kind}, {"ready", launchable}, {"launchable", launchable}, {"runtimeCount", sessions}, {"reason", QJsonValue::Null}};
                         };
                         const QJsonObject backends{{"domain", "backends"}, {"value", QJsonObject{{"backends", QJsonArray{
-                            backend("pi", true, 2), backend("codex", true, 0), backend("codexDesktop", true, 0), backend("dsh", false, 0), backend("claude", true, 1)}}}}};
+                            backend("pi", true, 2), backend("codex", true, 0), backend("codexDesktop", true, 0), backend("dsh", false, 0), backend("claude", true, 1),
+                            backend("dshDesktop", true, 0)}}}}};
                         controller.smokeReceive({{"event", "status"}, {"runtimeCount", 3},
                             {"devices", QJsonArray{QJsonObject{{"deviceId", "smoke-phone"}, {"label", "手机"}, {"path", "relay"}, {"createdAt", 1}}}},
                             {"model", QJsonObject{{"domains", QJsonArray{backends}}}}});
@@ -651,6 +652,18 @@ int main(int argc, char *argv[]) {
                         auto *sessions = item("overviewAgentSessions-pi");
                         if (!sessions || !sessions->isVisible() || sessions->property("text").toString() != "2") { app.exit(75); return; }
                         shot("4-open");
+                        // DSH-DESKTOP-09: a DeepSeek Desktop opened elsewhere keeps opening it from Orbis as the accented
+                        // step, and the wait for the user to quit it shows on that button, without explanatory text.
+                        if (!agentAccented("dshDesktop")) { app.exit(78); return; }
+                        controller.smokeReceive({{"event", "dshDesktop"}, {"status", QJsonObject{{"state", "running"}, {"reason", "DeepSeek 桌面版需由 Orbis 打开"}, {"version", "0.2.2-rc.2"}}}});
+                        auto *desktop = item("overviewAgent-dshDesktop");
+                        if (!agentAccented("dshDesktop") || !desktop || desktop->property("loading").toBool() || desktop->property("text").toString() != "打开") { app.exit(79); return; }
+                        controller.smokeReceive({{"event", "dshDesktopOpen"}, {"state", "waiting"}});
+                        if (!item("overviewAgent-dshDesktop")->property("loading").toBool()) { app.exit(80); return; }
+                        shot("4-dsh-desktop-waiting");
+                        controller.smokeReceive({{"event", "dshDesktopOpen"}, {"state", "idle"}});
+                        controller.smokeReceive({{"event", "dshDesktop"}, {"status", QJsonObject{{"state", "attached"}, {"reason", "已接入 DeepSeek 桌面版 0.2.2-rc.2"}, {"version", "0.2.2-rc.2"}}}});
+                        if (item("overviewAgent-dshDesktop")->property("loading").toBool() || !agentAccented("dshDesktop")) { app.exit(81); return; }
                         controller.smokePauseForChange();
                     });
                     QTimer::singleShot(3300, &app, [&, item, shot] {

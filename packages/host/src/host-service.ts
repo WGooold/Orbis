@@ -2629,7 +2629,10 @@ export class HostService {
           try {
             await this.#ensureDshRuntime(false, kind);
             backend = this.#backends.find(candidate => candidate.kind === kind);
-          } catch (error) { throw new ActivationError("agent_unsupported", `${kind === "dsh" ? "DeepSeek Harness" : "DeepSeek Harness Desktop"} 启动或接入失败：${describeError(error)}`); }
+          } catch (error) {
+            // Desktop failures are already short states (DSH-DESKTOP-09), shown on the phone as they are.
+            throw new ActivationError("agent_unsupported", kind === "dsh" ? `DeepSeek Harness 启动或接入失败：${describeError(error)}` : describeError(error));
+          }
         }
         if (backend === undefined) {
           throw new ActivationError(
@@ -2639,7 +2642,7 @@ export class HostService {
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未安装，或 Host 无法启动并接入它"
               : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它"
-              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek Harness Desktop 未安装，或 Host 无法接入它" : "未知的 agent 类型",
+              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek 桌面版不可用" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -2662,12 +2665,14 @@ export class HostService {
         } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
       }
       if ((resumeKind === "dsh" || resumeKind === "dshDesktop") && this.#backends.every(backend => backend.kind !== resumeKind || !backend.isReady())) {
-        const product = resumeKind === "dsh" ? "DeepSeek Harness" : "DeepSeek Harness Desktop";
+        const product = resumeKind === "dsh" ? "DeepSeek Harness" : "DeepSeek 桌面版";
         try {
           const runtime = await this.#ensureDshRuntime(false, resumeKind);
           if (!runtime?.isReady()) throw new Error(`${product} 没有完成握手`);
         }
-        catch (error) { throw new ActivationError("agent_unsupported", `${product} 启动或接入失败：${describeError(error)}`); }
+        catch (error) {
+          throw new ActivationError("agent_unsupported", resumeKind === "dsh" ? `${product} 启动或接入失败：${describeError(error)}` : describeError(error));
+        }
       }
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;

@@ -64,6 +64,10 @@ class HostController : public QObject {
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
     Q_PROPERTY(QVariantMap codexDesktop READ codexDesktop NOTIFY changed)
+    /** ADR-0076 DSH-DESKTOP-01: DeepSeek Desktop attach tier of the running Host ({state, reason, version}); empty while paused. */
+    Q_PROPERTY(QVariantMap dshDesktop READ dshDesktop NOTIFY changed)
+    /** DSH-DESKTOP-09: the Host UI open of DeepSeek Desktop: "idle", "opening", or "waiting" for the user to quit an instance Orbis did not open. */
+    Q_PROPERTY(QString dshDesktopOpen READ dshDesktopOpen NOTIFY changed)
     Q_PROPERTY(QString agentInstallKind READ agentInstallKind NOTIFY changed)
     Q_PROPERTY(QString agentInstallStage READ agentInstallStage NOTIFY changed)
     Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
@@ -123,6 +127,8 @@ public:
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
     QVariantMap codexDesktop() const { return m_codexDesktop; }
+    QVariantMap dshDesktop() const { return m_dshDesktop; }
+    QString dshDesktopOpen() const { return m_dshDesktopOpen; }
     QString agentInstallKind() const { return m_agentInstallKind; }
     QString agentInstallStage() const { return m_agentInstallStage; }
     QString agentInstallVersion() const { return m_agentInstallVersion; }
@@ -288,7 +294,8 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
-    QVariantMap m_codexDesktop;
+    QVariantMap m_codexDesktop, m_dshDesktop;
+    QString m_dshDesktopOpen = "idle";
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
     QVariantList m_providerPresets;

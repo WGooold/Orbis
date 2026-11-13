@@ -144,6 +144,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
+        m_dshDesktopOpen = "idle";
         m_claudeInstalled = false;
         m_claudeCompatible = false;
         m_claudeVersion.clear(); m_claudeMinimumVersion.clear(); m_claudeVersionError.clear();
@@ -224,7 +225,8 @@ void HostController::resumeAfterChange() {
     emit changed();
 }
 void HostController::clearRunningFacts() {
-    m_backends.clear(); m_runtimeCount = 0;
+    // A paused Host has released its DeepSeek Desktop connection; its lifecycle reports again on the next start.
+    m_backends.clear(); m_runtimeCount = 0; m_dshDesktop.clear();
     QVariantList devices;
     for (const auto &entry : m_devices) { auto device = entry.toMap(); device.insert("path", "offline"); devices.append(device); }
     m_devices = devices;
@@ -289,6 +291,12 @@ void HostController::receiveLine(const QJsonObject &line) {
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
+        else if (event == "dshDesktop") { m_dshDesktop = line.value("status").toObject().toVariantMap(); }
+        // The open may wait for the user to quit a Desktop Orbis did not open, so it reports beside the command queue.
+        else if (event == "dshDesktopOpen") {
+            m_dshDesktopOpen = line.value("state").toString("idle");
+            if (line.contains("error")) setMessage(line.value("error").toString());
+        }
         else if (event == "claudeStatus") {
             m_claudeInstalled = line.value("installed").toBool();
             m_claudeCompatible = line.value("compatible").toBool(m_claudeInstalled);
@@ -857,7 +865,7 @@ QString HostController::diagnostics() const {
         for (const auto &key : {"path", "entry", "error", "installations", "copies"}) agent.remove(key);
         agents.append(agent);
     }
-    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"logs", QJsonArray::fromStringList(m_logs.snapshot())}};
+    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"dshDesktop", QJsonObject::fromVariantMap(m_dshDesktop)}, {"logs", QJsonArray::fromStringList(m_logs.snapshot())}};
     return QString::fromUtf8(QJsonDocument(result).toJson());
 }
 void HostController::copyDiagnostics() { QApplication::clipboard()->setText(diagnostics()); setMessage("脱敏诊断信息已复制"); }

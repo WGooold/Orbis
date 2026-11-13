@@ -39,6 +39,8 @@ internal fun agentBrand(kind: String?) = when (kind) {
     "claude" -> AgentBrand.Claude
     else -> AgentBrand.Pi
 }
+/** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
+internal fun ownsComputerWindow(kind: String?) = kind == "codexDesktop" || kind == "dshDesktop"
 internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable

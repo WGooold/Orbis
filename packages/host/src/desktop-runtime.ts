@@ -17,7 +17,7 @@ import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDe
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
-import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
+import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
 import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
 import { DshWebClient } from "./dsh-web-client.js";
@@ -131,6 +131,9 @@ export class DesktopRuntime {
   /** DeepSeek Harness Desktop entry (ADR-0076); its app and backend stay owned by Desktop. */
   #dshDesktopLifecycle: DshDesktopLifecycle | undefined;
   #dshDesktopRuntime: DshRuntime | undefined;
+  /** Host UI open of DeepSeek Desktop (DSH-DESKTOP-09); independent of the Relay connection. */
+  #dshDesktopOpening: Promise<void> | undefined;
+  #dshDesktopOpenAbort: AbortController | undefined;
   #retry: NodeJS.Timeout | undefined;
   #poll: NodeJS.Timeout | undefined;
   /** 终端 shim 自动启用的在途守卫，避免并发 detect 重复写 PATH。 */
@@ -313,6 +316,10 @@ export class DesktopRuntime {
         const command = await piCommandStatus(context);
         status.terminalCommand = runtime === undefined && command.state === "available" ? "unavailable" : command.state;
         status.terminalCommandDetail = command.detail;
+      }
+      if (kind === "dsh") {
+        // DeepSeek Desktop is its own entry: installing it registers no dsh command (ADR-0076 F01).
+        status.desktopInstalled = await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled();
       }
       if (kind === "codex") {
         // 桌面版自带 CLI，是否装了 npm 版 codex 与能否接入桌面版无关。
@@ -561,6 +568,7 @@ export class DesktopRuntime {
         log: line => this.log(line),
         onStatusChange: status => {
           this.log(`DeepSeek Desktop 接入：${status.state} · ${status.reason}`);
+          this.#emit({ event: "dshDesktop", status });
           this.#service?.announceDshDesktopStatus();
         },
       });
@@ -1068,6 +1076,11 @@ export class DesktopRuntime {
       else await launchCodexDesktopApp();
       return;
     }
+    if (kind === "dshDesktop") {
+      if (mode !== "setup") throw new Error("未知打开方式");
+      this.#openDshDesktop();
+      return;
+    }
     if (kind === "claude") {
       const workingDirectory = await terminalWorkspace(cwd);
       const launcher = new TerminalClaudeLauncher({ stateDir: this.#stateDir, configDir: claudeConfigDir(process.env.CLAUDE_CONFIG_DIR) });
@@ -1130,7 +1143,33 @@ export class DesktopRuntime {
     await this.#dispose();
     this.#emit({ event: "state", state: "stopped" });
   }
+  /**
+   * Host UI open of DeepSeek Desktop (DSH-DESKTOP-09). It may wait for the user to quit a Desktop Orbis did not
+   * open, so it runs beside the serialized command queue and reports through `dshDesktopOpen` events. A second
+   * click while it runs keeps the same open.
+   */
+  #openDshDesktop(): void {
+    if (this.#dshDesktopOpening !== undefined) return;
+    const abort = this.#dshDesktopOpenAbort = new AbortController();
+    this.#emit({ event: "dshDesktopOpen", state: "opening" });
+    this.#dshDesktopOpening = openDshDesktopFromHost({
+      stateDir: this.#stateDir, signal: abort.signal,
+      onWaiting: waiting => { if (!abort.signal.aborted) this.#emit({ event: "dshDesktopOpen", state: waiting ? "waiting" : "opening" }); },
+    }).then(
+      // Attach now rather than at the next recovery tick; a paused Host attaches when it starts.
+      async () => { await this.#service?.recoverDshRuntime("dshDesktop").catch(() => undefined); return undefined; },
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    ).then(error => {
+      this.#dshDesktopOpening = undefined;
+      if (this.#dshDesktopOpenAbort === abort) this.#dshDesktopOpenAbort = undefined;
+      if (abort.signal.aborted) return;
+      if (error !== undefined) this.log(`打开 DeepSeek 桌面版失败：${error}`);
+      this.#emit({ event: "dshDesktopOpen", state: "idle", ...(error === undefined ? {} : { error }) });
+    });
+  }
+
   async close(): Promise<void> {
+    this.#dshDesktopOpenAbort?.abort();
     this.cancelInstall();
     await this.#installationTask?.catch(() => {});
     if (this.#poll) clearInterval(this.#poll);

@@ -50,9 +50,12 @@ ApplicationWindow {
         return [
             {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, data: pi},
             {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, data: codex},
-            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", installed: codex.desktopInstalled === true, broken: false},
+            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", tint: Theme.agentCodex, installed: codex.desktopInstalled === true, broken: false},
             {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible},
-            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh}
+            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh},
+            // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
+            {kind: "dshDesktop", name: "DeepSeek 桌面版", symbol: "computer", tint: Theme.agentDeepseek, installed: dsh.desktopInstalled === true,
+             broken: window.dshDesktopBlocked(), opensToFix: true}
         ]
     }
     readonly property string nextStep: !host.activated ? "activate"
@@ -68,7 +71,8 @@ ApplicationWindow {
     }
     function agentPhoneState(agent, sessions) {
         if (!agent.installed) return "未安装"
-        if (agent.broken) return agent.kind === "claude" ? "需升级" : "需要修复"
+        if (agent.kind === "dshDesktop" && host.dshDesktopOpen === "waiting") return "等待退出"
+        if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
         if (window.hostLinking) return "正在连接"
         if (!window.hostOnline) return "连接后手机可用"
         if (!window.agentReachable(agent)) return "手机暂不可用"
@@ -86,6 +90,13 @@ ApplicationWindow {
     function codexDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, error:Theme.danger, notInstalled:Theme.inkMuted, unsupported:Theme.inkMuted})[window.codexDesktopState()] || Theme.inkMuted }
     function piAgent() { return host.agents.find(a => a.kind === "pi") || {} }
     function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
+    // DeepSeek 桌面版（ADR-0076）：分档与原因都来自 Host；概览只给短状态，下一步始终是从这里打开。
+    function dshDesktopState() { return (host.dshDesktop && host.dshDesktop.state) ? host.dshDesktop.state : "" }
+    function dshDesktopBlocked() { return ["running", "incompatible", "error"].indexOf(window.dshDesktopState()) >= 0 }
+    function dshDesktopShortState() { return ({running:"需由 Orbis 打开", incompatible:"版本不兼容", error:"接入失败"})[window.dshDesktopState()] || "" }
+    function dshDesktopLabel() { return ({attached:"已接入", closed:"未接入", running:"未接入", notInstalled:"未安装", unsupported:"不可用", incompatible:"版本不兼容", error:"接入失败"})[window.dshDesktopState()] || (!host.bridgeReady ? "未知" : window.hostOnline ? "正在检测" : "未连接") }
+    function dshDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, running:Theme.warning, incompatible:Theme.danger, error:Theme.danger})[window.dshDesktopState()] || Theme.inkMuted }
+    function dshDesktopReason() { return (host.dshDesktop && host.dshDesktop.reason) ? host.dshDesktop.reason : "" }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function showAgentBatch() { batchInstallDialog.open() }
@@ -831,7 +842,7 @@ ApplicationWindow {
                                             Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
                                             opacity: agentRow.modelData.installed ? 1 : 0.4
                                             AgentMark { anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
-                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: Theme.agentCodex }
+                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: agentRow.modelData.tint || Theme.agentCodex }
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
@@ -856,9 +867,10 @@ ApplicationWindow {
                                             objectName: "overviewAgent-" + agentRow.modelData.kind
                                             Layout.preferredWidth: 112
                                             text: agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
-                                            primary: agentRow.modelData.installed && !agentRow.modelData.broken ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
+                                            primary: agentRow.modelData.installed && (!agentRow.modelData.broken || agentRow.modelData.opensToFix === true) ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
                                             enabled: host.bridgeReady && !host.busy && (agentRow.modelData.installed || agentRow.installable)
                                             loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
+                                                || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
                                             Accessible.name: text + " " + agentRow.modelData.name
                                             onClicked: {
                                                 if (agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
@@ -1165,6 +1177,20 @@ ApplicationWindow {
                                     Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
                                 }
                                 Hint { text: window.codexDesktopReason(); Layout.fillWidth: true }
+                            }
+                        }
+                        Card {
+                            objectName: "dshDesktopAttach"
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 12
+                                Heading { text: "DeepSeek 桌面版接入" }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 10
+                                    StatusDot { color: window.dshDesktopColor(); idle: window.dshDesktopState() === "closed" }
+                                    Label { text: window.dshDesktopLabel(); color: window.dshDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                }
+                                Hint { text: window.dshDesktopReason(); Layout.fillWidth: true }
                             }
                         }
                         Card {

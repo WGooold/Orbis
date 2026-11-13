@@ -2,9 +2,9 @@
 
 日期：2026-11-12
 
-Status: accepted（2026-11-13 已实现：Host 接入、协议协商与 App 入口通过自动验证；真实 Desktop、设备与用户验收待完成；未部署）
+Status: accepted（2026-11-13 已实现：Host 接入、协议协商、App 入口与 Host 界面引导通过自动验证；真实 Desktop、设备与用户验收待完成；未部署）
 
-关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0075](0075-host-confirmed-exit-and-update.md)。
+关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0070](0070-unified-design-and-interaction.md)（HOST-GUIDE-01）、[ADR-0075](0075-host-confirmed-exit-and-update.md)。
 
 ## 问题与结论
 
@@ -106,6 +106,7 @@ Electron preload / main-process IPC 是另一组 shell 私有接口，涵盖文�
 | DSH-DESKTOP-06 | 新 `dshDesktop` 能力按对端实际解析能力协商，注册、状态更新、目录和命令路由统一适配。旧端继续使用既有 Web 入口；不能将未知枚举直接发送给严格 schema。 |
 | DSH-DESKTOP-07 | Desktop 应用及后端归其原生启动器所有。Host 断开只释放自己的连接和桥接资源；退出、更新按已确认的资源归属收尾，不据进程名终止 Desktop。 |
 | DSH-DESKTOP-08 | 协议校验与历史解码匹配实际连接的 Desktop 版本。PATH 中另一份 npm dsh 的库不能无校验地替代；更新后重新核对并重连。 |
+| DSH-DESKTOP-09 | Desktop 只从 Orbis 打开，并按 HOST-GUIDE-01 引导，不加说明文字。Host 概览有「DeepSeek 桌面版」行：状态点 + 悬停短状态，唯一操作「打开」，强调色只跟随当前一步。用户自行打开的实例由用户退出后再由 Orbis 打开；Orbis 不结束它。分档原因均为短状态，手机发起失败时原样显示。 |
 
 实现可抽取 DSH Web 的协议传输、消息映射和历史投影共用部分；安装发现、认证端点取得、版本加载、生命周期与后端选择保持独立。参考 [codex-desktop-lifecycle.ts](../../packages/host/src/codex-desktop-lifecycle.ts) 和 [codex-desktop-launcher.ts](../../packages/host/src/codex-desktop-launcher.ts) 的职责划分，不假设 DSH 提供与 Codex 相同的包装入口。
 
@@ -126,9 +127,13 @@ Electron preload / main-process IPC 是另一组 shell 私有接口，涵盖文�
 | [DSH-DESKTOP-07](#决策) | Host 停止或暂停只关闭自己的 API Peer。Desktop 进程 detached，输出写文件，Host 退出不产生 EPIPE；Host 重启从私有描述文件恢复同一实例。产品代码不终止 Desktop。 | [desktop-runtime.ts](../../packages/host/src/desktop-runtime.ts) |
 | [DSH-DESKTOP-08](#决策) | 读取所连 Desktop 的 `app.asar` 并按其 SHA-256 完整性记录校验，沿 Gateway stream protocol、Connection 与 assistant-stream 三个入口的导入图把闭包提取到 `<状态目录>/dsh-desktop-protocol/<归档头指纹>`；加载失败或缺 `/connect` 报告 incompatible。归档变化生成新副本，保留上一份。 | [asar-archive.ts](../../packages/host/src/asar-archive.ts)、[dsh-desktop-protocol.ts](../../packages/host/src/dsh-desktop-protocol.ts) |
 
+| [DSH-DESKTOP-09](#决策) | Host 概览「DeepSeek 桌面版」行（电脑图标，DeepSeek 色）：已接入 / 可按需打开为绿点；`running`（非 Orbis 打开）、`incompatible`、`error` 为警示点，悬停短状态分别为「需由 Orbis 打开」「版本不兼容」「接入失败」。「打开」在下一步为打开 Agent 时与其他行一同强调。点击立即返回，打开在串行命令队列之外执行并以 `dshDesktopOpen`（`opening` / `waiting` / `idle`）事件报告，按钮期间显示加载、悬停「等待退出」：Orbis 打开的实例经单实例交接调到前台；已关闭则由 Orbis 打开；用户自行打开的实例每 2 秒检查一次，至多等待 10 分钟，用户退出后由 Orbis 打开，Host 随即通过恢复接入；暂停时打开的实例在下次启动时接入。同一状态目录的 Orbis 启动全进程共享一次，App 请求与界面打开不会互相覆盖端点记录。诊断页增加「DeepSeek 桌面版接入」卡，诊断导出含该分档。CLI Host 同样接入 Desktop（手机发起时打开），停止时只释放连接。Android 拉起提示不再对 Desktop 会话称“电脑上无窗口”；抽屉筛选显示条件与 iOS 一致（Host 提供或已有桌面版会话）。 | [dsh-desktop-lifecycle.ts](../../packages/host/src/dsh-desktop-lifecycle.ts) `openDshDesktopFromHost`、[dsh-desktop-app.ts](../../packages/host/src/dsh-desktop-app.ts) `launchDshDesktop` / `revealDshDesktop`、[desktop-runtime.ts](../../packages/host/src/desktop-runtime.ts)、[cli.ts](../../packages/host/src/cli.ts)、[host-service.ts](../../packages/host/src/host-service.ts)、[HostController.cpp](../../packages/windows-host/src/HostController.cpp)、[Main.qml](../../packages/windows-host/src/qml/Main.qml)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)、[SessionDrawer.kt](../../android/app/src/main/java/com/orbising/orbis/SessionDrawer.kt) |
+
 App 把 `dshDesktop` 作为 DeepSeek 的桌面版本：图标仍为一个，在旁选择网页版 / 桌面版，与 Codex 终端版 / 桌面版一致；会话筛选只在 Host 提供 Desktop 时出现「DeepSeek 桌面版」。未新增说明文案。
 
-已知限制：用户自行打开的 Desktop 不能接入；Desktop 日志随运行增长，下次由 Orbis 打开时重建；120 秒内未报告 URL（例如首次设置）时提示完成设置后自动接入；新 App 首次连接多一次往返；CLI Host 与 Windows Host 管理界面尚未展示 Desktop 分档。
+已知限制：用户自行打开的 Desktop 不能接入，只能由用户退出后从 Orbis 打开（DSH-DESKTOP-09）；Desktop 日志随运行增长，下次由 Orbis 打开时重建；120 秒内未报告 URL（例如首次设置）时报告「等待 DeepSeek 桌面版完成设置」，之后由恢复接入；新 App 首次连接多一次往返；手机端不显示 Desktop 分档，只在发起失败时显示短状态。
+
+接入用户自行打开的 Web / Desktop 的评估（2026-11-13，暂缓）：DSH 每个 Remote 调用都要认证，外部客户端的官方入口只有 `/connect?token=<启动令牌>`，令牌每进程随机生成且只在内存，没有实例登记文件；非 owner 的 remote-access 不能回答审批。可行路径是在 `$DSH_HOME/cordis.patch.yml`（对所有 profile 含 Desktop 生效）插入 Orbis 插件，由其调用公开的 `ctx.connection.authenticatedUrl()` 写出权限 600 的端点描述。隔离原型在 dsh 0.2.1-rc.2 / 0.2.1-rc.5 / 0.2.2-rc.1 上验证了用户自启 Web 可接入、与浏览器并存、HMR 增删、退出清理、模块缺失不阻止启动、非 Web profile 无告警；Desktop 未实测。因需改写用户 DSH 配置而暂缓。证据：[dsh-endpoint-bridge-20261113](../../.artifacts/dsh-endpoint-bridge-20261113/)，探针 `~/.orbis/tools/ui-regression/dsh-endpoint-bridge-probe.mjs`。
 
 ## 接入候选与难度（调查记录）
 
@@ -176,6 +181,16 @@ App 把 `dshDesktop` 作为 DeepSeek 的桌面版本：图标仍为一个，在�
 | DSH-DESKTOP-COMPAT-APP | 通过：`v0.1.19` iOS 目录解析器（标签源码原样编译）接受未声明设备的视图（150 个会话、多页）；未过滤目录被拒，作为负对照。 | [release-app-compat.json](../../.artifacts/dsh-desktop-implementation-20261113/release-app-compat.json)，`dsh-desktop-release-app-compat.mjs` |
 | 单元与集成 | 通过：Host / protocol 166 个文件 1,916 项（新增 ASAR、协议闭包、安装与启动、生命周期、API Peer、Desktop flavor、可见性、Host 协商与路由）；iOS 核心 3 项；Android `DshDesktopEntryTest`；iOS App generic Simulator 编译与 Android Debug Kotlin 编译。 | [summary.json](../../.artifacts/dsh-desktop-implementation-20261113/summary.json) |
 
+DSH-DESKTOP-09 自动验证（2026-11-13，macOS、Node `v22.23.2`、Qt 6.8.3），证据见 [dsh-desktop-host-ui-20261113](../../.artifacts/dsh-desktop-host-ui-20261113/)：
+
+| 验证 ID | 结果 | 证据 |
+| --- | --- | --- |
+| DSH-DESKTOP-OPEN-01 | 通过：界面打开调到前台 Orbis 的实例、打开已关闭实例、等用户退出后再打开、超时或取消时不启动；同一状态目录并发启动只 spawn 一次；调到前台的交接进程不写端点记录；`openAgent` 立即返回，重复点击合并，进度与错误经事件到达。typecheck、ESLint 与相关 10 个文件 221 项通过。 | `logs/ts-focused.log`、`logs/eslint.log` |
+| DSH-DESKTOP-OPEN-MUT | 变异对照：去掉共享启动、去掉退出等待、让打开阻塞命令队列，各自使对应测试失败；源文件按哈希恢复。 | `logs/mutations/` |
+| DSH-DESKTOP-HOSTUI-01 | 通过：Qt 构建与 10 组 CTest；`--smoke-guide`（标准与最小窗口）在打开一步断言「DeepSeek 桌面版」行强调，`running` 时仍为强调的「打开」，等待时按钮加载，接入后恢复；`--smoke-appearance` 通过；日志无 QML 错误。 | `logs/build/`、`smoke/guide*/`、`smoke/appearance/` |
+| DSH-DESKTOP-HOSTUI-SMOKE52 | 既有失败：默认与最小窗口 `--smoke-motion` 在第 4 页侧栏动效采样时进度为 0（退出码 52）。同一时间、同一 runtime 下，上一版构建（`host-live-config-20261112`，不含本次 QML）两次同样失败，判断与本次改动无关，原断言保留。 | `smoke/default*/`、`smoke/compact/`、`smoke/baseline-default*/` |
+| DSH-DESKTOP-ANDROID-01 | 通过：Android `DshDesktopEntryTest` 2 项（含 Debug Kotlin 编译），Desktop 入口不再报“电脑上无窗口”。 | `logs/android-unit-2/` |
+
 以下门槛需要真实 Desktop 安装、设备或已发布旧版本运行环境，均未执行：
 
 | 验证 ID | 验证目标 | 当前覆盖 |
@@ -187,6 +202,7 @@ App 把 `dshDesktop` 作为 DeepSeek 的桌面版本：图标仍为一个，在�
 | DSH-DESKTOP-VERSION-01 | 真实 Desktop 安装包与其匹配协议库完成同版正对照；与 npm Web 并存、升级及不支持版本下准确处理。 | 合成归档同版正对照；真实安装包未执行。 |
 | DSH-DESKTOP-COMPAT-01 | 按 ADR-0064 使用最近发版的真实 Host / Relay / App 实现验证新旧互通、重连和回退；未协商的 Desktop 能力不破坏既有连接。 | 已发布 iOS 目录解析器已核对；真实旧 App / 旧 Host 设备互通未执行。 |
 | DSH-DESKTOP-LIFECYCLE-01 | Host 暂停、退出、更新与桥接故障释放自身资源，Desktop 原生任务和配置保持正确归属。 | 释放 Peer 不停 Desktop 见合成探针；Windows 退出与更新未执行。 |
+| DSH-DESKTOP-GUIDE-01 | 真实 Desktop 上：自行打开 → 概览警示点与「需由 Orbis 打开」→ 点「打开」等待 → 退出 Desktop → Orbis 打开并接入；Orbis 打开的实例点「打开」调到前台（含 Windows 托盘隐藏窗口）；手机发起时显示短状态。 | 等待、交接与共享启动为注入式测试与合成 smoke；真实 Desktop 与 Windows 托盘行为未执行。 |
 
 未构建安装包、未部署。用户验收需要装有 DeepSeek Harness Desktop 的 Windows 或 macOS 电脑及包含本次修改的候选版本，待用户验证。
 

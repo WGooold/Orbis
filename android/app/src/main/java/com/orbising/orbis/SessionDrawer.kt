@@ -396,7 +396,9 @@ internal fun SessionDrawer(
                         providerFilterKey = providerKey,
                         onSelectProvider = { requestedProviderKey = it },
                         onRequestProviders = onRequestProviders,
-                        desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it },
+                        // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
+                        desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
+                            state.sessions.values.any { it.agentKind == "dshDesktop" },
                     )
 
                 }
