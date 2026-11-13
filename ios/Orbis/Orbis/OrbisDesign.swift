@@ -764,7 +764,9 @@ private struct OrbisBottomPanel: View {
             Capsule().fill(.clear).frame(width: 36, height: 6)
                 .neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
                 .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 4).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
+                // The handle rides the panel offset; a local-space translation would feed
+                // that offset back into itself and jitter during slow drags.
+                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .global).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
                     if drag > 100 || value.predictedEndTranslation.height > 180 { dismiss() }
                     else { withAnimation(reduced ? nil : .orbisDrag) { drag = 0 } }
                 })
