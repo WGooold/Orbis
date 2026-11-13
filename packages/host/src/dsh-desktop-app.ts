@@ -12,7 +12,8 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -41,7 +42,69 @@ export type DshDesktopDiscoveryOptions = {
   /** Explicit install root (Windows directory / macOS bundle) from settings or `ORBIS_DSH_DESKTOP_PATH`. */
   explicitPath?: string;
   registryInstallLocations?: () => Promise<string[]>;
+  /** macOS folders checked before the bundle-ID lookup; defaults to `/Applications` and `~/Applications`. */
+  applicationFolders?: string[];
+  /** macOS bundles registered for {@link DSH_DESKTOP_BUNDLE_IDS}; defaults to LaunchServices plus Spotlight. */
+  bundleLocations?: () => Promise<string[]>;
 };
+
+/**
+ * macOS bundle IDs: official releases (`com.deepseek.dsh`, read from the installed 0.2.2-rc.2) and
+ * upstream local builds (`com.deepseek.harness`, apps/desktop/packaging/README). A match is only a
+ * candidate; it still has to pass {@link inspectDshDesktopInstallation}.
+ */
+export const DSH_DESKTOP_BUNDLE_IDS = ["com.deepseek.dsh", "com.deepseek.harness"] as const;
+
+// `URLsForApplicationsWithBundleIdentifier:` needs macOS 12; older systems get the preferred copy only.
+const LAUNCH_SERVICES_SCRIPT = String.raw`
+ObjC.import("AppKit");
+function run(ids) {
+  const workspace = $.NSWorkspace.sharedWorkspace;
+  const all = workspace.respondsToSelector("URLsForApplicationsWithBundleIdentifier:");
+  const paths = [];
+  for (const id of ids) {
+    if (all) {
+      const urls = workspace.URLsForApplicationsWithBundleIdentifier(id);
+      for (let i = 0; i < urls.count; i++) paths.push(urls.objectAtIndex(i).path.js);
+    } else {
+      const url = workspace.URLForApplicationWithBundleIdentifier(id);
+      if (!url.isNil()) paths.push(url.path.js);
+    }
+  }
+  return JSON.stringify(paths);
+}`;
+
+/**
+ * Desktop bundles anywhere on the Mac, e.g. an external volume: LaunchServices knows every copy that was
+ * opened or seen by Finder; Spotlight adds indexed copies that never were. Either source may fail alone.
+ */
+async function macBundleLocations(): Promise<string[]> {
+  const [launchServices, spotlight] = await Promise.allSettled([
+    execute("/usr/bin/osascript", ["-l", "JavaScript", "-e", LAUNCH_SERVICES_SCRIPT, ...DSH_DESKTOP_BUNDLE_IDS],
+      { timeout: 5_000, maxBuffer: 256 * 1024, encoding: "utf8" }),
+    execute("/usr/bin/mdfind", [DSH_DESKTOP_BUNDLE_IDS.map(id => `kMDItemCFBundleIdentifier == "${id}"`).join(" || ")],
+      { timeout: 5_000, maxBuffer: 256 * 1024, encoding: "utf8" }),
+  ]);
+  const paths: string[] = [];
+  if (launchServices.status === "fulfilled") {
+    try {
+      const value: unknown = JSON.parse(launchServices.value.stdout.trim() || "[]");
+      if (Array.isArray(value)) paths.push(...value.filter((item): item is string => typeof item === "string"));
+    } catch { /* Spotlight below still applies. */ }
+  }
+  if (spotlight.status === "fulfilled") paths.push(...spotlight.value.stdout.split("\n").map(line => line.trim()));
+  return paths.filter(path => path.startsWith("/"));
+}
+
+/**
+ * Trashed copies are never launched. Read-only copies (a mounted installer image, an App Translocation
+ * path) stay usable but come after a copy the user installed.
+ */
+async function orderBundleLocations(paths: string[]): Promise<string[]> {
+  const kept = paths.filter(path => !/\/\.Trash(?:es)?\//u.test(path));
+  const writable = await Promise.all(kept.map(path => access(path, fsConstants.W_OK).then(() => true, () => false)));
+  return [...kept.filter((_, index) => writable[index]), ...kept.filter((_, index) => !writable[index])];
+}
 
 export function supportsDshDesktop(target: NodeJS.Platform = process.platform): boolean {
   return target === "win32" || target === "darwin";
@@ -100,26 +163,33 @@ export async function findDshDesktopInstallation(options: DshDesktopDiscoveryOpt
   const explicit = options.explicitPath?.trim() || env.ORBIS_DSH_DESKTOP_PATH?.trim();
   // An explicit choice is authoritative: never silently fall back to another install.
   if (explicit) return inspectDshDesktopInstallation(explicit, target);
-  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const firstValid = async (candidates: string[]): Promise<DshDesktopInstallation | undefined> => {
+    for (const candidate of candidates) {
+      const key = resolve(candidate).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const installation = await inspectDshDesktopInstallation(candidate, target);
+      if (installation !== undefined) return installation;
+    }
+    return undefined;
+  };
   if (target === "win32") {
+    const candidates: string[] = [];
     try { candidates.push(...await (options.registryInstallLocations ?? (() => windowsInstallLocations(env)))()); }
     catch { /* Registry access failures still allow the default per-user location below. */ }
     const programs = join(env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "Programs");
     for (const entry of await readdir(programs, { withFileTypes: true }).catch(() => [])) {
       if (entry.isDirectory()) candidates.push(join(programs, entry.name));
     }
-  } else {
-    candidates.push(join("/Applications", `${DSH_DESKTOP_PRODUCT}.app`), join(homedir(), "Applications", `${DSH_DESKTOP_PRODUCT}.app`));
+    return firstValid(candidates);
   }
-  const seen = new Set<string>();
-  for (const candidate of candidates) {
-    const key = resolve(candidate).toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const installation = await inspectDshDesktopInstallation(candidate, target);
-    if (installation !== undefined) return installation;
-  }
-  return undefined;
+  // The usual folders need no process; the bundle-ID lookup runs only when they hold no Desktop.
+  const folders = options.applicationFolders ?? ["/Applications", join(homedir(), "Applications")];
+  const standard = await firstValid(folders.map(folder => join(folder, `${DSH_DESKTOP_PRODUCT}.app`)));
+  if (standard !== undefined) return standard;
+  const located = await (options.bundleLocations ?? macBundleLocations)().catch(() => []);
+  return firstValid(await orderBundleLocations(located));
 }
 
 /** Whether Desktop's main process is running. Detection only: Orbis never terminates Desktop by name. */

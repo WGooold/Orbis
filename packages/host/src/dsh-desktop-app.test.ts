@@ -76,6 +76,30 @@ describe("Desktop installation discovery", () => {
     expect(await findDshDesktopInstallation({ platform: "win32", env, explicitPath: join(local, "missing"), registryInstallLocations: async () => [registered] })).toBeUndefined();
     expect(await findDshDesktopInstallation({ platform: "linux", env })).toBeUndefined();
   });
+
+  // A Desktop on an external volume used to be reported as not installed (only the two Applications folders were read).
+  it("finds a macOS bundle anywhere by bundle ID, skipping trashed copies and preferring a writable one", async () => {
+    const applications = await temp();
+    const external = join(await temp(), "外置 盘", "Applications", "DeepSeek Harness.app");
+    await install(external, "darwin");
+    const trashed = join(await temp(), ".Trash", "DeepSeek Harness.app");
+    await install(trashed, "darwin", undefined, archiveFiles("0.2.1"));
+    const image = join(await temp(), "DeepSeek Harness.app");
+    await install(image, "darwin", undefined, archiveFiles("0.2.0"));
+    await chmod(image, 0o555);
+    try {
+      const bundleLocations = vi.fn(async () => [trashed, image, external]);
+      const options = { platform: "darwin" as const, env: {}, applicationFolders: [applications], bundleLocations };
+      expect(await findDshDesktopInstallation(options)).toMatchObject({ root: external, version: "0.2.2-rc.2" });
+      expect(await findDshDesktopInstallation({ ...options, bundleLocations: async () => { throw new Error("osascript"); } })).toBeUndefined();
+      // The usual folders are used without starting a LaunchServices / Spotlight query.
+      const standard = join(applications, "DeepSeek Harness.app");
+      await install(standard, "darwin", undefined, archiveFiles("0.2.3"));
+      bundleLocations.mockClear();
+      expect((await findDshDesktopInstallation(options))?.root).toBe(standard);
+      expect(bundleLocations).not.toHaveBeenCalled();
+    } finally { await chmod(image, 0o755); }
+  });
 });
 
 describe.skipIf(process.platform === "win32")("Orbis-owned Desktop launch", () => {

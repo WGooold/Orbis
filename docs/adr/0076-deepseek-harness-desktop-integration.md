@@ -118,7 +118,7 @@ Electron preload / main-process IPC 是另一组 shell 私有接口，涵盖文�
 
 | 决策 | 实现 | 代码 |
 | --- | --- | --- |
-| [DSH-DESKTOP-01](#决策) | 显式路径（`ORBIS_DSH_DESKTOP_PATH`）优先且不回落；Windows 读 `HKCU` / `HKLM` 卸载项中 `DeepSeek Harness*` 的 `InstallLocation`，再查 `%LOCALAPPDATA%\Programs`；macOS 查 `/Applications`、`~/Applications`。候选须有可执行文件和 `app.asar`，归档内须有 `@deepseek-ai/dsh` 与 `dsh-desktop-host`。分档为 unsupported / notInstalled / closed / running / attached / incompatible / error，握手完成才是 attached；incompatible 不列为可启动。 | [dsh-desktop-app.ts](../../packages/host/src/dsh-desktop-app.ts)、[dsh-desktop-lifecycle.ts](../../packages/host/src/dsh-desktop-lifecycle.ts) |
+| [DSH-DESKTOP-01](#决策) | 显式路径（`ORBIS_DSH_DESKTOP_PATH`）优先且不回落；Windows 读 `HKCU` / `HKLM` 卸载项中 `DeepSeek Harness*` 的 `InstallLocation`，再查 `%LOCALAPPDATA%\Programs`；macOS 先查 `/Applications`、`~/Applications`，未找到再按应用标识（正式版 `com.deepseek.dsh`、上游本地构建 `com.deepseek.harness`）查 LaunchServices 与 Spotlight，覆盖外置盘等位置；跳过废纸篓，只读副本（安装镜像、App Translocation）排后。候选须有可执行文件和 `app.asar`，归档内须有 `@deepseek-ai/dsh` 与 `dsh-desktop-host`。分档为 unsupported / notInstalled / closed / running / attached / incompatible / error，握手完成才是 attached；incompatible 不列为可启动。 | [dsh-desktop-app.ts](../../packages/host/src/dsh-desktop-app.ts)、[dsh-desktop-lifecycle.ts](../../packages/host/src/dsh-desktop-lifecycle.ts) |
 | [DSH-DESKTOP-02](#决策) | Orbis 以 detached 方式直接启动 Desktop 可执行文件，stdout / stderr 写入 Host 状态目录内权限 600 的日志，取 Electron 转发的最新 `dsh web:` URL，用根路径令牌交换确认实例（不建 Peer），再为每个载体经 `/connect?…&interactions=answer` 建独立 owner API Peer。用户自行打开的实例及单实例交接（新进程以 0 退出且无 URL）报告 running；不扫描端口、不读 Cookie、不用私有 IPC。 | [dsh-desktop-app.ts](../../packages/host/src/dsh-desktop-app.ts)、[dsh-web-client.ts](../../packages/host/src/dsh-web-client.ts) `authentication: "api"` |
 | [DSH-DESKTOP-03](#决策) | 独立 kind `dshDesktop`，会话 / runtime 前缀 `dsh-desktop:`；Host 内 Web 与 Desktop 各有连接、启动和恢复状态。未带 kind 的恢复按前缀路由，Desktop 不参与无前缀轮询。 | [dsh-web-runtime.ts](../../packages/host/src/dsh-web-runtime.ts) `DshFlavor`、[host-service.ts](../../packages/host/src/host-service.ts) |
 | [DSH-DESKTOP-04](#决策) | 目录与历史均来自所连实例的 Remote API，不复制、不同步；同一原生 ID 在两入口各自显示。entryId 仍由原生 ID 推导，按 runtime 隔离。 | 同上 |
@@ -190,6 +190,13 @@ DSH-DESKTOP-09 自动验证（2026-11-13，macOS、Node `v22.23.2`、Qt 6.8.3）
 | DSH-DESKTOP-HOSTUI-01 | 通过：Qt 构建与 10 组 CTest；`--smoke-guide`（标准与最小窗口）在打开一步断言「DeepSeek 桌面版」行强调，`running` 时仍为强调的「打开」，等待时按钮加载，接入后恢复；`--smoke-appearance` 通过；日志无 QML 错误。 | `logs/build/`、`smoke/guide*/`、`smoke/appearance/` |
 | DSH-DESKTOP-HOSTUI-SMOKE52 | 既有失败：默认与最小窗口 `--smoke-motion` 在第 4 页侧栏动效采样时进度为 0（退出码 52）。同一时间、同一 runtime 下，上一版构建（`host-live-config-20261112`，不含本次 QML）两次同样失败，判断与本次改动无关，原断言保留。 | `smoke/default*/`、`smoke/compact/`、`smoke/baseline-default*/` |
 | DSH-DESKTOP-ANDROID-01 | 通过：Android `DshDesktopEntryTest` 2 项（含 Debug Kotlin 编译），Desktop 入口不再报“电脑上无窗口”。 | `logs/android-unit-2/` |
+
+macOS 按应用标识发现（2026-11-13，macOS 27.2、Node `v22.23.2`），证据见 [dsh-desktop-bundle-discovery-20261113](../../.artifacts/dsh-desktop-bundle-discovery-20261113/)：
+
+| 验证 ID | 结果 | 证据 |
+| --- | --- | --- |
+| DSH-DESKTOP-DISC-03 | 通过：常用目录外的安装按应用标识找到，跳过废纸篓、可写副本优先，查询失败报告未安装；常用目录有安装时不发起查询。去掉三项行为的变异各自使测试失败。typecheck 与 ESLint 通过。 | `summary.json`、`vitest.log` |
+| DSH-DESKTOP-DISC-03-REAL | 通过（只读）：外置盘 `/Volumes/WD1TB/Applications` 上的官方 `0.2.2-rc.2`，已安装的旧 Host 发现为空；本次源码默认发现找到该安装（149 ms）并识别运行中。未启动、未接入、未改动 Host。 | `summary.json`、`real-install-probe.mts` |
 
 以下门槛需要真实 Desktop 安装、设备或已发布旧版本运行环境，均未执行：
 
