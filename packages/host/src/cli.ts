@@ -233,6 +233,7 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
     relayUrl: config.relayUrl,
     credential: config.runtimeCredential,
     stateDir,
+    ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
     ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
     // 配对进程是短命的。它去开 loopback 只会覆盖掉常驻 Host 的发现文件，
     // 退出时再把文件删掉——结果是常驻 Host 明明在跑，Pi 却找不到它。

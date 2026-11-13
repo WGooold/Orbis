@@ -204,11 +204,14 @@ export function agentInvocation(cli: AgentCommand, args: readonly string[], env:
   }
   if (!/\.(?:cmd|bat)$/iu.test(cli.command)) return { command: cli.command, args: argv };
   if ([cli.command, ...argv].some(value => /[\0\r\n]/u.test(value))) throw new Error("Windows CLI 启动参数包含无效换行或空字符");
-  // Escape both the cmd parser and the native argv parser behind npm/pnpm's %*.
+  // Escape both the cmd parser and the native argv parser behind npm/pnpm's `%*`.
   const meta = /([()\][%!^"`<>&|;, *?])/gu;
   const escape = (value: string) => value.replace(meta, "^$1");
   const quote = (value: string) => {
-    const quoted = '"' + value.replace(/(\\*)"/gu, '$1$1\\"').replace(/(\\+)$/u, "$1$1") + '"';
+    // `\"` leaves cmd's quoting state unbalanced — the next argument's `&` or `|` then splits
+    // the command — while `""` is a literal quote for cmd and, with the preceding backslashes
+    // doubled, is still one quote for CommandLineToArgvW after the batch re-expands `%*`.
+    const quoted = '"' + value.replace(/(\\*)"/gu, '$1$1""').replace(/(\\+)$/u, "$1$1") + '"';
     const escaped = escape(quoted);
     return /node_modules[/\\]\.bin[/\\]/iu.test(cli.command) ? escape(escaped) : escaped;
   };
