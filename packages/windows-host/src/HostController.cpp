@@ -494,7 +494,12 @@ void HostController::invalidateActivation() {
     connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, generation] {
         const auto error = watcher->result(); watcher->deleteLater();
         --m_activationIO;
-        if (!m_shutdown && generation == m_activationGeneration && !error.isEmpty()) setMessage("无法重置激活凭据：" + error);
+        if (!m_shutdown && generation == m_activationGeneration) {
+            if (!error.isEmpty()) setMessage("无法重置激活凭据：" + error);
+            // HOST-ACT-17: policy may have arrived while secure storage was still busy. Retry the
+            // armed recovery now; the helper keeps paused, changing and exiting Hosts in their state.
+            maybeRecoverWithHostKey();
+        }
         emit changed();
     });
     const auto path = activationPath();
