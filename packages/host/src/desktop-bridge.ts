@@ -54,6 +54,8 @@ input.on("line", line => {
         case "revoke": await runtime.revoke(String(p.deviceId)); break;
         case "renameDevice": await runtime.renameDevice(String(p.deviceId), String(p.label)); break;
         case "rename": await runtime.renameHost(String(p.name)); break;
+        case "hostRecoveryProof": result = await runtime.hostRecoveryProof({ hostId: String(p.hostId), challengeId: String(p.challengeId), relayPub: String(p.relayPub) }); break;
+        case "replaceIdentity": result = await runtime.replaceIdentity(); break;
         case "updateAgent": result = await runtime.updateAgent(String(p.kind)); break;
         case "installAll": result = await runtime.installAll(String(p.action)); break;
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;

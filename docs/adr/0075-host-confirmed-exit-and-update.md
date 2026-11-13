@@ -22,6 +22,7 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 | HOST-EXIT-06 | Codex 桌面桥接沿用 Codex 桌面端的生命周期：退出和更新都不停止它，也不核验它的端点记录；Host 再次开始连接后按端点记录重新接入。收尾失败时 Host 窗口回到前台显示原因。 |
 | HOST-UPDATE-01 | 应用内 Host 更新先确认中断影响，再下载和校验；成功收尾后才打开安装包。重复点击只执行一次；下载、校验、收尾或启动安装包失败均保持可见失败状态。下载期间仍可请求退出。 |
 | HOST-UPDATE-02 | Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认。取消或失败暂停安装。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
+| HOST-LIVE-01 | 运行中的 Host 不再要求先手动暂停：常规设置中的启动参数（电脑名称、中继、预启动开关、DSH 启动链接）、Agent 安装 / 批量更新和 DSH Server 重启由 Host 自行暂停、执行并恢复连接；终端接入开关与登录启动仍即时生效。操作按钮写明“并重新连接”，有在线会话时确认页显示会暂时断开的会话数。 |
 
 暂停连接继续只释放 Host 的连接及适配器，不等同于退出。显式配置的外部 DSH URL 与独立终端沿用所属启动器的生命周期。若收尾期间 Orbis 管理的后台被重新启动，报告失败并要求关闭该应用后重试。DSH 的管理范围沿用同一 `DSH_HOME` 下的 Orbis 服务记录。
 
@@ -29,7 +30,7 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 
 Host 更新的哈希与文件提交移到后台线程，使用独立临时目录和原子文件提交。确认弹窗复用 `SoftDialog`、`SoftDialogButtons` 与现有动效。macOS 应用内更新完成收尾后打开 DMG，仍由用户拖入 Applications；手动下载的 DMG 先通过 Host 的退出确认完成收尾。
 
-本次不改变 Relay / App 线协议或自动更新 Agent 的语义。Agent 安装原有的暂停连接与安装确认继续适用。系统强制结束、应用崩溃、独立终端生命周期和完整安装事务回滚不属于本次已验证保证；安装器的文件占用检测继续保留。
+本次不改变 Relay / App 线协议或自动更新 Agent 的语义。Agent 安装的暂停由 HOST-LIVE-01 自动处理，安装确认继续适用。系统强制结束、应用崩溃、独立终端生命周期和完整安装事务回滚不属于本次已验证保证；安装器的文件占用检测继续保留。
 
 ## 实现
 
@@ -86,6 +87,22 @@ Host 更新的哈希与文件提交移到后台线程，使用独立临时目录
 | 本机安装 | 用户先退出 ChatGPT 与旧 Host 后安装到 `/Applications/OrbisHost.app` 并启动，运行中的二进制哈希与候选一致，回退保留为 `/Applications/.OrbisHost-rollback-codex-respawn-20261113.app`；[记录](../../.artifacts/host-exit-codex-respawn-20261113/verification.json)。 |
 
 Codex 桌面端开着时的真实退出、重新打开 Host 后重新接入，**待用户验证**；Windows 安装目录在桥接运行时可覆盖仍待 Windows 验证。
+
+## HOST-LIVE-01：运行中修改无需手动暂停
+
+控制器在原有串行命令队列上实现“暂停 → 变更 → 恢复”：变更前发送 `stop`，在队列中最后一个请求完成（成功或失败）后恢复；恢复期间状态显示“完成后自动恢复”，连接按钮不可用。中继地址变更会清除激活，此时停在待激活状态。暂停后的 Host 清空在线会话、后端事实，并把手机路径置为离线；运行时在释放服务后重新公告状态。用户显式暂停仍持久化为不自动连接，自动恢复不改写该设置。
+
+暂停可能落在一次重连尝试建后端的过程中。`start` 等待被放弃的尝试收尾后再开始；被放弃的尝试释放它在暂停之后建出的后端，其服务读取的 Codex 桌面版生命周期绑定到本次尝试，暂停后不再抛出未处理的拒绝。
+
+实现：[HostController](../../packages/windows-host/src/HostController.cpp)（`pauseForChange` / `afterQueuedCommands` / `clearRunningFacts`）、[desktop-runtime.ts](../../packages/host/src/desktop-runtime.ts)、[Main.qml](../../packages/windows-host/src/qml/Main.qml) 设置页与安装 / DSH 重启确认。回归：[HostLiveChangeTest.cpp](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)（真实 node 子进程模拟桥接，核对 `stop → 变更 → start` 顺序、失败后恢复、已暂停时不自动连接、仅连接参数触发重连、中继变更停在待激活、暂停清空运行事实）与 [desktop-runtime.test.ts](../../packages/host/src/desktop-runtime.test.ts) 中按“建后端 / 建服务”两个暂停点参数化的恢复用例。
+
+| 验证 | 实际结果与证据 |
+| --- | --- |
+| 恢复用例对照 | 原运行时两项均以“Host 已在运行，请先暂停连接”失败；去掉放弃尝试的释放后，“建后端”项残留旧 DSH 后端；改回未绑定的生命周期读取后出现未处理拒绝；修复后两项通过。见 [ts/](../../.artifacts/host-live-config-20261112/ts/)。 |
+| 原生变异对照 | 停用暂停后 4 项失败，停用暂停时清空事实后 1 项失败，见 [mutation-no-pause](../../.artifacts/host-live-config-20261112/logs/mutation-no-pause/run.log)、[mutation-no-clear](../../.artifacts/host-live-config-20261112/logs/mutation-no-clear/run.log)。 |
+| 当前工作树 | 桌面运行时 21 项通过，类型检查与 ESLint 通过，macOS Qt 6.8.3 构建与 10 组 CTest 全部通过；汇总见 [verification.json](../../.artifacts/host-live-config-20261112/verification.json)。 |
+
+真实 Relay、真实手机与 Windows 上的暂停 / 恢复未执行，**待用户验证**。
 
 ## Windows 必须补做的验证
 

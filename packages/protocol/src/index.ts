@@ -1558,3 +1558,5 @@ export * from "./display-entries.js";
 export * from "./runtime-input-policy.js";
 
 export * from "./state-delta.js";
+
+export * from "./host-recovery.js";

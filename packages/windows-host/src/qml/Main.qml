@@ -40,7 +40,44 @@ ApplicationWindow {
     property var installAgentData: ({})
     // “发现可用更新”提示条只在本轮运行里露一次：关掉后仍可从侧边栏圆点和各页面按钮进入。
     property bool updateNoticeDismissed: false
-    readonly property bool canInstallAgents: host.state === "stopped" || host.state === "error"
+    // HOST-GUIDE-01: the overview carries one next step; only that step's controls take the accent.
+    readonly property bool hostOnline: host.state === "connected"
+    readonly property bool hostLinking: host.resumePending || host.state === "connecting" || host.state === "reconnecting"
+    readonly property int onlineDevices: host.devices.filter(function(device) { return device.path === "lan" || device.path === "relay" }).length
+    readonly property var overviewAgents: {
+        function agent(kind) { return host.agents.find(function(a) { return a.kind === kind }) || ({}) }
+        var pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh")
+        return [
+            {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, data: pi},
+            {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, data: codex},
+            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", installed: codex.desktopInstalled === true, broken: false},
+            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible},
+            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh}
+        ]
+    }
+    readonly property string nextStep: !host.activated ? "activate"
+        : !host.desiredRunning && !host.resumePending ? "connect"
+        : host.devices.length === 0 ? "pair"
+        : !overviewAgents.some(function(agent) { return agent.installed }) ? "install" : "open"
+    function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
+    /** Whether a phone can use this Agent through the running Host right now. */
+    function agentReachable(agent) {
+        if (!agent.installed || agent.broken || !window.hostOnline) return false
+        var backend = window.backendFor(agent.kind)
+        return backend === undefined || backend.launchable === true || backend.ready === true
+    }
+    function agentPhoneState(agent, sessions) {
+        if (!agent.installed) return "未安装"
+        if (agent.broken) return agent.kind === "claude" ? "需升级" : "需要修复"
+        if (window.hostLinking) return "正在连接"
+        if (!window.hostOnline) return "连接后手机可用"
+        if (!window.agentReachable(agent)) return "手机暂不可用"
+        return sessions > 0 ? "手机上 " + sessions + " 个会话" : "手机可用"
+    }
+    function openOverviewAgent(kind) {
+        if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
+        else host.openAgent(kind)
+    }
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
@@ -237,6 +274,8 @@ ApplicationWindow {
     }
     function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
+        if (host.resumePending) return "完成后自动恢复"
+        if (!host.activated && host.bridgeReady) return "未激活"
         return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
     function agentUpdatesAvailable() { return host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
@@ -321,6 +360,39 @@ ApplicationWindow {
         }
     }
     component Hint: MotionText { color: Theme.inkMuted; wrapMode: Text.WordWrap; lineHeight: 1.4; font.pixelSize: Theme.label }
+    // HOST-GUIDE-01: the computer and the phones as two ends of one link. The link's shape is the
+    // connection state: solid when connected, travelling while connecting, dashed while paused.
+    component NodeDisc: Item {
+        property string symbol: ""
+        property bool lit: false
+        implicitWidth: 52; implicitHeight: 52
+        Accessible.ignored: true
+        Surface { anchors.fill: parent; anchors.margins: -10; margin: 10; cornerRadius: 26; shadowScale: 0.6 }
+        SymbolIcon { anchors.centerIn: parent; width: Theme.iconMd; height: Theme.iconMd; name: parent.symbol; color: parent.lit ? Theme.accent : Theme.inkFaint; Behavior on color { enabled: window.motionEnabled; ColorAnimation { duration: Theme.durState } } }
+    }
+    component ConnectionLine: Item {
+        id: link
+        readonly property color tone: window.hostOnline ? Theme.success : window.hostLinking ? Theme.warning : host.state === "error" ? Theme.danger : Theme.inkFaint
+        implicitHeight: 12
+        Accessible.ignored: true
+        Rectangle { visible: window.hostOnline; anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 2; radius: 1; color: link.tone }
+        Row {
+            visible: !window.hostOnline; clip: true
+            anchors.verticalCenter: parent.verticalCenter; width: parent.width; spacing: 6
+            Repeater { model: Math.max(0, Math.ceil(link.width / 12)); Rectangle { width: 6; height: 2; radius: 1; color: link.tone } }
+        }
+        Rectangle {
+            id: traveller
+            visible: window.hostLinking && window.motionEnabled
+            width: 8; height: 8; radius: 4; color: link.tone
+            anchors.verticalCenter: parent.verticalCenter
+            SequentialAnimation on x {
+                running: traveller.visible; loops: Animation.Infinite
+                NumberAnimation { from: 0; to: Math.max(0, link.width - 8); duration: Theme.durLoop; easing.type: Easing.InOutSine }
+                NumberAnimation { from: Math.max(0, link.width - 8); to: 0; duration: Theme.durLoop; easing.type: Easing.InOutSine }
+            }
+        }
+    }
     component EngravedWordmark: Item {
         id: wordmark
         property alias text: face.text
@@ -596,7 +668,7 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
                 RowLayout {
                     Layout.topMargin: 14; spacing: 9
-                    StatusDot { color: host.state === "connected" ? Theme.success : (host.state === "connecting" || host.state === "reconnecting") ? Theme.warning : Theme.inkFaint; idle: host.state === "stopped"; syncing: host.state === "connecting" || host.state === "reconnecting" }
+                    StatusDot { color: window.hostOnline ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint; idle: host.state === "stopped" && !host.resumePending; syncing: window.hostLinking }
                     Label { text: stateText(); color: Theme.inkMuted; font.pixelSize: Theme.caption }
                 }
                 Label { text: Qt.platform.os === "osx" ? "macOS v" + host.version : "Windows v" + host.version; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.bottomMargin: 10 }
@@ -665,80 +737,7 @@ ApplicationWindow {
                     ColumnLayout {
                         visible: window.page === 0
                         Layout.fillWidth: true; spacing: 20
-                        Card {
-                            Layout.fillWidth: true
-                            RowLayout {
-                                anchors.fill: parent; spacing: 20
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 9
-                                    Hint { text: "这台电脑" }
-                                    Heading { text: host.hostName || "正在准备这台电脑" }
-                                    Hint { text: host.activated ? (host.email ? "已通过 " + host.email + " 激活" : "这台电脑已激活") : "" }
-                                }
-                                ActionButton { visible: host.activated; text: host.state === "connected" || host.state === "connecting" || host.state === "reconnecting" ? "暂停连接" : "开始连接"; enabled: !host.busy; onClicked: { if (host.state === "connected" || host.state === "connecting" || host.state === "reconnecting") host.stopHost(); else host.startHost() } }
-                                ActionButton { visible: host.activated; text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
-                            }
-                        }
-                        Card {
-                            Layout.fillWidth: true
-                            ColumnLayout {
-                                anchors.fill: parent; spacing: 13
-                                Heading { text: "打开 AI 工作台" }
-                                Flow {
-                                    Layout.fillWidth: true; spacing: 12
-                                    ActionButton {
-                                        objectName: "overviewOpenPiTui"
-                                        text: "打开 Pi"
-                                        mark: "pi"
-                                        primary: true
-                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "pi" && a.installed)
-                                        Accessible.name: "打开 Pi 终端界面"
-                                        onClicked: host.openAgentTui("pi")
-                                    }
-                                    ActionButton {
-                                        objectName: "overviewOpenCodexTui"
-                                        text: "打开 Codex"
-                                        mark: "codex"
-                                        primary: true
-                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.installed)
-                                        Accessible.name: "打开 Codex 终端界面"
-                                        onClicked: host.openAgentTui("codex")
-                                    }
-                                    ActionButton {
-                                        objectName: "overviewOpenClaudeTui"
-                                        text: "打开 Claude Code"
-                                        mark: "claude"
-                                        primary: true
-                                        enabled: host.bridgeReady && !host.busy && host.claudeInstalled
-                                        Accessible.name: "打开 Claude Code 终端界面"
-                                        onClicked: host.openAgentTui("claude")
-                                    }
-                                    ActionButton {
-                                        objectName: "overviewOpenCodexDesktop"
-                                        text: "打开 Codex 桌面版"
-                                        symbol: "computer"
-                                        primary: true
-                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "codex" && a.desktopInstalled)
-                                        Accessible.name: "打开 Codex 桌面版"
-                                        onClicked: host.openAgent("codexDesktop")
-                                    }
-                                    ActionButton {
-                                        objectName: "overviewOpenDsh"
-                                        text: "打开 DeepSeek Harness"
-                                        mark: "dsh"
-                                        primary: true
-                                        enabled: host.bridgeReady && !host.busy && host.agents.some(a => a.kind === "dsh" && a.installed)
-                                        Accessible.name: "打开 DeepSeek Harness 网页工作台"
-                                        onClicked: host.openAgent("dsh")
-                                    }
-                                }
-                                RowLayout {
-                                    visible: !host.dshEnabled && host.agents.some(a => a.kind === "dsh" && a.installed)
-                                    Layout.fillWidth: true; spacing: 16
-                                    ActionButton { text: "前往设置"; onClicked: window.selectPage(3) }
-                                }
-                            }
-                        }
+                        // HOST-GUIDE-01: activation is the first step, so it leads until it is done.
                         RowLayout {
                             visible: !host.activated
                             Layout.fillWidth: true; spacing: 20
@@ -749,7 +748,15 @@ ApplicationWindow {
                                     Heading { text: "连接，从这里开始" }
                                     Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true; Layout.bottomMargin: 9 }
                                     Label { visible: host.verificationRequired; text: "QQ 邮箱"; color: Theme.inkMuted; font.pixelSize: Theme.label }
-                                    Field { id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"; text: host.email; placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱" }
+                                    Field {
+                                        id: emailField; visible: host.verificationRequired; objectName: "registrationEmail"
+                                        // HOST-ACT-13: status ticks must not overwrite a user's draft or selection.
+                                        readonly property string activationContext: JSON.stringify([host.relayUrl, host.hostId, host.email])
+                                        onActivationContextChanged: { text = host.email; if (codeField) codeField.clear() }
+                                        Component.onCompleted: text = host.email
+                                        placeholderText: "你的邮箱@qq.com"; Layout.fillWidth: true
+                                        inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !host.busy; Accessible.name: "QQ 邮箱"
+                                    }
                                     Label { visible: host.verificationRequired; text: "邮箱验证码"; color: Theme.inkMuted; font.pixelSize: Theme.label }
                                     RowLayout {
                                         visible: host.verificationRequired; Layout.fillWidth: true; spacing: 10
@@ -757,25 +764,110 @@ ApplicationWindow {
                                         ActionButton { text: host.cooldown > 0 ? host.cooldown + " 秒后重发" : "获取验证码"; enabled: host.bridgeReady && host.registrationAvailable && !host.busy && host.cooldown === 0; onClicked: host.requestCode(emailField.text) }
                                     }
                                     ActionButton { objectName: "overviewActivate"; text: host.busy ? "正在处理…" : host.verificationRequired ? "注册并激活" : "直接激活"; primary: true; Layout.fillWidth: true; Layout.topMargin: 7; enabled: host.bridgeReady && host.registrationAvailable && !host.busy; onClicked: { if (host.verificationRequired) host.activate(emailField.text, codeField.text); else host.activateWithoutEmail() } }
+                                    ActionButton { objectName: "activateAsNewComputer"; text: "作为新电脑激活"; visible: host.identityReplaceable; Layout.fillWidth: true; enabled: host.bridgeReady && !host.busy; onClicked: newComputerDialog.open() }
                                     Hint { visible: host.verificationRequired && !host.registrationAvailable; text: "邮箱注册暂未开放"; Layout.fillWidth: true }
                                 }
                             }
                         }
-                        RowLayout {
-                            Layout.fillWidth: true; spacing: 16
-                            Repeater {
-                                model: ["已配对设备", "在线会话", "Agent 接入"]
-                                delegate: Card {
-                                    required property string modelData
-                                    required property int index
-                                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                        Card {
+                            objectName: "overviewLink"
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 18
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 16
+                                    NodeDisc { symbol: "computer"; lit: window.hostOnline }
                                     ColumnLayout {
-                                        anchors.fill: parent; spacing: 10
-                                        Hint { text: modelData }
-                                        MotionText { objectName: "home-metric-" + index; roll: true; font.pixelSize: Theme.display; font.weight: Font.DemiBold; color: Theme.ink; text: String(index === 0 ? host.devices.length : index === 1 ? host.runtimeCount : host.agents.filter(a => a.installed).length + (host.claudeInstalled ? 1 : 0)); Layout.fillWidth: true }
-                                        Hint { text: index === 0 ? "" : index === 1 ? "由这台电脑提供" : "Pi / Codex / Claude Code / DeepSeek"; Layout.fillWidth: true; font.pixelSize: Theme.caption }
+                                        spacing: 4; Layout.preferredWidth: 180; Layout.maximumWidth: 220
+                                        Heading { text: host.hostName || "这台电脑"; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        MotionText { objectName: "overviewLinkState"; text: window.stateText(); color: window.hostOnline ? Theme.success : host.state === "error" && !host.resumePending ? Theme.danger : Theme.inkMuted; font.pixelSize: Theme.label; Layout.fillWidth: true }
+                                    }
+                                    ConnectionLine { Layout.fillWidth: true; Layout.minimumWidth: 60 }
+                                    ColumnLayout {
+                                        spacing: 4; Layout.preferredWidth: 110
+                                        RowLayout {
+                                            spacing: 6; Layout.alignment: Qt.AlignRight
+                                            MotionText { objectName: "home-metric-0"; roll: true; text: String(host.devices.length); font.pixelSize: Theme.title; font.weight: Font.DemiBold; color: Theme.ink; horizontalAlignment: Text.AlignRight }
+                                            Label { text: "台手机"; color: Theme.inkMuted; font.pixelSize: Theme.label }
+                                        }
+                                        Label { text: window.onlineDevices + " 台在线"; visible: window.hostOnline && host.devices.length > 0; color: window.onlineDevices > 0 ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.label; Layout.alignment: Qt.AlignRight }
+                                    }
+                                    NodeDisc { symbol: "smartphone"; lit: window.hostOnline && window.onlineDevices > 0 }
+                                }
+                                RowLayout {
+                                    visible: host.activated
+                                    Layout.fillWidth: true; spacing: 12
+                                    Item { Layout.fillWidth: true }
+                                    ActionButton {
+                                        objectName: "overviewConnection"
+                                        text: host.desiredRunning || host.resumePending ? "暂停连接" : "开始连接"
+                                        primary: window.nextStep === "connect"
+                                        enabled: !host.busy && !host.resumePending
+                                        onClicked: { if (host.desiredRunning) host.stopHost(); else host.startHost() }
+                                    }
+                                    ActionButton { objectName: "overviewPair"; text: "添加手机"; symbol: "add"; primary: window.nextStep === "pair"; enabled: window.hostOnline && !host.busy; onClicked: host.pair() }
+                                }
+                            }
+                        }
+                        Card {
+                            objectName: "overviewAgents"
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 6
+                                Heading { text: "Agent"; Layout.bottomMargin: 6 }
+                                Repeater {
+                                    model: window.overviewAgents
+                                    delegate: RowLayout {
+                                        id: agentRow
+                                        required property var modelData
+                                        readonly property var backend: window.backendFor(modelData.kind)
+                                        readonly property int sessions: window.hostOnline && backend ? backend.runtimeCount : 0
+                                        readonly property bool reachable: window.agentReachable(modelData)
+                                        readonly property bool installable: modelData.data !== undefined
+                                        Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8; spacing: 14
+                                        Accessible.role: Accessible.ListItem
+                                        Accessible.name: modelData.name + "，" + window.agentPhoneState(modelData, sessions)
+                                        Item {
+                                            Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
+                                            opacity: agentRow.modelData.installed ? 1 : 0.4
+                                            AgentMark { anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
+                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: Theme.agentCodex }
+                                        }
+                                        Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Item {
+                                            objectName: "overviewAgentState-" + agentRow.modelData.kind
+                                            Layout.preferredWidth: 72; Layout.preferredHeight: Theme.touchTarget
+                                            visible: agentRow.modelData.installed
+                                            ToolTip.visible: phoneStateHover.hovered; ToolTip.delay: 300
+                                            ToolTip.text: window.agentPhoneState(agentRow.modelData, agentRow.sessions)
+                                            HoverHandler { id: phoneStateHover }
+                                            RowLayout {
+                                                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                                                SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
+                                                MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
+                                                StatusDot {
+                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint
+                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking
+                                                    syncing: !agentRow.modelData.broken && window.hostLinking
+                                                }
+                                            }
+                                        }
+                                        ActionButton {
+                                            objectName: "overviewAgent-" + agentRow.modelData.kind
+                                            Layout.preferredWidth: 112
+                                            text: agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
+                                            primary: agentRow.modelData.installed && !agentRow.modelData.broken ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
+                                            enabled: host.bridgeReady && !host.busy && (agentRow.modelData.installed || agentRow.installable)
+                                            loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
+                                            Accessible.name: text + " " + agentRow.modelData.name
+                                            onClicked: {
+                                                if (agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
+                                                else window.openOverviewAgent(agentRow.modelData.kind)
+                                            }
+                                        }
                                     }
                                 }
+                                DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstalling; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true; Layout.topMargin: 6 }
                             }
                         }
                     }
@@ -947,6 +1039,10 @@ ApplicationWindow {
                     Card {
                         id: settingsPane
                         visible: window.page === 3; Layout.fillWidth: true
+                        // HOST-LIVE-01: start parameters of the running service apply by reconnecting it; the button says so.
+                        readonly property bool reconnects: host.desiredRunning && (relayField.text.trim().replace(/\/+$/, "") !== host.relayUrl
+                            || (nameField.text.trim().length > 0 && nameField.text.trim() !== host.hostName) || codexSwitch.checked !== host.codexEnabled
+                            || dshSwitch.checked !== host.dshEnabled || dshWebUrlField.text.trim() !== host.dshWebUrl)
                         function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
@@ -1009,15 +1105,14 @@ ApplicationWindow {
                             SoftSwitch { id: startupSwitch; enabled: !host.busy; marksProviderDirty: false; checked: host.autoStart; onToggled: { host.setAutoStart(checked); checked = host.autoStart } text: Qt.platform.os === "osx" ? "登录 macOS 后自动启动" : "登录 Windows 后自动启动" }
                             Hint { text: "立即应用，下次登录时自动打开 Orbis。" }
                             Heading { text: "常规"; Layout.topMargin: 24 }
-                            Hint { text: "暂停连接后修改，保存后生效。"; Layout.fillWidth: true }
 
                             Label { text: "电脑名称"; color: Theme.inkMuted }
-                            Field { id: nameField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
-                            SoftSwitch { id: codexSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
-                            SoftSwitch { id: dshSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
-                            SoftSwitch { id: piIntegrationSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
+                            Field { id: nameField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
+                            SoftSwitch { id: codexSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
+                            SoftSwitch { id: dshSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
+                            SoftSwitch { id: piIntegrationSwitch; enabled: host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
-                            SoftSwitch { id: claudeIntegrationSwitch; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
+                            SoftSwitch { id: claudeIntegrationSwitch; enabled: host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
                             Hint { text: "安装或首次打开 Host 时自动安装 Orbis 插件；未安装 Claude Code 时跳过，安装后重新打开 Host 即可。关闭此项会卸载插件，更新 Host 会保留关闭状态。需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
                             RowLayout {
                                 objectName: "piCommandRow"
@@ -1039,10 +1134,10 @@ ApplicationWindow {
                                 ActionButton { text: "修复终端接入"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.enableCodexTerminal() }
                             }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
-                            Field { id: relayField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
+                            Field { id: relayField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: Theme.inkMuted }
-                            Field { id: dshWebUrlField; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { text: "应用设置"; primary: true; enabled: window.canInstallAgents && host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
+                            Field { id: dshWebUrlField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
+                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
@@ -1176,6 +1271,13 @@ ApplicationWindow {
         }
     }
     SoftDialog {
+        // HOST-ACT-16: the always-available activation when this Host ID cannot be restored.
+        id: newComputerDialog; title: "作为新电脑激活？"; anchors.centerIn: parent; modal: true; width: 410
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmNewComputer"; text: "作为新电脑激活"; danger: true; enabled: host.bridgeReady && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: newComputerDialog.accept(); onRejected: newComputerDialog.reject() }
+        Label { width: parent.width; text: "已配对的手机需要重新添加。"; wrapMode: Text.WordWrap }
+        onAccepted: host.replaceIdentity()
+    }
+    SoftDialog {
         id: revokeDialog; title: "撤销这台手机的配对？"; anchors.centerIn: parent; modal: true; width: 410
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "撤销配对"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: revokeDialog.accept(); onRejected: revokeDialog.reject() }
         Label { width: parent.width; text: "连接会立即失效。"; wrapMode: Text.WordWrap }
@@ -1183,31 +1285,31 @@ ApplicationWindow {
     }
     SoftDialog {
         id: restartDshDialog; title: "重启 DSH Server？"; anchors.centerIn: parent; modal: true; width: 480
-        contentItem: Hint { text: "重启会断开 DSH 网页和相关会话连接，正在生成的回复可能中断。请先在概览中暂停 Host 连接。重启完成后，从 Host 重新打开网页工作台，再恢复连接。手动配置的外部服务需在原启动位置重启。"; width: parent.width }
+        contentItem: Hint { text: "重启会断开 DSH 网页和相关会话连接，正在生成的回复可能中断。完成后从 Host 重新打开网页工作台。手动配置的外部服务需在原启动位置重启。"; width: parent.width }
         footer: SoftDialogButtons {
             ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            ActionButton { text: "确认重启"; enabled: host.bridgeReady && !host.busy && !host.desiredRunning; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            ActionButton { text: host.desiredRunning ? "重启并重新连接" : "确认重启"; enabled: host.bridgeReady && !host.busy; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
             onAccepted: restartDshDialog.accept(); onRejected: restartDshDialog.reject()
         }
         onAccepted: host.restartDshServer()
     }
     SoftDialog {
         id: installDialog; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: window.installAgentData.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canInstallAgents && !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
-            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
+            Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.updateAgent(window.installKind)
     }
     SoftDialog {
         id: batchInstallDialog; title: "全部更新到最新版本"; anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "全部更新到最新版本"; primary: true; enabled: window.canInstallAgents && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: host.desiredRunning ? "全部更新并重新连接" : "全部更新到最新版本"; primary: true; enabled: !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
             Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
             DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
-            Hint { visible: !window.canInstallAgents; text: "需先暂停 Host"; Layout.fillWidth: true; color: Theme.warning }
+            Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.installAllAgents("update")
     }

@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
-import { readFile, writeFile, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, rm, stat } from "node:fs/promises";
 import { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join, delimiter, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, resolveStateDir, revokeDeviceRecord, saveDeviceStore } from "@orbis/e2e";
+import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSecret, fromBase64UrlFixed, loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, privateKeyFromRaw, resolveStateDir, revokeDeviceRecord, saveDeviceStore, toBase64Url } from "@orbis/e2e";
 import QRCode from "qrcode";
-import type { AgentStateRangeRequest } from "@orbis/protocol";
+import { hostRecoveryProof, type AgentStateRangeRequest } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
@@ -138,6 +138,8 @@ export class DesktopRuntime {
   #desired: DesktopSettings | undefined;
   #attempt = 0;
   #starting = false;
+  /** Settles when the current connection attempt has finished unwinding, including one a pause already abandoned. */
+  #attemptSettled: Promise<void> = Promise.resolve();
   #lastStatus = "";
   #lastSeen = new Map<string, number>();
   #installation: AbortController | undefined;
@@ -187,7 +189,7 @@ export class DesktopRuntime {
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
-    return { hostId: identity.hostId, hostName: identity.hostName, stateDir: this.#stateDir, devices, nodeVersion: process.version,
+    return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
 
@@ -462,7 +464,11 @@ export class DesktopRuntime {
   async start(settings: DesktopSettings): Promise<void> {
     settings.relayUrl = validateDesktopRelay(settings.relayUrl);
     if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
-    if (this.#desired || this.#starting) throw new Error("Host 已在运行，请先暂停连接");
+    if (this.#desired) throw new Error("Host 已在运行，请先暂停连接");
+    // HOST-LIVE-01: the desktop resumes right after a change it paused for. An attempt that the
+    // pause abandoned mid-handshake still disposes what it created, so wait for it instead of failing.
+    while (this.#starting) await this.#attemptSettled;
+    if (this.#desired) throw new Error("Host 已在运行，请先暂停连接");
     await this.#checkExistingHost();
     if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
     await this.#environment(settings);
@@ -492,6 +498,8 @@ export class DesktopRuntime {
     const settings = this.#desired;
     if (!settings || this.#starting) return;
     this.#starting = true;
+    let settleAttempt = (): void => {};
+    this.#attemptSettled = new Promise(resolve => { settleAttempt = resolve; });
     this.#emit({ event: "state", state: "connecting" });
     try {
       await this.#checkExistingHost();
@@ -507,7 +515,9 @@ export class DesktopRuntime {
       const wrapper = resolveCodexWrapper();
       const endpointPath = codexDesktopEndpointPath(this.#stateDir);
       if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
-      this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
+      // Closures below stay bound to this attempt's lifecycle: a pause clears the field while a
+      // service built by the abandoned attempt can still read its status.
+      const desktopLifecycle = this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
         log: line => this.log(line),
         onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
         onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
@@ -533,7 +543,7 @@ export class DesktopRuntime {
       let dshLaunchable = false;
       try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
       catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
-      const codexDesktopLaunchable = await this.#codexDesktopLifecycle.isInstalled();
+      const codexDesktopLaunchable = await desktopLifecycle.isInstalled();
       const connectDshRuntime = async (existingOnly = false): Promise<DshRuntime | undefined> => {
         if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
         const env = await this.#providers.environment("dsh");
@@ -578,9 +588,9 @@ export class DesktopRuntime {
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
         ...(this.#codexRuntime === undefined ? {} : { codexRuntime: this.#codexRuntime, codexLaunch: (request: { cwd: string }) => this.#codexRuntime!.prepareTerminalLaunch(request.cwd) }),
-        ensureCodexDesktop: () => this.#codexDesktopLifecycle!.ensureReady(),
+        ensureCodexDesktop: () => desktopLifecycle.ensureReady(),
         codexDesktopLaunchable,
-        codexDesktopStatus: () => this.#codexDesktopLifecycle!.status,
+        codexDesktopStatus: () => desktopLifecycle.status,
         ...(this.#dshRuntime === undefined ? {} : { dshRuntime: this.#dshRuntime }),
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
@@ -607,7 +617,8 @@ export class DesktopRuntime {
       });
       // 建服务可能跨越一次 stop()：这时它已经不属于任何一次运行，起它只会留下一个没人管的
       // 后台（并接着把状态捅给界面）。自己收掉，然后让 #connect 的 finally 放掉 #starting。
-      if (this.#desired !== settings) { await service.stop().catch(error => this.log(String(error))); return; }
+      // 这次尝试在 stop() 之后建出的 Codex / DSH 后端也只属于它：下一次 start 会等它收完再开始。
+      if (this.#desired !== settings) { await service.stop().catch(error => this.log(String(error))); await this.#dispose(); return; }
       this.#service = service;
       let deadline: NodeJS.Timeout | undefined;
       try {
@@ -640,7 +651,7 @@ export class DesktopRuntime {
         this.#emit({ event: "state", state: "reconnecting", message });
         this.#retry = setTimeout(() => { void this.#connect(); }, delay);
       }
-    } finally { this.#starting = false; }
+    } finally { this.#starting = false; settleAttempt(); }
   }
 
   async #requireActivation(settings: DesktopSettings): Promise<void> {
@@ -732,6 +743,37 @@ export class DesktopRuntime {
     stored.hostName = name.trim();
     await writeFile(`${path}.tmp`, JSON.stringify(stored, null, 2), { mode: 0o600 });
     await rename(`${path}.tmp`, path);
+  }
+
+  /**
+   * HOST-ACT-15: answers one Relay recovery challenge with this Host's long-term key. The private key
+   * never leaves this process; the desktop only relays the challenge and the proof.
+   */
+  async hostRecoveryProof(request: { hostId: string; challengeId: string; relayPub: string }): Promise<{ proof: string }> {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(request.challengeId)) throw new Error("恢复请求无效");
+    const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
+    if (identity.hostId !== request.hostId) throw new Error("电脑身份已变化，请重新激活");
+    const shared = deriveSharedSecret(privateKeyFromRaw(identity.privateRaw), fromBase64UrlFixed(request.relayPub, X25519_KEY_BYTES, "relayPub"));
+    return { proof: hostRecoveryProof(shared, identity.hostId, request.challengeId) };
+  }
+
+  /**
+   * HOST-ACT-16: the last-resort activation when a Relay refuses to restore this Host ID. The current
+   * identity and its phone pairings move to `retired-identities/`; a new identity keeps the computer name.
+   */
+  async replaceIdentity(): Promise<unknown> {
+    if (this.#desired || this.#starting || this.#service) throw new Error("请先暂停连接，再作为新电脑激活");
+    await this.#checkExistingHost();
+    const previous = await loadOrCreateHostIdentity({ dir: this.#stateDir });
+    const archive = join(this.#stateDir, "retired-identities", `${previous.hostId}-${Date.now()}`);
+    await mkdir(archive, { recursive: true, mode: 0o700 });
+    // Pairings move first: an interruption leaves the old identity without phones, never new keys with old phones.
+    for (const name of [DEVICE_STORE_FILE, HOST_IDENTITY_FILE]) {
+      await rename(join(this.#stateDir, name), join(archive, name)).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+    }
+    const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir, hostName: previous.hostName });
+    this.log(`已作为新电脑：原身份与手机配对记录保存在 ${archive}`);
+    return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), devices: [] };
   }
 
   async install(kind: string, version = "latest", mode = "current"): Promise<AgentInstallResult> {
@@ -1067,6 +1109,8 @@ export class DesktopRuntime {
 
   async #dispose(): Promise<void> {
     const service = this.#service; this.#service = undefined;
+    // The desktop drops running facts when paused; the next service must announce its status again.
+    this.#lastStatus = "";
     await service?.stop().catch(error => this.log(String(error)));
     const codex = this.#codex; const codexRuntime = this.#codexRuntime; this.#codex = undefined; this.#codexRuntime = undefined;
     await (codexRuntime ? codexRuntime.stop() : codex?.stop())?.catch(error => this.log(String(error)));

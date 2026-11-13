@@ -109,6 +109,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             const auto actualId = obj.value("hostId").toString();
             if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
             m_hostId = actualId; m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
+            m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
             m_bridgeReady = true;
@@ -139,7 +140,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // The relaunched core starts paused; a change that was waiting to resume the old one no longer applies.
-        m_settled.clear(); m_resumePending = false; m_relaySelectionPending = false;
+        m_settled.clear(); m_resumePending = false; m_relaySelectionPending = false; clearRunningFacts();
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
@@ -194,14 +195,15 @@ QStringList HostController::checkingProviderIds() const {
     }
     return ids;
 }
-void HostController::command(const QString &method, const QJsonObject &params, Callback done) {
-    if (m_exiting && method != "shutdown") return;
-    if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return; }
+int HostController::command(const QString &method, const QJsonObject &params, Callback done) {
+    if (m_exiting && method != "shutdown") return -1;
+    if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
     if (!isProviderBackgroundRequest(method)) ++m_busy;
     m_bridge.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
     emit changed();
+    return id;
 }
 void HostController::afterQueuedCommands(std::function<void()> next) {
     const int last = m_nextId - 1;
@@ -220,6 +222,12 @@ void HostController::resumeAfterChange() {
     // A previously used Relay resumes with its own credential; a new one needs activation.
     startHost();
     emit changed();
+}
+void HostController::clearRunningFacts() {
+    m_backends.clear(); m_runtimeCount = 0;
+    QVariantList devices;
+    for (const auto &entry : m_devices) { auto device = entry.toMap(); device.insert("path", "offline"); devices.append(device); }
+    m_devices = devices;
 }
 void HostController::receiveLine(const QJsonObject &line) {
     if (line.contains("id")) {
@@ -241,6 +249,8 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (event == "state") {
             m_state = line.value("state").toString();
             if (m_state == "error") m_desiredRunning = false;
+            if (m_state == "connected") bindHostKey();
+            if (m_state == "stopped" || m_state == "error") clearRunningFacts();
             if (line.contains("message")) setMessage(line.value("message").toString());
             // Older bundled bridges report only the original authentication message.
             if (m_state == "error" && (line.value("activationRequired").toBool() ||
@@ -267,7 +277,16 @@ void HostController::receiveLine(const QJsonObject &line) {
                 m_settings.setValue(kind + "Entry", line.value("entry").toString()); m_settings.sync();
             }
         }
-        else if (event == "status") { m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt(); }
+        else if (event == "status") {
+            m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt();
+            // The running service's own model; offline status events (rename/revoke while paused) carry none.
+            QVariantList backends;
+            for (const auto &domain : line.value("model").toObject().value("domains").toArray()) {
+                if (domain.toObject().value("domain").toString() == "backends")
+                    backends = domain.toObject().value("value").toObject().value("backends").toArray().toVariantList();
+            }
+            m_backends = backends;
+        }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
         else if (event == "claudeStatus") {
@@ -281,7 +300,7 @@ void HostController::receiveLine(const QJsonObject &line) {
     }
     emit changed();
 }
-void HostController::api(const QString &endpoint, const QJsonObject &body, Callback done) {
+void HostController::api(const QString &endpoint, const QJsonObject &body, Callback done, std::function<void()> failed) {
     if (!validRelay(relayUrl())) { setMessage("请在设置中填写有效的 wss:// 中继地址"); return; }
     QUrl url(relayUrl() + endpoint); url.setScheme(url.scheme() == "wss" ? "https" : "http");
     QNetworkRequest request(url); request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -290,8 +309,9 @@ void HostController::api(const QString &endpoint, const QJsonObject &body, Callb
     auto *reply = m_network.post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     const auto generation = m_activationGeneration;
     const auto requestedRelay = relayUrl(), requestedHost = m_hostId;
+    const bool mailboxVerified = body.contains("challengeId");
     ++m_busy; emit changed();
-    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, requestedRelay, requestedHost, done = std::move(done)] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, requestedRelay, requestedHost, mailboxVerified, done = std::move(done), failed = std::move(failed)] {
         m_busy = qMax(0, m_busy - 1);
         if (generation != m_activationGeneration || requestedRelay != relayUrl() || requestedHost != m_hostId) {
             reply->deleteLater(); emit changed(); return;
@@ -299,20 +319,35 @@ void HostController::api(const QString &endpoint, const QJsonObject &body, Callb
         auto result = QJsonDocument::fromJson(reply->readAll());
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status >= 200 && status < 300 && result.isObject()) done(result.object());
-        else if (result.object().contains("error")) handleRegistrationError(result.object());
+        else if (failed) failed();
+        else if (result.object().contains("error")) handleRegistrationError(result.object(), mailboxVerified);
         else setMessage("无法连接注册服务：" + reply->errorString());
         reply->deleteLater(); emit changed();
     });
 }
-void HostController::handleRegistrationError(const QJsonObject &result) {
+void HostController::handleRegistrationError(const QJsonObject &result, bool mailboxVerified) {
     const auto code = result.value("error").toString();
     if (code == "host_already_registered") {
-        m_recoverWithEmail = result.value("recovery").toString() != "administrator";
-        if (m_recoverWithEmail) {
+        m_registrationRefused = true;
+        const auto recovery = result.value("recovery").toString();
+        const auto reset = "联系管理员重置激活，电脑 ID：" + m_hostId;
+        // HOST-ACT-14: the Relay consumes a code before refusing it; another attempt needs a new one.
+        if (mailboxVerified) { m_challenge.clear(); m_challengeEmail.clear(); }
+        m_recoverWithEmail = recovery != "administrator";
+        if (!m_recoverWithEmail) setMessage("请" + reset);
+        else if (mailboxVerified) {
+            // A verified mailbox that still conflicts is not the registered one. A released Relay sends
+            // no hint, so the Host may also have been activated without a mailbox: asking for the
+            // "original mailbox" again would loop forever. Keep the mailbox entry for the right address.
+            setMessage(recovery == "email" ? "这个邮箱不是这台电脑的激活邮箱。请改用原 QQ 邮箱，或" + reset
+                : "这个邮箱无法恢复这台电脑的激活。如果当初没有用邮箱激活，或忘记了原邮箱，请" + reset);
+        } else {
             m_verificationRequired = true;
-            setMessage("请验证原 QQ 邮箱以恢复激活");
+            setMessage(recovery == "email" ? QString("请验证原 QQ 邮箱以恢复激活")
+                : "请验证原 QQ 邮箱以恢复激活。如果当初没有用邮箱激活，请" + reset);
             refreshRegistrationPolicy();
-        } else setMessage("请联系管理员重置激活，电脑 ID：" + m_hostId);
+        }
+        maybeRecoverWithHostKey();
     } else {
         if (code == "email_verification_required") m_verificationRequired = true;
         setMessage(friendlyError(code));
@@ -334,13 +369,73 @@ void HostController::activate(const QString &email, const QString &code) {
     const auto normalized = email.trimmed().toLower();
     if (m_challenge.isEmpty() || normalized != m_challengeEmail) { setMessage("请先为这个 QQ 邮箱获取验证码"); return; }
     if (!QRegularExpression("^\\d{6}$").match(code.trimmed()).hasMatch()) { setMessage("请输入 6 位验证码"); return; }
-    api("/v1/registration/activate", {{"email", normalized}, {"hostId", m_hostId}, {"challengeId", m_challenge}, {"code", code.trimmed()}}, [this](const QJsonValue &value) { saveActivation(value, "QQ 邮箱验证成功，这台电脑已激活"); });
+    api("/v1/registration/activate", withHostKey({{"email", normalized}, {"hostId", m_hostId}, {"challengeId", m_challenge}, {"code", code.trimmed()}}), [this](const QJsonValue &value) { saveActivation(value, "QQ 邮箱验证成功，这台电脑已激活"); });
 }
 void HostController::activateWithoutEmail() {
     if (!m_bridgeReady || busy() || activated() || m_verificationRequired || !m_registrationAvailable) return;
-    api("/v1/registration/activate", {{"hostId", m_hostId}}, [this](const QJsonValue &value) { saveActivation(value, "这台电脑已激活，可以开始连接"); });
+    api("/v1/registration/activate", withHostKey({{"hostId", m_hostId}}), [this](const QJsonValue &value) { saveActivation(value, "这台电脑已激活，可以开始连接"); });
 }
-void HostController::saveActivation(const QJsonValue &value, const QString &successMessage) {
+QJsonObject HostController::withHostKey(QJsonObject body) const {
+    // HOST-ACT-15: lets a Relay record this computer's key; released Relays ignore the field.
+    if (!m_hostPub.isEmpty()) body.insert("hostPub", m_hostPub);
+    return body;
+}
+void HostController::maybeRecoverWithHostKey() {
+    // HOST-ACT-15: a computer that still holds its Host key replaces a lost credential by itself. Bounded per
+    // run, so two copies of one identity cannot keep replacing each other's credential.
+    if (!m_hostKeyRecovery || !m_keyRecoveryArmed || m_keyRecoveries >= 3 || activated() || !m_bridgeReady || m_hostPub.isEmpty() ||
+        m_hostId.isEmpty() || m_activationIO > 0 || m_relaySelectionPending || m_exiting || m_updating || !validRelay(relayUrl())) return;
+    m_keyRecoveryArmed = false; ++m_keyRecoveries;
+    const auto hostId = m_hostId; const auto generation = m_activationGeneration;
+    const auto unavailable = [this] { appendLog("本机密钥无法恢复激活，可使用邮箱或作为新电脑激活"); };
+    api("/v1/registration/recovery-challenge", {{"hostId", hostId}}, [this, hostId, generation, unavailable](const QJsonValue &value) {
+        const auto challenge = value.toObject();
+        const auto challengeId = challenge.value("challengeId").toString();
+        command("hostRecoveryProof", {{"hostId", hostId}, {"challengeId", challengeId}, {"relayPub", challenge.value("relayPub").toString()}},
+            [this, hostId, generation, challengeId, unavailable](const QJsonValue &proof) {
+                if (generation != m_activationGeneration || hostId != m_hostId || activated()) return;
+                api("/v1/registration/recover", {{"hostId", hostId}, {"challengeId", challengeId}, {"proof", proof.toObject().value("proof").toString()}},
+                    [this](const QJsonValue &value) {
+                        // A paused Host stays paused; only the credential is restored.
+                        saveActivation(value, "已用这台电脑的密钥恢复激活", !m_deferStartup && m_settings.value("runHost", true).toBool());
+                    }, unavailable);
+            });
+    }, unavailable);
+}
+void HostController::bindHostKey() {
+    // HOST-ACT-15: records this computer's key with a Relay that supports recovery, once per credential.
+    // Failures and released Relays leave the activation unchanged.
+    if (!m_hostKeyRecovery || m_hostPub.isEmpty() || !activated() || !validRelay(relayUrl())) return;
+    const auto binding = relayUrl() + '\n' + m_hostId + '\n' + m_credential;
+    if (binding == m_keyBoundFor) return;
+    m_keyBoundFor = binding;
+    QUrl url(relayUrl() + "/v1/registration/host-key"); url.setScheme(url.scheme() == "wss" ? "https" : "http");
+    QNetworkRequest request(url); request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Authorization", "Bearer " + m_credential.toUtf8());
+    request.setTransferTimeout(15000);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    auto *reply = m_network.post(request, QJsonDocument(QJsonObject{{"hostPub", m_hostPub}}).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, binding] {
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // Unreachable or failing Relays are retried on the next connection; a refusal is final for this credential.
+        if ((status == 0 || status >= 500) && binding == m_keyBoundFor) m_keyBoundFor.clear();
+        if (status == 409) appendLog("Relay 记录的电脑密钥与本机不同，本机密钥无法用于恢复激活");
+        reply->deleteLater();
+    });
+}
+void HostController::replaceIdentity() {
+    // HOST-ACT-16: the always-available path when a Relay will not restore this Host ID.
+    if (!identityReplaceable() || busy() || m_desiredRunning) return;
+    command("replaceIdentity", {}, [this](const QJsonValue &value) {
+        const auto identity = value.toObject();
+        m_hostId = identity.value("hostId").toString(); m_hostName = identity.value("hostName").toString();
+        m_hostPub = identity.value("hostPub").toString(); m_devices.clear(); refreshDeviceUpdateIndicators();
+        m_email.clear(); m_registrationRefused = false; m_recoverWithEmail = false;
+        appendLog("已作为新电脑：原电脑身份与手机配对记录已归档");
+        restoreActivation(relayUrl(), [this] { setMessage("已作为新电脑，请完成激活后重新添加手机"); });
+    });
+}
+void HostController::saveActivation(const QJsonValue &value, const QString &successMessage, bool start) {
     auto obj = value.toObject();
     if (obj.value("hostId").toString() != m_hostId || !obj.value("credential").toString().startsWith("orbis_host_")) { setMessage("服务器返回了无效的激活凭据"); return; }
     obj.insert("relayUrl", relayUrl());
@@ -348,13 +443,13 @@ void HostController::saveActivation(const QJsonValue &value, const QString &succ
     const auto generation = m_activationGeneration;
     ++m_activationIO; emit changed();
     auto *watcher = new QFutureWatcher<QString>(this);
-    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, obj, successMessage, generation] {
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, obj, successMessage, generation, start] {
         const auto error = watcher->result(); watcher->deleteLater(); --m_activationIO;
         if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
         if (!error.isEmpty()) { setMessage(error); emit changed(); return; }
         m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString();
-        m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0; m_recoverWithEmail = false;
-        setMessage(successMessage); startHost(); emit changed();
+        m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0; m_recoverWithEmail = false; m_registrationRefused = false;
+        setMessage(successMessage); if (start) startHost(); emit changed();
     });
     watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, obj] {
         QString error; CredentialStore::save(path, obj, &error); return error;
@@ -370,12 +465,14 @@ void HostController::restoreActivation(const QString &relay, std::function<void(
         const auto result = watcher->result(); watcher->deleteLater(); --m_activationIO;
         if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
         if (!result.second.isEmpty()) {
-            resumeAfterChange(); setMessage(result.second); emit changed(); return;
+            // An unreadable credential store still leaves this Relay's activation and key recovery available now.
+            resumeAfterChange(); setMessage(result.second); refreshRegistrationPolicy(); emit changed(); return;
         }
         m_settings.setValue("relayUrl", CredentialStore::normalizedRelay(relay)); m_settings.sync();
         m_email = result.first.value("email").toString(); m_credential = result.first.value("credential").toString();
         m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0; m_qr.clear(); m_pairExpires = 0;
         m_recoverWithEmail = false; m_verificationRequired = true; m_registrationAvailable = false;
+        m_registrationRefused = false; m_keyRecoveryArmed = true;
         refreshRegistrationPolicy(); done(); emit changed();
     });
     watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, relay, hostId] {
@@ -388,6 +485,7 @@ void HostController::invalidateActivation() {
     const QJsonObject recovery{{"email", m_email}, {"hostId", m_hostId}, {"relayUrl", relayUrl()}};
     m_credential.clear(); m_qr.clear(); m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0;
     m_verificationRequired = !m_email.isEmpty();
+    m_keyRecoveryArmed = true;
     setMessage("激活凭据已失效，请重新激活");
     // Native key stores may wait on the OS; persist the rejected state off the UI thread.
     const auto generation = m_activationGeneration;
@@ -424,9 +522,12 @@ void HostController::refreshRegistrationPolicy() {
                 m_verificationRequired = status.value("qqEmailVerificationRequired").toBool(true) || m_recoverWithEmail || (!activated() && !m_email.isEmpty());
                 m_registrationAvailable = status.value("enabled").toBool() &&
                     (!m_verificationRequired || status.value("mailConfigured").toBool(true));
+                m_hostKeyRecovery = status.value("hostKeyRecovery").toBool(false);
             } else {
-                m_verificationRequired = true; m_registrationAvailable = false;
+                m_verificationRequired = true; m_registrationAvailable = false; m_hostKeyRecovery = false;
             }
+            maybeRecoverWithHostKey();
+            if (activated() && m_state == "connected") bindHostKey();
             emit changed();
         }
         reply->deleteLater();
@@ -453,6 +554,8 @@ void HostController::detectAgents(bool checkLatest) {
 void HostController::updateAgent(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
     m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = "latest"; emit changed();
+    // HOST-LIVE-01: installs need the Agent's files released, so a running Host pauses for them and resumes after.
+    pauseForChange();
     command("updateAgent", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         const auto result = value.toObject();
         m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
@@ -461,6 +564,7 @@ void HostController::updateAgent(const QString &kind) {
         setMessage(warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
             (result.value("restarted").toBool() ? "，后台已自动重启。请从 Host 重新打开网页。" : "") : warning); detectAgents();
     });
+    if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::cancelInstall() {
     if (!agentInstalling() || m_agentInstallStage == "cancelling" || m_agentInstallStage == "restarting") return;
@@ -470,6 +574,7 @@ void HostController::cancelInstall() {
 void HostController::installAllAgents(const QString &action) {
     if (!m_bridgeReady || busy()) return;
     m_agentInstallStage = "queued"; emit changed();
+    pauseForChange();
     command("installAll", {{"action", action}}, [this](const QJsonValue &value) {
         const auto result = value.toObject();
         const auto failures = result.value("failures").toArray().toVariantList();
@@ -480,6 +585,7 @@ void HostController::installAllAgents(const QString &action) {
         setMessage(QString("%1：成功 %2 项，失败 %3 项%4").arg(m_agentInstallStage == "cancelled" ? "批量操作已取消" : "批量操作完成").arg(result.value("succeeded").toInt()).arg(failures.size()).arg(details.isEmpty() ? "" : "\n" + details.join('\n')));
         detectAgents();
     });
+    if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::activateInstallation(const QString &kind, const QString &id) {
     command("activateInstallation", {{"kind", kind}, {"id", id}}, [this](const QJsonValue &value) {
@@ -631,11 +737,12 @@ QString HostController::selectWorkspace(const QString &kind) {
 }
 void HostController::restartDshServer() {
     if (!m_bridgeReady || busy()) return;
-    if (m_desiredRunning) { setMessage("请先在概览中暂停 Host 连接，再重启 DSH Server"); return; }
+    pauseForChange();
     setMessage("正在重启 DSH Server…");
     command("restartDshServer", {}, [this](const QJsonValue &) {
-        setMessage("DSH Server 已就绪，请从 Host 重新打开网页工作台，再恢复 Host 连接");
+        setMessage("DSH Server 已就绪，请从 Host 重新打开网页工作台");
     });
+    if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
@@ -675,7 +782,6 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     if (busy()) return;
     const auto normalized = CredentialStore::normalizedRelay(relay);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
-    if (m_desiredRunning && normalized == CredentialStore::normalizedRelay(relayUrl())) { setMessage("请先在概览中暂停连接，再修改设置"); return; }
     if (!dshUrl.trimmed().isEmpty()) {
         const QUrl web(dshUrl.trimmed());
         const auto query = QUrlQuery(web).queryItems();
@@ -703,6 +809,11 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     // Kept in the desktop API for older QML callers; the current switch applies independently.
     if (startup != autoStart()) { setAutoStart(startup); if (startup != autoStart()) return; }
 
+    // HOST-LIVE-01: fields the running service was started with apply by pausing and resuming it;
+    // terminal integrations and login startup keep applying live without touching the connection.
+    const auto hostName = name.trimmed();
+    const bool rename = !hostName.isEmpty() && hostName != m_hostName;
+    if (normalized != relayUrl() || rename || codex != codexEnabled() || dsh != dshEnabled() || dshUrl.trimmed() != dshWebUrl()) pauseForChange();
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS
@@ -719,7 +830,7 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         });
     }
     m_settings.sync();
-    if (!name.trimmed().isEmpty() && name.trimmed() != m_hostName) command("rename", {{"name", name.trimmed()}}, [this, name](const QJsonValue &) { m_hostName = name.trimmed(); emit changed(); });
+    if (rename) command("rename", {{"name", hostName}}, [this, hostName](const QJsonValue &) { m_hostName = hostName; emit changed(); });
     if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
     setMessage("设置已保存"); detectAgents(); refreshRegistrationPolicy();
 }

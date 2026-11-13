@@ -37,11 +37,15 @@ class HostController : public QObject {
     Q_PROPERTY(bool activated READ activated NOTIFY changed)
     Q_PROPERTY(bool verificationRequired READ verificationRequired NOTIFY changed)
     Q_PROPERTY(bool registrationAvailable READ registrationAvailable NOTIFY changed)
+    /** HOST-ACT-16: the Relay will not restore this Host ID (or its mailbox may be out of reach); a new identity always can be activated. */
+    Q_PROPERTY(bool identityReplaceable READ identityReplaceable NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool exiting READ exiting NOTIFY changed)
     Q_PROPERTY(bool exitApproved READ exitApproved NOTIFY exitReady)
     Q_PROPERTY(bool bridgeReady READ bridgeReady NOTIFY changed)
     Q_PROPERTY(bool desiredRunning READ desiredRunning NOTIFY changed)
+    /** HOST-LIVE-01: the Host paused itself to apply a change and resumes once that change settles. */
+    Q_PROPERTY(bool resumePending READ resumePending NOTIFY changed)
     Q_PROPERTY(bool autoStart READ autoStart NOTIFY changed)
     Q_PROPERTY(bool codexEnabled READ codexEnabled NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
@@ -55,6 +59,8 @@ class HostController : public QObject {
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
+    /** HOST-GUIDE-01: per-Agent backend facts of the running Host ({kind, ready, launchable, runtimeCount}); empty while paused. */
+    Q_PROPERTY(QVariantList backends READ backends NOTIFY changed)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
     Q_PROPERTY(QVariantMap codexDesktop READ codexDesktop NOTIFY changed)
@@ -95,6 +101,7 @@ public:
     bool activated() const { return !m_credential.isEmpty(); }
     bool verificationRequired() const { return m_verificationRequired; }
     bool registrationAvailable() const { return m_registrationAvailable; }
+    bool identityReplaceable() const { return m_bridgeReady && !activated() && (m_registrationRefused || !m_email.isEmpty()); }
     bool busy() const { return m_busy > 0 || m_activationIO > 0 || m_relaySelectionPending || m_exiting || m_updating; }
     bool exiting() const { return m_exiting; }
     bool exitApproved() const { return m_exitApproved; }
@@ -112,6 +119,7 @@ public:
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
+    QVariantList backends() const { return m_backends; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
     QVariantMap codexDesktop() const { return m_codexDesktop; }
@@ -128,6 +136,7 @@ public:
     Q_INVOKABLE void requestCode(const QString &email);
     Q_INVOKABLE void activate(const QString &email, const QString &code);
     Q_INVOKABLE void activateWithoutEmail();
+    Q_INVOKABLE void replaceIdentity();
     Q_INVOKABLE void refreshRegistrationPolicy();
     Q_INVOKABLE void startHost();
     Q_INVOKABLE void stopHost();
@@ -179,6 +188,14 @@ public:
     Q_INVOKABLE void openDataDirectory();
     Q_INVOKABLE void clearMessage();
     void shutdown();
+#ifdef ORBIS_SMOKE_INTERACTION
+    // Smoke-only (--smoke-test --smoke-guide): synthetic bridge lines go through the real reducer so the
+    // guided overview renders each step without activating, connecting or pairing anything.
+    void smokeReceive(const QJsonObject &line) { receiveLine(line); }
+    void smokeActivation(bool running) { m_credential = "orbis_host_smoke"; m_desiredRunning = running; emit changed(); }
+    void smokeAgents(const QVariantList &agents) { m_agents = agents; emit changed(); }
+    void smokePauseForChange() { pauseForChange(); emit changed(); }
+#endif
 signals:
     void changed();
     void providersChanged();
@@ -202,26 +219,35 @@ signals:
 private:
     friend class HostActivationTest;
     friend class HostExitTest;
+    friend class HostLiveChangeTest;
     using Callback = std::function<void(const QJsonValue &)>;
     void launchBridge();
     void beginExit(const QString &installer = {});
     void finishExit();
     void failExit(const QString &message);
-    void command(const QString &method, const QJsonObject &params = {}, Callback done = {});
+    /** Queues one bridge request and returns its id, or -1 when it was not sent. */
+    int command(const QString &method, const QJsonObject &params = {}, Callback done = {});
     /**
      * The bridge answers requests strictly in queue order (cancelInstall excepted), so `next`
      * runs once every request queued so far has settled, successfully or not.
      */
     void afterQueuedCommands(std::function<void()> next);
-    /** HOST-ACT-12: pause the old Relay before selecting credentials; remember whether to resume. */
+    /** HOST-LIVE-01: pauses a running Host before a change it cannot apply live; false when it was not running. */
     bool pauseForChange();
     void resumeAfterChange();
+    /** Paused Hosts have no reachable phones or sessions; drop the running service's facts with it. */
+    void clearRunningFacts();
     void receiveLine(const QJsonObject &line);
-    void api(const QString &endpoint, const QJsonObject &body, Callback done);
-    void saveActivation(const QJsonValue &value, const QString &successMessage);
+    /** `failed`, when given, replaces the user-facing error handling for a refused or unreachable request. */
+    void api(const QString &endpoint, const QJsonObject &body, Callback done, std::function<void()> failed = {});
+    QJsonObject withHostKey(QJsonObject body) const;
+    void maybeRecoverWithHostKey();
+    void bindHostKey();
+    void saveActivation(const QJsonValue &value, const QString &successMessage, bool start = true);
     void restoreActivation(const QString &relay, std::function<void()> done);
     void invalidateActivation();
-    void handleRegistrationError(const QJsonObject &result);
+    /** `mailboxVerified`: the refused request carried a mailbox verification code. */
+    void handleRegistrationError(const QJsonObject &result, bool mailboxVerified = false);
     void setMessage(const QString &message);
     void checkUpdatesInternal(bool announce);
     void refreshDeviceUpdateIndicators();
@@ -261,7 +287,7 @@ private:
     int m_draftGeneration = 0;
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
-    QVariantList m_devices, m_agents;
+    QVariantList m_devices, m_agents, m_backends;
     QVariantMap m_codexDesktop;
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
@@ -279,6 +305,10 @@ private:
     QString m_claudeVersion, m_claudeMinimumVersion, m_claudeVersionError;
     bool m_verificationRequired = true, m_registrationAvailable = false;
     bool m_recoverWithEmail = false;
+    // HOST-ACT-15/16: Host key recovery state for the current Relay and Host ID.
+    QString m_hostPub, m_keyBoundFor;
+    bool m_hostKeyRecovery = false, m_registrationRefused = false, m_keyRecoveryArmed = true;
+    int m_keyRecoveries = 0;
     QString m_updateVersion, m_updateInstallerUrl, m_updateChecksumUrl;
     QString m_androidLatestVersion;
     int m_androidLatestVersionCode = 0;

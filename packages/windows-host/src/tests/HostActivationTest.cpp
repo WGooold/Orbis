@@ -2,6 +2,7 @@
 #include "../CredentialStore.h"
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -21,6 +22,24 @@ class HostActivationTest : public QObject {
     int m_policyRequests = 0;
     bool m_deferNextPolicy = false;
     QPointer<QTcpSocket> m_deferredPolicy;
+    QJsonObject m_activationRefusal;
+    // HOST-ACT-15/16 Relay fixture state: requests as {method, path, authorization, body}.
+    bool m_hostKeyRecovery = false, m_recoveryAccepted = true;
+    QList<QJsonObject> m_requests;
+    QElapsedTimer m_relayActivity;
+    // A request a previous test's controller left in flight must not become this test's deferred response.
+    void settleRelayFixture() { QTRY_VERIFY_WITH_TIMEOUT(m_relayActivity.elapsed() >= 200, 5000); }
+    QList<QJsonObject> requests(const QString &path) const {
+        QList<QJsonObject> matching;
+        for (const auto &request : m_requests) if (request.value("path").toString() == path) matching.append(request);
+        return matching;
+    }
+    static void reply(QTcpSocket *socket, const QByteArray &status, const QJsonObject &value) {
+        const auto body = QJsonDocument(value).toJson(QJsonDocument::Compact);
+        socket->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+            QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        socket->disconnectFromHost();
+    }
     QString relayUrl() const { return "ws://127.0.0.1:" + QString::number(m_policy.serverPort()); }
     QJsonObject activation(const QString &email) const {
         return {{"hostId", "computer-one"}, {"email", email}, {"relayUrl", relayUrl()}, {"credential", "orbis_host_rejected"}};
@@ -61,6 +80,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     }
     out({ event: "state", state: "stopped" });
   }
+  if (method === "hostRecoveryProof") {
+    fs.appendFileSync(path.join(__dirname, "proofs.jsonl"), JSON.stringify(params) + "\n");
+    return out({ id, result: { proof: "proof-for-" + params.challengeId } });
+  }
+  if (method === "replaceIdentity") return out({ id, result: { hostId: "computer-two", hostName: "workstation", hostPub: "pub-two", devices: [] } });
   out({ id, result: method === "detect" ? [] : {} });
 });
 )JS");
@@ -72,23 +96,59 @@ private slots:
         QVERIFY(SecKeychainSetUserInteractionAllowed(false) == errSecSuccess);
 #endif
         QVERIFY(m_policy.listen(QHostAddress::LocalHost));
+        m_relayActivity.start();
         connect(&m_policy, &QTcpServer::newConnection, this, [this] {
             while (auto *socket = m_policy.nextPendingConnection()) {
+                m_relayActivity.restart();
                 connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
                 connect(socket, &QTcpSocket::readyRead, socket, [this, socket] {
-                    socket->readAll();
+                    m_relayActivity.restart();
+                    if (socket->property("answered").toBool()) { socket->readAll(); return; }
+                    const auto buffer = socket->property("buffer").toByteArray() + socket->readAll();
+                    socket->setProperty("buffer", buffer);
+                    const auto headerEnd = buffer.indexOf("\r\n\r\n");
+                    if (headerEnd < 0) return;
+                    const auto head = buffer.left(headerEnd);
+                    qsizetype length = 0;
+                    QByteArray authorization;
+                    for (const auto &line : head.split('\n')) {
+                        const auto lower = line.trimmed().toLower();
+                        if (lower.startsWith("content-length:")) length = lower.mid(15).trimmed().toLongLong();
+                        if (lower.startsWith("authorization:")) authorization = line.trimmed().mid(14).trimmed();
+                    }
+                    if (buffer.size() < headerEnd + 4 + length) return;
+                    socket->setProperty("answered", true);
+                    const auto requestLine = head.left(head.indexOf("\r\n")).split(' ');
+                    const auto method = QString::fromLatin1(requestLine.value(0)), path = QString::fromLatin1(requestLine.value(1));
+                    const auto body = QJsonDocument::fromJson(buffer.mid(headerEnd + 4, length)).object();
+                    if (method == "POST") m_requests.append({{"method", method}, {"path", path}, {"authorization", QString::fromLatin1(authorization)}, {"body", body}});
+                    if (path == "/v1/registration/activate") {
+                        if (!m_activationRefusal.isEmpty()) return reply(socket, "409 Conflict", m_activationRefusal);
+                        return reply(socket, "201 Created", {{"hostId", body.value("hostId")}, {"email", body.value("email").isString() ? body.value("email") : QJsonValue()},
+                            {"credential", "orbis_host_activated"}});
+                    }
+                    if (path == "/v1/registration/recovery-challenge") {
+                        if (!m_recoveryAccepted) return reply(socket, "404 Not Found", {{"error", "recovery_unavailable"}});
+                        return reply(socket, "201 Created", {{"challengeId", "challenge-one"}, {"relayPub", "relay-pub"}, {"expiresInSeconds", 120}});
+                    }
+                    if (path == "/v1/registration/recover") {
+                        if (body.value("proof").toString() != "proof-for-challenge-one") return reply(socket, "401 Unauthorized", {{"error", "invalid_recovery_proof"}});
+                        return reply(socket, "201 Created", {{"hostId", body.value("hostId")}, {"email", "owner@qq.com"}, {"credential", "orbis_host_recovered"}});
+                    }
+                    if (path == "/v1/registration/host-key") return reply(socket, "200 OK", {{"bound", true}});
                     ++m_policyRequests;
                     if (m_deferNextPolicy) { m_deferNextPolicy = false; m_deferredPolicy = socket; return; }
-                    const auto body = QJsonDocument(QJsonObject{{"enabled", true}, {"qqEmailVerificationRequired", false},
-                        {"mailConfigured", m_mailConfigured}}).toJson(QJsonDocument::Compact);
-                    socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
-                        QByteArray::number(body.size()) + "\r\n\r\n" + body);
-                    socket->disconnectFromHost();
+                    QJsonObject status{{"enabled", true}, {"qqEmailVerificationRequired", false}, {"mailConfigured", m_mailConfigured}};
+                    if (m_hostKeyRecovery) status.insert("hostKeyRecovery", true);
+                    reply(socket, "200 OK", status);
                 });
             }
         });
     }
-    void init() { m_mailConfigured = true; m_deferNextPolicy = false; m_deferredPolicy.clear(); }
+    void init() {
+        m_mailConfigured = true; m_deferNextPolicy = false; m_deferredPolicy.clear(); m_activationRefusal = {};
+        m_hostKeyRecovery = false; m_recoveryAccepted = true; m_requests.clear();
+    }
 
     void claudeVersionStatusRecoversAfterUpgrade() {
         // CLAUDE-MODS-MIN-01: stale version failures must clear on refresh; the
@@ -279,6 +339,129 @@ private slots:
         }
     }
 
+    void refusedMailboxDoesNotRepeatMailboxRecovery_data() {
+        QTest::addColumn<QString>("recovery");
+        QTest::newRow("released-relay") << "";
+        QTest::newRow("other-mailbox") << "email";
+        QTest::newRow("direct-without-mailbox") << "administrator";
+    }
+    void refusedMailboxDoesNotRepeatMailboxRecovery() {
+        // HOST-ACT-14: a released Relay refuses every conflict without a recovery hint. For a Host first
+        // activated without a mailbox, each verified mailbox was refused while the desktop kept asking for
+        // the "original mailbox". A refused verification must name the operator reset and the Host ID,
+        // and must drop the code the Relay already consumed.
+        QFETCH(QString, recovery);
+        m_activationRefusal = {{"error", "host_already_registered"}};
+        if (!recovery.isEmpty()) m_activationRefusal.insert("recovery", recovery);
+        QTemporaryDir temp;
+        HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
+        QCoreApplication::processEvents(); controller.m_tick.stop();
+        controller.m_settings.setValue("relayUrl", relayUrl());
+        controller.m_hostId = "computer-one";
+        controller.m_bridgeReady = true;
+        // The screen a refused direct activation leaves behind: mailbox recovery with a requested code.
+        controller.m_recoverWithEmail = true; controller.m_verificationRequired = true; controller.m_registrationAvailable = true;
+        controller.m_challenge = "challenge-one"; controller.m_challengeEmail = "owner@qq.com";
+        controller.activate("owner@qq.com", "123456");
+        QVERIFY(controller.busy());
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!controller.activated());
+        QVERIFY2(controller.message() != "请验证原 QQ 邮箱以恢复激活", qPrintable(controller.message()));
+        QVERIFY2(controller.message().contains("管理员") && controller.message().contains("computer-one"), qPrintable(controller.message()));
+        QVERIFY(controller.m_challenge.isEmpty());
+        // Only a Relay that names operator recovery closes the mailbox path; otherwise the right
+        // original mailbox can still be tried with a new code.
+        QCOMPARE(controller.m_recoverWithEmail, recovery != "administrator");
+        controller.activate("owner@qq.com", "123456");
+        QVERIFY(!controller.busy());
+        QVERIFY(controller.message().contains("获取验证码"));
+        // A released Relay advertises no key recovery, so none is attempted.
+        QVERIFY(requests("/v1/registration/recovery-challenge").isEmpty());
+    }
+
+    void hostKeyRecoveryRestoresAPausedHostAndRecordsItsKey() {
+        // HOST-ACT-15: a lost credential returns through the Host key without a mailbox or a click. A paused
+        // Host stays paused, and the key is recorded with the Relay once per credential after connecting.
+        m_hostKeyRecovery = true;
+        QTemporaryDir temp;
+        const auto cleanup = qScopeGuard([&] { clearCredentials(temp.path()); });
+        authenticationBridge(temp.path());
+        const auto path = temp.path() + "/activation.dat";
+        QVERIFY(CredentialStore::save(path, {{"hostId", "computer-one"}, {"email", ""}, {"relayUrl", relayUrl()}}));
+        HostController controller(temp.path(), temp.path(), temp.path() + "/state", temp.path(), false);
+        QTRY_VERIFY(controller.m_nextId > 1 && !controller.busy()); controller.m_tick.stop();
+        controller.m_settings.setValue("runHost", false);
+        controller.m_bridgeReady = true; controller.m_hostPub = "pub-one";
+        QVERIFY(!controller.activated());
+        controller.refreshRegistrationPolicy();
+        QTRY_VERIFY(controller.activated());
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(controller.m_credential, QString("orbis_host_recovered"));
+        QCOMPARE(CredentialStore::load(path).value("credential").toString(), QString("orbis_host_recovered"));
+        QCOMPARE(controller.email(), QString("owner@qq.com"));
+        QVERIFY(!controller.desiredRunning());
+        QVERIFY(!QFile::exists(temp.path() + "/packages/host/dist/starts.jsonl"));
+        const auto proofs = contents(temp.path() + "/packages/host/dist/proofs.jsonl").trimmed().split('\n');
+        QCOMPARE(proofs.size(), 1);
+        QCOMPARE(QJsonDocument::fromJson(proofs.first()).object(),
+            (QJsonObject{{"hostId", "computer-one"}, {"challengeId", "challenge-one"}, {"relayPub", "relay-pub"}}));
+        controller.receiveLine({{"event", "state"}, {"state", "connected"}});
+        QTRY_COMPARE(requests("/v1/registration/host-key").size(), 1);
+        const auto bind = requests("/v1/registration/host-key").first();
+        QCOMPARE(bind.value("authorization").toString(), QString("Bearer orbis_host_recovered"));
+        QCOMPARE(bind.value("body").toObject(), (QJsonObject{{"hostPub", "pub-one"}}));
+        controller.receiveLine({{"event", "state"}, {"state", "connected"}});
+        QTest::qWait(300);
+        QCOMPARE(requests("/v1/registration/host-key").size(), 1);
+    }
+
+    void unrestorableHostActivatesAsANewComputer() {
+        // HOST-ACT-15/16: a Relay that cannot restore this Host ID (no recorded key, then a refused direct
+        // activation) still leaves a path that always works: a new identity, activated like a new computer.
+        m_hostKeyRecovery = true; m_recoveryAccepted = false;
+        QTemporaryDir temp;
+        const auto cleanup = qScopeGuard([&] { clearCredentials(temp.path()); });
+        authenticationBridge(temp.path());
+        const auto path = temp.path() + "/activation.dat";
+        QVERIFY(CredentialStore::save(path, {{"hostId", "computer-one"}, {"email", ""}, {"relayUrl", relayUrl()}}));
+        HostController controller(temp.path(), temp.path(), temp.path() + "/state", temp.path(), false);
+        QTRY_VERIFY(controller.m_nextId > 1 && !controller.busy()); controller.m_tick.stop();
+        controller.m_bridgeReady = true; controller.m_hostPub = "pub-one";
+        QVERIFY(!controller.identityReplaceable());
+        controller.refreshRegistrationPolicy();
+        QTRY_COMPARE(requests("/v1/registration/recovery-challenge").size(), 1);
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!controller.activated());
+        // A refused key recovery is silent and is not repeated for the same loss.
+        const auto policies = m_policyRequests;
+        controller.refreshRegistrationPolicy();
+        QTRY_VERIFY(m_policyRequests > policies); QTRY_VERIFY(!controller.busy());
+        QCOMPARE(requests("/v1/registration/recovery-challenge").size(), 1);
+        QTRY_VERIFY(controller.registrationAvailable() && !controller.verificationRequired());
+        m_activationRefusal = {{"error", "host_already_registered"}};
+        controller.activateWithoutEmail();
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!controller.activated());
+        QVERIFY(controller.identityReplaceable());
+        QCOMPARE(requests("/v1/registration/activate").first().value("body").toObject(), (QJsonObject{{"hostId", "computer-one"}, {"hostPub", "pub-one"}}));
+        controller.replaceIdentity();
+        QTRY_COMPARE(controller.hostId(), QString("computer-two"));
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!controller.identityReplaceable());
+        QVERIFY(controller.devices().isEmpty());
+        QCOMPARE(CredentialStore::load(path).value("hostId").toString(), QString("computer-two"));
+        m_activationRefusal = {};
+        // The new identity is checked for key recovery as well; activation buttons stay disabled until that settles.
+        QTRY_COMPARE(requests("/v1/registration/recovery-challenge").size(), 2);
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(controller.registrationAvailable() && !controller.verificationRequired());
+        controller.activateWithoutEmail();
+        QTRY_VERIFY(controller.activated());
+        QTRY_VERIFY(!controller.busy());
+        QCOMPARE(requests("/v1/registration/activate").last().value("body").toObject(), (QJsonObject{{"hostId", "computer-two"}, {"hostPub", "pub-two"}}));
+        QCOMPARE(CredentialStore::load(path).value("credential").toString(), QString("orbis_host_activated"));
+    }
+
     void relaySwitchKeepsIndependentActivation_data() {
         QTest::addColumn<QString>("email");
         QTest::newRow("direct") << "";
@@ -420,12 +603,14 @@ private slots:
         QVERIFY(CredentialStore::save(temp.path() + "/activation.dat", activation("")));
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path(), temp.path(), false);
         QCoreApplication::processEvents(); controller.m_tick.stop();
+        settleRelayFixture();
         m_deferNextPolicy = true; controller.refreshRegistrationPolicy();
         QTRY_VERIFY(m_deferredPolicy);
         switchRelay(controller, relayUrl() + "/other"); QTRY_VERIFY(!controller.busy());
         switchRelay(controller, relayUrl()); QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.registrationAvailable() && !controller.verificationRequired());
         const auto body = QJsonDocument(QJsonObject{{"enabled", true}, {"qqEmailVerificationRequired", true}, {"mailConfigured", true}}).toJson(QJsonDocument::Compact);
+        QVERIFY2(m_deferredPolicy, "the deferred policy request must still be open");
         m_deferredPolicy->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
             QByteArray::number(body.size()) + "\r\n\r\n" + body);
         m_deferredPolicy->disconnectFromHost();

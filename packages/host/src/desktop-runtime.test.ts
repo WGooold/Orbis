@@ -11,6 +11,7 @@ import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./deskt
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import { HostService } from "./host-service.js";
 import type { DshConnection } from "./dsh-client.js";
 
 describe("desktop Host lifecycle", () => {
@@ -298,5 +299,66 @@ describe("desktop Host lifecycle", () => {
       await new Promise(resolve => setTimeout(resolve, 500));
       expect([...events].reverse().find(event => event.event === "state")?.state).toBe("stopped");
     } finally { await runtime.close(); server.close(); await rm(stateDir, { recursive: true, force: true }); }
+  });
+
+  it.each(["backend", "service"] as const)("resumes after a pause that abandoned a retry while it created its %s", async gate => {
+    // HOST-LIVE-01: the desktop pauses around a settings or Agent change and resumes right away.
+    // A retry abandoned mid-start must unwind first: the resume must not report a running Host, the
+    // abandoned service must not read the released Codex Desktop lifecycle, and a DSH backend that the
+    // abandoned attempt created after the pause must be disposed instead of being overwritten.
+    const server = new WebSocketServer({ port: 0 });
+    await new Promise<void>(resolve => server.once("listening", resolve));
+    const port = (server.address() as AddressInfo).port;
+    let connections = 0;
+    server.on("connection", socket => {
+      connections += 1;
+      if (connections === 1) { socket.close(); return; }
+      socket.once("message", raw => {
+        const auth = JSON.parse(raw.toString());
+        socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: auth.protocolVersion, runtimeId: auth.runtime.runtimeId }));
+      });
+    });
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-resume-"));
+    const fakeDsh = (): { client: DshConnection; runtime: DshRuntime } => {
+      const client: DshConnection = { onNotification: undefined, onRequest: undefined, onExit: undefined,
+        request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}) };
+      return { client, runtime: new DshRuntime(client, { list: async () => [],
+        read: async id => ({ header: { id, cwd: root, createdAt: 1 }, events: [] }), close: async () => {} }) };
+    };
+    const stale = fakeDsh(); const resumedDsh = fakeDsh();
+    let release: () => void = () => {};
+    let retryHeld = false;
+    const hold = async (): Promise<void> => { retryHeld = true; await new Promise<void>(resolve => { release = resolve; }); };
+    vi.spyOn(DshRuntime, "create")
+      .mockRejectedValueOnce(new Error("first attempt has no DSH"))
+      .mockImplementationOnce(async () => { if (gate === "backend") await hold(); return stale.runtime; })
+      .mockResolvedValueOnce(resumedDsh.runtime);
+    const createService = HostService.create.bind(HostService);
+    vi.spyOn(HostService, "create")
+      .mockImplementationOnce(createService)
+      .mockImplementationOnce(async options => { if (gate === "service") await hold(); return createService(options); });
+    const events: DesktopEvent[] = [];
+    const settings = { relayUrl: `ws://127.0.0.1:${port}`, credential: "orbis_host_" + "A".repeat(43), lanPort: 0,
+      codexEnabled: false, dshEnabled: true, piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      await runtime.start({ ...settings });
+      await vi.waitFor(() => expect(retryHeld).toBe(true), { timeout: 4_000 });
+      await runtime.stop();
+      const resumed = runtime.start({ ...settings });
+      setTimeout(() => release(), 100);
+      await resumed;
+      expect([...events].reverse().find(event => event.event === "state")?.state).toBe("connected");
+      expect(stale.client.stop).toHaveBeenCalledTimes(1);
+      expect(resumedDsh.client.stop).not.toHaveBeenCalled();
+      expect(connections).toBe(2);
+    } finally {
+      await runtime.close();
+      await stale.runtime.stop(); await resumedDsh.runtime.stop();
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
