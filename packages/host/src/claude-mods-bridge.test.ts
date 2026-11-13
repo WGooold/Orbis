@@ -27,6 +27,29 @@ function online(bridge: ClaudeModsBridge, input: unknown = hello()) {
 }
 
 describe("ClaudeModsBridge", () => {
+  // SC87: keep idle effort after a reply, but never retain it across an explicit
+  // full snapshot that no longer confirms it. Old plugins still send partial states.
+  it.each([false, true])("clears omitted effort only with snapshot capability: %s", capable => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    const current = online(bridge, hello({ capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "configuration.observed",
+      ...(capable ? ["configuration.effort.snapshot"] : [])] }));
+    const send = (event: unknown) => expect(bridge.receiveEvent(current.runtimeId, current.generation, event)).toBe("accepted");
+    const last = () => events.flatMap(event => event.type === "runtime.metadata" ? [event.metadata] : []).at(-1)!;
+    try {
+      send({ type: "session.state", state: { model: "sonnet-id", effort: "high", currentTurnConfiguration: null } });
+      send({ type: "turn.start", turnId: "first" });
+      send({ type: "session.state", state: { currentTurnConfiguration: { turnId: "first",
+        model: { provider: "claude-code", id: "sonnet-id" }, thinkingLevel: "high" } } });
+      expect(last().thinkingLevel).toBe("high");
+      send({ type: "turn.complete", turnId: "first" });
+      send({ type: "session.state", state: { model: "sonnet-id", effort: "high", currentTurnConfiguration: null } });
+      expect(last()).toMatchObject({ thinkingLevel: "high", currentTurnConfiguration: null, modelSelection: { thinking: "high" } });
+      send({ type: "session.state", state: { model: "other-id", currentTurnConfiguration: null } });
+      expect(last().thinkingLevel).toBe(capable ? undefined : "high");
+      expect(last().modelSelection?.thinking).toBe(capable ? undefined : "high");
+    } finally { bridge.close(); }
+  });
   // SC86: the selection has a catalog name and command alias; request facts keep
   // the resolved ID without a name. Clients must use that identity to fill labels.
   it("keeps an unchanged Claude alias distinct from the resolved request identity", () => {
