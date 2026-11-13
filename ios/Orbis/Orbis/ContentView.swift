@@ -50,7 +50,9 @@ struct ContentView: View {
         #endif
     }
 
-    var body: some View {
+    // Separate type-checking boundaries keep this modifier chain within older
+    // CI compilers' limits while preserving the view tree and modifier order.
+    private var rootSurface: some View {
         ZStack {
             if store.pairings.isEmpty {
                 PairingEntryView(onCancel: nil, onCode: store.pair)
@@ -81,6 +83,10 @@ struct ContentView: View {
             drawer
         })
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { surfaceWidth = $0 }
+    }
+
+    private var rootWithNotices: some View {
+        rootSurface
         .overlay(alignment: .top) {
             if let error = store.errorMessage {
                 HStack(alignment: .top, spacing: 10) {
@@ -116,6 +122,10 @@ struct ContentView: View {
             }
         }
         #endif
+    }
+
+    private var rootWithNavigationUpdates: some View {
+        rootWithNotices
         .onChange(of: rootTab) { _, next in switchRoot(next) }
         .onChange(of: store.selectedHostId) { _, _ in
             store.hostState.setCatalogQuery(directoryState.networkQuery)
@@ -147,6 +157,10 @@ struct ContentView: View {
         .onChange(of: store.isPairing) { old, active in
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
+    }
+
+    private var rootWithSceneUpdates: some View {
+        rootWithNavigationUpdates
         .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { hostId in
             guard let hostId else { return }
             ReplyCompletionNotifications.remoteOpens.consume()
@@ -170,6 +184,10 @@ struct ContentView: View {
             if new != .active { store.toolContent.close() }
             if old == .background && new == .active { store.resumeForeground() }
         }
+    }
+
+    var body: some View {
+        rootWithSceneUpdates
         .overlay {
             if store.isPairing {
                 ZStack {
