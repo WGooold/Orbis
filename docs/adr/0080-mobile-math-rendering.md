@@ -72,8 +72,8 @@ Android 使用 CommonMark 加表格、删除线、任务列表与自动链接扩
 
 2026-11-13：Android / iOS 实现及上述自动验证已完成。Android 候选提交为 `b65703b95a45763d5f52a5f83fd7a30865c2eaf1`，后续测试入口和交付记录更新未改变该候选的产品代码。
 
-Android 独立回归批次 `R-MATH-20261113` 已发布到[本机回归页面](http://localhost:18412/?batch=R-MATH-20261113)，状态 `ready`。ARM64 Release 安装包使用独立的 `com.orbising.orbis.qa` 身份，体积 27443453 字节；包身份、签名、ABI、ZIP 有效载荷、对齐与全部 28 个数学资源文件哈希已核对，混淆映射随包保留。证据见 `manual-package-audit.log`、`manual-asset-audit.json`、`delivery.json` 及 `/Volumes/WD1TB/Orbis/qa-lab/runs/R-MATH-20261113/`。
+Android 旧独立回归批次 `R-MATH-20261113` 已退役，旧页面、服务与本机 QA Skill 已移除；后续回归通过 `orbis-qa` MCP 登记并准备新的隔离环境。原 ARM64 Release 安装包使用独立的 `com.orbising.orbis.qa` 身份，体积 27443453 字节；包身份、签名、ABI、ZIP 有效载荷、对齐与全部 28 个数学资源文件哈希已核对，混淆映射随包保留。证据见 `manual-package-audit.log`、`manual-asset-audit.json`、`delivery.json`；旧批次交付物与历史结果保存在 `/Volumes/WD1TB/Orbis/Orbis-QA/.artifacts/legacy-qa-cleanup-20261113/historical-results/runs/R-MATH-20261113/`。
 
-独立回归用例见本机证据目录的 `manual-cases-android.json` 与 `manual-cases-ios.json`，按平台分别登记公式、布局与流式场景。2026-11-13 16:49（Asia/Taipei），旧批次 `R-LAB-001` 环境已结束并保留原验收记录；本轮 Android 环境启动并通过配对、加密传输、真实 Host / Relay / Pi 与本地合成模型往返自检。证据见本批次 `probe.json`、`manual-start.log` 及旧批次 `environment-cleanup.json`。iOS 签名安装包待准备，iOS 人工用例随可安装产物另行交付。
+独立回归用例见本机证据目录的 `manual-cases-android.json` 与 `manual-cases-ios.json`，按平台分别登记公式、布局与流式场景。2026-11-13 16:49（Asia/Taipei），旧批次 `R-LAB-001` 环境已结束并保留原验收记录；当时的 Android 环境启动并通过配对、加密传输、真实 Host / Relay / Pi 与本地合成模型往返自检。该环境现已退役，原自检证据见历史备份中的 `probe.json`、`manual-start.log` 及旧批次 `environment-cleanup.json`。iOS 签名安装包待准备，iOS 人工用例随可安装产物另行交付。
 
 用户验收：待用户验证。真实会话的阅读位置、整条消息选择、系统辅助功能与长时间滚动仍需人工验证。当前证据覆盖本地呈现与合成内容；Host / Relay 协议未修改，跨版本真实供应商会话未在本轮验证。
