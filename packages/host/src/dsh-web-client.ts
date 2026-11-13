@@ -60,9 +60,21 @@ export interface DshWebClientOptions {
   timeoutMs?: number;
   reconnectDelayMs?: number;
   protocol?: DshWebProtocol;
+  /**
+   * `browser` exchanges the launch token once for the shared browser cookie (DSH Web, ADR-0020).
+   * `api` keeps the token in memory and opens an independent owner API Peer through the
+   * official `/connect` route for every carrier; the Peer ends with its socket (ADR-0076).
+   */
+  authentication?: "browser" | "api";
+  /** User-visible product name in transport errors. */
+  label?: string;
 }
 
 export class DshWebUnconfirmedError extends Error {}
+/** The endpoint answered, but this native version cannot provide the requested connection (ADR-0076 DSH-DESKTOP-08). */
+export class DshWebIncompatibleError extends Error {}
+/** The launch token no longer belongs to the running native process; the owner must supply its current endpoint. */
+export class DshWebAuthenticationError extends Error {}
 
 export class DshWebRemoteError extends Error {
   constructor(readonly code: string, message: string, readonly details: JsonObject = {}) { super(message); this.name = "DshWebRemoteError"; }
@@ -102,6 +114,9 @@ export class DshWebClient implements DshWebConnection {
   #initialReject: ((error: Error) => void) | undefined;
   #handshakeTimer: NodeJS.Timeout | undefined;
   #stopping: Promise<void> | undefined;
+  /** API Peer mode only: the private launch URL, re-exchanged for each carrier. Never logged. */
+  #launch: URL | undefined;
+  readonly #label: string;
 
   private constructor(base: URL, cookie: string, protocol: DshWebProtocol, options: DshWebClientOptions) {
     this.#base = base;
@@ -110,6 +125,7 @@ export class DshWebClient implements DshWebConnection {
     this.#protocol = protocol;
     this.#timeoutMs = options.timeoutMs ?? 15_000;
     this.#reconnectDelayMs = options.reconnectDelayMs;
+    this.#label = options.label ?? "DSH Web";
   }
 
   static async connect(options: DshWebClientOptions = {}): Promise<DshWebClient> {
@@ -125,9 +141,12 @@ export class DshWebClient implements DshWebConnection {
     const cliEntry = options.cliEntry ?? (cli ? dshPackageEntry(cli) : undefined);
     if (!options.protocol && !cliEntry) throw new Error("无法定位此 DeepSeek 启动器对应的协议库，请将 ORBIS_DSH_ENTRY 指向同一安装的 dsh 包入口");
     const protocol = options.protocol ?? await loadDshWebProtocol(cliEntry!);
-    const client = new DshWebClient(base, options.cookie ?? env.ORBIS_DSH_WEB_COOKIE ?? "", protocol, options);
+    const api = options.authentication === "api";
+    if (api && launch.searchParams.getAll("token").length !== 1) throw new DshWebAuthenticationError(`${options.label ?? "DSH Web"} API connection requires its current launch URL`);
+    const client = new DshWebClient(base, api ? "" : options.cookie ?? env.ORBIS_DSH_WEB_COOKIE ?? "", protocol, options);
     try {
-      if (launch.searchParams.has("token")) await client.#authenticate(launch);
+      if (api) client.#launch = launch;
+      else if (launch.searchParams.has("token")) await client.#authenticate(launch);
       await new Promise<void>((resolve, reject) => {
         client.#initialResolve = resolve;
         client.#initialReject = reject;
@@ -152,7 +171,38 @@ export class DshWebClient implements DshWebConnection {
     } finally { await response.body?.cancel(); }
   }
 
+  /** Exchange the launch token for a fresh owner API Peer; its cookie is valid until that Peer's socket closes. */
+  async #connectPeer(launch: URL): Promise<void> {
+    const url = new URL("connect", this.#base);
+    url.searchParams.set("token", launch.searchParams.get("token")!);
+    url.searchParams.set("interactions", "answer");
+    const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(this.#timeoutMs) });
+    await response.body?.cancel();
+    if (response.status === 404) throw new DshWebIncompatibleError(`${this.#label} does not provide the API connection route; update it to a version that supports /connect`);
+    if (response.status === 401) throw new DshWebAuthenticationError(`${this.#label} rejected its launch token; it has restarted or is a different instance`);
+    if (response.status !== 302 && response.status !== 303) throw new Error(`${this.#label} API connection failed: HTTP ${response.status}`);
+    const location = response.headers.get("location");
+    if (!location || new URL(location, url).origin !== this.#base.origin) throw new Error(`${this.#label} refused an API connection redirect to another origin`);
+    const cookies = response.headers.getSetCookie().map(value => value.split(";", 1)[0]).filter((value): value is string => Boolean(value));
+    if (cookies.length === 0) throw new Error(`${this.#label} did not return an API connection cookie`);
+    this.#cookie = cookies.join("; ");
+  }
+
   #openSocket(): void {
+    if (this.#closed) return;
+    const launch = this.#launch;
+    if (launch === undefined) { this.#openCarrier(); return; }
+    void this.#connectPeer(launch).then(() => this.#openCarrier(), (error: unknown) => {
+      if (this.#closed) return;
+      const reason = error instanceof Error ? error : new Error(String(error));
+      // Before the first handshake, and whenever the token itself is gone, retrying the same URL cannot help.
+      if (!this.#connectedOnce || reason instanceof DshWebAuthenticationError || reason instanceof DshWebIncompatibleError) { this.#fail(reason); return; }
+      this.#diagnose({ event: "socket.error", reason: reason.message.slice(0, 256) });
+      this.#scheduleReconnect();
+    });
+  }
+
+  #openCarrier(): void {
     if (this.#closed) return;
     const endpoint = new URL(this.#protocol.muxPath.replace(/^\//, ""), this.#base);
     endpoint.protocol = endpoint.protocol === "https:" ? "wss:" : "ws:";
@@ -217,20 +267,27 @@ export class DshWebClient implements DshWebConnection {
       this.#pendingEvents.clear();
       // Browser-cookie HTTP RPCs have an independent lifetime in the native Gateway.
       // Rotating the event socket must not cancel an accepted RPC or cause its mutation to be retried.
+      // An API Peer ends with its socket, so its cookie is discarded and the next carrier exchanges anew.
+      if (this.#launch !== undefined) this.#cookie = "";
       if (this.#closed) return;
-      if (!this.#connectedOnce) { this.#fail(new Error("DSH Web disconnected before its handshake completed")); return; }
-      // Bound the whole outage, not each socket attempt. A dead service must
-      // retire this bridge so Host recovery can reread its current descriptor.
-      // Successful carrier rotations still reuse the same runtime and follows.
-      if (!this.#recoveryTimer) {
-        this.#recoveryTimer = setTimeout(() => this.#fail(new Error("DSH Web reconnection timed out; reconnect using the current Web service")), this.#timeoutMs);
-        this.#recoveryTimer.unref();
-      }
-      const cap = Math.min(10_000, 500 * 2 ** Math.min(this.#reconnectAttempt++, 5));
-      const delay = this.#reconnectDelayMs ?? Math.round(cap * (0.5 + Math.random() * 0.5));
-      this.#reconnectTimer = setTimeout(() => this.#openSocket(), delay);
-      this.#reconnectTimer.unref();
+      if (!this.#connectedOnce) { this.#fail(new Error(`${this.#label} disconnected before its handshake completed`)); return; }
+      this.#scheduleReconnect();
     });
+  }
+
+  #scheduleReconnect(): void {
+    // Bound the whole outage, not each socket attempt. A dead service must
+    // retire this bridge so Host recovery can reread its current descriptor.
+    // Successful carrier rotations still reuse the same runtime and follows.
+    if (!this.#recoveryTimer) {
+      this.#recoveryTimer = setTimeout(() => this.#fail(new Error(`${this.#label} reconnection timed out; reconnect using the current service`)), this.#timeoutMs);
+      this.#recoveryTimer.unref();
+    }
+    const cap = Math.min(10_000, 500 * 2 ** Math.min(this.#reconnectAttempt++, 5));
+    const delay = this.#reconnectDelayMs ?? Math.round(cap * (0.5 + Math.random() * 0.5));
+    clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = setTimeout(() => this.#openSocket(), delay);
+    this.#reconnectTimer.unref();
   }
 
   #receive(frame: StreamFrame): void {

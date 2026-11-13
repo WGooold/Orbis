@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
 import type { DshWebConnection } from "./dsh-web-client.js";
-import { DshWebRuntime } from "./dsh-web-runtime.js";
+import { DSH_DESKTOP_FLAVOR, DshWebRuntime } from "./dsh-web-runtime.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { ToolContentStore } from "@orbis/runtime-bridge";
@@ -1617,5 +1617,39 @@ describe("DeepSeek Web runtime adapter", () => {
       type: "interaction.respond", requestId: "approval-1", extensionId: "dsh", response: { kind: "select", value: "allowed-once" },
     });
     await vi.waitFor(() => expect(client.respondEvent).toHaveBeenCalledOnce());
+  });
+});
+
+// ADR-0076 DSH-DESKTOP-03 / 05: the Desktop entry shares the Remote adapter but owns its kind and
+// public namespace, and never initializes or writes provider configuration in Desktop's profile.
+describe("DeepSeek Desktop flavor", () => {
+  it("publishes Desktop sessions under their own kind and namespace and ignores Web ids", async () => {
+    const f = discoveryFixture(undefined, { flavor: DSH_DESKTOP_FLAVOR });
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-desktop-")); roots.push(cwd);
+    f.list([{ ...f.live("shared", true), cwd }]);
+    await f.runtime.start();
+    expect(f.runtime.kind).toBe("dshDesktop");
+    const catalog = await f.runtime.catalog();
+    expect(catalog).toEqual([expect.objectContaining({ sessionId: "dsh-desktop:shared", agentKind: "dshDesktop" })]);
+    await vi.waitFor(() => expect(f.runtime.directoryEntries()).toEqual([expect.objectContaining({ runtimeId: "dsh-desktop:shared", name: "DeepSeek Harness Desktop" })]));
+    // The same native id on the Web entry is a different session for routing purposes.
+    await expect(f.runtime.activate({ type: "resume", sessionId: "dsh:shared" })).rejects.toMatchObject({ code: "session_not_found" });
+    await expect(f.runtime.setArchived("dsh:shared", true)).rejects.toThrow();
+  });
+
+  it("reads Desktop's model catalog without initializing defaults or applying Web provider configuration", async () => {
+    const f = discoveryFixture(undefined, { flavor: DSH_DESKTOP_FLAVOR });
+    const cwd = await mkdtemp(join(tmpdir(), "orbis-dsh-desktop-")); roots.push(cwd);
+    const inherited = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (method, args) => {
+      if (method === "session/modelCatalog") return { default: { provider: "deepseek-official", model: "deepseek-flash" }, groups: [{ id: "deepseek-account", models: [{ id: "m" }] }] };
+      if (method === "session/create") return { sessionId: "created" };
+      return inherited(method, args);
+    });
+    await f.runtime.start();
+    expect(await f.runtime.activate({ type: "new", cwd })).toMatchObject({ sessionId: "dsh-desktop:created" });
+    expect(f.request.mock.calls.some(([method]) => method === "session/initializeDefaultModel" || method === "credentials/set" || method === "settings/describe")).toBe(false);
+    expect(await f.runtime.currentProvider()).toBeUndefined();
+    await expect(f.runtime.reloadProviderConfiguration({})).rejects.toThrow("原生供应商设置");
   });
 });

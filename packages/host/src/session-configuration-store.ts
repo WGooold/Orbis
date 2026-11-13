@@ -7,7 +7,7 @@ import { SessionConfigurationValuesSchema, type AgentKind, type ConfiguredSessio
 
 const preference = z.object({ revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema });
 const launch = z.object({
-  deviceId: z.string(), fingerprint: z.string(), launchId: z.string(), agentKind: z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]),
+  deviceId: z.string(), fingerprint: z.string(), launchId: z.string(), agentKind: z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]),
   cwd: z.string(), binding: z.string(), revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema,
   phase: z.enum(["preparing", "created", "configuring", "ready", "failed", "unknown"]),
   sessionId: z.string().optional(), spawnMode: z.enum(["tui", "headless"]).optional(), error: z.string().optional(),

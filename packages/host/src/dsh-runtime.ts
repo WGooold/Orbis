@@ -15,8 +15,8 @@ import {
 import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, DshUnconfirmedError, dshPackageEntry, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
 import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
-import { DshWebClient, type DshWebConnection, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
-import { DshWebRuntime, STREAM_COALESCE_MS } from "./dsh-web-runtime.js";
+import { DshWebClient, DshWebIncompatibleError, loadDshWebProtocol, type DshWebConnection, type DshWebProtocol, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
+import { DSH_DESKTOP_FLAVOR, DshWebRuntime, STREAM_COALESCE_MS, type DshFlavor } from "./dsh-web-runtime.js";
 import { ensureDshWebService, findDshWebService, type DshWebService } from "./dsh-web-service.js";
 import type { DshStreamDecoder } from "./dsh-web-history.js";
 import { applyDshWebProvider } from "./dsh-web-provider.js";
@@ -634,7 +634,8 @@ type DshImplementation = AgentBackend & {
  * kept for the ACP unit tests and older embedders.
  */
 export class DshRuntime implements AgentBackend {
-  readonly kind = "dsh" as const;
+  /** `dsh` (Web service) or `dshDesktop` (the backend owned by DeepSeek Harness Desktop, ADR-0076). */
+  readonly kind: "dsh" | "dshDesktop";
   readonly #implementation: DshImplementation;
   get toolContents(): ToolContentReader | undefined { return this.#implementation.toolContents; }
   set onFileChangeEvent(value: ((runtimeId: string, event: RuntimeEvent) => void) | undefined) { this.#implementation.onFileChangeEvent = value; }
@@ -657,15 +658,36 @@ export class DshRuntime implements AgentBackend {
   }
 
   constructor(client: DshConnection, history: DshHistory, options?: { coalesceMs?: number });
-  constructor(client: DshWebConnection, decoder?: DshStreamDecoder, options?: { coalesceMs?: number });
+  constructor(client: DshWebConnection, decoder?: DshStreamDecoder, options?: { coalesceMs?: number; flavor?: DshFlavor });
   constructor(
     client: DshConnection | DshWebConnection,
     history?: DshHistory | DshStreamDecoder,
-    options: { coalesceMs?: number } = {},
+    options: { coalesceMs?: number; flavor?: DshFlavor } = {},
   ) {
     this.#implementation = history !== undefined && typeof history !== "function"
       ? new DshAcpRuntime(client as DshConnection, history, options)
       : new DshWebRuntime(client as DshWebConnection, history as DshStreamDecoder | undefined, options);
+    this.kind = this.#implementation.kind === "dshDesktop" ? "dshDesktop" : "dsh";
+  }
+
+  /**
+   * Attach to a running DeepSeek Harness Desktop backend as an independent API Peer (ADR-0076).
+   * `packageEntry` must come from that Desktop's own archive (DSH-DESKTOP-08); provider
+   * configuration is never written (DSH-DESKTOP-05). Stopping releases only this connection.
+   */
+  static async connectDesktop(endpoint: { url: string; packageEntry: string }, options: { timeoutMs?: number; protocol?: DshWebProtocol; decoder?: DshStreamDecoder } = {}): Promise<DshRuntime> {
+    const { loadDshStreamDecoder } = await import("./dsh-web-history.js");
+    let protocol: DshWebProtocol;
+    let decoder: DshStreamDecoder;
+    try {
+      protocol = options.protocol ?? await loadDshWebProtocol(endpoint.packageEntry);
+      decoder = options.decoder ?? await loadDshStreamDecoder(endpoint.packageEntry);
+    } catch (error) {
+      throw new DshWebIncompatibleError(`无法加载此 Desktop 的协议库：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    const client = await DshWebClient.connect({ url: endpoint.url, protocol, authentication: "api", label: "DeepSeek Harness Desktop",
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) });
+    return new DshRuntime(client, decoder, { coalesceMs: STREAM_COALESCE_MS, flavor: DSH_DESKTOP_FLAVOR });
   }
 
   static async create(env: NodeJS.ProcessEnv = process.env): Promise<DshRuntime> {

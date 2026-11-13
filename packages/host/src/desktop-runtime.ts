@@ -17,6 +17,7 @@ import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDe
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
 import { ensureDshWebService, restartDshWebServiceAfterUpdate, validateDshWebUrl } from "./dsh-web-service.js";
 import { DshWebClient } from "./dsh-web-client.js";
@@ -127,6 +128,9 @@ export class DesktopRuntime {
   #codexRuntime: CodexRuntime | undefined;
   #codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   #dshRuntime: DshRuntime | undefined;
+  /** DeepSeek Harness Desktop entry (ADR-0076); its app and backend stay owned by Desktop. */
+  #dshDesktopLifecycle: DshDesktopLifecycle | undefined;
+  #dshDesktopRuntime: DshRuntime | undefined;
   #retry: NodeJS.Timeout | undefined;
   #poll: NodeJS.Timeout | undefined;
   /** 终端 shim 自动启用的在途守卫，避免并发 detect 重复写 PATH。 */
@@ -542,6 +546,27 @@ export class DesktopRuntime {
         if (runtime) this.#dshRuntime = runtime;
         return runtime;
       };
+      const dshDesktopLifecycle = this.#dshDesktopLifecycle = new DshDesktopLifecycle({
+        stateDir: this.#stateDir,
+        log: line => this.log(line),
+        onStatusChange: status => {
+          this.log(`DeepSeek Desktop 接入：${status.state} · ${status.reason}`);
+          this.#service?.announceDshDesktopStatus();
+        },
+      });
+      const dshDesktopLaunchable = await dshDesktopLifecycle.isInstalled();
+      const connectDshDesktop = async (existingOnly = false): Promise<DshRuntime | undefined> => {
+        if (this.#dshDesktopRuntime?.isReady()) return this.#dshDesktopRuntime;
+        const runtime = existingOnly ? await dshDesktopLifecycle.connectExisting() : await dshDesktopLifecycle.ensure();
+        if (this.#desired !== settings) {
+          // Release only Orbis's connection; Desktop keeps running (DSH-DESKTOP-07).
+          await runtime?.stop().catch(() => {});
+          if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek Desktop 接入");
+          return undefined;
+        }
+        if (runtime) this.#dshDesktopRuntime = runtime;
+        return runtime;
+      };
       let relayAuthenticated = false;
       const service = await HostService.create({
         providers: this.#providers,
@@ -560,6 +585,11 @@ export class DesktopRuntime {
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
         dshLaunchable,
+        dshDesktopLaunchable,
+        dshDesktopStatus: () => dshDesktopLifecycle.status,
+        ensureDshDesktopRuntime: () => connectDshDesktop(),
+        recoverDshDesktopRuntime: () => connectDshDesktop(true),
+        onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
         claude: {},
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
@@ -589,6 +619,7 @@ export class DesktopRuntime {
       if (this.#codexDesktopLifecycle !== undefined) {
         await this.#codexDesktopLifecycle.probe().catch(error => this.log(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`));
       }
+      this.#dshDesktopLifecycle?.watch();
       this.status();
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
@@ -1044,6 +1075,10 @@ export class DesktopRuntime {
     await desktopLifecycle?.stop().catch(error => this.log(String(error)));
     const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
     await dsh?.stop().catch(error => this.log(String(error)));
+    // Stopping closes only Orbis's API Peer; DeepSeek Harness Desktop is never terminated here.
+    this.#dshDesktopLifecycle?.stop(); this.#dshDesktopLifecycle = undefined;
+    const dshDesktop = this.#dshDesktopRuntime; this.#dshDesktopRuntime = undefined;
+    await dshDesktop?.stop().catch(error => this.log(String(error)));
   }
   async stop(): Promise<void> {
     this.#desired = undefined;

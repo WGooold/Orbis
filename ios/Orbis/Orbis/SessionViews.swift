@@ -338,7 +338,7 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "claude"].map { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude"].filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
                 ? sessionProviderOptions(catalog.sessions, kind: kind, current: store.currentProvider(for: kind)) : []
             return OrbisMenuItem(title: filterTitle(kind), agentKind: kind, checked: state.kind == kind,
@@ -538,8 +538,26 @@ private func filterTitle(_ kind: String) -> String {
     case "codex": return L10n.tr("Codex 终端")
     case "codexDesktop": return L10n.tr("Codex 桌面版")
     case "dsh": return "DeepSeek"
+    case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
     case "claude": return "Claude Code"
     default: return "Pi"
+    }
+}
+
+/// Agents with a second native entry: the emblem stays one family, the variant is chosen beside it.
+private func agentFamily(_ kind: String) -> String {
+    switch kind { case "codexDesktop": return "codex"; case "dshDesktop": return "dsh"; default: return kind }
+}
+private func agentVariants(_ family: String) -> [String] {
+    switch family { case "codex": return ["codex", "codexDesktop"]; case "dsh": return ["dsh", "dshDesktop"]; default: return [family] }
+}
+private func agentVariantTitle(_ kind: String) -> String {
+    switch kind {
+    case "codex": return L10n.tr("Codex 终端版")
+    case "codexDesktop": return L10n.tr("Codex 桌面版")
+    case "dsh": return L10n.tr("DeepSeek 网页版")
+    case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
+    default: return agentTitle(kind)
     }
 }
 
@@ -565,7 +583,7 @@ struct SessionDraftView: View {
     @State private var cancelling = false
     @State private var risen = false
     @State private var frame: CGRect = .zero
-    @State private var codexFrame: CGRect = .zero
+    @State private var familyFrames: [String: CGRect] = [:]
     @State private var codexLabelFrame: CGRect = .zero
     @State private var focused = false
     @State private var choosingConfiguration = false
@@ -578,8 +596,9 @@ struct SessionDraftView: View {
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
     private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
-    private var isCodex: Bool { agent == "codex" || agent == "codexDesktop" }
-    private var codexVersionTitle: String { L10n.tr(agent == "codexDesktop" ? "Codex 桌面版" : "Codex 终端版") }
+    private var family: String { agentFamily(agent) }
+    /// Both native entries of this family can start here, so the variant is a real choice.
+    private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
     private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
     private var hasMessage: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
@@ -609,32 +628,36 @@ struct SessionDraftView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 4) {
                 ForEach(["codex", "claude", "dsh", "pi"], id: \.self) { kind in
-                    OrbisMotionButton { agent = kind == "codex" && !allowed.contains("codex") && allowed.contains("codexDesktop") ? "codexDesktop" : kind } label: {
+                    let variants = agentVariants(kind), chosen = family == kind
+                    OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
                         AgentEmblem(kind: kind, size: 20, recessed: false)
-                            .saturation(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0).opacity(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0.4)
+                            .saturation(chosen ? 1 : 0).opacity(chosen ? 1 : 0.4)
                             .frame(width: 36, height: 36)
-                            .neuSurface(inset: agent == kind || kind == "codex" && agent == "codexDesktop", radius: 18,
-                                intensity: agent == kind || kind == "codex" && agent == "codexDesktop" ? 0.4 : 0, concentric: false)
+                            .neuSurface(inset: chosen, radius: 18, intensity: chosen ? 0.4 : 0, concentric: false)
                             .frame(width: 48, height: 48).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!allowed.contains(kind) && !(kind == "codex" && allowed.contains("codexDesktop")))
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if kind == "codex" { codexFrame = $0 } }
-                        .simultaneousGesture(LongPressGesture().onEnded { _ in if kind == "codex" { showCodexChoices() } })
-                        .accessibilityAction(named: L10n.tr("Codex 桌面版")) { if kind == "codex", allowed.contains("codexDesktop") { agent = "codexDesktop" } }
-                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind || kind == "codex" && agent == "codexDesktop" ? .isSelected : [])
+                    }.buttonStyle(.plain).disabled(!variants.contains(where: allowed.contains))
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { familyFrames[kind] = $0 }
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
+                        .accessibilityActions {
+                            ForEach(variants.dropFirst().filter(allowed.contains), id: \.self) { variant in
+                                Button(agentVariantTitle(variant)) { agent = variant }
+                            }
+                        }
+                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                if isCodex {
-                    OrbisMotionButton { showCodexChoices(from: codexLabelFrame) } label: {
+                if agentVariants(family).count > 1 {
+                    OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
                         HStack(spacing: 6) {
-                            Text("Codex").font(.orbisLabel(.semibold)).lineLimit(1)
-                            Image(systemName: agent == "codexDesktop" ? "desktopcomputer" : "terminal")
+                            Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)
+                            Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" ? "desktopcomputer" : agent == "dsh" ? "globe" : "terminal")
                                 .font(.system(size: 18)).accessibilityHidden(true)
                         }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
                             .contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!allowed.contains("codex") || !allowed.contains("codexDesktop"))
+                    }.buttonStyle(.plain).disabled(!hasVariants)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
-                        .accessibilityLabel("Codex").accessibilityValue(codexVersionTitle)
-                        .accessibilityIdentifier("draft-codex-version")
+                        .accessibilityLabel(agentTitle(agent)).accessibilityValue(agentVariantTitle(agent))
+                        .accessibilityIdentifier(family == "codex" ? "draft-codex-version" : "draft-\(family)-version")
                 } else {
                     Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -668,7 +691,7 @@ struct SessionDraftView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
-                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" ? L10n.tr("Codex 桌面版") : agentTitle(agent)),
+                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary), onSubmit: submit, onCancel: cancel)
                     .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 56)
                     .orbisField(focused: focused)
@@ -793,13 +816,13 @@ struct SessionDraftView: View {
         }.padding(16).onAppear { store.browseDirectory(currentPath) }
             .onDisappear { store.dismissBrowse() }
     }
-    /// Preserve the existing desktop backend without adding a fifth primary Agent.
-    private func showCodexChoices(from anchor: CGRect? = nil) {
+    /// Desktop entries stay variants of their Agent family instead of extra primary Agents.
+    private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
         focused = false
-        var choices: [OrbisMenuItem] = []
-        if allowed.contains("codex") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 终端版"), checked: agent == "codex") { agent = "codex" }) }
-        if allowed.contains("codexDesktop") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 桌面版"), checked: agent == "codexDesktop") { agent = "codexDesktop" }) }
-        if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? codexFrame) }
+        let choices = agentVariants(family).filter(allowed.contains).map { variant in
+            OrbisMenuItem(title: agentVariantTitle(variant), checked: agent == variant) { agent = variant }
+        }
+        if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? familyFrames[family] ?? .zero) }
     }
     private func cancel() {
         cancelling = true

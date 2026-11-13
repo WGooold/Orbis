@@ -14,9 +14,11 @@ import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProvider
  * 会话条目来源（spec §7.2 的 AgentBackend）。
  *
  * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` / `codexDesktop` 是同一个 Codex
- * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020）。
+ * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020），`dshDesktop` 接入
+ * DeepSeek Harness Desktop 自己拥有的后端（ADR-0076）。只有声明了
+ * `DEVICE_FEATURE_DSH_DESKTOP` 的设备才会收到 `dshDesktop`。
  */
-export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]);
+export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");

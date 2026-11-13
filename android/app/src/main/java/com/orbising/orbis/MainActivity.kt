@@ -2098,7 +2098,7 @@ internal fun ChatScreen(
                         // 命令词表的 source 在 Pi 与 Codex 下都叫 "builtin"，但徽标文案不同：
                         // Codex 的命令来自 app-server，标成 "Pi" 会让用户以为点错了后端。
                         isCodex = runtime?.isCodex == true,
-                        isDsh = runtime?.agentKind == "dsh",
+                        isDsh = runtime?.agentKind == "dsh" || runtime?.agentKind == "dshDesktop",
                         onOpenTree = {
                             // /tree 不再把候选铺在输入框下面：整页打开，命令词也一并清掉，
                             // 免得节点 ID 落到聊天输入框里。

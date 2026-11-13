@@ -1263,6 +1263,26 @@ struct StoreTests {
         #expect(store.turnTimings.first?.durationMs == 12)
     }
 
+    /// ADR-0076 DSH-DESKTOP-06: the Host's filtered first view (no `dshDesktop` key) is answered with
+    /// `device.features` and replaced by the full view, so a Desktop session is never dropped in between.
+    @Test func declaresDesktopFeatureAndAppliesOnlyTheFullReady() async throws {
+        let (store, transport) = setup()
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("dsh:web")], "hostFeatures": ["device.features"]])
+        let declaration = try #require(transport.sent.last { $0["type"] as? String == "device.features" })
+        #expect(declaration["features"] as? [String] == ["agent.dshDesktop"])
+        #expect(store.runtimes.isEmpty)
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("dsh:web"), runtime("dsh-desktop:desk")], "hostFeatures": ["device.features"],
+            "dshDesktop": ["state": "attached", "reason": "attached"], "launchableAgents": ["dsh", "dshDesktop"]])
+        #expect(store.runtimes.map(\.runtimeId).sorted() == ["dsh-desktop:desk", "dsh:web"])
+        #expect(store.launchableAgents == ["dsh", "dshDesktop"])
+        #expect(transport.sent.filter { $0["type"] as? String == "device.features" }.count == 1)
+        // A Host without the negotiation is applied as before.
+        await transport.ready([runtime("pi-a")])
+        #expect(store.runtimes.map(\.runtimeId) == ["pi-a"])
+    }
+
     @Test func authenticatedDesktopAvailabilityClearsWhenOmitted() async throws {
         let (store, transport) = setup()
         await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": [],

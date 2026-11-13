@@ -594,6 +594,8 @@ final class HostConnection: ObservableObject {
     }
     var didUpdatePairing: ((HostPairing) -> Void)?
     private var modelCatalogReceived = false
+    /// ADR-0076: the filtered `device.ready` this App answered with `device.features`; the full one replaces it.
+    private var filteredReady: (id: UUID, message: [String: Any], channel: String?)?
 
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil, autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil, initialPairing: HostPairing? = nil, isolated: Bool = false, historyWorker: SessionHistoryWorker? = nil, localStores: HostLocalStores? = nil) {
         self.secure = secure
@@ -2542,6 +2544,23 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
+            // A Host that can show DeepSeek Desktop first sends the view released Apps parse (no `dshDesktop` key).
+            // Declare the feature and wait for the full view, so a selected Desktop session is never dropped.
+            if (message["hostFeatures"] as? [String])?.contains("device.features") == true, message["dshDesktop"] == nil,
+               message["_orbisFilteredFallback"] == nil,
+               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": ["agent.dshDesktop"]]) {
+                let id = UUID()
+                filteredReady = (id, message, channel)
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    guard let self, let pending = self.filteredReady, pending.id == id else { return }
+                    self.filteredReady = nil
+                    var fallback = pending.message; fallback["_orbisFilteredFallback"] = true
+                    await self.receive(fallback, channel: pending.channel)
+                }
+                return
+            }
+            filteredReady = nil
             let next: [RuntimeSummary] = values.compactMap(jsonDecode)
             guard next.count == values.count, Set(next.map(\.runtimeId)).count == next.count else {
                 errorMessage = L10n.tr("会话目录格式无法识别，请重新连接。"); return

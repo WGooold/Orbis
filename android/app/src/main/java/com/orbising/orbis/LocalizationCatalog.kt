@@ -51,6 +51,8 @@ internal object LocalizationCatalog {
         "Codex 桌面版" to "Codex Desktop",
         "Codex 终端" to "Codex Terminal",
         "Codex 终端版" to "Codex Terminal",
+        "DeepSeek 桌面版" to "DeepSeek Desktop",
+        "DeepSeek 网页版" to "DeepSeek Web",
         "E2eConnectOptions 必须且只能选择普通连接或配对模式之一" to "E2eConnectOptions requires exactly one connection or pairing mode",
         "HEAD，{0}（分离）" to "HEAD, {0} (detached)",
         "Host 未报告进行中的切换" to "Host has not reported a pending switch",
@@ -165,10 +167,10 @@ internal object LocalizationCatalog {
         "上一级" to "Parent folder",
         "上一题" to "Previous question",
         "上下文" to "Context",
-        "上下文 {0}" to "Context {0}",
-        "上下文压缩" to "Context compaction",
     )
     private fun part1(): Map<String, String> = mapOf(
+        "上下文 {0}" to "Context {0}",
+        "上下文压缩" to "Context compaction",
         "上下文已使用 {0}%" to "Context used: {0}%",
         "上传中" to "Uploading",
         "上传中：" to "Uploading: ",
@@ -317,10 +319,10 @@ internal object LocalizationCatalog {
         "会话空闲时可调整权限。" to "Permissions can be changed while the session is idle.",
         "会话读取归属已经失效" to "Session read ownership expired",
         "会话读取归属已经改变，请重试。" to "Session read ownership changed. Try again.",
-        "会话读取归属无效或任务已满" to "Invalid session read ownership or task limit reached",
-        "会话读取未能发送，请重试" to "Session read could not be sent. Try again.",
     )
     private fun part2(): Map<String, String> = mapOf(
+        "会话读取归属无效或任务已满" to "Invalid session read ownership or task limit reached",
+        "会话读取未能发送，请重试" to "Session read could not be sent. Try again.",
         "会话读取超时，请重试" to "Session read timed out. Try again.",
         "会话身份" to "Session identity",
         "会话身份尚未就绪，请重新加载" to "Session identity is not ready. Reload.",
@@ -469,10 +471,10 @@ internal object LocalizationCatalog {
         "历史来源已经改变" to "History source changed",
         "历史来源已经改变，请刷新会话。" to "History source changed. Refresh the session.",
         "历史来源已被替换" to "History source was replaced",
-        "历史来源或范围无效" to "Invalid history source or range",
-        "历史父节点形成循环" to "History parent nodes form a cycle",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "历史来源或范围无效" to "Invalid history source or range",
+        "历史父节点形成循环" to "History parent nodes form a cycle",
         "历史缓存代次已经改变" to "History cache generation changed",
         "历史缓存读取失败：{0}" to "History cache read failed: {0}",
         "历史范围不可用，请刷新会话后重试。" to "History range unavailable. Refresh the session and try again.",
@@ -621,10 +623,10 @@ internal object LocalizationCatalog {
         "复制消息" to "Copy message",
         "复制路径" to "Copy path",
         "复制选中文本" to "Copy selected text",
-        "复制选区" to "Copy selection",
-        "外观" to "Appearance",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "复制选区" to "Copy selection",
+        "外观" to "Appearance",
         "外部沙箱" to "External sandbox",
         "失败" to "Failed",
         "子代理 {0} 项" to "{0} subagents",
@@ -773,10 +775,10 @@ internal object LocalizationCatalog {
         "已收起" to "Collapsed",
         "已断开" to "Disconnected",
         "已显示完整差异" to "Full diff displayed",
-        "已暂停" to "Paused",
-        "已暂停，{0}" to "Paused, {0}",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "已暂停" to "Paused",
+        "已暂停，{0}" to "Paused, {0}",
         "已暂停，可在下载页面继续" to "Paused. Resume from Downloads.",
         "已暂停，可重新发送（{0}%）" to "Paused. You can send again ({0}%).",
         "已有会话需要重新打开。" to "Existing sessions must be reopened.",
@@ -925,10 +927,10 @@ internal object LocalizationCatalog {
         "握手尚未完成，收到 bin" to "Received bin before handshake completed",
         "握手尚未完成，收到 data" to "Received data before handshake completed",
         "握手尚未完成，收到 ping" to "Received ping before handshake completed",
-        "握手认证失败" to "Handshake authentication failed",
-        "搜索会话或目录" to "Search sessions or folders",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "握手认证失败" to "Handshake authentication failed",
+        "搜索会话或目录" to "Search sessions or folders",
         "搜索历史与分支" to "Search history and branches",
         "搜索消息、分支或书签" to "Search messages, branches or bookmarks",
         "搜索目录或会话" to "Search folders or sessions",
@@ -1077,10 +1079,10 @@ internal object LocalizationCatalog {
         "未知角色：{0}" to "Unknown role: {0}",
         "未知错误" to "Unknown error",
         "未知（{0}）" to "Unknown ({0})",
-        "未确认" to "Unconfirmed",
-        "未确认是否送达" to "Delivery unconfirmed",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "未确认" to "Unconfirmed",
+        "未确认是否送达" to "Delivery unconfirmed",
         "未统计" to "Not measured",
         "未能确认送达，可以重新发送" to "Delivery could not be confirmed. You can send again.",
         "未获取到 Git 分支" to "Git branch not available",
@@ -1229,10 +1231,10 @@ internal object LocalizationCatalog {
         "此节点没有可显示的缓存内容。" to "No cached content to display for this node.",
         "此轮文件版本已超过电脑端保留期限。" to "The computer's retention period for this turn's file versions has expired.",
         "此轮未保存可比较的文件版本。" to "No comparable file versions were saved for this turn.",
-        "此部分内容已无法恢复" to "This content cannot be recovered",
-        "没有{0}会话" to "No {0}sessions",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "此部分内容已无法恢复" to "This content cannot be recovered",
+        "没有{0}会话" to "No {0}sessions",
         "没有匹配的会话" to "No matching sessions",
         "没有匹配的命令" to "No matching commands",
         "没有匹配的节点" to "No matching nodes",
@@ -1381,10 +1383,10 @@ internal object LocalizationCatalog {
         "窗口 {0}" to "Window {0}",
         "端到端加密" to "End-to-end encryption",
         "端到端加密已连接" to "Connected with end-to-end encryption",
-        "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
-        "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
+        "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
         "第 {0} 轮" to "Turn {0}",
@@ -1533,10 +1535,10 @@ internal object LocalizationCatalog {
         "负载里没有 records" to "Payload has no records",
         "负载里没有 totalSessions" to "Payload has no totalSessions",
         "资源" to "Resources",
-        "跟随手机" to "Follow phone language",
-        "跟随系统" to "Follow system",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "跟随手机" to "Follow phone language",
+        "跟随系统" to "Follow system",
         "跟随输出" to "Follow output",
         "路由" to "Routing",
         "跳到最新消息" to "Jump to latest message",
@@ -1685,10 +1687,10 @@ internal object LocalizationCatalog {
         "重新加载会话" to "Reload session",
         "重新发送" to "Send again",
         "重新扫描" to "Scan again",
-        "重新核对" to "Check again",
-        "重新读取" to "Reload",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "重新核对" to "Check again",
+        "重新读取" to "Reload",
         "重新读取文件清单" to "Reload file list",
         "重新连接" to "Reconnect",
         "重置 " to "Resets ",

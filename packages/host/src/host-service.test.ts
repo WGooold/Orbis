@@ -60,6 +60,7 @@ import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import { DSH_DESKTOP_FLAVOR } from "./dsh-web-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
@@ -3175,6 +3176,106 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ensureDshRuntime).not.toHaveBeenCalled();
       expect(recoverDshRuntime).toHaveBeenCalledTimes(mode === "recovered" ? 1 : 0);
     } finally { await runtime.stop(); }
+  });
+
+  // ADR-0076 DSH-DESKTOP-03 / 06: Web and Desktop expose the same native id as two routes, and a device sees
+  // `dshDesktop` only after declaring it on its current handshake. Released Apps keep the pre-Desktop view.
+  it("negotiates the Desktop entry per device and routes the same native id to separate entries", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-desktop-host-"));
+    relay = await startRelayLocal(stateDir);
+    const fake = (label: string) => {
+      const row = (sessionId: string) => ({ sessionId, cwd: stateDir!, agentAvailable: true, running: true, updatedAt: 1000 });
+      const request = vi.fn<(method: string, args?: unknown) => Promise<unknown>>(async method => method === "session/list" ? { items: [row("shared")] } : {});
+      const client: DshWebConnection = {
+        onEvent: undefined, onExit: undefined, onReconnect: undefined,
+        request: request as DshWebConnection["request"], respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+        subscribe(method, _args, frame) {
+          if (method === "workspace/follow") queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: [] } }));
+          if (method === "session/follow") queueMicrotask(() => frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [], assistantStream: { revision: 0 } }));
+          return () => {};
+        },
+      };
+      return { client, request, row, label };
+    };
+    const web = fake("web"); const desktop = fake("desktop");
+    const webRuntime = new DshRuntime(web.client);
+    const desktopRuntime = new DshRuntime(desktop.client, undefined, { flavor: DSH_DESKTOP_FLAVOR });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: webRuntime, dshDesktopRuntime: desktopRuntime,
+      dshDesktopLaunchable: true, dshDesktopStatus: () => ({ state: "attached", reason: "已接入 DeepSeek Harness Desktop", version: "0.2.2-rc.2" }) });
+    try {
+      await host.start();
+      await vi.waitFor(() => expect(desktopRuntime.directoryEntries().map(row => row.runtimeId)).toEqual(["dsh-desktop:shared"]));
+      await vi.waitFor(() => expect(webRuntime.directoryEntries().map(row => row.runtimeId)).toEqual(["dsh:shared"]));
+      const opened = await host.openPairingWindow();
+      const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+        qrText: encodePairingQrText(opened.payload), deviceName: "Released App" });
+      device = connected.device;
+      const pskRoot = await device.pair(opened.payload);
+      await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+      const ready = { ready: await device.receiveMessage() as Record<string, unknown> };
+      const legacyRuntimes = (ready.ready.runtimes as RuntimeMetadata[]).map(row => row.runtimeId);
+      expect(legacyRuntimes).toContain("dsh:shared");
+      expect(legacyRuntimes).not.toContain("dsh-desktop:shared");
+      expect(ready.ready.agents).not.toContain("dshDesktop");
+      expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
+      expect(ready.ready).not.toHaveProperty("dshDesktop");
+      expect(ready.ready.hostFeatures).toEqual(["device.features"]);
+      RelayToDeviceMessageSchema.parse(ready.ready);
+      const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 80; i++) {
+          const message = await device!.receiveMessage() as Record<string, unknown>;
+          expect(message.type).not.toBe("protocol.error");
+          if (predicate(message)) return message;
+        }
+        throw new Error("Expected Desktop negotiation message not received");
+      };
+      const hostState = async (requestId: string, known?: unknown[]) => {
+        sendRequest(device!, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId, scope: "host", domains: ["catalog", "backends"], ...(known ? { known } : {}) });
+        return until(message => message.requestId === requestId);
+      };
+      const legacy = await hostState("legacy-host");
+      const legacyDomains = new Map((legacy.domains as AgentStateDomainSnapshot[]).map(domain => [domain.domain, domain]));
+      const legacyCatalog = legacyDomains.get("catalog")!.value as { sessions: Array<{ sessionId: string; agentKind: string }>; totalSessions: number; nextCursor: string | null };
+      expect(legacyCatalog.sessions.map(session => session.sessionId)).toEqual(["dsh:shared"]);
+      expect(legacyCatalog.totalSessions).toBe(1);
+      expect(legacyCatalog.nextCursor).toBeNull();
+      expect(JSON.stringify(legacyDomains.get("backends")!.value)).not.toContain("dshDesktop");
+      // The released App never hears Desktop runtime traffic.
+      desktop.client.onEvent?.({ type: "emit", event: "api-session/added", args: [desktop.row("desktop-only")] });
+      web.client.onEvent?.({ type: "emit", event: "api-session/added", args: [web.row("web-only")] });
+      const seen: string[] = [];
+      await until(message => {
+        if (typeof message.runtimeId === "string") seen.push(message.runtimeId);
+        if (message.type === "runtime.online") seen.push((message.runtime as RuntimeMetadata).runtimeId);
+        return message.type === "runtime.online" && (message.runtime as RuntimeMetadata).runtimeId === "dsh:web-only";
+      });
+      expect(seen.filter(id => id.startsWith("dsh-desktop:"))).toEqual([]);
+
+      // Declaring the feature replaces this handshake's filtered view with the full one.
+      sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.dshDesktop"] });
+      const full = await until(message => message.type === "device.ready");
+      expect((full.runtimes as RuntimeMetadata[]).map(row => row.runtimeId)).toEqual(expect.arrayContaining(["dsh:shared", "dsh-desktop:shared", "dsh-desktop:desktop-only"]));
+      expect(full.agents).toContain("dshDesktop");
+      expect(full.launchableAgents).toContain("dshDesktop");
+      expect(full.dshDesktop).toEqual({ state: "attached", reason: "已接入 DeepSeek Harness Desktop", version: "0.2.2-rc.2" });
+      // Revisions read under the filtered view are not trusted for the full one.
+      const known = (legacy.domains as AgentStateDomainSnapshot[]).map(domain => ({ domain: domain.domain, modelEpoch: domain.modelEpoch, revision: domain.revision }));
+      const upgraded = await hostState("full-host", known);
+      const catalog = (upgraded.domains as AgentStateDomainSnapshot[]).find(domain => domain.domain === "catalog")!.value as { sessions: Array<{ sessionId: string; agentKind: string }> };
+      expect(catalog.sessions.map(session => [session.sessionId, session.agentKind])).toEqual(expect.arrayContaining([["dsh:shared", "dsh"], ["dsh-desktop:shared", "dshDesktop"]]));
+
+      // The same native id reaches only the entry that owns the public id.
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "dsh-desktop:shared", commandId: "desktop-send",
+        command: { type: "user_message", text: "to desktop", messageId: "desktop-1" } });
+      await vi.waitFor(() => expect(desktop.request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "shared" }) }));
+      expect(web.request.mock.calls.some(([method]) => method === "session/prompt")).toBe(false);
+
+      // A new handshake may be an older App build: it starts filtered again until it declares.
+      await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+      const again = await until(message => message.type === "device.ready");
+      expect((again.runtimes as RuntimeMetadata[]).map(row => row.runtimeId)).not.toContain("dsh-desktop:shared");
+    } finally { await webRuntime.stop(); await desktopRuntime.stop(); }
   });
 
   it("reopens a quit DSH browser session over E2E when Codex is also enabled", async () => {

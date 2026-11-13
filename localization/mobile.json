@@ -32,6 +32,8 @@
   "Codex 桌面版": "Codex Desktop",
   "Codex 终端": "Codex Terminal",
   "Codex 终端版": "Codex Terminal",
+  "DeepSeek 桌面版": "DeepSeek Desktop",
+  "DeepSeek 网页版": "DeepSeek Web",
   "E2eConnectOptions 必须且只能选择普通连接或配对模式之一": "E2eConnectOptions requires exactly one connection or pairing mode",
   "HEAD，{0}（分离）": "HEAD, {0} (detached)",
   "Host 未报告进行中的切换": "Host has not reported a pending switch",

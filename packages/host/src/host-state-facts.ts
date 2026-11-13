@@ -41,7 +41,9 @@ function boundedArray<T>(items: readonly T[], bytes: number, wrap: (items: T[]) 
   return items.slice(0, low);
 }
 
-const catalogCursor = (snapshotId: string, offset: number): string => Buffer.from(JSON.stringify([snapshotId, offset])).toString("base64url");
+/** A hidden-kind view (ADR-0076 DSH-DESKTOP-06) has its own cursor space; full and filtered offsets never mix. */
+const catalogCursor = (snapshotId: string, offset: number, hide?: AgentKind): string =>
+  Buffer.from(JSON.stringify(hide === undefined ? [snapshotId, offset] : [snapshotId, offset, `-${hide}`])).toString("base64url");
 
 /**
  * 「有供应商切换正在进行」这条事实（模块 20）。
@@ -184,9 +186,10 @@ export class HostStateFacts {
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
   // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
-  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): HostCatalogRange {
+  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
-    const inventory = this.#catalogInventory;
+    const full = this.#catalogInventory;
+    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
     const empty = (error: NonNullable<HostCatalogRange["error"]>): HostCatalogRange => ({
       modelEpoch: this.#registry.currentModelEpoch(), revision: state?.revision ?? 0, snapshotId: state?.value?.snapshotId ?? null,
       offset: 0, totalSessions: state?.value?.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
@@ -197,7 +200,8 @@ export class HostStateFacts {
       let cursor: unknown;
       if (request.cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(request.cursor)) return empty("invalid_cursor");
       try { cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString("utf8")); } catch { return empty("invalid_cursor"); }
-      if (!Array.isArray(cursor) || cursor.length !== 2 || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0) return empty("invalid_cursor");
+      if (!Array.isArray(cursor) || cursor.length !== (hide === undefined ? 2 : 3) || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0
+        || hide !== undefined && cursor[2] !== `-${hide}`) return empty("invalid_cursor");
       if (cursor[0] !== inventory.snapshotId) return empty("snapshot_changed");
       offset = cursor[1] as number;
       if (offset > inventory.sessions.length) return empty("invalid_cursor");
@@ -207,8 +211,45 @@ export class HostStateFacts {
     const next = offset + sessions.length;
     const complete = inventory.state.backends.every(backend => backend.complete) && !inventory.state.truncated;
     return { modelEpoch: inventory.modelEpoch, revision: state.revision, snapshotId: inventory.snapshotId,
-      offset, totalSessions: inventory.state.totalSessions, sessions, nextCursor: next < inventory.sessions.length ? catalogCursor(inventory.snapshotId, next) : null,
+      offset, totalSessions: inventory.state.totalSessions, sessions, nextCursor: next < inventory.sessions.length ? catalogCursor(inventory.snapshotId, next, hide) : null,
       complete, truncated: inventory.state.truncated };
+  }
+
+  #hidden: { source: CatalogInventory; hide: AgentKind; view: CatalogInventory } | undefined;
+  /** The committed inventory without one agent kind; the order is kept, so a filtered prefix is a prefix of this view. */
+  #hiddenInventory(inventory: CatalogInventory, hide: AgentKind): CatalogInventory {
+    if (this.#hidden?.source === inventory && this.#hidden.hide === hide) return this.#hidden.view;
+    const sessions = inventory.sessions.filter(session => session.agentKind !== hide);
+    const removed = Math.max(inventory.sessions.length - sessions.length, inventory.state.backends.find(backend => backend.kind === hide)?.sessions ?? 0);
+    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => backend.kind !== hide),
+      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => row.agentKind !== hide) }),
+      totalSessions: inventory.state.truncated ? Math.max(sessions.length, inventory.state.totalSessions - removed) : sessions.length };
+    const view = { ...inventory, state, sessions };
+    this.#hidden = { source: inventory, hide, view };
+    return view;
+  }
+
+  /**
+   * The committed catalog value as a device without `hide` sees it: same snapshot and revision,
+   * sessions/rows of that kind removed, totals and next cursor from the filtered inventory.
+   */
+  hiddenCatalog(value: Record<string, unknown>, hide: AgentKind): Record<string, unknown> {
+    const inventory = this.#catalogInventory;
+    const keep = (row: unknown): boolean => !(row !== null && typeof row === "object" && (row as { agentKind?: unknown; kind?: unknown }).agentKind === hide)
+      && !(row !== null && typeof row === "object" && (row as { kind?: unknown }).kind === hide);
+    const next: Record<string, unknown> = { ...value };
+    if (Array.isArray(value.sessions)) next.sessions = value.sessions.filter(keep);
+    if (Array.isArray(value.backends)) next.backends = value.backends.filter(keep);
+    if (Array.isArray(value.currentProviders)) next.currentProviders = value.currentProviders.filter(keep);
+    if (!inventory || value.snapshotId !== inventory.snapshotId) {
+      // No inventory for this version: never advertise a cursor whose offsets could not be honoured.
+      const sessions = Array.isArray(next.sessions) ? next.sessions.length : 0;
+      return { ...next, nextCursor: null, totalSessions: sessions, truncated: value.nextCursor !== null && value.nextCursor !== undefined || value.truncated === true };
+    }
+    const view = this.#hiddenInventory(inventory, hide);
+    const count = Array.isArray(next.sessions) ? next.sessions.length : 0;
+    return { ...next, totalSessions: view.state.totalSessions,
+      nextCursor: count < view.sessions.length ? catalogCursor(inventory.snapshotId, count, hide) : null };
   }
 
   /**

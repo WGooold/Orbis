@@ -26,7 +26,7 @@ export const SessionConfigurationCatalogSchema = z.strictObject({
 });
 export type SessionConfigurationCatalog = z.infer<typeof SessionConfigurationCatalogSchema>;
 
-const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]);
+const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]);
 const location = { agentKind: kind, cwd: z.string().min(1).max(4096) };
 const selected = { ...location, binding: id, revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema };
 export const SessionConfigurationReadSchema = z.strictObject({ type: z.literal("session.configuration.read"), requestId: id, ...location });

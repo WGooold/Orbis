@@ -93,6 +93,7 @@ internal enum class DrawerAgentFilter(
     Codex("codex", "Codex 终端", "codex"),
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh"),
+    DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
@@ -111,6 +112,7 @@ private fun DrawerAgentFilterMenu(
     providerFilterKey: String,
     onSelectProvider: (String) -> Unit,
     onRequestProviders: () -> Unit,
+    desktopDeepSeek: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -147,7 +149,8 @@ private fun DrawerAgentFilterMenu(
                     )
                 }
             } else {
-            DrawerAgentFilter.values().forEach { filter ->
+            // The Desktop entry is listed only where this Host offers it (ADR-0076).
+            DrawerAgentFilter.values().filter { it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -359,6 +362,7 @@ internal fun SessionDrawer(
                         providerFilterKey = providerKey,
                         onSelectProvider = { requestedProviderKey = it },
                         onRequestProviders = onRequestProviders,
+                        desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it },
                     )
 
                 }
@@ -752,7 +756,7 @@ private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteS
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> L10n.tr("请先退出 Pi 会话")
     row.agentKind == "claude" -> L10n.tr("请先退出 Claude Code 会话")
-    (row.isCodex || row.agentKind == "dsh") && state.runtimes[row.runtimeId]?.status == "idle" -> null
+    (row.isCodex || row.agentKind == "dsh" || row.agentKind == "dshDesktop") && state.runtimes[row.runtimeId]?.status == "idle" -> null
     else -> L10n.tr("等待任务完成后归档")
 }
 

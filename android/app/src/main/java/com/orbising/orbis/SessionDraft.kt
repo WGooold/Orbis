@@ -74,7 +74,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var fieldValue by draft.editing
     LaunchedEffect(text) { if (fieldValue.text != text) fieldValue = TextFieldValue(text, selection = TextRange(text.length)) }
     var directoryOpen by rememberSaveable { mutableStateOf(false) }
-    var agentMenu by remember { mutableStateOf(false) }
+    var agentMenu by remember { mutableStateOf<String?>(null) }
     var pressed by remember { mutableStateOf(true) }
     val appearance = remember { Animatable(0f) }
     var bounds by remember { mutableStateOf(Rect.Zero) }
@@ -91,8 +91,10 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
     val supported = state.launchableAgents ?: state.supportedAgents
-    val codexVersionsAvailable = supported?.contains("codex") == true && supported.contains("codexDesktop")
     val kinds = listOf("codex", "claude", "dsh", "pi")
+    val family = agentFamily(kind)
+    /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
+    fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
     LaunchedEffect(open) {
         if (open) {
             pressed = true; appearance.snapTo(0f)
@@ -116,7 +118,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
     LaunchedEffect(supported) { if (supported != null && kind !in supported)
-        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "pi")).firstOrNull { it in supported } ?: "pi"
+        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi")).firstOrNull { it in supported } ?: "pi"
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
@@ -126,53 +128,55 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     kinds.forEach { agent ->
                         val brand = agentBrand(agent)
-                        val selected = agent == kind || agent == "codex" && kind == "codexDesktop"
-                        val enabled = supported == null || agent in supported || agent == "codex" && "codexDesktop" in supported
-                        val chooseCodexVersion = agent == "codex" && codexVersionsAvailable
+                        val variants = agentVariants(agent)
+                        val selected = family == agent
+                        val enabled = supported == null || variants.any { it in supported }
+                        val chooseCodexVersion = versionsAvailable(agent)
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
                             enabled = enabled,
                             role = if (chooseCodexVersion) Role.Button else Role.RadioButton,
                             onClick = {
-                                if (chooseCodexVersion) agentMenu = true
-                                else kind = if (agent == "codex" && supported?.contains("codex") == false) "codexDesktop" else agent
+                                if (chooseCodexVersion) agentMenu = agent
+                                else kind = variants.firstOrNull { supported?.contains(it) != false } ?: agent
                             },
-                            onLongClick = if (chooseCodexVersion) ({ agentMenu = true }) else null,
+                            onLongClick = if (chooseCodexVersion) ({ agentMenu = agent }) else null,
                         ).semantics {
                             this.selected = selected
-                            if (chooseCodexVersion) stateDescription = L10n.tr("选择 Codex 终端版或桌面版")
+                            if (chooseCodexVersion) stateDescription = if (agent == "codex") L10n.tr("选择 Codex 终端版或桌面版")
+                                else variants.joinToString(" / ") { agentVariantTitle(it) }
                         }) {
                             Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
                                 if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
                                 AgentIcon(brand, Modifier.size(20.dp).graphicsLayer { alpha = if (selected) 1f else 0.4f }, brand.title,
                                     tintOverride = if (selected) null else LocalOrbisPalette.current.faint)
                             }
-                            if (agent == "codex") NeumorphMenu(agentMenu, { agentMenu = false }) {
-                                listOf("codex", "codexDesktop").forEach { value ->
-                                    NeumorphMenuItem(text = { Text(if (value == "codex") L10n.tr("Codex 终端版") else L10n.tr("Codex 桌面版")) },
-                                        onClick = { kind = value; agentMenu = false }, enabled = supported?.contains(value) != false)
+                            if (variants.size > 1) NeumorphMenu(agentMenu == agent, { agentMenu = null }) {
+                                variants.forEach { value ->
+                                    NeumorphMenuItem(text = { Text(agentVariantTitle(value)) },
+                                        onClick = { kind = value; agentMenu = null }, enabled = supported?.contains(value) != false)
                                 }
                             }
                         }
                     }
-                    val isCodex = kind == "codex" || kind == "codexDesktop"
-                    val versionChoice = codexVersionsAvailable && isCodex
+                    val hasVariants = agentVariants(family).size > 1
+                    val versionChoice = versionsAvailable(family)
                     Row(Modifier.weight(1f).heightIn(min = 48.dp)
-                        .testTag(if (isCodex) "draft-codex-version" else "draft-agent-label")
+                        .testTag(if (family == "codex") "draft-codex-version" else if (hasVariants) "draft-$family-version" else "draft-agent-label")
                         .then(if (versionChoice) Modifier.orbisKeyboardFocus().clickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
                             role = Role.Button,
-                        ) { agentMenu = true } else Modifier)
+                        ) { agentMenu = family } else Modifier)
                         .semantics {
-                            if (isCodex) stateDescription = L10n.tr(if (kind == "codexDesktop") "Codex 桌面版" else "Codex 终端版")
+                            if (hasVariants) stateDescription = agentVariantTitle(kind)
                         }, verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
-                        Text(if (isCodex) "Codex" else agentBrand(kind).title,
+                        Text(if (family == "codex") "Codex" else agentBrand(kind).title,
                             modifier = Modifier.weight(1f).testTag("draft-agent-name"), style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (isCodex) Icon(if (kind == "codexDesktop") OrbisSymbols.Computer else Icons.Rounded.Terminal,
-                            null, Modifier.size(18.dp).testTag("draft-codex-mode-icon"), tint = MaterialTheme.colorScheme.primary)
+                        if (hasVariants) Icon(when (kind) { "codexDesktop", "dshDesktop" -> OrbisSymbols.Computer; "dsh" -> Icons.Rounded.Language; else -> Icons.Rounded.Terminal },
+                            null, Modifier.size(18.dp).testTag(if (family == "codex") "draft-codex-mode-icon" else "draft-$family-mode-icon"), tint = MaterialTheme.colorScheme.primary)
                     }
                 }
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("draft-directory")
@@ -296,4 +300,19 @@ private fun DraftConfigurationButton(label: String, value: String?, panel: Strin
             Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(14.dp), tint = tint)
         }
     }
+}
+
+/** Agents with a second native entry keep one emblem; the entry is a version beside it (ADR-0022, ADR-0076). */
+internal fun agentFamily(kind: String): String = when (kind) { "codexDesktop" -> "codex"; "dshDesktop" -> "dsh"; else -> kind }
+internal fun agentVariants(family: String): List<String> = when (family) {
+    "codex" -> listOf("codex", "codexDesktop")
+    "dsh" -> listOf("dsh", "dshDesktop")
+    else -> listOf(family)
+}
+internal fun agentVariantTitle(kind: String): String = when (kind) {
+    "codex" -> L10n.tr("Codex 终端版")
+    "codexDesktop" -> L10n.tr("Codex 桌面版")
+    "dsh" -> L10n.tr("DeepSeek 网页版")
+    "dshDesktop" -> L10n.tr("DeepSeek 桌面版")
+    else -> agentBrand(kind).title
 }

@@ -1,0 +1,288 @@
+/**
+ * DeepSeek Harness Desktop installation, Orbis-owned launch and endpoint recovery
+ * (ADR-0076 DSH-DESKTOP-01/02/07).
+ *
+ * Desktop owns its backend, profile and authentication. Its Host prints the
+ * authenticated loopback URL (`dsh web: …`) to stdout, and Electron main pipes
+ * that stdout to its own. Only a Desktop process started by Orbis has a stdout
+ * Orbis can read, so Orbis records the URL for the instance it started and never
+ * scans ports, reads cookie stores or uses private Electron IPC. A Desktop the
+ * user opened elsewhere is reported as running but not connectable. Nothing here
+ * terminates Desktop.
+ */
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
+import { AsarArchive } from "./asar-archive.js";
+import { DSH_DESKTOP_HOST_PACKAGE_DIR, DSH_DESKTOP_PACKAGE_DIR } from "./dsh-desktop-protocol.js";
+import { DSH_PROVIDER_ENV } from "./dsh-web-provider.js";
+
+const execute = promisify(execFile);
+export const DSH_DESKTOP_PRODUCT = "DeepSeek Harness";
+const URL_LINE = /(?:^|\r?\n)dsh web: (http:\/\/127\.0\.0\.1:\d{1,5}\/\?token=[A-Za-z0-9_-]{16,})/gu;
+const MAX_LOG_SCAN_BYTES = 4 * 1024 * 1024;
+
+export type DshDesktopInstallation = {
+  /** Windows install directory or macOS `.app` bundle. */
+  root: string;
+  executable: string;
+  archive: string;
+  /** `@deepseek-ai/dsh` version inside this Desktop (Desktop and dsh are released together). */
+  version: string;
+};
+
+export type DshDesktopDiscoveryOptions = {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  /** Explicit install root (Windows directory / macOS bundle) from settings or `ORBIS_DSH_DESKTOP_PATH`. */
+  explicitPath?: string;
+  registryInstallLocations?: () => Promise<string[]>;
+};
+
+export function supportsDshDesktop(target: NodeJS.Platform = process.platform): boolean {
+  return target === "win32" || target === "darwin";
+}
+
+function layout(root: string, target: NodeJS.Platform): { executable: string; archive: string } {
+  return target === "darwin"
+    ? { executable: join(root, "Contents", "MacOS", DSH_DESKTOP_PRODUCT), archive: join(root, "Contents", "Resources", "app.asar") }
+    : { executable: join(root, `${DSH_DESKTOP_PRODUCT}.exe`), archive: join(root, "resources", "app.asar") };
+}
+
+const isFile = async (path: string): Promise<boolean> => (await stat(path).catch(() => undefined))?.isFile() === true;
+
+/** A candidate is Desktop only when its executable and archive exist and the archive carries dsh plus the Desktop Host. */
+export async function inspectDshDesktopInstallation(root: string, target: NodeJS.Platform = process.platform): Promise<DshDesktopInstallation | undefined> {
+  const paths = layout(resolve(root), target);
+  if (!await isFile(paths.executable) || !await isFile(paths.archive)) return undefined;
+  let archive: AsarArchive;
+  try { archive = await AsarArchive.open(paths.archive); } catch { return undefined; }
+  if (!archive.isFile(`${DSH_DESKTOP_HOST_PACKAGE_DIR}/package.json`)) return undefined;
+  const manifest = await archive.readJson(`${DSH_DESKTOP_PACKAGE_DIR}/package.json`).catch(() => undefined);
+  const version = manifest !== null && typeof manifest === "object" && typeof (manifest as { version?: unknown }).version === "string"
+    ? (manifest as { version: string }).version : undefined;
+  if (version === undefined) return undefined;
+  return { root: resolve(root), ...paths, version };
+}
+
+/** Per-user uninstall entries written by the official NSIS installer (`InstallLocation`). */
+async function windowsInstallLocations(env: NodeJS.ProcessEnv): Promise<string[]> {
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$roots = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall')
+$found = foreach ($root in $roots) {
+  if (Test-Path $root) {
+    Get-ChildItem $root | ForEach-Object { Get-ItemProperty $_.PSPath } |
+      Where-Object { $_.DisplayName -like 'DeepSeek Harness*' -and $_.InstallLocation } |
+      ForEach-Object { [string]$_.InstallLocation }
+  }
+}
+ConvertTo-Json -Compress -InputObject @($found)
+`;
+  const { stdout } = await execute(join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { windowsHide: true, timeout: 15_000, maxBuffer: 256 * 1024, encoding: "utf8" });
+  const value: unknown = JSON.parse(stdout.trim() || "[]");
+  return (Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map(item => item.trim().replace(/^"(.*)"$/u, "$1"));
+}
+
+/** Installed Desktop candidates in preference order; the first valid one is used. */
+export async function findDshDesktopInstallation(options: DshDesktopDiscoveryOptions = {}): Promise<DshDesktopInstallation | undefined> {
+  const target = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  if (!supportsDshDesktop(target)) return undefined;
+  const explicit = options.explicitPath?.trim() || env.ORBIS_DSH_DESKTOP_PATH?.trim();
+  // An explicit choice is authoritative: never silently fall back to another install.
+  if (explicit) return inspectDshDesktopInstallation(explicit, target);
+  const candidates: string[] = [];
+  if (target === "win32") {
+    try { candidates.push(...await (options.registryInstallLocations ?? (() => windowsInstallLocations(env)))()); }
+    catch { /* Registry access failures still allow the default per-user location below. */ }
+    const programs = join(env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "Programs");
+    for (const entry of await readdir(programs, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory()) candidates.push(join(programs, entry.name));
+    }
+  } else {
+    candidates.push(join("/Applications", `${DSH_DESKTOP_PRODUCT}.app`), join(homedir(), "Applications", `${DSH_DESKTOP_PRODUCT}.app`));
+  }
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const key = resolve(candidate).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const installation = await inspectDshDesktopInstallation(candidate, target);
+    if (installation !== undefined) return installation;
+  }
+  return undefined;
+}
+
+/** Whether Desktop's main process is running. Detection only: Orbis never terminates Desktop by name. */
+export async function isDshDesktopRunning(installation: DshDesktopInstallation, target: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const wanted = installation.executable.replaceAll("/", "\\").toLowerCase();
+  if (target === "win32") {
+    const script = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter "Name = 'DeepSeek Harness.exe'" | ForEach-Object { [string]$_.ExecutablePath })
+`;
+    const { stdout } = await execute(join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { windowsHide: true, timeout: 15_000, maxBuffer: 256 * 1024, encoding: "utf8" });
+    const value: unknown = JSON.parse(stdout.trim() || "[]");
+    return (Array.isArray(value) ? value : [value]).some(item => typeof item === "string" && item.replaceAll("/", "\\").toLowerCase() === wanted);
+  }
+  const { stdout } = await execute("/bin/ps", ["-axww", "-o", "comm="], { timeout: 5_000, maxBuffer: 8 * 1024 * 1024 });
+  return stdout.split("\n").some(line => line.trim() === installation.executable);
+}
+
+export type DshDesktopDescriptor = {
+  version: 1;
+  owner: "orbis";
+  pid: number;
+  executable: string;
+  archive: string;
+  logPath: string;
+  launchedAt: number;
+  /** Last authenticated launch URL. Private: never logged or sent to devices. */
+  url?: string;
+};
+
+export function dshDesktopStateDirectory(stateDir: string): string { return join(stateDir, "dsh-desktop"); }
+const descriptorPath = (stateDir: string): string => join(dshDesktopStateDirectory(stateDir), "endpoint.json");
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return !(error instanceof Error && "code" in error && error.code === "ESRCH"); }
+}
+
+/** A launch token is valid only for its process; the root exchange mints a stateless cookie and creates no Peer. */
+export async function dshDesktopUrlAuthenticates(url: string, timeoutMs = 3_000): Promise<boolean> {
+  try {
+    const response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    const cookie = response.headers.getSetCookie().some(value => value.startsWith("dsh-auth-"));
+    await response.body?.cancel();
+    return (response.status === 303 || response.status === 302) && cookie;
+  } catch { return false; }
+}
+
+/** The latest URL in the private stdout log: Desktop restarts its Host (for example after update recovery) in place. */
+export async function latestDshDesktopUrl(logPath: string): Promise<string | undefined> {
+  let text: string;
+  try {
+    const handle = await open(logPath, "r");
+    try {
+      const size = (await handle.stat()).size;
+      const length = Math.min(size, MAX_LOG_SCAN_BYTES);
+      const buffer = Buffer.alloc(length);
+      // The first line is normally at the start; a long-running Desktop may also print a newer one near the end.
+      await handle.read(buffer, 0, length, size > MAX_LOG_SCAN_BYTES ? size - length : 0);
+      text = buffer.toString("utf8");
+      if (size > MAX_LOG_SCAN_BYTES) {
+        const head = Buffer.alloc(Math.min(size, 256 * 1024));
+        await handle.read(head, 0, head.length, 0);
+        text = `${head.toString("utf8")}\n${text}`;
+      }
+    } finally { await handle.close(); }
+  } catch { return undefined; }
+  let latest: string | undefined;
+  for (const match of text.matchAll(URL_LINE)) latest = match[1];
+  return latest;
+}
+
+async function writeDescriptor(stateDir: string, descriptor: DshDesktopDescriptor): Promise<void> {
+  const path = descriptorPath(stateDir);
+  await mkdir(dshDesktopStateDirectory(stateDir), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const file = await open(temporary, "wx", 0o600);
+  try { await file.writeFile(JSON.stringify(descriptor)); } finally { await file.close(); }
+  await rename(temporary, path);
+}
+
+async function readDescriptor(stateDir: string): Promise<DshDesktopDescriptor | undefined> {
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(await readFile(descriptorPath(stateDir), "utf8")) as Record<string, unknown>; }
+  catch { return undefined; }
+  if (value === null || typeof value !== "object" || value.version !== 1 || value.owner !== "orbis" || !Number.isSafeInteger(value.pid) || Number(value.pid) <= 0
+    || typeof value.executable !== "string" || typeof value.archive !== "string" || typeof value.logPath !== "string" || !Number.isSafeInteger(value.launchedAt)) return undefined;
+  return { version: 1, owner: "orbis", pid: Number(value.pid), executable: value.executable, archive: value.archive, logPath: value.logPath,
+    launchedAt: Number(value.launchedAt), ...(typeof value.url === "string" ? { url: value.url } : {}) };
+}
+
+export type DshDesktopEndpoint = { url: string; descriptor: DshDesktopDescriptor };
+
+/**
+ * Recover the endpoint of the Desktop instance Orbis launched, without starting anything.
+ * The stored URL is re-read from the log when Desktop has restarted its Host.
+ */
+export async function readDshDesktopEndpoint(stateDir: string, installation: DshDesktopInstallation): Promise<DshDesktopEndpoint | undefined> {
+  const descriptor = await readDescriptor(stateDir);
+  if (descriptor === undefined || !alive(descriptor.pid)) return undefined;
+  // A different install (moved, reinstalled) is a different Desktop.
+  if (resolve(descriptor.executable).toLowerCase() !== resolve(installation.executable).toLowerCase()) return undefined;
+  if (descriptor.url !== undefined && await dshDesktopUrlAuthenticates(descriptor.url)) return { url: descriptor.url, descriptor };
+  const latest = await latestDshDesktopUrl(descriptor.logPath);
+  if (latest === undefined || latest === descriptor.url || !await dshDesktopUrlAuthenticates(latest)) return undefined;
+  const updated = { ...descriptor, url: latest };
+  await writeDescriptor(stateDir, updated);
+  return { url: latest, descriptor: updated };
+}
+
+export class DshDesktopRunningElsewhereError extends Error {}
+
+/** Desktop must not inherit Orbis's Node runtime switches or managed provider credentials (DSH-DESKTOP-05). */
+export function dshDesktopLaunchEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const launch = { ...env };
+  for (const key of ["ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "ORBIS_DSH_WEB_URL", "ORBIS_DSH_ENTRY", DSH_PROVIDER_ENV]) delete launch[key];
+  return launch;
+}
+
+/**
+ * Start Desktop so that its forwarded Host stdout lands in a private file, then wait for its URL.
+ * The process is detached: Host exit or update never takes Desktop down, and a file never raises EPIPE.
+ */
+export async function launchDshDesktop(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn } = {}): Promise<DshDesktopEndpoint> {
+  const directory = dshDesktopStateDirectory(stateDir);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const logPath = join(directory, "desktop-output.log");
+  await unlink(logPath).catch(() => {});
+  const output = await open(logPath, "wx", 0o600);
+  let exitCode: number | null | undefined;
+  let spawnError: Error | undefined;
+  const child = (options.spawnDesktop ?? spawn)(installation.executable, [], {
+    cwd: homedir(), detached: true, env: dshDesktopLaunchEnvironment(options.env ?? process.env), stdio: ["ignore", output.fd, output.fd],
+  });
+  child.once("error", error => { spawnError = error; });
+  child.once("exit", code => { exitCode = code; });
+  await output.close();
+  if (child.pid === undefined) {
+    await delay(0);
+    throw new Error(`无法打开 DeepSeek Harness Desktop：${spawnError?.message ?? "启动失败"}`);
+  }
+  const descriptor: DshDesktopDescriptor = { version: 1, owner: "orbis", pid: child.pid, executable: installation.executable,
+    archive: installation.archive, logPath, launchedAt: Date.now() };
+  await writeDescriptor(stateDir, descriptor);
+  child.unref();
+  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`无法打开 DeepSeek Harness Desktop：${spawnError.message}`);
+    const url = await latestDshDesktopUrl(logPath);
+    if (url !== undefined && await dshDesktopUrlAuthenticates(url)) {
+      const ready = { ...descriptor, url };
+      await writeDescriptor(stateDir, ready);
+      return { url, descriptor: ready };
+    }
+    if (exitCode !== undefined) {
+      // Electron's single-instance handoff focuses the existing window and quits this one cleanly.
+      if (exitCode === 0) throw new DshDesktopRunningElsewhereError("DeepSeek Harness Desktop 已在运行，但不是由 Orbis 打开，无法取得它的连接；请完全退出 Desktop 后由 Orbis 打开");
+      throw new Error(`DeepSeek Harness Desktop 启动后退出（${exitCode ?? "signal"}）`);
+    }
+    await delay(200);
+  }
+  throw new Error("DeepSeek Harness Desktop 已打开，但尚未报告可连接的后端；完成 Desktop 首次设置后 Orbis 会自动接入");
+}

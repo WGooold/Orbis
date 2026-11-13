@@ -29,6 +29,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -323,6 +324,8 @@ internal class HostConnection(
     private val modelInterestLock = Any()
     private var modelInterests = ModelInterests()
     @Volatile private var preferCompactState = true
+    /** ADR-0076: filtered device.ready answered with `device.features`; applied only if no full view follows. */
+    @Volatile private var pendingFilteredReady: String? = null
     @Volatile private var preferDeltaState = true
     private val menuOptions = MenuOptionsLoader()
     private val sharedSessionContent = SharedSessionContent()
@@ -2447,6 +2450,30 @@ internal class HostConnection(
                 var payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                // ADR-0076: a Host that can show DeepSeek Desktop first sends the view released Apps parse
+                // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
+                // selected Desktop session is not dropped; the filtered view is applied only if none arrives.
+                if (interactiveChannel != null && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "device.ready") {
+                    val filtered = incomingMessage["hostFeatures"]?.let { it as? JsonArray }?.any { it.jsonPrimitive.contentOrNull == "device.features" } == true &&
+                        !incomingMessage.containsKey("dshDesktop") && !incomingMessage.containsKey("_orbisFilteredFallback")
+                    if (filtered && relay.sendDeviceMessage(buildJsonObject {
+                            put("type", "device.features")
+                            put("protocolVersion", PROTOCOL_VERSION)
+                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"))))
+                        })) {
+                        val fallback = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
+                        pendingFilteredReady = fallback
+                        scope.launch {
+                            delay(5_000)
+                            if (currentGeneration == generation && pendingFilteredReady == fallback) {
+                                pendingFilteredReady = null
+                                lanes.offer(fallback, interactiveChannel)
+                            }
+                        }
+                        continue
+                    }
+                    pendingFilteredReady = null
+                }
                 if (interactiveChannel != null && incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "agent.menu.options.page") {
                     menuOptions.consume(incomingMessage, messageJson)?.let { result ->
                         result.next?.let(::sendMenuOptionRequest)

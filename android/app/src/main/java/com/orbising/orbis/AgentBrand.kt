@@ -35,7 +35,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
 internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
-    "dsh" -> AgentBrand.DeepSeek
+    "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
     else -> AgentBrand.Pi
 }
