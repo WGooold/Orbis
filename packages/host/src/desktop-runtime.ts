@@ -29,6 +29,7 @@ import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
 import { CLAUDE_MIN_VERSION, claudeVersionRequirement, readClaudeVersion } from "./claude-version.js";
+import { updateClaudeCode } from "./claude-update.js";
 import { CODEX_STARTUP_ARGS, PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
@@ -996,6 +997,7 @@ export class DesktopRuntime {
 
   async updateAgent(kind: string): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
+    if (selected === "claude") return this.#updateClaude();
     let status = this.#detected.get(selected);
     if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
     const mode = status?.installationSource === "npm" ? "current" : "managed";
@@ -1004,6 +1006,37 @@ export class DesktopRuntime {
       throw new Error("这份 Agent 使用外部安装入口，请通过原安装器或包管理器更新");
     }
     return this.install(selected, "latest", mode);
+  }
+
+  async #updateClaude(): Promise<AgentInstallResult> {
+    if (this.#desired) throw new Error("请先暂停 Host，再更新 Claude Code");
+    if (this.#installation) throw new Error("另一个安装正在进行");
+    const abort = this.#installation = new AbortController();
+    this.#installationCommitted = false;
+    this.#installationTask = (async () => {
+      try {
+        await this.#checkExistingHost();
+        // Do not race the updater with an old version probe or plugin install.
+        await Promise.all([this.#claudeDetection, this.#claudeIntegrationTask]);
+        abort.signal.throwIfAborted();
+        this.#agentInstallProgress({ kind: "claude", stage: "resolving", version: "" });
+        const result = await updateClaudeCode({ signal: abort.signal,
+          onStage: stage => this.#agentInstallProgress({ kind: "claude", stage }) });
+        this.#installationCommitted = true;
+        await this.#detectClaude();
+        this.#agentInstallProgress({ kind: "claude", stage: "done", version: result.version });
+        return result;
+      } catch (error) {
+        this.#agentInstallProgress({ kind: "claude", stage: abort.signal.aborted ? "cancelled" : "error" });
+        // A native updater may already have changed files before failing or
+        // being cancelled. Refresh facts rather than retaining a stale version.
+        this.#scheduleClaudeDetection();
+        if (abort.signal.aborted) throw new Error("Claude Code 更新已取消");
+        throw error;
+      }
+    })();
+    try { return await this.#installationTask; }
+    finally { this.#installation = undefined; this.#installationTask = undefined; this.#installationCommitted = false; }
   }
 
   async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {

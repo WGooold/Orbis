@@ -258,6 +258,16 @@ int main(int argc, char *argv[]) {
             };
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"})
                 if (!contentIsCentered(findVisualItem(window->contentItem(), name))) { app.exit(56); return; }
+            // HOST-AGENT-MARK-02: desktop variants retain the vendor identity.
+            // Verify the rendered image as well as the model so a missing SVG cannot pass.
+            for (const auto &kind : {QString("codex"), QString("dsh")}) {
+                auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind + "Desktop");
+                if (!mark || !mark->isVisible() || mark->property("kind").toString() != kind) { app.exit(84); return; }
+                bool loaded = false;
+                for (auto *child : mark->childItems()) if (child->property("source").toUrl().toString().startsWith("data:image/svg+xml,"))
+                    loaded = child->property("status").toInt() == 1;
+                if (!loaded) { app.exit(85); return; }
+            }
             if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif
             controller.requestCode("not-a-qq-mailbox@example.com");
@@ -553,7 +563,35 @@ int main(int argc, char *argv[]) {
                 });
                 QTimer::singleShot(4000, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
+#ifdef ORBIS_SMOKE_INTERACTION
+                    // HOST-CLAUDE-UPDATE-01: an old native CLI still offers its updater.
+                    // Only open and cancel the real dialog; never update the machine in smoke.
+                    controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false}, {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}});
+                    QTimer::singleShot(250, &app, [&] {
+                        auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                        auto *scroll = window->findChild<QObject *>("pageScroll");
+                        auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr;
+                        if (!button || !button->isEnabled() || !viewport) { app.exit(86); return; }
+                        viewport->setProperty("contentY", qMax(0.0, viewport->property("contentHeight").toReal() - viewport->property("height").toReal()));
+                        QTest::qWait(80);
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-card.png")) { app.exit(7); return; }
+                        if (!clickSmokeItem(window, "updateClaude")) { app.exit(86); return; }
+                        QTimer::singleShot(200, &app, [&] {
+                            auto *dialog = window->findChild<QObject *>("agentInstallDialog");
+                            if (!dialog || !dialog->property("visible").toBool() || dialog->property("title").toString() != "更新 Claude Code" || window->property("installKind").toString() != "claude") { app.exit(87); return; }
+                            if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-update.png")) { app.exit(7); return; }
+                            QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                            controller.smokeReceive({{"event", "claudeStatus"}, {"installed", false}, {"compatible", false}});
+                            QTimer::singleShot(100, &app, [&] {
+                                auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                                app.exit(button && !button->isEnabled() ? 0 : 88);
+                            });
+                        });
+                    });
+#else
                     app.exit(0);
+#endif
                 });
             } else if (parser.isSet("smoke-exit")) {
                 requestSmokeExit();

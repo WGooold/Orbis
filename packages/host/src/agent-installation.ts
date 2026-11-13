@@ -42,7 +42,7 @@ export type AgentInstallStatus = LocalAgent & {
   /** 机器 PATH 抢先，只有提权能修；界面只在为真时给出一次修复入口。 */
   terminalNeedsElevation?: boolean;
 };
-export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string; onStderr?: (chunk: string) => void }) => Promise<{ stdout: string; stderr: string }>;
+export type InstallRun = (command: string, args: string[], options: { signal: AbortSignal; timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean; onStderr?: (chunk: string) => void }) => Promise<{ stdout: string; stderr: string }>;
 
 export function parseAgentVersion(value: string): { core: bigint[]; pre: string[] } | undefined {
   const match = versionPattern.exec(value.trim());
@@ -129,8 +129,10 @@ async function exists(path: string): Promise<boolean> { try { await access(path)
 export const runAgentInstaller: InstallRun = async (command, args, options) => {
   options.signal.throwIfAborted();
   return new Promise((resolveRun, reject) => {
-    const env = { ...process.env, PATH: dirname(command) + delimiter + (process.env.PATH ?? process.env.Path ?? "") };
-    const child = spawn(command, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(options.cwd ? { cwd: options.cwd } : {}), detached: process.platform !== "win32" });
+    const sourceEnv = options.env ?? process.env;
+    const env = { ...sourceEnv, PATH: dirname(command) + delimiter + (sourceEnv.PATH ?? sourceEnv.Path ?? "") };
+    const child = spawn(command, args, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), detached: process.platform !== "win32" });
     let stdout = ""; let stderr = ""; let stopped: Error | undefined; let terminating: Promise<unknown> | undefined;
     const stop = (reason: Error) => {
       if (stopped) return;

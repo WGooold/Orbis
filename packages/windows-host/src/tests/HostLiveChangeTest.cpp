@@ -75,21 +75,31 @@ private slots:
 
     void agentUpdatePausesAndResumes_data() {
         QTest::addColumn<bool>("fails");
-        QTest::newRow("installed") << false;
-        QTest::newRow("failed") << true;
+        QTest::addColumn<QString>("kind");
+        QTest::newRow("installed") << false << QString("pi");
+        QTest::newRow("failed") << true << QString("pi");
+        QTest::newRow("claude-updated") << false << QString("claude");
+        QTest::newRow("claude-failed") << true << QString("claude");
     }
     void agentUpdatePausesAndResumes() {
         QFETCH(bool, fails);
+        QFETCH(QString, kind);
         auto &host = *m_host;
         connectHost(host, root());
         if (fails) { QFile marker(root() + "/packages/host/dist/fail-updateAgent"); QVERIFY(marker.open(QIODevice::WriteOnly)); }
-        host.updateAgent("pi");
+        host.updateAgent(kind);
         QVERIFY(host.resumePending()); QVERIFY(!host.desiredRunning());
         settle(host);
         QCOMPARE(methods(root()), QStringList({"stop", "updateAgent", "start"}));
         QTRY_COMPARE(host.state(), QString("connected"));
         QVERIFY(host.desiredRunning());
         QCOMPARE(host.agentInstallStage(), QString(fails ? "error" : "done"));
+        // HOST-CLAUDE-UPDATE-01: native Claude keeps its own launcher/channel;
+        // a successful check must not claim the public latest release.
+        if (kind == "claude") {
+            QVERIFY(!host.m_settings.contains("claudeEntry"));
+            if (!fails) { QVERIFY(host.message().contains("当前版本 9.9.9")); QVERIFY(!host.message().contains("最新版本")); }
+        }
     }
     void batchUpdateAndDshRestartResume() {
         auto &host = *m_host;

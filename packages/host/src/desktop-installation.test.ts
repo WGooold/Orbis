@@ -30,6 +30,9 @@ import { agentEntries, agentPackages } from "./agent-installation.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
 import { resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
+import * as claudeUpdate from "./claude-update.js";
+import * as claudeDiscovery from "./claude-integration-install.js";
+import * as claudeVersion from "./claude-version.js";
 
 const roots: string[] = [];
 beforeEach(() => {
@@ -43,6 +46,7 @@ beforeEach(() => {
   web.apply.mockReset().mockResolvedValue(undefined);
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.clearAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true, maxRetries: 3 })));
 });
@@ -66,6 +70,47 @@ async function fixture() {
 }
 
 describe("desktop Agent installation commands", () => {
+  // HOST-CLAUDE-UPDATE-01: Claude uses the same exclusive/cancellable lifecycle
+  // as other updates, but never enters the managed npm installation registry.
+  it("updates Claude through its native updater and refreshes compatibility", async () => {
+    const { runtime, events } = await fixture();
+    vi.spyOn(claudeDiscovery, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
+    const update = vi.spyOn(claudeUpdate, "updateClaudeCode").mockImplementation(async input => {
+      input.onStage?.("downloading"); input.onStage?.("verifying");
+      return { entry: "/fixture/claude", version: "2.1.322" };
+    });
+    try {
+      await expect(runtime.updateAgent("claude")).resolves.toEqual({ entry: "/fixture/claude", version: "2.1.322" });
+      expect(update).toHaveBeenCalledOnce();
+      expect(installation.run).not.toHaveBeenCalled();
+      expect(events.filter(event => event.event === "agentInstall").map(event => event.stage)).toEqual(["resolving", "downloading", "verifying", "done"]);
+      expect(events).toContainEqual(expect.objectContaining({ event: "claudeStatus", version: "2.1.322", compatible: true }));
+    } finally { await runtime.close(); }
+  });
+
+  it("cancels a native Claude update, refreshes facts and releases the install slot", async () => {
+    const { runtime, events } = await fixture();
+    vi.spyOn(claudeDiscovery, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
+    const update = vi.spyOn(claudeUpdate, "updateClaudeCode").mockImplementation(input => new Promise((_, reject) => {
+      input.signal.addEventListener("abort", () => reject(new Error("fixture cancelled")), { once: true });
+    }));
+    try {
+      const pending = runtime.updateAgent("claude");
+      const failure = expect(pending).rejects.toThrow("Claude Code 更新已取消");
+      await vi.waitFor(() => expect(update).toHaveBeenCalledOnce());
+      await expect(runtime.updateAgent("claude")).rejects.toThrow("另一个安装正在进行");
+      runtime.cancelInstall();
+      await failure;
+      expect(events).toContainEqual({ event: "agentInstall", kind: "claude", stage: "cancelled" });
+      expect(events.some(event => event.event === "agentInstall" && event.stage === "done")).toBe(false);
+      update.mockResolvedValue({ entry: "/fixture/claude", version: "2.1.322" });
+      await expect(runtime.updateAgent("claude")).resolves.toHaveProperty("version", "2.1.322");
+      expect(installation.run).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
+  });
+
   // SC82: explicit user launchers win over automatic discovery, including failure reporting.
   it("uses a native Pi choice for version detection and does not silently replace a broken choice", async () => {
     const { runtime, root } = await fixture();

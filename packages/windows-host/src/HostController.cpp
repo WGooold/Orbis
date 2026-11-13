@@ -749,15 +749,15 @@ void HostController::detectAgents(bool checkLatest) {
 }
 void HostController::updateAgent(const QString &kind) {
     if (!m_bridgeReady || busy()) return;
-    m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = "latest"; emit changed();
+    m_agentInstallKind = kind; m_agentInstallStage = "queued"; m_agentInstallVersion = kind == "claude" ? "" : "latest"; emit changed();
     // HOST-LIVE-01: installs need the Agent's files released, so a running Host pauses for them and resumes after.
     pauseForChange();
     command("updateAgent", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
         const auto result = value.toObject();
-        m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync();
+        if (kind != "claude") { m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync(); }
         const auto warning = result.value("restartWarning").toString();
         m_agentInstallStage = warning.isEmpty() ? "done" : "restartFailed"; m_agentInstallVersion = result.value("version").toString();
-        setMessage(warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
+        setMessage(kind == "claude" ? "Claude Code 已完成更新检查，当前版本 " + result.value("version").toString() + "。请重新打开 Claude Code 会话。" : warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
             (result.value("restarted").toBool() ? "，后台已自动重启。请从 Host 重新打开网页。" : "") : warning); detectAgents();
     });
     if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });

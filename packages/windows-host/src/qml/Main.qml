@@ -50,12 +50,12 @@ ApplicationWindow {
         return [
             {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, data: pi},
             {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, data: codex},
-            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", tint: Theme.agentCodex, installed: codex.desktopInstalled === true, broken: false},
+            {kind: "codexDesktop", name: "Codex 桌面版", mark: "codex", installed: codex.desktopInstalled === true, broken: false},
             // A version still being read is not a verdict: only a finished probe can mark Claude broken.
             {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting},
             {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh},
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
-            {kind: "dshDesktop", name: "DeepSeek 桌面版", symbol: "computer", tint: Theme.agentDeepseek, installed: dsh.desktopInstalled === true,
+            {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
         ]
     }
@@ -128,7 +128,10 @@ ApplicationWindow {
     function dshDesktopLabel() { return ({attached:"已接入", closed:"未接入", running:"未接入", notInstalled:"未安装", unsupported:"不可用", incompatible:"版本不兼容", error:"接入失败"})[window.dshDesktopState()] || (!host.bridgeReady ? "未知" : window.hostOnline ? "正在检测" : "未连接") }
     function dshDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, running:Theme.warning, incompatible:Theme.danger, error:Theme.danger})[window.dshDesktopState()] || Theme.inkMuted }
     function dshDesktopReason() { return (host.dshDesktop && host.dshDesktop.reason) ? host.dshDesktop.reason : "" }
-    function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
+    function installationStage() {
+        if (host.agentInstallKind === "claude" && host.agentInstallStage === "downloading") return "检查并更新"
+        return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || ""
+    }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
@@ -766,7 +769,7 @@ ApplicationWindow {
                 }
             }
             ScrollView {
-                id: scroll
+                id: scroll; objectName: "pageScroll"
                 Layout.fillWidth: true; Layout.fillHeight: true
                 clip: true
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -892,7 +895,7 @@ ApplicationWindow {
                                         Item {
                                             Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
                                             opacity: agentRow.modelData.installed ? 1 : 0.4
-                                            AgentMark { anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
+                                            AgentMark { objectName: "overviewAgentMark-" + agentRow.modelData.kind; anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
                                             SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: agentRow.modelData.tint || Theme.agentCodex }
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
@@ -990,7 +993,7 @@ ApplicationWindow {
                         }
                         RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
                             BusyIndicator { running: visible; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
-                            Hint { text: window.agentName(host.agentInstallKind) + "，" + window.installationStage() + "，" + host.agentInstallVersion; Layout.fillWidth: true }
+                            Hint { text: window.agentName(host.agentInstallKind) + "，" + window.installationStage() + (host.agentInstallVersion ? "，" + host.agentInstallVersion : ""); Layout.fillWidth: true }
                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                         }
                         DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
@@ -1030,6 +1033,8 @@ ApplicationWindow {
                                 Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
                                 Hint { text: "供应商切换后，请重新打开 Claude Code 会话。"; Layout.fillWidth: true }
                                 RowLayout {
+                                    // HOST-CLAUDE-UPDATE-01: use the installed CLI's own update channel.
+                                    ActionButton { objectName: "updateClaude"; text: "检查并更新"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled && !host.claudeDetecting; loading: host.agentInstalling && host.agentInstallKind === "claude"; onClicked: window.showAgentInstaller({kind: "claude", installed: true, version: host.claudeVersion}) }
                                     ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }
                                     ActionButton { text: "打开 Claude Code"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled; onClicked: host.openAgentTui("claude") }
                                 }
@@ -1385,10 +1390,10 @@ ApplicationWindow {
         onAccepted: host.restartDshServer()
     }
     SoftDialog {
-        id: installDialog; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
+        id: installDialog; objectName: "agentInstallDialog"; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + (window.installKind === "claude" ? "" : " 到最新版本"); anchors.centerIn: parent; modal: true; width: 540
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: window.installKind === "claude" && !host.desiredRunning ? "检查并更新" : (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
+            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + (window.installKind === "claude" ? "" : "，最新 " + (window.installAgentData.latestVersion || "未知")); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
