@@ -20,6 +20,7 @@ private final class TestTransport: OrbisTransport {
     var sent: [[String: Any]] = []
     var drain: (() async -> Void)?
     var acceptsSends = true
+    var onSend: (([String: Any]) -> Void)?
     var receive: (([String: Any], String?) -> Void)?
     var state: ((ConnectionState, String?) -> Void)?
     func pair(qr: PairingQR, deviceName: String, identity: DeviceIdentity, completion: @escaping (Result<HostPairing, Error>) -> Void) { completion(.failure(PairingError.invalidQR)) }
@@ -27,13 +28,18 @@ private final class TestTransport: OrbisTransport {
         self.receive = receive; self.state = state; state(.connecting, nil)
     }
     func disconnect() {}
-    func send(_ object: [String: Any]) -> Bool { if acceptsSends { sent.append(object) }; return acceptsSends }
+    func send(_ object: [String: Any]) -> Bool { if acceptsSends { sent.append(object); onSend?(object) }; return acceptsSends }
     func emit(_ message: [String: Any], channel: String? = "ctl") async { receive?(message, channel); await drain?() }
     var syncCommands: [[String: Any]] { sent.compactMap { $0["command"] as? [String: Any] }.filter { $0["type"] as? String == "session.sync" } }
     func ready(_ runtimes: [[String: Any]]) async { await emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": runtimes]) }
-    func enableHistoryWindow() async throws {
+    func enableHistoryWindow(accept: Bool = true) async throws {
         let request = try #require(sent.last { $0["type"] as? String == "session.history.capabilities.request" })
         await emit(["type": "session.history.capabilities", "requestId": request["requestId"]!, "format": "v1", "maxPageBytes": 65536])
+        if accept { try await acceptHistoryInterest() }
+    }
+    func acceptHistoryInterest(_ id: Any? = nil) async throws {
+        let requestId = try #require(id ?? sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        await emit(["type": "session.history.interest.result", "requestId": requestId, "accepted": true])
     }
     func event(_ payload: [String: Any], runtimeId: String = "a", sequence: Int = 1, channel: String = "msg") async {
         var value = payload
@@ -1210,8 +1216,9 @@ struct StoreTests {
     @Test func automaticHistoryPrefetchReservesSixtyEntriesFromTheCachedBoundary() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         store.setHistoryWindowVisible(true)
-        try await transport.enableHistoryWindow()
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
         #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         #expect(store.messages.map(\.text) == ["row 499", "row 500"])
         let first = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
@@ -1243,19 +1250,70 @@ struct StoreTests {
         #expect(transport.syncCommands.filter { $0["range"] as? String == "history" && $0["beforeEntryId"] as? String == "e499" }.count == 1)
     }
 
+    // FT-G12-RESUME-01: a new source demand arriving during a reserved history
+    // page must run before its automatic successor and preserve the spent budget.
+    @Test func pendingSourceRefreshPrecedesTheNextAutomaticHistoryPage() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true)
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
+        let first = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        store.refresh()
+        var page = rangeSnapshot(first, ids: Array(469...498), complete: false)
+        page["hasOlder"] = true; page["rangeStatus"] = "older_available"
+        await transport.event(page, sequence: 3)
+        await store.waitForPendingEvents()
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 1)
+        let source = try #require(transport.syncCommands.last)
+        #expect(source["range"] as? String == "preview")
+        await transport.event(checkpoint(source, ids: [499, 500], hasOlder: true), sequence: 4)
+        await store.waitForPendingEvents()
+        let next = try #require(transport.syncCommands.last)
+        #expect(next["range"] as? String == "history")
+        #expect(next["beforeEntryId"] as? String == "e469")
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 2)
+    }
+
+    // The preview ACK is written after its local reserve has been registered but
+    // before its disk worker returns. Inject a source demand at that exact edge.
+    @Test func sourceDemandDuringLocalPrefetchDoesNotDispatchReservedPage() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true)
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        let before = transport.syncCommands.count
+        transport.onSend = { [weak store, weak transport] object in
+            guard (object["command"] as? [String: Any])?["type"] as? String == "session.snapshot.ack" else { return }
+            transport?.onSend = nil
+            store?.refresh()
+        }
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
+        await store.waitForPendingEvents()
+        #expect(transport.syncCommands.count == before + 1)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.isEmpty)
+        let source = try #require(transport.syncCommands.last)
+        #expect(source["range"] as? String == "preview")
+        await transport.event(checkpoint(source, ids: [499, 500], hasOlder: true), sequence: 3)
+        await store.waitForPendingEvents()
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 1)
+        #expect(transport.syncCommands.last?["beforeEntryId"] as? String == "e499")
+    }
+
     @Test func automaticHistoryPrefetchStopsAfterFourSmallPagesAndAcknowledgesDuplicates() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         store.setHistoryWindowVisible(true)
-        try await transport.enableHistoryWindow()
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
         for page in 0..<4 {
             let request = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
             #expect(request["beforeEntryId"] as? String == "e\(499 - page)")
             #expect(request["targetLeafId"] as? String == "e500")
             var response = rangeSnapshot(request, ids: [498 - page], complete: false)
             response["hasOlder"] = true; response["rangeStatus"] = "older_available"
-            await transport.event(response, sequence: page * 2 + 2)
             await transport.event(response, sequence: page * 2 + 3)
+            await transport.event(response, sequence: page * 2 + 4)
         }
         #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 4)
         #expect(store.messages.map(\.text) == ["row 499", "row 500"])
@@ -1266,8 +1324,10 @@ struct StoreTests {
     // a backgrounded window must not create a fresh budget or publish its delayed reserve.
     @Test func automaticHistoryBudgetShrinksAndBackgroundCancelsTheOwnedRead() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
-        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        store.setHistoryWindowVisible(true)
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
         for page in 0..<2 {
             let request = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
             var response = rangeSnapshot(request, ids: [498 - page], complete: false)
@@ -1276,7 +1336,7 @@ struct StoreTests {
             var rows = try #require(display["entries"] as? [[String: Any]])
             rows[0]["message"] = message("m\(498 - page)", text: String(repeating: "界", count: 16_000))
             display["entries"] = rows; response["display"] = display
-            await transport.event(response, sequence: page + 2)
+            await transport.event(response, sequence: page + 3)
         }
         let pending = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
         let window = try #require(pending["historyWindow"] as? [String: Any])
@@ -1286,8 +1346,10 @@ struct StoreTests {
         store.setHistoryWindowVisible(false)
         var delayed = rangeSnapshot(pending, ids: [496], complete: false)
         delayed["hasOlder"] = true; delayed["rangeStatus"] = "older_available"
-        await transport.event(delayed, sequence: 4)
-        store.setHistoryWindowVisible(true); await store.waitForPendingEvents()
+        await transport.event(delayed, sequence: 5)
+        store.setHistoryWindowVisible(true); try await transport.acceptHistoryInterest()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 6)
+        await store.waitForPendingEvents()
         #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 3)
         #expect(store.messages.map(\.text) == ["row 499", "row 500"])
         #expect(store.historyLoading.isEmpty)
@@ -1295,7 +1357,7 @@ struct StoreTests {
 
     @Test func rejectedHistoryInterestCanBeRegisteredAgain() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
-        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow(accept: false)
         let request = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" })
         await transport.emit(["type": "session.history.interest.result", "requestId": request["requestId"]!, "accepted": false])
         store.setHistoryWindowVisible(true)
@@ -1318,8 +1380,9 @@ struct StoreTests {
     @Test func closingTheHistoryWindowCancelsItsReservationAndPreservesTheNewConversation() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
         store.setHistoryWindowVisible(true)
-        try await transport.enableHistoryWindow()
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true), sequence: 2)
         let old = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
         store.selectRuntime("b"); await store.waitForPendingEvents()
         var delayed = rangeSnapshot(old, ids: Array(469...498), complete: false)
@@ -1550,6 +1613,157 @@ struct StoreTests {
         #expect(child.messages.map(\.text) == ["row 2"])
         #expect(!child.isSyncing)
         child.shutdown()
+    }
+
+    // FT-G12-RESUME-01: a hidden window can miss its final reply. Its accepted
+    // subscription reconciles immediately, independent of the periodic cooldown.
+    @Test func returningHistoryInterestReconcilesLatestTailOnce() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]), sequence: 2)
+        store.setHistoryWindowVisible(false); try await transport.acceptHistoryInterest()
+        let before = transport.syncCommands.count
+        store.setHistoryWindowVisible(true)
+        let interest = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        try await transport.acceptHistoryInterest(interest)
+        #expect(transport.syncCommands.count == before + 1)
+        try await transport.acceptHistoryInterest(interest)
+        store.setHistoryWindowVisible(true); store.reconcileHistoryWindow()
+        #expect(transport.syncCommands.count == before + 1)
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1, 2], seq: 2), sequence: 3)
+        #expect(store.messages.map(\.text) == ["row 1", "row 2"])
+    }
+
+    // A preview started before the window reopened cannot satisfy the newer
+    // demand, including an unchanged response. Keep a single successor read.
+    @Test func returningHistoryInterestSurvivesAnOlderInflightPreview() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        let old = try #require(transport.syncCommands.last)
+        store.setHistoryWindowVisible(false)
+        store.setHistoryWindowVisible(true); try await transport.acceptHistoryInterest()
+        let count = transport.syncCommands.count
+        var unchanged = checkpoint(old, ids: [1]); unchanged["selection"] = "unchanged"
+        await transport.event(unchanged, sequence: 2)
+        #expect(transport.syncCommands.count == count + 1)
+        #expect(transport.syncCommands.last?["syncId"] as? String != old["syncId"] as? String)
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1, 2], seq: 2), sequence: 3)
+        #expect(store.messages.map(\.text) == ["row 1", "row 2"])
+        #expect(!store.isSyncing)
+    }
+
+    // An exhausted preview retains its immutable identity for a late reply. A
+    // resumed subscription still needs a successor source read before prefetch.
+    @Test(arguments: ["unchanged", "snapshot"])
+    func returningHistoryInterestSurvivesAnExhaustedPreview(selection: String) async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [2, 3], hasOlder: true))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        let old = try #require(transport.syncCommands.last)
+        store.setHistoryWindowVisible(false); try await transport.acceptHistoryInterest()
+        store.advanceSessionSyncs(now: Date().addingTimeInterval(151))
+        #expect(!store.isSyncing)
+        store.setHistoryWindowVisible(true); try await transport.acceptHistoryInterest()
+        let count = transport.syncCommands.count
+        #expect(transport.syncCommands.last?["syncId"] as? String == old["syncId"] as? String)
+
+        var late = checkpoint(old, ids: [2, 3], hasOlder: true); late["selection"] = selection
+        await transport.event(late, sequence: 2)
+        #expect(transport.syncCommands.count == count + 1)
+        let successor = try #require(transport.syncCommands.last)
+        #expect(successor["syncId"] as? String != old["syncId"] as? String)
+        #expect(successor["range"] as? String == "preview")
+        #expect(store.isSyncing)
+
+        await transport.event(checkpoint(successor, ids: [2, 3, 4], seq: 2, hasOlder: true), sequence: 3)
+        #expect(store.messages.map(\.text) == ["row 2", "row 3", "row 4"])
+        #expect(!store.isSyncing)
+        #expect(transport.syncCommands.count == count + 2)
+        #expect(transport.syncCommands.last?["range"] as? String == "history")
+        #expect(transport.syncCommands.last?["historyWindow"] != nil)
+    }
+
+    // Closing, switching the runtime or reconnecting retires old subscription
+    // acknowledgements; they cannot enqueue a read for another window.
+    @Test func obsoleteHistoryInterestCannotRefreshClosedOrReplacedWindows() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow(accept: false)
+        let old = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        store.setHistoryWindowVisible(false)
+        let closedCount = transport.syncCommands.count
+        try await transport.acceptHistoryInterest(old); try await transport.acceptHistoryInterest()
+        #expect(transport.syncCommands.count == closedCount)
+        store.setHistoryWindowVisible(true)
+        let previous = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        store.selectRuntime("b"); await store.waitForPendingEvents()
+        let switchedCount = transport.syncCommands.count
+        try await transport.acceptHistoryInterest(previous)
+        #expect(transport.syncCommands.count == switchedCount)
+        #expect(store.selectedRuntimeId == "b")
+        let beforeReconnect = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        transport.state?(.offline, nil); await transport.ready([runtime("b")])
+        let reconnectCount = transport.syncCommands.count
+        try await transport.acceptHistoryInterest(beforeReconnect)
+        #expect(transport.syncCommands.count == reconnectCount)
+    }
+
+    // Interest results require the same authenticated envelope as source reads;
+    // a bare relay frame must not consume the current acknowledgement owner.
+    @Test func unauthenticatedHistoryInterestCannotConsumeTheCurrentRequest() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow(accept: false)
+        let id = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        let before = transport.syncCommands.count
+        await transport.emit(["type": "session.history.interest.result", "requestId": id, "accepted": true], channel: nil)
+        #expect(transport.syncCommands.count == before)
+        try await transport.acceptHistoryInterest(id)
+        #expect(transport.syncCommands.count == before + 1)
+    }
+
+    // Runtime metadata may legally omit a session. Interest must close both
+    // target fields together when selection or offline fallback reaches it.
+    @Test func runtimeWithoutSessionClosesHistoryInterestWithBothNullTargets() async throws {
+        let (store, transport) = setup()
+        var pending = runtime("pending"); pending["sessionId"] = nil
+        await transport.ready([runtime("a"), pending])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]), sequence: 2)
+        let before = transport.syncCommands.count
+        store.selectRuntime("pending")
+        #expect(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["runtimeId"] is NSNull)
+        store.setHistoryWindowVisible(true)
+        let closed = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" })
+        #expect(closed["runtimeId"] is NSNull)
+        #expect(closed["sessionId"] is NSNull)
+        try await transport.acceptHistoryInterest(closed["requestId"])
+        #expect(transport.syncCommands.count == before)
+        store.selectRuntime("a")
+        await transport.emit(["type": "runtime.offline", "runtimeId": "a"])
+        #expect(store.selectedRuntimeId == "pending")
+        #expect(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["runtimeId"] is NSNull)
+    }
+
+    // Lost ACKs are retried even while the last source confirmation is inside
+    // its 60-second cooldown. A late ACK from the first attempt is ignored.
+    @Test func lostHistoryInterestAcknowledgementCanRecoverInsideCooldown() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow(accept: false)
+        let old = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"])
+        let child = try #require(store.connection(for: "host-1"))
+        child.reconcileHistoryWindow(now: Date().addingTimeInterval(21))
+        let next = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" }?["requestId"] as? String)
+        #expect(next != old as? String)
+        let before = transport.syncCommands.count
+        try await transport.acceptHistoryInterest(old)
+        #expect(transport.syncCommands.count == before)
+        try await transport.acceptHistoryInterest(next)
+        #expect(transport.syncCommands.count == before + 1)
     }
 
 }

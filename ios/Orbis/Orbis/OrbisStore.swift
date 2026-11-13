@@ -508,10 +508,9 @@ final class HostConnection: ObservableObject {
     private var syncReads: [String: String] = [:]
     private var automaticHistoryProgress: [String: SessionHistoryPrefetch] = [:]
     private var historyWindowRequestId: String?
-    private var historyInterestRequestId: String?
     private var historyWindowSupported = false
     private var historyWindowVisible = false
-    private var historyInterestTarget: String?
+    private var historyInterest = HistoryWindowInterest()
     private var historyReconcileSchedules: [String: ReadReconcileSchedule] = [:]
     private var pendingReadPages: [String: SessionHistoryPage] = [:]
     private var pendingCatchups: [String: SessionCatchupGap] = [:]
@@ -1041,11 +1040,12 @@ final class HostConnection: ObservableObject {
 
     func reconcileCatalog() { if connection == .secured { hostState.reconcile() } }
 
-    func reconcileHistoryWindow() {
+    func reconcileHistoryWindow(now: Date = Date()) {
         guard historyWindowVisible, connection == .secured, let runtime = selectedRuntime,
               let session = runtime.sessionId else { return }
         let key = runtime.runtimeId + "\u{0}" + session
-        if historyReconcileSchedules[key, default: ReadReconcileSchedule()].claim(Date()) {
+        sendHistoryInterest(now: now)
+        if historyReconcileSchedules[key, default: ReadReconcileSchedule()].claim(now) {
             syncSession(runtime, force: true)
         }
     }
@@ -1061,9 +1061,10 @@ final class HostConnection: ObservableObject {
     }
 
     private func syncSession(_ runtime: RuntimeSummary, force: Bool = false) {
+        // Selecting a runtime without a Session still closes the previous interest.
+        sendHistoryInterest()
         guard connection == .secured, runtime.runtimeId == selectedRuntimeId, let sessionId = runtime.sessionId,
               runtimes.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == sessionId }) else { return }
-        sendHistoryInterest()
         let key = "\(runtime.runtimeId)|\(sessionId)"
         if force { sessionReads.requestSource(historyKey: runtime.runtimeId) }
         if toolAcknowledgements.values.contains(where: { $0.runtimeId == runtime.runtimeId }) {
@@ -1076,6 +1077,9 @@ final class HostConnection: ObservableObject {
         guard force || !syncedSessions.contains(key) else { return }
         if let (id, value) = pendingSyncs.first(where: { $0.value.runtimeId == runtime.runtimeId && $0.value.sessionId == sessionId && $0.value.range == "preview" && $0.value.exhausted }) {
             guard recoverRead(id, runtime: runtime) else { finishSync(id); syncSession(runtime, force: true); return }
+            // The recovered transaction retains its original demand generation. Its
+            // late response cannot fulfill a refresh requested after it exhausted.
+            if force { syncDemands.insert(runtime.runtimeId) }
             var task = value
             let now = Date()
             task.exhausted = false; task.attempts = 1; task.firstSentAt = now; task.sentAt = now; task.deadline = now.addingTimeInterval(150)
@@ -1124,6 +1128,8 @@ final class HostConnection: ObservableObject {
               hasOlderHistory[runtime.runtimeId] == true,
               !pendingSyncs.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.range != "catchup" && !$0.exhausted }) else { return false }
         if let prefetch, automaticHistoryScope(runtime) != prefetch.scopeId { return false }
+        // Continuation pages share the same priority gate as the first reserve.
+        if prefetch != nil, syncDemands.contains(runtime.runtimeId) || sessionReads.demands[runtime.runtimeId] != nil { return false }
         if prefetch != nil, sessionReads.operations.values.contains(where: {
             $0.owner.historyKey == runtime.runtimeId && $0.kind == .history && $0.phase.active
         }) { return false }
@@ -1172,6 +1178,8 @@ final class HostConnection: ObservableObject {
 
     private func startAutomaticHistoryPrefetch(_ runtime: RuntimeSummary) {
         guard historyWindowVisible, historyWindowSupported, connection == .secured, selectedOfflineSession == nil, selectedRuntimeId == runtime.runtimeId,
+              historyInterest.confirmedTarget == runtime.sessionId.map({ runtime.runtimeId + "\u{0}" + $0 }),
+              !syncDemands.contains(runtime.runtimeId),
               hasOlderHistory[runtime.runtimeId] == true, oldestEntries[runtime.runtimeId] != nil,
               let scopeId = automaticHistoryScope(runtime),
               !sessionReads.operations.values.contains(where: {
@@ -1186,22 +1194,19 @@ final class HostConnection: ObservableObject {
     func setHistoryWindowVisible(_ visible: Bool) {
         historyWindowVisible = visible
         sendHistoryInterest()
-        if visible, let runtime = selectedRuntime { startAutomaticHistoryPrefetch(runtime) }
         if !visible {
             for runtime in runtimes { cancelAutomaticHistoryReads(runtimeId: runtime.runtimeId) }
         }
     }
 
-    private func sendHistoryInterest() {
+    private func sendHistoryInterest(now: Date = Date()) {
         guard historyWindowSupported, connection == .secured else { return }
-        let runtime = historyWindowVisible && selectedOfflineSession == nil ? selectedRuntime : nil
+        let runtime = historyWindowVisible && selectedOfflineSession == nil ? selectedRuntime.flatMap { $0.sessionId == nil ? nil : $0 } : nil
         let target = runtime.flatMap { value in value.sessionId.map { value.runtimeId + "\u{0}" + $0 } } ?? "closed"
-        guard target != historyInterestTarget else { return }
-        let requestId = UUID().uuidString
-        if transport.send(["type": "session.history.interest", "protocolVersion": orbisProtocolVersion,
-            "requestId": requestId, "runtimeId": runtime?.runtimeId as Any? ?? NSNull(),
-            "sessionId": runtime?.sessionId as Any? ?? NSNull()]) {
-            historyInterestTarget = target; historyInterestRequestId = requestId
+        historyInterest.publish(target, now: now) { requestId in
+            transport.send(["type": "session.history.interest", "protocolVersion": orbisProtocolVersion,
+                "requestId": requestId, "runtimeId": runtime?.runtimeId as Any? ?? NSNull(),
+                "sessionId": runtime?.sessionId as Any? ?? NSNull()])
         }
     }
 
@@ -1222,6 +1227,13 @@ final class HostConnection: ObservableObject {
         let sync = UUID().uuidString, command = "session-sync:" + UUID().uuidString
         let leaf = sessionReads.operations[operation]?.targetLeafId
         let prefetch = sessionReads.operations[operation]?.historyPrefetch
+        // Local disk IO yields the actor; a source demand may have arrived since
+        // this reservation began. Keep its allowance and resume after that read.
+        if let prefetch, syncDemands.contains(runtime.runtimeId) || sessionReads.demands[runtime.runtimeId] != nil {
+            automaticHistoryProgress[prefetch.scopeId] = prefetch
+            sessionReads.finish(operation, phase: .cancelled)
+            return
+        }
         var body: [String: Any] = ["type": "session.sync", "sessionId": sessionId, "syncId": sync,
                                   "range": "history", "beforeEntryId": boundary, "maxEntries": prefetch?.nextMaxEntries ?? 30]
         if let leaf { body["targetLeafId"] = leaf }
@@ -2627,9 +2639,18 @@ final class HostConnection: ObservableObject {
         }
         transfers.consume(message)
         recordConnectionEvent("\(channel ?? "—") · \(type)")
-        if channel != nil, let requestId = historyInterestRequestId, message["requestId"] as? String == requestId {
-            if message["accepted"] as? Bool != true { historyInterestTarget = nil }
-            historyInterestRequestId = nil
+        if let requestId = message["requestId"] as? String,
+           historyInterest.consume(requestId, accepted: type == "session.history.interest.result" && message["accepted"] as? Bool == true) {
+            // FT-G12-RESUME-01: the Host suppressed the hidden window's events. An
+            // accepted current subscription must reconcile after it resumes, even
+            // inside the periodic cooldown and while an older preview is in flight.
+            if historyWindowVisible, historyWindowSupported, selectedOfflineSession == nil,
+               connection == .secured, let runtime = selectedRuntime, let session = runtime.sessionId,
+               historyInterest.confirmedTarget == runtime.runtimeId + "\u{0}" + session {
+                historyReconcileSchedules[runtime.runtimeId + "\u{0}" + session, default: ReadReconcileSchedule()].started(Date())
+                cancelAutomaticHistoryReads(runtimeId: runtime.runtimeId)
+                syncSession(runtime, force: true)
+            }
             return
         }
         if channel != nil, let requestId = historyWindowRequestId, message["requestId"] as? String == requestId {
@@ -2637,7 +2658,6 @@ final class HostConnection: ObservableObject {
                 integer(message["maxPageBytes"]) == 65536
             historyWindowRequestId = nil
             sendHistoryInterest()
-            if historyWindowSupported, let runtime = selectedRuntime { startAutomaticHistoryPrefetch(runtime) }
             return
         }
         if let requestId = message["requestId"] as? String, let read = ledgerReads.removeValue(forKey: requestId) {
@@ -2699,7 +2719,7 @@ final class HostConnection: ObservableObject {
             filteredReady = nil
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
-            historyInterestTarget = nil
+            historyInterest = HistoryWindowInterest()
             let capabilityRequest = UUID().uuidString
             historyWindowRequestId = capabilityRequest
             _ = transport.send(["type": "session.history.capabilities.request", "protocolVersion": orbisProtocolVersion,
@@ -2779,6 +2799,7 @@ final class HostConnection: ObservableObject {
                 notifications.offline(runtimeId: id)
                 invalidateConversation(id)
                 if selectedRuntimeId == id { selectedRuntimeId = runtimes.first?.runtimeId }
+                sendHistoryInterest()
                 publishMessages()
                 if let selectedRuntime { agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime) }
             }

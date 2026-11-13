@@ -1759,7 +1759,8 @@ internal fun ChatScreen(
         model.setAgentModelInterest(originHost, runtimeId, "chat", CHAT_AGENT_MODEL_DOMAINS)
         onDispose { model.setAgentModelInterest(originHost, runtimeId, "chat", emptyList()) }
     }
-    LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
+    // FT-G12-RESUME-01: identical runtime/session IDs on another Host still own a new interest.
+    LaunchedEffect(state.hostId, runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             val historyHost = state.hostId
             model.setHistoryWindowVisible(historyHost, runtimeId, true)

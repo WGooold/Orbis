@@ -68,6 +68,9 @@ final class OrbisStore: ObservableObject {
     private var directorySurfaceKey: DirectorySurfaceKey?
     private var publicationScheduled = false
     private var cleanupTasks: [UUID: Task<Void, Never>] = [:]
+    // FT-G12-RESUME-01: navigation/scene visibility belongs to the selected Host
+    // projection and must follow it even when the chat view remains mounted.
+    private var historyWindowVisible = false
 
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil,
          autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil,
@@ -158,6 +161,7 @@ final class OrbisStore: ObservableObject {
         if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
+        activeConnection.setHistoryWindowVisible(historyWindowVisible)
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
         refreshScreenPublications()
     }
@@ -183,7 +187,10 @@ final class OrbisStore: ObservableObject {
             await connection.waitForPendingEvents()
             self?.cleanupTasks[cleanupId] = nil
         }
-        if selectedHostId == hostId { selectedHostId = next.first?.hostId }
+        if selectedHostId == hostId {
+            selectedHostId = next.first?.hostId
+            activeConnection.setHistoryWindowVisible(historyWindowVisible)
+        }
         if let selectedHostId { preferences?.set(selectedHostId, forKey: "orbis.selectedHostId") }
         else { preferences?.removeObject(forKey: "orbis.selectedHostId") }
         refreshScreenPublications()
@@ -307,7 +314,10 @@ final class OrbisStore: ObservableObject {
     func reconcileCatalog() { activeConnection.reconcileCatalog() }
     func reconcileHistoryWindow() { activeConnection.reconcileHistoryWindow() }
     func resumeForeground() { activeConnection.resumeForeground() }
-    func setHistoryWindowVisible(_ visible: Bool) { activeConnection.setHistoryWindowVisible(visible) }
+    func setHistoryWindowVisible(_ visible: Bool) {
+        historyWindowVisible = visible
+        activeConnection.setHistoryWindowVisible(visible)
+    }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
     func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }

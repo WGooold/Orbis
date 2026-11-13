@@ -147,9 +147,10 @@ struct ContentView: View {
         .onChange(of: store.isPairing) { old, active in
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ReplyCompletionNotifications.remoteWake)) { notification in
-            guard let hostId = notification.userInfo?["hostId"] as? String,
-                  store.pairings.contains(where: { $0.hostId == hostId }) else { return }
+        .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { hostId in
+            guard let hostId else { return }
+            ReplyCompletionNotifications.remoteOpens.consume()
+            guard store.pairings.contains(where: { $0.hostId == hostId }) else { return }
             store.connect(hostId: hostId)
             rootTab = .chat; displayedRoot = .chat
             navigation.replace(with: [.chat])

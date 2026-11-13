@@ -36,6 +36,15 @@ private final class MultiHostTransport: OrbisTransport {
             "runtimeId": "shared-runtime", "name": "Shared runtime", "cwd": "/repo", "status": "idle", "sessionId": "shared-session"
         ]]])
     }
+    var lastHistoryInterest: [String: Any]? { sent.last { $0["type"] as? String == "session.history.interest" } }
+    func enableHistoryWindow() async throws {
+        let request = try #require(sent.last { $0["type"] as? String == "session.history.capabilities.request" })
+        await emit(["type": "session.history.capabilities", "requestId": request["requestId"]!, "format": "v1", "maxPageBytes": 65536])
+    }
+    func acceptHistoryInterest(_ request: [String: Any]) async throws {
+        let id = try #require(request["requestId"])
+        await emit(["type": "session.history.interest.result", "requestId": id, "accepted": true])
+    }
     var commands: [[String: Any]] { sent.compactMap { $0["command"] as? [String: Any] } }
     var lastSync: [String: Any]? { commands.last { $0["type"] as? String == "session.sync" } }
     func snapshot(text: String) async throws {
@@ -181,6 +190,81 @@ struct MultiHostTests {
             #expect(transport.disconnectCount == initial[id]?.1)
             #expect(fixture.store.connection(for: id)?.connection == .secured)
         }
+    }
+
+    // FT-G12-RESUME-01: chat navigation stays mounted across Host switches.
+    // The UI-owned visibility follows A→B→A and supersedes each old ACK owner.
+    @Test func visibleHistoryInterestFollowsSelectedHostAndRejectsLateAcknowledgements() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.transports["host-1"]), second = try #require(fixture.transports["host-2"])
+        try await first.snapshot(text: "First"); try await second.snapshot(text: "Second")
+        try await first.enableHistoryWindow(); try await second.enableHistoryWindow()
+        fixture.store.setHistoryWindowVisible(true)
+        let initial = try #require(first.lastHistoryInterest)
+        fixture.store.selectHost("host-2")
+        let switched = try #require(second.lastHistoryInterest)
+        #expect(first.lastHistoryInterest?["runtimeId"] is NSNull)
+        #expect(switched["runtimeId"] as? String == "shared-runtime")
+        let firstReads = first.commands.count, secondReads = second.commands.count
+        try await first.acceptHistoryInterest(initial)
+        #expect(first.commands.count == firstReads)
+        try await second.acceptHistoryInterest(switched)
+        #expect(second.commands.count == secondReads + 1)
+        fixture.store.selectHost("host-1")
+        let returned = try #require(first.lastHistoryInterest)
+        #expect(second.lastHistoryInterest?["runtimeId"] is NSNull)
+        #expect(returned["requestId"] as? String != initial["requestId"] as? String)
+        try await first.acceptHistoryInterest(initial)
+        #expect(first.commands.count == firstReads)
+        try await first.acceptHistoryInterest(returned)
+        #expect(first.commands.count == firstReads + 1)
+        fixture.store.selectHost("host-1")
+        try await first.acceptHistoryInterest(returned)
+        #expect(first.commands.count == firstReads + 1)
+    }
+
+    // ContentView publishes false both off-chat and while the scene is inactive.
+    // Switching or unpairing in either state must keep every source window shut.
+    @Test func hiddenHistoryInterestStaysClosedAcrossHostSwitchAndUnpair() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.transports["host-1"]), second = try #require(fixture.transports["host-2"])
+        try await first.enableHistoryWindow(); try await second.enableHistoryWindow()
+        fixture.store.selectHost("host-2")
+        #expect(first.lastHistoryInterest?["runtimeId"] is NSNull)
+        #expect(second.lastHistoryInterest?["runtimeId"] is NSNull)
+        fixture.store.setHistoryWindowVisible(true)
+        let opened = try #require(second.lastHistoryInterest)
+        fixture.store.setHistoryWindowVisible(false)
+        fixture.store.selectHost("host-1")
+        let before = second.commands.count
+        try await second.acceptHistoryInterest(opened)
+        #expect(second.commands.count == before)
+        fixture.store.unpair(hostId: "host-1")
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.store.selectedHostId == "host-2")
+        #expect(second.lastHistoryInterest?["runtimeId"] is NSNull)
+    }
+
+    // Removing the active Host keeps a visible chat subscribed on its surviving
+    // Host; having no selected runtime must remain a closed, legal interest.
+    @Test func visibleHistoryTransfersAfterUnpairAndWaitsForARuntime() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        let first = try #require(fixture.transports["host-1"]), second = try #require(fixture.transports["host-2"])
+        await first.ready()
+        await second.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": []])
+        try await first.enableHistoryWindow(); try await second.enableHistoryWindow()
+        fixture.store.setHistoryWindowVisible(true)
+        fixture.store.unpair(hostId: "host-1")
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.store.selectedHostId == "host-2")
+        #expect(fixture.store.selectedRuntimeId == nil)
+        #expect(second.lastHistoryInterest?["runtimeId"] is NSNull)
+        await second.emit(["type": "runtime.online", "runtime": [
+            "runtimeId": "shared-runtime", "name": "Shared runtime", "cwd": "/repo", "status": "idle", "sessionId": "shared-session"
+        ]])
+        #expect(second.lastHistoryInterest?["runtimeId"] as? String == "shared-runtime")
     }
 
     @Test func draftWritesMergeFreshPreferencesAcrossHosts() async throws {
