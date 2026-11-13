@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { claudeLaunchConfig, claudeWorkspaceTrustRoot, trustClaudeWorkspace } from "./claude-workspace-trust.js";
+import { isSymlinkRefusal } from "../../../scripts/test-fixtures/temp-directory.js";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -80,14 +81,16 @@ describe("Claude workspace trust", () => {
     expect(await claudeWorkspaceTrustRoot(child, { ...process.env, GIT_DIR: join(input.cwd, ".git"), GIT_WORK_TREE: input.cwd })).toBe(child);
   });
 
-  it("preserves a config symlink and resolves workspace symlinks", async () => {
+  it("preserves a config symlink and resolves workspace symlinks", async (context) => {
     const input = await fixture();
     await mkdir(join(input.root, "config"));
     const target = join(input.root, "actual.json");
     await writeFile(target, "{}");
-    await symlink(target, input.configFile);
     const linked = join(input.root, "alias");
-    await symlink(input.cwd, linked);
+    try {
+      await symlink(target, input.configFile);
+      await symlink(input.cwd, linked);
+    } catch (error) { if (isSymlinkRefusal(error)) { context.skip(); return; } throw error; }
     await trustClaudeWorkspace({ ...input, cwd: linked });
     expect(await realpath(input.configFile)).toBe(target);
     expect(JSON.parse(await readFile(target, "utf8")).projects[input.cwd].hasTrustDialogAccepted).toBe(true);

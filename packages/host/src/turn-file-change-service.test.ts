@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { RuntimeEventSchema, type AgentKey, type RuntimeEvent, type TurnChangeSummary, type FileChangeDetailReadRequest } from "@orbis/protocol";
 import { TurnFileChangeService } from "./turn-file-change-service.js";
 import * as snapshots from "./turn-file-change-snapshot.js";
+import { isSymlinkRefusal } from "../../../scripts/test-fixtures/temp-directory.js";
 
 const agent: AgentKey = { hostId: "host", agentKind: "codex", sessionId: "session" };
 const runtimeId = "runtime";
@@ -238,10 +239,12 @@ describe("Host turn file changes", () => {
     await begin("partial", false); await writeFile(join(workspace, "a.txt"), "new\n"); const summary = await finish();
     expect(summary.coverage).toBe("partial"); expect(summary.reasons).toContain("start-boundary-unconfirmed"); expect(summary.reasons).toContain("capture-entry-budget");
   });
-  it("does not traverse symlinks and distinguishes binary and oversize metadata", async () => {
+  it("does not traverse symlinks and distinguishes binary and oversize metadata", async (context) => {
     await service.close(); service = new TurnFileChangeService({ ...options(), captureBudget: { maxFileBytes: 100 } });
     await writeFile(join(directory, "outside"), "secret"); await begin();
-    await symlink(join(directory, "outside"), join(workspace, "link")); await writeFile(join(workspace, "binary"), Buffer.from([0, 1, 2])); await writeFile(join(workspace, "large"), "x".repeat(101));
+    try { await symlink(join(directory, "outside"), join(workspace, "link")); }
+    catch (error) { if (isSymlinkRefusal(error)) { context.skip(); return; } throw error; }
+    await writeFile(join(workspace, "binary"), Buffer.from([0, 1, 2])); await writeFile(join(workspace, "large"), "x".repeat(101));
     const summary = await finish();
     expect(summary.preview.map(file => [file.path, file.detail])).toEqual([["binary", "binary"], ["large", "too-large"], ["link", "unsupported"]]);
     expect(summary.additions).toBeNull(); expect(summary.fileCount).toBe(3);
