@@ -359,11 +359,17 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         Group {
+            #if compiler(>=6.4)
+            // 折叠屏分栏用的是 iOS 27.1 SDK 才有的 ArrangementView；CI 上的旧工具链
+            // 没有这些符号，编不过，所以按编译器版本选布局，行为在真机上不变。
             if #available(iOS 27.1, *) {
                 foldAwareContent(content)
             } else {
                 ordinaryContent(content)
             }
+            #else
+            ordinaryContent(content)
+            #endif
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
         .overlay {
@@ -418,6 +424,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     /// FOLD-01: only devices with a physical division use the system split arrangement.
     /// Include inactive divisions so changing the hinge angle preserves the view identity.
+    #if compiler(>=6.4)
     @available(iOS 27.1, *)
     @ViewBuilder
     private func foldAwareContent(_ content: Content) -> some View {
@@ -437,6 +444,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
             }
         }
     }
+    #endif
 
     private func ordinaryContent(_ content: Content) -> some View {
         GeometryReader { geometry in
