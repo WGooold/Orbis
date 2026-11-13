@@ -16,6 +16,15 @@ android {
         versionCode = 58
         versionName = "0.1.57"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // QA 构建用独立包名：与手机上的发布版共存，装测试包不会顶掉发布版。
+        // 只有显式传 -PorbisQaBuild=true 时生效，日常与发版构建完全不变。
+        manifestPlaceholders["appLabel"] = "@string/app_name"
+        if (providers.gradleProperty("orbisQaBuild").orNull == "true") {
+            applicationIdSuffix = ".qa"
+            versionNameSuffix = "-qa"
+            // 两个图标并存时能一眼分清哪个是测试包。
+            manifestPlaceholders["appLabel"] = "Orbis QA"
+        }
     }
 
     // 发版签名密钥不进仓库：路径与密码从 ~/.gradle/gradle.properties（或同名 -P 参数）读取。
