@@ -205,6 +205,8 @@ func pendingSendFailureText(status: String?, error: String?) -> String {
     if status == "message_id_conflict" { return L10n.tr("消息身份冲突，请重新发送") }
     switch error {
     case "runtime_busy": return L10n.tr("会话正在运行，请选择插入或完成后发送")
+    case "权限设置尚未确认，请稍后重试": return L10n.tr("权限设置尚未确认，请稍后重试")
+    case "权限设置正在保存，请稍后重试": return L10n.tr("权限设置正在保存，请稍后重试")
     case "claude_steer_unsupported": return L10n.tr("Claude Code 不支持插入当前任务")
     case .some(let text) where !text.isEmpty: return text
     default: return L10n.tr("电脑端没有接受这条消息")

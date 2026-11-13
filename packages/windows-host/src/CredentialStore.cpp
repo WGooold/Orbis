@@ -4,6 +4,10 @@
 #include <QJsonDocument>
 #include <QFileInfo>
 #include <QUuid>
+#include <QDir>
+#include <QCryptographicHash>
+#include <QJsonArray>
+#include <QUrl>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <wincrypt.h>
@@ -181,4 +185,63 @@ QJsonObject CredentialStore::load(const QString &path, QString *error) {
     if (error) *error = QStringLiteral("此版本的凭据存储仅支持 Windows 和 macOS"); return {};
 #endif
 #endif
+}
+
+QString CredentialStore::normalizedRelay(const QString &relay) {
+    QUrl url(relay.trimmed());
+    if ((url.scheme() == "wss" && url.port() == 443) || (url.scheme() == "ws" && url.port() == 80)) url.setPort(-1);
+    auto result = url.toString(QUrl::FullyEncoded);
+    while (result.endsWith('/')) result.chop(1);
+    return result;
+}
+
+static QString activationArchivePath(const QString &path, const QString &relay, const QString &hostId) {
+    const auto key = QJsonDocument(QJsonArray{CredentialStore::normalizedRelay(relay), hostId}).toJson(QJsonDocument::Compact);
+    return QFileInfo(path).absolutePath() + "/relay-activations/" +
+        QString::fromLatin1(QCryptographicHash::hash(key, QCryptographicHash::Sha256).toHex()) + ".dat";
+}
+
+QJsonObject CredentialStore::selectActivation(const QString &path, const QString &relay, const QString &hostId, QString *error) {
+    error->clear();
+    const auto endpoint = normalizedRelay(relay);
+    const auto matches = [&](const QJsonObject &value) {
+        return normalizedRelay(value.value("relayUrl").toString()) == endpoint && value.value("hostId").toString() == hostId;
+    };
+    auto current = load(path, error);
+    if (!error->isEmpty()) return {};
+    if (matches(current)) {
+        if (current.value("relayUrl").toString() != endpoint) {
+            current.insert("relayUrl", endpoint);
+            if (!save(path, current, error)) return {};
+        }
+        return current;
+    }
+    const auto directory = QFileInfo(path).absolutePath() + "/relay-activations";
+    if (!current.value("relayUrl").toString().isEmpty() && !current.value("hostId").toString().isEmpty()) {
+        if (!QDir().mkpath(directory)) { *error = "无法保存原服务器的激活凭据"; return {}; }
+        // The active slot is authoritative, including credential-less recovery state
+        // and credentials rotated by an older client after a rollback.
+        if (!save(activationArchivePath(path, current.value("relayUrl").toString(), current.value("hostId").toString()), current, error)) return {};
+    }
+    auto selected = hostId.isEmpty() ? QJsonObject() : load(activationArchivePath(path, endpoint, hostId), error);
+    if (!error->isEmpty()) return {};
+    if (!selected.isEmpty() && !matches(selected)) { *error = "保存的激活凭据与服务器或电脑身份不匹配"; return {}; }
+    selected.insert("relayUrl", endpoint); selected.insert("hostId", hostId);
+    // Atomic replacement: if either archive or selection fails, the previous active
+    // slot remains intact and the caller must keep its previous Relay selected.
+    if (!save(path, selected, error)) return {};
+    return selected;
+}
+
+bool CredentialStore::invalidateActivation(const QString &path, const QJsonObject &recovery, QString *error) {
+    error->clear();
+    // Also replace an archived copy: clearing an unreadable active slot must never
+    // make a previously rejected credential eligible for restoration.
+    const auto archive = activationArchivePath(path, recovery.value("relayUrl").toString(), recovery.value("hostId").toString());
+    for (const auto &target : {archive, path}) {
+        QString saveError, clearError;
+        if (QDir().mkpath(QFileInfo(target).absolutePath()) && save(target, recovery, &saveError)) continue;
+        if (!clear(target, &clearError)) *error += clearError + '\n';
+    }
+    return error->isEmpty();
 }

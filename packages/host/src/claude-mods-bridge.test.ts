@@ -149,6 +149,8 @@ describe("ClaudeModsBridge", () => {
   it("validates the Claude version and every required native capability", () => {
     const bridge = bridgeWith();
     expect(bridge.hello(hello({ claudeVersion: "2.1.286" }))).toEqual({ ok: false, error: "claude_version_too_old:2.1.287" });
+    // CLAUDE-MODS-MIN-01: a prerelease cannot satisfy the stable terminal Mods floor.
+    expect(bridge.hello(hello({ claudeVersion: "2.1.287-rc.1" }))).toEqual({ ok: false, error: "claude_version_too_old:2.1.287" });
     expect(bridge.hello(hello({ claudeVersion: "dev-build-999" }))).toEqual({ ok: false, error: "invalid_hello" });
     expect(bridge.hello(hello({ capabilities: ["prompt.submit"] }))).toEqual({ ok: false, error: "missing_capability:turn.abort" });
     expect(bridge.hello(hello({ capabilities: ["turn.abort", "prompt.submit", "session.append", "turn.start", "turn.complete", "tool.call"] })))

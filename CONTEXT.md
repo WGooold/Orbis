@@ -14,7 +14,7 @@ The resident computer-side process that owns the pairing identity, device record
 One computer-side agent integration behind the Host, addressed by an `agentKind`; it discovers, activates, drives, and reports the sessions of one agent product and integration path. It owns native interpretation, verified recovery, and the standardized facts supplied to the Host Agent state model (ADR-0032).
 
 **Agent kind**:
-The `pi` | `codex` | `codexDesktop` | `dsh` discriminator that labels a Session and selects its backend. Codex terminal and desktop are separate integration paths for the same agent product. DSH uses its authenticated local Web service and native event RPC; see ADR-0020.
+The `pi` | `codex` | `codexDesktop` | `dsh` | `dshDesktop` discriminator that labels a Session and selects its backend. Codex terminal and desktop are separate integration paths for the same agent product. DSH uses its authenticated local Web service and native event RPC; see ADR-0020. `dshDesktop` attaches to the backend owned by DeepSeek Harness Desktop and is sent only to devices that declare it; see ADR-0076.
 
 **Agent state model**:
 The Host-managed logical state for one agent Session, keyed by Host, agent kind and Session identity. It covers history and head, live messages and tools, execution, delivery, interactions, permissions, model and context, capabilities and resources, notifications, and references to providers, workspace, artifacts and diagnostic records. Native execution and history remain source authority; the Host owns the standardized client-facing projection. See ADR-0032 for the accepted architecture and the implementation status of each domain.

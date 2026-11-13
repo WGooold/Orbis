@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogBackend, type HostCatalogState } from "@orbis/protocol";
+import { createHash } from "node:crypto";
+import { CatalogQueryPageSchema, HostCatalogRangeSchema, HostCatalogStateSchema, type CatalogQuery, type AgentSessionSummary, type HostCatalogBackend, type HostCatalogState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
 
@@ -16,6 +17,90 @@ const setup = () => {
 };
 
 describe("Host catalog immutable ranges", () => {
+  // FT-G11-COMPAT-01 / DSH-DESKTOP-06: query negotiation does not grant Desktop visibility;
+  // rows, provider facets, totals and continuation offsets share the same device view.
+  it("keeps query rows, facets and cursors inside the device's negotiated visibility", () => {
+    const { facts } = setup();
+    const visible = [session(1, { cwd: "/visible", modelProvider: "web" }), session(2, { cwd: "/visible", modelProvider: "web" })];
+    const hidden = session(3, { agentKind: "dshDesktop", cwd: "/desktop", modelProvider: "desktop" });
+    facts.catalog({ sessions: [visible[0]!, hidden, visible[1]!], totalSessions: 3, truncated: false,
+      backends: [backend(2), backend(1, { kind: "dshDesktop" })] });
+    const request = { type: "session.catalog.query" as const, requestId: "visibility", format: "v1" as const,
+      query: { text: "", agentKind: null, archived: false, provider: "all" }, cursor: null, limit: 1 };
+    const filtered = CatalogQueryPageSchema.parse(facts.catalogQuery(request, "dshDesktop"));
+    expect(filtered).toMatchObject({ directoryCount: 1, providers: ["web"], unknownProvider: false,
+      page: { totalSessions: 2, sessions: [{ ...visible[0], directoryTotal: 2 }] } });
+    const full = facts.catalogQuery(request);
+    expect(full).toMatchObject({ directoryCount: 2, providers: ["desktop", "web"], page: { totalSessions: 3 } });
+    expect(facts.catalogQuery({ ...request, cursor: full.page.nextCursor }, "dshDesktop").page)
+      .toMatchObject({ error: "invalid_cursor", totalSessions: 2, sessions: [] });
+    expect(facts.catalogQuery({ ...request, cursor: filtered.page.nextCursor }).page.error).toBe("invalid_cursor");
+    expect(facts.catalogRange({ cursor: filtered.page.nextCursor }, "dshDesktop").error).toBe("invalid_cursor");
+    expect(facts.catalogQuery({ ...request, cursor: filtered.page.nextCursor }, "dshDesktop").page)
+      .toMatchObject({ offset: 1, totalSessions: 2, sessions: [{ ...visible[1], directoryTotal: 2 }], nextCursor: null });
+    expect(facts.catalogQuery({ ...request, query: { ...request.query, agentKind: "dshDesktop" } }, "dshDesktop"))
+      .toMatchObject({ directoryCount: 0, providers: [], page: { totalSessions: 0, sessions: [] } });
+  });
+
+  // SC-01: collapsed previews must not force a hot folder's entire inventory to be
+  // downloaded before another folder can appear or be expanded accurately.
+  it("loads directory previews first and expands only the exact selected directory", () => {
+    const { facts } = setup();
+    const all = Array.from({ length: 200 }, (_, n) => session(n, { cwd: n < 180 ? "/hot" : "/cold" }));
+    facts.catalog({ totalSessions: all.length, truncated: false, backends: [backend(all.length)], sessions: all });
+    const request = { type: "session.catalog.query" as const, requestId: "preview", format: "v1" as const,
+      query: { text: "", agentKind: null, archived: false, provider: "all" }, cursor: null, limit: 10 };
+    const preview = facts.catalogQuery(request);
+    expect(preview.previewsComplete).toBe(true); expect(preview.directoryCount).toBe(2);
+    expect(preview.page.sessions.map(row => row.cwd)).toEqual([...Array(5).fill("/hot"), ...Array(5).fill("/cold")]);
+    expect(preview.page.sessions[0]?.directoryTotal).toBe(180);
+    const directory = createHash("sha256").update("/cold").digest("hex");
+    const expanded = facts.catalogQuery({ ...request, query: { ...request.query, directory }, limit: 100 });
+    expect(expanded.page.totalSessions).toBe(20); expect(expanded.page.nextCursor).toBeNull();
+    expect(expanded.page.sessions.every(row => row.cwd === "/cold")).toBe(true);
+    expect(facts.catalogQuery({ ...request, cursor: preview.page.nextCursor, query: { ...request.query, directory } }).page.error).toBe("invalid_cursor");
+  });
+  it("advances past a single row above the target without exceeding the hard page", () => {
+    const { facts } = setup();
+    const row = session(1, { cwd: "\u0001".repeat(4096), firstMessage: "\u0001".repeat(4000) });
+    facts.catalog({ totalSessions: 1, truncated: false, sessions: [row], backends: [backend(1)] });
+    const response = facts.catalogQuery({ type: "session.catalog.query", requestId: "large", format: "v1",
+      query: { text: "", agentKind: "pi", archived: false, provider: "all" }, cursor: null, limit: 100 });
+    expect(response.page.sessions).toEqual([{ ...row, directoryTotal: 1 }]); expect(response.page.nextCursor).toBeNull();
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeGreaterThan(28 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(64 * 1024);
+  });
+  // SC-01/04: queries inspect the full inventory, not the 28 KiB first page. Every
+  // continuation binds both source snapshot and query; partial sources stay partial.
+  it("finds uncached global matches with fixed query cursors and global provider facets", () => {
+    const { facts, read } = setup();
+    const all = Array.from({ length: 250 }, (_, n) => session(n, { name: `needle ${n}`, cwd: `/repo/${n}`,
+      agentKind: "codex", modelProvider: n === 249 ? "other" : "current", archived: n === 248,
+      firstMessage: "界".repeat(150) }));
+    facts.catalog({ sessions: all, totalSessions: all.length, backends: [backend(all.length, { kind: "codex" })], truncated: false,
+      currentProviders: [{ agentKind: "codex", provider: "current" }] });
+    expect(read().value!.sessions!.some(row => row.sessionId === "session-249")).toBe(false);
+    const query: CatalogQuery = { text: "NEEDLE", agentKind: "codex", archived: false, provider: "all" };
+    const request = { type: "session.catalog.query" as const, format: "v1" as const, requestId: "q", query, cursor: null, limit: 100 };
+    const first = CatalogQueryPageSchema.parse(facts.catalogQuery(request));
+    expect(first.page.totalSessions).toBe(249); expect(first.directoryCount).toBe(249);
+    expect(first.providers).toEqual(["current", "other"]);
+    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(64 * 1024);
+    const rows = [...first.page.sessions]; let cursor = first.page.nextCursor;
+    while (cursor) {
+      const page = facts.catalogQuery({ ...request, cursor }).page;
+      expect(page.offset).toBe(rows.length); rows.push(...page.sessions); cursor = page.nextCursor;
+    }
+    expect(rows).toHaveLength(249); expect(rows.at(-1)?.sessionId).toBe("session-249");
+    expect(facts.catalogQuery({ ...request, query: { ...query, provider: "provider:other" } }).page.sessions.map(row => row.sessionId)).toEqual(["session-249"]);
+    expect(facts.catalogQuery({ ...request, query: { ...query, archived: true } }).page.sessions.map(row => row.sessionId)).toEqual(["session-248"]);
+    expect(facts.catalogQuery({ ...request, query: { ...query, provider: "current" } }).page.totalSessions).toBe(248);
+    expect(facts.catalogQuery({ ...request, query: { ...query, text: "different" }, cursor: first.page.nextCursor }).page.error).toBe("invalid_cursor");
+    expect(facts.catalogRange({ cursor: first.page.nextCursor }).error).toBe("invalid_cursor");
+    facts.catalog({ sessions: all, totalSessions: all.length, backends: [backend(all.length, { kind: "codex", complete: false })], truncated: false });
+    expect(facts.catalogQuery({ ...request, cursor: first.page.nextCursor }).page.error).toBe("snapshot_changed");
+    expect(facts.catalogQuery(request).page.complete).toBe(false);
+  });
   it("fits long summaries into the public budget and retrieves the whole source without mixed versions", () => {
     const { facts, read } = setup();
     const all = Array.from({ length: 100 }, (_, index) => session(index, { cwd: `D:/${"目录".repeat(2_000)}`, firstMessage: "预览".repeat(2_000) }));

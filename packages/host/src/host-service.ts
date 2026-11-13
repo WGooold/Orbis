@@ -40,11 +40,14 @@ import {
 } from "@orbis/e2e";
 import {
   DeviceE2ePayloadSchema,
+  DEVICE_FEATURE_DSH_DESKTOP,
+  HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
   type AgentSessionSummary,
   type CodexDesktopAttach,
+  type DshDesktopAttach,
   type DeviceE2ePayload,
   type EnvelopeChannel,
   type EnvelopeV2,
@@ -94,6 +97,7 @@ import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
+import { DSH_DESKTOP_KIND, hiddenFromLegacy, isDshDesktopRuntime, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -122,6 +126,12 @@ import type { UsageSnapshot } from "./provider-usage-cache.js";
  * 又不至于让用户察觉「刚建的会话不在列表里」——激活路径另走 `#invalidateCatalog`。
  */
 const CATALOG_TTL_MS = 5_000;
+type DshKind = "dsh" | "dshDesktop";
+const DSH_KINDS: readonly DshKind[] = ["dsh", "dshDesktop"];
+type DshSlot = {
+  runtime?: DshRuntime | undefined; starting?: Promise<DshRuntime | undefined> | undefined; startingExistingOnly: boolean;
+  recoveryTimer?: ReturnType<typeof setTimeout> | undefined; recoveryError?: string | undefined;
+};
 /**
  * 一条 Host→设备的消息该走哪个 channel（票 07）。
  *
@@ -152,7 +162,7 @@ export function channelForDeviceMessage(message: {
       .concat(message.unchanged ?? []);
     if (domains.length > 0 && domains.every(domain => domain === "execution")) return "ctl";
   }
-  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
+  if (message.type === "agent.state.snapshot" || message.type === "agent.state.range.page" || message.type === "session.catalog.page" || message.type === "diagnostics.page" || message.type === "transport.fields.page") return "msg";
   if (message.type !== "runtime.event") return "ctl";
   const eventType = message.event?.type ?? "";
   if (eventType === "session.tool.content.page" || eventType === "session.change.detail.page") return "bulk";
@@ -235,6 +245,18 @@ export type HostServiceOptions = {
   recoverDshRuntime?: () => Promise<DshRuntime | undefined>;
   /** DeepSeek Harness 已安装且 Host 可启动；与当前是否已连接分开公告。 */
   dshLaunchable?: boolean;
+  /** DeepSeek Harness Desktop (ADR-0076): a separate entry with its own kind, namespace and connection. */
+  dshDesktopRuntime?: DshRuntime;
+  /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
+  ensureDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
+  /** Reconnect only to the Desktop instance Orbis launched; automatic recovery never opens Desktop. */
+  recoverDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
+  /** A usable Desktop installation exists. */
+  dshDesktopLaunchable?: boolean;
+  /** Desktop attach tier (DSH-DESKTOP-01), published only to devices that declared `agent.dshDesktop`. */
+  dshDesktopStatus?: () => DshDesktopAttach | undefined;
+  /** Orbis's Desktop connection ended; Desktop itself is not stopped (DSH-DESKTOP-07). */
+  onDshDesktopOffline?: (reason: string) => void;
   /**
    * Claude Code's transcript directory and phone-opened terminals (ADR-0033). Absent, Claude
    * Sessions appear only while an attached TUI reports in.
@@ -286,11 +308,12 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
-  #dshRuntime: DshRuntime | undefined;
-  #dshStarting: Promise<DshRuntime | undefined> | undefined;
-  #dshStartingExistingOnly = false;
-  #dshRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  #dshRecoveryError: string | undefined;
+  /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
+  readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
+  /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
+  readonly #deviceFeatures = new Map<string, ReadonlySet<string>>();
+  /** Devices that read a host-scope view without `dshDesktop`; their cached revisions are not full views. */
+  readonly #legacyHostServed = new Set<string>();
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -313,6 +336,8 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
+  readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null>();
+  readonly #catalogQueryDevices = new Set<string>();
   /**
    * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
    *
@@ -541,13 +566,13 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude"];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"];
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
         reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null : "backend_not_ready" };
-    }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot() });
+    }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const grouped = new Map<string, Set<string>>();
     for (const session of [...(this.#catalogCache?.sessions ?? []), ...runtimes]) {
       if (!session.cwd) continue;
@@ -583,9 +608,9 @@ export class HostService {
   }
 
   /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
-  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): Promise<HostCatalogRange> {
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind): Promise<HostCatalogRange> {
     if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
-    return this.#hostStateFacts.catalogRange(request);
+    return this.#hostStateFacts.catalogRange(request, hide);
   }
 
   #beginSharedOperation(kind: HostSharedOperation["kind"], agentKind: AgentKind | null = null, sessionId: string | null = null): string | undefined {
@@ -645,7 +670,9 @@ export class HostService {
    * 目录变化很慢、拉取很贵，而手机端会反复请求——不收敛就会互相堆叠。
    */
   #catalogCache: { at: number; sessions: AgentSessionSummary[] } | undefined;
-  #catalogInFlight: Promise<AgentSessionSummary[]> | undefined;
+  #catalogRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  #catalogRefreshFirstAt = 0;
+  #catalogInFlight: { epoch: number; promise: Promise<AgentSessionSummary[]> } | undefined;
   #catalogEpoch = 0;
   #sessionMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
@@ -722,6 +749,8 @@ export class HostService {
       dispatch: (runtimeId, commandId, command) => {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         const forwarded = { ...command };
+        // Window limits belong to the Host/device transaction; deployed adapters retain their strict command schema.
+        delete forwarded.historyWindow;
         if (!scope || !this.#conversationState.hasBaseline(scope)) delete forwarded.knownState;
         const recovered = scope ? this.#conversationState.recover(scope, forwarded) : undefined;
         if (recovered) {
@@ -878,13 +907,16 @@ export class HostService {
     this.#fileChangeTurns = new TurnChangeCoordinator(this.#fileChanges, changeScope,
       runtimeId => this.#runtimesSnapshot().find(runtime => runtime.runtimeId === runtimeId));
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
-    this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message));
-    this.#compactState = new CompactStateModel(agentStateRegistry);
-    this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message));
+    const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
+    this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
+    this.#compactState = new CompactStateModel(agentStateRegistry,
+      value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND)));
+    this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
+    if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
     this.refreshHostFacts();
   }
 
@@ -929,10 +961,11 @@ export class HostService {
 
   #attachDshBackend(dsh: DshRuntime): void {
     if (this.#backends.includes(dsh)) return;
+    const kind = dsh.kind;
     if (this.#toolContentStore) dsh.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
-    dsh.onDiagnostic = event => this.recordDiagnostic({ scope: "host", agentKind: "dsh", sessionId: null,
+    dsh.onDiagnostic = event => this.recordDiagnostic({ scope: "host", agentKind: kind, sessionId: null,
       category: "backend.transport", severity: event.event === "reconnected" ? "info" : event.event === "failed" ? "error" : "warning",
-      message: `DSH Web ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
+      message: `${kind === "dsh" ? "DSH Web" : "DSH Desktop"} ${event.event}`, detail: { ...(event.code === undefined ? {} : { code: event.code }),
         ...(event.reason === undefined ? {} : { reason: event.reason }),
         ...(event.maxFrameBytes === undefined ? {} : { maxFrameBytes: String(event.maxFrameBytes) }) } });
     dsh.onFileChangeEvent = (runtimeId, event) => {
@@ -946,7 +979,7 @@ export class HostService {
     dsh.onCatalogChange = () => this.#invalidateCatalog();
     dsh.onArchiveChange = (sessionId, archived) => {
       this.#invalidateCatalog();
-      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: "dsh", sessionId, archived });
+      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: kind, sessionId, archived });
     };
     dsh.onMetadataChange = () => {
       for (const runtime of dsh.directoryEntries()) {
@@ -961,15 +994,16 @@ export class HostService {
         this.#markRuntimeOffline(runtime.runtimeId, reason);
         this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
       }
+      if (kind === "dshDesktop") this.#options.onDshDesktopOffline?.(reason);
       this.#broadcastDeviceReady();
     };
     this.#backends.push(dsh);
-    this.#dshRuntime = dsh;
+    this.#dsh[kind].runtime = dsh;
   }
 
   /** Attach a newly connected DeepSeek backend and publish the changed capability. */
   async attachDshRuntime(runtime: DshRuntime): Promise<void> {
-    const existing = this.#backends.find(backend => backend.kind === "dsh");
+    const existing = this.#backends.find(backend => backend.kind === runtime.kind);
     if (existing === runtime) return;
     if (existing !== undefined) {
       const previous = existing as DshRuntime;
@@ -983,10 +1017,10 @@ export class HostService {
     this.#broadcastDeviceReady();
   }
 
-  /** Detach only Orbis's DSH Web client; the user's shared Web service stays alive. */
+  /** Detach only Orbis's DSH client; the user's Web service or Desktop app stays alive. */
   detachDshRuntime(runtime: DshRuntime): void {
     const index = this.#backends.indexOf(runtime);
-    if (index < 0 || runtime.kind !== "dsh") return;
+    if (index < 0 || (runtime.kind !== "dsh" && runtime.kind !== "dshDesktop")) return;
     runtime.onDiagnostic = undefined;
     runtime.onFileChangeEvent = undefined;
     runtime.onCatalogChange = undefined;
@@ -994,7 +1028,33 @@ export class HostService {
     runtime.onMetadataChange = undefined;
     runtime.onOffline = undefined;
     this.#backends.splice(index, 1);
-    if (this.#dshRuntime === runtime) this.#dshRuntime = undefined;
+    if (this.#dsh[runtime.kind].runtime === runtime) this.#dsh[runtime.kind].runtime = undefined;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Attach the terminal Codex backend once its app-server is ready, so Relay connectivity never waits for it. */
+  attachCodexRuntime(runtime: CodexRuntime): void {
+    if (runtime.kind !== "codex") return;
+    const existing = this.#backends.find(backend => backend.kind === "codex");
+    if (existing !== undefined && existing !== runtime) this.detachCodexRuntime(existing as CodexRuntime);
+    this.#options.codexRuntime = runtime;
+    this.#attachCodexBackend(runtime);
+    runtime.markStarted();
+    this.#options.log?.(`Codex 后端已就绪（runtimeId=${runtime.runtimeId}）`);
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Remove the terminal Codex backend (paused or being replaced). Terminal sessions go offline. */
+  detachCodexRuntime(runtime: CodexRuntime): void {
+    const index = this.#backends.indexOf(runtime);
+    if (index < 0 || runtime.kind !== "codex") return;
+    runtime.onMetadataChange = undefined;
+    runtime.onOffline = undefined;
+    runtime.onArchiveChange = undefined;
+    this.#backends.splice(index, 1);
+    if (this.#options.codexRuntime === runtime) delete this.#options.codexRuntime;
     this.#invalidateCatalog();
     this.#broadcastDeviceReady();
   }
@@ -1088,7 +1148,7 @@ export class HostService {
           if (backend.kind === "codexDesktop" && backend.isReady()) (backend as CodexRuntime).assertProviderSwitchReady();
         }
       }
-      if (kind === "dsh") await this.#dshRuntime?.assertProviderSwitchReady();
+      if (kind === "dsh") await this.#dsh.dsh.runtime?.assertProviderSwitchReady();
       if (kind === "claude" && [...new Set([...this.#claudeBridge.runtimeIds(), ...this.#claudeModsBridge.runtimeIds()])].some(id =>
         this.#claudeModsBridge.statusOf(id) === "running" || this.#claudeBridge.pendingRequests(id).length > 0)) {
         throw new ProviderError("Claude Code 正在工作或等待权限确认，请完成后再切换供应商");
@@ -1098,7 +1158,7 @@ export class HostService {
 
   async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv, live = false): Promise<void> {
     if (kind === "codex") await this.#options.codexRuntime?.reloadProviderConfiguration();
-    if (kind === "dsh") await this.#dshRuntime?.reloadProviderConfiguration(env, live);
+    if (kind === "dsh") await this.#dsh.dsh.runtime?.reloadProviderConfiguration(env, live);
     this.#invalidateCatalog();
   }
 
@@ -1182,7 +1242,7 @@ export class HostService {
         const threadId = backend.activeThreadIds().find(id => backend.runtimeIdFor(id) === runtimeId);
         if (threadId !== undefined) backend.announce(threadId);
       }
-      if (this.#dshRuntime?.ownsRuntime(runtimeId)) this.#dshRuntime.announce();
+      for (const kind of DSH_KINDS) if (this.#dsh[kind].runtime?.ownsRuntime(runtimeId)) this.#dsh[kind].runtime!.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
@@ -1194,15 +1254,37 @@ export class HostService {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
       return;
     }
+    // A device that has just declared `agent.dshDesktop` may hold revisions of the filtered view.
+    const known = scope.kind === "host" && this.#showsDshDesktop(deviceId) && this.#legacyHostServed.delete(deviceId) ? undefined : request.known;
     for (const part of buildAgentStateSnapshotParts({
       registry,
       requestId: request.requestId,
       scope,
       identity,
       stateFormat: request.stateFormat,
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, !this.#showsDshDesktop(deviceId)) } : {}),
+      projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
-      ...(request.known === undefined ? {} : { known: request.known }),
-    })) this.#sendToDevice(deviceId, part);
+      ...(known === undefined ? {} : { known }),
+    })) {
+      this.#sendToDevice(deviceId, part);
+    }
+  }
+
+  #showsDshDesktop(deviceId: string): boolean {
+    return this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_DSH_DESKTOP) === true;
+  }
+
+  /** Host-scope values for a device without `agent.dshDesktop` (ADR-0076 DSH-DESKTOP-06). */
+  #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
+    if (scope.kind !== "host" || this.#showsDshDesktop(deviceId)) return value;
+    this.#legacyHostServed.add(deviceId);
+    return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND));
+  }
+
+  /** What one device may receive; `undefined` drops the message for that device. */
+  #visibleTo(deviceId: string, message: object): object | undefined {
+    return this.#showsDshDesktop(deviceId) ? message : legacyDeviceMessage(message);
   }
 
   #resolveAgentStateScope(
@@ -1280,44 +1362,60 @@ export class HostService {
     const agents = this.#agentsSnapshot().filter(kind => kind !== "claude" || this.#claudeLaunchable);
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if (this.#options.dshLaunchable === true && !agents.includes("dsh")) agents.push("dsh");
+    // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
+    const desktop = this.#options.dshDesktopStatus?.()?.state;
+    if (this.#options.dshDesktopLaunchable === true && !agents.includes("dshDesktop")
+      && desktop !== "unsupported" && desktop !== "notInstalled" && desktop !== "incompatible") agents.push("dshDesktop");
     return agents;
   }
 
-  /** Recover existing native work without creating a Session or starting a Web service. */
-  recoverDshRuntime(): Promise<DshRuntime | undefined> {
-    return this.#ensureDshRuntime(true);
+  /** Recover existing native work without creating a Session, starting a Web service or opening Desktop. */
+  recoverDshRuntime(kind: DshKind = "dsh"): Promise<DshRuntime | undefined> {
+    return this.#ensureDshRuntime(true, kind);
   }
 
-  #scheduleDshRecovery(): void {
-    if (!this.#options.recoverDshRuntime || this.#providerFactsClosing || this.#serviceClosed) return;
-    void this.recoverDshRuntime().then(() => { this.#dshRecoveryError = undefined; }, error => {
+  /**
+   * HOST-PREP-05: the desktop's DSH prestart, run after the Relay is online. It shares the slot with
+   * recovery and App requests, so a single Web service connection is started however they interleave.
+   */
+  prepareDshRuntime(): Promise<DshRuntime | undefined> {
+    return this.#ensureDshRuntime(false, "dsh");
+  }
+
+  #scheduleDshRecovery(kind: DshKind = "dsh"): void {
+    const slot = this.#dsh[kind];
+    if (!(kind === "dsh" ? this.#options.recoverDshRuntime : this.#options.recoverDshDesktopRuntime) || this.#providerFactsClosing || this.#serviceClosed) return;
+    void this.recoverDshRuntime(kind).then(() => { slot.recoveryError = undefined; }, error => {
       const message = describeError(error);
-      if (!this.#providerFactsClosing && message !== this.#dshRecoveryError) {
-        this.#dshRecoveryError = message;
-        this.#options.log?.(`DeepSeek 自动接入暂时失败，将重试：${message}`);
+      if (!this.#providerFactsClosing && message !== slot.recoveryError) {
+        slot.recoveryError = message;
+        this.#options.log?.(`${kind === "dsh" ? "DeepSeek" : "DeepSeek Desktop"} 自动接入暂时失败，将重试：${message}`);
       }
     }).finally(() => {
       if (this.#providerFactsClosing || this.#serviceClosed) return;
-      this.#dshRecoveryTimer = setTimeout(() => { this.#dshRecoveryTimer = undefined; this.#scheduleDshRecovery(); }, 2_000);
-      this.#dshRecoveryTimer.unref();
+      slot.recoveryTimer = setTimeout(() => { slot.recoveryTimer = undefined; this.#scheduleDshRecovery(kind); }, 2_000);
+      slot.recoveryTimer.unref();
     });
   }
 
-  async #ensureDshRuntime(existingOnly = false): Promise<DshRuntime | undefined> {
+  async #ensureDshRuntime(existingOnly = false, kind: DshKind = "dsh"): Promise<DshRuntime | undefined> {
     if (this.#providerFactsClosing || this.#serviceClosed) return undefined;
-    const current = this.#backends.find(backend => backend.kind === "dsh" && backend.isReady());
+    const slot = this.#dsh[kind];
+    const current = this.#backends.find(backend => backend.kind === kind && backend.isReady());
     if (current !== undefined) return current as DshRuntime;
-    if (this.#dshStarting) {
-      const passive = this.#dshStartingExistingOnly;
+    if (slot.starting) {
+      const passive = slot.startingExistingOnly;
       if (!existingOnly && passive) {
         // A failed read-only probe is not a failed App operation. Retry through the
         // explicit launch path, but never repeat a launch or native Session operation.
-        const runtime = await this.#dshStarting.catch(() => undefined);
-        return runtime ?? this.#ensureDshRuntime();
+        const runtime = await slot.starting.catch(() => undefined);
+        return runtime ?? this.#ensureDshRuntime(false, kind);
       }
-      return this.#dshStarting;
+      return slot.starting;
     }
-    const connect = existingOnly ? this.#options.recoverDshRuntime : this.#options.ensureDshRuntime;
+    const connect = kind === "dsh"
+      ? existingOnly ? this.#options.recoverDshRuntime : this.#options.ensureDshRuntime
+      : existingOnly ? this.#options.recoverDshDesktopRuntime : this.#options.ensureDshDesktopRuntime;
     if (!connect) return undefined;
     const pending = (async () => {
       const runtime = await connect();
@@ -1331,10 +1429,19 @@ export class HostService {
         }
       }
       return runtime;
-    })().finally(() => { if (this.#dshStarting === pending) this.#dshStarting = undefined; });
-    this.#dshStartingExistingOnly = existingOnly;
-    this.#dshStarting = pending;
+    })().finally(() => { if (slot.starting === pending) slot.starting = undefined; });
+    slot.startingExistingOnly = existingOnly;
+    slot.starting = pending;
     return pending;
+  }
+
+  #dshDesktopSnapshot(): DshDesktopAttach | null {
+    return this.#options.dshDesktopStatus?.() ?? null;
+  }
+
+  /** Desktop attach tier changed: devices that understand it see the new tier and launchability. */
+  announceDshDesktopStatus(): void {
+    this.#broadcastDeviceReady();
   }
 
   #codexDesktopSnapshot(): CodexDesktopAttach | null {
@@ -1365,6 +1472,8 @@ export class HostService {
       agents: this.#agentsSnapshot(),
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
+      dshDesktop: this.#dshDesktopSnapshot(),
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
       sessionConfiguration: 1,
     };
   }
@@ -1381,7 +1490,8 @@ export class HostService {
       if (!link?.active || link.protocolVersion(kind) === undefined) return;
       for (const backend of this.#backends) if (backend instanceof CodexRuntime && backend.isReady())
         for (const threadId of backend.activeThreadIds()) backend.announce(threadId);
-      this.#dshRuntime?.announce(); this.#claudeBackend.announce();
+      for (const kind of DSH_KINDS) this.#dsh[kind].runtime?.announce();
+      this.#claudeBackend.announce();
       for (const { runtimeId, event } of this.#loopback?.runtimeCapabilities() ?? []) {
         if (this.#compactStateSubscriptions.owns(deviceId, runtimeId, "capabilities")) continue;
         this.#sendToDeviceOn(deviceId, kind, { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
@@ -1545,28 +1655,44 @@ export class HostService {
       this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
     }
 
-    try { await this.#dshRuntime?.start(); }
-    catch (error) { this.#options.log?.(`DeepSeek Web 会话发现暂时失败，将自动重试：${describeError(error)}`); }
     await relay.start();
     this.#modelLifecycle = "running";
-    this.#scheduleDshRecovery();
+    // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
+    // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
+    // prestarted backend settled, so it cannot open a second connection beside one still starting.
+    for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
     this.refreshHostFacts();
     void this.refreshProviderFacts();
+  }
+
+  async #startDshBackend(kind: DshKind): Promise<void> {
+    const runtime = this.#dsh[kind].runtime;
+    if (runtime === undefined || this.#providerFactsClosing || this.#serviceClosed) return;
+    try { await runtime.start(); }
+    catch (error) {
+      this.#options.log?.(`${kind === "dsh" ? "DeepSeek Web" : "DeepSeek Desktop"} 会话发现暂时失败，将自动重试：${describeError(error)}`);
+      return;
+    }
+    if (this.#providerFactsClosing || this.#serviceClosed) return;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   async stop(): Promise<void> {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
-    clearTimeout(this.#dshRecoveryTimer); this.#dshRecoveryTimer = undefined;
+    for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
     for (const timer of this.#bootstrapReplayTimers.values()) clearTimeout(timer);
     this.#bootstrapReplayTimers.clear();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
-    await this.#dshStarting?.catch(() => {});
+    // HOST-PREP-05: a DeepSeek start still in flight (a Web service lock may take a minute) does not hold
+    // the pause. Its pending attach sees #providerFactsClosing and stops the runtime it receives.
     this.#toolContentService.close();
     await this.#fileChangeTurns.close();
     await this.#fileChanges.close();
@@ -1587,6 +1713,8 @@ export class HostService {
     this.#lan = undefined;
     for (const link of this.#links.values()) link.close();
     this.#links.clear();
+    this.#historyInterests.clear();
+    this.#catalogQueryDevices.clear();
     await this.#loopback?.stop();
     this.#loopback = undefined;
     await this.#relay?.stop();
@@ -1683,6 +1811,9 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
+    this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
+    this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
@@ -1794,6 +1925,18 @@ export class HostService {
       this.#options.onData?.(deviceId, payload);
       return;
     }
+    if (message.type === "device.features") {
+      const before = this.#showsDshDesktop(deviceId);
+      this.#deviceFeatures.set(deviceId, new Set(message.features));
+      if (before === this.#showsDshDesktop(deviceId)) return;
+      // The filtered device.ready and notification snapshots of this handshake are replaced by the full view.
+      this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
+      for (const runtime of this.#runtimesSnapshot()) {
+        if (isDshDesktopRuntime(runtime.runtimeId)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+      }
+      this.#dsh.dshDesktop.runtime?.announce();
+      return;
+    }
     if (message.type === "device.version.report") {
       const device = findActiveDeviceRecord(this.#store, deviceId);
       if (device !== undefined && (device.appVersion !== message.version || device.appVersionCode !== message.versionCode)) {
@@ -1808,6 +1951,41 @@ export class HostService {
       if (message.type === "session.launch" || message.type === "session.launch.read") {
         this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
       } else void this.#handleSessionConfiguration(deviceId, message);
+      return;
+    }
+    if (message.type === "session.catalog.capabilities.request") {
+      this.#catalogQueryDevices.add(deviceId);
+      this.#sendToDevice(deviceId, { type: "session.catalog.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1" }); return;
+    }
+    if (message.type === "session.catalog.query") {
+      if (!this.#catalogQueryDevices.has(deviceId)) return;
+      const link = this.#links.get(deviceId);
+      void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
+        if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
+        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#showsDshDesktop(deviceId) ? undefined : "dshDesktop"), protocolVersion: PROTOCOL_VERSION };
+        if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
+          this.#sendToDevice(deviceId, { type: "protocol.error",
+            requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
+        }
+        this.#sendToDevice(deviceId, response);
+      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
+      return;
+    }
+    if (message.type === "session.history.capabilities.request") {
+      this.#historyInterests.set(deviceId, null);
+      this.#sendToDevice(deviceId, { type: "session.history.capabilities", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, format: "v1", maxPageBytes: 65536 });
+      return;
+    }
+    if (message.type === "session.history.interest") {
+      const scope = message.runtimeId === null ? undefined : this.#agentFacts.scopeOf(message.runtimeId);
+      const accepted = this.#historyInterests.has(deviceId) && (message.runtimeId === null ||
+        scope?.kind === "agent" && scope.key.sessionId === message.sessionId);
+      if (accepted) this.#historyInterests.set(deviceId, message.runtimeId === null ? null :
+        { runtimeId: message.runtimeId, sessionId: message.sessionId! });
+      this.#sendToDevice(deviceId, { type: "session.history.interest.result", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, accepted });
       return;
     }
     if (message.type === "transport.fields.read") {
@@ -1872,7 +2050,8 @@ export class HostService {
     }
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
-      void this.readHostRange(message).then(page => {
+      if (!this.#showsDshDesktop(deviceId)) this.#legacyHostServed.add(deviceId);
+      void this.readHostRange(message, this.#showsDshDesktop(deviceId) ? undefined : DSH_DESKTOP_KIND).then(page => {
         if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
           requestId: message.requestId, scope: "host", domain: "catalog", page });
@@ -2143,20 +2322,28 @@ export class HostService {
     }
     const epoch = this.#catalogEpoch;
     if (this.#catalogInFlight !== undefined) {
-      const sessions = await this.#catalogInFlight;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      const flight = this.#catalogInFlight;
+      const sessions = await flight.promise;
+      if (flight.epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       return { sessions, cached: true };
     }
     const task = this.#collectCatalogs(epoch);
-    this.#catalogInFlight = task;
+    const flight = { epoch, promise: task };
+    this.#catalogInFlight = flight;
     try {
       const sessions = await task;
-      if (epoch !== this.#catalogEpoch) return this.#catalogWithCache();
+      if (epoch !== this.#catalogEpoch) {
+        if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
+        return this.#catalogWithCache();
+      }
       this.#catalogCache = { at: Date.now(), sessions };
       this.refreshHostFacts();
       return { sessions, cached: false };
     } finally {
-      if (this.#catalogInFlight === task) this.#catalogInFlight = undefined;
+      if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
     }
   }
 
@@ -2214,12 +2401,25 @@ export class HostService {
   #invalidateCatalog(): void {
     this.#catalogEpoch += 1;
     this.#catalogCache = undefined;
-    this.#catalogInFlight = undefined;
+    // FT-G11: source invalidation must publish without waiting for a periodic
+    // phone read. Coalesce bursts, bounded by the first invalidation's deadline.
+    if (this.#serviceClosed || this.#providerFactsClosing ||
+        !(this.#compactStateSubscriptions?.interestedInCatalog() || this.#agentStateSubscriptions?.interestedInCatalog())) return;
+    const now = Date.now();
+    if (this.#catalogRefreshTimer === undefined) this.#catalogRefreshFirstAt = now;
+    clearTimeout(this.#catalogRefreshTimer);
+    this.#catalogRefreshTimer = setTimeout(() => {
+      this.#catalogRefreshTimer = undefined;
+      if (this.#serviceClosed || this.#providerFactsClosing ||
+          !(this.#compactStateSubscriptions.interestedInCatalog() || this.#agentStateSubscriptions.interestedInCatalog())) return;
+      void this.#catalogWithCache().catch(error => this.#options.log?.(`目录聚合失败：${describeError(error)}`));
+    }, Math.max(0, Math.min(250, this.#catalogRefreshFirstAt + 1_000 - now)));
+    this.#catalogRefreshTimer.unref();
   }
 
   async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
     let backend = this.#backends.find(item => item.kind === kind);
-    if (kind === "dsh" && !backend?.isReady()) await this.#ensureDshRuntime();
+    if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
     if (kind === "codexDesktop" && !backend?.isReady()) {
       const runtime = await this.#options.ensureCodexDesktop?.();
       if (runtime) this.attachCodexDesktopRuntime(runtime);
@@ -2471,11 +2671,15 @@ export class HostService {
             }
           } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
         }
-        if ((backend === undefined || !backend.isReady()) && target.agentKind === "dsh") {
+        if ((backend === undefined || !backend.isReady()) && (target.agentKind === "dsh" || target.agentKind === "dshDesktop")) {
+          const kind = target.agentKind;
           try {
-            await this.#ensureDshRuntime();
-            backend = this.#backends.find(candidate => candidate.kind === target.agentKind);
-          } catch (error) { throw new ActivationError("agent_unsupported", `DeepSeek Harness 启动或接入失败：${describeError(error)}`); }
+            await this.#ensureDshRuntime(false, kind);
+            backend = this.#backends.find(candidate => candidate.kind === kind);
+          } catch (error) {
+            // Desktop failures are already short states (DSH-DESKTOP-09), shown on the phone as they are.
+            throw new ActivationError("agent_unsupported", kind === "dsh" ? `DeepSeek Harness 启动或接入失败：${describeError(error)}` : describeError(error));
+          }
         }
         if (backend === undefined) {
           throw new ActivationError(
@@ -2484,7 +2688,8 @@ export class HostService {
               ? "Codex 后端未启用：请用 `orbis host --codex` 启动"
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未安装，或 Host 无法启动并接入它"
-              : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它" : "未知的 agent 类型",
+              : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它"
+              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek 桌面版不可用" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -2498,7 +2703,7 @@ export class HostService {
         return;
       }
       const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
-        : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
+        : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {
           const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2506,17 +2711,20 @@ export class HostService {
           if (!runtime?.isReady()) throw new Error("Codex 桌面版没有完成 app-server 握手");
         } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
       }
-      if (resumeKind === "dsh" && this.#backends.every(backend => backend.kind !== "dsh" || !backend.isReady())) {
+      if ((resumeKind === "dsh" || resumeKind === "dshDesktop") && this.#backends.every(backend => backend.kind !== resumeKind || !backend.isReady())) {
+        const product = resumeKind === "dsh" ? "DeepSeek Harness" : "DeepSeek 桌面版";
         try {
-          const runtime = await this.#ensureDshRuntime();
-          if (!runtime?.isReady()) throw new Error("DeepSeek Harness 没有完成 Web 握手");
+          const runtime = await this.#ensureDshRuntime(false, resumeKind);
+          if (!runtime?.isReady()) throw new Error(`${product} 没有完成握手`);
         }
-        catch (error) { throw new ActivationError("agent_unsupported", `DeepSeek Harness 启动或接入失败：${describeError(error)}`); }
+        catch (error) {
+          throw new ActivationError("agent_unsupported", resumeKind === "dsh" ? `${product} 启动或接入失败：${describeError(error)}` : describeError(error));
+        }
       }
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && backend.kind === "codexDesktop") continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop")) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -2561,11 +2769,15 @@ export class HostService {
    * 路径，而对端恰恰是那时候最需要目录——把它挂在路径变更上，手机重开就永远补不到。
    */
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
+    // Features belong to the App process on the other end; a new handshake may be a different (older) build.
+    this.#deviceFeatures.delete(deviceId);
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
     this.#compactStateSubscriptions.clearDevice(deviceId);
     this.#sessionSync.clearDevice(deviceId);
+    this.#historyInterests.delete(deviceId);
+    this.#catalogQueryDevices.delete(deviceId);
     this.#syncDeviceTransfers(deviceId);
     if (change.changed) {
       this.#options.log?.(`设备 ${deviceId} 的路径 ${describePath(change.from)} → ${describePath(change.to)}`);
@@ -2655,9 +2867,11 @@ export class HostService {
     this.#sendJsonToDevice(deviceId, message, channelForDeviceMessage(message));
   }
 
-  #sendJsonToDevice(deviceId: string, message: object, channel: EnvelopeChannel): void {
+  #sendJsonToDevice(deviceId: string, original: object, channel: EnvelopeChannel): void {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
+    const message = this.#visibleTo(deviceId, original);
+    if (message === undefined) return;
     try {
       // `send` 走当前生效路径；没有可用路径时返回 false，此时消息就是发不出去，
       // 也不该假装发出去了——上层会靠重连后的 `device.ready` 重新对齐。
@@ -2669,9 +2883,11 @@ export class HostService {
   }
 
   /** 指定路径上的发送（握手刚完成时用，理由见 `DeviceLink.sendOn`）。 */
-  #sendToDeviceOn(deviceId: string, kind: PathKind, message: RelayToDeviceMessage): void {
+  #sendToDeviceOn(deviceId: string, kind: PathKind, original: RelayToDeviceMessage): void {
     const link = this.#links.get(deviceId);
     if (link === undefined) return;
+    const message = this.#visibleTo(deviceId, original) as RelayToDeviceMessage | undefined;
+    if (message === undefined) return;
     try {
       const payload = this.#encodeForDevice(deviceId, message);
       link.sendOn(kind, payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
@@ -2819,8 +3035,17 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    if (message.type === "runtime.event" && (message.event.type === "session.patch" || message.event.type === "session.snapshot")) {
+    const hidden = hiddenFromLegacy(message);
+    const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
+      "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
+    if (message.type === "runtime.event" && chatEvent) {
+      const scope = this.#agentFacts.scopeOf(message.runtimeId);
+      const sessionId = "sessionId" in message.event ? message.event.sessionId : scope?.kind === "agent" ? scope.key.sessionId : undefined;
       for (const [deviceId, link] of this.#links) {
+        const interest = this.#historyInterests.get(deviceId);
+        if (this.#historyInterests.has(deviceId) &&
+            (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
+        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
@@ -2830,17 +3055,20 @@ export class HostService {
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
+        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
         try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
       return;
     }
-    this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength));
+    this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength),
+      hidden ? deviceId => this.#showsDshDesktop(deviceId) : undefined);
   }
 
   /** 广播给所有握好手的设备。单台设备封帧失败不影响其他设备。 */
-  #broadcastPayload(payload: Uint8Array, channel: EnvelopeChannel, source: OutboundQueueSource): void {
+  #broadcastPayload(payload: Uint8Array, channel: EnvelopeChannel, source: OutboundQueueSource, admits?: (deviceId: string) => boolean): void {
     for (const [deviceId, link] of this.#links) {
+      if (admits !== undefined && !admits(deviceId)) continue;
       try {
         this.#measurePayload(payload, { type: source.type, runtimeId: source.runtimeId,
           ...(source.eventType ? { event: { type: source.eventType } } : {}) });

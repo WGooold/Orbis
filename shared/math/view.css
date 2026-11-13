@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; }
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, Roboto, sans-serif; font-variant-numeric: tabular-nums; color: var(--ink); overflow-wrap: anywhere; }
+main { padding: 2px 0; }
+a { color: var(--link); text-decoration: underline; }
+code, .math-fallback { white-space: pre-wrap; font-family: ui-monospace, monospace; }
+code { background: #80808014; }
+.math-source { position: relative; display: inline-grid; grid-template-columns: max-content; max-width: 100%; overflow-x: auto; overflow-y: hidden; vertical-align: baseline; padding: 2px 0; }
+.math-source.display { display: block; width: 100%; }
+.katex { font-size: 1.1em; }
+.katex-display { margin: .35em 0; min-width: max-content; }
+.katex-display > .katex { text-align: center; }
+body.no-selection { -webkit-user-select: none; user-select: none; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }

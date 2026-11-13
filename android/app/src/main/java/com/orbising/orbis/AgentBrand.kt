@@ -35,10 +35,12 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
 internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
-    "dsh" -> AgentBrand.DeepSeek
+    "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
     else -> AgentBrand.Pi
 }
+/** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
+internal fun ownsComputerWindow(kind: String?) = kind == "codexDesktop" || kind == "dshDesktop"
 internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable

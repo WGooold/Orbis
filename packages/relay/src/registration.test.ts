@@ -1,12 +1,12 @@
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, diffieHellman, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { once } from "node:events";
 import WebSocket from "ws";
-import { PROTOCOL_VERSION } from "@orbis/protocol";
+import { PROTOCOL_VERSION, hostRecoveryProof } from "@orbis/protocol";
 import { RegistrationAuthority, normalizeQqEmail, type VerificationMail } from "./registration.js";
 import { createRelayServer, type RelayServer } from "./index.js";
 import { verificationMailer } from "./verification-mail.js";
@@ -152,6 +152,93 @@ describe("QQ mailbox activation", () => {
   });
 });
 
+describe("Host key recovery (HOST-ACT-15)", () => {
+  // A lost credential must stay recoverable by the computer that still holds its Host key, whatever
+  // mailbox or direct path registered it; nobody else may use that path, and each challenge works once.
+  const hostKeys = (): { privateKey: KeyObject; hostPub: string } => {
+    const { privateKey, publicKey } = generateKeyPairSync("x25519");
+    return { privateKey, hostPub: String(publicKey.export({ format: "jwk" }).x) };
+  };
+  const prove = (privateKey: KeyObject, hostId: string, challenge: { challengeId: string; relayPub: string }): string =>
+    hostRecoveryProof(diffieHellman({ privateKey, publicKey: createPublicKey({ key: { kty: "OKP", crv: "X25519", x: challenge.relayPub }, format: "jwk" }) }), hostId, challenge.challengeId);
+
+  it("replaces a lost direct credential only for the recorded key, once per challenge, and persists the key", async () => {
+    const stateFile = join(await testDirectory(join(tmpdir(), "orbis-registration-recovery-")), "accounts.json");
+    let now = 1_000_000;
+    const authority = await RegistrationAuthority.create({ stateFile, now: () => now });
+    const hostId = "recoverable-host";
+    const owner = hostKeys(), other = hostKeys();
+    const original = await authority.activate({ hostId, hostPub: owner.hostPub }, "source", () => false);
+    await expect(authority.activate({ hostId }, "source", () => false)).rejects.toMatchObject({ code: "host_already_registered" });
+    const refused = authority.recoveryChallenge({ hostId }, "source");
+    await expect(authority.recover({ hostId, challengeId: refused.challengeId, proof: prove(other.privateKey, hostId, refused) })).rejects.toMatchObject({ code: "invalid_recovery_proof" });
+    // The refused challenge is spent even for the right key.
+    await expect(authority.recover({ hostId, challengeId: refused.challengeId, proof: prove(owner.privateKey, hostId, refused) })).rejects.toMatchObject({ code: "invalid_recovery_proof" });
+    const expired = authority.recoveryChallenge({ hostId }, "source");
+    now += expired.expiresInSeconds * 1_000;
+    await expect(authority.recover({ hostId, challengeId: expired.challengeId, proof: prove(owner.privateKey, hostId, expired) })).rejects.toMatchObject({ code: "invalid_recovery_proof" });
+    const foreign = authority.recoveryChallenge({ hostId }, "source");
+    await expect(authority.recover({ hostId: "another-host", challengeId: foreign.challengeId, proof: prove(owner.privateKey, "another-host", foreign) })).rejects.toMatchObject({ code: "invalid_recovery_proof" });
+    const challenge = authority.recoveryChallenge({ hostId }, "source");
+    const recovered = await authority.recover({ hostId, challengeId: challenge.challengeId, proof: prove(owner.privateKey, hostId, challenge) });
+    expect(recovered).toMatchObject({ hostId, email: null });
+    expect(authority.hostForCredential(recovered.credential)).toBe(hostId);
+    expect(authority.hostForCredential(original.credential)).toBeUndefined();
+    expect(await readFile(stateFile, "utf8")).not.toContain(recovered.credential);
+    const restarted = await RegistrationAuthority.create({ stateFile, now: () => now });
+    expect(restarted.hostForCredential(recovered.credential)).toBe(hostId);
+    const again = restarted.recoveryChallenge({ hostId }, "source");
+    expect(restarted.hostForCredential((await restarted.recover({ hostId, challengeId: again.challengeId, proof: prove(owner.privateKey, hostId, again) })).credential)).toBe(hostId);
+    expect(() => restarted.recoveryChallenge({ hostId: "unknown-host" }, "source")).toThrow(expect.objectContaining({ code: "recovery_unavailable" }));
+  });
+
+  it("records a registered Host's key once from its credential, keeps it across mailbox rotation, and drops it on reset", async () => {
+    let code = "";
+    let now = 1_000_000;
+    const authority = await RegistrationAuthority.create({ sendMail: async mail => { code = mail.code; }, now: () => now });
+    const hostId = "legacy-mailbox-host";
+    const body = { hostId, email: "owner@qq.com" };
+    const verify = async (hostPub?: string) => {
+      now += 61_000; // past the per-mailbox resend interval
+      const challenge = await authority.requestCode(body, "source");
+      return await authority.activate({ ...body, ...challenge, code, ...(hostPub === undefined ? {} : { hostPub }) });
+    };
+    // A released desktop activates without a key: no recovery path yet.
+    const legacy = await verify();
+    expect(() => authority.recoveryChallenge({ hostId }, "source")).toThrow(expect.objectContaining({ code: "recovery_unavailable" }));
+    const owner = hostKeys(), other = hostKeys();
+    await expect(authority.bindHostKey("orbis_host_unknown", owner.hostPub)).rejects.toMatchObject({ code: "unauthorized" });
+    await expect(authority.bindHostKey(legacy.credential, "not-a-key")).rejects.toMatchObject({ code: "invalid_host_key" });
+    await authority.bindHostKey(legacy.credential, owner.hostPub);
+    await authority.bindHostKey(legacy.credential, owner.hostPub);
+    await expect(authority.bindHostKey(legacy.credential, other.hostPub)).rejects.toMatchObject({ code: "host_key_mismatch" });
+    // Mailbox rotation offering another key keeps the recorded one.
+    const rotated = await verify(other.hostPub);
+    expect(authority.hostForCredential(legacy.credential)).toBeUndefined();
+    const refused = authority.recoveryChallenge({ hostId }, "source");
+    await expect(authority.recover({ hostId, challengeId: refused.challengeId, proof: prove(other.privateKey, hostId, refused) })).rejects.toMatchObject({ code: "invalid_recovery_proof" });
+    const challenge = authority.recoveryChallenge({ hostId }, "source");
+    const recovered = await authority.recover({ hostId, challengeId: challenge.challengeId, proof: prove(owner.privateKey, hostId, challenge) });
+    expect(recovered.email).toBe("owner@qq.com");
+    expect(authority.hostForCredential(rotated.credential)).toBeUndefined();
+    await authority.resetHost(hostId);
+    expect(() => authority.recoveryChallenge({ hostId }, "source")).toThrow(expect.objectContaining({ code: "recovery_unavailable" }));
+    await expect(authority.bindHostKey(recovered.credential, owner.hostPub)).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("limits recovery challenges per source without letting other sources lock a Host out", async () => {
+    const authority = await RegistrationAuthority.create({});
+    const owner = hostKeys();
+    await authority.activate({ hostId: "limited-host", hostPub: owner.hostPub }, "source", () => false);
+    // Probing unknown Hosts spends the prober's own allowance.
+    for (let index = 0; index < 30; index++) expect(() => authority.recoveryChallenge({ hostId: `probe-host-${index}` }, "probe")).toThrow();
+    expect(() => authority.recoveryChallenge({ hostId: "limited-host" }, "probe")).toThrow(expect.objectContaining({ code: "too_many_requests" }));
+    for (let index = 0; index < 40; index++) authority.recoveryChallenge({ hostId: "limited-host" }, `attacker-${index}`);
+    const challenge = authority.recoveryChallenge({ hostId: "limited-host" }, "owner");
+    expect(authority.hostForCredential((await authority.recover({ hostId: "limited-host", challengeId: challenge.challengeId, proof: prove(owner.privateKey, "limited-host", challenge) })).credential)).toBe("limited-host");
+  });
+});
+
 describe("registered Host Relay routes", () => {
   let relay: RelayServer | undefined;
   const sockets: WebSocket[] = [];
@@ -193,6 +280,32 @@ describe("registered Host Relay routes", () => {
     const next = once(connected.socket, "message");
     connected.socket.send(JSON.stringify({ type: "v2.frame", protocolVersion: PROTOCOL_VERSION, envelope: { v: 2, hdr: { k: "data", room: "other-computer", from: device.deviceId, to: "other-computer", n: 1, ch: "ctl" }, ct: "opaque" } }));
     expect(JSON.parse(String((await next)[0])).code).toBe("runtime_mismatch");
+  });
+  it("routes key recording and recovery: the recovered credential connects and the lost one is refused", async () => {
+    // HOST-ACT-15 over HTTP, as the desktop calls it.
+    const { hostId, credential, base } = await setup();
+    expect(await (await fetch(`${base}/v1/registration/status`)).json()).toMatchObject({ hostKeyRecovery: true });
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+    expect((await post("/v1/registration/recovery-challenge", { hostId })).status).toBe(404);
+    const { privateKey, publicKey } = generateKeyPairSync("x25519");
+    const hostPub = String(publicKey.export({ format: "jwk" }).x);
+    expect((await post("/v1/registration/host-key", { hostPub })).status).toBe(401);
+    expect((await post("/v1/registration/host-key", { hostPub }, { authorization: `Bearer ${credential}` })).status).toBe(200);
+    const challengeResponse = await post("/v1/registration/recovery-challenge", { hostId });
+    expect(challengeResponse.status).toBe(201);
+    expect(challengeResponse.headers.get("cache-control")).toBe("no-store");
+    const challenge = await challengeResponse.json() as { challengeId: string; relayPub: string };
+    const proof = hostRecoveryProof(diffieHellman({ privateKey, publicKey: createPublicKey({ key: { kty: "OKP", crv: "X25519", x: challenge.relayPub }, format: "jwk" }) }), hostId, challenge.challengeId);
+    expect((await post("/v1/registration/recover", { hostId, challengeId: challenge.challengeId, proof: proof.replace(/^./, proof[0] === "A" ? "B" : "A") })).status).toBe(401);
+    const retry = await (await post("/v1/registration/recovery-challenge", { hostId })).json() as { challengeId: string; relayPub: string };
+    const recoveredResponse = await post("/v1/registration/recover", { hostId, challengeId: retry.challengeId,
+      proof: hostRecoveryProof(diffieHellman({ privateKey, publicKey: createPublicKey({ key: { kty: "OKP", crv: "X25519", x: retry.relayPub }, format: "jwk" }) }), hostId, retry.challengeId) });
+    expect(recoveredResponse.status).toBe(201);
+    const recovered = await recoveredResponse.json() as { hostId: string; credential: string; email: string | null };
+    expect(recovered).toMatchObject({ hostId, email: "owner@qq.com" });
+    const authenticate = (key: string) => ({ type: "runtime.authenticate", role: "host", protocolVersion: PROTOCOL_VERSION, credential: key, runtime: { runtimeId: hostId, name: "desktop", cwd: "/", status: "idle" } });
+    expect((await socketMessage("/v1/runtime", authenticate(credential))).message.code).toBe("unauthorized");
+    expect((await socketMessage("/v1/runtime", authenticate(recovered.credential))).message.type).toBe("runtime.ready");
   });
   it("missing SMTP exposes a clear unavailable status without issuing any credentials", async () => {
     relay = await createRelayServer({ registration: await RegistrationAuthority.create({}) });

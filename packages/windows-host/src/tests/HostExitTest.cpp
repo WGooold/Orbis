@@ -9,7 +9,12 @@
 #include <QFileInfo>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
+#include <QQuickWindow>
 #include <QtTest>
+#include <memory>
 
 class HostExitTest : public QObject {
     Q_OBJECT
@@ -19,6 +24,42 @@ class HostExitTest : public QObject {
         QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(script), script.size());
     }
 private slots:
+    void approvedWindowClose_data() {
+        QTest::addColumn<bool>("trayAvailable");
+        QTest::newRow("with-tray") << true;
+        QTest::newRow("without-tray") << false;
+    }
+    // HOST-EXIT-05: run Main.qml's real close handler before, during and after verified cleanup.
+    // A controller-only exitReady assertion misses the window veto that leaves the native app alive.
+    void approvedWindowClose() {
+        QFETCH(bool, trayAvailable);
+        QFile source(QStringLiteral(ORBIS_MAIN_QML)); QVERIFY(source.open(QIODevice::ReadOnly));
+        const auto text = QString::fromUtf8(source.readAll());
+        const auto start = text.indexOf("    onClosing: function(close)");
+        const auto end = text.indexOf("\n    component ", start);
+        QVERIFY(start >= 0 && end > start);
+        QTemporaryDir root;
+        HostController host(root.path(), root.path(), root.path(), root.path(), false);
+        host.m_shutdown = true; // No real runtime or credentials are used in this window fixture.
+        QSignalSpy prompts(&host, &HostController::exitConfirmationRequested);
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("host", &host);
+        engine.rootContext()->setContextProperty("trayAvailable", trayAvailable);
+        QQmlComponent component(&engine);
+        component.setData(("import QtQuick\nWindow { id: window; width: 320; height: 200; visible: true\n" + text.mid(start, end - start) + "\n}").toUtf8(), QUrl());
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> view(component.create());
+        auto *window = qobject_cast<QQuickWindow *>(view.get()); QVERIFY(window);
+        QVERIFY(!window->close());
+        QCOMPARE(prompts.size(), trayAvailable ? 0 : 1);
+        QCOMPARE(window->isVisible(), !trayAvailable);
+        window->show(); host.m_exiting = true;
+        QVERIFY(!window->close()); QVERIFY(window->isVisible());
+        host.finishExit(); QVERIFY(host.exitApproved());
+        QVERIFY2(window->close(), "Verified cleanup must release Main.qml's window-close veto");
+        QVERIFY(!window->isVisible());
+        QCOMPARE(prompts.size(), trayAvailable ? 0 : 1);
+    }
     // HOST-EXIT-01: requesting exit/update only opens confirmation; cancellation has no side effects.
     void requestsRequireConfirmation() {
         QTemporaryDir root;

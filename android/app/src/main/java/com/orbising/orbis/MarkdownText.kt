@@ -41,6 +41,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
@@ -115,6 +116,7 @@ internal fun rememberMarkdownDocument(
 
 @Composable
 internal fun MarkdownText(markdown: String, downloadFile: (String) -> Unit) {
+    MathMarkupEngine.install(LocalContext.current.assets)
     val prepared = rememberMarkdownDocument(markdown, markdownDocuments.peek(markdown), markdownDocuments::resolve)
     val blocks = prepared?.blocks.orEmpty()
     val uriHandler = LocalUriHandler.current
@@ -198,7 +200,9 @@ private fun MarkdownInline(
     val text = remember(node, document, listener, linkColor) {
         document?.inline?.get(node)?.let { bindMarkdownInline(it, listener, linkColor) } ?: AnnotatedString("")
     }
-    StreamingMarkdownText(text, modifier = modifier, style = style, textAlign = textAlign)
+    val math = document?.mathHtml?.get(node)
+    if (math != null) MathFragment(math, text, listener, modifier, style, textAlign)
+    else StreamingMarkdownText(text, modifier = modifier, style = style, textAlign = textAlign)
 }
 
 @Composable

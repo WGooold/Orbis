@@ -77,15 +77,22 @@ private final class DirectoryViewport: ObservableObject {
 /// Observes the existing native pan; never replaces its delegate or takes the gesture.
 private struct DirectoryViewportObserver: UIViewRepresentable {
     let viewport: DirectoryViewport
-    func makeUIView(context: Context) -> Observer { Observer(viewport: viewport) }
-    func updateUIView(_ view: Observer, context: Context) { view.attach() }
+    var needMore: () -> Void
+    func makeUIView(context: Context) -> Observer { Observer(viewport: viewport, needMore: needMore) }
+    func updateUIView(_ view: Observer, context: Context) {
+        view.needMore = needMore; view.attach()
+        DispatchQueue.main.async { [weak view] in view?.checkForMore() }
+    }
     static func dismantleUIView(_ view: Observer, coordinator: ()) { view.detach() }
 
     final class Observer: UIView {
         let viewport: DirectoryViewport
         private weak var scroll: UIScrollView?
         private var displayLink: CADisplayLink?
-        init(viewport: DirectoryViewport) { self.viewport = viewport; super.init(frame: .zero); isUserInteractionEnabled = false }
+        var needMore: () -> Void
+        init(viewport: DirectoryViewport, needMore: @escaping () -> Void) {
+            self.viewport = viewport; self.needMore = needMore; super.init(frame: .zero); isUserInteractionEnabled = false
+        }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func didMoveToWindow() { super.didMoveToWindow(); attach() }
         func attach() {
@@ -117,9 +124,15 @@ private struct DirectoryViewportObserver: UIViewRepresentable {
             }
         }
         @objc private func checkIdle() {
+            checkForMore()
             guard let scroll, !scroll.isTracking && !scroll.isDragging && !scroll.isDecelerating else { return }
             displayLink?.invalidate(); displayLink = nil
             viewport.interactionChanged(false)
+        }
+        func checkForMore() {
+            guard let scroll, window != nil, scroll.bounds.height > 0,
+                  scroll.contentOffset.y + scroll.bounds.height + 200 >= scroll.contentSize.height else { return }
+            needMore()
         }
     }
 }
@@ -136,6 +149,11 @@ struct SessionDirectoryState: Equatable {
     /// 展开目录里是否显示预览之外的较早会话；换目录时复位。
     var showAllSessions = false
     var showAllDirectories = false
+    var networkQuery: CatalogQuery {
+        CatalogQuery(text: String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256)), agentKind: kind,
+            archived: archived, provider: kind == "codex" || kind == "codexDesktop" ? providerKey : "all",
+            directory: showAllSessions ? expandedPath.map(catalogDirectoryId) : nil)
+    }
 }
 
 struct SessionDrawerView: View, Equatable {
@@ -160,7 +178,8 @@ struct SessionDrawerView: View, Equatable {
     private var request: SessionDirectoryFilter {
         SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
             kind: state.kind, archived: state.archived, provider: state.providerKey,
-            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language))
+            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language),
+            queryRevision: store.hostState.catalogQueryRevision)
     }
     private var projection: SessionDirectoryProjection? {
         incomingProjection?.filter.sameView(as: request) == true ? incomingProjection : nil
@@ -263,7 +282,13 @@ struct SessionDrawerView: View, Equatable {
                     }
                 }.padding(.top, 4).padding(.bottom, 16)
                     .coordinateSpace(name: "directory-viewport-content")
-                    .background(DirectoryViewportObserver(viewport: viewport))
+                    .background(DirectoryViewportObserver(viewport: viewport) {
+                        guard let result = store.hostState.catalogQuery else { store.hostState.loadNextCatalogPage(); return }
+                        guard result.query == state.networkQuery else { return }
+                        if searching || state.showAllSessions || !result.previewsComplete {
+                            store.hostState.loadNextCatalogPage()
+                        }
+                    })
                     .animation(reduceMotion ? nil : InteractionMotion.panel, value: "\(state.kind ?? "")|\(state.archived)|\(state.providerKey)|\(state.query)")
             }
             // As in the transcript, let the scroll view resolve shrinking content itself.
@@ -285,10 +310,16 @@ struct SessionDrawerView: View, Equatable {
             }
             .task(id: request) {
                 let filter = request, source = catalog
-                let next = await directoryWorker.resolve(catalog: source, filter: filter)
+                let facets = store.hostState.catalogQuery.flatMap { $0.query.agentKind == state.kind ? $0 : nil }
+                let next = await directoryWorker.resolve(catalog: source, filter: filter,
+                    knownProviders: facets?.providers ?? [], hasUnknown: facets?.unknownProvider == true)
                 guard !Task.isCancelled else { return }
                 incomingProjection = next
                 if !viewport.scrolling { resolveExpansion() }
+            }
+            .task(id: state.networkQuery) {
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+                store.hostState.setCatalogQuery(state.networkQuery)
             }
             .onChange(of: viewport.scrolling) { _, active in if !active { resolveExpansion() } }
             .onDisappear { selectedSessionIds = [] }
@@ -338,7 +369,7 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "claude"].map { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude"].filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
                 ? sessionProviderOptions(catalog.sessions, kind: kind, current: store.currentProvider(for: kind)) : []
             return OrbisMenuItem(title: filterTitle(kind), agentKind: kind, checked: state.kind == kind,
@@ -392,7 +423,9 @@ struct SessionDrawerView: View, Equatable {
 
     private func directoryGroup(_ directory: SessionDirectory, selectedIds: Set<String>) -> some View {
         let expanded = state.expandedPath == directory.path
-        let hidden = directory.sessions.count - directorySessionPreviewLimit
+        let facts = store.hostState.catalogQuery.flatMap { $0.query == state.networkQuery ? $0 : nil }
+        let total = max(directory.sessions.count, facts?.directoryTotals[directory.path] ?? 0)
+        let hidden = total - directorySessionPreviewLimit
         let visible = expanded && (state.showAllSessions || searching || hidden <= 0) ? directory.sessions : Array(directory.sessions.prefix(directorySessionPreviewLimit))
         return VStack(spacing: 0) {
             OrbisMotionButton { toggle(directory.path) } label: {
@@ -401,12 +434,12 @@ struct SessionDrawerView: View, Equatable {
                         .foregroundStyle(expanded ? OrbisPalette(scheme).text : OrbisPalette(scheme).secondary)
                     Text(directoryTitle(directory.path).isEmpty ? L10n.tr("未记录目录") : directoryTitle(directory.path)).font(.orbisLabel(.semibold)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("\(directory.sessions.count)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    Text("\(total)").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                     Image(systemName: "chevron.right").font(.system(size: 16))
                         .rotationEffect(.degrees(expanded ? 90 : 0)).animation(reduceMotion ? nil : .orbisCollapse, value: expanded)
                 }.padding(.horizontal, 8).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(DirectoryRowStyle())
-                .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, directory.sessions.count))
+                .accessibilityLabel(L10n.tr("{0}目录 {1}，{2} 个会话", expanded ? L10n.tr("收起") : L10n.tr("展开"), directory.path, total))
                 .accessibilityIdentifier("drawer-directory-" + directory.path)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("directory-viewport-content")) } action: { viewport.record("directory:" + directory.path, frame: $0) }
             OrbisCollapse(expanded: expanded) {
@@ -420,7 +453,7 @@ struct SessionDrawerView: View, Equatable {
                     if hidden > 0 && !searching {
                         OrbisMotionButton { state.showAllSessions.toggle() } label: {
                             HStack(spacing: 4) {
-                                Text(state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("查看全部 {0} 条", directory.sessions.count))
+                                Text(state.showAllSessions ? L10n.tr("收起较早会话") : L10n.tr("查看全部 {0} 条", total))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Image(systemName: state.showAllSessions ? "chevron.up" : "chevron.right")
                             }.font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).accent).frame(minHeight: 48).contentShape(Rectangle())
@@ -538,8 +571,26 @@ private func filterTitle(_ kind: String) -> String {
     case "codex": return L10n.tr("Codex 终端")
     case "codexDesktop": return L10n.tr("Codex 桌面版")
     case "dsh": return "DeepSeek"
+    case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
     case "claude": return "Claude Code"
     default: return "Pi"
+    }
+}
+
+/// Agents with a second native entry: the emblem stays one family, the variant is chosen beside it.
+private func agentFamily(_ kind: String) -> String {
+    switch kind { case "codexDesktop": return "codex"; case "dshDesktop": return "dsh"; default: return kind }
+}
+private func agentVariants(_ family: String) -> [String] {
+    switch family { case "codex": return ["codex", "codexDesktop"]; case "dsh": return ["dsh", "dshDesktop"]; default: return [family] }
+}
+private func agentVariantTitle(_ kind: String) -> String {
+    switch kind {
+    case "codex": return L10n.tr("Codex 终端版")
+    case "codexDesktop": return L10n.tr("Codex 桌面版")
+    case "dsh": return L10n.tr("DeepSeek 网页版")
+    case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
+    default: return agentTitle(kind)
     }
 }
 
@@ -565,7 +616,7 @@ struct SessionDraftView: View {
     @State private var cancelling = false
     @State private var risen = false
     @State private var frame: CGRect = .zero
-    @State private var codexFrame: CGRect = .zero
+    @State private var familyFrames: [String: CGRect] = [:]
     @State private var codexLabelFrame: CGRect = .zero
     @State private var focused = false
     @State private var choosingConfiguration = false
@@ -578,8 +629,9 @@ struct SessionDraftView: View {
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
     private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
-    private var isCodex: Bool { agent == "codex" || agent == "codexDesktop" }
-    private var codexVersionTitle: String { L10n.tr(agent == "codexDesktop" ? "Codex 桌面版" : "Codex 终端版") }
+    private var family: String { agentFamily(agent) }
+    /// Both native entries of this family can start here, so the variant is a real choice.
+    private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
     private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
     private var hasMessage: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
@@ -609,32 +661,36 @@ struct SessionDraftView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 4) {
                 ForEach(["codex", "claude", "dsh", "pi"], id: \.self) { kind in
-                    OrbisMotionButton { agent = kind == "codex" && !allowed.contains("codex") && allowed.contains("codexDesktop") ? "codexDesktop" : kind } label: {
+                    let variants = agentVariants(kind), chosen = family == kind
+                    OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
                         AgentEmblem(kind: kind, size: 20, recessed: false)
-                            .saturation(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0).opacity(agent == kind || kind == "codex" && agent == "codexDesktop" ? 1 : 0.4)
+                            .saturation(chosen ? 1 : 0).opacity(chosen ? 1 : 0.4)
                             .frame(width: 36, height: 36)
-                            .neuSurface(inset: agent == kind || kind == "codex" && agent == "codexDesktop", radius: 18,
-                                intensity: agent == kind || kind == "codex" && agent == "codexDesktop" ? 0.4 : 0, concentric: false)
+                            .neuSurface(inset: chosen, radius: 18, intensity: chosen ? 0.4 : 0, concentric: false)
                             .frame(width: 48, height: 48).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!allowed.contains(kind) && !(kind == "codex" && allowed.contains("codexDesktop")))
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if kind == "codex" { codexFrame = $0 } }
-                        .simultaneousGesture(LongPressGesture().onEnded { _ in if kind == "codex" { showCodexChoices() } })
-                        .accessibilityAction(named: L10n.tr("Codex 桌面版")) { if kind == "codex", allowed.contains("codexDesktop") { agent = "codexDesktop" } }
-                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(agent == kind || kind == "codex" && agent == "codexDesktop" ? .isSelected : [])
+                    }.buttonStyle(.plain).disabled(!variants.contains(where: allowed.contains))
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { familyFrames[kind] = $0 }
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
+                        .accessibilityActions {
+                            ForEach(variants.dropFirst().filter(allowed.contains), id: \.self) { variant in
+                                Button(agentVariantTitle(variant)) { agent = variant }
+                            }
+                        }
+                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-                if isCodex {
-                    OrbisMotionButton { showCodexChoices(from: codexLabelFrame) } label: {
+                if agentVariants(family).count > 1 {
+                    OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
                         HStack(spacing: 6) {
-                            Text("Codex").font(.orbisLabel(.semibold)).lineLimit(1)
-                            Image(systemName: agent == "codexDesktop" ? "desktopcomputer" : "terminal")
+                            Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)
+                            Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" ? "desktopcomputer" : agent == "dsh" ? "globe" : "terminal")
                                 .font(.system(size: 18)).accessibilityHidden(true)
                         }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
                             .contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!allowed.contains("codex") || !allowed.contains("codexDesktop"))
+                    }.buttonStyle(.plain).disabled(!hasVariants)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
-                        .accessibilityLabel("Codex").accessibilityValue(codexVersionTitle)
-                        .accessibilityIdentifier("draft-codex-version")
+                        .accessibilityLabel(agentTitle(agent)).accessibilityValue(agentVariantTitle(agent))
+                        .accessibilityIdentifier(family == "codex" ? "draft-codex-version" : "draft-\(family)-version")
                 } else {
                     Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -668,7 +724,7 @@ struct SessionDraftView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
-                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" ? L10n.tr("Codex 桌面版") : agentTitle(agent)),
+                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary), onSubmit: submit, onCancel: cancel)
                     .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 56)
                     .orbisField(focused: focused)
@@ -681,6 +737,9 @@ struct SessionDraftView: View {
             .accessibilityElement(children: .contain).accessibilityIdentifier("session-draft")
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
             .onAppear {
+                // The home list is lazy and keeps this card's state under its fixed id, so a card
+                // reopened after closing would come back still cancelling and never rise.
+                cancelling = false; risen = false
                 text = owner.draft(for: draftRuntime)
                 let rememberedPath = owner.draft(for: pathRuntime)
                 if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
@@ -793,13 +852,13 @@ struct SessionDraftView: View {
         }.padding(16).onAppear { store.browseDirectory(currentPath) }
             .onDisappear { store.dismissBrowse() }
     }
-    /// Preserve the existing desktop backend without adding a fifth primary Agent.
-    private func showCodexChoices(from anchor: CGRect? = nil) {
+    /// Desktop entries stay variants of their Agent family instead of extra primary Agents.
+    private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
         focused = false
-        var choices: [OrbisMenuItem] = []
-        if allowed.contains("codex") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 终端版"), checked: agent == "codex") { agent = "codex" }) }
-        if allowed.contains("codexDesktop") { choices.append(OrbisMenuItem(title: L10n.tr("Codex 桌面版"), checked: agent == "codexDesktop") { agent = "codexDesktop" }) }
-        if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? codexFrame) }
+        let choices = agentVariants(family).filter(allowed.contains).map { variant in
+            OrbisMenuItem(title: agentVariantTitle(variant), checked: agent == variant) { agent = variant }
+        }
+        if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? familyFrames[family] ?? .zero) }
     }
     private func cancel() {
         cancelling = true

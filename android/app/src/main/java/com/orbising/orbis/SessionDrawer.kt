@@ -58,6 +58,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -93,6 +96,7 @@ internal enum class DrawerAgentFilter(
     Codex("codex", "Codex 终端", "codex"),
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh"),
+    DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
@@ -111,6 +115,7 @@ private fun DrawerAgentFilterMenu(
     providerFilterKey: String,
     onSelectProvider: (String) -> Unit,
     onRequestProviders: () -> Unit,
+    desktopDeepSeek: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -147,7 +152,8 @@ private fun DrawerAgentFilterMenu(
                     )
                 }
             } else {
-            DrawerAgentFilter.values().forEach { filter ->
+            // The Desktop entry is listed only where this Host offers it (ADR-0076).
+            DrawerAgentFilter.values().filter { it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -197,11 +203,22 @@ internal fun SessionDrawer(
     onNewSession: (String, String?) -> Unit,
     onSetArchived: (String, String, Boolean) -> Unit,
     onRequestProviders: () -> Unit = {},
+    onCatalogVisibility: (String?, Boolean) -> Unit = { _, _ -> },
+    onNextCatalogPage: (String?) -> Unit = {},
+    onCatalogQuery: (String?, CatalogQuery) -> Unit = { _, _ -> },
     isOpen: Boolean = true,
     preparedCatalog: List<CachedHostGroup>? = null,
     permanent: Boolean = false,
 ) {
     val activeHostId = state.hostId
+    val pageActive = LocalPageActive.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(activeHostId, isOpen, pageActive, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            onCatalogVisibility(activeHostId, isOpen && pageActive)
+            try { kotlinx.coroutines.awaitCancellation() } finally { onCatalogVisibility(activeHostId, false) }
+        }
+    }
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
@@ -263,13 +280,33 @@ internal fun SessionDrawer(
     }
     var showAllSessions by rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, expandedKey) { mutableStateOf(false) }
     var showAllDirectories by rememberSaveable(viewportIdentity) { mutableStateOf(false) }
-    val allDirectoryItems = remember(sections, expandedKey, showAllSessions, searchTerm) {
+    val networkQuery = CatalogQuery(searchTerm.take(256), agentFilterKey.takeUnless { it == "all" }, showArchived,
+        requestedProviderKey.takeIf { agentFilter.hasProviderFilter } ?: "all",
+        directory = expandedKey?.substringAfter('\u0000')?.takeIf { showAllSessions }?.let(::catalogDirectoryId))
+    val queryResult = state.catalogQuery?.takeIf { it.query == networkQuery }
+    LaunchedEffect(activeHostId, isOpen, pageActive, networkQuery, currentProvider) {
+        if (isOpen && pageActive) {
+            kotlinx.coroutines.delay(250)
+            onCatalogQuery(activeHostId, networkQuery)
+        }
+    }
+    LaunchedEffect(activeHostId, isOpen, pageActive, listState, queryResult, searchTerm, showAllSessions) {
+        if (isOpen && pageActive) androidx.compose.runtime.snapshotFlow {
+            val layout = listState.layoutInfo
+            layout.totalItemsCount to (layout.visibleItemsInfo.lastOrNull()?.index ?: -1)
+        }.collect { (total, last) ->
+            val wanted = state.catalogQuery == null || queryResult != null &&
+                (searchTerm.isNotEmpty() || showAllSessions || !queryResult.previewsComplete)
+            if (wanted && total > 0 && last >= total - 3) onNextCatalogPage(activeHostId)
+        }
+    }
+    val allDirectoryItems = remember(sections, expandedKey, showAllSessions, searchTerm, queryResult) {
         sections.flatMap { section -> section.directories.map { directory ->
             val branchKey = section.hostId + '\u0000' + directory.cwd
             val expanded = branchKey == expandedKey
             DrawerDirectoryItems(section.hostId, directory, branchKey, expanded,
                 if (expanded && (showAllSessions || searchTerm.isNotEmpty())) directory.sessions else directory.sessions.take(3),
-                directory.sessions.size > 3 && searchTerm.isEmpty())
+                maxOf(directory.sessions.size, queryResult?.directoryTotals?.get(directory.cwd) ?: 0) > 3 && searchTerm.isEmpty())
         } }
     }
     val directoryItems = if (showAllDirectories || searchTerm.isNotEmpty()) allDirectoryItems else allDirectoryItems.take(3)
@@ -359,6 +396,9 @@ internal fun SessionDrawer(
                         providerFilterKey = providerKey,
                         onSelectProvider = { requestedProviderKey = it },
                         onRequestProviders = onRequestProviders,
+                        // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
+                        desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
+                            state.sessions.values.any { it.agentKind == "dshDesktop" },
                     )
 
                 }
@@ -507,7 +547,7 @@ internal fun SessionDrawer(
                                             Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
                                                 .orbisKeyboardFocus().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { showAllSessions = !showAllSessions },
                                                 verticalAlignment = Alignment.CenterVertically) {
-                                                Text(if (showAllSessions) L10n.tr("收起较早会话") else L10n.tr("查看全部 {0} 条", directory.sessions.size),
+                                                Text(if (showAllSessions) L10n.tr("收起较早会话") else L10n.tr("查看全部 {0} 条", maxOf(directory.sessions.size, queryResult?.directoryTotals?.get(directory.cwd) ?: 0)),
                                                     modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
                                                     color = MaterialTheme.colorScheme.primary)
                                                 Icon(if (showAllSessions) Icons.Rounded.ExpandLess else OrbisSymbols.ChevronRight,
@@ -752,7 +792,7 @@ private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteS
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> L10n.tr("请先退出 Pi 会话")
     row.agentKind == "claude" -> L10n.tr("请先退出 Claude Code 会话")
-    (row.isCodex || row.agentKind == "dsh") && state.runtimes[row.runtimeId]?.status == "idle" -> null
+    (row.isCodex || row.agentKind == "dsh" || row.agentKind == "dshDesktop") && state.runtimes[row.runtimeId]?.status == "idle" -> null
     else -> L10n.tr("等待任务完成后归档")
 }
 

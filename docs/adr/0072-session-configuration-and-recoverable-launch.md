@@ -20,6 +20,8 @@ Status: accepted（主路径已实现；自动验证与后端能力边界见下�
 
 S52／SC76（r55）：Android Codex 顶栏运行中显示绑定原生 turn ID 的实际模型与深度，空闲显示确认的所选值。正常运行不加前缀；保存中、未确认、修改失败在标题行独立标记，仅确认所选配置与本轮不同才显示“下轮已设”。入口使用共用选择弹层分别显示本轮与下轮，修改保持输入草稿；改回原值清除差异标记。窄屏大字体优先显示模型与深度，Agent 与运行状态保留图标及无障碍描述。Host 依据已接受的原生 turn/start 参数或该 turn 的原生 turn_context 提供可选 currentTurn 事实；缺失、断线或身份不匹配显示未确认，保持 18／19 旧端所选字段语义。模型切换时将明确不受支持的深度调整到新模型支持的默认值。
 
+2026-11-12，SC84（S52）：iOS 顶栏与共用配置弹层采用相同的本轮事实、后续选择及保存进度语义。点击顶栏进入“模型与深度”，诊断信息保留在 info 按钮。选择沿用后端不透明选项及现有配置账本，兼容 `thinking`／`effort`，保留输入草稿和失败重试；迟到失败按原会话身份隔离。旧 Host 缺少本轮事实时显示未确认，明确的默认深度与未提供深度分别解码。实现见 `ChatView.swift`、`Models.swift`、`AgentState.swift`、`OperationKinds.swift` 与 `OrbisStore.swift`；回归见 `SessionModelPresentationTests.swift`、`ConfigLedgerTests.swift` 与 `OrbisUITests.swift`。43 项 Swift 定向回归及 iPad 模拟器配置面板、旧 Host 回退、输入草稿和等待发送验证通过。初次 UI 时序失败、修正后的证据、Release 真机包及安装记录见 `.artifacts/ios-session-completeness-20261112/verification.json`；视觉和实际操作待用户验证。
+
 ### 新建时序
 
 1. App 为一次启动建立稳定身份，保存配置快照和首句恢复副本，立即进入聊天页并显示启动中与本地首句。

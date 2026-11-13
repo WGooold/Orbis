@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // Public Host projections only: credentials, native configuration and private receipts never enter these values.
-const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]);
+const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]);
 const id = z.string().min(1).max(1_024);
 const count = z.number().int().nonnegative();
 const availability = z.enum(["ready", "unknown", "unavailable"]);
@@ -10,6 +10,17 @@ export const HostIdentityStateSchema = z.strictObject({
   hostId: id, hostName: z.string().max(256), protocolVersion: z.number().int().positive(),
 });
 export type HostIdentityState = z.infer<typeof HostIdentityStateSchema>;
+
+/**
+ * DeepSeek Harness Desktop 接入分档（ADR-0076 DSH-DESKTOP-01）。安装、运行、可连接和版本不兼容分开表达：
+ * `running` 是 Desktop 已在运行但没有 Orbis 可用的连接（例如不是由 Orbis 打开）；只有握手完成才是 `attached`。
+ */
+export const DshDesktopAttachSchema = z.strictObject({
+  state: z.enum(["unsupported", "notInstalled", "closed", "running", "attached", "incompatible", "error"]),
+  reason: z.string().min(1).max(256),
+  version: z.string().min(1).max(64).nullable().optional(),
+});
+export type DshDesktopAttach = z.infer<typeof DshDesktopAttachSchema>;
 
 export const HostBackendsStateSchema = z.strictObject({
   backends: z.array(z.strictObject({
@@ -21,6 +32,7 @@ export const HostBackendsStateSchema = z.strictObject({
   codexDesktop: z.strictObject({
     state: z.enum(["unsupported", "notInstalled", "closed", "attached", "error"]), reason: z.string().min(1).max(256),
   }).nullable().optional(),
+  dshDesktop: DshDesktopAttachSchema.nullable().optional(),
 });
 export type HostBackendsState = z.infer<typeof HostBackendsStateSchema>;
 

@@ -21,6 +21,8 @@ const PROCESSING_LEASE_MS = 120_000;
 const DELIVERY_LEASE_MS = 60_000;
 /** ADR-0037 §4：写完字节之后等设备 applied 回执的上限。只对会回执的设备生效。 */
 const ACK_LEASE_MS = 30_000;
+// Unchanged adapters can still return their released 1 MiB format; reserve for
+// that path until a bounded history transaction explicitly supplies its limit.
 const RESERVED_BYTES = sessionSyncWireBytes(SESSION_SYNC_MAX_BYTES);
 type Stage = "queued" | "processing" | "sending" | "delivered" | "failed";
 type Task = {
@@ -74,7 +76,8 @@ export class SessionSyncTasks {
     const key = this.#key(deviceId, commandId);
     const fingerprint = JSON.stringify([runtimeId, command.sessionId, command.syncId, command.range,
       command.knownLeafId ?? null, command.targetLeafId ?? null, command.beforeEntryId ?? null, command.maxEntries ?? SESSION_SYNC_DEFAULT_MAX_ENTRIES,
-      command.knownState === undefined ? null : [command.knownState.epoch, command.knownState.seq, command.knownState.head.leafId]]);
+      command.knownState === undefined ? null : [command.knownState.epoch, command.knownState.seq, command.knownState.head.leafId],
+      command.historyWindow === undefined ? null : [command.historyWindow.format, command.historyWindow.maxBytes, command.historyWindow.maxDeliveries]]);
     const existing = this.#tasks.get(key);
     const duplicateSync = [...this.#tasks.values()].find((task) => task.deviceId === deviceId &&
       task.command.syncId === command.syncId && task !== existing);
@@ -92,7 +95,7 @@ export class SessionSyncTasks {
         this.#notifyPending(existing);
         return;
       }
-      if (existing.stage === "failed" || existing.attempts >= MAX_SENDS) {
+      if (existing.stage === "failed" || existing.attempts >= (existing.command.historyWindow?.maxDeliveries ?? MAX_SENDS)) {
         this.#rejectRequest(deviceId, runtimeId, commandId, command, "session_sync_retry_exhausted", "retry_exhausted");
         return;
       }
@@ -172,8 +175,26 @@ export class SessionSyncTasks {
         });
         return true;
       }
-      const payload = this.#options.encodeEvent(runtimeId, { ...event, syncId: task.command.syncId }, task.deviceId);
-      if (payload.byteLength > SESSION_SYNC_MAX_BYTES) {
+      let response = { ...event, syncId: task.command.syncId };
+      let payload = this.#options.encodeEvent(runtimeId, response, task.deviceId);
+      if (task.command.historyWindow) {
+        const hard = task.command.historyWindow.maxBytes;
+        const target = Math.min(32 * 1024, hard);
+        // Trim only the oldest prefix of this exact history range, preserving the nearest
+        // parent of beforeEntryId. The native source event was already committed unchanged.
+        while (response.entries.length > 1 && payload.byteLength > target) {
+          const entries = response.entries.slice(1);
+          const ids = new Set(entries.map(entry => entry.entryId));
+          const display = response.display && { ...response.display,
+            entries: response.display.entries.filter(row => row.entryId === null || ids.has(row.entryId)) };
+          const messages = new Set(display?.entries.flatMap(row => row.message ? [row.message.messageId] : []) ?? []);
+          response = { ...response, entries, ...(display ? { display } : {}),
+            turnTimings: response.turnTimings?.filter(timing => timing.messageId === undefined || ids.has(timing.messageId) || messages.has(timing.messageId)),
+            complete: false, hasOlder: true, rangeStatus: "older_available" };
+          payload = this.#options.encodeEvent(runtimeId, response, task.deviceId);
+        }
+      }
+      if (payload.byteLength > (task.command.historyWindow?.maxBytes ?? SESSION_SYNC_MAX_BYTES)) {
         this.#fail(task, "session_sync_response_too_large");
         return true;
       }

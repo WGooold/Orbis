@@ -12,22 +12,33 @@ vi.mock("./claude-startup.js", async original => {
     actual.checkClaudeAuthentication(process.platform === "win32" ? `${cli}.cmd` : cli, cwd, env) };
 });
 
+vi.mock("./claude-version.js", async original => {
+  const actual = await original<typeof import("./claude-version.js")>();
+  return { ...actual, requireClaudeModsVersion: (cli: string, env: NodeJS.ProcessEnv, cwd?: string) =>
+    actual.requireClaudeModsVersion(process.platform === "win32" ? `${cli}.cmd` : cli, env, cwd) };
+});
+
 vi.mock("./session-configuration-probe.js", () => ({
   claudeSessionConfiguration: vi.fn(async (_cli, _cwd, _env, selected) => ({ defaults: selected ?? {} })),
 }));
 
 import { TerminalClaudeLauncher, posixScript, windowsClaudeConsole, windowsScript } from "./claude-launcher.js";
+import { ClaudeStartupBlocked } from "./claude-startup.js";
+import { claudeSessionConfiguration } from "./session-configuration-probe.js";
 
-async function writeClaudeFixture(bin: string, loggedIn: boolean) {
+async function writeClaudeFixture(bin: string, loggedIn: boolean, version = "2.1.287") {
   const json = JSON.stringify({ loggedIn });
   const code = loggedIn ? 0 : 1;
-  await writeFile(join(bin, "claude"), `#!/bin/sh\nprintf '%s\\n' '${json}'\nexit ${code}\n`, { mode: 0o755 });
-  if (process.platform === "win32") await writeFile(join(bin, "claude.cmd"), `@echo off\r\necho ${json}\r\nexit /b ${code}\r\n`);
+  await writeFile(join(bin, "claude"), `#!/bin/sh\nif [ "$1" = '--version' ]; then\n  printf '%s\\n' '${version} (Claude Code)'\n  exit 0\nfi\nprintf '%s\\n' '${json}'\nexit ${code}\n`, { mode: 0o755 });
+  if (process.platform === "win32") await writeFile(join(bin, "claude.cmd"), `@echo off\r\nif "%~1"=="--version" (\r\necho ${version} ^(Claude Code^)\r\nexit /b 0\r\n)\r\necho ${json}\r\nexit /b ${code}\r\n`);
 }
 
 async function setup() {
   const root = await testDirectory(join(tmpdir(), "orbis-claude-launch-"));
-  const bin = join(root, "bin");
+  // Discovery through PATH cannot be expressed on a Windows host: cliPathDirs splits by the
+  // simulated platform's separator, so `C:\…` would be cut at its drive colon. The native
+  // installer's own directory is searched without PATH and works on every host.
+  const bin = join(root, ".local", "bin");
   await mkdir(bin, { recursive: true });
   await writeClaudeFixture(bin, true);
   const pluginDir = join(root, "plugin");
@@ -35,10 +46,50 @@ async function setup() {
   await writeFile(join(pluginDir, ".claude-plugin", "plugin.json"), "{}");
   const config = join(root, "config");
   await mkdir(config, { recursive: true });
-  return { root, bin, pluginDir, config, env: { PATH: `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`, HOME: root } };
+  // A PATH entry for the simulated POSIX platform is prepended with ':' on purpose: this host
+  // may be Windows, where the drive colon makes that entry unparsable, and the same directory is
+  // still searched as `~/.local/bin`. Both hosts therefore discover the identical launcher path.
+  return { root, bin, pluginDir, config, env: { PATH: `${bin}:${process.env.PATH}`, HOME: root } };
 }
 
 describe("TerminalClaudeLauncher", () => {
+  // CLAUDE-MODS-MIN-02: a wrapper that cannot report a version still reaches
+  // the original authentication, terminal launch and native handshake path.
+  it("does not block a usable TUI solely because the version probe is unreadable", async () => {
+    const { root, bin, pluginDir, config, env } = await setup();
+    await writeClaudeFixture(bin, true, "unreadable");
+    const run = vi.fn(async (_command: string, args: readonly string[]) => { await writeFile(`${args[2]!}.started`, ""); });
+    const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir, run });
+    await launcher.launch({ cwd: root, launchId: "unreadable-version", resume: "saved" });
+    expect(run).toHaveBeenCalledTimes(1);
+    await writeClaudeFixture(bin, false, "unreadable");
+    await expect(launcher.launch({ cwd: root, launchId: "still-check-login" })).rejects.toThrow("账号授权");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  // CLAUDE-MODS-MIN-01: reject before opening or writing project trust, including
+  // old-session recovery and local setup; re-read after an in-place CLI update.
+  it("blocks unsupported Claude before new, resumed and setup launches and configuration reads", async () => {
+    const { root, bin, pluginDir, config, env } = await setup();
+    await writeClaudeFixture(bin, true, "2.1.286");
+    const run = vi.fn(async (_command: string, args: readonly string[]) => { await writeFile(`${args[2]!}.started`, ""); });
+    const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir, run });
+    for (const extra of [{}, { resume: "saved" }, { setup: true }]) {
+      const pending = launcher.launch({ cwd: root, launchId: "old-cli", ...extra });
+      await expect(pending).rejects.toBeInstanceOf(ClaudeStartupBlocked);
+      await expect(pending).rejects.toThrow("最低 2.1.287");
+    }
+    vi.mocked(claudeSessionConfiguration).mockClear();
+    await expect(launcher.sessionConfiguration(root)).rejects.toThrow("Claude Code 2.1.286");
+    expect(claudeSessionConfiguration).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(await readdir(config)).toEqual([]);
+    expect(await readdir(join(root, "state/tmp")).catch(() => [])).toEqual([]);
+    await writeClaudeFixture(bin, true, "2.1.287");
+    await launcher.launch({ cwd: root, launchId: "updated-cli", resume: "saved" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("opens Terminal on macOS with a self-removing script that loads the plugin only when it is not installed", async () => {
     const { root, bin, pluginDir, config, env } = await setup();
     const cwd = await realpath(await mkdir(join(root, "work", "it's here"), { recursive: true }).then(() => join(root, "work", "it's here")));
@@ -90,7 +141,7 @@ describe("TerminalClaudeLauncher", () => {
 
   it("fails before opening for missing login but keeps explicit local setup reachable", async () => {
     const { root, config, env, pluginDir } = await setup();
-    await writeClaudeFixture(join(root, "bin"), false);
+    await writeClaudeFixture(join(root, ".local", "bin"), false);
     const calls: string[] = [];
     const launcher = new TerminalClaudeLauncher({ stateDir: join(root, "state"), configDir: config, env, platform: "darwin", pluginDir,
       run: async (command, args) => { calls.push(command); await writeFile(`${args[2]!}.started`, ""); } });

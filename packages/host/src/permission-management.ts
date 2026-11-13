@@ -36,7 +36,7 @@ function rootsDetails(permissions: RuntimePermissions | undefined): string[] {
   ];
 }
 
-export function codexPermissionManagement(permissions: RuntimePermissions | undefined, busy = false): PermissionManagement {
+export function codexPermissionManagement(permissions: RuntimePermissions | undefined, busy: boolean | string = false): PermissionManagement {
   const fileScope = scope(permissions, false);
   const approval = CODEX_PERMISSION_COMMANDS.find(command => command.name === "approvals")?.argument?.options
     ?.find(option => option.value === permissions?.approvalPolicy);
@@ -63,7 +63,7 @@ export function codexPermissionManagement(permissions: RuntimePermissions | unde
         ...(option.description === undefined ? {} : { description: option.description }),
       })) ?? [];
       const currentValue = facts[command.name];
-      const disabledReason = busy ? busyReason : command.name === "network" && permissions?.sandbox === "dangerFullAccess"
+      const disabledReason = busy ? typeof busy === "string" ? busy : busyReason : command.name === "network" && permissions?.sandbox === "dangerFullAccess"
         ? "完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。" : undefined;
       return { id: command.name, label: command.description ?? command.name, options,
         ...(currentValue !== undefined && options.some(option => option.value === currentValue) ? { currentValue } : {}),

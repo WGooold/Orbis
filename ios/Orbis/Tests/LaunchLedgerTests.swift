@@ -51,8 +51,8 @@ struct LaunchLedgerTests {
         let transport = Transport()
         let store: OrbisStore
         var host: HostConnection { store.activeConnection }
-        init(root: URL? = nil) {
-            store = OrbisStore(secure: Storage(), transport: transport, preferences: nil, transferRoot: root)
+        init(root: URL? = nil, localStores: HostLocalStores? = nil) {
+            store = OrbisStore(secure: Storage(), transport: transport, preferences: nil, transferRoot: root, localStores: localStores)
             transport.drain = { [weak store] in await store?.waitForPendingEvents() }
         }
     }
@@ -89,6 +89,45 @@ struct LaunchLedgerTests {
         #expect(fixture.host.connection == .secured)
     }
 
+    // PERF-08 / SC73: UI admission and draft state stay responsive while the
+    // recovery write is blocked; no native launch can overtake that write.
+    @Test func configuredLaunchWaitsForBackgroundDurabilityWithoutBlockingUI() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-launch-io-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = MainThreadWorkGate()
+        let fixture = Fixture(root: root, localStores: HostLocalStores(io: HostLocalIO(beforeIO: { gate.work() })))
+        try await configured(fixture)
+        gate.arm()
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "preserve me"))
+        #expect(await gate.waitEntered())
+        #expect(fixture.host.isLaunchPage && fixture.host.pendingSends.items.count == 1)
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "duplicate"))
+        gate.release.signal()
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 1)
+    }
+
+    // Reconnect cancels only the old send continuation, not its accepted durable
+    // write. Recovery reads the same ID after that write, without creating twice.
+    @Test func reconnectDuringJournalWriteKeepsTheOriginalLaunchIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-launch-reconnect-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = MainThreadWorkGate()
+        let fixture = Fixture(root: root, localStores: HostLocalStores(io: HostLocalIO(beforeIO: { gate.work() })))
+        try await configured(fixture)
+        gate.arm()
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "preserve me"))
+        let id = try #require(fixture.host.launching?.requestId)
+        #expect(await gate.waitEntered())
+        fixture.host.reconnectSelectedHost()
+        gate.release.signal()
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "next", "sessionConfiguration": 1, "runtimes": []])
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
+        #expect(fixture.transport.sent.last { $0["type"] as? String == "session.launch.read" }?["launchId"] as? String == id)
+        #expect(fixture.host.pendingSends.items.count == 1)
+    }
+
     // S51 / SC73: runtime presence alone cannot release a first message. The journal
     // and stable message identity exist before launch, including the crash recovery path.
     @Test func configuredLaunchPersistsBeforeTransportAndWaitsForNativeReadiness() async throws {
@@ -96,6 +135,7 @@ struct LaunchLedgerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let fixture = Fixture(root: root); try await configured(fixture)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first sentence"))
+        await fixture.store.waitForPendingEvents()
         let request = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
         let id = try #require(request["launchId"] as? String)
         let file = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("ConfiguredLaunches"), includingPropertiesForKeys: nil).first)
@@ -118,6 +158,7 @@ struct LaunchLedgerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let original = Fixture(root: root); try await configured(original)
         #expect(original.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "recover this sentence"))
+        await original.store.waitForPendingEvents()
         let request = try #require(original.transport.sent.last { $0["type"] as? String == "session.launch" })
         let id = try #require(request["launchId"] as? String)
         let firstId = original.host.pendingSends.items.first?.messageId
@@ -139,6 +180,7 @@ struct LaunchLedgerTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let original = Fixture(root: root); try await configured(original)
         #expect(original.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "preserve rejected sentence"))
+        await original.store.waitForPendingEvents()
         let launch = try #require(original.transport.sent.last { $0["type"] as? String == "session.launch" })
         let id = try #require(launch["launchId"] as? String)
         await original.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "failed", "error": "stale catalog"])

@@ -21,6 +21,14 @@ async function fixture() {
   vi.stubEnv("DSH_HOME", join(root, "dsh")); vi.stubEnv("ORBIS_CODEX_WRAPPER_ROOT", join(root, "wrapper"));
   return { root, stateDir, request: { runtimeRoot: root, stateDir, bridgePid: 0, integrations: false, externalDsh: false } };
 }
+const dshCli = { command: process.execPath, prefixArgs: ["-e", `const http=require('node:http'); const s=http.createServer((q,r)=>{if(q.url==='/?token=test-shutdown-service-token'){r.writeHead(303,{'set-cookie':'dsh-auth-test=yes'});r.end()}else if(q.headers.cookie==='dsh-auth-test=yes'){r.end('__DSH_BOOT__')}else{r.writeHead(401);r.end()}});s.listen(0,'127.0.0.1',()=>console.log('dsh web: http://127.0.0.1:'+s.address().port+'/?token=test-shutdown-service-token'));`, "--"] };
+/** Starts an authenticated Orbis-owned DSH Web service and returns its recorded descriptor. */
+async function dshService() {
+  const service = await ensureDshWebService({ ...process.env, ORBIS_DSH_WEB_URL: "" }, { cli: dshCli, port: 0 });
+  const path = join(process.env.DSH_HOME!, "cache", "orbis-web.json");
+  const text = await readFile(path, "utf8"); const pid = (JSON.parse(text) as { pid: number }).pid; pids.push(pid);
+  return { service, path, text, pid };
+}
 async function start(root: string, script: string, name = "desktop-bridge.js") {
   const path = join(root, "packages", "host", "dist", name); await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, script);
@@ -66,9 +74,7 @@ describe("confirmed desktop shutdown", () => {
   // HOST-EXIT-03: legacy version-1 DSH descriptors are accepted only after auth + listener ownership.
   it("closes a previously detached DSH service and retains its data", async () => {
     const f = await fixture(); const home = process.env.DSH_HOME!;
-    const cli = { command: process.execPath, prefixArgs: ["-e", `const http=require('node:http'); const s=http.createServer((q,r)=>{if(q.url==='/?token=test-shutdown-service-token'){r.writeHead(303,{'set-cookie':'dsh-auth-test=yes'});r.end()}else if(q.headers.cookie==='dsh-auth-test=yes'){r.end('__DSH_BOOT__')}else{r.writeHead(401);r.end()}});s.listen(0,'127.0.0.1',()=>console.log('dsh web: http://127.0.0.1:'+s.address().port+'/?token=test-shutdown-service-token'));`, "--"] };
-    const service = await ensureDshWebService({ ...process.env, ORBIS_DSH_WEB_URL: "" }, { cli, port: 0 });
-    const path = join(home, "cache", "orbis-web.json"); const old = JSON.parse(await readFile(path, "utf8")) as { pid: number }; pids.push(old.pid);
+    const { service, path, pid } = await dshService(); const old = { pid };
     await writeFile(join(home, "history.jsonl"), "keep history");
     // An explicit external endpoint must be preserved, even if an Orbis-owned descriptor also exists.
     await (await prepareDesktopShutdown({ ...f.request, integrations: true, externalDsh: true })).finish(0);
@@ -79,37 +85,45 @@ describe("confirmed desktop shutdown", () => {
     expect(await readFile(join(home, "history.jsonl"), "utf8")).toBe("keep history");
   }, 30_000);
 
-  it("closes only a verified Codex wrapper and its listening child", async () => {
+  // HOST-EXIT-06: Codex Desktop respawns its bridge as soon as it dies. Exit must neither stop it
+  // nor treat Codex Desktop's replacement record as a failed cleanup.
+  it("leaves the Codex Desktop bridge running even when Codex Desktop replaces it during cleanup", async () => {
     const f = await fixture();
-    const child = await start(f.root, `const net=require('node:net');const s=net.createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));`, "codex-desktop-wrapper.js");
-    const port = Number(String((await once(child.stdout!, "data"))[0]).trim());
+    const listener = `const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));`;
+    const original = await start(f.root, listener, "codex-desktop-wrapper.js");
+    const port = Number(String((await once(original.stdout!, "data"))[0]).trim());
     const path = join(f.stateDir, "codex-desktop-endpoint.json");
-    await writeFile(path, JSON.stringify({ schema: 1, bridgePid: child.pid, url: `ws://127.0.0.1:${port}` }));
-    await (await prepareDesktopShutdown({ ...f.request, integrations: true })).finish(0);
-    expect((await processTable()).some(row => row.pid === child.pid)).toBe(false);
-    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(path, JSON.stringify({ schema: 1, bridgePid: original.pid, url: `ws://127.0.0.1:${port}` }));
+    const cleanup = await prepareDesktopShutdown({ ...f.request, integrations: true });
+    const respawned = await start(f.root, listener, "codex-desktop-wrapper.js");
+    const respawnedPort = Number(String((await once(respawned.stdout!, "data"))[0]).trim());
+    const replacement = JSON.stringify({ schema: 1, bridgePid: respawned.pid, url: `ws://127.0.0.1:${respawnedPort}` });
+    await writeFile(path, replacement);
+    await cleanup.finish(0);
+    const rows = await processTable();
+    expect(rows.some(row => row.pid === original.pid)).toBe(true);
+    expect(rows.some(row => row.pid === respawned.pid)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(replacement);
   }, 20_000);
 
-  // A valid-looking endpoint file is not sufficient evidence to terminate its PID.
-  it("refuses a descriptor pointing at another process's listener", async () => {
+  // A valid-looking service record is not sufficient evidence to terminate its PID.
+  it("refuses a DSH record whose PID does not own the authenticated listener", async () => {
     const f = await fixture();
-    const root = await start(f.root, "setInterval(()=>{},1000)", "codex-desktop-wrapper.js");
-    const listener = await start(f.root, "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));", "listener.js");
-    const port = Number(String((await once(listener.stdout!, "data"))[0]).trim());
-    await writeFile(join(f.stateDir, "codex-desktop-endpoint.json"), JSON.stringify({ schema: 1, bridgePid: root.pid, url: `ws://127.0.0.1:${port}` }));
+    const { path, text, pid } = await dshService();
+    const unrelated = await start(f.root, "setInterval(()=>{},1000)", "unrelated.js");
+    await writeFile(path, JSON.stringify({ ...JSON.parse(text) as object, pid: unrelated.pid }));
     await expect(prepareDesktopShutdown({ ...f.request, integrations: true })).rejects.toThrow("端口归属");
-    const rows = await processTable(); expect(rows.some(row => row.pid === root.pid)).toBe(true); expect(rows.some(row => row.pid === listener.pid)).toBe(true);
-  }, 20_000);
+    const rows = await processTable(); expect(rows.some(row => row.pid === unrelated.pid)).toBe(true); expect(rows.some(row => row.pid === pid)).toBe(true);
+  }, 30_000);
 
   // A dead recorded launcher cannot justify ignoring a surviving listener or killing its new owner.
-  it.each(["codex", "dsh"])("blocks installation when a stale %s PID still points at a live port", async kind => {
+  it("blocks installation when a stale DSH PID still points at a live port", async () => {
     const f = await fixture();
     const listener = await start(f.root, "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));", "listener.js");
     const port = Number(String((await once(listener.stdout!, "data"))[0]).trim());
-    const path = kind === "codex" ? join(f.stateDir, "codex-desktop-endpoint.json") : join(process.env.DSH_HOME!, "cache", "orbis-web.json");
+    const path = join(process.env.DSH_HOME!, "cache", "orbis-web.json");
     await mkdir(join(path, ".."), { recursive: true });
-    const stored = kind === "codex" ? { schema: 1, bridgePid: 2147483647, url: `ws://127.0.0.1:${port}` }
-      : { version: 1, owner: "orbis", pid: 2147483647, url: `http://127.0.0.1:${port}/?token=test-shutdown-service-token` };
+    const stored = { version: 1, owner: "orbis", pid: 2147483647, url: `http://127.0.0.1:${port}/?token=test-shutdown-service-token` };
     await writeFile(path, JSON.stringify(stored));
     await expect(prepareDesktopShutdown({ ...f.request, integrations: true })).rejects.toThrow("端口仍被占用");
     expect((await processTable()).some(row => row.pid === listener.pid)).toBe(true);
@@ -117,31 +131,29 @@ describe("confirmed desktop shutdown", () => {
   }, 20_000);
 
   // A newly published generation must survive and force the installer to pause.
-  it("detects a background first registered after the cleanup snapshot", async () => {
+  it("detects a DSH service first registered after the cleanup snapshot", async () => {
     const f = await fixture();
     const cleanup = await prepareDesktopShutdown({ ...f.request, integrations: true });
-    const listener = await start(f.root, "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));", "codex-desktop-wrapper.js");
+    const listener = await start(f.root, "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));", "listener.js");
     const port = Number(String((await once(listener.stdout!, "data"))[0]).trim());
-    const path = join(f.stateDir, "codex-desktop-endpoint.json");
-    await writeFile(path, JSON.stringify({ schema: 1, bridgePid: listener.pid, url: `ws://127.0.0.1:${port}` }));
+    const path = join(process.env.DSH_HOME!, "cache", "orbis-web.json");
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, JSON.stringify({ version: 1, owner: "orbis", pid: listener.pid, url: `http://127.0.0.1:${port}/?token=test-shutdown-service-token` }));
     await expect(cleanup.finish(0)).rejects.toThrow("重新启动");
     expect((await processTable()).some(row => row.pid === listener.pid)).toBe(true);
     expect(await readFile(path, "utf8")).toContain(String(listener.pid));
   }, 20_000);
 
-  // An existing descriptor replaced during cleanup must also be preserved.
-  it("reports a replacement descriptor instead of deleting it or allowing installation", async () => {
+  // An existing record replaced during cleanup must also be preserved.
+  it("reports a replacement DSH record instead of deleting it or allowing installation", async () => {
     const f = await fixture();
-    const root = await start(f.root, "const s=require('node:net').createServer();s.listen(0,'127.0.0.1',()=>console.log(s.address().port));", "codex-desktop-wrapper.js");
-    const port = Number(String((await once(root.stdout!, "data"))[0]).trim());
-    const path = join(f.stateDir, "codex-desktop-endpoint.json");
-    await writeFile(path, JSON.stringify({ schema: 1, bridgePid: root.pid, url: `ws://127.0.0.1:${port}` }));
+    const { path } = await dshService();
     const cleanup = await prepareDesktopShutdown({ ...f.request, integrations: true });
-    const replacement = JSON.stringify({ schema: 1, bridgePid: 424242, url: "ws://127.0.0.1:12345" });
+    const replacement = JSON.stringify({ version: 1, owner: "orbis", pid: 424242, url: "http://127.0.0.1:12345/?token=test-shutdown-service-token" });
     await writeFile(path, replacement);
     await expect(cleanup.finish(0)).rejects.toThrow("重新启动");
     expect(await readFile(path, "utf8")).toBe(replacement);
-  }, 20_000);
+  }, 30_000);
 });
 
 describe("process identity protection", () => {

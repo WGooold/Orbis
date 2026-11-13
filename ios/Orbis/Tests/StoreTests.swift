@@ -31,6 +31,10 @@ private final class TestTransport: OrbisTransport {
     func emit(_ message: [String: Any], channel: String? = "ctl") async { receive?(message, channel); await drain?() }
     var syncCommands: [[String: Any]] { sent.compactMap { $0["command"] as? [String: Any] }.filter { $0["type"] as? String == "session.sync" } }
     func ready(_ runtimes: [[String: Any]]) async { await emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": runtimes]) }
+    func enableHistoryWindow() async throws {
+        let request = try #require(sent.last { $0["type"] as? String == "session.history.capabilities.request" })
+        await emit(["type": "session.history.capabilities", "requestId": request["requestId"]!, "format": "v1", "maxPageBytes": 65536])
+    }
     func event(_ payload: [String: Any], runtimeId: String = "a", sequence: Int = 1, channel: String = "msg") async {
         var value = payload
         if ["session.snapshot", "session.patch"].contains(value["type"] as? String ?? "") {
@@ -699,6 +703,8 @@ struct StoreTests {
         #expect(host.homeRuntimes.allSatisfy { $0.agentKind == "claude" && $0.status == "running" })
         let restored = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         restored.connect(hostId: "host-1")
+        // Cold cache hydration is asynchronous; its durable contents stay the same.
+        await restored.waitForPendingEvents()
         #expect(Set(restored.sessions.map(\.sessionId)) == ["session-a", "session-b"])
         #expect(restored.sessions.allSatisfy { $0.cwd == "/repo" && $0.agentKind == "claude" })
         #expect(restored.activeConnection.homePresentation == .preparing)
@@ -725,10 +731,17 @@ struct StoreTests {
         let restored = OrbisStore(secure: secure, transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         #expect(restored.sessions.isEmpty)
         restored.connect(hostId: "host-1")
+        await restored.waitForPendingEvents()
         #expect(restored.sessions.map(\.sessionId) == ["cached"])
+        // A reconnect reuses the hydrated snapshot without flashing an empty directory.
+        restored.reconnectSelectedHost()
+        #expect(restored.sessions.map(\.sessionId) == ["cached"])
+        await restored.waitForPendingEvents()
         restored.unpair(hostId: "host-1")
+        await restored.waitForPendingEvents()
         let afterUnpair = OrbisStore(secure: MemorySecureStore(), transport: TestTransport(), autoConnect: false, preferences: preferences, transferRoot: root)
         afterUnpair.connect(hostId: "host-1")
+        await afterUnpair.waitForPendingEvents()
         #expect(afterUnpair.sessions.isEmpty)
     }
 
@@ -1128,19 +1141,15 @@ struct StoreTests {
         return result
     }
 
-    @Test func fixedTargetCatchupCommitsAncestorsWithoutMovingLiveHead() async throws {
+    @Test func previewDoesNotBackfillAncestorsAndStillTracksTheCurrentLiveHead() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [3, 4], hasOlder: true))
-        let catchup = try #require(transport.syncCommands.last { $0["range"] as? String == "catchup" })
-        #expect(catchup["targetLeafId"] as? String == "e2")
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         await transport.event(["type": "session.patch", "sessionId": "session-a", "baseSeq": 1, "seq": 2,
             "source": ["epoch": "source", "seq": 2, "ready": true], "head": ["leafId": "e5"],
             "entries": [["entryId": "e5", "parentId": "e4"]],
             "display": ["entries": [["entryId": "e5", "message": message("m5", text: "row 5")]]]], sequence: 2)
-        await transport.event(rangeSnapshot(catchup, ids: [1, 2]), sequence: 3)
         #expect(store.messages.map(\.text) == ["row 3", "row 4", "row 5"])
-        let child = try #require(store.connection(for: "host-1"))
-        #expect(child.sessionReads.latest(historyKey: "a", kind: .catchup)?.phase == .succeeded)
         store.refresh()
         let known = try #require(transport.syncCommands.last?["knownState"] as? [String: Any])
         #expect(known["seq"] as? Int64 == 2)
@@ -1198,26 +1207,127 @@ struct StoreTests {
         #expect(child.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .failed)
     }
 
-    @Test(arguments: ["msg", "catchup"]) func backgroundCatchupAdvancesAcrossMultipleForwardPages(channel: String) async throws {
+    @Test func automaticHistoryPrefetchReservesSixtyEntriesFromTheCachedBoundary() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true)
+        try await transport.enableHistoryWindow()
         await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
-        var last = 0
-        for page in 0..<4 {
-            let request = try #require(transport.syncCommands.last { $0["range"] as? String == "catchup" })
-            #expect(request["targetLeafId"] as? String == "e498")
-            #expect(request["knownLeafId"] as? String == (last == 0 ? nil : "e\(last)"))
-            let end = min(498, last + 128)
-            await transport.event(rangeSnapshot(request, ids: Array((last + 1)...end), complete: end == 498), sequence: page + 2, channel: channel)
-            last = end
-        }
-        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.count == 4)
-        let child = try #require(store.connection(for: "host-1"))
-        #expect(child.sessionReads.latest(historyKey: "a", kind: .catchup)?.phase == .succeeded)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         #expect(store.messages.map(\.text) == ["row 499", "row 500"])
+        let first = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        #expect(first["beforeEntryId"] as? String == "e499")
+        #expect(first["targetLeafId"] as? String == "e500")
+        #expect(first["maxEntries"] as? Int == 30)
+        var firstPage = rangeSnapshot(first, ids: Array(469...498), complete: false)
+        firstPage["hasOlder"] = true; firstPage["rangeStatus"] = "older_available"
+        await transport.event(firstPage, sequence: 3)
+        await store.waitForPendingEvents()
+        let second = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        #expect(second["beforeEntryId"] as? String == "e469")
+        #expect(second["targetLeafId"] as? String == "e500")
+        var secondPage = rangeSnapshot(second, ids: Array(439...468), complete: false)
+        secondPage["hasOlder"] = true; secondPage["rangeStatus"] = "older_available"
+        await transport.event(secondPage, sequence: 4)
+        await store.waitForPendingEvents()
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 2)
+        // Reserved pages are cached only; the visible conversation stays at its original tail.
+        #expect(store.messages.count == 2)
+        #expect(store.messages.first?.text == "row 499")
+        #expect(store.historyLoading.isEmpty)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "catchup" }.isEmpty)
         #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
         #expect(store.messages.count == 32)
         #expect(store.messages.first?.text == "row 469")
-        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.isEmpty)
+        // The explicit read uses the reserved disk page. Its new anchor may reserve the next
+        // bounded page; it must never fetch that same range again or start a root catchup.
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" && $0["beforeEntryId"] as? String == "e499" }.count == 1)
+    }
+
+    @Test func automaticHistoryPrefetchStopsAfterFourSmallPagesAndAcknowledgesDuplicates() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true)
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        for page in 0..<4 {
+            let request = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+            #expect(request["beforeEntryId"] as? String == "e\(499 - page)")
+            #expect(request["targetLeafId"] as? String == "e500")
+            var response = rangeSnapshot(request, ids: [498 - page], complete: false)
+            response["hasOlder"] = true; response["rangeStatus"] = "older_available"
+            await transport.event(response, sequence: page * 2 + 2)
+            await transport.event(response, sequence: page * 2 + 3)
+        }
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 4)
+        #expect(store.messages.map(\.text) == ["row 499", "row 500"])
+        #expect(store.historyLoading.isEmpty)
+    }
+
+    // Actual envelope bytes constrain the next request, including JSON overhead. Re-entering
+    // a backgrounded window must not create a fresh budget or publish its delayed reserve.
+    @Test func automaticHistoryBudgetShrinksAndBackgroundCancelsTheOwnedRead() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        for page in 0..<2 {
+            let request = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+            var response = rangeSnapshot(request, ids: [498 - page], complete: false)
+            response["hasOlder"] = true; response["rangeStatus"] = "older_available"
+            var display = try #require(response["display"] as? [String: Any])
+            var rows = try #require(display["entries"] as? [[String: Any]])
+            rows[0]["message"] = message("m\(498 - page)", text: String(repeating: "界", count: 16_000))
+            display["entries"] = rows; response["display"] = display
+            await transport.event(response, sequence: page + 2)
+        }
+        let pending = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        let window = try #require(pending["historyWindow"] as? [String: Any])
+        #expect((window["maxBytes"] as? Int ?? 0) > 8192)
+        #expect((window["maxBytes"] as? Int ?? 65536) < 40 * 1024)
+        #expect(window["maxDeliveries"] as? Int == 1)
+        store.setHistoryWindowVisible(false)
+        var delayed = rangeSnapshot(pending, ids: [496], complete: false)
+        delayed["hasOlder"] = true; delayed["rangeStatus"] = "older_available"
+        await transport.event(delayed, sequence: 4)
+        store.setHistoryWindowVisible(true); await store.waitForPendingEvents()
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 3)
+        #expect(store.messages.map(\.text) == ["row 499", "row 500"])
+        #expect(store.historyLoading.isEmpty)
+    }
+
+    @Test func rejectedHistoryInterestCanBeRegisteredAgain() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        store.setHistoryWindowVisible(true); try await transport.enableHistoryWindow()
+        let request = try #require(transport.sent.last { $0["type"] as? String == "session.history.interest" })
+        await transport.emit(["type": "session.history.interest.result", "requestId": request["requestId"]!, "accepted": false])
+        store.setHistoryWindowVisible(true)
+        #expect(transport.sent.filter { $0["type"] as? String == "session.history.interest" }.count == 2)
+    }
+
+    @Test func legacyHostDoesNotStartAutomaticHistoryAndCapabilityProbeFailureIsSilent() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let request = try #require(transport.sent.last { $0["type"] as? String == "session.history.capabilities.request" })
+        await transport.emit(["type": "protocol.error", "requestId": request["requestId"]!, "code": "unsupported_message"])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        #expect(store.errorMessage == nil)
+        #expect(transport.syncCommands.filter { $0["range"] as? String != "preview" }.isEmpty)
+        #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
+        let history = try #require(transport.syncCommands.last)
+        #expect(history["range"] as? String == "history")
+        #expect(history["historyWindow"] == nil)
+    }
+
+    @Test func closingTheHistoryWindowCancelsItsReservationAndPreservesTheNewConversation() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
+        store.setHistoryWindowVisible(true)
+        try await transport.enableHistoryWindow()
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [499, 500], hasOlder: true))
+        let old = try #require(transport.syncCommands.last { $0["range"] as? String == "history" })
+        store.selectRuntime("b"); await store.waitForPendingEvents()
+        var delayed = rangeSnapshot(old, ids: Array(469...498), complete: false)
+        delayed["hasOlder"] = true; delayed["rangeStatus"] = "older_available"
+        await transport.event(delayed, sequence: 3)
+        #expect(store.selectedRuntimeId == "b")
+        #expect(store.messages.isEmpty)
+        #expect(transport.syncCommands.filter { $0["range"] as? String == "history" }.count == 1)
     }
 
     @Test func toolInventoryFailureRejectsAckAndReleasesSourceRead() async throws {
@@ -1252,6 +1362,26 @@ struct StoreTests {
         #expect(store.turnTimings.first?.durationMs == 34)
         store.selectRuntime("a"); await store.waitForPendingEvents()
         #expect(store.turnTimings.first?.durationMs == 12)
+    }
+
+    /// ADR-0076 DSH-DESKTOP-06: the Host's filtered first view (no `dshDesktop` key) is answered with
+    /// `device.features` and replaced by the full view, so a Desktop session is never dropped in between.
+    @Test func declaresDesktopFeatureAndAppliesOnlyTheFullReady() async throws {
+        let (store, transport) = setup()
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("dsh:web")], "hostFeatures": ["device.features"]])
+        let declaration = try #require(transport.sent.last { $0["type"] as? String == "device.features" })
+        #expect(declaration["features"] as? [String] == ["agent.dshDesktop"])
+        #expect(store.runtimes.isEmpty)
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("dsh:web"), runtime("dsh-desktop:desk")], "hostFeatures": ["device.features"],
+            "dshDesktop": ["state": "attached", "reason": "attached"], "launchableAgents": ["dsh", "dshDesktop"]])
+        #expect(store.runtimes.map(\.runtimeId).sorted() == ["dsh-desktop:desk", "dsh:web"])
+        #expect(store.launchableAgents == ["dsh", "dshDesktop"])
+        #expect(transport.sent.filter { $0["type"] as? String == "device.features" }.count == 1)
+        // A Host without the negotiation is applied as before.
+        await transport.ready([runtime("pi-a")])
+        #expect(store.runtimes.map(\.runtimeId) == ["pi-a"])
     }
 
     @Test func authenticatedDesktopAvailabilityClearsWhenOmitted() async throws {
@@ -1372,6 +1502,22 @@ struct StoreTests {
         transport.acceptsSends = true
         #expect(store.loadOlderHistory()); await store.waitForPendingEvents()
         #expect(transport.syncCommands.last?["range"] as? String == "history")
+    }
+
+    // PERF-08: queued payloads retain the ownership at admission, even when an
+    // offline/online pair reuses the same runtime and session IDs before draining.
+    @Test func queuedRuntimeEventsCannotCrossAnOwnershipBoundary() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        transport.receive?(["type": "runtime.event", "runtimeId": "a", "sequence": 1,
+            "event": ["type": "message.started", "message": ["messageId": "old", "role": "assistant",
+                "content": [["type": "text", "text": "old owner"]], "timestamp": 1]]], "msg")
+        transport.receive?(["type": "runtime.offline", "runtimeId": "a"], "ctl")
+        transport.receive?(["type": "runtime.online", "runtime": runtime("a")], "ctl")
+        await store.waitForPendingEvents()
+        #expect(store.messages.isEmpty)
+        await transport.event(["type": "message.started", "message": ["messageId": "new", "role": "assistant",
+            "content": [["type": "text", "text": "new owner"]], "timestamp": 2]])
+        #expect(store.messages.map(\.text) == ["new owner"])
     }
 
     @Test func runtimeReplacementDuringDiskCommitCannotPublishOrPersistTheOldSnapshot() async throws {

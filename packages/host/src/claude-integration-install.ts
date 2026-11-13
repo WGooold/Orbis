@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { agentInvocation, findExternalAgentEntries } from "./agent-command.js";
+import { requireClaudeModsVersion } from "./claude-version.js";
 
 /**
  * Registers the Orbis Claude Code plugin through Claude Code's own plugin CLI
@@ -16,7 +17,7 @@ export const CLAUDE_MARKETPLACE = "orbis-host";
 export const CLAUDE_PLUGIN = "orbis-host-session-link";
 
 export type ClaudeCommandResult = { code: number; stdout: string; stderr: string };
-export type ClaudeCommandRunner = (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<ClaudeCommandResult>;
+export type ClaudeCommandRunner = (file: string, args: readonly string[], env: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<ClaudeCommandResult>;
 export type ClaudeIntegrationResult = "installed" | "removed" | "claude_not_found" | "disabled";
 
 export class ClaudeIntegrationError extends Error {
@@ -36,12 +37,22 @@ export async function updateClaudeIntegration(input: {
   env?: NodeJS.ProcessEnv;
   claude?: string;
   run?: ClaudeCommandRunner;
+  /** HOST-PREP-04: the desktop registers in the background and cancels a run the user superseded or the Host is closing. */
+  signal?: AbortSignal;
 }): Promise<ClaudeIntegrationResult> {
   if (!input.uninstall && input.desktopSettingsPath && !await integrationEnabled(input.desktopSettingsPath)) return "disabled";
   const env = input.env ?? process.env;
   const claude = input.claude ?? await findClaudeExecutable(env);
   if (claude === undefined) return "claude_not_found";
-  const run = input.run ?? runClaude;
+  const signal = input.signal;
+  // Each `claude plugin` step may take up to a minute. A cancelled run stops at the current
+  // step and never reports the next one as failed.
+  const run: ClaudeCommandRunner = async (file, args, commandEnv) => {
+    signal?.throwIfAborted();
+    const result = await (input.run ?? runClaude)(file, args, commandEnv, signal);
+    signal?.throwIfAborted();
+    return result;
+  };
   const plugin = `${CLAUDE_PLUGIN}@${CLAUDE_MARKETPLACE}`;
   // Callers derive this from a directory URL, which keeps a trailing separator. Claude Code
   // rejects that form with "Path does not exist: <dir>\" for a directory that exists.
@@ -52,6 +63,8 @@ export async function updateClaudeIntegration(input: {
     await run(claude, ["plugin", "marketplace", "remove", CLAUDE_MARKETPLACE], env);
     return "removed";
   }
+  await requireClaudeModsVersion(claude, env, undefined, input.run);
+  signal?.throwIfAborted();
   // `add` re-points an existing marketplace of the same name, and `install` is idempotent.
   await expectSuccess(run(claude, ["plugin", "marketplace", "add", pluginDir], env), "登记 Orbis 插件目录失败");
   await expectSuccess(run(claude, ["plugin", "install", plugin, "--scope", "user"], env), "安装 Orbis Claude Code 插件失败");
@@ -87,9 +100,9 @@ async function expectSuccess(pending: Promise<ClaudeCommandResult>, message: str
   throw new ClaudeIntegrationError(detail.length === 0 ? message : `${message}：${detail}`);
 }
 
-const runClaude: ClaudeCommandRunner = (file, args, env) => new Promise(resolve => {
+const runClaude: ClaudeCommandRunner = (file, args, env, signal) => new Promise(resolve => {
   const invocation = agentInvocation({ command: file, prefixArgs: [] }, args, env);
-  execFile(invocation.command, invocation.args, { env, timeout: 60_000, windowsHide: true,
+  execFile(invocation.command, invocation.args, { env, timeout: 60_000, windowsHide: true, ...(signal === undefined ? {} : { signal }),
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), maxBuffer: 1024 * 1024 },
     (error, stdout, stderr) => {
       const code = error === null ? 0 : typeof (error as NodeJS.ErrnoException & { code?: unknown }).code === "number" ? (error as unknown as { code: number }).code : 1;

@@ -394,6 +394,9 @@ internal fun RemoteApp(
                 onCloseRuntimes = model::closeRuntimesOn,
                 onOpenDownloads = { cancelLaunchIntro(); allDownloadsOpen = true },
                 onSelectHost = { hostId -> cancelLaunchIntro(); model.selectHost(hostId) },
+                onCatalogVisibility = model::setCatalogVisible,
+                onNextCatalogPage = model::loadNextCatalogPage,
+                onCatalogQuery = model::setCatalogQuery,
                 onRetryHome = model::refreshHome,
             )
         }
@@ -458,6 +461,9 @@ internal fun RemoteApp(
                     },
                     onSetArchived = model::setSessionArchivedOn,
                     onRequestProviders = model::refreshProviderFacts,
+                    onCatalogVisibility = model::setCatalogVisible,
+                    onNextCatalogPage = model::loadNextCatalogPage,
+                    onCatalogQuery = model::setCatalogQuery,
                 )
             },
         ) { rootHomeContent() }
@@ -469,7 +475,7 @@ internal fun RemoteApp(
             val kind = agentBrand(activation.agentKind).title
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
-            val suffix = if (activation.spawnMode == "headless" && activation.agentKind != "codexDesktop") L10n.tr("，此会话无头（电脑上无窗口）") else ""
+            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind)) L10n.tr("，此会话无头（电脑上无窗口）") else ""
             Toast.makeText(context, L10n.tr("已在电脑上拉起 {0} 进程{1}，等待会话上线…", kind, suffix), Toast.LENGTH_LONG).show()
             model.clearActivationNotice()
         }
@@ -515,7 +521,10 @@ internal fun RemoteApp(
                                 newSessionCwd = cwd; newSessionOpen = true
                             },
                             onSetArchived = model::setSessionArchivedOn, preparedCatalog = homeUi?.catalog,
-                            onRequestProviders = model::refreshProviderFacts, permanent = true)
+                            onRequestProviders = model::refreshProviderFacts, permanent = true,
+                            onCatalogVisibility = model::setCatalogVisible,
+                            onNextCatalogPage = model::loadNextCatalogPage,
+                            onCatalogQuery = model::setCatalogQuery)
                     }
                     HomeTabBar(homeTab, onSelect = { tab ->
                         cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
@@ -755,6 +764,9 @@ internal fun RuntimeListScreen(
     onAddHost: () -> Unit = {},
     onOpenStatus: () -> Unit = {},
     onRequestProviders: () -> Unit = {},
+    onCatalogVisibility: (String?, Boolean) -> Unit = { _, _ -> },
+    onNextCatalogPage: (String?) -> Unit = {},
+    onCatalogQuery: (String?, CatalogQuery) -> Unit = { _, _ -> },
     onRetryHome: () -> Unit = {},
     launchIntro: LaunchState? = null,
     onLaunchPresented: (String) -> Unit = {},
@@ -1216,6 +1228,7 @@ internal fun RuntimeListScreen(
                     state = state, hosts = hosts, isOpen = drawerState.isOpen, preparedCatalog = preparedCatalog,
                     onSelectHost = onSelectHost, onUnpairHost = onUnpairHost, onAddHost = onAddHost,
                     onSetArchived = onSetArchived, onRequestProviders = onRequestProviders,
+                    onCatalogVisibility = onCatalogVisibility, onNextCatalogPage = onNextCatalogPage, onCatalogQuery = onCatalogQuery,
                     onOpenSession = { host, session -> scope.launch { drawerState.close() }; onOpenSession(host, session) },
                     onOpenHistory = onOpenHistory,
                     onNewSession = { host, cwd -> scope.launch { drawerState.close() }; onNewSession(host, cwd) },
@@ -1748,11 +1761,15 @@ internal fun ChatScreen(
     }
     LaunchedEffect(runtimeId, sessionId, runtime?.cwd, state.e2eReady, lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            model.reconcileChat(runtimeId)
-            while (isActive) {
-                delay(15_000)
+            val historyHost = state.hostId
+            model.setHistoryWindowVisible(historyHost, runtimeId, true)
+            try {
                 model.reconcileChat(runtimeId)
-            }
+                while (isActive) {
+                    delay(15_000)
+                    model.reconcileChat(runtimeId)
+                }
+            } finally { model.setHistoryWindowVisible(historyHost, runtimeId, false) }
         }
     }
     fun loadHistoryPage() {
@@ -2110,7 +2127,7 @@ internal fun ChatScreen(
                         // 命令词表的 source 在 Pi 与 Codex 下都叫 "builtin"，但徽标文案不同：
                         // Codex 的命令来自 app-server，标成 "Pi" 会让用户以为点错了后端。
                         isCodex = runtime?.isCodex == true,
-                        isDsh = runtime?.agentKind == "dsh",
+                        isDsh = runtime?.agentKind == "dsh" || runtime?.agentKind == "dshDesktop",
                         onOpenTree = {
                             // /tree 不再把候选铺在输入框下面：整页打开，命令词也一并清掉，
                             // 免得节点 ID 落到聊天输入框里。

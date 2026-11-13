@@ -2,19 +2,19 @@
 
 日期：2026-11-07（Asia/Taipei）
 
-Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、部署及用户验证）
+Status: accepted（FT-G11 / FT-G12 已实施并集成；自动验证见第 8 节，部署与用户验收待完成）
 
 关联：[ADR-0067](0067-host-app-field-transport-rules.md)、[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0026](0026-host-selected-session-sync.md)、[ADR-0029](0029-session-read-operation-state-machine.md)、[ADR-0037](0037-session-sync-transaction-contract.md)、[ADR-0064](0064-protocol-compatibility.md)。
 
 ## 1. 范围与状态
 
 - 本 ADR 只规定会话目录和会话历史的网络读取、变化推送、缓存、恢复与确认；适用于全部后端、Android 和 iOS。
-- 第 2 节记录当前实现；第 3–8 节规定目标行为及默认参数。目标参数进入经过协商的新表示后生效，当前发布包继续遵守已有契约。
+- 第 2 节记录实施前基线；第 3–8 节规定目标行为及默认参数。目标参数进入经过协商的新表示后生效，当前发布包继续遵守已有契约。
 - FT-G11 实施目录规则 SC-01–SC-07；FT-G12 实施历史规则 SH-01–SH-09。字段装载继续执行 ADR-0067，本文细化这两类数据的触发和范围。
 - `KiB = 1024 bytes`；实测中的 `KB = 1000 bytes`。目标包预算指最终字段投影、正文复用之后，包含业务路由 envelope 的 UTF-8 JSON 明文字节；加密、信封、分片、TLS 和重传的线路字节单独计量。
 - 条目数指 canonical Entry 数，包含工具及其他非消息节点；条目数、屏幕消息数、回合数分别统计。
 
-## 2. 当前实现
+## 2. 实施前规则与基线
 
 | 项目 | 当前条件、大小与行为 | 实现指针 |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 | 目录读取入口 | `agent.state.request(scope=host, domains 包含 catalog, subscribe=true)` 携带本地领域版本。Android 在连接建立、归档变化、刷新等路径还会请求 `session.list`；iOS 在尚未收到模型目录时保留该回退。 | [Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/OrbisStore.swift) |
 | Host 目录聚合 | 读取 catalog 时调用 `readHostRange()`；缓存有效期 5 秒，并发读取合并。部分后端变动只使缓存失效，等待后续读取重新聚合；5 秒是本机缓存有效期。 | [Host](../../packages/host/src/host-service.ts) |
 | 目录对账应答 | `known` 的 modelEpoch / revision 相同则返回 `unchanged`；不同或缺少 known 时返回整个 catalog 领域 value。主动订阅更新另行计算 compact-v2 增量，差分小于原 value 的 80% 时使用。 | [读取应答](../../packages/host/src/agent-state-snapshot.ts)、[订阅更新](../../packages/host/src/agent-state-subscriptions.ts) |
-| 目录页 | 公共目录投影最多 2,000 条，使用 192 KiB 公共值预算并预留 2 KiB；后续范围页默认 100 条、最多 200 条，也按公共值预算裁剪。两端在存在 nextCursor 时继续取页；尚未按目录视图限定后续读取。 | [目录库存与页](../../packages/host/src/host-state-facts.ts)、[协议](../../packages/protocol/src/agent-state.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/HostState.swift) |
+| 目录页 | 公共目录投影最多 2,000 条、192 KiB；首页模型最多承载 28 KiB 目录 value。范围页默认 100 条、最多 200 条，value 最多 28 KiB；两端当前收到 cursor 后会连续取完剩余页。 | [目录库存与页](../../packages/host/src/host-state-facts.ts)、[协议](../../packages/protocol/src/agent-state.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/HostState.swift) |
 | 历史首屏与翻页 | preview 默认最多 30 条；两端主动历史页最多 30 条。Android catchup 请求 30 条，iOS catchup 请求 128 条。普通页预算 512 KiB，计算包含 4 KiB wrapper 预留；单条导致超页预算时可放宽至完整响应 1 MiB 硬上限。 | [选择与预算](../../packages/protocol/src/session-sync.ts)、[Android](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS](../../ios/Orbis/Orbis/OrbisStore.swift) |
 | 历史条件核对 | preview 支持 knownState。可信的同代完整基线下：同 head / seq 返回 unchanged；同 head 且 seq 前进返回 state；能容纳的新增后缀返回 delta；其他情况返回有界尾页 snapshot。 | [选择器](../../packages/protocol/src/session-sync.ts)、[契约用例](../../packages/protocol/src/session-sync-selection.test.ts) |
 | 周期性聊天核对 | Android 当前聊天在前台进入时及每次等待 15 秒后调用 refreshRuntime，读取已有源端基线或补缓存缺口。iOS 已有基线核对由打开、恢复、来源或 head 变化等路径触发；聊天页的 15 秒循环读取工作分支。 | [Android 调度](../../android/app/src/main/java/com/orbising/orbis/RemoteViewModel.kt)、[Android 聊天](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)、[iOS Store](../../ios/Orbis/Orbis/OrbisStore.swift)、[iOS 聊天](../../ios/Orbis/Orbis/ChatView.swift) |
@@ -38,7 +38,8 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 | --- | --- |
 | 目录 / 历史页 | 目标 32 KiB，硬上限 64 KiB；条数与字节数先到者决定页边界。 |
 | 读取请求、版本确认、ACK、pending 与关联错误 | 目标不超过 2 KiB，硬上限 8 KiB；准确身份、范围和必要错误保留。长详情使用有版本的内容引用。 |
-| 目录页条数 | 默认 100，最多 200；64 KiB 包上限优先。 |
+| 目录页 value | 目标不超过 28 KiB JSON；保留完整 Host envelope 后目标包不超过 32 KiB。 |
+| 目录页条数 | 默认 100，最多 200；32 KiB 包目标优先。 |
 | 历史页条数 | 首屏、用户翻页和自动预留每页默认最多 30；64 KiB 包上限优先。 |
 | 目录 / 当前聊天的兜底核对 | 前台且当前需要该数据时，距最近有效核对至少 60 秒；后台暂停定期核对。 |
 | 单目录请求并发 | 同一 Host、快照、过滤范围最多 1 个在途读取；相同需求合并。 |
@@ -85,7 +86,7 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 - 目录内容版本由条目、有效排序、覆盖与可用性决定。读取耗时、核对时间和重复通知复用原内容版本。
 - 订阅推送及显式对账统一按客户端实际已应用版本决定内容：相同版本返回 unchanged；有可用差异时返回按稳定身份的新增、修改、显式删除；差异不可用时返回有界恢复页及新快照身份。
 - 差异使用准确基准，且相对等价完整必要范围至少节省 20% 时采用；差异页与恢复页都受 64 KiB 上限约束，分段期间保留其固定版本及未完成覆盖。
-- 当前 compact-v2 的 JSON 差分只覆盖订阅推送；FT-G11 同时补齐显式对账的差异 / 范围恢复与实际应用版本确认。Host 在缺少接收端基准时提供恢复入口。
+- compact-v2 的 JSON 差分已覆盖订阅推送与显式对账；两条路径均按设备实际可见的领域值和已应用版本计算差异。FT-G11 保留最多 16 个历史目录版本及 4 MiB 基线预算，缺少接收端准确基准时返回有界恢复页。
 
 ### SC-04：分页、完整性与失效
 
@@ -102,7 +103,7 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 | `totalSessions/backends/complete/truncated/offset/nextCursor` | 随相应版本的确认、摘要或页携带；保留实际确认的覆盖与计数。 |
 | `sessions[].agentKind/sessionId` | 每个条目保留准确目标；只在该页首次装载、条目变化或恢复时发送。 |
 | `name/firstMessage` | 保留当前标题及搜索需要的公开信息，按内容版本装载一份；完整聊天正文走历史范围或明确详情读取。 |
-| `cwd/hostname/modelProvider` | 保留列表、分组和准确定位所需值；新表示复用已解析的同版本元数据引用。 |
+| `cwd/hostname/modelProvider` | 保留列表、分组和准确定位所需值；已装载页复用其目录版本。需求页保留准确公开值，展开请求用 cwd 的 UTF-8 SHA-256 定位同目录范围。 |
 | `createdAt/modifiedAt/messageCount/archived` | 真实值变化才更新对应条目；列表时长等可派生值在 App 计算。 |
 | `currentProviders` | 复用相同 Host 的已确认 provider 事实；目录读取只取得其必要引用或缺失基线。 |
 | `checkedAt/backends[].elapsedMs/error` | 核对与来源状态随相关应答携带；耗时单独变化保留原目录内容版本，失败保留部分库存及原因。 |
@@ -236,12 +237,60 @@ Status: proposed（规则已记录；FT-G11 / FT-G12 待实现、自动验证、
 - 已协商设备在一个作用域内使用一种目录及历史业务权威；旧格式继续采用原字段、预算、根覆盖与恢复契约。
 - 全部后端共用 Host 出口的触发、预算与覆盖规则；后端原生事实采集和本机保存独立于 App 的缓存窗口。
 
-## 8. 实施与验证登记
+## 8. 协商字段与实施登记
+
+### 8.1 历史窗口字段
+
+| 消息 / 字段 | 规则与行为 |
+| --- | --- |
+| `session.history.capabilities.request.type/protocolVersion/requestId` | SH-09：认证后每次连接探测一次；准确关联应答，旧 Host 拒绝或不应答时保持用户主动翻页。 |
+| `session.history.capabilities.type/protocolVersion/requestId/format/maxPageBytes` | SH-09：`format=v1` 且 `maxPageBytes=65536` 确认预算与可见兴趣能力。 |
+| `session.history.interest.type/protocolVersion/requestId/runtimeId/sessionId` | SH-02 / SH-06：每设备保留一个可见聊天目标；两个目标字段同时为 null 表示关闭。相同目标去重，关闭和切换立即替换。 |
+| `session.history.interest.result.type/protocolVersion/requestId/accepted` | SH-06 / SH-09：准确回执，拒绝后释放客户端去重状态以便重新登记。已协商设备关闭或目标不匹配时停止 snapshot / patch 及旧 message / tool / turn 正文事件推送；未协商旧设备保持原广播。 |
+| `session.sync.historyWindow.format/maxBytes/maxDeliveries` | SH-01 / SH-08 / SH-09：仅固定 `targetLeafId + beforeEntryId` 的 history 可用。Host 校验最终 envelope 不超过剩余额度，单事务投递次数固定；转发旧 adapter 前移除此 Host 参数。 |
+
+- 每轮的请求上限为 `min(64 KiB, 128 KiB - 已支出字节)`；不足 8 KiB 停止。可投递次数为剩余页数与“剩余字节 / 本次请求上限”的较小值。
+- 收到的成功页计原始 UTF-8 JSON envelope 字节；请求重试而未观测到的响应按该请求固定上限预留成本。失败与撤销结算原事务，重复 ACK 不创建下一页或刷新额度。
+- 自动页只落库，用户主动翻页从 SQLite 读取预留页后才推进可见最早边界。到终点、错误、撤销或边界未推进记录本轮已停止；周期 preview、live 与重新进入同一边界复用原额度。
+
+### 8.2 目录查询字段
+
+| 消息 / 字段 | 规则与行为 |
+| --- | --- |
+| `session.catalog.capabilities.request.type/protocolVersion/requestId` | SC-07：每次认证 ready 后探测一次；连接或路径重新握手重新协商。未确认时沿用原严格范围协议。 |
+| `session.catalog.capabilities.type/protocolVersion/requestId/format` | SC-07：准确关联请求，`format=v1` 确认查询及分页语义；旧 Host 的拒绝静默交给兼容读取。 |
+| `session.catalog.query.type/protocolVersion/requestId/format` | SC-01 / SC-06 / SC-07：可见目录产生逻辑读取，最多一个在途；一次重试复用原消息和 requestId。 |
+| `query.text/agentKind/archived/provider/directory`（请求与页应答） | SC-01 / SC-04：文本最多 256 字符；完整 Host 库存按标题 / 预览 / 路径匹配，App 保留既有最终展示过滤。agentKind=null 表示全部；archived 为准确归档范围；provider 为 all/current/unknown/provider:精确值。应答原样确认查询归属。directory 为准确 cwd 的 SHA-256（UTF-8）或 null，展开更多只查询对应目录，避免重新下载其他分组。输入变化合并 250 ms 后登记新范围。 |
+| `session.catalog.query.cursor/limit` | SC-04 / SC-06：首页 cursor=null；后续游标绑定快照、版本、查询散列与位置。默认 100 条、最多 200；实际字节预算优先。关闭目录取消本地读取身份，迟到页不能提交。 |
+| `session.catalog.page.type/protocolVersion/requestId/format` | SC-04 / SC-07：消息走 msg 通道；最终 JSON envelope 校验不超过 64 KiB，控制通道保留阶段和回执。 |
+| `page.modelEpoch/revision/snapshotId/offset/totalSessions/nextCursor` | SC-04 / SC-05：固定来源版本、查询总数和准确位置；只拼接同作用域连续页。源库存截断或相关后端不完整时，总数只代表已确认匹配范围。 |
+| `page.sessions[]` 的原有字段 | SC-05；沿用目录字段装载表。首次和变化查询只发送当前需要页，App 增加已知条目并保留已有磁盘缓存身份。 |
+| `page.complete/truncated/error` | SC-04 / SC-06：complete 表示查询所需后端完整性，nextCursor 单独表示尚余页；第一页领域投影未装载全目录时 completeness=partial。快照变化最多自动重开一次；其他错误保留已显示数据，手动刷新可恢复。 |
+| `directoryCount/previewsComplete` | SC-01 / SC-05：绑定该查询版本的匹配目录数和五条预览覆盖；默认目录先取得各分组的最多五条预览，预览已齐时停止隐藏行下载。搜索或用户展开后按实际滚动读取。 |
+| `page.sessions[].directoryTotal` | SC-01 / SC-05：同查询、同 cwd 的版本化会话数，随该页条目携带；App 保留为分组计数及“显示更多”依据，与当前已加载条数区分。 |
+| `providers/unknownProvider/providersTruncated` | SC-01 / SC-05：同库存、同 agentKind 的 provider 筛选元数据，只随查询第一页发送；后续页复用。最多 64 个、总 JSON 最多 8 KiB，预算截断单独标识；源端未完整继续由 page.complete 表达。 |
+
+- 查询首屏和后续页都由可见目录持有；滚动到已加载范围底部附近时请求下一页，页到达本身不产生下一页需求。旧 Host 在目录可见时沿原库存连续分页，以保持完整列表及全局搜索 / 筛选语义。
+- 目录版本读取、兼容范围页和新查询页都等待 20 秒，间隔 5 秒后按原身份重试一次，总等待 45 秒。周期核对合并到在途读取；同版本确认复用已装载页，真实目录版本变化重新核对查询范围。
+
+### 8.3 分组验证登记
 
 | 组 | 规则 | 针对性回归范围与实现指针 | 当前状态 |
 | --- | --- | --- | --- |
-| FT-G11 | SC-01–SC-07 | 60 秒条件核对、前后台与多 Host、同版本小确认、变化差异、固定快照分页、查询覆盖、部分后端保留、过期游标、重复连接读取、旧格式。对应 [Host 目录](../../packages/host/src/host-state-facts.test.ts)、[订阅](../../packages/host/src/agent-state-subscriptions.test.ts)、[Host 联动](../../packages/host/src/host-service.test.ts)及两端目录接收 / 调度测试。 | 规则记录；实现、运行回归、部署、用户验证待完成。 |
-| FT-G12 | SH-01–SH-09 | 长会话冷缓存首屏加有界预留、达到条数 / 字节 / 页数任一上限停止、重复事件不补根、真实滚动才扩窗、离线页、窗口内缺口、切分支 / 来源换代、压缩与显示缺口、live 落盘、乱序 / 重复、ACK 丢失、背压、旧端根覆盖兼容。对应 [范围选择](../../packages/protocol/src/session-sync-selection.test.ts)、[Host 事务](../../packages/host/src/session-sync-tasks.test.ts)、[Android 覆盖规划](../../android/app/src/main/java/com/orbising/orbis/SessionGraphStore.kt)、[iOS 历史测试](../../ios/Orbis/Tests/SessionHistoryTests.swift)及两端读取状态机测试。 | 规则记录；实现、运行回归、部署、用户验证待完成。 |
+| FT-G11 | SC-01–SC-07 | 已实现 60 秒条件核对、前后台与当前 Host、同版本小确认、缺更差异恢复、28 KiB 固定快照分页、来源变化主动聚合，保留 `session.list` 兼容。对应 [Host 目录](../../packages/host/src/host-state-facts.test.ts)、[差异与淘汰](../../packages/host/src/catalog-reconcile.test.ts)、[Host 加密与分页联动](../../packages/host/src/host-service.test.ts)、[Android 调度](../../android/app/src/test/java/com/orbising/orbis/ReadReconcileScheduleTest.kt)、[iOS 调度](../../ios/Orbis/Tests/ReadReconcileScheduleTests.swift)。G11.2 已实现可见需求分页、关闭 / 后台取消、独立 v1 查询协商、全库存搜索 / 筛选、同版本 provider 筛选缓存、游标归属及 20 + 5 + 20 秒重试。针对性回归与 App 编译证据见本任务 `final-node.log`、`final-e2e.log`、`delivery-android/run.log`、`delivery-ios/run.log`、`delivery-ios-app/run.log`。 | 自动回归及编译已完成，部署、真实网络和用户验收待完成。 |
+| FT-G12 | SH-01–SH-09 | 长会话冷缓存首屏加有界预留、达到条数 / 字节 / 页数任一上限停止、重复事件不补根、真实滚动才扩窗、离线页、窗口内缺口、切分支 / 来源换代、压缩与显示缺口、live 落盘、乱序 / 重复、ACK 丢失、背压、旧端根覆盖兼容。对应 [范围选择](../../packages/protocol/src/session-sync-selection.test.ts)、[Host 事务](../../packages/host/src/session-sync-tasks.test.ts)、[Android 覆盖规划](../../android/app/src/main/java/com/orbising/orbis/SessionGraphStore.kt)、[iOS 历史测试](../../ios/Orbis/Tests/SessionHistoryTests.swift)及两端读取状态机测试。 | 子组 G12.1：32 KiB 目标 / 64 KiB hard page、24 KiB 单条线路投影已实现；Protocol 165 项回归通过。G12.2：Android / iOS 自动根向 catchup 已移除；iOS 首屏与显式历史边界测试、Android 来源恢复测试通过。iOS StoreTests 另有 `homeWaitsForCardFactsAndPersistsIdentityBeforeCatalogArrives` 在基线工作树复现的既有失败。G12.3：已实现额外 60 条 / 128 KiB / 4 页预留、按实际响应和重试预算结算、缓存写入与可见范围分离、60 秒来源核对及可见聊天推送兴趣。能力未确认的旧 Host 保留用户主动翻页。自动验证见本任务 `g12-ios-final/run.log`、`g12-android-final/run.log`、`g12-node-latest.log`、`g12-e2e-latest.log`；既有基线失败保留原证据。部署、用户验证待完成。 |
 
 - 本次文档静态校验与后续实现证据保存于 `.artifacts/catalog-history-rules-20261107/`；文档检查只确认链接、规则覆盖、参数与格式。
-- 每组独立实现、完成针对性回归后提交。真实线路测量分别记录 JSON 发送尝试、实际 socket 字节、成功应用范围和完整性；实施收益以相同工作负载对照为准。
+- 每组独立实现、完成针对性回归后提交。真实线路测量分别记录 JSON 发送尝试、实际 socket 字节、成功应用范围和完整性；实施收益以相同工作负载对照为准。本机自动回归、构建、部署与用户验收分别记账；真实线路收益尚未测量。
+
+2026-11-07 分支阶段汇总证据：[自动验证记录](../../.artifacts/catalog-history-rules-20261107/delivery-results.json)。Node 219 项、Host 加密链路 4 项、Android 96 项通过；iOS 153 项中 152 项通过，`homeWaitsForCardFactsAndPersistsIdentityBeforeCatalogArrives` 的既有五项断言失败在基线 `f84dd7e` 再次复现，证据见 `ios-baseline-confirmation/run.log`。iOS App 构建成功，构建租约及所属子进程清理复核见 `delivery-ios-app-recovery/cleanup.json`。该阶段证据及失败断言保持保留。
+
+### 8.4 2026-11-13 主分支集成
+
+- Android / iOS 继续使用现有三条会话预览与目录折叠 UI；Host 查询的五条网络预览是读取覆盖，不改变界面展开规则。iPad 常驻侧栏也持有可见目录兴趣。iOS 目录结果继续通过异步 Store 提交，复用后台模型准备与连接代次隔离。
+- `FT-G11-COMPAT-01`：目录查询能力和 `agent.dshDesktop` 独立协商；查询结果、分组总数、供应商筛选及游标统一取设备可见视图，完整 / 过滤游标互不接受。显式对账保存当时的过滤基线，避免用新库存重建旧游标。回归见 [目录范围](../../packages/host/src/host-catalog-range.test.ts)和 [Host 加密链路](../../packages/host/src/host-service.test.ts)。
+- `FT-G11-ASYNC-01`：查询页提交等待异步目录落地，重复页与纯加载状态不重复提交。回归见 [HostStateTests](../../ios/Orbis/Tests/HostStateTests.swift)。
+- `FT-G12-COMPAT-01/02`：Host 转发到已发布适配器前移除 `historyWindow`。普通 preview / history / catchup 保留旧适配器的 1 MiB 响应上限及资源预留；显式有预算的历史预留继续按 `historyWindow.maxBytes`（最多 64 KiB）裁剪与拒绝超限。新选择器自身生成 32 KiB 目标 / 64 KiB 上限页；未协商旧链路不会因较大合法页而失败。回归见 [Host 转发](../../packages/host/src/host-service.test.ts)和 [事务预算](../../packages/host/src/session-sync-tasks.test.ts)。
+- 当前集成自动结果与边界见 [integration-results.json](../../.artifacts/catalog-history-integration-20261113/integration-results.json)。Node 171 项、Swift 115 项与 Android 156 项通过；此前首页基线失败用例在本次集成中通过。初次合并的差分游标失败、Swift 异步编译失败及测试夹具修正前结果分别保留原日志。
+- 实际旧实现对照为 `v0.1.19 / 757dd9df`：[协议解析与选择器](../../.artifacts/catalog-history-integration-20261113/release-wire-final/verification.json)验证新旧双向及同版正对照、旧严格 schema 拒绝新增请求与字段、旧选择器大页穿过当前事务协调者；[旧 iOS 目录解析器](../../.artifacts/catalog-history-integration-20261113/release-app/release-app-compat.json)从发布源码原样编译，接受过滤后的 22 页并拒绝含未知 DSH Desktop 类型的负对照。该验证使用隔离合成数据，完整旧包 UI、真实网络收益与部署验收单独完成。
+- 待用户验证：多目录展开、全库存搜索及 provider 筛选；长聊天首屏后停止自动补根、向上翻页与回到实时内容；切 Host / 聊天、退后台和重连后无错位或串会话。安装候选与正式验收由统一回归页面登记。

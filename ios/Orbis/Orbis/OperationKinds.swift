@@ -51,7 +51,11 @@ enum OperationKinds {
     ) }
     /// 某个 Runtime 的模型配置（model 领域或 runtime.metadata）在账本里的领域名。
     static func modelDomain(_ runtimeId: String) -> String { "model:" + runtimeId }
-    static func isConfigSetting(_ name: String) -> Bool { name == "model" || name == "thinking" }
+    static let configSettings = ["model", "thinking", "effort"]
+    static func isConfigSetting(_ name: String) -> Bool { configSettings.contains(name) }
+    static func depthCommand(_ commands: [SlashCommand]) -> String? {
+        commands.first { $0.name == "thinking" }?.name ?? commands.first { $0.name == "effort" }?.name
+    }
     static func configTitle(_ setting: String) -> String { setting == "model" ? L10n.tr("模型") : L10n.tr("思考级别") }
     static func configTarget(runtimeId: String, setting: String) -> String { "config:\(runtimeId):\(setting)" }
 
@@ -67,14 +71,16 @@ enum OperationKinds {
     ) }
 
     static func confirmedValue(_ runtime: RuntimeSummary, setting: String) -> String? {
-        setting == "model" ? runtime.model?.id : runtime.thinkingLevel
+        if let selection = runtime.modelSelection { return setting == "model" ? selection.model : selection.thinking }
+        return setting == "model" ? runtime.model?.id : runtime.thinkingLevel
     }
 
     /// 模型配置对 `config` 说明了什么：确认值等于所选即落地；成功回执后确认值不同（规范化或别名）也落地，显示确认值。
     static func configEvidence(_ op: AppLedger.Operation, runtime: RuntimeSummary?) -> AppLedger.Evidence {
         guard case .config(_, let setting, let value, _) = op.payload, let runtime else { return .none }
         if confirmedValue(runtime, setting: setting) == value { return .landed }
-        return op.succeeded && confirmedValue(runtime, setting: setting) != nil ? .landed : .none
+        let observed = confirmedValue(runtime, setting: setting) != nil || (setting == "model" ? runtime.model != nil : runtime.thinkingLevel != nil)
+        return op.succeeded && observed ? .landed : .none
     }
 
     /// 未结算的配置切换：等它的消息排在它后面（§6.2）。

@@ -82,6 +82,19 @@ export function relayHttpBase(relayUrl: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
+function tailnetHost(hostname: string): boolean {
+  // Tailscale 在链路上已经加密，尾网内的 Relay 用 ws:// 与回环同样安全；
+  // 公网地址仍只允许 wss://。100.64.0.0/10 与 fd7a:115c:a1e0::/48 是尾网地址段。
+  if (hostname.endsWith(".ts.net")) return true;
+  const ipv4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/u.exec(hostname);
+  if (ipv4 !== null) {
+    const first = Number(ipv4[1]);
+    const second = Number(ipv4[2]);
+    return first === 100 && second >= 64 && second <= 127;
+  }
+  return hostname.startsWith("fd7a:115c:a1e0:");
+}
+
 function assertRelayUrl(value: string): void {
   let url: URL;
   try {
@@ -91,7 +104,8 @@ function assertRelayUrl(value: string): void {
   }
   if (url.protocol === "wss:") return;
   if (url.protocol === "ws:" && ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) return;
-  throw new Error("公网 Relay 必须使用 wss:// 加密传输");
+  if (url.protocol === "ws:" && tailnetHost(url.hostname)) return;
+  throw new Error("公网 Relay 必须使用 wss:// 加密传输（尾网地址与回环除外）");
 }
 
 function stringField(source: Record<string, unknown> | undefined, key: string): string | undefined {

@@ -31,6 +31,7 @@ function makeHarness(options?: {
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
   desktop?: boolean;
+  taskRegistry?: unknown[];
 }): {
   runtime: CodexRuntime;
   server: CodexAppServer;
@@ -49,7 +50,11 @@ function makeHarness(options?: {
   // Keep subsequent reconciliation reads separate from the initial native hydration.
   // Existing race tests explicitly resolve those reads; initial hydration uses the fixture.
   const historyReads = vi.fn();
-  const request = vi.fn((method: string, params?: { threadId?: string }) => {
+  const request = vi.fn((method: string, params?: { threadId?: string; parentThreadId?: string; ancestorThreadId?: string; archived?: boolean }) => {
+    if (method === "thread/list" && params?.parentThreadId && params.ancestorThreadId) {
+      return options?.taskRegistry ? Promise.reject(new Error("parentThreadId and ancestorThreadId are mutually exclusive")) : Promise.resolve({ data: [] });
+    }
+    if (method === "thread/list" && params?.ancestorThreadId && options?.taskRegistry) return Promise.resolve({ data: params.archived ? [] : options.taskRegistry });
     // markStarted 会探一次 model/list 来缓存默认模型名（用于 runtime.metadata 的 model
     // 字段）。它不属于被测的请求序列，直接就地回一个固定的模型表，不占用 queue——
     // 否则每个用例的 resolveNext 都会错位。
@@ -170,6 +175,18 @@ describe("Codex CLI/Desktop child task integration", () => {
   const tasks = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.tasks").at(-1)?.tasks;
   const collab = (status: string) => ({ type: "collabAgentToolCall", id: "spawn-call", tool: "spawnAgent", status: "completed",
     senderThreadId: "th-1", receiverThreadIds: ["child"], agentsStates: { child: { status, message: "private output" } }, prompt: "private prompt" });
+
+  it.each([false, true])("reconciles registry on refresh after native history (desktop=%s)", async desktop => {
+    const h = makeHarness({ desktop, taskRegistry: [{ id: "child", parentThreadId: "th-1", status: { type: "idle" } }],
+      initialTurns: [{ id: "t", status: "completed", items: [collab("completed")] }] });
+    await activate(h);
+    h.runtime.announce("th-1");
+    await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+    h.resolveNext({ data: [{ id: "t", status: "completed", items: [collab("completed")] }] });
+    await vi.waitFor(() => expect(tasks(h)).toMatchObject({ availability: "ready", truncated: false, items: [{ id: "child", status: "completed" }] }));
+    h.server.onExit?.(0);
+    expect(tasks(h)?.availability).toBe("unknown");
+  });
 
   it.each([false, true])("projects native items and child source/status without creating sessions (desktop=%s)", async desktop => {
     const h = makeHarness({ desktop }); await activate(h);

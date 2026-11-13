@@ -36,6 +36,7 @@ internal class DrawerCatalogRequest(val state: RemoteState?, val language: AppLa
     override fun equals(other: Any?): Boolean = other is DrawerCatalogRequest && sameView(other) && prepared === other.prepared &&
         state?.hostName == other.state?.hostName && state?.sessions === other.state?.sessions &&
         state?.runtimes === other.state?.runtimes && state?.sessionGraphs === other.state?.sessionGraphs &&
+        state?.catalogQuery === other.state?.catalogQuery &&
         state?.conversations === other.state?.conversations && state?.ledger === other.state?.ledger
 
     override fun hashCode(): Int = listOf(state?.hostId, state?.hostName, language, filter).hashCode()
@@ -69,14 +70,17 @@ internal class DrawerCatalogWorker(
 ) {
     private var previousTree: List<CachedHostGroup>? = null
     private var previous: DrawerCatalogProjection? = null
+    private var previousQuery: CatalogQueryResult? = null
 
     suspend fun resolve(request: DrawerCatalogRequest): DrawerCatalogProjection = withContext(dispatcher) {
         val tree = request.prepared ?: cache.resolve(request.state, request.language)
         val old = previous
-        if (tree === previousTree && old?.identity?.matches(request) == true) return@withContext old
+        if (tree === previousTree && old?.identity?.matches(request) == true && previousQuery === request.state?.catalogQuery) return@withContext old
         val filter = request.filter
         val agent = drawerAgentFilter(filter.agentKey)
-        val options = codexProviderOptions(tree, filter.currentProvider, agent.key, request.language)
+        val facets = request.state?.catalogQuery?.takeIf { it.query.agentKind == agent.key }
+        val options = codexProviderOptions(tree, filter.currentProvider, agent.key, request.language,
+            facets?.providers.orEmpty(), facets?.unknownProvider == true)
         val provider = filter.requestedProvider.takeIf { key -> options.any { it.key == key } } ?: CURRENT_CODEX_PROVIDER
         val sections = tree.mapNotNull { host ->
             val directories = host.directories.mapNotNull { directory ->
@@ -93,7 +97,7 @@ internal class DrawerCatalogWorker(
         }
         val content = if (old != null && old.content.sections == sections) old.content else DrawerCatalogContent(sections)
         DrawerCatalogProjection(DrawerCatalogIdentity(request.state?.hostId, request.language, filter), options, provider, content)
-            .also { previousTree = tree; previous = it }
+            .also { previousTree = tree; previous = it; previousQuery = request.state?.catalogQuery }
     }
 }
 

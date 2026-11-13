@@ -168,7 +168,7 @@ struct ChatView: View {
                 PermissionsView(runtime: runtime).orbisSheet([.large])
             }
             .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
-                RuntimeInfoView(runtime: runtime).orbisSheet([.large])
+                SessionModelConfigurationView(runtime: runtime).orbisSheet([.medium, .large])
             }
             .modifier(TurnFileReviewPresenter(changes: store.turnFileChanges))
             .onChange(of: draft.wrappedValue) { _, next in
@@ -195,6 +195,7 @@ struct ChatView: View {
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
             .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
             .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in
+                runtimeInfoOpen = false
                 sendFlight.clear()
                 hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
                 suppressQuestionPaging = false; metrics.rowFrames = [:]
@@ -241,6 +242,7 @@ struct ChatView: View {
 
     private var header: some View {
         let p = OrbisPalette(scheme)
+        let presentation = store.sessionModelPresentation(runtime)
         return OrbisHeader {
             OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack)
         } title: {
@@ -260,19 +262,21 @@ struct ChatView: View {
                             OrbisMotionText(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
                         }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
                     }
-                    // ADR-0049 §6.7：切换中显示所选值加标记；同一槽位、同一省略规则（V05）。
-                    if let pending = store.configStatus(runtime.runtimeId, setting: "model") {
-                        OrbisMotionText(L10n.tr("{0}，{1}", pending.label, pending.mark)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("chat-model-switching")
-                    } else if let model = runtime.model, domainReady("model") {
-                        OrbisMotionText(runtime.status == "idle" ? model.name ?? model.id : L10n.tr("后续：{0}", model.name ?? model.id)).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if let model = presentation.model {
+                        OrbisMotionText([model, presentation.thinking].compactMap { $0 }.joined(separator: " · "))
+                            .font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading).layoutPriority(1)
+                    }
+                    if let indicator = presentation.indicator {
+                        OrbisMotionText(indicator).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false).accessibilityIdentifier("chat-model-switching")
                     }
                 }
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), store.displayName(runtime), store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection)))
-                .accessibilityHint(L10n.tr("查看会话信息")).accessibilityIdentifier("chat-title")
+                .accessibilityValue([presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · "))
+                .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
             OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)
@@ -1245,7 +1249,7 @@ private struct RevealRenderer: TextRenderer {
     }
 }
 
-private extension Text {
+extension Text {
     /// iOS 17 has no text renderer; streamed text simply appears there.
     @ViewBuilder func reveal(_ clock: RevealClock, base: Int, now: TimeInterval) -> some View {
         if #available(iOS 18.0, *) { textRenderer(RevealRenderer(clock: clock, base: base, now: now)) }
@@ -1298,7 +1302,7 @@ struct MarkdownMessage: View {
             #endif
             let now = reduceMotion ? TimeInterval.greatestFiniteMagnitude : renderTime
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(rows) { row in rowView(row, clock: visibleClock, now: now) }
+                ForEach(rows) { row in rowView(row, html: prepared?.mathHTML[row.id], clock: visibleClock, now: now) }
             }
         }.font(.orbisBody()).textSelection(.enabled)
             .task(id: text) {
@@ -1334,7 +1338,7 @@ struct MarkdownMessage: View {
             }
     }
 
-    @ViewBuilder private func rowView(_ row: MarkdownRow, clock: RevealClock, now: TimeInterval) -> some View {
+    @ViewBuilder private func rowView(_ row: MarkdownRow, html: String?, clock: RevealClock, now: TimeInterval) -> some View {
         let p = OrbisPalette(scheme)
         switch row.kind {
         case .spacer: Spacer().frame(height: 2)
@@ -1345,26 +1349,33 @@ struct MarkdownMessage: View {
         case .quote(let value):
             HStack(alignment: .top, spacing: 10) {
                 Capsule().fill(p.accent.opacity(0.6)).frame(width: 3)
-                Text(value).reveal(clock, base: row.base, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base, now: now, color: p.secondary)
                     .foregroundStyle(p.secondary).frame(maxWidth: .infinity, alignment: .leading)
             }.fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let value):
-            Text(value).reveal(clock, base: row.base, now: now)
+            mathOrText(value, html: html, clock: clock, base: row.base, now: now, size: level <= 2 ? OrbisTextSize.title : OrbisTextSize.body, bold: true)
                 .font(level <= 2 ? .orbisTitle() : .orbisBody(.semibold))
                 .padding(.top, 4).accessibilityAddTraits(.isHeader)
         case .task(let checked, let value):
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 OrbisActionSymbol(systemName: checked ? "checkmark.square.fill" : "square").orbisIconBaseline(OrbisTextSize.body)
-                Text(value).reveal(clock, base: row.base, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base, now: now)
             }
         case .bullet(let indent, let value):
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Text("•").reveal(clock, base: row.base, now: now)
-                Text(value).reveal(clock, base: row.base + 1, now: now)
+                mathOrText(value, html: html, clock: clock, base: row.base + 1, now: now)
             }.padding(.leading, CGFloat(min(indent, 12)) * 6)
         case .text(let value):
-            Text(value).reveal(clock, base: row.base, now: now)
+            mathOrText(value, html: html, clock: clock, base: row.base, now: now)
         }
+    }
+    @ViewBuilder private func mathOrText(_ value: AttributedString, html: String?, clock: RevealClock, base: Int, now: TimeInterval,
+        size: CGFloat = OrbisTextSize.body, bold: Bool = false, color: Color? = nil) -> some View {
+        if let html {
+            MathFragment(html: html, source: value, size: size, bold: bold, color: color ?? OrbisPalette(scheme).text,
+                clock: clock, base: base, now: now)
+        } else { Text(value).reveal(clock, base: base, now: now) }
     }
 }
 
@@ -1501,6 +1512,7 @@ struct PermissionsView: View {
 }
 
 private struct MarkdownTableView: View {
+    @Environment(\.colorScheme) private var scheme
     let section: MarkdownTextSection
     var body: some View {
         ScrollView(.horizontal) {
@@ -1508,7 +1520,7 @@ private struct MarkdownTableView: View {
                 ForEach(Array(section.rows.enumerated()), id: \.offset) { rowIndex, row in
                     GridRow(alignment: .top) {
                         ForEach(Array((section.rows.first ?? []).indices), id: \.self) { column in
-                            Text(rowIndex < section.inlineRows.count && column < section.inlineRows[rowIndex].count ? section.inlineRows[rowIndex][column] : AttributedString(""))
+                            cell(row: rowIndex, column: column)
                                 .font(.orbisLabel(rowIndex == 0 ? .semibold : .regular))
                                 .frame(width: 150, alignment: alignment(column)).padding(10)
                                 .frame(maxHeight: .infinity, alignment: .top)
@@ -1519,6 +1531,13 @@ private struct MarkdownTableView: View {
                 }
             }
         }.neuSurface(inset: true, radius: 12, intensity: 0.4).clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous)).textSelection(.enabled)
+    }
+    @ViewBuilder private func cell(row: Int, column: Int) -> some View {
+        let value = row < section.inlineRows.count && column < section.inlineRows[row].count ? section.inlineRows[row][column] : AttributedString("")
+        if row < section.mathRows.count, column < section.mathRows[row].count, let html = section.mathRows[row][column] {
+            MathFragment(html: html, source: value, size: OrbisTextSize.label, bold: row == 0, color: OrbisPalette(scheme).text,
+                alignment: alignment(column) == .center ? "center" : alignment(column) == .trailing ? "right" : "left")
+        } else { Text(value) }
     }
     private func alignment(_ column: Int) -> Alignment {
         let markers = section.text.components(separatedBy: "|")
@@ -1634,6 +1653,89 @@ struct RuntimeNoticesView: View {
                     .orbisNested().disabled(store.connection != .secured)
             }
         }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
+    }
+}
+
+/// SC84: the same configuration choices as Android, using the shared iOS sheet
+/// and selection rows. Submenus keep the composer draft and the current turn intact.
+private struct SessionModelConfigurationView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @EnvironmentObject private var agent: AgentState
+    @Environment(\.colorScheme) private var scheme
+    @OrbisDismiss private var dismiss
+    @State private var setting: String?
+    @State private var diagnosticsOpen = false
+    let runtime: RuntimeSummary
+    private var commands: [SlashCommand] { store.commands[runtime.runtimeId] ?? [] }
+    private var command: SlashCommand? { commands.first { $0.name == setting } }
+    private func select(_ name: String, _ value: String) {
+        guard store.selectedRuntime?.runtimeId == runtime.runtimeId,
+              store.selectedRuntime?.sessionId == runtime.sessionId else { return }
+        if store.executeSlash(name, args: value) { dismiss() }
+    }
+    var body: some View {
+        let presentation = store.sessionModelPresentation(runtime)
+        VStack(spacing: 0) {
+            OrbisPageHeader(title: L10n.tr("模型与深度"), closes: true, back: { dismiss() }) {
+                OrbisIconButton(symbol: "info.circle", label: L10n.tr("会话信息")) { diagnosticsOpen = true }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if presentation.showsCurrent {
+                        Text(L10n.tr("本轮使用")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        Text(presentation.current?.model.map { $0.name ?? $0.id } ?? L10n.tr("模型未确认"))
+                            .font(.orbisBody(.semibold)).accessibilityIdentifier("session-current-model")
+                        if presentation.current?.thinkingKnown == true {
+                            Text(presentation.current?.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
+                        }
+                    }
+                    Text(L10n.tr(presentation.showsCurrent ? (store.agentKind(runtime) == "codex" || store.agentKind(runtime) == "claude" ? "下轮使用" : "后续选择") : "当前所选"))
+                        .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    Text(runtime.model.map { $0.name ?? $0.id } ?? L10n.tr("未确认"))
+                        .font(.orbisBody(.semibold)).accessibilityIdentifier("session-selected-model")
+                    Text(runtime.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
+                    if let failure = store.sessionConfigFailure(runtime.runtimeId) {
+                        Text(failure.message).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).error)
+                        OrbisActionButton(title: L10n.tr("重试")) { select(failure.setting, failure.value) }.disabled(!store.canSend)
+                    }
+                    ForEach(OperationKinds.configSettings, id: \.self) { name in
+                        if let progress = store.configStatus(runtime.runtimeId, setting: name) {
+                            Text(L10n.tr("{0}，{1}", progress.label, L10n.matches(progress.mark, source: "切换中") ? L10n.tr("保存中") : progress.mark))
+                                .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+                        }
+                    }
+                    if presentation.indicator == L10n.tr("未确认") {
+                        OrbisActionButton(title: L10n.tr("核对配置")) { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
+                    }
+                    if let command {
+                        OrbisActionButton(title: L10n.tr("返回")) { setting = nil }
+                        if command.argument?.options?.isEmpty != false {
+                            Text(L10n.tr((command.argument?.optionCatalog?.count ?? 0) > 0 ? "加载中…" : "暂无可用选项")).font(.orbisLabel())
+                        }
+                        ForEach(command.argument?.options ?? []) { option in
+                            OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "",
+                                selected: OperationKinds.confirmedValue(runtime, setting: command.name) == option.value) {
+                                select(command.name, option.value)
+                            }.disabled(!store.canSend).accessibilityIdentifier("session-config-option-" + option.value)
+                        }
+                    } else {
+                        configButton("模型", name: "model")
+                        configButton("思考深度", name: OperationKinds.depthCommand(commands))
+                    }
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }.accessibilityIdentifier("session-model-configuration")
+        }
+        .onChange(of: setting) { old, next in
+            if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
+            if let next { store.loadMenuOptions(runtimeId: runtime.runtimeId, name: next) }
+        }
+        .onDisappear { if let setting { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: setting) } }
+        .orbisBottomSheet(isPresented: $diagnosticsOpen) { RuntimeInfoView(runtime: runtime).orbisSheet([.large]) }
+    }
+    private func configButton(_ title: String, name: String?) -> some View {
+        OrbisActionButton(title: L10n.tr(title)) { setting = name }
+            .disabled(!store.canSend || !commands.contains { $0.name == name && $0.argument?.kind == "select" })
+            .accessibilityIdentifier("session-config-" + (name ?? "depth"))
     }
 }
 

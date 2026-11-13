@@ -52,6 +52,9 @@ final class OrbisUITests: XCTestCase {
             card.swipeLeft()
             XCTAssertTrue(card.exists)
             XCTAssertFalse(app.buttons["关闭选中会话"].exists)
+            XCTAssertTrue(app.staticTexts["子代理尚未结束，暂不能关闭会话。"].waitForExistence(timeout: 3))
+            app.buttons["关闭错误提示"].tap()
+            XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
             card.tap()
             let toggle = app.buttons["background-tasks-toggle"]
             XCTAssertTrue(toggle.waitForExistence(timeout: 5))
@@ -70,6 +73,57 @@ final class OrbisUITests: XCTestCase {
             capture("background-tasks-\(dark ? "dark" : "light")", app: app)
             app.terminate()
         }
+    }
+
+    // SC82: a partial inventory of completed tasks must still allow selection and
+    // swipe feedback; mixed close leaves the blocked card selected and closes only Pi.
+    func testHomeSubagentCardsRemainSelectableAndBlockedSwipesExplainWhy() {
+        let app = launch("home", arguments: ["--preview-background-tasks", "--preview-background-incomplete", "--preview-reduce-motion"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        let pi = app.buttons["home-runtime-preview-pi"]
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["子代理 2 项，清单不完整"].waitForExistence(timeout: 3))
+        let originalFrame = card.frame
+        let start = card.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.30, dy: 0)))
+        XCTAssertFalse(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].exists)
+        waitForX(card, originalFrame.minX, operation: "short blocked swipe")
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -originalFrame.width * 0.6, dy: 0)))
+        XCTAssertTrue(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].waitForExistence(timeout: 3))
+        XCTAssertTrue(card.exists)
+        waitForX(card, originalFrame.minX, operation: "blocked swipe rebound")
+        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].firstMatch.exists)
+        capture("home-subagent-blocked-swipe", app: app)
+        app.buttons["关闭错误提示"].tap()
+        XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
+
+        card.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertTrue(card.isSelected)
+        XCTAssertEqual(card.frame, originalFrame)
+        // Accessibility text can remain present underneath an opaque selection fill.
+        // Check rendered title pixels so an empty-looking selected card cannot pass.
+        XCTAssertGreaterThan(inkPixels(app.staticTexts["对齐移动端的使用体验"].firstMatch), 100)
+        pi.tap()
+        XCTAssertTrue(app.staticTexts["已选择 2 项"].waitForExistence(timeout: 3))
+        app.buttons["关闭选中会话"].tap()
+        XCTAssertTrue(pi.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(card.exists)
+        XCTAssertTrue(card.isSelected)
+        XCTAssertTrue(app.staticTexts["已选择 1 项"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["子代理清单不完整，暂不能关闭会话。"].exists)
+        XCTAssertGreaterThan(inkPixels(app.staticTexts["对齐移动端的使用体验"].firstMatch), 100)
+        capture("home-subagent-mixed-close-retains-selection", app: app)
+        app.buttons["关闭错误提示"].tap()
+        XCTAssertTrue(app.buttons["关闭错误提示"].waitForNonExistence(timeout: 3))
+        app.buttons["退出多选"].tap()
+        card.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 5))
+    }
+
+    private func waitForX(_ element: XCUIElement, _ x: CGFloat, operation: String) {
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in abs(element.frame.minX - x) <= 1 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed, operation)
     }
 
     // S34–38 / SC54–59: exercise the production root controls and local-only
@@ -180,6 +234,34 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 4))
         XCTAssertTrue(app.buttons["root-tab-providers"].isSelected)
         capture("design-tablet-detail-to-provider-root", app: app)
+    }
+
+    // FOLD-01: the session directory and primary surface must stay on opposite
+    // sides of the active Duo division, and the draft input must remain usable.
+    func testIPhoneDuoFoldDivisionKeepsDirectoryAndDraftUsable() {
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let window = app.windows.firstMatch
+        let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        XCTAssertGreaterThan(window.frame.width, 600, "Duo must be testing its inner dual-screen canvas")
+        XCTAssertTrue(directory.waitForExistence(timeout: 5))
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        let horizontalGap = list.frame.minX - directory.frame.maxX
+        let verticalGap = list.frame.minY - directory.frame.maxY
+        XCTAssertTrue(horizontalGap > 0 || verticalGap > 0,
+                      "The system split arrangement must keep the panes clear of the Duo division")
+
+        let newSession = app.buttons["home-new-session"]
+        XCTAssertTrue(newSession.isHittable)
+        newSession.tap()
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        XCTAssertTrue(draft.isHittable)
+        draft.tap(); draft.typeText("折叠屏草稿")
+        XCTAssertEqual(draft.value as? String, "折叠屏草稿")
+        XCTAssertTrue(directory.exists)
+        capture("iphone-duo-fold-division-draft", app: app)
     }
 
     // The desktop Codex backend remains reachable from the four-Agent draft.
@@ -374,12 +456,44 @@ final class OrbisUITests: XCTestCase {
         app.launch()
         return app
     }
+
+    // MATH-01: native paragraph/table hosts must size real offline math and survive completion.
+    func testMathRenderingUsesOfflineFragmentsAndKeepsStreamFallback() {
+        for dark in [false, true] {
+            let app = launch("math", dark: dark, arguments: ["--preview-reduce-motion"])
+            XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 15))
+            let all = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                app.webViews.count >= 4 && app.webViews.allElementsBoundByIndex.allSatisfy { $0.frame.height > 10 }
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [all], timeout: 15), .completed)
+            capture(dark ? "math-dark" : "math-light", app: app)
+            app.buttons["math-complete"].tap()
+            let completed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in app.webViews.count >= 5 }, object: nil)
+            XCTAssertEqual(XCTWaiter().wait(for: [completed], timeout: 15), .completed)
+            capture(dark ? "math-completed-dark" : "math-completed-light", app: app)
+            app.terminate()
+        }
+    }
     private func waitUntilEnabled(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
         return XCTWaiter().wait(for: [enabled], timeout: timeout) == .completed
     }
     /// Lets a short state transition (the capsule's 0.16 s fade) settle before a screenshot.
     private func settle() { _ = XCTWaiter().wait(for: [XCTestExpectation(description: "settle")], timeout: 0.5) }
+    /// M14: a covered page stays mounted under the top page, and XCUITest's snapshot lists it
+    /// even though SwiftUI hides it from accessibility. These read what assistive technologies
+    /// reach instead (`--probe-accessibility-reach`); `key` is "identifier|" or "|label".
+    private func reachable(_ app: XCUIApplication, _ key: String) -> Bool {
+        let lines = ((app.staticTexts["accessibility-reach"].value as? String) ?? "").split(separator: "\n")
+        return lines.contains { key.hasSuffix("|") ? $0.hasPrefix(key) : $0.hasSuffix(key) }
+    }
+    private func waitReachable(_ app: XCUIApplication, _ key: String, _ expected: Bool,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(3)
+        while reachable(app, key) != expected && Date() < deadline { settle() }
+        let report = (app.staticTexts["accessibility-reach"].value as? String) ?? "<no probe>"
+        XCTAssertEqual(reachable(app, key), expected, "\(key) reachable in:\n\(report.prefix(1500))", file: file, line: line)
+    }
     private func waitForY(_ element: XCUIElement, _ y: CGFloat, operation: String) {
         let position = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             element.exists && abs(element.frame.minY - y) <= 1
@@ -861,30 +975,64 @@ final class OrbisUITests: XCTestCase {
         capture("new-session-local-draft", app: app)
     }
 
-    /// V12 r27 / ADR-0049 §6.7：选择模型后立即显示所选值并带“切换中”，确认前不声称已生效；顶栏不位移（V05）。
+    /// SC84: saving keeps the confirmed model and a separate progress mark; header geometry and send prerequisites remain stable.
     func testModelSwitchShowsTheChoiceWithItsMarkWithoutMovingTheHeader() {
-        let app = launch("chat", arguments: ["--preview-model-switch"])
+        let app = launch("chat", arguments: ["--preview-reduce-motion"])
         let title = app.descendants(matching: .any)["chat-title"].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 8))
         let before = title.frame
-        // 夹具在聊天页出现约 3 秒后发起切换；电脑端只回执、不改模型，选择停在“切换中”。
-        RunLoop.current.run(until: Date().addingTimeInterval(4.5))
-        XCTAssertEqual(title.frame.minY, before.minY, accuracy: 1)
-        XCTAssertEqual(title.frame.height, before.height, accuracy: 1)
-        capture("model-switching-header", app: app)
         // V10 r27 / §6.2：切换中发送的消息立即出现并清空输入，标明在等模型切换。
         let text = "等模型切好再发"
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         composer.tap(); composer.typeText(text)
+        // Start the real operation after keyboard setup, so slow device automation
+        // cannot exhaust its unchanged 15-second confirmation deadline beforehand.
+        title.tap(); app.buttons["session-config-model"].tap()
+        let choice = app.buttons["session-config-option-model-a"]
+        if !choice.isHittable { app.scrollViews["session-model-configuration"].swipeUp() }
+        choice.tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForNonExistence(timeout: 3))
+        XCTAssertEqual(title.frame.minY, before.minY, accuracy: 1)
+        XCTAssertEqual(title.frame.height, before.height, accuracy: 1)
+        capture("model-switching-header", app: app)
         app.buttons["发送消息"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts[text].waitForExistence(timeout: 1))
         XCTAssertTrue(app.staticTexts["等待模型切换"].waitForExistence(timeout: 1))
         XCTAssertEqual((composer.value as? String)?.contains(text), false)
         capture("model-switching-waiting-send", app: app)
         title.tap()
-        let fact = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "默认模型（切换中）")).firstMatch
+        let fact = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "默认模型，保存中")).firstMatch
         XCTAssertTrue(fact.waitForExistence(timeout: 3))
         capture("model-switching-facts", app: app)
+    }
+
+    // SC84: real header/sheet interaction preserves unsent input, separates this
+    // turn from the next choice, and safely falls back with an older Host.
+    func testSessionModelPanelSeparatesTurnsAndPreservesDraft() {
+        for legacy in [false, true] {
+            let args = ["--preview-current-turn", "--preview-reduce-motion"] + (legacy ? ["--preview-old-turn-host"] : [])
+            let app = launch("chat", arguments: args)
+            let title = app.descendants(matching: .any)["chat-title"].firstMatch
+            let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 8))
+            composer.tap(); composer.typeText("keep config draft")
+            title.tap()
+            XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.staticTexts["session-current-model"].label, legacy ? "模型未确认" : "GPT-5.3")
+            XCTAssertEqual(app.staticTexts["session-selected-model"].label, "GPT-5.4")
+            XCTAssertTrue(app.staticTexts["本轮使用"].exists)
+            XCTAssertTrue(app.staticTexts["下轮使用"].exists)
+            capture(legacy ? "session-config-old-host" : "session-config-current-next", app: app)
+            app.buttons["session-config-model"].tap()
+            let option = app.buttons["session-config-option-model-a"]
+            if !option.isHittable { app.scrollViews["session-model-configuration"].swipeUp() }
+            XCTAssertTrue(option.waitForExistence(timeout: 5)); option.tap()
+            XCTAssertTrue(app.staticTexts["模型与深度"].waitForNonExistence(timeout: 3))
+            XCTAssertEqual(composer.value as? String, "keep config draft")
+            XCTAssertTrue((title.value as? String)?.contains(legacy ? "模型未确认" : "GPT-5.3") == true)
+            XCTAssertTrue((title.value as? String)?.contains("保存中") == true)
+            app.terminate()
+        }
     }
 
     /// V10 r27 / ADR-0049 §6.1–§6.2：附件还在上传时发送，气泡立即出现并带着附件（缩略图、文件名、进度），
@@ -1453,7 +1601,7 @@ final class OrbisUITests: XCTestCase {
         capture("slash-menu", app: slash)
     }
     func testChatSwipeBackReboundsThenReturnsHome() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.55))
@@ -1461,7 +1609,8 @@ final class OrbisUITests: XCTestCase {
                     thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.55)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
         XCTAssertTrue(composer.isHittable)
-        XCTAssertFalse(app.buttons["打开会话目录"].isHittable)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         capture("chat-swipe-rebounded", app: app)
         start.press(forDuration: 0.05,
                     thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.55)),
@@ -1469,6 +1618,51 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
+    }
+    // V21 / M14: returning from chat keeps the previously scrolled home card stationary.
+    func testScrolledHomeKeepsCardPositionAfterChatReturn() {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 8))
+        settle()
+        list.swipeUp()
+        settle()
+        let candidates = (9...12).map { app.buttons["home-runtime-preview-scroll-\($0)"] }
+        let card = candidates.first(where: {
+            let frame = $0.frame
+            return $0.exists && frame.minY >= list.frame.minY && frame.maxY <= list.frame.maxY
+        })
+        guard let card else {
+            return XCTFail("no fully visible card after scrolling; list=\(list.frame); app=\(app.frame)")
+        }
+        let before = card.frame
+        // XCTest's hit-test snapshot can mark a visible SwiftUI button as non-hittable
+        // on the iPad split layout. Tap the visible point and still require chat to open.
+        app.coordinate(withNormalizedOffset: CGVector(dx: before.midX / app.frame.width,
+                                                       dy: before.midY / app.frame.height)).tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+        // The root stays live under chat; its updated sessions must be present on return.
+        let insert = app.buttons["preview-list-insert"]
+        insert.tap()
+        XCTAssertEqual(insert.value as? String, "1", "the synthetic update must actually be dispatched underneath chat")
+        settle()
+        // On iPad the persistent session directory occupies the left side; begin
+        // the back gesture inside the chat surface rather than in that sidebar.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: app.frame.width > 600 ? 0.42 : 0.15, dy: 0.55))
+        start.press(forDuration: 0.05,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.55)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        settle()
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        let inserted = app.buttons["home-runtime-preview-new"]
+        let listAfterReturn = app.scrollViews["home-session-list"]
+        // The synthetic session has the newest modifiedAt, so it is above the retained viewport.
+        for _ in 0..<8 where !inserted.exists { listAfterReturn.swipeDown() }
+        XCTAssertTrue(inserted.exists, "a home session added underneath chat must appear when returning")
+        capture("scrolled-home-after-chat-return", app: app)
     }
     // ADR-0046 §6 / V21: a session closing above the viewport does not move the cards being read.
     func testHomeViewportStaysWhenSessionsChangeAboveIt() {
@@ -1746,7 +1940,7 @@ final class OrbisUITests: XCTestCase {
     }
 
     func testFullPageReturnBudgetAndNestedSourceReentry() {
-        let app = launch("home", arguments: ["--measure-page-return"])
+        let app = launch("home", arguments: ["--measure-page-return", "--probe-accessibility-reach"])
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
         for (index, entry) in ["root-tab-settings", "home-downloads"].enumerated() {
             app.buttons[entry].tap()
@@ -1762,7 +1956,7 @@ final class OrbisUITests: XCTestCase {
             downloads.tap()
             returnWithoutSettling(app, count: count)
             XCTAssertTrue(downloads.isHittable)
-            XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
+            waitReachable(app, "chat-composer|", false)
         }
         returnWithoutSettling(app, count: 6)
         XCTAssertTrue(app.buttons["历史与分支"].isHittable)
@@ -1813,7 +2007,7 @@ final class OrbisUITests: XCTestCase {
     }
 
     func testNestedPagesSwipeBackOneLevelAtATime() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("nested page draft")
@@ -1831,32 +2025,35 @@ final class OrbisUITests: XCTestCase {
         swipeBack()
         XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
         XCTAssertEqual(search.value as? String, "保留")
-        XCTAssertFalse(composer.exists)
+        waitReachable(app, "history-downloads|", true)
+        waitReachable(app, "chat-composer|", false)
         capture("nested-downloads-return-history", app: app)
         swipeBack()
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue((composer.value as? String)?.contains("nested page draft") == true)
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         capture("nested-history-return-chat", app: app)
     }
 
     // ADR-0054 / M14: settings and the home downloads page slide back to home like the chat.
     func testSettingsAndDownloadsSwipeBack() {
-        let app = launch("home")
+        let app = launch("home", arguments: ["--probe-accessibility-reach"])
         let directory = app.buttons["打开会话目录"]
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
         for (entry, page) in [("home-downloads", "")] {
             app.buttons[entry].tap()
             let opened = page.isEmpty ? app.staticTexts["下载"] : app.descendants(matching: .any)[page].firstMatch
             XCTAssertTrue(opened.waitForExistence(timeout: 3))
-            XCTAssertTrue(directory.waitForNonExistence(timeout: 3))
+            waitReachable(app, "download-path|", true)
+            waitReachable(app, "|打开会话目录", false)
             let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
             // A short drag rebounds and stays on the page.
             start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.6)),
                         withVelocity: .slow, thenHoldForDuration: 0.3)
             XCTAssertTrue(opened.exists)
-            // The rebounding page may still show the home preview beneath it, which takes no taps.
-            XCTAssertFalse(directory.exists && directory.isHittable)
+            // The rebounding page still covers the live home beneath it, which stays unreachable.
+            waitReachable(app, "|打开会话目录", false)
             // Past a third of the width it returns home, and home takes taps at once.
             start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
                         withVelocity: .slow, thenHoldForDuration: 0.1)
@@ -1957,14 +2154,17 @@ final class OrbisUITests: XCTestCase {
 
     // M14: history and branch browsing is a page above the same chat, so a right swipe returns there.
     func testHistorySwipeBackReturnsToChat() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let historyButton = app.buttons["历史与分支"]
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(historyButton.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("历史前的草稿")
         historyButton.tap()
         XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        XCTAssertFalse(composer.exists)
+        waitReachable(app, "history-downloads|", true)
+        waitReachable(app, "chat-composer|", false)
+        // The covered chat must not keep the keyboard.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
@@ -1975,7 +2175,8 @@ final class OrbisUITests: XCTestCase {
                     withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue(historyButton.exists)
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         XCTAssertTrue((composer.value as? String)?.contains("历史前的草稿") == true)
         capture("history-swipe-back-to-chat", app: app)
         historyButton.tap()
@@ -3053,6 +3254,8 @@ final class OrbisUITests: XCTestCase {
         app.buttons["关闭通知"].firstMatch.tap()
         XCTAssertFalse(app.staticTexts["模型服务等待恢复，电脑端会继续核对。"].waitForExistence(timeout: 2))
         app.buttons["chat-title"].tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+        app.buttons["会话信息"].tap()
         XCTAssertTrue(app.staticTexts["模型与上下文"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["high"].exists)
         XCTAssertTrue(app.staticTexts["本轮耗时"].exists)

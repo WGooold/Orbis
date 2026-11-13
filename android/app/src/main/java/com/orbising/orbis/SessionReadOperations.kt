@@ -6,7 +6,44 @@ enum class SessionReadPhase {
     val active: Boolean get() = this in setOf(QUEUED, LOCAL, REMOTE, WAITING)
 }
 
-enum class SessionReadKind { FIRST_PAGE, SOURCE, HISTORY, CATCHUP }
+enum class SessionReadKind { FIRST_PAGE, SOURCE, HISTORY, PREFETCH, CATCHUP }
+
+/** Budget for one automatically reserved older-history window. */
+data class SessionHistoryPrefetch(
+    val scopeId: String,
+    val targetLeafId: String?,
+    val beforeEntryId: String? = null,
+    val entries: Int = 0,
+    val responseBytes: Int = 0,
+    val responsePages: Int = 0,
+    val paused: Boolean = false,
+) {
+    val nextMaxEntries: Int get() = minOf(30, (MAX_ENTRIES - entries).coerceAtLeast(0))
+    val nextMaxBytes: Int get() = minOf(HARD_RESPONSE_BYTES, (MAX_RESPONSE_BYTES - responseBytes).coerceAtLeast(0))
+    val maxAttempts: Int get() = minOf((MAX_PAGES - responsePages).coerceAtLeast(0),
+        if (nextMaxBytes < 8192) 0 else (MAX_RESPONSE_BYTES - responseBytes).coerceAtLeast(0) / nextMaxBytes)
+    val canContinue: Boolean get() = !paused && entries < MAX_ENTRIES && responseBytes < MAX_RESPONSE_BYTES &&
+        responsePages < MAX_PAGES && maxAttempts > 0
+
+    fun addingCachedEntries(count: Int) = copy(entries = minOf(MAX_ENTRIES, entries + count.coerceAtLeast(0)))
+    fun addingResponse(entryCount: Int, jsonBytes: Int, attempts: Int) = copy(
+        entries = minOf(MAX_ENTRIES, entries + entryCount.coerceAtLeast(0)),
+        responseBytes = minOf(MAX_RESPONSE_BYTES, responseBytes + jsonBytes.coerceAtLeast(0) + nextMaxBytes * (attempts - 1).coerceAtLeast(0)),
+        responsePages = minOf(MAX_PAGES, responsePages + attempts.coerceAtLeast(1)),
+    )
+    fun spendingFailedAttempts(attempts: Int): SessionHistoryPrefetch {
+        val sent = attempts.coerceAtLeast(0).coerceAtMost(maxAttempts)
+        return copy(paused = true, responseBytes = minOf(MAX_RESPONSE_BYTES, responseBytes + nextMaxBytes * sent),
+            responsePages = minOf(MAX_PAGES, responsePages + sent))
+    }
+
+    companion object {
+        const val MAX_ENTRIES = 60
+        const val MAX_RESPONSE_BYTES = 128 * 1024
+        const val MAX_PAGES = 4
+        const val HARD_RESPONSE_BYTES = 64 * 1024
+    }
+}
 
 data class SessionReadOperation(
     val operationId: String,
@@ -22,6 +59,8 @@ data class SessionReadOperation(
     val commandId: String? = null,
     val error: String? = null,
     val kind: SessionReadKind = SessionReadKind.HISTORY,
+    val historyPrefetch: SessionHistoryPrefetch? = null,
+    val prefetchNetworkCommitted: Boolean = false,
     val demandGeneration: Long = 0,
     val startedAt: Long = System.currentTimeMillis(),
 )
@@ -44,12 +83,12 @@ internal fun RemoteState.sessionReadForWindow(key: String, kind: SessionReadKind
 private fun RemoteState.readOwnerValid(operation: SessionReadOperation): Boolean {
     if (deviceId != operation.deviceId || hostId != operation.hostId ||
         (sessionBranchGenerations[operation.historyKey] ?: 0) != operation.branchGeneration) return false
-    if ((operation.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.CATCHUP) ||
+    if ((operation.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH, SessionReadKind.CATCHUP) ||
             operation.kind == SessionReadKind.FIRST_PAGE && operation.cacheEpoch != null) &&
         sessionGraphs[operation.sessionId]?.cacheEpoch != operation.cacheEpoch) return false
     if (operation.historyKey == "offline:${operation.sessionId}") return selectedOfflineSessionId == operation.sessionId
     val source = conversations[operation.historyKey]
-    if (operation.kind == SessionReadKind.HISTORY && source?.sourceReady == true && source.sourceEpoch != null &&
+    if (operation.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH) && source?.sourceReady == true && source.sourceEpoch != null &&
         source.sourceEpoch != operation.cacheEpoch) return false
     return runtimes[operation.historyKey]?.sessionId == operation.sessionId &&
         (operation.kind in setOf(SessionReadKind.CATCHUP, SessionReadKind.SOURCE) || selectedRuntimeId == operation.historyKey)
@@ -87,9 +126,14 @@ internal fun RemoteState.beginSessionRead(
     return SessionReadStart(current.registerRead(operation), SessionReadAcceptance(operationId))
 }
 
-internal fun RemoteState.beginHistoryRead(key: String, operationId: String): SessionReadStart {
+internal fun RemoteState.beginHistoryRead(
+    key: String,
+    operationId: String,
+    automatic: SessionHistoryPrefetch? = null,
+): SessionReadStart {
     var current = reconcileHistoryReads()
-    current.latestHistoryRead(key)?.takeIf { it.phase.active }?.let {
+    val kind = if (automatic == null) SessionReadKind.HISTORY else SessionReadKind.PREFETCH
+    current.latestSessionRead(key, kind)?.takeIf { it.phase.active }?.let {
         return SessionReadStart(current, SessionReadAcceptance(it.operationId, merged = true))
     }
     val retired = current.sessionSyncCommands.filterValues {
@@ -105,8 +149,8 @@ internal fun RemoteState.beginHistoryRead(key: String, operationId: String): Ses
     if (!history.hasOlder || history.oldestEntryId == null) return rejected(L10n.tr("没有更早的历史"))
     if (current.sessionSyncCommands.values.any { it.runtimeId == key && it.range == "history" }) return rejected(L10n.tr("历史页仍在等待响应"))
     val operation = SessionReadOperation(operationId, key, current.deviceId, current.hostId, sessionId,
-        history.leafId, history.oldestEntryId, current.sessionBranchGenerations[key] ?: 0,
-        current.sessionGraphs[sessionId]?.cacheEpoch)
+        automatic?.targetLeafId ?: history.leafId, automatic?.beforeEntryId ?: history.oldestEntryId, current.sessionBranchGenerations[key] ?: 0,
+        current.sessionGraphs[sessionId]?.cacheEpoch, kind = kind, historyPrefetch = automatic)
     if (!current.readOwnerValid(operation)) return rejected(L10n.tr("该历史窗口已关闭"))
     return SessionReadStart(current.registerRead(operation).copy(
         sessionRangeFailures = current.sessionRangeFailures - sessionRangeFailureKey(key, "history")), SessionReadAcceptance(operationId))
@@ -116,6 +160,29 @@ internal fun RemoteState.finishHistoryRead(operationId: String, phase: SessionRe
     require(!phase.active)
     val operation = sessionReads[operationId]?.takeIf { it.phase.active } ?: return this
     return copy(sessionReads = sessionReads + (operationId to operation.copy(phase = phase, error = error))).projectHistoryReads()
+}
+
+internal fun RemoteState.recordPrefetchCachePage(operationId: String, entries: Int): RemoteState {
+    val operation = sessionReads[operationId]?.takeIf { it.historyPrefetch != null } ?: return this
+    return copy(sessionReads = sessionReads + (operationId to operation.copy(
+        historyPrefetch = operation.historyPrefetch!!.addingCachedEntries(entries), prefetchNetworkCommitted = false,
+    )))
+}
+
+internal fun RemoteState.recordPrefetchResponse(operationId: String, entries: Int, jsonBytes: Int, attempts: Int): RemoteState {
+    val operation = sessionReads[operationId]?.takeIf { it.historyPrefetch != null } ?: return this
+    return copy(sessionReads = sessionReads + (operationId to operation.copy(
+        historyPrefetch = operation.historyPrefetch!!.addingResponse(entries, jsonBytes, attempts),
+        prefetchNetworkCommitted = true,
+    )))
+}
+
+internal fun RemoteState.spendPrefetchAttempts(operationId: String, attempts: Int): RemoteState {
+    val operation = sessionReads[operationId]?.takeIf { it.historyPrefetch != null } ?: return this
+    return copy(sessionReads = sessionReads + (operationId to operation.copy(
+        historyPrefetch = operation.historyPrefetch!!.spendingFailedAttempts(attempts),
+        prefetchNetworkCommitted = false,
+    )))
 }
 
 internal fun RemoteState.bindHistoryRead(operationId: String, commandId: String): RemoteState {
@@ -171,7 +238,7 @@ internal fun RemoteState.reconcileHistoryReads(previous: RemoteState? = null): R
         }
         if (operation.phase != SessionReadPhase.REMOTE || operation.commandId in next.sessionSyncCommands) continue
         next = when (operation.kind) {
-            SessionReadKind.HISTORY -> next.finishHistoryRead(operation.operationId, SessionReadPhase.CANCELLED)
+            SessionReadKind.HISTORY, SessionReadKind.PREFETCH -> next.finishHistoryRead(operation.operationId, SessionReadPhase.CANCELLED)
             SessionReadKind.CATCHUP, SessionReadKind.SOURCE -> if (next.connection == RelayConnection.RECONNECTING)
                 next.finishHistoryRead(operation.operationId, SessionReadPhase.CANCELLED)
                 else next.waitForSessionRead(operation.operationId)
@@ -209,13 +276,14 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     if (!ownsHistoryRead(operationId)) return reconcileHistoryReads()
     val operation = sessionReads.getValue(operationId)
     if (cacheEpoch != operation.cacheEpoch) return finishHistoryRead(operationId, SessionReadPhase.SUPERSEDED)
-    if (operation.kind != SessionReadKind.HISTORY || operation.phase != SessionReadPhase.LOCAL) return this
+    if (operation.kind !in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH) || operation.phase != SessionReadPhase.LOCAL) return this
     if (page.status in setOf(SessionGraphRangeStatus.LEAF_NOT_FOUND, SessionGraphRangeStatus.RANGE_START_NOT_FOUND) &&
         page.entries.isEmpty()) return this
     if (page.status !in setOf(SessionGraphRangeStatus.COMPLETE, SessionGraphRangeStatus.OLDER_AVAILABLE, SessionGraphRangeStatus.MISSING_PARENT))
         return finishHistoryRead(operationId, SessionReadPhase.FAILED, L10n.tr("本地历史范围无效：{0}", page.status))
     if (page.entries.isEmpty()) {
         if (page.status != SessionGraphRangeStatus.COMPLETE || !page.complete || page.hasOlder) return this
+        if (operation.kind == SessionReadKind.PREFETCH) return finishHistoryRead(operationId, SessionReadPhase.END_REACHED)
         val history = sessionHistory[operation.historyKey] ?: return this
         return copy(sessionHistory = sessionHistory + (operation.historyKey to history.copy(hasOlder = false)))
             .finishHistoryRead(operationId, SessionReadPhase.END_REACHED)
@@ -231,6 +299,10 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     // Canonical coverage does not prove that the producer's display rows are cached. Keep the
     // same operation active so its worker can fetch this fixed range from the source.
     if (page.entries.any { !merged.hasDisplayFor(it) }) return this
+    if (operation.kind == SessionReadKind.PREFETCH) {
+        if (page.entries.first().entryId == operation.beforeEntryId) return finishHistoryRead(operationId, SessionReadPhase.CANCELLED)
+        return finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED)
+    }
     val history = sessionHistory[operation.historyKey] ?: return this
     val first = page.entries.first()
     val keepBoundary = history.oldestEntryId != operation.beforeEntryId && merged.isDescendant(first.entryId, history.oldestEntryId)

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -10,6 +10,7 @@ import {
   type HostIdentityState, type HostManagementState, type HostOperationsState, type HostProvidersState,
   type HostStateDomain, type HostWorkspacesState,
   type AgentSessionSummary, type HostCatalogRange, type AgentStateRangeRequest,
+  type CatalogQuery, type CatalogQueryRequest, type CatalogQueryPage,
 } from "@orbis/protocol";
 
 import { AgentStateRegistry, type CommitResult, type StateScope } from "./agent-state-registry.js";
@@ -27,6 +28,8 @@ export type HostStateFactsOptions = {
 };
 
 const PUBLIC_VALUE_BYTES = 192 * 1024;
+/** A committed catalog response is the first page, not an inline directory dump. */
+const CATALOG_PAGE_VALUE_BYTES = 28 * 1024;
 const CATALOG_INVENTORY_BYTES = 8 * 1024 * 1024;
 const CATALOG_INVENTORY_ENTRIES = 20_000;
 type CatalogInput = Omit<HostCatalogState, "checkedAt">;
@@ -41,7 +44,13 @@ function boundedArray<T>(items: readonly T[], bytes: number, wrap: (items: T[]) 
   return items.slice(0, low);
 }
 
-const catalogCursor = (snapshotId: string, offset: number): string => Buffer.from(JSON.stringify([snapshotId, offset])).toString("base64url");
+/** A hidden-kind view (ADR-0076 DSH-DESKTOP-06) has its own cursor space; full and filtered offsets never mix. */
+const catalogCursor = (snapshotId: string, offset: number, hide?: AgentKind, queryHash?: string): string =>
+  Buffer.from(JSON.stringify([snapshotId, offset, ...(queryHash === undefined ? [] : [queryHash]), ...(hide === undefined ? [] : [`-${hide}`])])).toString("base64url");
+const queryKey = (query: CatalogQuery): string => createHash("sha256").update(JSON.stringify([
+  query.text, query.agentKind, query.archived, query.provider, query.directory ?? null,
+])).digest("hex");
+const searchKey = (value: string): string => value.normalize("NFKD").toLowerCase().replace(/\p{M}/gu, "");
 
 /**
  * 「有供应商切换正在进行」这条事实（模块 20）。
@@ -161,15 +170,17 @@ export class HostStateFacts {
       const fingerprint = JSON.stringify(full);
       const modelEpoch = this.#registry.currentModelEpoch();
       const snapshotId = previous?.fingerprint === fingerprint && previous.modelEpoch === modelEpoch ? previous.snapshotId : randomUUID();
-      const projected = boundedArray(inventory.slice(0, 2_000), PUBLIC_VALUE_BYTES - 2_048, items => ({ ...full, sessions: items, snapshotId }));
+      const projected = boundedArray(inventory.slice(0, 2_000), CATALOG_PAGE_VALUE_BYTES, items => ({ ...full, sessions: items, snapshotId }));
       const value = { ...full, sessions: projected, snapshotId,
         nextCursor: projected.length < inventory.length ? catalogCursor(snapshotId, projected.length) : null,
-        truncated: full.truncated || projected.length < inventory.length };
+        // The committed domain is a bounded first page. More pages are not a lost
+        // source inventory; nextCursor expresses their availability independently.
+        truncated: full.truncated };
       const candidate = { snapshotId, modelEpoch, fingerprint, state: full, sessions: inventory };
       const validated = HostCatalogStateSchema.parse(this.#withCheckedAt("catalog", value));
       this.#catalogInventory = candidate;
       staged = true;
-      const complete = full.backends.every(backend => backend.complete) && !value.truncated;
+      const complete = full.backends.every(backend => backend.complete) && !value.truncated && projected.length === inventory.length;
       const committed = this.#commit("catalog", validated, "ready", complete ? "complete" : "partial");
       if (!committed.ok) this.#catalogInventory = previous;
     } catch {
@@ -184,31 +195,118 @@ export class HostStateFacts {
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
   // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
-  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}): HostCatalogRange {
+  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}, hide?: AgentKind): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
-    const inventory = this.#catalogInventory;
+    const full = this.#catalogInventory;
+    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
     const empty = (error: NonNullable<HostCatalogRange["error"]>): HostCatalogRange => ({
       modelEpoch: this.#registry.currentModelEpoch(), revision: state?.revision ?? 0, snapshotId: state?.value?.snapshotId ?? null,
-      offset: 0, totalSessions: state?.value?.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
+      offset: 0, totalSessions: inventory?.state.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
     });
     if (!inventory || inventory.modelEpoch !== this.#registry.currentModelEpoch() || state?.value?.snapshotId !== inventory.snapshotId) return empty("catalog_unavailable");
+    const query = request.query;
+    const matched = query ? this.#catalogMatches(query, inventory) : inventory.sessions;
+    const hash = query && queryKey(query);
     let offset = 0;
     if (request.cursor) {
       let cursor: unknown;
       if (request.cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(request.cursor)) return empty("invalid_cursor");
       try { cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString("utf8")); } catch { return empty("invalid_cursor"); }
-      if (!Array.isArray(cursor) || cursor.length !== 2 || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0) return empty("invalid_cursor");
+      if (!Array.isArray(cursor) || cursor.length !== 2 + (query ? 1 : 0) + (hide === undefined ? 0 : 1)
+        || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0
+        || query && cursor[2] !== hash || hide !== undefined && cursor[query ? 3 : 2] !== `-${hide}`) return empty("invalid_cursor");
       if (cursor[0] !== inventory.snapshotId) return empty("snapshot_changed");
       offset = cursor[1] as number;
-      if (offset > inventory.sessions.length) return empty("invalid_cursor");
+      if (offset > matched.length) return empty("invalid_cursor");
     }
     const limit = Number.isSafeInteger(request.limit) ? Math.max(1, Math.min(200, request.limit!)) : 100;
-    const sessions = boundedArray(inventory.sessions.slice(offset, offset + limit), PUBLIC_VALUE_BYTES - 2_048, items => ({ sessions: items }));
+    const totals = new Map<string, number>();
+    if (query) for (const row of matched) totals.set(row.cwd, (totals.get(row.cwd) ?? 0) + 1);
+    const candidates = matched.slice(offset, offset + limit).map(row => query ? { ...row, directoryTotal: totals.get(row.cwd)! } : row);
+    const sessions = boundedArray(candidates, CATALOG_PAGE_VALUE_BYTES, items => ({ sessions: items }));
+    // One valid public row can exceed the 28 KiB target (e.g. escaped Unicode paths).
+    // It still fits the 64 KiB hard page; never produce a cursor that points to itself.
+    if (sessions.length === 0 && candidates[0]) sessions.push(candidates[0]);
     const next = offset + sessions.length;
-    const complete = inventory.state.backends.every(backend => backend.complete) && !inventory.state.truncated;
+    const backends = query?.agentKind ? inventory.state.backends.filter(backend => backend.kind === query.agentKind) : inventory.state.backends;
+    const complete = backends.length > 0 && backends.every(backend => backend.complete) && !inventory.state.truncated;
     return { modelEpoch: inventory.modelEpoch, revision: state.revision, snapshotId: inventory.snapshotId,
-      offset, totalSessions: inventory.state.totalSessions, sessions, nextCursor: next < inventory.sessions.length ? catalogCursor(inventory.snapshotId, next) : null,
+      offset, totalSessions: query ? matched.length : inventory.state.totalSessions, sessions,
+      nextCursor: next < matched.length ? catalogCursor(inventory.snapshotId, next, hide, hash) : null,
       complete, truncated: inventory.state.truncated };
+  }
+
+  #hidden: { source: CatalogInventory; hide: AgentKind; view: CatalogInventory } | undefined;
+  /** The committed inventory without one agent kind; the order is kept, so a filtered prefix is a prefix of this view. */
+  #hiddenInventory(inventory: CatalogInventory, hide: AgentKind): CatalogInventory {
+    if (this.#hidden?.source === inventory && this.#hidden.hide === hide) return this.#hidden.view;
+    const sessions = inventory.sessions.filter(session => session.agentKind !== hide);
+    const removed = Math.max(inventory.sessions.length - sessions.length, inventory.state.backends.find(backend => backend.kind === hide)?.sessions ?? 0);
+    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => backend.kind !== hide),
+      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => row.agentKind !== hide) }),
+      totalSessions: inventory.state.truncated ? Math.max(sessions.length, inventory.state.totalSessions - removed) : sessions.length };
+    const view = { ...inventory, state, sessions };
+    this.#hidden = { source: inventory, hide, view };
+    return view;
+  }
+
+  /**
+   * The committed catalog value as a device without `hide` sees it: same snapshot and revision,
+   * sessions/rows of that kind removed, totals and next cursor from the filtered inventory.
+   */
+  hiddenCatalog(value: Record<string, unknown>, hide: AgentKind): Record<string, unknown> {
+    const inventory = this.#catalogInventory;
+    const keep = (row: unknown): boolean => !(row !== null && typeof row === "object" && (row as { agentKind?: unknown; kind?: unknown }).agentKind === hide)
+      && !(row !== null && typeof row === "object" && (row as { kind?: unknown }).kind === hide);
+    const next: Record<string, unknown> = { ...value };
+    if (Array.isArray(value.sessions)) next.sessions = value.sessions.filter(keep);
+    if (Array.isArray(value.backends)) next.backends = value.backends.filter(keep);
+    if (Array.isArray(value.currentProviders)) next.currentProviders = value.currentProviders.filter(keep);
+    if (!inventory || value.snapshotId !== inventory.snapshotId) {
+      // No inventory for this version: never advertise a cursor whose offsets could not be honoured.
+      const sessions = Array.isArray(next.sessions) ? next.sessions.length : 0;
+      return { ...next, nextCursor: null, totalSessions: sessions, truncated: value.nextCursor !== null && value.nextCursor !== undefined || value.truncated === true };
+    }
+    const view = this.#hiddenInventory(inventory, hide);
+    const count = Array.isArray(next.sessions) ? next.sessions.length : 0;
+    return { ...next, totalSessions: view.state.totalSessions,
+      nextCursor: count < view.sessions.length ? catalogCursor(inventory.snapshotId, count, hide) : null };
+  }
+
+  catalogQuery(request: CatalogQueryRequest, hide?: AgentKind): CatalogQueryPage {
+    const page = this.catalogRange(request, hide);
+    const full = this.#catalogInventory;
+    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
+    const rows = inventory?.sessions.filter(row => request.query.agentKind === null || row.agentKind === request.query.agentKind) ?? [];
+    const all = [...new Set(rows.flatMap(row => row.modelProvider ? [row.modelProvider] : []))].sort();
+    const providers = boundedArray(all.slice(0, 64), 8 * 1024, providers => providers);
+    // Facets describe this immutable source inventory; loaded rows and global matches are separate.
+    const groups = page.error ? [] : this.#catalogMatches(request.query, inventory);
+    const counts = new Map<string, number>();
+    for (const row of groups) counts.set(row.cwd, (counts.get(row.cwd) ?? 0) + 1);
+    const previewCount = [...counts.values()].reduce((sum, count) => sum + Math.min(5, count), 0);
+    return { type: "session.catalog.page", requestId: request.requestId, format: "v1", query: request.query, page,
+      directoryCount: new Set(groups.map(row => row.cwd)).size,
+      previewsComplete: page.offset + page.sessions.length >= previewCount,
+      ...(request.cursor ? {} : { providers, unknownProvider: rows.some(row => !row.modelProvider), providersTruncated: providers.length < all.length }) };
+  }
+
+  #catalogMatches(query: CatalogQuery, inventory: CatalogInventory | undefined = this.#catalogInventory): AgentSessionSummary[] {
+    const current = inventory?.state.currentProviders?.find(row => row.agentKind === query.agentKind)?.provider;
+    const text = searchKey(query.text.trim());
+    const matched = inventory?.sessions.filter(session =>
+      (query.agentKind === null || session.agentKind === query.agentKind) && (session.archived === true) === query.archived &&
+      (!query.directory || createHash("sha256").update(session.cwd).digest("hex") === query.directory) &&
+      (!text || [session.cwd, session.name ?? "", session.firstMessage ?? "", session.sessionId].some(value => searchKey(value).includes(text))) &&
+      (query.agentKind !== "codex" && query.agentKind !== "codexDesktop" || query.provider === "all" ||
+        query.provider === "current" && current !== undefined && session.modelProvider === current ||
+        query.provider === "unknown" && !session.modelProvider || query.provider.startsWith("provider:") && session.modelProvider === query.provider.slice(9))) ?? [];
+    if (query.directory) return matched;
+    // Surface directory headers and their five-row previews before hidden older rows.
+    // Expanding a directory uses its exact path hash instead of downloading other groups.
+    const groups = new Map<string, AgentSessionSummary[]>();
+    for (const row of matched) { const group = groups.get(row.cwd) ?? []; group.push(row); groups.set(row.cwd, group); }
+    return [...[...groups.values()].flatMap(rows => rows.slice(0, 5)), ...[...groups.values()].flatMap(rows => rows.slice(5))];
   }
 
   /**

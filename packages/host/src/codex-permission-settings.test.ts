@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEvent } from "@orbis/protocol";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { CodexAppServer } from "./codex-daemon.js";
-import { codexPermissionUpdate } from "./codex-permissions.js";
+import { codexPermissionSelectionMatches, codexPermissionUpdate } from "./codex-permissions.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { cleanups.splice(0).forEach((fn) => fn()); vi.useRealTimers(); });
@@ -12,7 +12,7 @@ async function harness() {
   const settings = { model: "gpt-6.1-sol", modelProvider: "openai", effort: "medium",
     approvalPolicy: "on-request", approvalsReviewer: "user",
     sandboxPolicy: { type: "workspaceWrite", networkAccess: false, writableRoots: ["D:/shared"], excludeSlashTmp: true } };
-  const request = vi.fn(async (method: string, params: Record<string, unknown>) => method === "thread/resume"
+  const request = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => method === "thread/resume"
     ? { thread: { id: params.threadId, cwd: "D:/test", turns: [] }, ...settings, reasoningEffort: settings.effort }
     : method === "model/list" ? { data: [
       { id: "gpt-6.1-sol", isDefault: true }, { id: "gpt-6-astra" },
@@ -28,6 +28,180 @@ async function harness() {
 }
 
 describe("mobile Codex permission settings", () => {
+  // SC85: native saved selections own the display; directory lists and temporary-path
+  // normalization must never turn a confirmed selection into a permanent input barrier.
+  it("confirms only the selected native option without validating directories", () => {
+    const settings = { sandbox: { type: "workspaceWrite", writableRoots: ["D:/visualization"],
+      networkAccess: true, excludeSlashTmp: true }, approvalPolicy: "never", approvalsReviewer: "user" };
+    expect(codexPermissionSelectionMatches(settings, "sandbox", "workspaceWrite")).toBe(true);
+    expect(codexPermissionSelectionMatches(settings, "sandbox", "dangerFullAccess")).toBe(false);
+    expect(codexPermissionSelectionMatches(settings, "network", "enabled")).toBe(true);
+    expect(codexPermissionSelectionMatches(settings, "network", "restricted")).toBe(false);
+    expect(codexPermissionSelectionMatches(settings, "approvals", "never")).toBe(true);
+    expect(codexPermissionSelectionMatches(settings, "approvals", "on-request")).toBe(false);
+    expect(codexPermissionSelectionMatches(settings, "approval-reviewer", "auto_review")).toBe(false);
+    expect(codexPermissionSelectionMatches({ sandbox: { type: "externalSandbox", networkAccess: "enabled" } }, "network", "enabled")).toBe(true);
+    expect(codexPermissionSelectionMatches({}, "network", "restricted")).toBe(false);
+  });
+
+  it("confirms normalized workspace permissions and keeps sending and later changes available", async () => {
+    const h = await harness();
+    h.notify({ sandboxPolicy: { type: "dangerFullAccess" } });
+    h.apply("sandbox", "workspaceWrite");
+    const policy = { type: "workspaceWrite", writableRoots: ["D:/visualization"], networkAccess: true,
+      excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+    h.notify({ sandboxPolicy: policy });
+    await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: "apply", ok: true }));
+    expect(h.runtime.directoryEntries()[0]?.permissions).toMatchObject({ sandbox: "workspaceWrite", writableRoots: ["D:/visualization"] });
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings.every(setting => !setting.disabledReason)).toBe(true);
+    h.apply("approvals", "never", "next-change");
+    h.notify({ sandboxPolicy: policy, approvalPolicy: "never" });
+    await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: "next-change", ok: true }));
+    h.runtime.dispatchCommand("codex:a", "message", { type: "user_message", text: "continue" });
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true));
+  });
+
+  // Saved permission settings take effect on the next native turn. An active turn
+  // must keep running, while confirmation releases follow-up input immediately.
+  it("displays saved permissions during the current turn and leaves execution to the next turn", async () => {
+    const h = await harness();
+    h.notify({ sandboxPolicy: { type: "dangerFullAccess" } });
+    h.server.onNotification?.("turn/started", { threadId: "a", turn: { id: "current", status: "inProgress" } });
+    h.request.mockClear();
+    h.apply("sandbox", "workspaceWrite");
+    h.notify({ sandboxPolicy: { type: "workspaceWrite", writableRoots: ["D:/visualization"], networkAccess: true } });
+    await vi.waitFor(() => expect(h.events).toContainEqual({ type: "command.result", commandId: "apply", ok: true }));
+    expect(h.runtime.directoryEntries()[0]).toMatchObject({ status: "running", permissions: { sandbox: "workspaceWrite" } });
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings.every(setting => !setting.disabledReason)).toBe(true);
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update"]);
+    h.runtime.dispatchCommand("codex:a", "follow-up", { type: "user_message", text: "next turn", delivery: "followUp", messageId: "next-message" });
+    expect(h.events).toContainEqual(expect.objectContaining({ commandId: "follow-up", ok: true, status: "success" }));
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start" || method === "turn/interrupt")).toBe(false);
+    h.server.onNotification?.("turn/completed", { threadId: "a", turn: { id: "current", status: "completed" } });
+    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("turn/start", {
+      threadId: "a", input: [{ type: "text", text: "next turn" }], clientUserMessageId: "next-message", model: "gpt-6.1-sol", effort: "medium",
+    }));
+    expect(h.request.mock.calls.filter(([method]) => method === "thread/settings/update")).toHaveLength(1);
+  });
+
+  it("recovers a lost confirmation from saved native settings without another write", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    h.notify({ sandboxPolicy: { type: "dangerFullAccess" } });
+    const sandbox = { type: "workspaceWrite", writableRoots: ["D:/visualization"], networkAccess: true,
+      excludeTmpdirEnvVar: false, excludeSlashTmp: false };
+    h.request.mockClear();
+    h.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ ...h.settings, sandboxPolicy: undefined, sandbox,
+      thread: { id: "a" } });
+    h.apply("sandbox", "workspaceWrite");
+    // Simulate a missing notification; the recovery read uses the same saved selection.
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(h.events).toContainEqual(expect.objectContaining({ commandId: "apply", status: "unconfirmed" }));
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update", "thread/resume"]);
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings.every(setting => !setting.disabledReason)).toBe(true);
+    h.runtime.dispatchCommand("codex:a", "recovered", { type: "user_message", text: "after recovery" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true);
+  });
+
+  it("keeps unknown writes blocked for every delivery mode and retries only the recovery read", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    h.request.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("read disconnected"));
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(h.runtime.directoryEntries()[0]?.status).toBe("idle");
+    for (const delivery of [undefined, "followUp", "steer"] as const) {
+      const commandId = delivery ?? "plain";
+      h.runtime.dispatchCommand("codex:a", commandId, { type: "user_message", text: "preserve this draft", ...(delivery ? { delivery } : {}) });
+      expect(h.events).toContainEqual({ type: "command.result", commandId, ok: false, status: "failure", error: "权限设置尚未确认，请稍后重试" });
+    }
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBe("权限设置尚未确认，请稍后重试");
+    await vi.advanceTimersByTimeAsync(1_001);
+    h.request.mockResolvedValueOnce({ ...h.settings, approvalPolicy: "never", thread: { id: "a" } });
+    h.runtime.dispatchCommand("codex:a", "retry", { type: "user_message", text: "retry" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings.every(setting => !setting.disabledReason)).toBe(true);
+    expect(h.request.mock.calls.filter(([method]) => method === "thread/settings/update")).toHaveLength(1);
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+  });
+
+  // Recovery adopts the saved native selection instead of keeping the UI locked to
+  // an old request; the original request is not retrospectively reported successful.
+  it("releases uncertainty when the read confirms a different saved native selection", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    h.request.mockClear();
+    h.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ ...h.settings, approvalPolicy: "untrusted", thread: { id: "a" } });
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(h.runtime.directoryEntries()[0]?.permissions?.approvalPolicy).toBe("untrusted");
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBeUndefined();
+    expect(h.events).toContainEqual(expect.objectContaining({ commandId: "apply", ok: false, status: "unconfirmed" }));
+    expect(h.events).not.toContainEqual({ type: "command.result", commandId: "apply", ok: true });
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update", "thread/resume"]);
+  });
+
+  // Only this thread's valid saved settings can end uncertainty; malformed or
+  // cross-thread replies must not enable sending under an unknown configuration.
+  it.each(["wrong-thread", "missing-permissions"])("ignores a %s recovery response", async kind => {
+    const h = await harness(); vi.useFakeTimers();
+    h.request.mockResolvedValueOnce({}).mockResolvedValueOnce(kind === "wrong-thread"
+      ? { ...h.settings, approvalPolicy: "never", thread: { id: "other" } } : { thread: { id: "a" } });
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(h.runtime.directoryEntries()[0]?.permissions?.approvalPolicy).toBe("on-request");
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBeDefined();
+    expect(h.request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
+  });
+
+  it("does not let a stale recovery read overwrite newer native permissions", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    let finishRead!: (result: unknown) => void;
+    h.request.mockResolvedValueOnce({}).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    h.notify({ approvalPolicy: "untrusted" });
+    finishRead({ ...h.settings, approvalPolicy: "never", thread: { id: "a" } });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.runtime.directoryEntries()[0]?.permissions?.approvalPolicy).toBe("untrusted");
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBeDefined();
+    h.notify({ approvalPolicy: "never" });
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBeUndefined();
+  });
+
+  it("waits for the original write to settle before starting timeout recovery", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    let finishWrite!: (result: unknown) => void;
+    h.request.mockClear();
+    h.request.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    h.runtime.dispatchCommand("codex:a", "blocked", { type: "user_message", text: "do not race" });
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update"]);
+    h.request.mockResolvedValueOnce({ ...h.settings, approvalPolicy: "never", thread: { id: "a" } });
+    finishWrite({}); await vi.advanceTimersByTimeAsync(1);
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update", "thread/resume"]);
+    expect(h.runtime.directoryEntries()[0]?.permissionManagement?.settings[0]?.disabledReason).toBeUndefined();
+  });
+
+  // A recovery resume can subscribe after an archive; wait for it before unsubscribing
+  // and never republish the returned settings for a closed session.
+  it("releases a late recovery subscription without reviving a closed session", async () => {
+    const h = await harness(); vi.useFakeTimers();
+    let finishRead!: (result: unknown) => void;
+    h.request.mockClear();
+    h.request.mockResolvedValueOnce({}).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    h.apply("approvals", "never");
+    await vi.advanceTimersByTimeAsync(15_001);
+    h.server.onNotification?.("thread/archived", { threadId: "a" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    expect(h.request.mock.calls.some(([method]) => method === "thread/unsubscribe")).toBe(false);
+    finishRead({ ...h.settings, approvalPolicy: "never", thread: { id: "a" } });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.request.mock.calls.map(([method]) => method)).toEqual(["thread/settings/update", "thread/resume", "thread/unsubscribe"]);
+    expect(h.runtime.directoryEntries()).toEqual([]);
+  });
+
   it("preserves next-turn Astra and reasoning selections across every permission snapshot", async () => {
     const h = await harness();
     h.request.mockClear();
@@ -119,6 +293,7 @@ describe("mobile Codex permission settings", () => {
   // under unknown permissions. A later native snapshot resolves that barrier.
   it("holds subsequent messages after a permission timeout until native settings match", async () => {
     const h = await harness(); vi.useFakeTimers();
+    h.request.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error("native settings unavailable"));
     h.apply("approvals", "never", "uncertain");
     await vi.advanceTimersByTimeAsync(15_001); vi.useRealTimers();
     expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "uncertain", status: "unconfirmed" }));

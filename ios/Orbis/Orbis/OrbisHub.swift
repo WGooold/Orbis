@@ -51,6 +51,7 @@ final class OrbisStore: ObservableObject {
     private let preferences: UserDefaults?
     private let deviceName: String
     private let root: URL
+    private let localStores: HostLocalStores
     private let historyWorker: SessionHistoryWorker
     private let factory: (HostPairing) -> OrbisTransport
     private var connections: [String: HostConnection] = [:]
@@ -70,8 +71,9 @@ final class OrbisStore: ObservableObject {
 
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil,
          autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil,
-         transportFactory: ((HostPairing) -> OrbisTransport)? = nil) {
+         transportFactory: ((HostPairing) -> OrbisTransport)? = nil, localStores: HostLocalStores? = nil) {
         self.secure = secure; self.preferences = preferences
+        self.localStores = localStores ?? HostLocalStores()
         #if canImport(UIKit)
         self.deviceName = deviceName ?? UIDevice.current.name
         #else
@@ -105,7 +107,7 @@ final class OrbisStore: ObservableObject {
         observations.removeValue(forKey: pairing.hostId)?.cancel()
         connections.removeValue(forKey: pairing.hostId)?.shutdown(); started.remove(pairing.hostId)
         let connection = HostConnection(secure: secure, transport: factory(pairing), deviceName: deviceName,
-            autoConnect: false, preferences: preferences, transferRoot: root, initialPairing: pairing, isolated: true, historyWorker: historyWorker)
+            autoConnect: false, preferences: preferences, transferRoot: root, initialPairing: pairing, isolated: true, historyWorker: historyWorker, localStores: localStores)
         connection.didUpdatePairing = { [weak self] updated in self?.updatePairing(updated) }
         connections[pairing.hostId] = connection
         observations[pairing.hostId] = connection.objectWillChange.sink { [weak self] _ in self?.publishChanges(hostId: pairing.hostId) }
@@ -153,6 +155,7 @@ final class OrbisStore: ObservableObject {
 
     func selectHost(_ hostId: String) {
         guard connections[hostId] != nil else { return }
+        if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
         selectedHostId = hostId; pairingError = nil
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
@@ -266,6 +269,14 @@ final class OrbisStore: ObservableObject {
     func respondingRequestIds(_ runtimeId: String) -> Set<String> { activeConnection.respondingRequestIds(runtimeId) }
     func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? { activeConnection.interactionStatus(runtimeId) }
     func configStatus(_ runtimeId: String, setting: String) -> (label: String, mark: String)? { activeConnection.configStatus(runtimeId, setting: setting) }
+    func sessionConfigFailure(_ runtimeId: String) -> SessionConfigFailure? { activeConnection.sessionConfigFailure(runtimeId) }
+    func sessionModelPresentation(_ runtime: RuntimeSummary) -> SessionModelPresentation {
+        let snapshot = agentState.snapshots[runtime.runtimeId]
+        func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
+        return .make(runtime: runtime, connected: connection == .secured, modelReady: ready("model"), executionReady: ready("execution"),
+                     progress: OperationKinds.configSettings.compactMap { configStatus(runtime.runtimeId, setting: $0) },
+                     failed: sessionConfigFailure(runtime.runtimeId) != nil)
+    }
     var queuedMessages: [String: [QueuedMessage]] { activeConnection.queuedMessages }
     func unconfirmedQueueCancellations(_ runtimeId: String) -> Set<String> { activeConnection.unconfirmedQueueCancellations(runtimeId) }
     var pendingSends: PendingSendOutbox { activeConnection.pendingSends }
@@ -293,6 +304,10 @@ final class OrbisStore: ObservableObject {
     func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool { activeConnection.moveHistory(to: option, fallbackText: fallbackText) }
     func respond(_ request: InteractionRequest, response: [String: Any]) -> Bool { activeConnection.respond(request, response: response) }
     func refresh() { activeConnection.refresh() }
+    func reconcileCatalog() { activeConnection.reconcileCatalog() }
+    func reconcileHistoryWindow() { activeConnection.reconcileHistoryWindow() }
+    func resumeForeground() { activeConnection.resumeForeground() }
+    func setHistoryWindowVisible(_ visible: Bool) { activeConnection.setHistoryWindowVisible(visible) }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
     func activate(_ session: SessionSummary) { activeConnection.activate(session) }
     func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }

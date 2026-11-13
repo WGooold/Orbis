@@ -3,6 +3,38 @@ import Foundation
 import SwiftUI
 import UIKit
 
+/// MATH-01: offline production renderer fixture for both themes, tables and streamed completion.
+struct MathRenderingPreview: View {
+    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.colorScheme) private var scheme
+    @State private var completed = false
+    private var source: String {
+        #"""
+        **相邻变化** \(\Delta S=S_B-S_A\) 与参考值。
+
+        \[
+        \begin{aligned}\text{相邻变化：}\quad &\hat d_t=g_\theta(X_t)-g_\theta(X_{t-1})\\
+        \text{相对基线：}\quad &\hat R_t=g_\theta(X_t)-g_\theta(X_0)\end{aligned}
+        \]
+
+        | 方式 | 公式 |
+        |---|---|
+        | 加权分 | \(\sum w_i R_i/15+|x|\) |
+
+        \[\begin{pmatrix}1&2\\3&4\end{pmatrix}\]
+
+        """# + (completed ? #"完整 \(\frac{a}{b}\)，回退 \(\unknownCommand{x}\)"# : #"未完成 \(\frac{a}"#)
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Button("Complete") { completed = true }.accessibilityIdentifier("math-complete")
+                MarkdownMessage(text: source, streaming: !completed).environmentObject(store.transfers)
+            }.padding(20)
+        }.background(OrbisPalette(scheme).base).foregroundStyle(OrbisPalette(scheme).text)
+    }
+}
+
 /// Uses production buttons with no network or navigation, for cancellation and frame review.
 struct ActionFeedbackPreview: View {
     @Environment(\.colorScheme) private var scheme
@@ -549,10 +581,18 @@ private final class PreviewTransport: OrbisTransport {
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
                 if name == "execution", keyboardStream, runtime == "preview-codex" { value["phase"] = "running" }
+                if ProcessInfo.processInfo.arguments.contains("--preview-current-turn"), runtime == "preview-codex" {
+                    if name == "execution" { value["phase"] = "running" }
+                    if name == "model", !ProcessInfo.processInfo.arguments.contains("--preview-old-turn-host") {
+                        value["currentTurnSupported"] = true
+                        value["currentTurn"] = ["turnId": "preview-turn", "model": ["provider": "openai", "id": "gpt-5.3", "name": "GPT-5.3"], "thinkingLevel": "medium"]
+                    }
+                }
                 if name == "execution", runtime == "preview-codex", ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") {
-                    value["tasks"] = ["availability": "ready", "truncated": false, "items": [
-                        ["id": "review", "title": "检查代码", "kind": "Explore", "status": "running"],
-                        ["id": "tests", "title": "运行测试", "kind": "general-purpose", "status": "running", "parentId": "review"]
+                    let partial = ProcessInfo.processInfo.arguments.contains("--preview-background-incomplete")
+                    value["tasks"] = ["availability": partial ? "unknown" : "ready", "truncated": partial, "items": [
+                        ["id": "review", "title": "检查代码", "kind": "Explore", "status": partial ? "completed" : "running"],
+                        ["id": "tests", "title": "运行测试", "kind": "general-purpose", "status": partial ? "completed" : "running", "parentId": "review"]
                     ]]
                 }
                 return ["domain": name, "modelEpoch": epoch, "revision": 1, "availability": "ready", "completeness": "complete", "projectionComplete": true,
@@ -970,6 +1010,67 @@ struct ChatEntryReport: View {
             Text(probe.report).accessibilityIdentifier("chat-entry-metrics")
             Text(String(probe.syncRequests)).accessibilityIdentifier("chat-entry-sync-count")
         }.font(.system(size: 12)).allowsHitTesting(false)
+    }
+}
+
+/// M14: what assistive technologies can reach. XCUITest's snapshot also lists subtrees SwiftUI
+/// hides from accessibility (inactive root tabs, pages covered by another page), so UI tests read
+/// this walk of the key window's accessibility containers instead. Each line is
+/// `identifier|label` of one reachable element.
+enum AccessibilityReachProbe {
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-accessibility-reach")
+
+    @MainActor static func reachable() -> [String] {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows).first(where: \.isKeyWindow) else { return [] }
+        var lines: [String] = []
+        var budget = 4_000
+        walk(window, into: &lines, budget: &budget)
+        return lines
+    }
+
+    @MainActor private static func walk(_ item: Any, into lines: inout [String], budget: inout Int) {
+        guard budget > 0, let object = item as? NSObject else { return }
+        budget -= 1
+        if object.accessibilityElementsHidden { return }
+        if let view = object as? UIView, view.isHidden || view.alpha < 0.01 { return }
+        if object.isAccessibilityElement {
+            // SwiftUI's accessibility nodes answer the selector without declaring the protocol.
+            let selector = NSSelectorFromString("accessibilityIdentifier")
+            let identifier = object.responds(to: selector)
+                ? (object.perform(selector)?.takeUnretainedValue() as? String ?? "") : ""
+            if identifier != "accessibility-reach" { lines.append(identifier + "|" + (object.accessibilityLabel ?? "")) }
+            return
+        }
+        if let elements = object.accessibilityElements {
+            for element in elements { walk(element, into: &lines, budget: &budget) }
+            return
+        }
+        let count = object.accessibilityElementCount()
+        if count > 0 && count != NSNotFound {
+            for index in 0..<count {
+                if let element = object.accessibilityElement(at: index) { walk(element, into: &lines, budget: &budget) }
+            }
+            return
+        }
+        if let view = object as? UIView {
+            for subview in view.subviews { walk(subview, into: &lines, budget: &budget) }
+        }
+    }
+}
+
+struct AccessibilityReachReport: View {
+    @State private var report = ""
+    var body: some View {
+        Text(" ").font(.system(size: 1)).frame(width: 1, height: 1)
+            .accessibilityIdentifier("accessibility-reach").accessibilityValue(report)
+            .allowsHitTesting(false)
+            .task {
+                while !Task.isCancelled {
+                    report = AccessibilityReachProbe.reachable().joined(separator: "\n")
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+            }
     }
 }
 #endif

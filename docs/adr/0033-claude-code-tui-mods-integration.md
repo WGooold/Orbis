@@ -184,6 +184,16 @@ CLAUDE-LIVE-01：同一 instance、Session、配置目录和工作目录重新�
 
 实现与回归见 [claude-mods-bridge.ts](../../packages/host/src/claude-mods-bridge.ts)、[claude-mods-bridge.test.ts](../../packages/host/src/claude-mods-bridge.test.ts)、[register.ts](../../packages/claude-mod/src/register.ts)、[reconnect.test.ts](../../packages/claude-mod/tests/reconnect.test.ts)。自动结果与合成复现证据见 [verification.json](../../.artifacts/backend-stream-fix-20261106/verification.json)。尚未部署；更新 Host 及内置插件后，Android 真机待用户验证。
 
+### 20. Host 启动前检查 Mods 最低版本（2026-11-12）
+
+CLAUDE-MODS-MIN-01：Host 检测、插件安装、新建／恢复／本地终端启动与配置读取共用 CLI 最低版本 `2.1.287`。执行将要启动的同一可执行文件的有界 `--version` 检查；确认低版本时返回具体原因，升级后重新检查。Agent 卡显示当前版本、最低版本及失败原因，卸载插件继续可用。实际会话仍按原生握手版本、bridge 协议与能力确认；该下限不替代完整能力验证。
+
+CLAUDE-MODS-MIN-02：版本检查兼容标准错误输出与封装器提示行，优先采用 Claude 原生版本行。无法核对版本时由 Host 展示提示，启动与安装沿用原路径，并继续检查登录、插件加载及真实会话握手。隔离回归在修正前确认了标准错误输出、封装器自身版本和检查异常三种误拦；首次失败与修正结果保留在上述证据目录的 `regression-review/`。
+
+CLAUDE-MODS-MIN-03：版本状态检测在后台完成，同一时间的刷新合并，Host 初始化和其他 Agent 检测继续执行；关闭时等待所属检查结束。启动和安装入口仍执行自身的有界版本检查。慢检查阻塞初始化的首次失败及修正证据同样保留在 `regression-review/`。
+
+实现与测试：`claude-version.ts`／`.test.ts`、`claude-launcher.test.ts`、`claude-integration-install.test.ts`、`claude-mods-bridge.test.ts`、`desktop-runtime.test.ts`、`HostActivationTest.cpp`。官方最低版本复核及自动验证证据：`.artifacts/claude-min-version-20261112/`。未部署，待用户验证；最低版本真实 TUI 与 Windows 原生验证仍按既有边界记录。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

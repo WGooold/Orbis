@@ -335,6 +335,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     emailDomain: "qq.com",
     qqEmailVerificationRequired: admin.qqEmailVerificationRequired,
     mailConfigured: options.registration?.enabled ?? false,
+    // HOST-ACT-15: older desktops ignore this; newer ones attempt key recovery only when it is true.
+    hostKeyRecovery: options.registration !== undefined,
   });
   const isAdmin = (request: IncomingMessage): boolean => {
     if (!adminTokenHash) return false;
@@ -575,6 +577,30 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           }
           runtimes.get(activated.hostId)?.socket.close(4003, "credential rotated");
           jsonResponse(response, 201, activated);
+          return;
+        }
+        // HOST-ACT-15: a Host that still holds its recorded key replaces a lost credential itself.
+        if (request.method === "POST" && path === "/v1/registration/recovery-challenge") {
+          const body = await readJson(request) as { hostId?: unknown };
+          if (!body || typeof body !== "object") throw new RegistrationError(400, "invalid_request");
+          jsonResponse(response, 201, options.registration.recoveryChallenge(body, requestSource(request, options.trustProxy)));
+          return;
+        }
+        if (request.method === "POST" && path === "/v1/registration/recover") {
+          const body = await readJson(request) as { hostId?: unknown; challengeId?: unknown; proof?: unknown };
+          if (!body || typeof body !== "object") throw new RegistrationError(400, "invalid_request");
+          const recovered = await options.registration.recover(body);
+          runtimes.get(recovered.hostId)?.socket.close(4003, "credential rotated");
+          jsonResponse(response, 201, recovered);
+          return;
+        }
+        if (request.method === "POST" && path === "/v1/registration/host-key") {
+          const authorization = request.headers.authorization;
+          const body = await readJson(request) as { hostPub?: unknown };
+          if (!authorization?.startsWith("Bearer ")) throw new RegistrationError(401, "unauthorized");
+          if (!body || typeof body !== "object") throw new RegistrationError(400, "invalid_request");
+          await options.registration.bindHostKey(authorization.slice(7), body.hostPub);
+          jsonResponse(response, 200, { bound: true });
           return;
         }
       }

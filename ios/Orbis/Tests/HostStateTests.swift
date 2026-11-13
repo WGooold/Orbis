@@ -35,26 +35,26 @@ struct HostStateTests {
                         "profiles": ["official", "team"].map { id in ["id": id, "name": id, "enabled": id == enabled,
                             "mode": additive ? "additive" : "exclusive", "globalDefault": additive && id == "official", "subscriptionSupported": !additive && id == "official"] as [String: Any] }]]]
     }
-    private func installProviders(_ state: HostState, _ sent: Sent, kind: String = "codex", additive: Bool = false) {
-        state.consume(snapshot(sent, domains: [domain("providers", value: providers(kind: kind, additive: additive))]))
+    private func installProviders(_ state: HostState, _ sent: Sent, kind: String = "codex", additive: Bool = false) async {
+        await state.consume(snapshot(sent, domains: [domain("providers", value: providers(kind: kind, additive: additive))]))
     }
 
     // FT-G03: ordinary home refreshes retain a bounded baseline; closing an
     // inspector replaces the subscription and excludes cached diagnostic versions.
     // FT-G06: old Hosts reject the read-only format by request ID; retry only
     // the Host scope and avoid reusing versions from a different representation.
-    @Test func deltaFormatFallsBackOnCorrelatedOldHostRejection() {
+    @Test func deltaFormatFallsBackOnCorrelatedOldHostRejection() async {
         let (state, sent) = setup()
         #expect(sent.last["stateFormat"] as? String == "compact-v2")
         let request = sent.last
-        state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": request["requestId"]!])
+        await state.consume(["type": "protocol.error", "code": "invalid_request", "requestId": request["requestId"]!])
         #expect(sent.last["stateFormat"] == nil)
         #expect((sent.last["known"] as? [[String: Any]])?.isEmpty == true)
-        state.consume(snapshot(sent, domains: [domain("identity", value: ["name": "Old Host"])]))
+        await state.consume(snapshot(sent, domains: [domain("identity", value: ["name": "Old Host"])]))
         #expect(state.domains["identity"]?.value["name"].string == "Old Host")
     }
 
-    @Test func homeInterestDoesNotRetainClosedManagementViews() {
+    @Test func homeInterestDoesNotRetainClosedManagementViews() async {
         let state = HostState(), sent = Sent()
         state.send = { sent.values.append($0); return true }
         state.setConnection(pairing(), connected: true)
@@ -62,20 +62,45 @@ struct HostStateTests {
         state.setInterest("diagnostics", domains: ["diagnostics", "connections"])
         let previous = sent.last
         #expect(Set(previous["domains"] as? [String] ?? []) == HostState.homeDomains.union(["diagnostics", "connections"]))
-        state.consume(snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])]))
+        await state.consume(snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])]))
         state.setInterest("diagnostics", domains: [])
         #expect(Set(sent.last["domains"] as? [String] ?? []) == HostState.homeDomains)
         #expect((sent.last["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "diagnostics" } == false)
         var stale = snapshot(sent, domains: [domain("diagnostics", revision: 2, value: ["records": 999])])
         stale["requestId"] = previous["requestId"]
-        state.consume(stale)
+        await state.consume(stale)
         #expect(state.domains["diagnostics"]?.value["records"].integer == 12)
     }
 
-    @Test func subscriptionQuotaIsScopedToHostProviderAndRequest() throws {
+    // FT-G11-ASYNC-01: query rows must finish the store's asynchronous catalog commit
+    // before consume returns; loading/error-only publications do not re-commit rows.
+    @Test func catalogQueryWaitsForAsynchronousStorePublication() async throws {
+        let (state, sent) = setup()
+        state.negotiateCatalogReadFormat()
+        await state.consume(["type": "session.catalog.capabilities", "format": "v1", "requestId": sent.last["requestId"]!])
+        state.setCatalogVisible(true)
+        let request = sent.last
+        var committed: [String] = []
+        state.didChangeCatalog = { rows, completeKinds in
+            await Task.yield()
+            #expect(completeKinds.isEmpty)
+            committed.append(contentsOf: rows.map(\.sessionId))
+        }
+        let response: [String: Any] = ["type": "session.catalog.page", "format": "v1", "requestId": request["requestId"]!, "query": request["query"]!,
+            "page": ["modelEpoch": "model-a", "revision": 1, "snapshotId": "snapshot", "offset": 0, "totalSessions": 1,
+                     "sessions": [session("query-row")], "nextCursor": NSNull(), "complete": true, "truncated": false],
+            "directoryCount": 1, "previewsComplete": true, "providers": [], "unknownProvider": false, "providersTruncated": false]
+        await state.consume(response)
+        #expect(committed == ["query-row"])
+        await state.consume(response)
+        #expect(committed == ["query-row"])
+        state.setConnection(pairing(), connected: false)
+    }
+
+    @Test func subscriptionQuotaIsScopedToHostProviderAndRequest() async throws {
         let (state, sent) = setup()
         state.loadProviders("claude")
-        installProviders(state, sent, kind: "claude")
+        await installProviders(state, sent, kind: "claude")
         let provider = try #require(state.providers.first)
         #expect(provider.subscriptionSupported)
         state.querySubscription(provider, expectedHostKey: "stale-host")
@@ -89,47 +114,47 @@ struct HostStateTests {
             ["name": "five_hour", "remainingPercent": 82.5, "resetsAt": 2000] as [String: Any],
             ["name": "seven_day", "remainingPercent": NSNull(), "resetsAt": NSNull()] as [String: Any]]]
         var reply: [String: Any] = ["type": "provider.subscription.result", "requestId": "stale", "kind": "claude", "id": provider.id, "quota": payload]
-        state.consume(reply)
+        await state.consume(reply)
         #expect(state.quota == nil && state.queryingQuota)
         reply["requestId"] = request["requestId"]
-        state.consume(reply)
+        await state.consume(reply)
         #expect(state.quota?.windows.first?.remainingPercent == 82.5)
         #expect(state.quota?.windows.last?.remainingPercent == nil)
         #expect(!state.queryingQuota)
         state.querySubscription(provider, expectedHostKey: state.hostKey!)
         reply["requestId"] = sent.last["requestId"]
         state.setConnection(pairing("host-b"), connected: true)
-        state.consume(reply)
+        await state.consume(reply)
         #expect(state.quota == nil && !state.queryingQuota)
     }
 
-    @Test func quotaFailureCanRetryAndProviderChangesClearResults() throws {
+    @Test func quotaFailureCanRetryAndProviderChangesClearResults() async throws {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         let provider = try #require(state.providers.first)
         state.querySubscription(provider, expectedHostKey: state.hostKey!)
-        state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": provider.id, "error": "登录过期"])
+        await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": provider.id, "error": "登录过期"])
         #expect(state.quotaError == "登录过期")
         #expect(state.canChangeProvider)
         state.querySubscription(provider, expectedHostKey: state.hostKey!)
         #expect(state.queryingQuota && state.quotaError == nil)
         let request = sent.last
-        state.consume(["type": "provider.changed", "kind": "codex"])
-        state.consume(["type": "provider.subscription.result", "requestId": request["requestId"]!, "kind": "codex", "id": provider.id, "error": "stale error"])
+        await state.consume(["type": "provider.changed", "kind": "codex"])
+        await state.consume(["type": "provider.subscription.result", "requestId": request["requestId"]!, "kind": "codex", "id": provider.id, "error": "stale error"])
         #expect(!state.queryingQuota && state.quotaError == nil)
         let malformed = Data("{\"checkedAt\":1,\"windows\":[{\"name\":\"five_hour\",\"remainingPercent\":101},{\"name\":\"seven_day\",\"remainingPercent\":null}]}".utf8)
         #expect(try !JSONDecoder().decode(SubscriptionQuota.self, from: malformed).valid)
     }
 
-    @Test func refreshingQuotaRetainsLastReadingAndOtherAgentCard() throws {
+    @Test func refreshingQuotaRetainsLastReadingAndOtherAgentCard() async throws {
         let (state, sent) = setup()
         let rows = (providers(kind: "codex")["providers"] as! [[String: Any]]) +
             (providers(kind: "claude")["providers"] as! [[String: Any]])
-        state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": rows])]))
+        await state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": rows])]))
         for kind in ["codex", "claude"] {
             let provider = try #require(state.currentProvider(for: kind))
             state.querySubscription(provider, expectedHostKey: state.hostKey!)
-            state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": kind, "id": provider.id,
+            await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": kind, "id": provider.id,
                 "quota": ["checkedAt": 1000, "windows": [
                     ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
                     ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]])
@@ -137,69 +162,69 @@ struct HostStateTests {
         let codex = try #require(state.currentProvider(for: "codex"))
         state.querySubscription(codex, expectedHostKey: state.hostKey!)
         #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
-        state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id, "error": "超时"])
+        await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id, "error": "超时"])
         #expect(state.subscriptionQuota(for: "codex")?.error == "超时")
         #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
         #expect(state.subscriptionQuota(for: "claude")?.quota?.windows.last?.remainingPercent == 40)
     }
 
-    @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() throws {
+    @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() async throws {
         let (state, sent) = setup()
         let original = snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])])
-        state.consume(original)
-        installProviders(state, sent)
+        await state.consume(original)
+        await installProviders(state, sent)
         #expect(state.domains["diagnostics"]?.value["records"].integer == 12)
         #expect(state.currentProviders["codex"] == "native-provider")
         #expect(!state.providersLoading)
         state.loadProviders("pi")
         #expect(Set(sent.last["domains"] as? [String] ?? []) == Set(HostState.domainNames))
         #expect((sent.last["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "diagnostics" } == true)
-        state.consume(original) // The previous request is no longer an active subscription.
+        await state.consume(original) // The previous request is no longer an active subscription.
         #expect(state.providersLoading)
         var response = snapshot(sent, domains: [domain("providers", revision: 2, value: providers(kind: "pi", additive: true))])
         response["unchanged"] = ["diagnostics"]
-        state.consume(response)
+        await state.consume(response)
         #expect(state.domains["diagnostics"]?.revision == 1)
         #expect(state.providers.count == 2)
     }
 
-    @Test func malformedSnapshotIsAtomicAndSameRevisionCannotChangeFacts() {
+    @Test func malformedSnapshotIsAtomicAndSameRevisionCannotChangeFacts() async {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         var malformed = domain("diagnostics")
         malformed["checkedAt"] = nil
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team")), malformed]))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team")), malformed]))
         #expect(state.modelError != nil)
         #expect(state.providers.first(where: \.enabled)?.id == "official")
-        state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"))]))
+        await state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"))]))
         #expect(state.providers.first(where: \.enabled)?.id == "official")
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: providers(enabled: "team"))]))
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers())]))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: providers(enabled: "team"))]))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers())]))
         #expect(state.providers.first(where: \.enabled)?.id == "team")
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 100, value: providers(), epoch: "retired")], epoch: "retired"))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 100, value: providers(), epoch: "retired")], epoch: "retired"))
         #expect(state.domains["providers"]?.revision == 3)
     }
 
-    @Test func missingUnknownAndEmptyCatalogHaveDifferentMeaning() {
+    @Test func missingUnknownAndEmptyCatalogHaveDifferentMeaning() async {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         #expect(state.canChangeProvider)
-        state.consume(snapshot(sent, domains: [], missing: [["domain": "providers", "reason": "no_state"]]))
+        await state.consume(snapshot(sent, domains: [], missing: [["domain": "providers", "reason": "no_state"]]))
         #expect(state.providerCatalogProblem == "电脑尚未报告这个状态领域")
         #expect(!state.canChangeProvider)
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(), availability: "unknown")]))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(), availability: "unknown")]))
         #expect(state.providerCatalogProblem == "电脑尚未核对")
         var empty = providers()
         empty["providers"] = [["agentKind": "codex", "profiles": [], "switching": false]]
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: empty)]))
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 3, value: empty)]))
         #expect(state.providerCatalogProblem == nil)
         #expect(state.providers.isEmpty)
         #expect(state.currentProviders.isEmpty)
     }
 
-    @Test func providerChangeWaitsForMatchingResultAndAuthoritativeRefresh() throws {
+    @Test func providerChangeWaitsForMatchingResultAndAuthoritativeRefresh() async throws {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         let team = try #require(state.providers.first { $0.id == "team" })
         let key = try #require(state.hostKey)
         state.changeProvider(team, expectedHostKey: key)
@@ -207,44 +232,44 @@ struct HostStateTests {
         #expect(operation["type"] as? String == "provider.switch")
         #expect(operation["enabled"] as? Bool == true)
         #expect(state.changingProvider)
-        state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "pi"])
+        await state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "pi"])
         #expect(state.changingProvider)
         // A subscription update may arrive before this device's operation result.
         let subscription = try #require(sent.values.first { $0["type"] as? String == "agent.state.request" })
         let response: [String: Any] = ["type": "agent.state.snapshot", "requestId": subscription["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": subscription["stateFormat"] ?? NSNull(),
             "domains": [domain("providers", revision: 2, value: providers(enabled: "team"))], "missing": [], "truncated": false]
-        state.consume(response)
+        await state.consume(response)
         #expect(state.changingProvider)
-        state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "codex", "notice": "请重新打开会话"])
+        await state.consume(["type": "provider.result", "requestId": operation["requestId"]!, "kind": "codex", "notice": "请重新打开会话"])
         #expect(!state.changingProvider)
         #expect(state.providerNotice == "请重新打开会话")
         #expect(sent.last["type"] as? String == "agent.state.request")
         #expect(state.providersLoading)
     }
 
-    @Test func providerActionsRejectOldHostStaleListAndExclusiveRemoval() throws {
+    @Test func providerActionsRejectOldHostStaleListAndExclusiveRemoval() async throws {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         let team = try #require(state.providers.first { $0.id == "team" })
         let key = try #require(state.hostKey)
         let before = sent.values.count
         state.changeProvider(try #require(state.providers.first { $0.enabled }), expectedHostKey: key)
         #expect(sent.values.count == before)
-        state.loadProviders("codex"); installProviders(state, sent)
-        state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team"))]))
+        state.loadProviders("codex"); await installProviders(state, sent)
+        await state.consume(snapshot(sent, domains: [domain("providers", revision: 2, value: providers(enabled: "team"))]))
         state.changeProvider(team, expectedHostKey: key)
         #expect(!state.changingProvider)
         state.setConnection(pairing("host-b"), connected: true)
         state.changeProvider(team, expectedHostKey: key)
         #expect(!state.changingProvider)
         #expect(state.domains.isEmpty)
-        state.consume(snapshot(sent, domains: [domain("providers", value: providers())]))
+        await state.consume(snapshot(sent, domains: [domain("providers", value: providers())]))
         #expect(state.providerError != nil)
     }
 
-    @Test func piDefaultRemovalUsesSameGuardAndExplicitDisable() throws {
+    @Test func piDefaultRemovalUsesSameGuardAndExplicitDisable() async throws {
         let (state, sent) = setup()
-        state.loadProviders("pi"); installProviders(state, sent, kind: "pi", additive: true)
+        state.loadProviders("pi"); await installProviders(state, sent, kind: "pi", additive: true)
         let current = try #require(state.providers.first { $0.enabled })
         #expect(current.confirmation.contains("全局默认供应商"))
         state.changeProvider(current, expectedHostKey: try #require(state.hostKey))
@@ -256,63 +281,63 @@ struct HostStateTests {
         #expect(!state.canChangeProvider)
     }
 
-    private func installRemovableProviders(_ state: HostState, _ sent: Sent) {
+    private func installRemovableProviders(_ state: HostState, _ sent: Sent) async {
         state.loadProviders("pi")
         let profiles: [[String: Any]] = ["official", "team"].map {
             ["id": $0, "name": $0, "enabled": true, "mode": "additive", "globalDefault": $0 == "official"]
         }
-        state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": [
+        await state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": [
             ["agentKind": "pi", "availability": "ready", "switching": false, "profiles": profiles]
         ]])]))
     }
 
-    @Test func batchRemovalWaitsForEachMatchingReceiptAndKeepsCardsUntilRefresh() throws {
+    @Test func batchRemovalWaitsForEachMatchingReceiptAndKeepsCardsUntilRefresh() async throws {
         let (state, sent) = setup()
-        installRemovableProviders(state, sent)
+        await installRemovableProviders(state, sent)
         let cards = state.providers
         state.removeProviders(cards, expectedHostKey: try #require(state.hostKey))
         let first = sent.last
         #expect(first["id"] as? String == "official")
         #expect(first["enabled"] as? Bool == false)
-        state.consume(["type": "provider.result", "requestId": "stale", "kind": "pi"])
-        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "codex"])
+        await state.consume(["type": "provider.result", "requestId": "stale", "kind": "pi"])
+        await state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "codex"])
         #expect(sent.last["requestId"] as? String == first["requestId"] as? String)
-        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+        await state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
         let second = sent.last
         #expect(second["id"] as? String == "team")
         #expect(second["enabled"] as? Bool == false)
         #expect(state.changingProvider)
         #expect(state.providers == cards)
-        state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+        await state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
         #expect(state.changingProvider)
-        state.consume(["type": "provider.result", "requestId": second["requestId"]!, "kind": "pi", "notice": "已更新"])
+        await state.consume(["type": "provider.result", "requestId": second["requestId"]!, "kind": "pi", "notice": "已更新"])
         #expect(!state.changingProvider)
         #expect(state.providerNotice == "已移除 2 个供应商。已更新")
         #expect(sent.last["type"] as? String == "agent.state.request")
         #expect(state.providers == cards)
     }
 
-    @Test func batchRemovalStopsOnFailureDisconnectAndStaleSelection() throws {
+    @Test func batchRemovalStopsOnFailureDisconnectAndStaleSelection() async throws {
         for disconnect in [false, true] {
             let (state, sent) = setup()
-            installRemovableProviders(state, sent)
+            await installRemovableProviders(state, sent)
             state.removeProviders(state.providers, expectedHostKey: try #require(state.hostKey))
             let first = sent.last
             if disconnect { state.setConnection(pairing(), connected: false) }
-            else { state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi", "error": "busy"]) }
-            state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
+            else { await state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi", "error": "busy"]) }
+            await state.consume(["type": "provider.result", "requestId": first["requestId"]!, "kind": "pi"])
             #expect(!state.changingProvider)
             #expect(state.providerError?.contains("批量移除已停止") == true)
             #expect(sent.values.filter { $0["type"] as? String == "provider.switch" }.count == 1)
         }
         let (state, sent) = setup()
-        state.loadProviders("pi"); installProviders(state, sent, kind: "pi", additive: true)
+        state.loadProviders("pi"); await installProviders(state, sent, kind: "pi", additive: true)
         state.removeProviders(state.providers, expectedHostKey: try #require(state.hostKey))
         #expect(!state.changingProvider) // The disabled provider cannot be removed.
         #expect(sent.values.allSatisfy { $0["type"] as? String != "provider.switch" })
     }
 
-    @Test func diagnosticPagesAreCorrelatedHostScopedAndExposeWindowGaps() throws {
+    @Test func diagnosticPagesAreCorrelatedHostScopedAndExposeWindowGaps() async throws {
         let (state, sent) = setup()
         state.readDiagnostics()
         let id = try #require(sent.last["requestId"] as? String)
@@ -321,21 +346,21 @@ struct HostStateTests {
                 ["recordId": "r1", "hostId": host, "category": "provider", "severity": "warning", "message": "配置读取失败", "at": 100]
             ], "nextCursor": "next-page", "truncated": true]]
         }
-        state.consume(page("old-request"))
+        await state.consume(page("old-request"))
         #expect(state.diagnosticsLoading)
-        state.consume(page(id))
+        await state.consume(page(id))
         #expect(!state.diagnosticsLoading)
         #expect(state.diagnosticPage?.truncated == true)
         state.readDiagnostics(cursor: state.diagnosticPage?.nextCursor)
         #expect(sent.last["cursor"] as? String == "next-page")
-        state.consume(page(try #require(sent.last["requestId"] as? String), host: "host-b"))
+        await state.consume(page(try #require(sent.last["requestId"] as? String), host: "host-b"))
         #expect(state.diagnosticsError != nil)
         #expect(state.diagnosticPage?.records.first?.hostId == "host-a")
     }
 
-    @Test func failedSendsAndProtocolErrorsLeaveRecoverablePageState() throws {
+    @Test func failedSendsAndProtocolErrorsLeaveRecoverablePageState() async throws {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         sent.accepts = false
         state.changeProvider(try #require(state.providers.last), expectedHostKey: try #require(state.hostKey))
         #expect(!state.changingProvider)
@@ -345,7 +370,7 @@ struct HostStateTests {
         #expect(state.diagnosticsError != nil)
         sent.accepts = true
         state.readDiagnostics()
-        state.consume(["type": "protocol.error", "requestId": sent.last["requestId"]!, "message": "读取失败"])
+        await state.consume(["type": "protocol.error", "requestId": sent.last["requestId"]!, "message": "读取失败"])
         #expect(!state.diagnosticsLoading)
         #expect(state.diagnosticsError == "读取失败")
         state.setConnection(pairing(), connected: false)
@@ -354,12 +379,14 @@ struct HostStateTests {
     private func session(_ id: String) -> [String: Any] {
         ["sessionId": id, "cwd": "/repo", "createdAt": 1, "modifiedAt": 2, "messageCount": 1, "agentKind": "pi"]
     }
-    private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog") {
+    private func catalog(_ state: HostState, _ sent: Sent, revision: Int = 1, snapshotId: String = "catalog", requestNext: Bool = true) async {
         let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
-        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
+        await state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": [domain("catalog", revision: revision, value: ["totalSessions": 2, "sessions": [session("first")],
                 "snapshotId": snapshotId, "nextCursor": "cursor-" + snapshotId, "truncated": false,
                 "backends": [["kind": "pi", "ready": true, "complete": true, "sessions": 2]]])], "missing": [], "truncated": false])
+        // Existing range fixtures explicitly model viewport demand.
+        if requestNext { state.setCatalogVisible(true); state.loadNextCatalogPage() }
     }
     private func catalogPage(_ request: [String: Any], snapshot: String = "catalog", revision: Int = 1,
                              offset: Int = 1, sessions: [[String: Any]], cursor: String? = nil) -> [String: Any] {
@@ -368,18 +395,50 @@ struct HostStateTests {
                   "totalSessions": 2, "sessions": sessions, "nextCursor": cursor as Any? ?? NSNull(), "complete": true, "truncated": false]]
     }
 
-    @Test func catalogPagesAccumulateFixedSnapshotBeforeAllowingPruning() throws {
+    @Test func closedCatalogAndCommittedPageDoNotDownloadTheRemainder() async {
+        let (state, sent) = setup()
+        await catalog(state, sent, requestNext: false)
+        #expect(!sent.values.contains { $0["type"] as? String == "agent.state.range.request" })
+        state.setCatalogVisible(true)
+        #expect(!sent.values.contains { $0["type"] as? String == "agent.state.range.request" })
+        state.loadNextCatalogPage()
+        let request = sent.last
+        state.setCatalogVisible(false)
+        await state.consume(catalogPage(request, sessions: [session("late")]))
+        #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
+        #expect(sent.values.filter { $0["type"] as? String == "agent.state.range.request" }.count == 1)
+    }
+
+    // SC-06: the version read is the same logical request as its single retry;
+    // refresh ticks cannot replace its identity or extend its deadline.
+    @Test func catalogVersionReadMergesTicksAndRetriesTheOriginalRequestOnce() {
+        let (state, sent) = setup()
+        let original = sent.last, count = sent.values.count
+        state.refresh()
+        #expect(sent.values.count == count)
+        let clock = Date()
+        state.advanceModelRead(now: clock.addingTimeInterval(21)); #expect(sent.values.count == count)
+        state.advanceModelRead(now: clock.addingTimeInterval(26))
+        #expect(sent.values.count == count + 1)
+        #expect(sent.last["requestId"] as? String == original["requestId"] as? String)
+        state.advanceModelRead(now: clock.addingTimeInterval(46))
+        #expect(state.pendingDomains.isEmpty)
+        #expect(state.modelError != nil)
+        state.advanceModelRead(now: clock.addingTimeInterval(90)); #expect(sent.values.count == count + 1)
+    }
+
+    @Test func catalogPagesAccumulateFixedSnapshotBeforeAllowingPruning() async throws {
         let (state, sent) = setup()
         var inventories: [([SessionSummary], Set<String>)] = []
         state.didChangeCatalog = { inventories.append(($0, $1)) }
-        catalog(state, sent)
+        await catalog(state, sent)
         #expect(inventories.last?.0.map(\.sessionId) == ["first"])
         #expect(inventories.last?.1.isEmpty == true)
         #expect(state.problem(for: "catalog")?.contains("1 / 2") == true)
         let request = sent.last
         #expect(request["type"] as? String == "agent.state.range.request")
         #expect(request["limit"] as? Int == 200)
-        state.consume(catalogPage(request, sessions: [session("second")]))
+        await state.consume(catalogPage(request, sessions: [session("second")]))
         #expect(inventories.last?.0.map(\.sessionId) == ["first", "second"])
         #expect(inventories.last?.1 == ["pi"])
         #expect(state.catalogRange?.nextCursor == nil)
@@ -387,56 +446,56 @@ struct HostStateTests {
         #expect(state.domains["catalog"]?.value["sessions"].array.count == 1) // Applied first-window baseline stays immutable.
     }
 
-    @Test func catalogRetiresOldCursorsAndRejectsDuplicateOrIncompletePages() throws {
+    @Test func catalogRetiresOldCursorsAndRejectsDuplicateOrIncompletePages() async throws {
         let (state, sent) = setup()
-        catalog(state, sent)
+        await catalog(state, sent)
         let stale = sent.last
-        catalog(state, sent, revision: 2, snapshotId: "new")
+        await catalog(state, sent, revision: 2, snapshotId: "new")
         let current = sent.last
-        state.consume(catalogPage(stale, sessions: [session("old")]))
+        await state.consume(catalogPage(stale, sessions: [session("old")]))
         #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
         #expect(state.catalogRange?.error == nil)
-        state.consume(catalogPage(current, snapshot: "new", revision: 2, sessions: [session("first")]))
+        await state.consume(catalogPage(current, snapshot: "new", revision: 2, sessions: [session("first")]))
         #expect(state.catalogRange?.error == "invalid_page")
         #expect(state.catalogRange?.sessions.map(\.sessionId) == ["first"])
         state.refresh(["catalog"])
-        catalog(state, sent, revision: 3, snapshotId: "third")
-        state.consume(catalogPage(sent.last, snapshot: "third", revision: 3, sessions: []))
+        await catalog(state, sent, revision: 3, snapshotId: "third")
+        await state.consume(catalogPage(sent.last, snapshot: "third", revision: 3, sessions: []))
         #expect(state.catalogRange?.error == "invalid_page")
     }
 
-    @Test func scopeErrorsAndDiagnosticFailuresAreCorrelated() {
+    @Test func scopeErrorsAndDiagnosticFailuresAreCorrelated() async {
         let (state, sent) = setup()
         var agent = snapshot(sent, domains: [domain("identity")]); agent["scope"] = "agent"
-        #expect(!state.consume(agent))
+        #expect(await !state.consume(agent))
         state.readDiagnostics()
-        state.consume(["type": "diagnostics.page", "requestId": sent.last["requestId"]!, "error": "source_unavailable"])
+        await state.consume(["type": "diagnostics.page", "requestId": sent.last["requestId"]!, "error": "source_unavailable"])
         #expect(state.diagnosticsError == "source_unavailable")
         #expect(!state.diagnosticsLoading)
     }
 
-    @Test func invalidCatalogDoesNotAdvanceBaselineAndRefreshCanRetryAFailedCursor() {
+    @Test func invalidCatalogDoesNotAdvanceBaselineAndRefreshCanRetryAFailedCursor() async {
         let (state, sent) = setup()
-        catalog(state, sent)
-        state.consume(catalogPage(sent.last, sessions: [session("first")]))
+        await catalog(state, sent)
+        await state.consume(catalogPage(sent.last, sessions: [session("first")]))
         #expect(state.catalogRange?.error == "invalid_page")
-        state.refresh(["catalog"]); catalog(state, sent)
+        state.refresh(["catalog"]); await catalog(state, sent)
         #expect(state.catalogRange?.error == nil)
         #expect(sent.last["type"] as? String == "agent.state.range.request")
         let request = sent.values.last { $0["type"] as? String == "agent.state.request" }!
-        state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
+        await state.consume(["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "model-a", "stateFormat": request["stateFormat"] ?? NSNull(),
             "domains": [domain("catalog", revision: 2, value: ["totalSessions": 0, "sessions": [session("bad")], "truncated": false])], "missing": [], "truncated": false])
         #expect(state.domains["catalog"]?.revision == 1)
         #expect(state.modelError != nil)
     }
 
-    @Test func hostModelGenerationCanChangeOnAnAuthenticatedReady() {
+    @Test func hostModelGenerationCanChangeOnAnAuthenticatedReady() async {
         let (state, sent) = setup()
-        installProviders(state, sent)
+        await installProviders(state, sent)
         let old = snapshot(sent, domains: [domain("providers", revision: 99, value: providers())])
         #expect(state.beginEpoch("next"))
-        state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"), epoch: "next")], epoch: "next"))
-        state.consume(old)
+        await state.consume(snapshot(sent, domains: [domain("providers", value: providers(enabled: "team"), epoch: "next")], epoch: "next"))
+        await state.consume(old)
         #expect(state.domains["providers"]?.modelEpoch == "next")
         #expect(state.providers.first(where: \.enabled)?.id == "team")
         #expect(!state.beginEpoch("model-a"))

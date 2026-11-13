@@ -15,6 +15,15 @@ const known = (seq = 10, head: string | null = "100"): SessionAppliedState => ({
 const request = { sessionId: "s", syncId: "sync", range: "preview" as const, maxEntries: 30 };
 
 describe("Host-selected preview content", () => {
+  it("requires an explicitly bounded history-window request without widening the legacy command", () => {
+    const window = { type: "session.sync", sessionId: "s", syncId: "window", range: "history",
+      targetLeafId: "leaf", beforeEntryId: "boundary", historyWindow: { format: "v1", maxBytes: 65536, maxDeliveries: 2 } };
+    expect(RuntimeCommandSchema.safeParse(window).success).toBe(true);
+    expect(RuntimeCommandSchema.safeParse({ ...window, range: "preview" }).success).toBe(false);
+    expect(RuntimeCommandSchema.safeParse({ ...window, beforeEntryId: null }).success).toBe(false);
+    expect(RuntimeCommandSchema.safeParse({ ...window, historyWindow: { ...window.historyWindow, maxBytes: 65537 } }).success).toBe(false);
+    expect(RuntimeCommandSchema.safeParse({ ...window, historyWindow: { ...window.historyWindow, format: "v2" } }).success).toBe(false);
+  });
   it("acknowledges an unchanged baseline without old history, timings or live bodies", () => {
     const state = source();
     const withHugeLive = { ...state, live: { ...state.live, messages: [{

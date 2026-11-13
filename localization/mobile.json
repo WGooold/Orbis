@@ -32,6 +32,8 @@
   "Codex 桌面版": "Codex Desktop",
   "Codex 终端": "Codex Terminal",
   "Codex 终端版": "Codex Terminal",
+  "DeepSeek 桌面版": "DeepSeek Desktop",
+  "DeepSeek 网页版": "DeepSeek Web",
   "E2eConnectOptions 必须且只能选择普通连接或配对模式之一": "E2eConnectOptions requires exactly one connection or pairing mode",
   "HEAD，{0}（分离）": "HEAD, {0} (detached)",
   "Host 未报告进行中的切换": "Host has not reported a pending switch",
@@ -1591,5 +1593,9 @@
   "所选：{0}": "Selected: {0}",
   "结束本次等待？": "Stop waiting for this launch?",
   "电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。": "The session on your computer may still be starting. Your first message will be kept as a draft. Creating again may open another session.",
-  "结束等待": "Stop waiting"
+  "结束等待": "Stop waiting",
+  "子代理清单不完整，暂不能关闭会话。": "The subagent list is incomplete. This session cannot be closed yet.",
+  "子代理状态待核对，暂不能关闭会话。": "Subagent status is unconfirmed. This session cannot be closed yet.",
+  "子代理尚未结束，暂不能关闭会话。": "Subagents are still active. This session cannot be closed yet.",
+  "暂不可关闭": "Cannot close yet"
 }

@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -75,6 +76,8 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
+    parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
+    parser.addOption({"smoke-guide", "Walk the overview through activation, connection, pairing and open steps with synthetic bridge events"});
     parser.process(app);
     const auto sharedDataDir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).absolutePath();
     QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = sharedDataDir;
@@ -154,7 +157,8 @@ int main(int argc, char *argv[]) {
     });
     QObject::connect(&controller, &HostController::exitReady, &app, [&] { replyInstaller("ready"); });
     QObject::connect(&controller, &HostController::exitCancelled, &app, [&] { replyInstaller("cancelled"); if (parser.isSet("prepare-update")) app.exit(20); });
-    QObject::connect(&controller, &HostController::exitFailed, &app, [&] { replyInstaller("failed"); });
+    // HOST-EXIT-06: a failed cleanup keeps the Host running; bring its reason to the front.
+    QObject::connect(&controller, &HostController::exitFailed, &app, [&] { replyInstaller("failed"); show(); });
     QSystemTrayIcon tray(QIcon(":/src/assets/orbis.png"));
     QMenu menu;
     menu.addAction("打开 Orbis", &app, show);
@@ -163,19 +167,29 @@ int main(int argc, char *argv[]) {
     menu.addAction("开始连接", &controller, &HostController::startHost);
     menu.addAction("暂停连接", &controller, &HostController::stopHost);
     menu.addSeparator();
-    menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
+    auto *exitAction = menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
     tray.setContextMenu(&menu); tray.setToolTip("Orbis Host");
     if (QSystemTrayIcon::isSystemTrayAvailable()) { app.setQuitOnLastWindowClosed(false); tray.show(); }
     QObject::connect(&tray, &QSystemTrayIcon::activated, &app, [show](QSystemTrayIcon::ActivationReason reason) { if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) show(); });
     QObject::connect(&controller, &HostController::notification, &tray, [&tray](const QString &title, const QString &body) { tray.showMessage(title, body, QSystemTrayIcon::Information, 4000); });
     QObject::connect(&app, &QApplication::aboutToQuit, &controller, &HostController::shutdown);
-    ExitGuard exitGuard([&] { return parser.isSet("smoke-test") || controller.exitApproved(); }, [&] { controller.requestExit(); });
+    ExitGuard exitGuard([&] { return controller.exitApproved(); }, [&] { controller.requestExit(); });
     app.installEventFilter(&exitGuard);
-    QObject::connect(&controller, &HostController::exitReady, &app, &QCoreApplication::quit);
+    QObject::connect(&controller, &HostController::exitReady, &app, [&] {
+        // Cleanup and user confirmation are already complete. Finish the event loop instead
+        // of asking the native platform to approve Quit a second time.
+        tray.hide();
+        window->close();
+        QCoreApplication::exit(0);
+    }, Qt::QueuedConnection);
     if (parser.isSet("prepare-update")) QTimer::singleShot(0, &controller, &HostController::requestInstallerExit);
     if (parser.isSet("tray") && QSystemTrayIcon::isSystemTrayAvailable() && !parser.isSet("smoke-test")) window->hide();
     QString smokeModelUrl;
     int smokePiModelCount = 0;
+    const auto requestSmokeExit = [&] {
+        if (parser.value("smoke-exit-entry") == "tray") exitAction->trigger();
+        else QCoreApplication::quit();
+    };
     if (parser.isSet("smoke-test")) {
         if (parser.isSet("smoke-providers")) {
             auto *models = new QTcpServer(&app);
@@ -222,11 +236,12 @@ int main(int argc, char *argv[]) {
                 });
             }
             QList<QRectF> launchBounds;
-            for (const auto &name : {"overviewOpenPiTui", "overviewOpenCodexTui", "overviewOpenClaudeTui", "overviewOpenCodexDesktop", "overviewOpenDsh"}) {
+            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
                 if (!button || !button->isVisible()) { app.exit(44); return; }
                 const auto bounds = button->mapRectToScene(button->boundingRect());
-                if (!QRectF(0, 0, window->width(), window->height()).contains(bounds)) { app.exit(45); return; }
+                // Rows may scroll below the fold at the minimum height; they must never overflow sideways.
+                if (bounds.left() < 0 || bounds.right() > window->width()) { app.exit(45); return; }
                 for (const auto &other : launchBounds) if (bounds.intersects(other)) { app.exit(46); return; }
                 launchBounds.append(bounds);
             }
@@ -241,8 +256,18 @@ int main(int argc, char *argv[]) {
                 const auto bounds = button->mapRectToScene(button->boundingRect());
                 return qAbs(content.center().x() - bounds.center().x()) <= 1.0;
             };
-            for (const auto &name : {"overviewOpenPiTui", "overviewOpenCodexTui", "overviewOpenClaudeTui", "overviewOpenCodexDesktop", "overviewOpenDsh"})
+            for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"})
                 if (!contentIsCentered(findVisualItem(window->contentItem(), name))) { app.exit(56); return; }
+            // HOST-AGENT-MARK-02: desktop variants retain the vendor identity.
+            // Verify the rendered image as well as the model so a missing SVG cannot pass.
+            for (const auto &kind : {QString("codex"), QString("dsh")}) {
+                auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind + "Desktop");
+                if (!mark || !mark->isVisible() || mark->property("kind").toString() != kind) { app.exit(84); return; }
+                bool loaded = false;
+                for (auto *child : mark->childItems()) if (child->property("source").toUrl().toString().startsWith("data:image/svg+xml,"))
+                    loaded = child->property("status").toInt() == 1;
+                if (!loaded) { app.exit(85); return; }
+            }
             if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif
             controller.requestCode("not-a-qq-mailbox@example.com");
@@ -538,10 +563,38 @@ int main(int argc, char *argv[]) {
                 });
                 QTimer::singleShot(4000, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
+                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
+#ifdef ORBIS_SMOKE_INTERACTION
+                    // HOST-CLAUDE-UPDATE-01: an old native CLI still offers its updater.
+                    // Only open and cancel the real dialog; never update the machine in smoke.
+                    controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false}, {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}});
+                    QTimer::singleShot(250, &app, [&] {
+                        auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                        auto *scroll = window->findChild<QObject *>("pageScroll");
+                        auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr;
+                        if (!button || !button->isEnabled() || !viewport) { app.exit(86); return; }
+                        viewport->setProperty("contentY", qMax(0.0, viewport->property("contentHeight").toReal() - viewport->property("height").toReal()));
+                        QTest::qWait(80);
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-card.png")) { app.exit(7); return; }
+                        if (!clickSmokeItem(window, "updateClaude")) { app.exit(86); return; }
+                        QTimer::singleShot(200, &app, [&] {
+                            auto *dialog = window->findChild<QObject *>("agentInstallDialog");
+                            if (!dialog || !dialog->property("visible").toBool() || dialog->property("title").toString() != "更新 Claude Code" || window->property("installKind").toString() != "claude") { app.exit(87); return; }
+                            if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-update.png")) { app.exit(7); return; }
+                            QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                            controller.smokeReceive({{"event", "claudeStatus"}, {"installed", false}, {"compatible", false}});
+                            QTimer::singleShot(100, &app, [&] {
+                                auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                                app.exit(button && !button->isEnabled() ? 0 : 88);
+                            });
+                        });
+                    });
+#else
                     app.exit(0);
+#endif
                 });
             } else if (parser.isSet("smoke-exit")) {
-                controller.requestExit();
+                requestSmokeExit();
                 QTimer::singleShot(500, &app, [&] {
                     auto *dialog = window->findChild<QObject *>("hostExitDialog");
                     if (!dialog || !dialog->property("visible").toBool() || controller.exiting()) { app.exit(60); return; }
@@ -564,7 +617,7 @@ int main(int argc, char *argv[]) {
                 });
                 QTimer::singleShot(2200, &app, [&] {
                     if (controller.exiting() || controller.exitApproved()) { app.exit(63); return; }
-                    controller.requestExit();
+                    requestSmokeExit();
                     QTimer::singleShot(500, &app, [&] {
                         auto *dialog = window->findChild<QObject *>("hostExitDialog");
                         if (!dialog || !dialog->property("visible").toBool()) { app.exit(64); return; }
@@ -573,8 +626,108 @@ int main(int argc, char *argv[]) {
                     // Exercise the real Quit path after cleanup, including QML's close handler.
                     QTimer::singleShot(20000, &app, [&] { app.exit(65); });
                 });
-            } else QTimer::singleShot(parser.isSet("smoke-motion") ? 2300 : 1800, &app, [&] { app.exit(0); });
+            }
+#ifdef ORBIS_SMOKE_INTERACTION
+            else if (parser.isSet("smoke-guide")) {
+                // HOST-GUIDE-01: in every overview step only that step's controls carry the accent.
+                // Bridge events are synthetic and pass through the real reducer; nothing is activated or paired.
+                static const QStringList kinds{"pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop"};
+                auto item = [&](const QString &name) { return findVisualItem(window->contentItem(), name); };
+                // Helpers outlive this block inside the timers: they hold each other by value.
+                auto accented = [item](const QString &name) { auto *found = item(name); return found && found->isVisible() && found->property("primary").toBool(); };
+                auto agentAccented = [accented](const QString &kind) { return accented("overviewAgent-" + kind); };
+                auto anyAgentAccented = [agentAccented] { for (const auto &kind : kinds) if (agentAccented(kind)) return true; return false; };
+                auto step = [&]() { return window->property("nextStep").toString(); };
+                auto shot = [&](const QString &name) { if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".guide-" + name + ".png")) app.exit(7); };
+                auto *waitIdle = new QTimer(&app); waitIdle->setInterval(250);
+                const auto started = QDateTime::currentMSecsSinceEpoch();
+                QObject::connect(waitIdle, &QTimer::timeout, &app, [&, waitIdle, started, item, accented, agentAccented, anyAgentAccented, step, shot] {
+                    // Agent detection must settle first, or its late result would replace the fixture agents.
+                    if (controller.busy() && QDateTime::currentMSecsSinceEpoch() - started < 45000) return;
+                    waitIdle->stop(); waitIdle->deleteLater();
+                    QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 0));
+                    controller.smokeAgents({
+                        QVariantMap{{"kind", "pi"}, {"installed", true}, {"version", "0.70.0"}},
+                        QVariantMap{{"kind", "codex"}, {"installed", true}, {"desktopInstalled", true}, {"version", "0.130.0"}},
+                        QVariantMap{{"kind", "dsh"}, {"installed", false}, {"desktopInstalled", true}}});
+                    controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.300"}, {"minimumVersion", "2.1.287"}});
+                    QTimer::singleShot(600, &app, [&, item, anyAgentAccented, step, shot] {
+                        if (step() != "activate") { qWarning() << "guide step" << step(); app.exit(66); return; }
+                        if (anyAgentAccented()) { app.exit(67); return; }
+                        if (auto *connection = item("overviewConnection"); connection && connection->isVisible()) { app.exit(68); return; }
+                        shot("1-activate");
+                        controller.smokeActivation(false);
+                        controller.smokeReceive({{"event", "state"}, {"state", "stopped"}});
+                    });
+                    QTimer::singleShot(1200, &app, [&, item, accented, anyAgentAccented, step, shot] {
+                        if (step() != "connect") { qWarning() << "guide step" << step(); app.exit(69); return; }
+                        if (!accented("overviewConnection") || accented("overviewPair") || anyAgentAccented()) {
+                            auto *connection = item("overviewConnection");
+                            qWarning() << "guide connect" << (connection ? connection->isVisible() : false) << (connection ? connection->property("primary") : QVariant()) << accented("overviewPair") << anyAgentAccented();
+                            shot("2-connect-failed"); app.exit(70); return;
+                        }
+                        shot("2-connect");
+                        controller.smokeActivation(true);
+                        controller.smokeReceive({{"event", "state"}, {"state", "connected"}});
+                    });
+                    QTimer::singleShot(1800, &app, [&, item, accented, anyAgentAccented, step, shot] {
+                        if (step() != "pair") { qWarning() << "guide step" << step(); app.exit(71); return; }
+                        if (!accented("overviewPair") || !item("overviewPair")->isEnabled() || accented("overviewConnection") || anyAgentAccented()) { app.exit(72); return; }
+                        shot("3-pair");
+                        auto backend = [](const QString &kind, bool launchable, int sessions) {
+                            return QJsonObject{{"kind", kind}, {"ready", launchable}, {"launchable", launchable}, {"runtimeCount", sessions}, {"reason", QJsonValue::Null}};
+                        };
+                        const QJsonObject backends{{"domain", "backends"}, {"value", QJsonObject{{"backends", QJsonArray{
+                            backend("pi", true, 2), backend("codex", true, 0), backend("codexDesktop", true, 0), backend("dsh", false, 0), backend("claude", true, 1),
+                            backend("dshDesktop", true, 0)}}}}};
+                        controller.smokeReceive({{"event", "status"}, {"runtimeCount", 3},
+                            {"devices", QJsonArray{QJsonObject{{"deviceId", "smoke-phone"}, {"label", "手机"}, {"path", "relay"}, {"createdAt", 1}}}},
+                            {"model", QJsonObject{{"domains", QJsonArray{backends}}}}});
+                    });
+                    QTimer::singleShot(2700, &app, [&, item, accented, agentAccented, step, shot] {
+                        if (step() != "open") { qWarning() << "guide step" << step(); app.exit(73); return; }
+                        if (!agentAccented("pi") || !agentAccented("codex") || agentAccented("dsh") || accented("overviewConnection") || accented("overviewPair")) { app.exit(74); return; }
+                        auto *sessions = item("overviewAgentSessions-pi");
+                        if (!sessions || !sessions->isVisible() || sessions->property("text").toString() != "2") { app.exit(75); return; }
+                        shot("4-open");
+                        // DSH-DESKTOP-09: a DeepSeek Desktop opened elsewhere keeps opening it from Orbis as the accented
+                        // step, and the wait for the user to quit it shows on that button, without explanatory text.
+                        if (!agentAccented("dshDesktop")) { app.exit(78); return; }
+                        controller.smokeReceive({{"event", "dshDesktop"}, {"status", QJsonObject{{"state", "running"}, {"reason", "DeepSeek 桌面版需由 Orbis 打开"}, {"version", "0.2.2-rc.2"}}}});
+                        auto *desktop = item("overviewAgent-dshDesktop");
+                        if (!agentAccented("dshDesktop") || !desktop || desktop->property("loading").toBool() || desktop->property("text").toString() != "打开") { app.exit(79); return; }
+                        controller.smokeReceive({{"event", "dshDesktopOpen"}, {"state", "waiting"}});
+                        if (!item("overviewAgent-dshDesktop")->property("loading").toBool()) { app.exit(80); return; }
+                        shot("4-dsh-desktop-waiting");
+                        controller.smokeReceive({{"event", "dshDesktopOpen"}, {"state", "idle"}});
+                        controller.smokeReceive({{"event", "dshDesktop"}, {"status", QJsonObject{{"state", "attached"}, {"reason", "已接入 DeepSeek 桌面版 0.2.2-rc.2"}, {"version", "0.2.2-rc.2"}}}});
+                        if (item("overviewAgent-dshDesktop")->property("loading").toBool() || !agentAccented("dshDesktop")) { app.exit(81); return; }
+                        controller.smokePauseForChange();
+                    });
+                    QTimer::singleShot(3300, &app, [&, item, shot] {
+                        auto *state = item("overviewLinkState");
+                        if (!controller.resumePending() || !state || state->property("text").toString() != "完成后自动恢复") { app.exit(76); return; }
+                        if (item("overviewConnection")->isEnabled()) { app.exit(77); return; }
+                        shot("5-resume");
+                        app.exit(0);
+                    });
+                });
+                // The shared smoke flow visits pages 1-4 first; start once it has returned control.
+                QTimer::singleShot(parser.isSet("smoke-motion") ? 2400 : 2000, &app, [waitIdle] { waitIdle->start(); });
+            }
+#endif
+            else QTimer::singleShot(parser.isSet("smoke-motion") ? 2300 : 1800, &app, [&] { app.exit(0); });
         });
     }
-    return app.exec();
+    const int result = app.exec();
+    // A successful smoke run must reach verified cleanup, not leave via a test-only Quit bypass.
+    if (parser.isSet("smoke-exit")) {
+        QFile report(dataDir + "/smoke-exit-result.json");
+        if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{
+            {"exitApproved", controller.exitApproved()}, {"bridgeReady", controller.bridgeReady()},
+            {"windowVisible", window->isVisible()}, {"trayVisible", tray.isVisible()},
+            {"entry", parser.value("smoke-exit-entry")}, {"exitCode", result}}).toJson());
+        if (!controller.exitApproved() || controller.bridgeReady() || window->isVisible() || tray.isVisible()) return 78;
+    }
+    return result;
 }

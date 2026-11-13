@@ -10,6 +10,24 @@ afterEach(async () => {
 });
 
 describe("Orbis Host configuration", () => {
+  // 尾网链路本身已加密，隔离环境的中继就在尾网里，用 ws:// 是安全的。
+  it("accepts an unencrypted relay only on loopback or inside the tailnet", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-relay-url-"));
+    temporaryDirectories.push(stateDir);
+    const credential = { ORBIS_RUNTIME_CREDENTIAL: "fixture" };
+    for (const relayUrl of [
+      "ws://127.0.0.1:8787",
+      "ws://100.69.159.21:8787",
+      "ws://100.90.24.47:8787",
+      "ws://host.tail1b0195.ts.net:8787",
+    ]) {
+      expect((await loadHostConfig({ stateDir, env: { ...credential, ORBIS_RELAY_URL: relayUrl } })).relayUrl).toBe(relayUrl);
+    }
+    for (const relayUrl of ["ws://relay.example.com:8787", "ws://101.6.7.8:8787"]) {
+      await expect(loadHostConfig({ stateDir, env: { ...credential, ORBIS_RELAY_URL: relayUrl } }))
+        .rejects.toThrow(/wss/u);
+    }
+  });
   it("isolates background history only when explicitly configured and validates overrides", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "orbis-history-config-"));
     temporaryDirectories.push(stateDir);

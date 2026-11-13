@@ -46,10 +46,12 @@ export class CodexAgentTasks {
   #inventory: AgentTaskInventory = agentTaskInventory([], "unknown");
   #live = new Map<string, { itemId: string; status: AgentTask["status"] }>();
   #replaying = false;
+  #generation = 0;
   constructor(readonly rootId: string) {}
   snapshot(): AgentTaskInventory { return structuredClone(this.#inventory); }
   has(id: string): boolean { return this.#inventory.items.some(item => item.id === id); }
   stale(): AgentTaskInventory {
+    ++this.#generation;
     this.#live.clear();
     this.#inventory = agentTaskInventory(this.#inventory.items, "unknown");
     return this.snapshot();
@@ -59,7 +61,7 @@ export class CodexAgentTasks {
     const previous = this.#inventory.items.find(item => item.id === id);
     const parent = parentId === undefined ? previous?.parentId : parentId === this.rootId ? undefined : parentId;
     return { id, title: title ?? previous?.title ?? id, kind: kind ?? previous?.kind ?? "subagent",
-      status: status ?? (this.#inventory.truncated ? previous?.status : undefined) ?? "unknown", ...(parent ? { parentId: parent } : {}) };
+      status: status ?? (this.#inventory.truncated || this.#inventory.availability === "ready" ? previous?.status : undefined) ?? "unknown", ...(parent ? { parentId: parent } : {}) };
   }
 
   #merge(items: AgentTask[], itemId?: string): AgentTaskInventory | undefined {
@@ -77,18 +79,45 @@ export class CodexAgentTasks {
         if (live) this.#live.set(item.id, { ...live, status: item.status });
       }
     }
-    const incoming = mergeAgentTaskInventory(this.#inventory, agentTaskInventory(items, "unknown", true));
+    const complete = this.#inventory.availability === "ready" && !this.#inventory.truncated && items.every(item => this.has(item.id));
+    const incoming = complete ? agentTaskInventory([...this.#inventory.items.filter(old => !items.some(item => item.id === old.id)), ...items])
+      : mergeAgentTaskInventory(this.#inventory, agentTaskInventory(items, "unknown", true));
     const retained = new Set(incoming.items.map(item => item.id));
     for (const id of this.#live.keys()) if (!retained.has(id)) this.#live.delete(id);
     if (JSON.stringify(incoming) === JSON.stringify(this.#inventory)) return undefined;
     this.#inventory = incoming;
+    ++this.#generation;
     return this.snapshot();
   }
 
   #threadStatus(id: string, value: unknown): AgentTask["status"] {
     const observed = threadStatus(value), previous = this.#inventory.items.find(item => item.id === id)?.status;
     // Registry idle/notLoaded does not undo an explicit completed/errored/shutdown task.
-    return this.#inventory.truncated && (observed === "idle" || observed === "unknown") && previous && ["completed", "failed", "killed"].includes(previous) ? previous : observed;
+    return (this.#inventory.truncated || this.#inventory.availability === "ready") && (observed === "idle" || object(value).type === "notLoaded") && previous && ["completed", "failed", "killed"].includes(previous) ? previous : observed;
+  }
+
+  /** Only a verified full descendant registry can clear the partial-inventory flag.
+   * A live event or disconnect during I/O invalidates the read. Known children absent
+   * from the persistent registry (including ephemeral tasks) keep the list partial. */
+  async reconcile(read: () => Promise<unknown[]>): Promise<AgentTaskInventory | undefined> {
+    const generation = this.#generation;
+    let values: unknown[];
+    try { values = await read(); }
+    catch {
+      if (generation !== this.#generation || this.#inventory.availability !== "ready") return undefined;
+      this.#inventory = agentTaskInventory(this.#inventory.items, "unknown", true);
+      return this.snapshot();
+    }
+    if (generation !== this.#generation) return undefined;
+    const children = values.map(codexChildThread);
+    if (children.some(child => child === undefined)) return undefined;
+    const items = children.map(child => this.#task(child!.id, this.#threadStatus(child!.id, child!.status), child!.parentId, child!.title, child!.kind));
+    const missing = this.#inventory.items.filter(item => !items.some(next => next.id === item.id));
+    const incoming = agentTaskInventory([...items, ...missing], missing.length ? "unknown" : "ready", missing.length > 0);
+    if (JSON.stringify(incoming) === JSON.stringify(this.#inventory)) return undefined;
+    this.#inventory = incoming;
+    ++this.#generation;
+    return this.snapshot();
   }
 
   observeThread(value: unknown): AgentTaskInventory | undefined {

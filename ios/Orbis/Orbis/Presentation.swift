@@ -36,13 +36,13 @@ struct SessionProviderOption: Identifiable {
     var id: String { key }
 }
 
-func sessionProviderOptions(_ sessions: [SessionSummary], kind: String, current: String?) -> [SessionProviderOption] {
+func sessionProviderOptions(_ sessions: [SessionSummary], kind: String, current: String?, knownProviders: [String] = [], hasUnknown: Bool = false) -> [SessionProviderOption] {
     let rows = sessions.filter { $0.agentKind == kind }
     var result = [SessionProviderOption(key: "current", label: current.map { L10n.tr("{0}（当前使用）", $0) } ?? L10n.tr("当前 provider（尚未获取）")),
                   SessionProviderOption(key: "all", label: L10n.tr("全部 provider"))]
-    let providers = Set(rows.compactMap(\.modelProvider).filter { !$0.isEmpty }).sorted()
+    let providers = Set((rows.compactMap(\.modelProvider) + knownProviders).filter { !$0.isEmpty }).sorted()
     result += providers.filter { $0 != current }.map { SessionProviderOption(key: "provider:" + $0, label: $0) }
-    if rows.contains(where: { $0.modelProvider == nil || $0.modelProvider?.isEmpty == true }) {
+    if hasUnknown || rows.contains(where: { $0.modelProvider == nil || $0.modelProvider?.isEmpty == true }) {
         result.append(SessionProviderOption(key: "unknown", label: L10n.tr("未知 provider")))
     }
     return result
@@ -196,7 +196,7 @@ func defaultExpandedDirectory(_ directories: [SessionDirectory], preferred: Stri
 
 /// Host 的 runtime 元数据（`RuntimeMetadata`）不携带 agentKind，缺省会被当成 Pi。
 /// 展示时先用会话目录里同一 sessionId 的 agentKind（Host 扫描出的事实），
-/// 再退回 Host 的 runtimeId 约定：`codex` / `codex:<thread>`、`codex-desktop` / `codex-desktop:<thread>`、`dsh:<id>`、`claude:<session>`。
+/// 再退回 Host 的 runtimeId 约定：`codex` / `codex:<thread>`、`codex-desktop` / `codex-desktop:<thread>`、`dsh:<id>`、`dsh-desktop:<id>`、`claude:<session>`。
 /// Pi 的 runtimeId 是随机 UUID，不会命中这些前缀。
 /// `catalogKind` 是目录里同一 sessionId 的 agentKind，调用方用索引查好再传入。
 func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String?) -> String? {
@@ -209,6 +209,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     func owned(by prefix: String) -> Bool { runtimeId == prefix || runtimeId.hasPrefix(prefix + ":") }
     if owned(by: "codex-desktop") { return "codexDesktop" }
     if owned(by: "codex") { return "codex" }
+    if runtimeId.hasPrefix("dsh-desktop:") { return "dshDesktop" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
     if runtimeId.hasPrefix("claude:") { return "claude" }
     return nil
@@ -533,6 +534,7 @@ struct MarkdownTextSection: Identifiable, Equatable {
     let text: String
     var rows: [[String]] = []
     var inlineRows: [[AttributedString]] = []
+    var mathRows: [[String?]] = []
 }
 
 func markdownTextSections(_ text: String) -> [MarkdownTextSection] {
@@ -757,18 +759,35 @@ private func preparedMarkdownImage(_ value: String) -> (String, URL)? {
 final class PreparedMarkdownDocument: @unchecked Sendable {
     let rows: [MarkdownRow]
     let length: Int
+    let mathHTML: [String: String]
+    let mathCost: Int
     init(_ text: String) {
+        let math = MathMarkupEngine.shared.protect(text)
+        if math?.bypass == true {
+            self.rows = [MarkdownRow(id: "math-source-fallback", kind: .text(AttributedString(text)), base: 0, length: text.utf16.count)]
+            self.length = text.utf16.count; self.mathHTML = [:]; self.mathCost = 0
+            return
+        }
+        var mathHTML: [String: String] = [:]
+        var lastHTML: String?
+        var tableCost = 0
+        var mathFragments = 0
         func inline(_ text: String) -> AttributedString {
-            (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+            let value = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+            lastHTML = mathFragments < 32 ? math.flatMap { MathMarkupEngine.shared.html(value, prepared: $0) } : nil
+            if lastHTML != nil { mathFragments += 1 }
+            return math?.restore(value) ?? value
         }
         var rows: [MarkdownRow] = []
         var offset = 0
         func add(_ id: String, _ kind: MarkdownRow.Kind, _ length: Int) {
             rows.append(MarkdownRow(id: id, kind: kind, base: offset, length: length))
+            if let html = lastHTML { mathHTML[id] = html }
+            lastHTML = nil
             offset += length
         }
         func count(_ value: AttributedString) -> Int { String(value.characters).utf16.count }
-        for block in markdownBlocks(text) {
+        for block in markdownBlocks(math?.text ?? text) {
             if case .code(let language) = block.kind {
                 add("code-\(block.id)", .code(language, block.text), block.text.utf16.count)
                 continue
@@ -777,7 +796,18 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
                 let id = "text-\(block.id)-\(section.id)"
                 if section.kind == .table {
                     var table = section
-                    table.inlineRows = section.rows.map { $0.map(inline) }
+                    table.inlineRows = section.rows.map { row in
+                        var html: [String?] = []
+                        let values = row.map { cell in
+                            let value = inline(cell)
+                            html.append(lastHTML)
+                            tableCost += lastHTML?.utf16.count ?? 0
+                            return value
+                        }
+                        table.mathRows.append(html)
+                        return values
+                    }
+                    lastHTML = nil
                     add(id, .table(table), 0); continue
                 }
                 let line = section.text.trimmingCharacters(in: .whitespaces)
@@ -785,7 +815,7 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
                 let hashes = line.prefix(while: { $0 == "#" }).count
                 if line.isEmpty { add(id, .spacer, 0) }
                 else if ["---", "***", "___"].contains(line) { add(id, .divider, 0) }
-                else if line.hasPrefix("!["), let image = preparedMarkdownImage(line) { add(id, .image(image.0, image.1), 0) }
+                else if line.hasPrefix("!["), let image = preparedMarkdownImage(line) { add(id, .image(math?.restore(image.0) ?? image.0, image.1), 0) }
                 else if line.hasPrefix("> ") {
                     let value = inline(String(line.dropFirst(2))); add(id, .quote(value), count(value))
                 } else if (1...6).contains(hashes), line.dropFirst(hashes).hasPrefix(" ") {
@@ -801,6 +831,8 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
         }
         self.rows = rows
         self.length = offset
+        self.mathHTML = mathHTML
+        self.mathCost = tableCost + mathHTML.values.reduce(0) { $0 + $1.utf16.count }
     }
 }
 
@@ -809,7 +841,7 @@ final class MarkdownDocumentCache: @unchecked Sendable {
     private let store = NSCache<NSString, PreparedMarkdownDocument>()
     init() { store.countLimit = 256; store.totalCostLimit = 4 * 1024 * 1024 }
     func cached(_ text: String) -> PreparedMarkdownDocument? { store.object(forKey: text as NSString) }
-    func insert(_ value: PreparedMarkdownDocument, text: String) { store.setObject(value, forKey: text as NSString, cost: text.utf16.count) }
+    func insert(_ value: PreparedMarkdownDocument, text: String) { store.setObject(value, forKey: text as NSString, cost: text.utf16.count + value.mathCost) }
 }
 
 actor MarkdownParsingWorker {
@@ -1048,6 +1080,7 @@ struct SessionDirectoryFilter: Hashable {
     let provider: String
     let currentProvider: String?
     let language: String
+    var queryRevision: UUID? = nil
     func sameView(as other: Self) -> Bool {
         hostId == other.hostId && query == other.query && kind == other.kind && archived == other.archived &&
             provider == other.provider && currentProvider == other.currentProvider && language == other.language
@@ -1079,10 +1112,11 @@ actor SessionDirectoryWorker {
     private let beforeResolve: (@Sendable () -> Void)?
     private var previous: SessionDirectoryProjection?
     init(beforeResolve: (@Sendable () -> Void)? = nil) { self.beforeResolve = beforeResolve }
-    func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter) -> SessionDirectoryProjection {
+    func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter, knownProviders: [String] = [], hasUnknown: Bool = false) -> SessionDirectoryProjection {
         if let previous, previous.filter == filter { return previous }
         beforeResolve?()
-        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider)
+        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider,
+            knownProviders: knownProviders, hasUnknown: hasUnknown)
         let provider = options.contains { $0.key == filter.provider } ? filter.provider : "current"
         let visible = filter.kind == "codex" || filter.kind == "codexDesktop" ? catalog.sessions.filter {
             matchesSessionProvider($0, filter: provider, current: filter.currentProvider)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  RuntimeEventSchema, selectSessionSyncSnapshot, SESSION_SYNC_MAX_BYTES, SESSION_SYNC_PAGE_BYTES,
-  SESSION_SYNC_WRAPPER_BYTES, SessionSyncPreparer, WIRE_ENTRY_LIMIT_BYTES,
+  RuntimeEventSchema, selectSessionSyncSnapshot, SESSION_SYNC_PAGE_BYTES,
+  SESSION_SYNC_TARGET_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, SessionSyncPreparer, WIRE_ENTRY_LIMIT_BYTES,
   type RemoteSessionEntry, type RuntimeTurnTiming,
 } from "./index.js";
 
@@ -65,24 +65,37 @@ describe("bounded Session ranges", () => {
     expect(snapshot.complete).toBe(false);
   });
 
-  // ADR-0038：一条超长 Entry 现在被截断后可发送；只有截断也装不下的结构（大量字段累加）
-  // 才按确定性失败处理，且不跳过它换取后面的条目。
+  // ADR-0038 / ADR-0069：单条线路投影必须同时适配 canonical 与 display 双表示；
+  // 页目标是 32 KiB，64 KiB hard 上限之外的单条不跳过，而是确定性失败。
   it("truncates a single large Entry, and still fails on one that cannot be reduced", () => {
     const tree = entries(2, "x".repeat(400_000));
     const snapshot = selectSessionSyncSnapshot(tree, "s", "2", { ...request, range: "catchup" });
-    // 截断让原本放不下的一页能装下更多条目：这里是两条一起发，而不是只发一条。
-    expect(snapshot.entries.map((entry) => entry.entryId)).toEqual(["1", "2"]);
+    expect(snapshot.entries.map((entry) => entry.entryId)).toEqual(["1"]);
     expect(snapshot.entries[0]!.data).not.toEqual(tree[0]!.data);
     expect(JSON.stringify(snapshot.entries[0]!.data)).toContain("已截断");
-    expect(Buffer.byteLength(JSON.stringify(snapshot)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_MAX_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(snapshot)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(snapshot.entries[0]!))).toBeLessThanOrEqual(WIRE_ENTRY_LIMIT_BYTES);
 
-    // 字段数本身过大：即使每个字段被压到下限，总字节仍超过 1MB 兜底，属无法缩减的结构。
+    // 字段数本身过大：即使每个字段被压到下限，总字节仍超过 64 KiB hard limit。
     const wide: Record<string, string> = {};
     for (let index = 0; index < 3_000; index += 1) wide[`f${index}`] = "y".repeat(2_000);
     // 条目不可变（ADR-0035）：修正内容一律换新对象，不能原地改（截断结果按对象身份缓存）。
     const replaced = [{ ...tree[0]! }, { ...tree[1]!, data: wide }];
     expect(() => selectSessionSyncSnapshot(replaced, "s", "2", { ...request, range: "catchup", knownLeafId: "1" }))
       .toThrow("session_entry_too_large");
+  });
+
+  it("keeps a large message plus its duplicated display projection under the hard page limit", () => {
+    const message = { role: "user" as const, content: [{ type: "text" as const, text: "界🙂".repeat(200_000) }] };
+    const source: RemoteSessionEntry = { ...entries(1)[0]!, data: { message } };
+    const snapshot = selectSessionSyncSnapshot([source], "s", source.entryId,
+      { ...request, range: "preview", maxEntries: 1 });
+    const bytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8") + SESSION_SYNC_WRAPPER_BYTES;
+    expect(bytes).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+    expect(bytes).toBeGreaterThan(SESSION_SYNC_TARGET_PAGE_BYTES);
+    expect(snapshot.entries[0]!.entryId).toBe(source.entryId);
+    expect(JSON.stringify(snapshot.entries[0]!.data)).toContain("已截断");
+    expect(JSON.stringify(snapshot.display)).toContain("已截断");
   });
 
   it("pages anchored timing with its Entries and includes metadata in the byte limit", () => {

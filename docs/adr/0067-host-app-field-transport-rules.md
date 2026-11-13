@@ -16,7 +16,7 @@ Status: proposed
 6. 未采样字段仍按规则表确定行为；样本不足只影响体积和频率结论。`null`、字段缺席、空集合、未知、不可用、部分与完整分别保留各自含义。
 7. 认证及后端生产者入口保留其完整输入契约；字段拆分、引用和按需装载作用于 Host→App 的目标投影。Host 内部仍持有完成原生核对和执行所需的事实。
 
-会话目录与历史的具体请求条件、60 秒核对、字节预算及有界缓存预留见 [ADR-0069](0069-session-catalog-and-bounded-history-loading.md)。该 ADR 区分当前实现与 FT-G11 / FT-G12 待实现规则；G01–G10 的既有实现记录继续按原证据解释。
+会话目录与历史的具体请求条件、60 秒核对、字节预算及有界缓存预留见 [ADR-0069](0069-session-catalog-and-bounded-history-loading.md)。该 ADR 区分实施前基线与 FT-G11 / FT-G12 分组实施规则；G01–G10 的既有实现记录继续按原证据解释。
 
 字段名与嵌套结构以[协议入口](../../packages/protocol/src/index.ts)、[领域模型](../../packages/protocol/src/agent-state.ts)、[Host 领域](../../packages/protocol/src/host-model-domains.ts)、[工具](../../packages/protocol/src/tool-activity.ts)、[通知](../../packages/protocol/src/notifications.ts)、[文件变更](../../packages/protocol/src/turn-file-changes.ts)为准；新增字段按 FT-19 同步登记。
 
@@ -1532,8 +1532,8 @@ Status: proposed
 | G08 工具、diff 与文件 | FT-05/06/07/17：库存、摘要、详情和二进制内容各按范围及兴趣传输，原生工具体留在 Host。 | 工具原始内容不进入共享快照；详情版本、分页、取消和缺口可辨；diff 完整性、上传 / 下载续传与持久确认、文件校验正确。 |
 | G09 管理与计量 | FT-03/05/12/15/16：provider、工作区、连接、records、诊断及管理领域按兴趣更新；记录消息 / 字段字节和发送频率。 | 普通状态刷新不扩散诊断；按需页有正确边界；计量不含正文或凭据，父子字节不重复相加；采样有界且不重序列化每个 token 的全量状态。 |
 | G10 队列与通道 | FT-04/10/14/16：按业务类别限制帧和在途预算，在版本 / 加密序号形成前合并可替换状态，调度保留控制与结果。 | 慢链路和积压下控制可达；终态 / 交互 / 结果无丢失；增量基准、AEAD 序号、分片 / 重试 / 换路及公平调度正确；超时可区分排队与应用阶段。 |
-| G11 会话目录读取（待实现） | [ADR-0069 SC-01–SC-07](0069-session-catalog-and-bounded-history-loading.md)：目录 60 秒条件核对、差异 / 范围恢复、按视图分页与单份目录权威。 | 同版本确认、真实变动、来源失效聚合、查询完整性、快照分页、部分库存、旧格式及两端请求调度。 |
-| G12 历史缓存窗口（待实现） | [ADR-0069 SH-01–SH-09](0069-session-catalog-and-bounded-history-loading.md)：首屏最多 30 条、额外自动预留最多 60 条 / 128 KiB / 4 页，按实际阅读扩窗。 | 冷缓存停止、窗口内覆盖、条数 / 字节 / 页数先到即停、滚动扩窗、分支与来源变化、落库后 ACK、背压与旧格式。 |
+| G11 会话目录读取（分组实施） | [ADR-0069 SC-01–SC-07](0069-session-catalog-and-bounded-history-loading.md)：目录 60 秒条件核对、差异 / 范围恢复、按视图分页与单份目录权威。 | 同版本确认、真实变动、来源失效聚合、查询完整性、快照分页、部分库存、旧格式及两端请求调度。 |
+| G12 历史缓存窗口（已实施，待部署验收） | [ADR-0069 SH-01–SH-09](0069-session-catalog-and-bounded-history-loading.md)：首屏最多 30 条、额外自动预留最多 60 条 / 128 KiB / 4 页，按实际阅读扩窗。 | 冷缓存停止、窗口内覆盖、条数 / 字节 / 页数先到即停、滚动扩窗、分支与来源变化、落库后 ACK、背压与旧格式。 |
 
 跨组依赖在启用前完成：G04–G08 的新字段形状依 FT-13 在 Host、Android、iOS 同时实现协商与降级；G10 只合并尚未形成版本依赖的业务对象。各组体积比较使用相同合成输入与范围，节省比例与尚未处理的大字段分别记录。
 
@@ -1576,3 +1576,29 @@ G09 的计量报告快照全局限制为最多 8 份、合计 16,384 行；计�
 G10 在握手发送 `device.ready` 与 `device.path` 后，为兼容菜单恢复留出默认 250 ms、有 1 秒上限的 compact 订阅建立时间；设备在目标 Runtime 上订阅 `capabilities` 后，该 Runtime 不再重播 legacy capabilities，未协商的旧客户端仍取得完整菜单。交互 `resync` 仍立即发起。队列准入必须在封帧前按 channel 和预算判定；控制 / 普通消息 / bulk / history / catchup 使用独立通道与预算，`ctl` 优先、`msg` 次之，已封帧即使队列超限也不可静默丢弃或合并。bulk 分片可在封帧前因无预算而延后，由接收端 pull 重试；路径写入失败保留队首重试，耗尽时摘除路径并在新会话恢复。控制结果、交互终态、来源 / 基准版本和正在传输的正文不得用通用队列合并替代。
 
 G10 实现与验证：[握手兼容恢复](../../packages/host/src/host-service.ts)及 FT-G10 compact / legacy 联动回归（[Host 测试](../../packages/host/src/host-service.test.ts)）；[出站队列准入、优先级及密文帧保留](../../packages/protocol/src/outbound-mux.test.ts)；[封帧前 admission、分片、换路与恢复](../../packages/host/src/device-link.test.ts)。记录及重连结果保存于 `.artifacts/field-transport-implementation-20261106/g10-results.json`。
+
+
+### FT-G12 历史窗口新增字段登记
+
+| 消息 / 字段 | 字段规则 | 行为规则 |
+| --- | --- | --- |
+| `session.history.capabilities.request` 的 `type/protocolVersion/requestId` | FT-01 / FT-12 / FT-16 | ADR-0069 SH-09；每次认证连接探测一次。 |
+| `session.history.capabilities` 的 `type/protocolVersion/requestId/format/maxPageBytes` | FT-01 / FT-12 / FT-16 | SH-09；匹配请求且明确 v1 / 64 KiB 后启用。 |
+| `session.history.interest` 的 `type/protocolVersion/requestId/runtimeId/sessionId` | FT-01 / FT-12 / FT-16 | SH-02 / SH-06；准确可见目标或双 null，变化才发送。 |
+| `session.history.interest.result` 的 `type/protocolVersion/requestId/accepted` | FT-01 / FT-10 / FT-12 | SH-06 / SH-09；相关请求回执，拒绝释放去重状态。 |
+| `session.sync.historyWindow.format/maxBytes/maxDeliveries` | FT-01 / FT-12 / FT-16 | SH-01 / SH-08 / SH-09；固定范围的剩余预算，Host 校验后按旧 adapter schema 转发。 |
+
+
+### FT-G11 目录查询新增字段登记
+
+| 消息 / 字段 | 字段规则 | 行为规则 |
+| --- | --- | --- |
+| `session.catalog.capabilities.request` 的 `type/protocolVersion/requestId` | FT-01 / FT-12 / FT-16 | ADR-0069 SC-07；每次认证 ready 协商一次。 |
+| `session.catalog.capabilities` 的 `type/protocolVersion/requestId/format` | FT-01 / FT-12 / FT-16 | SC-07；匹配 v1 能力才启用查询。 |
+| `session.catalog.query` 的 `type/protocolVersion/requestId/format/cursor/limit` | FT-01 / FT-12 / FT-16 | SC-01 / SC-04 / SC-06；可见需求、固定游标、同身份重试。 |
+| 请求及页应答的 `query.text/agentKind/archived/provider/directory` | FT-01 / FT-05 / FT-12 / FT-16 | SC-01 / SC-04；全库存查询，回包准确确认原过滤范围。 |
+| `session.catalog.page` 的 `type/protocolVersion/requestId/format` | FT-01 / FT-12 / FT-16 | SC-04 / SC-07；msg 通道，最终 envelope 64 KiB 校验。 |
+| `page.modelEpoch/revision/snapshotId/offset/totalSessions/nextCursor/complete/truncated/error` | FT-01 / FT-10 / FT-12 / FT-16 | SC-04 / SC-05 / SC-06；固定版本、覆盖和错误分别解释。 |
+| `page.sessions[]` | FT-05 / FT-12 | 全部子字段沿用 Host catalog 目录字段表和 SC-05。 |
+| `directoryCount/previewsComplete/page.sessions[].directoryTotal` | FT-12 | SC-01 / SC-05；同版本分组数、预览覆盖及分组会话总数，五条预览之后按准确目录需求加载。 |
+| `providers/unknownProvider/providersTruncated` | FT-05 / FT-07 / FT-12 | SC-01 / SC-05；仅第一页按版本装载，后续页复用；条数与 8 KiB 预算先到即止。 |

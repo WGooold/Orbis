@@ -61,7 +61,7 @@ struct OrbisPalette {
     func agent(_ kind: String?) -> Color {
         switch kind {
         case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x00655D)
-        case "dsh": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
+        case "dsh", "dshDesktop": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
         case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
         default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
         }
@@ -465,12 +465,15 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
         let accent = OrbisPalette(scheme).accent
         configuration.label
             .environment(\.orbisGlyphPressed, configuration.isPressed && enabled)
-            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
-            .background(OrbisTouchOrigin { touchOrigin = $0 })
-            .overlay {
+            // Keep the opaque selection material below the label and above the surface.
+            // Expand through the surface padding without changing content geometry.
+            .background {
                 OrbisSelectionFill(selected: selected, origin: touchOrigin,
                                    radius: parent?.innerRadius ?? radius, color: accent)
+                    .padding(-padding)
             }
+            .neuSurface(inset: recessed || (!selecting && configuration.isPressed), radius: radius, intensity: enabled ? 0.65 : 0, padding: padding, press: configuration.isPressed)
+            .background(OrbisTouchOrigin { touchOrigin = $0 })
             .contentShape(shape)
             .overlay { if !enabled { shape.strokeBorder(OrbisPalette(scheme).outline, lineWidth: 1) } }
     }
@@ -761,7 +764,9 @@ private struct OrbisBottomPanel: View {
             Capsule().fill(.clear).frame(width: 36, height: 6)
                 .neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
                 .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 4).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
+                // The handle rides the panel offset; a local-space translation would feed
+                // that offset back into itself and jitter during slow drags.
+                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .global).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
                     if drag > 100 || value.predictedEndTranslation.height > 180 { dismiss() }
                     else { withAnimation(reduced ? nil : .orbisDrag) { drag = 0 } }
                 })
@@ -1392,7 +1397,7 @@ struct AgentEmblem: View {
 func agentTitle(_ kind: String?) -> String {
     switch kind {
     case "codex", "codexDesktop": return "Codex"
-    case "dsh": return "DeepSeek"
+    case "dsh", "dshDesktop": return "DeepSeek"
     case "claude": return "Claude Code"
     default: return "Pi"
     }
@@ -1401,7 +1406,7 @@ func agentTitle(_ kind: String?) -> String {
 private func agentAsset(_ kind: String?) -> String {
     switch kind {
     case "codex", "codexDesktop": return "AgentCodex"
-    case "dsh": return "AgentDeepSeek"
+    case "dsh", "dshDesktop": return "AgentDeepSeek"
     case "claude": return "AgentClaude"
     default: return "AgentPi"
     }

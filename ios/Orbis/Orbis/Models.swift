@@ -2,7 +2,7 @@ import Foundation
 
 let orbisProtocolVersion = 19
 
-struct SessionConfigurationValues: Codable, Equatable {
+struct SessionConfigurationValues: Codable, Hashable {
     var model: String? = nil
     var thinking: String? = nil
     var permissions: [String: String]? = nil
@@ -126,6 +126,10 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var model: RuntimeModelInfo?
     var contextUsage: RuntimeContextUsage?
     var thinkingLevel: String? = nil
+    var currentTurnConfiguration: RuntimeTurnConfiguration? = nil
+    var currentTurnConfigurationSupported: Bool? = nil
+    var modelSelection: SessionConfigurationValues? = nil
+    var executionTurnId: String? = nil
     var permissionManagement: PermissionManagement? = nil
     var sessionGraphSync: Bool? = nil
     var sessionLeafId: String? = nil
@@ -152,7 +156,29 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         return summary
     }
     func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
-        (backgroundTasks?.visible != true || backgroundTasks?.allowsQuit == true) && commands.contains { $0.name == "quit" && $0.argument?.required != true }
+        remoteCloseBlockReason(commands) == nil
+    }
+    func remoteCloseBlockReason(_ commands: [SlashCommand]) -> RuntimeCloseBlockReason? {
+        if let tasks = backgroundTasks, tasks.visible, !tasks.allowsQuit {
+            if tasks.truncated { return .incompleteTasks }
+            if !tasks.confirmed { return .unconfirmedTasks }
+            return .activeTasks
+        }
+        return commands.contains { $0.name == "quit" && $0.argument?.required != true } ? nil : .unavailableCommand
+    }
+}
+
+/// SC82: selection and swipe feedback stay available; only submission uses close admission.
+enum RuntimeCloseBlockReason: Equatable {
+    case incompleteTasks, unconfirmedTasks, activeTasks, unavailableCommand
+
+    var message: String {
+        switch self {
+        case .incompleteTasks: L10n.tr("子代理清单不完整，暂不能关闭会话。")
+        case .unconfirmedTasks: L10n.tr("子代理状态待核对，暂不能关闭会话。")
+        case .activeTasks: L10n.tr("子代理尚未结束，暂不能关闭会话。")
+        case .unavailableCommand: L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")
+        }
     }
 }
 
@@ -228,6 +254,73 @@ struct RuntimeModelInfo: Codable, Hashable {
     let provider: String
     let id: String
     let name: String?
+}
+
+struct RuntimeTurnConfiguration: Codable, Hashable {
+    let turnId: String
+    var model: RuntimeModelInfo? = nil
+    var thinkingLevel: String? = nil
+    var thinkingKnown: Bool = false
+    init(turnId: String, model: RuntimeModelInfo? = nil, thinkingLevel: String? = nil, thinkingKnown: Bool = false) {
+        self.turnId = turnId; self.model = model; self.thinkingLevel = thinkingLevel; self.thinkingKnown = thinkingKnown
+    }
+    private enum CodingKeys: String, CodingKey { case turnId, model, thinkingLevel }
+    init(from decoder: Decoder) throws {
+        let value = try decoder.container(keyedBy: CodingKeys.self)
+        turnId = try value.decode(String.self, forKey: .turnId)
+        model = try value.decodeIfPresent(RuntimeModelInfo.self, forKey: .model)
+        thinkingLevel = try value.decodeIfPresent(String.self, forKey: .thinkingLevel)
+        thinkingKnown = value.contains(.thinkingLevel)
+    }
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.container(keyedBy: CodingKeys.self)
+        try value.encode(turnId, forKey: .turnId); try value.encodeIfPresent(model, forKey: .model)
+        if thinkingKnown { try value.encode(thinkingLevel, forKey: .thinkingLevel) }
+    }
+}
+
+struct SessionConfigFailure: Equatable {
+    let setting: String
+    let value: String
+    let message: String
+    let sessionId: String?
+}
+
+/// SC84: match Android's current-turn facts, selected next configuration and save
+/// progress independently. A selected value never becomes evidence for an active turn.
+struct SessionModelPresentation {
+    let model: String?
+    let thinking: String?
+    let indicator: String?
+    let current: RuntimeTurnConfiguration?
+    let active: Bool
+    let showsCurrent: Bool
+
+    static func make(runtime: RuntimeSummary, connected: Bool, modelReady: Bool = true, executionReady: Bool = true,
+                     progress: [(label: String, mark: String)] = [], failed: Bool = false) -> Self {
+        let codex = runtime.agentKind == "codex" || runtime.runtimeId.hasPrefix("codex")
+        let active = ["running", "waiting_local_interaction"].contains(runtime.status)
+        let supported = runtime.currentTurnConfigurationSupported ?? (codex || runtime.currentTurnConfiguration != nil)
+        let current = supported && connected && active && modelReady && executionReady &&
+            runtime.currentTurnConfiguration?.turnId == runtime.executionTurnId ? runtime.currentTurnConfiguration : nil
+        let different: Bool
+        if let actual = current?.model, let selected = runtime.model {
+            different = actual.id != selected.id || actual.provider != selected.provider ||
+                (current?.thinkingKnown == true && current?.thinkingLevel != nil && current?.thinkingLevel != runtime.thinkingLevel)
+        } else { different = false }
+        let indicator: String?
+        if progress.contains(where: { L10n.matches($0.mark, source: "未确认") }) { indicator = L10n.tr("未确认") }
+        else if !progress.isEmpty { indicator = L10n.tr("保存中") }
+        else if failed { indicator = L10n.tr("修改失败") }
+        else if different { indicator = L10n.tr(codex || runtime.agentKind == "claude" ? "下轮已设" : "后续已设") }
+        else { indicator = nil }
+        let showTurn = runtime.status != "idle" && supported && (codex || current?.model != nil)
+        let selected = runtime.model.map { $0.name ?? $0.id }
+        return Self(model: showTurn ? current?.model.map { $0.name ?? $0.id } ?? L10n.tr("模型未确认") :
+                        (active ? selected.map { L10n.tr("所选：{0}", $0) } : selected),
+                    thinking: showTurn ? current?.thinkingLevel : runtime.thinkingLevel, indicator: indicator, current: current,
+                    active: active, showsCurrent: active && supported && (codex || current?.model != nil))
+    }
 }
 
 struct RuntimeContextUsage: Codable, Hashable {

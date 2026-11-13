@@ -13,8 +13,16 @@ export class AgentStateSubscriptions {
   readonly #unsubscribe: () => void;
   #scheduled = false;
   #closed = false;
-  constructor(readonly registry: AgentStateRegistry, readonly send: (deviceId: string, message: RelayToDeviceMessage) => void) {
+  /**
+   * `project` adapts a domain value to what one device can parse (ADR-0076 DSH-DESKTOP-06). It runs
+   * before delta computation and on the stored baseline, so a delta always moves the device's own view.
+   */
+  constructor(readonly registry: AgentStateRegistry, readonly send: (deviceId: string, message: RelayToDeviceMessage) => void,
+    readonly project?: (deviceId: string, scope: StateScope, domain: string, value: unknown) => unknown) {
     this.#unsubscribe = registry.subscribe(change => this.#changed(change));
+  }
+  #projected<T extends { value: unknown }>(deviceId: string, scope: StateScope, domain: string, state: T): T {
+    return this.project === undefined || state.value === null ? state : { ...state, value: this.project(deviceId, scope, domain, state.value) };
   }
   register(deviceId: string, scope: StateScope, request: AgentStateRequest): boolean {
     const key = JSON.stringify([deviceId, scopeId(scope)]);
@@ -28,7 +36,7 @@ export class AgentStateSubscriptions {
     if (scope.kind === "agent" && !this.#entries.has(key) &&
         [...this.#entries.values()].filter(entry => entry.deviceId === deviceId && entry.scope.kind === "agent").length - replaced.length >= MAX_AGENT_SUBSCRIPTIONS_PER_DEVICE) return false;
     for (const [entryKey] of replaced) this.#entries.delete(entryKey);
-    this.#entries.set(key, { deviceId, scope: structuredClone(scope), request: structuredClone(request), changed: new Set(), baseline: new Map(request.stateFormat === "compact-v2" ? this.registry.snapshot(scope).filter(({ domain }) => !request.domains || request.domains.includes(domain)).map(({ domain, state }) => [domain, state]) : []) });
+    this.#entries.set(key, { deviceId, scope: structuredClone(scope), request: structuredClone(request), changed: new Set(), baseline: new Map(request.stateFormat === "compact-v2" ? this.registry.snapshot(scope).filter(({ domain }) => !request.domains || request.domains.includes(domain)).map(({ domain, state }) => [domain, this.#projected(deviceId, scope, domain, state)]) : []) });
     return true;
   }
   clearDevice(deviceId: string): void {
@@ -40,6 +48,10 @@ export class AgentStateSubscriptions {
   }
   supportsSharedContent(deviceId: string): boolean {
     return [...this.#entries.values()].some(entry => entry.deviceId === deviceId && entry.request.stateFormat === "compact-v2");
+  }
+  interestedInCatalog(): boolean {
+    return [...this.#entries.values()].some(entry => entry.scope.kind === "host" &&
+      (entry.request.domains === undefined || entry.request.domains.includes("catalog")));
   }
   owns(deviceId: string, runtimeId: string, domain: string): boolean {
     return [...this.#entries.values()].some(entry => entry.deviceId === deviceId && entry.scope.kind === "agent" &&
@@ -62,6 +74,9 @@ export class AgentStateSubscriptions {
         const domains = [...entry.changed]; entry.changed.clear();
         for (const part of buildAgentStateSnapshotParts({ registry: this.registry, scope: entry.scope,
           requestId: entry.request.requestId, identity: entry.request, domains, update: true, stateFormat: entry.request.stateFormat })) {
+          if (this.project !== undefined) for (const current of part.domains) {
+            if (current.value !== null) current.value = this.project(entry.deviceId, entry.scope, current.domain, current.value) as typeof current.value;
+          }
           if (entry.request.stateFormat === "compact-v2") for (const current of part.domains) {
             const old = entry.baseline.get(current.domain);
             if (old && old.modelEpoch === current.modelEpoch && old.revision < current.revision &&
@@ -78,7 +93,7 @@ export class AgentStateSubscriptions {
         }
         if (entry.request.stateFormat === "compact-v2") for (const domain of domains) {
           const state = this.registry.read(entry.scope, domain as StateDomain);
-          if (state) entry.baseline.set(domain, state); else entry.baseline.delete(domain);
+          if (state) entry.baseline.set(domain, this.#projected(entry.deviceId, entry.scope, domain, state)); else entry.baseline.delete(domain);
         }
       }
     });

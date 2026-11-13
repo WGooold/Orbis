@@ -1,6 +1,7 @@
 import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
 export * from "./turn-file-changes.js";
 import { z } from "zod";
+import { DshDesktopAttachSchema } from "./host-model-domains.js";
 import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 export * from "./turn-configuration.js";
 import { SessionConfigurationReadSchema, SessionConfigurationSaveSchema, ConfiguredSessionLaunchSchema, SessionLaunchReadSchema,
@@ -11,6 +12,7 @@ import {
   StateDeltaSchema, AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,
   AgentCatalogSessionSchema as AgentSessionSummarySchema, AgentStateRangeRequestSchema, AgentStateRangePageSchema,
+  CatalogQueryRequestSchema, CatalogQueryPageSchema,
 } from "./agent-state.js";
 import { NotificationSourceEventSchema, NotificationSnapshotSchema } from "./notifications.js";
 import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchema, ToolContentPageSchema,
@@ -263,6 +265,16 @@ export const CodexDesktopAttachSchema = z.strictObject({
   reason: z.string().min(1).max(256),
 });
 export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
+
+/**
+ * 设备与 Host 按实际解析能力协商的功能（ADR-0064、ADR-0076 DSH-DESKTOP-06）。
+ *
+ * Host 先在 `device.ready.hostFeatures` 公告自己能接收 `device.features`；设备只在看到公告后声明。
+ * 未声明 `agent.dshDesktop` 的设备（包括全部已发布 App）不会收到 `dshDesktop` 枚举、会话或运行时。
+ */
+export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
+export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
+const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
  * 拉起形态（spec §8.3）。结果一律随响应回执，手机不推断。
@@ -1065,8 +1077,14 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
     maxEntries: z.number().int().positive().max(2_000).optional(),
     range: SessionSyncRangeSchema.optional(),
     knownState: SessionAppliedStateSchema.optional(),
+    historyWindow: z.strictObject({
+      format: z.literal("v1"), maxBytes: z.number().int().min(8192).max(65536),
+      maxDeliveries: z.number().int().min(1).max(4),
+    }).optional(),
   }).refine(command => command.knownState === undefined || command.range === "preview",
-    { message: "An applied baseline is only valid for preview reconciliation" }),
+    { message: "An applied baseline is only valid for preview reconciliation" })
+    .refine(command => command.historyWindow === undefined || command.range === "history" && !!command.beforeEntryId && !!command.targetLeafId,
+      { message: "A reserved history window requires a fixed leaf and older boundary" }),
   z.strictObject({
     /**
      * 设备对快照的提交回执（ADR-0037 §4）：`applied` 表示已在本地事务里提交并推进已应用版本。
@@ -1211,10 +1229,17 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("session.catalog.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
+  CatalogQueryRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  z.strictObject({ type: z.literal("session.history.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
+  z.strictObject({ type: z.literal("session.history.interest"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+    runtimeId: z.string().min(1).max(256).nullable(), sessionId: z.string().min(1).max(256).nullable() })
+    .refine(value => (value.runtimeId === null) === (value.sessionId === null)),
   TransportFieldsRequestSchema,
   MenuOptionsRequestSchema,
   z.strictObject({ type: z.literal("notification.sync"), protocolVersion: z.literal(PROTOCOL_VERSION), runtimeId: z.string().min(1).max(256) }),
   z.strictObject({ type: z.literal("notification.dismiss"), protocolVersion: z.literal(PROTOCOL_VERSION), hostEpoch: z.string().min(1).max(256), runtimeId: z.string().min(1).max(256), notificationId: z.string().min(1).max(256) }),
+  z.strictObject({ type: z.literal("device.features"), protocolVersion: z.literal(PROTOCOL_VERSION), features: z.array(DeviceFeatureSchema).max(32) }),
   z.strictObject({
     type: z.literal("device.version.report"),
     protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -1318,6 +1343,12 @@ export const SharedSessionContentSchema = z.strictObject({
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
   SessionConfigurationResultSchema,
   SessionLaunchResultSchema,
+  z.strictObject({ type: z.literal("session.catalog.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128), format: z.literal("v1") }),
+  CatalogQueryPageSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  z.strictObject({ type: z.literal("session.history.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128),
+    format: z.literal("v1"), maxPageBytes: z.literal(65536) }),
+  z.strictObject({ type: z.literal("session.history.interest.result"), protocolVersion: z.literal(PROTOCOL_VERSION),
+    requestId: z.string().min(1).max(128), accepted: z.boolean() }),
   TransportFieldsPageSchema,
   MenuOptionsPageSchema,
   NotificationSnapshotSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
@@ -1349,6 +1380,10 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
       * 说明 Host 能否按需启动 / 接入；本分档继续区分未安装、未打开和打开但接入失败。
       */
      codexDesktop: CodexDesktopAttachSchema.nullable().optional(),
+     /** DeepSeek Harness Desktop 接入分档（ADR-0076）；只发给声明了 `agent.dshDesktop` 的设备。 */
+     dshDesktop: DshDesktopAttachSchema.nullable().optional(),
+     /** Host 能接收的设备侧协商消息；旧 App 忽略此字段。 */
+     hostFeatures: z.array(DeviceFeatureSchema).max(32).optional(),
   }),
   /**
    * 当前生效的传输路径（spec §6.2 / §14 B4）。
@@ -1542,3 +1577,5 @@ export * from "./display-entries.js";
 export * from "./runtime-input-policy.js";
 
 export * from "./state-delta.js";
+
+export * from "./host-recovery.js";

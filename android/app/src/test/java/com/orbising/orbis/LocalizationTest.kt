@@ -60,6 +60,9 @@ class LocalizationTest {
     }
 
     @Test fun hostUiCopyPreservesUnknownTextAndOpaqueValues() {
+        // SC85: permission recovery is not presented as an active conversation.
+        assertEquals("Permissions are unconfirmed. Try again shortly.", L10n.hostText("权限设置尚未确认，请稍后重试", AppLanguage.English))
+        assertEquals("Permission settings are being saved. Try again shortly.", L10n.hostText("权限设置正在保存，请稍后重试", AppLanguage.English))
         assertEquals("Workspace write, Ask when needed", L10n.hostSummary("工作区可写 · 按需询问", AppLanguage.English))
         assertEquals("选择此 Codex 会话的模型", L10n.hostText("Select the model for this Codex session", AppLanguage.Chinese))
         val path = "/工作区可写/设置 {1}/file.swift 100% 🧪"

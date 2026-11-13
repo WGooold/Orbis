@@ -14,9 +14,11 @@ import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProvider
  * 会话条目来源（spec §7.2 的 AgentBackend）。
  *
  * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` / `codexDesktop` 是同一个 Codex
- * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020）。
+ * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020），`dshDesktop` 接入
+ * DeepSeek Harness Desktop 自己拥有的后端（ADR-0076）。只有声明了
+ * `DEVICE_FEATURE_DSH_DESKTOP` 的设备才会收到 `dshDesktop`。
  */
-export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude"]);
+export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");
@@ -327,6 +329,28 @@ export const AgentStateRangePageSchema = z.strictObject({
   scope: z.literal("host"), domain: z.literal("catalog"), page: HostCatalogRangeSchema,
 });
 export type AgentStateRangePage = z.infer<typeof AgentStateRangePageSchema>;
+
+/** Independently negotiated directory view; strict deployed range readers keep their schema. */
+export const CatalogQuerySchema = z.strictObject({
+  text: z.string().max(256), agentKind: AgentKindSchema.nullable(), archived: z.boolean(),
+  provider: z.string().min(1).max(137).refine(value => ["all", "current", "unknown"].includes(value) || value.startsWith("provider:")),
+  directory: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+});
+export type CatalogQuery = z.infer<typeof CatalogQuerySchema>;
+export const CatalogQueryRequestSchema = z.strictObject({
+  type: z.literal("session.catalog.query"), requestId: identity, format: z.literal("v1"), query: CatalogQuerySchema,
+  cursor: z.string().min(1).max(512).nullable(), limit: z.number().int().min(1).max(200),
+});
+export type CatalogQueryRequest = z.infer<typeof CatalogQueryRequestSchema>;
+export const CatalogQueryPageSchema = z.strictObject({
+  type: z.literal("session.catalog.page"), requestId: identity, format: z.literal("v1"), query: CatalogQuerySchema,
+  page: HostCatalogRangeSchema.safeExtend({ sessions: z.array(AgentCatalogSessionSchema.safeExtend({
+    directoryTotal: z.number().int().nonnegative().optional(),
+  })).max(200) }), directoryCount: z.number().int().nonnegative(),
+  previewsComplete: z.boolean(),
+  providers: z.array(z.string().min(1).max(128)).max(64).optional(), unknownProvider: z.boolean().optional(), providersTruncated: z.boolean().optional(),
+});
+export type CatalogQueryPage = z.infer<typeof CatalogQueryPageSchema>;
 
 /**
  * 一个后端的供应商摘要（模块 20–22：手机摘要、配置与认证绑定、用量/健康度/路由）。

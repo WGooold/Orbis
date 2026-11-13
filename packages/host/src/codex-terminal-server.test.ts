@@ -38,7 +38,8 @@ async function fixture(platform: NodeJS.Platform = "darwin", arch = "arm64") {
   };
   await repack();
   const release = { tag_name: `rust-v${version}`, assets: [asset] };
-  const fetch = vi.fn(async (url: string) => url.startsWith("https://api.github.com/")
+  // `init` carries the caller's cancellation; the test-only typecheck needs it in the mock's signature.
+  const fetch = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async url => url.startsWith("https://api.github.com/")
     ? Response.json(release) : new Response(new Uint8Array(archive)));
   const run = vi.fn(async (command: string, args: string[]) => {
     if (command === "tar") return execute(command, args);
@@ -160,5 +161,70 @@ describe("source-aware Codex terminal server", () => {
     await expect(resolveCodexTerminalServer(cli, h.options)).rejects.toThrow("download interrupted");
     expect(await readdir(join(h.cache, "codex-terminal-server", "0.167.0"))).toEqual(["aarch64-apple-darwin.tmp-other"]);
     expect(await readFile(join(other, "keep.txt"), "utf8")).toBe("owned elsewhere");
+  });
+
+  // The Host prepares this package off the connection path, so the UI needs real byte counts
+  // to show what is taking time, and pausing must cancel the transfer instead of orphaning it.
+  it("reports download progress and cancels an aborted download without publishing", async () => {
+    const h = await fixture();
+    const progress: { received: number; total: number }[] = [];
+    await resolveCodexTerminalServer(cli, { ...h.options, onProgress: (received, total) => progress.push({ received, total }) });
+    expect(progress.at(-1)).toEqual({ received: h.asset.size, total: h.asset.size });
+    expect(progress.every(entry => entry.total === h.asset.size)).toBe(true);
+    expect(progress.every((entry, index) => index === 0 || entry.received >= progress[index - 1]!.received)).toBe(true);
+
+    const aborted = await fixture();
+    const controller = new AbortController();
+    aborted.fetch.mockImplementation(async (url, init) => {
+      if (url.startsWith("https://api.github.com/")) return Response.json(aborted.release);
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    const pending = resolveCodexTerminalServer(cli, { ...aborted.options, signal: controller.signal });
+    await vi.waitFor(() => expect(aborted.fetch).toHaveBeenCalledTimes(2));
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(await readdir(join(aborted.cache, "codex-terminal-server", "0.167.0"))).toEqual([]);
+    await expect(readFile(join(aborted.destination, "codex-package.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  // ADR-0081 review: a pause cancels the paused Host's preparation while the resumed Host may already
+  // share it. The resumed caller was not cancelled and must get the package, not the other abort.
+  it("restarts a shared preparation that another caller cancelled", async () => {
+    const h = await fixture();
+    const paused = new AbortController();
+    const resumed = new AbortController();
+    let downloads = 0;
+    h.fetch.mockImplementation(async (url, init) => {
+      if (url.startsWith("https://api.github.com/")) return Response.json(h.release);
+      downloads += 1;
+      if (downloads === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+      const archive = await readFile(join(h.root, "package.tar.gz"));
+      return new Response(new Uint8Array(archive));
+    });
+    const first = resolveCodexTerminalServer(cli, { ...h.options, signal: paused.signal });
+    await vi.waitFor(() => expect(downloads).toBe(1));
+    const second = resolveCodexTerminalServer(cli, { ...h.options, signal: resumed.signal });
+    paused.abort();
+    await expect(first).rejects.toThrow();
+    await expect(second).resolves.toEqual({ command: join(h.destination, "bin/codex-app-server"), prefixArgs: [] });
+    expect(downloads).toBe(2);
+    expect(await readdir(join(h.cache, "codex-terminal-server", "0.167.0"))).toEqual(["aarch64-apple-darwin"]);
+  });
+
+  it("lets a caller stop waiting for a preparation it only joined", async () => {
+    const h = await fixture();
+    const owner = new AbortController();
+    const joined = new AbortController();
+    h.fetch.mockImplementation(async (url, init) => {
+      if (url.startsWith("https://api.github.com/")) return Response.json(h.release);
+      return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    const first = resolveCodexTerminalServer(cli, { ...h.options, signal: owner.signal });
+    await vi.waitFor(() => expect(h.fetch).toHaveBeenCalledTimes(2));
+    const second = resolveCodexTerminalServer(cli, { ...h.options, signal: joined.signal });
+    joined.abort();
+    await expect(second).rejects.toThrow();
+    owner.abort();
+    await expect(first).rejects.toThrow();
   });
 });

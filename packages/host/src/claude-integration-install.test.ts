@@ -8,21 +8,42 @@ import { ClaudeIntegrationError, findClaudeExecutable, updateClaudeIntegration, 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
-function recorder(codes: Record<string, number> = {}) {
+function recorder(codes: Record<string, number> = {}, version = "2.1.287") {
   const calls: string[][] = [];
   const run: ClaudeCommandRunner = async (_file, args) => {
     calls.push([...args]);
     const key = args.slice(0, 3).join(" ");
-    return { code: codes[key] ?? 0, stdout: "", stderr: codes[key] ? "✘ marketplace source is not a directory" : "" };
+    return { code: codes[key] ?? 0, stdout: key === "--version" ? `${version} (Claude Code)` : "", stderr: codes[key] ? "✘ marketplace source is not a directory" : "" };
   };
   return { calls, run };
 }
 
 describe("updateClaudeIntegration", () => {
+  // CLAUDE-MODS-MIN-02: a failed diagnostic must not disable the existing native installer.
+  it("keeps plugin installation available when the version-only probe fails", async () => {
+    const { calls, run } = recorder({ "--version": 1 });
+    await expect(updateClaudeIntegration({ pluginDir: "/app/plugin", claude: "/bin/claude", run, uninstall: false })).resolves.toBe("installed");
+    expect(calls).toHaveLength(4);
+    expect(calls[3]).toEqual(["plugin", "update", "orbis-host-session-link@orbis-host", "--scope", "user"]);
+  });
+
+  // CLAUDE-MODS-MIN-01: an older CLI must not be presented as a working Mods
+  // installation; cleanup remains available after a downgrade.
+  it("rejects plugin installation on old Claude while still allowing removal", async () => {
+    const { calls, run } = recorder({}, "2.1.286");
+    const input = { pluginDir: "/app/plugin", claude: "/bin/claude", run };
+    await expect(updateClaudeIntegration({ ...input, uninstall: false })).rejects.toThrow("最低 2.1.287");
+    expect(calls).toEqual([["--version"]]);
+    calls.length = 0;
+    await expect(updateClaudeIntegration({ ...input, uninstall: true })).resolves.toBe("removed");
+    expect(calls.map(call => call.slice(0, 2).join(" "))).toEqual(["plugin uninstall", "plugin marketplace"]);
+  });
+
   it("registers the plugin directory, installs and refreshes its cached version at user scope", async () => {
     const { calls, run } = recorder();
     await expect(updateClaudeIntegration({ pluginDir: "/app/runtime/packages/claude-mod", uninstall: false, claude: "/bin/claude", run })).resolves.toBe("installed");
     expect(calls).toEqual([
+      ["--version"],
       ["plugin", "marketplace", "add", "/app/runtime/packages/claude-mod"],
       ["plugin", "install", "orbis-host-session-link@orbis-host", "--scope", "user"],
       ["plugin", "update", "orbis-host-session-link@orbis-host", "--scope", "user"],
@@ -33,7 +54,7 @@ describe("updateClaudeIntegration", () => {
       ["D:\\app\\runtime\\packages\\claude-mod\\", "D:\\app\\runtime\\packages\\claude-mod"]] as const) {
       calls.length = 0;
       await expect(updateClaudeIntegration({ pluginDir, uninstall: false, claude: "/bin/claude", run })).resolves.toBe("installed");
-      expect(calls[0]).toEqual(["plugin", "marketplace", "add", added]);
+      expect(calls[1]).toEqual(["plugin", "marketplace", "add", added]);
     }
   });
 
@@ -41,14 +62,14 @@ describe("updateClaudeIntegration", () => {
     const { calls, run } = recorder({ "plugin marketplace add": 1 });
     await expect(updateClaudeIntegration({ pluginDir: "/missing", uninstall: false, claude: "/bin/claude", run }))
       .rejects.toThrow(ClaudeIntegrationError);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
   });
 
   it("reports a failed cache refresh so a later Host launch can retry the upgrade", async () => {
     const { calls, run } = recorder({ "plugin update orbis-host-session-link@orbis-host": 1 });
     await expect(updateClaudeIntegration({ pluginDir: "/app/plugin", uninstall: false, claude: "/bin/claude", run }))
       .rejects.toThrow("更新 Orbis Claude Code 插件失败");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
   });
 
   it("removes plugin and marketplace, tolerating either being absent", async () => {
@@ -61,7 +82,7 @@ describe("updateClaudeIntegration", () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-claude-install-")); roots.push(root);
     const { calls, run } = recorder();
     await expect(updateClaudeIntegration({ pluginDir: root, uninstall: false, desktopSettingsPath: join(root, "settings.ini"), claude: "/bin/claude", run })).resolves.toBe("installed");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
   });
 
   it("preserves an explicit desktop opt-out during an update, but still removes on uninstall", async () => {
