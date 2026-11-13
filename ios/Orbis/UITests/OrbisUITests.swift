@@ -236,6 +236,34 @@ final class OrbisUITests: XCTestCase {
         capture("design-tablet-detail-to-provider-root", app: app)
     }
 
+    // FOLD-01: the session directory and primary surface must stay on opposite
+    // sides of the active Duo division, and the draft input must remain usable.
+    func testIPhoneDuoFoldDivisionKeepsDirectoryAndDraftUsable() {
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let window = app.windows.firstMatch
+        let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        XCTAssertGreaterThan(window.frame.width, 600, "Duo must be testing its inner dual-screen canvas")
+        XCTAssertTrue(directory.waitForExistence(timeout: 5))
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        let horizontalGap = list.frame.minX - directory.frame.maxX
+        let verticalGap = list.frame.minY - directory.frame.maxY
+        XCTAssertTrue(horizontalGap > 0 || verticalGap > 0,
+                      "The system split arrangement must keep the panes clear of the Duo division")
+
+        let newSession = app.buttons["home-new-session"]
+        XCTAssertTrue(newSession.isHittable)
+        newSession.tap()
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        XCTAssertTrue(draft.isHittable)
+        draft.tap(); draft.typeText("折叠屏草稿")
+        XCTAssertEqual(draft.value as? String, "折叠屏草稿")
+        XCTAssertTrue(directory.exists)
+        capture("iphone-duo-fold-division-draft", app: app)
+    }
+
     // The desktop Codex backend remains reachable from the four-Agent draft.
     func testDraftCodexLongPressRetainsDesktopBackend() {
         let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop"])
@@ -1557,6 +1585,48 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
         XCTAssertFalse(composer.exists)
         capture("chat-swipe-home", app: app)
+    }
+    // V21 / M14: returning from chat keeps the previously scrolled home card stationary.
+    func testScrolledHomeKeepsCardPositionAfterChatReturn() {
+        let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-runtime-preview-codex"].waitForExistence(timeout: 8))
+        settle()
+        list.swipeUp()
+        settle()
+        let candidates = (9...12).map { app.buttons["home-runtime-preview-scroll-\($0)"] }
+        let card = candidates.first(where: {
+            let frame = $0.frame
+            return $0.exists && frame.minY >= list.frame.minY && frame.maxY <= list.frame.maxY
+        })
+        guard let card else {
+            return XCTFail("no fully visible card after scrolling; list=\(list.frame); app=\(app.frame)")
+        }
+        let before = card.frame
+        // XCTest's hit-test snapshot can mark a visible SwiftUI button as non-hittable
+        // on the iPad split layout. Tap the visible point and still require chat to open.
+        app.coordinate(withNormalizedOffset: CGVector(dx: before.midX / app.frame.width,
+                                                       dy: before.midY / app.frame.height)).tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 3))
+        // The root stays live under chat; its updated sessions must be present on return.
+        app.buttons["preview-list-insert"].tap()
+        settle()
+        // On iPad the persistent session directory occupies the left side; begin
+        // the back gesture inside the chat surface rather than in that sidebar.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: app.frame.width > 600 ? 0.42 : 0.15, dy: 0.55))
+        start.press(forDuration: 0.05,
+                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.55)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        settle()
+        XCTAssertEqual(card.frame.minY, before.minY, accuracy: 1)
+        let inserted = app.buttons["home-runtime-preview-new"]
+        let listAfterReturn = app.scrollViews["home-session-list"]
+        // The synthetic session has the newest modifiedAt, so it is above the retained viewport.
+        for _ in 0..<8 where !inserted.exists { listAfterReturn.swipeDown() }
+        XCTAssertTrue(inserted.exists, "a home session added underneath chat must appear when returning")
+        capture("scrolled-home-after-chat-return", app: app)
     }
     // ADR-0046 §6 / V21: a session closing above the viewport does not move the cards being read.
     func testHomeViewportStaysWhenSessionsChangeAboveIt() {

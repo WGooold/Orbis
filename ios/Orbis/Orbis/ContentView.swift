@@ -50,40 +50,53 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $navigation.pages) {
+        ZStack {
             Group {
                 if store.pairings.isEmpty {
                     PairingEntryView(onCancel: nil, onCode: store.pair)
                 } else {
-                    rootPages
-                        .accessibilityHidden(drawerOpen && surfaceWidth < 600)
+                    OrbisMountedRoot(hidden: rootCovered) { rootPages }
+                        .modifier(OrbisRootRevealEffect(reveal: navigation.rootReveal))
+                        .accessibilityHidden(rootCovered)
+                        .allowsHitTesting(navigation.pages.isEmpty)
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: AppPage.self) { page in
-                Group {
-                    switch page {
-                    case .chat:
-                        if let runtime = store.selectedRuntime {
-                            ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
-                                .id(localSessionKey(host: store.selectedHost, runtime: runtime))
-                                .modifier(OrbisDraftExpansion(origin: draftOrigin, snapshot: draftSnapshot, onComplete: { draftOrigin = nil; draftSnapshot = nil }))
-                        } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
-                    case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
-                    case .status: ConnectionStatusView(onBack: back)
-                    case .providers: AgentProvidersView(onBack: back)
-                    case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
-                    case .downloads: DownloadsView(onBack: back)
+            NavigationStack(path: $navigation.pages) {
+                Color.clear
+                    .orbisTransparentNavigationContainer()
+                    .toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(for: AppPage.self) { page in
+                        Group {
+                            switch page {
+                            case .chat:
+                                if let runtime = store.selectedRuntime {
+                                    ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
+                                        .id(localSessionKey(host: store.selectedHost, runtime: runtime))
+                                        .modifier(OrbisDraftExpansion(origin: draftOrigin, snapshot: draftSnapshot, onComplete: { draftOrigin = nil; draftSnapshot = nil }))
+                                } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
+                            case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
+                            case .status: ConnectionStatusView(onBack: back)
+                            case .providers: AgentProvidersView(onBack: back)
+                            case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
+                            case .downloads: DownloadsView(onBack: back)
+                            }
+                        }
+                        .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .foregroundStyle(OrbisPalette(scheme).text)
+                        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                        .toolbar(.hidden, for: .navigationBar)
+                        .modifier(OrbisPageTransition(onBack: back,
+                                                      rootReveal: navigation.isRootPage(page) ? navigation.rootReveal : nil,
+                                                      underlay: { navigation.underlay(below: page) }))
+                        .orbisTransparentNavigationContainer()
                     }
                 }
-                .frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
-                .foregroundStyle(OrbisPalette(scheme).text)
-                .background(OrbisPalette(scheme).base.ignoresSafeArea())
-                .toolbar(.hidden, for: .navigationBar)
-                .modifier(OrbisPageTransition(onBack: back,
-                                              underlay: { navigation.underlay(below: page) { rootPages } }))
-            }
+            .toolbar(.hidden, for: .navigationBar)
+            .allowsHitTesting(!navigation.pages.isEmpty)
         }
+        // The actual root stays mounted below the transparent navigation stack. Pushes,
+        // swipe-back and the back button reveal this live home with its list offset and updates.
+        .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .environmentObject(store.transfers)
         .environmentObject(store.toolInventories)
         .environmentObject(store.hostState)
@@ -209,11 +222,15 @@ struct ContentView: View {
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 
+    /// The mounted root is below a full page or the phone drawer and must not be reachable.
+    private var rootCovered: Bool { !navigation.pages.isEmpty || (drawerOpen && surfaceWidth < 600) }
+
     private func rootContent<Content: View>(_ tab: RootTab, @ViewBuilder content: () -> Content) -> some View {
-        content().environment(\.orbisVisible, displayedRoot == tab).opacity(displayedRoot == tab ? 1 : 0)
-            .allowsHitTesting(displayedRoot == tab && rootOpacity == 1)
+        let active = displayedRoot == tab && navigation.pages.isEmpty
+        return content().environment(\.orbisVisible, active).opacity(displayedRoot == tab ? 1 : 0)
+            .allowsHitTesting(active && rootOpacity == 1)
             .accessibilityElement(children: .contain)
-            .accessibilityHidden(displayedRoot != tab)
+            .accessibilityHidden(displayedRoot != tab || rootCovered)
     }
 
     private func switchRoot(_ next: RootTab) {
@@ -230,7 +247,8 @@ struct ContentView: View {
     }
 
     private var home: some View {
-        HomeView(store: store, updates: store.homeUpdates, draftOpen: newSessionOpen, draftCwd: newSessionCwd, draftCloseRequest: draftCloseRequest, onDraft: {
+        HomeView(store: store, updates: store.homeUpdates, pageCovered: !navigation.pages.isEmpty,
+                 draftOpen: newSessionOpen, draftCwd: newSessionCwd, draftCloseRequest: draftCloseRequest, onDraft: {
             if newSessionOpen { draftCloseRequest += 1 }
             else { draftNotice = false; withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true } }
         }, onDraftCancelled: { retained in
@@ -292,6 +310,61 @@ struct ContentView: View {
     }
 }
 
+/// Keep one hosting controller (and its scroll/draft state) while excluding a covered
+/// root from native accessibility enumeration. Hidden SwiftUI descendants alone can
+/// remain visible to automation when mounted beside a NavigationStack.
+private struct OrbisMountedRoot<Content: View>: UIViewControllerRepresentable {
+    let hidden: Bool
+    @ViewBuilder var content: Content
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(content: AnyView(content.environment(\.self, context.environment)))
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.host.rootView = AnyView(content.environment(\.self, context.environment))
+        controller.accessibilityContainer.covered = hidden
+        controller.host.view.accessibilityElementsHidden = hidden
+    }
+
+    final class Controller: UIViewController {
+        let host: UIHostingController<AnyView>
+        let accessibilityContainer = RootAccessibilityView()
+
+        init(content: AnyView) {
+            host = UIHostingController(rootView: content)
+            super.init(nibName: nil, bundle: nil)
+        }
+        required init?(coder: NSCoder) { nil }
+
+        override func loadView() {
+            view = accessibilityContainer
+            view.backgroundColor = .clear
+            addChild(host)
+            host.view.backgroundColor = .clear
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(host.view)
+            NSLayoutConstraint.activate([
+                host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                host.view.topAnchor.constraint(equalTo: view.topAnchor),
+                host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ])
+            host.didMove(toParent: self)
+        }
+    }
+
+    final class RootAccessibilityView: UIView {
+        var covered = false {
+            didSet { accessibilityElementsHidden = covered }
+        }
+        override var accessibilityElements: [Any]? {
+            get { covered ? [] : super.accessibilityElements }
+            set { super.accessibilityElements = newValue }
+        }
+    }
+}
+
 /// 会话目录抽屉。关闭时在主页左侧（左 40% 宽度内）起手向右横拖即把抽屉拉出；打开时在抽屉
 /// 或遮罩上向左拖动即推回。拖动过程中抽屉与遮罩跟随手指，松手按位置与速度吸附到打开或关闭。
 /// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
@@ -309,23 +382,22 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @State private var horizontalDrag: Bool?
     /// 横拖抽屉期间停用手指下的按钮：从会话卡片或目录行上起手拖动时，松手不能再触发它们。
     @State private var suppressTaps = false
-    @State private var containerWidth: CGFloat = 390
+    @State private var containerSize = CGSize(width: 390, height: 844)
 
+    private var containerWidth: CGFloat { containerSize.width }
     private var width: CGFloat { min(320, containerWidth * 0.85) }
     private var persistent: Bool { hasHost && containerWidth >= 600 }
 
     func body(content: Content) -> some View {
-        HStack(spacing: 0) {
-            if persistent {
-                drawer.frame(width: 320).frame(maxHeight: .infinity)
-                    .orbisNested().background(OrbisPalette(scheme).base)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("persistent-session-directory")
+        Group {
+            if #available(iOS 27.1, *) {
+                foldAwareContent(content)
+            } else {
+                ordinaryContent(content)
             }
-            content.disabled(suppressTaps)
-                .simultaneousGesture(edgeSwipeEnabled && !isOpen && !persistent ? openGesture : nil)
-        }.onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
-            .overlay {
+        }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
+        .overlay {
                 let visible = !persistent && (isOpen || offset != nil)
                 let progress = visible ? max(0, min(1, 1 + (offset ?? 0) / width)) : 0
                 ZStack(alignment: .leading) {
@@ -373,6 +445,52 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 .accessibilityHidden(!visible)
                 .simultaneousGesture(isOpen && !persistent ? closeGesture : nil)
             }
+    }
+
+    /// FOLD-01: only devices with a physical division use the system split arrangement.
+    /// Include inactive divisions so changing the hinge angle preserves the view identity.
+    @available(iOS 27.1, *)
+    @ViewBuilder
+    private func foldAwareContent(_ content: Content) -> some View {
+        GeometryReader { geometry in
+            let divisions = geometry.reservedRegions(kind: .division, options: .includeInactive)
+            if persistent, let division = divisions.first {
+                ArrangementView {
+                    directoryPanel(width: width, fillsAvailableWidth: division.frame.width > division.frame.height)
+                } secondary: {
+                    content.disabled(suppressTaps)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .arrangementViewStyle(.split)
+                .background(OrbisPalette(scheme).base.ignoresSafeArea())
+            } else {
+                ordinaryContent(content)
+            }
+        }
+    }
+
+    private func ordinaryContent(_ content: Content) -> some View {
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                if persistent { directoryPanel(width: 320) }
+                content.disabled(suppressTaps)
+                    .simultaneousGesture(edgeSwipeEnabled && !isOpen && !persistent ? openGesture : nil)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        }
+    }
+
+    private func directoryPanel(width: CGFloat, fillsAvailableWidth: Bool = false) -> some View {
+        Group {
+            if fillsAvailableWidth {
+                drawer.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                drawer.frame(width: width).frame(maxHeight: .infinity)
+            }
+        }
+            .orbisNested().background(OrbisPalette(scheme).base)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("persistent-session-directory")
     }
 
     private var openGesture: some Gesture {
@@ -445,8 +563,12 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         didSet { snapshots = snapshots.filter { $0.key < pages.count } }
     }
     private var snapshots: [Int: UIView] = [:]
+    /// Not published: a root page's return drives only the live root's effect, not the whole screen.
+    let rootReveal = OrbisRootReveal()
 
     init(_ pages: [Page] = []) { self.pages = pages }
+
+    func isRootPage(_ page: Page) -> Bool { pages.first == page }
 
     func push(_ page: Page) {
         if !pages.isEmpty { snapshots[pages.count] = currentScreenSnapshot() }
@@ -460,22 +582,91 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         self.pages = pages
     }
 
-    @ViewBuilder func underlay<Root: View>(below page: Page, @ViewBuilder root: () -> Root) -> some View {
+    @ViewBuilder func underlay(below page: Page) -> some View {
         let index = pages.lastIndex(of: page) ?? 0
-        if index == 0 { root() }
-        else if let snapshot = snapshots[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
+        if let snapshot = snapshots[index] { SnapshotUnderlay(view: snapshot).ignoresSafeArea() }
         else { Color.clear }
     }
 }
 
-/// Every pushed full page uses the same transition, independent of its route (M14).
-/// The source is a noninteractive preview; the actual source stays in the navigation stack.
+/// Return progress of the page directly above the live root: nil while none is being revealed,
+/// 0 while the page still covers the root and 1 once it has left.
+@MainActor
+final class OrbisRootReveal: ObservableObject {
+    @Published var progress: CGFloat?
+}
+
+/// The live root takes the same compression and scrim as a nested page's source preview (M14).
+private struct OrbisRootRevealEffect: ViewModifier {
+    @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
+    @ObservedObject var reveal: OrbisRootReveal
+
+    func body(content: Content) -> some View {
+        let compression = 1 - (reveal.progress ?? 1)
+        content
+            .overlay {
+                if let progress = reveal.progress {
+                    OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea().allowsHitTesting(false)
+                }
+            }
+            .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
+                         y: reduceMotion ? 1 : 1 + 0.008 * compression,
+                         anchor: .leading)
+    }
+}
+
+extension View {
+    /// The root is mounted below the NavigationStack, so its pages must not paint the
+    /// container's opaque system background where that root should show through.
+    @ViewBuilder func orbisTransparentNavigationContainer() -> some View {
+        if #available(iOS 18.0, *) { containerBackground(.clear, for: .navigation) }
+        else { background(LegacyNavigationContainerClearing()) }
+    }
+}
+
+/// iOS 17 has no navigation container background: clear the UIKit views between this page
+/// and its UINavigationController, leaving everything outside the stack untouched.
+private struct LegacyNavigationContainerClearing: UIViewRepresentable {
+    func makeUIView(context: Context) -> ClearingView { ClearingView() }
+    func updateUIView(_ view: ClearingView, context: Context) { view.clearContainer() }
+
+    final class ClearingView: UIView {
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+        required init?(coder: NSCoder) { nil }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            clearContainer()
+        }
+        func clearContainer() {
+            guard window != nil else { return }
+            var responder: UIResponder? = next
+            while let current = responder, !(current is UINavigationController) { responder = current.next }
+            guard let container = (responder as? UINavigationController)?.view else { return }
+            var view = superview
+            while let current = view {
+                current.backgroundColor = .clear
+                if current === container { break }
+                view = current.superview
+            }
+        }
+    }
+}
+
+/// Every pushed full page uses the same transition (M14). Root returns reveal the live
+/// root mounted below the stack; nested returns use a noninteractive source preview.
 struct OrbisPageTransition<Underlay: View>: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @AppStorage("orbis.appearance") private var visualStyle = "mist"
     @EnvironmentObject private var overlay: OrbisOverlay
     let onBack: () -> Void
+    /// Set for the page directly above the live root, which is revealed instead of a preview.
+    let rootReveal: OrbisRootReveal?
     @ViewBuilder let underlay: () -> Underlay
     @State private var offset: CGFloat = 0
     @State private var horizontalDrag: Bool?
@@ -492,7 +683,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         ZStack {
-            if revealing {
+            if revealing && rootReveal == nil {
                 underlay()
                     .overlay { OrbisPalette(scheme).scrim.opacity(0.34 * (1 - progress)).ignoresSafeArea() }
                     .scaleEffect(x: reduceMotion ? 1 : 1 - 0.025 * compression,
@@ -505,7 +696,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                 .disabled(suppressTaps)
                 .allowsHitTesting(!returning)
         }
-        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .background((revealing && rootReveal != nil ? Color.clear : OrbisPalette(scheme).base).ignoresSafeArea())
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { containerWidth = $0 }
         .simultaneousGesture(gesture)
         .onPreferenceChange(OrbisBackPriorityKey.self) { backPriority = $0 }
@@ -517,7 +708,7 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                 settle(back: false, velocity: 0)
             }
         }
-        .onDisappear { returning = false; suppressTaps = false; settleID = UUID() }
+        .onDisappear { returning = false; suppressTaps = false; settleID = UUID(); rootReveal?.progress = nil }
     }
 
     private var gesture: some Gesture {
@@ -537,7 +728,9 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
                 if backPriority != nil { return }
                 revealing = true
                 let distance = max(0, value.translation.width)
-                offset = distance > containerWidth ? containerWidth + (distance - containerWidth) * 0.18 : distance
+                let next = distance > containerWidth ? containerWidth + (distance - containerWidth) * 0.18 : distance
+                offset = next
+                rootReveal?.progress = max(0, min(1, next / max(1, containerWidth)))
             }
             .onEnded { value in
                 let horizontal = horizontalDrag == true
@@ -570,12 +763,16 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
         let initialVelocity = abs(distance) > 1 ? max(-8, min(8, velocity / distance)) : 0
         let finish = {
             guard settleID == id else { return }
-            guard back && returning else { revealing = false; return }
-            // Consume this completion before handing navigation back to the source.
-            settleID = UUID()
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            withTransaction(transaction) { onBack() }
+            guard back && returning else {
+                withTransaction(transaction) { revealing = false; rootReveal?.progress = nil }
+                return
+            }
+            // Consume this completion before handing navigation back to the source.
+            settleID = UUID()
+            // At progress 1 the root effect is already identity; clearing it changes no pixel.
+            withTransaction(transaction) { onBack(); rootReveal?.progress = nil }
             #if DEBUG
             PageReturnProbe.shared.committed()
             #endif
@@ -585,12 +782,13 @@ struct OrbisPageTransition<Underlay: View>: ViewModifier {
         if reduceMotion || (back && offset >= containerWidth) {
             var transaction = Transaction(animation: nil)
             transaction.disablesAnimations = true
-            withTransaction(transaction) { offset = target }
+            withTransaction(transaction) { offset = target; rootReveal?.progress = back ? 1 : 0 }
             finish()
         } else {
             let animation = back ? InteractionMotion.pageReturn : .orbisSwipeBack(velocity: Double(initialVelocity))
             withAnimation(animation, completionCriteria: back ? .logicallyComplete : .removed) {
                 offset = target
+                rootReveal?.progress = back ? 1 : 0
             } completion: { finish() }
         }
     }
@@ -671,9 +869,10 @@ private struct TransferErrorBanner: View {
 struct HomeView: View, Equatable {
     let store: OrbisStore
     @ObservedObject var updates: ScreenPublication
+    var pageCovered = false
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.store === rhs.store && lhs.draftOpen == rhs.draftOpen && lhs.draftCwd == rhs.draftCwd &&
-            lhs.draftCloseRequest == rhs.draftCloseRequest && lhs.visualStyle == rhs.visualStyle
+            lhs.draftCloseRequest == rhs.draftCloseRequest && lhs.pageCovered == rhs.pageCovered && lhs.visualStyle == rhs.visualStyle
     }
 
     @Environment(\.orbisReduceMotion) private var reduceMotion
@@ -784,6 +983,9 @@ struct HomeView: View, Equatable {
             }
             .onChange(of: closableRuntimeIds) { _, ids in
                 armedCloseRuntimeIds.formIntersection(ids)
+            }
+            .onChange(of: pageCovered) { _, covered in
+                if covered { selectedRuntimeIds = []; exitingCards = [:]; resetCloseSwipes(); onSelection(false) }
             }
             .onChange(of: currentHost?.homeCards.map(\.id) ?? []) { _, ids in
                 for id in ids where exitingCards[id] != nil || (swipeTranslations[id] ?? 0) < 0 {
