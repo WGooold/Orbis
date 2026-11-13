@@ -4,9 +4,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolveStateDir } from "@orbis/e2e";
 import { findDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
-import { codexWrapperRoot } from "./codex-desktop-launcher.js";
 import { listeningPids, processCommand, processTable, processTree, sameProcess, stopOwnedProcesses, type ProcessIdentity } from "./owned-processes.js";
 
 export type ShutdownRequest = { bridgePid: number; stateDir?: string; runtimeRoot: string; integrations: boolean; externalDsh: boolean };
@@ -49,40 +47,23 @@ export async function prepareDesktopShutdown(request: ShutdownRequest, parentPid
     if (!listeners.some(pid => tree.some(row => row.pid === pid))) throw new Error("无法确认后台端口归属，请关闭相关应用后重试");
     addTree(root); descriptors.push({ path, text: stored.text, root, port });
   };
-  if (request.integrations) {
-    const stateDir = resolveStateDir(request.stateDir || undefined);
-    const endpointPath = join(stateDir, "codex-desktop-endpoint.json");
-    const endpoint = await observe(endpointPath);
-    if (endpoint) {
-      const root = rows.find(row => row.pid === endpoint.value.bridgePid);
-      const url = String(endpoint.value.url);
+  // HOST-EXIT-06: the Codex Desktop bridge belongs to Codex Desktop, which respawns it at once.
+  // Stopping it only interrupts desktop tasks and races the respawn; the next Host attaches again.
+  if (request.integrations && !request.externalDsh) {
+    const configured = process.env.DSH_HOME?.trim() || join(homedir(), ".dsh");
+    const home = resolve(configured === "~" ? homedir() : /^~[/\\]/u.test(configured) ? join(homedir(), configured.slice(2)) : configured);
+    const path = join(home, "cache", "orbis-web.json");
+    const stored = await observe(path);
+    if (stored) {
+      const root = rows.find(row => row.pid === stored.value.pid);
       if (root) {
-        const command = await processCommand(root.pid);
-        const scripts = [join(request.runtimeRoot, "packages", "host", "dist", "codex-desktop-wrapper.js"),
-          join(codexWrapperRoot(), "packages", "host", "dist", "codex-desktop-wrapper.js")];
-        if (endpoint.value.schema !== 1 || !/^ws:\/\/127\.0\.0\.1:\d+$/u.test(url) || !scripts.some(script => commandRunsScript(command, script)))
-          throw new Error("无法确认 Codex 桌面桥接归属，请关闭 Codex 桌面端后重试");
-        await attachDescriptor(endpointPath, endpoint, root, Number(new URL(url).port));
-      } else if (/^ws:\/\/127\.0\.0\.1:\d+$/u.test(url) && (await listeningPids(Number(new URL(url).port))).length > 0) {
-        throw new Error("Codex 桌面桥接记录已失效但端口仍被占用，请关闭 Codex 桌面端后重试");
-      }
-    }
-    if (!request.externalDsh) {
-      const configured = process.env.DSH_HOME?.trim() || join(homedir(), ".dsh");
-      const home = resolve(configured === "~" ? homedir() : /^~[/\\]/u.test(configured) ? join(homedir(), configured.slice(2)) : configured);
-      const path = join(home, "cache", "orbis-web.json");
-      const stored = await observe(path);
-      if (stored) {
-        const root = rows.find(row => row.pid === stored.value.pid);
-        if (root) {
-          const service = await findDshWebService({ ...process.env, DSH_HOME: home, ORBIS_DSH_WEB_URL: "" });
-          if (!service) throw new Error("无法验证 DeepSeek Web 后台，请关闭该服务后重试");
-          await attachDescriptor(path, stored, root, Number(new URL(service.url).port || "80"));
-        } else if (typeof stored.value.url === "string") {
-          const url = new URL(validateDshWebUrl(stored.value.url));
-          if ((await listeningPids(Number(url.port || "80"))).length > 0)
-            throw new Error("DeepSeek Web 记录已失效但端口仍被占用，请关闭该服务后重试");
-        }
+        const service = await findDshWebService({ ...process.env, DSH_HOME: home, ORBIS_DSH_WEB_URL: "" });
+        if (!service) throw new Error("无法验证 DeepSeek Web 后台，请关闭该服务后重试");
+        await attachDescriptor(path, stored, root, Number(new URL(service.url).port || "80"));
+      } else if (typeof stored.value.url === "string") {
+        const url = new URL(validateDshWebUrl(stored.value.url));
+        if ((await listeningPids(Number(url.port || "80"))).length > 0)
+          throw new Error("DeepSeek Web 记录已失效但端口仍被占用，请关闭该服务后重试");
       }
     }
   }

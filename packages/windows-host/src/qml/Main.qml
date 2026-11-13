@@ -1096,7 +1096,7 @@ ApplicationWindow {
         id: exitDialog; objectName: "hostExitDialog"; title: "退出 Orbis？"
         anchors.centerIn: parent; modal: true; width: 500
         closePolicy: Popup.CloseOnEscape
-        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web 和 Codex 桌面桥接）将关闭，正在运行的任务会中断。" }
+        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web）将关闭，正在运行的任务会中断。" }
         footer: SoftDialogButtons {
             ActionButton { objectName: "cancelHostExit"; text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
             ActionButton { objectName: "confirmHostExit"; text: "停止并退出"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
@@ -1108,7 +1108,7 @@ ApplicationWindow {
     SoftDialog {
         id: installerExitDialog; objectName: "installerExitDialog"; title: "停止后台并安装新版 Host？"
         anchors.centerIn: parent; modal: true; width: 500; closePolicy: Popup.CloseOnEscape
-        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web 和 Codex 桌面桥接）将关闭，正在运行的任务会中断。" }
+        Hint { width: parent.width; text: "手机连接将断开，Host 管理的后台（包括 DeepSeek Web）将关闭，正在运行的任务会中断。" }
         footer: SoftDialogButtons {
             ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
             ActionButton { text: "停止并安装"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
@@ -1122,7 +1122,7 @@ ApplicationWindow {
         anchors.centerIn: parent; modal: true; width: 500
         closePolicy: Popup.CloseOnEscape
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "下载完成后将断开手机连接，停止 Host 管理的后台并退出。DeepSeek Web 和 Codex 桌面桥接中的任务会中断。"; Layout.fillWidth: true }
+            Hint { text: "下载完成后将断开手机连接，停止 Host 管理的后台并退出。DeepSeek Web 中的任务会中断。"; Layout.fillWidth: true }
             Hint { visible: Qt.platform.os === "osx"; text: "退出后会打开更新包，请将新版拖入 Applications 替换。"; Layout.fillWidth: true }
         }
         footer: SoftDialogButtons {

@@ -330,12 +330,17 @@ function readEndpointFile(path: string): string | undefined {
   catch { return undefined; }
 }
 
+/** The exact bytes written for an endpoint, so republishing can compare like with like. */
+function endpointText(value: CodexDesktopEndpointFile): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
 function writeEndpointFile(path: string, value: CodexDesktopEndpointFile): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
     // 先写临时文件再改名：Host 每 2s 就会读一次，读到半截的 JSON 会让它误判端点消失。
     const temporary = `${path}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temporary, endpointText(value), { mode: 0o600 });
     renameSync(temporary, path);
   } catch (error) {
     log(`无法写入端点文件（不影响桌面版使用）：${error instanceof Error ? error.message : String(error)}`);
@@ -362,7 +367,7 @@ async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile:
     // 端点文件是 Host 找到我们的唯一线索：被删或被清理后就再也没人知道这个端点。
     // 定期重发（内容一致则不重写），Host 的 2s 轮询就能自愈。
     const republish = setInterval(() => {
-      if (readEndpointFile(endpointFile) === JSON.stringify(descriptor, null, 2)) return;
+      if (readEndpointFile(endpointFile) === endpointText(descriptor)) return;
       writeEndpointFile(endpointFile, descriptor);
     }, 5_000);
     republish.unref?.();

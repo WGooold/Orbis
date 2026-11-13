@@ -155,7 +155,8 @@ int main(int argc, char *argv[]) {
     });
     QObject::connect(&controller, &HostController::exitReady, &app, [&] { replyInstaller("ready"); });
     QObject::connect(&controller, &HostController::exitCancelled, &app, [&] { replyInstaller("cancelled"); if (parser.isSet("prepare-update")) app.exit(20); });
-    QObject::connect(&controller, &HostController::exitFailed, &app, [&] { replyInstaller("failed"); });
+    // HOST-EXIT-06: a failed cleanup keeps the Host running; bring its reason to the front.
+    QObject::connect(&controller, &HostController::exitFailed, &app, [&] { replyInstaller("failed"); show(); });
     QSystemTrayIcon tray(QIcon(":/src/assets/orbis.png"));
     QMenu menu;
     menu.addAction("打开 Orbis", &app, show);
