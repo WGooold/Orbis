@@ -17,6 +17,37 @@ const setup = () => {
 };
 
 describe("Host catalog immutable ranges", () => {
+  // FT-G11-PREVIEW-01: backend enumeration order must not hide recent metadata
+  // behind a completed directory preview; byte-limited continuations stay lossless.
+  it("previews the newest sessions across backends within the Android page budget", () => {
+    const { facts } = setup();
+    const older = Array.from({ length: 100 }, (_, n) => session(n, {
+      modifiedAt: 1_000 - n, firstMessage: "synthetic ".repeat(60),
+    }));
+    const newest = session(100, { agentKind: "codex", modifiedAt: 2_000,
+      firstMessage: "synthetic ".repeat(60) });
+    const all = [...older, newest];
+    facts.catalog({ sessions: all, totalSessions: all.length, truncated: false,
+      backends: [backend(100), backend(1, { kind: "codex" })] });
+    const request = { type: "session.catalog.query" as const, requestId: "recent-preview", format: "v1" as const,
+      query: { text: "", agentKind: null, archived: false, provider: "all" }, cursor: null, limit: 100 };
+    const first = facts.catalogQuery(request);
+    expect(first.previewsComplete).toBe(true);
+    expect(first.page.sessions.length).toBeLessThan(request.limit);
+    expect(first.page.nextCursor).not.toBeNull();
+    expect(first.page.sessions[0]).toEqual({ ...newest, directoryTotal: all.length });
+    const received = [...first.page.sessions];
+    let page = first;
+    while (true) {
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(64 * 1024);
+      if (!page.page.nextCursor) break;
+      page = facts.catalogQuery({ ...request, cursor: page.page.nextCursor });
+      expect(page.page.offset).toBe(received.length);
+      received.push(...page.page.sessions);
+    }
+    expect(received).toEqual([newest, ...older].map(row => ({ ...row, directoryTotal: all.length })));
+  });
+
   // FT-G11-COMPAT-01 / DSH-DESKTOP-06: query negotiation does not grant Desktop visibility;
   // rows, provider facets, totals and continuation offsets share the same device view.
   it("keeps query rows, facets and cursors inside the device's negotiated visibility", () => {

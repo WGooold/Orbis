@@ -29,6 +29,7 @@ internal class HomeUiWorker {
         val state = RemoteState(hostId = source.hostId, hostName = source.hostName,
             connection = source.connection, e2eReady = source.e2eReady, path = source.path,
             runtimes = source.runtimes, sessions = source.sessions, homeSnapshot = source.homeSnapshot,
+            catalogQuery = source.catalogQuery,
             capabilities = source.capabilities, currentProviders = source.currentProviders,
             sessionActivateRequests = source.sessionActivateRequests, ledger = OperationLedger(operations = source.ledger.operations.filter {
                 it.payload is LedgerPayload.Archive || it.payload is LedgerPayload.Quit
