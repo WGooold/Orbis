@@ -1,15 +1,16 @@
 // ADR-0076 DSH-DESKTOP-01 / 02 / 07: Desktop is discovered independently of any CLI on PATH, Orbis reads
 // the endpoint only of a Desktop it launched itself, a Desktop opened elsewhere is reported as such, and
 // nothing here terminates Desktop. The fake executable stands in for Electron forwarding Host stdout.
+import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DshDesktopRunningElsewhereError, findDshDesktopInstallation, inspectDshDesktopInstallation, latestDshDesktopUrl, launchDshDesktop,
-  readDshDesktopEndpoint, dshDesktopLaunchEnvironment,
+  pendingDshDesktopLaunch, readDshDesktopEndpoint, revealDshDesktop, dshDesktopLaunchEnvironment,
 } from "./dsh-desktop-app.js";
 import { writeAsarFixture } from "./fixtures/asar-fixture.js";
 
@@ -109,6 +110,36 @@ describe.skipIf(process.platform === "win32")("Orbis-owned Desktop launch", () =
     await install(root, "darwin", "#!/bin/sh\nexit 0\n");
     const installation = (await inspectDshDesktopInstallation(root, "darwin"))!;
     await expect(launchDshDesktop(installation, await temp(), { timeoutMs: 10_000 })).rejects.toBeInstanceOf(DshDesktopRunningElsewhereError);
+  });
+
+  // DSH-DESKTOP-09: the Host UI and an App request may open Desktop at the same moment; a second spawn would
+  // replace the shared log and endpoint record with a single-instance handoff process.
+  it("shares one Orbis launch per state directory", async () => {
+    const port = await tokenEndpoint(new Set(["shared-token-abcdefghijk"]));
+    const root = join(await temp(), "DeepSeek Harness.app");
+    const state = await temp();
+    await install(root, "darwin", `#!/bin/sh\nsleep 0.3\necho "dsh web: http://127.0.0.1:${port}/?token=shared-token-abcdefghijk"\nexec sleep 30\n`);
+    const installation = (await inspectDshDesktopInstallation(root, "darwin"))!;
+    let spawned = 0;
+    const counting = ((...args: Parameters<typeof spawn>) => { spawned += 1; return spawn(...args); }) as typeof spawn;
+    const first = launchDshDesktop(installation, state, { timeoutMs: 10_000, spawnDesktop: counting });
+    expect(pendingDshDesktopLaunch(state)).toBe(first);
+    const [a, b] = await Promise.all([first, launchDshDesktop(installation, state, { timeoutMs: 10_000, spawnDesktop: counting })]);
+    pids.push(a.descriptor.pid);
+    expect(spawned).toBe(1);
+    expect(b.descriptor.pid).toBe(a.descriptor.pid);
+    expect(pendingDshDesktopLaunch(state)).toBeUndefined();
+  });
+
+  it("brings Desktop forward through a detached handoff launch that writes no endpoint record", async () => {
+    const root = join(await temp(), "DeepSeek Harness.app");
+    const marker = join(await temp(), "handoff");
+    await install(root, "darwin", `#!/bin/sh\necho "\${ELECTRON_RUN_AS_NODE:-unset}" > "${marker}"\n`);
+    const installation = (await inspectDshDesktopInstallation(root, "darwin"))!;
+    const state = await temp();
+    await revealDshDesktop(installation, { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+    await vi.waitFor(async () => expect(await readFile(marker, "utf8")).toBe("unset\n"));
+    expect(await readDshDesktopEndpoint(state, installation)).toBeUndefined();
   });
 
   it("returns the newest URL in the log and never a malformed one", async () => {

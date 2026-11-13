@@ -3,6 +3,7 @@ import { DesktopRuntime, type DesktopSettings } from "./desktop-runtime.js";
 import { ProviderError } from "./provider-manager.js";
 import { join } from "node:path";
 import { AgentStateRangeRequestSchema } from "@orbis/protocol";
+import { DesktopCommandLanes } from "./desktop-command-lanes.js";
 
 // stdout is exclusively a JSON-lines pipe to the parent Qt process. Host diagnostics use events or stderr.
 const output = (value: unknown): void => { process.stdout.write(`${JSON.stringify(value)}\n`); };
@@ -10,7 +11,8 @@ console.log = (...values: unknown[]) => console.error(...values);
 const providerTestRoot = process.env.ORBIS_PROVIDER_TEST_ROOT;
 const runtime = new DesktopRuntime(output, process.env.ORBIS_HOST_STATE_DIR, providerTestRoot ? { codex: join(providerTestRoot, "codex"), pi: join(providerTestRoot, "pi"), dsh: join(providerTestRoot, "dsh") } : undefined);
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
-let commands = Promise.resolve();
+// HOST-LANE-01: connect / pause / pair no longer wait behind a slow Agent detection; see desktop-command-lanes.ts.
+const commands = new DesktopCommandLanes();
 let closing = false;
 let installCancellation = 0;
 input.on("line", line => {
@@ -27,7 +29,10 @@ input.on("line", line => {
     }
   } catch { /* Normal request handling reports malformed JSON below. */ }
   const cancellationAtEnqueue = installCancellation;
-  commands = commands.then(async () => {
+  let lane = "";
+  try { const parsed = JSON.parse(line) as { method?: unknown }; if (typeof parsed.method === "string") lane = parsed.method; }
+  catch { /* Malformed JSON is reported in order with the other exclusive commands. */ }
+  void commands.enqueue(lane, async () => {
     let request: { id: number; method: string; params?: Record<string, unknown> } | undefined;
     try {
       request = JSON.parse(line) as typeof request;
@@ -62,7 +67,7 @@ input.on("line", line => {
         case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;
         case "enableCodexTerminal": result = await runtime.enableCodexTerminal(String(p.runtimeRoot)); break;
         case "piIntegration": await runtime.setPiIntegration(p.enabled === true); break;
-        case "claudeIntegration": await runtime.setClaudeIntegration(p.enabled === true); break;
+        case "claudeIntegration": await runtime.configureClaudeIntegration(p.enabled === true); break;
         case "piCommand": result = await runtime.piCommand(String(p.action)); break;
         case "provider.list": result = await runtime.listProviders(String(p.kind)); break;
         case "provider.reorder": result = await runtime.reorderProviders(String(p.kind), p.ids); break;
@@ -98,5 +103,5 @@ input.on("line", line => {
     } catch (error) { output({ id: request?.id ?? 0, error: typeof request?.method === "string" && request.method.startsWith("provider.") && !(error instanceof ProviderError) ? "供应商操作失败，请检查配置格式与文件权限" : error instanceof Error ? error.message : String(error) }); }
   });
 });
-input.on("close", () => { installCancellation += 1; runtime.cancelInstall(); void commands.finally(async () => { await runtime.close(); process.exit(0); }); });
+input.on("close", () => { installCancellation += 1; runtime.cancelInstall(); void commands.drain().finally(async () => { await runtime.close(); process.exit(0); }); });
 process.on("SIGTERM", () => { installCancellation += 1; void runtime.close().finally(() => process.exit(0)); });

@@ -233,7 +233,28 @@ export async function readDshDesktopEndpoint(stateDir: string, installation: Dsh
   return { url: latest, descriptor: updated };
 }
 
-export class DshDesktopRunningElsewhereError extends Error {}
+/** Short state shared by the Host UI and phones: a Desktop Orbis did not open cannot be attached (DSH-DESKTOP-09). */
+export const DSH_DESKTOP_OPEN_FROM_ORBIS = "DeepSeek 桌面版需由 Orbis 打开";
+
+export class DshDesktopRunningElsewhereError extends Error {
+  constructor(message = DSH_DESKTOP_OPEN_FROM_ORBIS) { super(message); }
+}
+
+/**
+ * Bring the Desktop Orbis opened forward. A second launch hands off to the running owner through Electron's
+ * single-instance lock: the owner focuses or recreates its window and the new process quits
+ * (upstream `single-instance.ts`, and "relaunching the application still focuses it" for a window hidden to the tray).
+ * The handoff process writes nothing Orbis reads, so the endpoint record stays the owner's.
+ */
+export function revealDshDesktop(installation: DshDesktopInstallation, options: { env?: NodeJS.ProcessEnv; spawnDesktop?: typeof spawn } = {}): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = (options.spawnDesktop ?? spawn)(installation.executable, [], {
+      cwd: homedir(), detached: true, env: dshDesktopLaunchEnvironment(options.env ?? process.env), stdio: "ignore",
+    });
+    child.once("error", error => { reject(new Error(`无法打开 DeepSeek 桌面版：${error.message}`)); });
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
+}
 
 /** Desktop must not inherit Orbis's Node runtime switches or managed provider credentials (DSH-DESKTOP-05). */
 export function dshDesktopLaunchEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -242,11 +263,29 @@ export function dshDesktopLaunchEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proc
   return launch;
 }
 
+const launches = new Map<string, Promise<DshDesktopEndpoint>>();
+
+/** The Orbis launch in progress for this state directory, if any. */
+export function pendingDshDesktopLaunch(stateDir: string): Promise<DshDesktopEndpoint> | undefined {
+  return launches.get(resolve(stateDir));
+}
+
 /**
  * Start Desktop so that its forwarded Host stdout lands in a private file, then wait for its URL.
  * The process is detached: Host exit or update never takes Desktop down, and a file never raises EPIPE.
+ * Concurrent callers for one state directory (an App request, the Host UI, a paused Host's open) share
+ * one launch: a second spawn would replace the shared log and endpoint record with a handoff process.
  */
-export async function launchDshDesktop(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn } = {}): Promise<DshDesktopEndpoint> {
+export function launchDshDesktop(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn } = {}): Promise<DshDesktopEndpoint> {
+  const key = resolve(stateDir);
+  const existing = launches.get(key);
+  if (existing !== undefined) return existing;
+  const pending = launchOnce(installation, stateDir, options).finally(() => { if (launches.get(key) === pending) launches.delete(key); });
+  launches.set(key, pending);
+  return pending;
+}
+
+async function launchOnce(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn }): Promise<DshDesktopEndpoint> {
   const directory = dshDesktopStateDirectory(stateDir);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const logPath = join(directory, "desktop-output.log");
@@ -262,7 +301,7 @@ export async function launchDshDesktop(installation: DshDesktopInstallation, sta
   await output.close();
   if (child.pid === undefined) {
     await delay(0);
-    throw new Error(`无法打开 DeepSeek Harness Desktop：${spawnError?.message ?? "启动失败"}`);
+    throw new Error(`无法打开 DeepSeek 桌面版：${spawnError?.message ?? "启动失败"}`);
   }
   const descriptor: DshDesktopDescriptor = { version: 1, owner: "orbis", pid: child.pid, executable: installation.executable,
     archive: installation.archive, logPath, launchedAt: Date.now() };
@@ -270,7 +309,7 @@ export async function launchDshDesktop(installation: DshDesktopInstallation, sta
   child.unref();
   const deadline = Date.now() + (options.timeoutMs ?? 120_000);
   while (Date.now() < deadline) {
-    if (spawnError) throw new Error(`无法打开 DeepSeek Harness Desktop：${spawnError.message}`);
+    if (spawnError) throw new Error(`无法打开 DeepSeek 桌面版：${spawnError.message}`);
     const url = await latestDshDesktopUrl(logPath);
     if (url !== undefined && await dshDesktopUrlAuthenticates(url)) {
       const ready = { ...descriptor, url };
@@ -279,10 +318,11 @@ export async function launchDshDesktop(installation: DshDesktopInstallation, sta
     }
     if (exitCode !== undefined) {
       // Electron's single-instance handoff focuses the existing window and quits this one cleanly.
-      if (exitCode === 0) throw new DshDesktopRunningElsewhereError("DeepSeek Harness Desktop 已在运行，但不是由 Orbis 打开，无法取得它的连接；请完全退出 Desktop 后由 Orbis 打开");
-      throw new Error(`DeepSeek Harness Desktop 启动后退出（${exitCode ?? "signal"}）`);
+      if (exitCode === 0) throw new DshDesktopRunningElsewhereError();
+      throw new Error(`DeepSeek 桌面版启动后退出（${exitCode ?? "signal"}）`);
     }
     await delay(200);
   }
-  throw new Error("DeepSeek Harness Desktop 已打开，但尚未报告可连接的后端；完成 Desktop 首次设置后 Orbis 会自动接入");
+  // First-run setup has no backend yet; the endpoint is recovered once Desktop prints it.
+  throw new Error("等待 DeepSeek 桌面版完成设置");
 }

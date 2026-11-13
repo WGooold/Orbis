@@ -50,12 +50,17 @@ ApplicationWindow {
         return [
             {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, data: pi},
             {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, data: codex},
-            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", installed: codex.desktopInstalled === true, broken: false},
-            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible},
-            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh}
+            {kind: "codexDesktop", name: "Codex 桌面版", symbol: "computer", tint: Theme.agentCodex, installed: codex.desktopInstalled === true, broken: false},
+            // A version still being read is not a verdict: only a finished probe can mark Claude broken.
+            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting},
+            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh},
+            // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
+            {kind: "dshDesktop", name: "DeepSeek 桌面版", symbol: "computer", tint: Theme.agentDeepseek, installed: dsh.desktopInstalled === true,
+             broken: window.dshDesktopBlocked(), opensToFix: true}
         ]
     }
-    readonly property string nextStep: !host.activated ? "activate"
+    // HOST-ACTIVITY-05: while the saved activation is still being read, "not activated" is not known yet.
+    readonly property string nextStep: !host.activated ? (host.credentialsLoading ? "" : "activate")
         : !host.desiredRunning && !host.resumePending ? "connect"
         : host.devices.length === 0 ? "pair"
         : !overviewAgents.some(function(agent) { return agent.installed }) ? "install" : "open"
@@ -63,16 +68,46 @@ ApplicationWindow {
     /** Whether a phone can use this Agent through the running Host right now. */
     function agentReachable(agent) {
         if (!agent.installed || agent.broken || !window.hostOnline) return false
+        // 该 Agent 的后端在后台准备时手机还用不了它；其余 Agent 不受影响。
+        if (window.preparing(agent.kind)) return false
         var backend = window.backendFor(agent.kind)
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
     function agentPhoneState(agent, sessions) {
+        // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
+        if (agent.kind === "claude" ? host.claudeDetecting : window.activityKinds.indexOf("agents") >= 0) return "检测中"
         if (!agent.installed) return "未安装"
-        if (agent.broken) return agent.kind === "claude" ? "需升级" : "需要修复"
+        if (agent.kind === "dshDesktop" && host.dshDesktopOpen === "waiting") return "等待退出"
+        if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
         if (window.hostLinking) return "正在连接"
         if (!window.hostOnline) return "连接后手机可用"
+        // 后台准备（Codex 终端服务端首次安装或 CLI 升级后约一百多 MB；Claude 插件登记；DeepSeek 后端）不挡连接。
+        if (agent.kind === "codex" && window.codexTerminalPreparing) return window.codexTerminalProgressText()
+        if (window.preparing(agent.kind)) return "正在准备"
         if (!window.agentReachable(agent)) return "手机暂不可用"
         return sessions > 0 ? "手机上 " + sessions + " 个会话" : "手机可用"
+    }
+    readonly property var codexTerminalState: host.codexTerminal || ({})
+    // 进行中的操作来自 host.activity（桥命令逐个登记），是所有按钮变灰的统一原因。
+    // 命令现在会并行（HOST-LANE-01），所以按钮读 activityKinds 判断自己的那一项是否在跑。
+    readonly property var activity: host.activity || ({})
+    readonly property string activityKind: window.activity.kind || ""
+    readonly property string activityText: window.activity.text || ""
+    readonly property var activityKinds: host.activityKinds || []
+    function preparationOf(kind) { return (host.preparations || ({}))[kind] || ({}) }
+    function preparing(kind) { return window.preparationOf(kind).state === "preparing" }
+    readonly property bool codexTerminalPreparing: window.codexTerminalState.state === "preparing"
+    function codexTerminalProgressText() {
+        var received = Number(window.codexTerminalState.receivedBytes || 0)
+        var total = Number(window.codexTerminalState.totalBytes || 0)
+        return total > 0 ? "准备中 " + Math.floor(Math.min(1, received / total) * 100) + "%" : "正在准备"
+    }
+    /** Claude 检测未完成时不能用“未安装”当结论；这与 Host 侧的 detecting 对齐。 */
+    function claudeStateText() {
+        if (host.claudeDetecting) return "检测中"
+        if (!host.claudeInstalled) return "尚未安装"
+        if (host.claudeCompatible) return "可用"
+        return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
         if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
@@ -86,6 +121,13 @@ ApplicationWindow {
     function codexDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, error:Theme.danger, notInstalled:Theme.inkMuted, unsupported:Theme.inkMuted})[window.codexDesktopState()] || Theme.inkMuted }
     function piAgent() { return host.agents.find(a => a.kind === "pi") || {} }
     function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
+    // DeepSeek 桌面版（ADR-0076）：分档与原因都来自 Host；概览只给短状态，下一步始终是从这里打开。
+    function dshDesktopState() { return (host.dshDesktop && host.dshDesktop.state) ? host.dshDesktop.state : "" }
+    function dshDesktopBlocked() { return ["running", "incompatible", "error"].indexOf(window.dshDesktopState()) >= 0 }
+    function dshDesktopShortState() { return ({running:"需由 Orbis 打开", incompatible:"版本不兼容", error:"接入失败"})[window.dshDesktopState()] || "" }
+    function dshDesktopLabel() { return ({attached:"已接入", closed:"未接入", running:"未接入", notInstalled:"未安装", unsupported:"不可用", incompatible:"版本不兼容", error:"接入失败"})[window.dshDesktopState()] || (!host.bridgeReady ? "未知" : window.hostOnline ? "正在检测" : "未连接") }
+    function dshDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, running:Theme.warning, incompatible:Theme.danger, error:Theme.danger})[window.dshDesktopState()] || Theme.inkMuted }
+    function dshDesktopReason() { return (host.dshDesktop && host.dshDesktop.reason) ? host.dshDesktop.reason : "" }
     function installationStage() { return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || "" }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function showAgentBatch() { batchInstallDialog.open() }
@@ -274,6 +316,11 @@ ApplicationWindow {
     }
     function saveProviderEditor() { var draft = buildProviderDraft(!advancedProvider.checked); if (draft !== null) host.saveProvider(draft) }
     function stateText() {
+        // 钥匙串读取可能在等系统授权框：窗口要能先出来，并说出它在等什么。
+        if (host.awaitingSystemAuthorization) return "正在等待系统授权"
+        // 内核还没就绪时不要说“已暂停”：用户会以为 Host 自己停了。内核已退出则不是“正在启动”。
+        if (!host.bridgeReady) return host.state === "error" ? "需要处理" : "正在启动 Host 核心"
+        if (host.credentialsLoading) return "正在读取激活信息"
         if (host.resumePending) return "完成后自动恢复"
         if (!host.activated && host.bridgeReady) return "未激活"
         return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
@@ -323,8 +370,8 @@ ApplicationWindow {
     }
     /** 下载已用秒数：npm 不给在途字节，单个大包期间百分比不动，靠它证明“还在下”。 */
     property int downloadSeconds: 0
-    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 ? window.downloadSeconds + 1 : 0 }
-    Connections { target: host; function onChanged() { if (host.downloadReceived < 0) window.downloadSeconds = 0 } }
+    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0 || window.codexTerminalPreparing; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 || window.codexTerminalPreparing ? window.downloadSeconds + 1 : 0 }
+    Connections { target: host; function onChanged() { if (host.downloadReceived < 0 && !window.codexTerminalPreparing) window.downloadSeconds = 0 } }
     /** 下载进度条：知道总大小就给百分比，不知道就只报已下字节 + 一段来回走的色块。 */
     component DownloadBar: ColumnLayout {
         property string label: ""
@@ -739,7 +786,7 @@ ApplicationWindow {
                         Layout.fillWidth: true; spacing: 20
                         // HOST-GUIDE-01: activation is the first step, so it leads until it is done.
                         RowLayout {
-                            visible: !host.activated
+                            visible: !host.activated && !host.credentialsLoading
                             Layout.fillWidth: true; spacing: 20
                             Card {
                                 Layout.fillWidth: true; Layout.preferredWidth: 510
@@ -781,6 +828,14 @@ ApplicationWindow {
                                         spacing: 4; Layout.preferredWidth: 180; Layout.maximumWidth: 220
                                         Heading { text: host.hostName || "这台电脑"; elide: Text.ElideRight; Layout.fillWidth: true }
                                         MotionText { objectName: "overviewLinkState"; text: window.stateText(); color: window.hostOnline ? Theme.success : host.state === "error" && !host.resumePending ? Theme.danger : Theme.inkMuted; font.pixelSize: Theme.label; Layout.fillWidth: true }
+                                        // 按钮变灰时能读到这里在做什么：没有这句就只能看到“点了没反应”。
+                                        RowLayout {
+                                            objectName: "overviewActivity"
+                                            visible: window.activityText.length > 0
+                                            spacing: 6; Layout.fillWidth: true
+                                            BusyIndicator { running: visible; Layout.preferredWidth: 14; Layout.preferredHeight: 14 }
+                                            Label { text: window.activityText; color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        }
                                     }
                                     ConnectionLine { Layout.fillWidth: true; Layout.minimumWidth: 60 }
                                     ColumnLayout {
@@ -795,17 +850,24 @@ ApplicationWindow {
                                     NodeDisc { symbol: "smartphone"; lit: window.hostOnline && window.onlineDevices > 0 }
                                 }
                                 RowLayout {
-                                    visible: host.activated
+                                    // While the saved activation is still being read, keep Connect visible and say why it waits.
+                                    visible: host.activated || host.credentialsLoading
                                     Layout.fillWidth: true; spacing: 12
                                     Item { Layout.fillWidth: true }
                                     ActionButton {
                                         objectName: "overviewConnection"
                                         text: host.desiredRunning || host.resumePending ? "暂停连接" : "开始连接"
                                         primary: window.nextStep === "connect"
-                                        enabled: !host.busy && !host.resumePending
+                                        enabled: !host.resumePending && (host.desiredRunning || host.connectionBlockReason.length === 0)
+                                        loading: window.activityKinds.indexOf("connect") >= 0
                                         onClicked: { if (host.desiredRunning) host.stopHost(); else host.startHost() }
+                                        // 点不了的时候给出原因，而不是只把按钮变灰。
+                                        ToolTip.visible: !enabled && hoverHandler.hovered && host.connectionBlockReason.length > 0
+                                        ToolTip.text: host.connectionBlockReason
+                                        ToolTip.delay: 200
+                                        HoverHandler { id: hoverHandler }
                                     }
-                                    ActionButton { objectName: "overviewPair"; text: "添加手机"; symbol: "add"; primary: window.nextStep === "pair"; enabled: window.hostOnline && !host.busy; onClicked: host.pair() }
+                                    ActionButton { objectName: "overviewPair"; text: "添加手机"; symbol: "add"; primary: window.nextStep === "pair"; enabled: window.hostOnline && !host.busy; loading: window.activityKinds.indexOf("pair") >= 0; onClicked: host.pair() }
                                 }
                             }
                         }
@@ -831,7 +893,7 @@ ApplicationWindow {
                                             Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
                                             opacity: agentRow.modelData.installed ? 1 : 0.4
                                             AgentMark { anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
-                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: Theme.agentCodex }
+                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: agentRow.modelData.tint || Theme.agentCodex }
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
@@ -846,9 +908,10 @@ ApplicationWindow {
                                                 SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
                                                 MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
                                                 StatusDot {
-                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint
-                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking
-                                                    syncing: !agentRow.modelData.broken && window.hostLinking
+                                                    readonly property bool preparing: window.preparing(agentRow.modelData.kind)
+                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || preparing ? Theme.warning : Theme.inkFaint
+                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking && !preparing
+                                                    syncing: !agentRow.modelData.broken && (window.hostLinking || preparing)
                                                 }
                                             }
                                         }
@@ -856,9 +919,10 @@ ApplicationWindow {
                                             objectName: "overviewAgent-" + agentRow.modelData.kind
                                             Layout.preferredWidth: 112
                                             text: agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
-                                            primary: agentRow.modelData.installed && !agentRow.modelData.broken ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
+                                            primary: agentRow.modelData.installed && (!agentRow.modelData.broken || agentRow.modelData.opensToFix === true) ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
                                             enabled: host.bridgeReady && !host.busy && (agentRow.modelData.installed || agentRow.installable)
                                             loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
+                                                || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
                                             Accessible.name: text + " " + agentRow.modelData.name
                                             onClicked: {
                                                 if (agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
@@ -868,6 +932,17 @@ ApplicationWindow {
                                     }
                                 }
                                 DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstalling; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true; Layout.topMargin: 6 }
+                                // 终端接入的配套包不在启动关键路径上：手机已经能连，这里只显示它还差多少。
+                                DownloadBar {
+                                    visible: window.codexTerminalPreparing && window.codexTerminalState.receivedBytes > 0
+                                    label: "Codex 终端接入"
+                                    received: window.codexTerminalState.receivedBytes || 0
+                                    total: window.codexTerminalState.totalBytes || 0
+                                    Layout.fillWidth: true; Layout.topMargin: 6
+                                }
+                                Hint { visible: window.codexTerminalState.state === "error"; text: "Codex 终端接入未就绪，Codex 会话暂时不可用"; Layout.fillWidth: true; Layout.topMargin: 6 }
+                                // HOST-PREP-04: a failed automatic registration only affects Claude Code started in a terminal.
+                                Hint { visible: window.preparationOf("claude").state === "error"; text: "Claude Code 插件未登记，终端里运行的 Claude Code 暂时不会连接 Orbis"; Layout.fillWidth: true; Layout.topMargin: 6 }
                             }
                         }
                     }
@@ -908,7 +983,7 @@ ApplicationWindow {
 
                     ColumnLayout {
                         visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
-                        RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy; onClicked: host.detectAgents(true) } }
+                        RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy && window.activityKinds.indexOf("agents") < 0; loading: window.activityKinds.indexOf("agents") >= 0; onClicked: host.detectAgents(true) } }
                         RowLayout { Layout.fillWidth: true
                             ActionButton { text: "全部更新到最新（" + host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken).length + "）"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => !a.installed || a.updateAvailable || a.installedButBroken); onClicked: window.showAgentBatch() }
                             Item { Layout.fillWidth: true }
@@ -939,7 +1014,7 @@ ApplicationWindow {
                                         spacing: 10
                                         ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
                                         ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
-                                        ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: modelData.kind === "dsh"; enabled: host.bridgeReady && !host.busy && !host.agentInstalling && modelData.installed; onClicked: restartDshDialog.open() }
+                                        ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: modelData.kind === "dsh"; enabled: host.bridgeReady && !host.busy && !host.agentInstalling && modelData.installed; loading: window.activityKinds.indexOf("dsh") >= 0; onClicked: restartDshDialog.open() }
                                     }
                                 }
                             }
@@ -949,7 +1024,7 @@ ApplicationWindow {
                                 RowLayout { Layout.fillWidth: true
                                     Heading { text: "Claude Code"; color: Theme.agentClaude }
                                     Item { Layout.fillWidth: true }
-                                    Hint { text: !host.claudeInstalled ? "尚未安装" : host.claudeCompatible ? "可用" : host.claudeVersion ? "需升级" : "版本未确认"; color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
+                                    Hint { text: window.claudeStateText(); color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
                                 }
                                 Hint { visible: !!host.claudeMinimumVersion; text: "当前 " + (host.claudeVersion || "—") + "，最低 " + host.claudeMinimumVersion; Layout.fillWidth: true }
                                 Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
@@ -960,7 +1035,9 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Hint { visible: host.busy && !host.agentInstalling; text: "正在检测 Agent…"; Layout.fillWidth: true }
+                        // 以前这里写死“正在检测 Agent…”，但 busy 也包含激活、切中继、保存供应商；
+                        // 统一读活动文案，并只在 Agent 页保留（其余页由概览、对话框自己负责）。
+                        Hint { visible: window.activityText.length > 0 && !host.agentInstalling; text: window.activityText; Layout.fillWidth: true }
                     }
 
                     ColumnLayout {
@@ -1165,6 +1242,20 @@ ApplicationWindow {
                                     Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
                                 }
                                 Hint { text: window.codexDesktopReason(); Layout.fillWidth: true }
+                            }
+                        }
+                        Card {
+                            objectName: "dshDesktopAttach"
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 12
+                                Heading { text: "DeepSeek 桌面版接入" }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 10
+                                    StatusDot { color: window.dshDesktopColor(); idle: window.dshDesktopState() === "closed" }
+                                    Label { text: window.dshDesktopLabel(); color: window.dshDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                }
+                                Hint { text: window.dshDesktopReason(); Layout.fillWidth: true }
                             }
                         }
                         Card {

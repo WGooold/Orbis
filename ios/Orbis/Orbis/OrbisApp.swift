@@ -35,7 +35,10 @@ struct OrbisApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--preview-screen=disclosure") {
+            if ProcessInfo.processInfo.arguments.contains("--preview-screen=math") {
+                MathRenderingPreview().environmentObject(store)
+                    .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : .light)
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=disclosure") {
                 DisclosurePerformancePreview()
             } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=reveal") {
                 StreamingRevealPreview().environmentObject(store)

@@ -156,7 +156,7 @@ private slots:
         // native bridge still accepts the older installed-only status event.
         QTemporaryDir temp;
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         controller.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false},
             {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}, {"error", "请升级 Claude Code"}});
         QVERIFY(controller.claudeInstalled()); QVERIFY(!controller.claudeCompatible());
@@ -204,7 +204,7 @@ private slots:
             // No bridge fixture is installed: these tests exercise only the native reducer.
             HostController controller(temp.path() + "/missing-runtime", desktop, state, desktop, false);
             QCoreApplication::processEvents();
-            controller.m_tick.stop();
+            controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
             QVERIFY(controller.activated());
             controller.m_desiredRunning = true;
             controller.m_qr = "old-pairing-window";
@@ -232,7 +232,7 @@ private slots:
         QCOMPARE(contents(state + "/devices.json"), QByteArray("devices.json"));
         {
             HostController relaunched(temp.path() + "/missing-runtime", desktop, state, desktop, false);
-            QCoreApplication::processEvents(); relaunched.m_tick.stop();
+            QCoreApplication::processEvents(); relaunched.m_tick.stop(); QTRY_VERIFY(!relaunched.credentialsLoading());
             QVERIFY(!relaunched.activated());
             QCOMPARE(relaunched.email(), email);
             relaunched.refreshRegistrationPolicy();
@@ -263,7 +263,7 @@ private slots:
         const auto original = activation("owner@qq.com");
         QVERIFY(CredentialStore::save(path, original));
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         controller.receiveLine({{"event", "state"}, {"state", "error"}, {"message", message}});
         QVERIFY(controller.activated());
         QCOMPARE(CredentialStore::load(path), original);
@@ -278,7 +278,7 @@ private slots:
         const auto cleanup = qScopeGuard([&] { clearCredentials(temp.path()); });
         QVERIFY(CredentialStore::save(path, activation("owner@qq.com")));
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         controller.receiveLine({{"event", "state"}, {"state", "error"}, {"activationRequired", true}});
         const auto requests = m_policyRequests;
         QTRY_VERIFY(!controller.busy());
@@ -300,7 +300,7 @@ private slots:
         for (const auto &location : {"installed", "reinstalled", "portable"}) {
             HostController controller(temp.path() + "/missing-runtime", temp.path() + "/" + location,
                 temp.path() + "/state", shared, false);
-            QCoreApplication::processEvents(); controller.m_tick.stop();
+            QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
             QVERIFY(controller.activated());
             QCOMPARE(controller.email(), QString("owner@qq.com"));
             QCOMPARE(controller.hostId(), QString("computer-one"));
@@ -321,7 +321,7 @@ private slots:
         QFETCH(QString, recovery);
         QTemporaryDir temp;
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         controller.m_settings.setValue("relayUrl", relayUrl());
         controller.m_hostId = "computer-one";
         controller.m_verificationRequired = false;
@@ -356,7 +356,7 @@ private slots:
         if (!recovery.isEmpty()) m_activationRefusal.insert("recovery", recovery);
         QTemporaryDir temp;
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path() + "/state", temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         controller.m_settings.setValue("relayUrl", relayUrl());
         controller.m_hostId = "computer-one";
         controller.m_bridgeReady = true;
@@ -535,7 +535,7 @@ private slots:
         QVERIFY(devices.open(QIODevice::WriteOnly)); devices.write("phone-trust"); devices.close();
         {
             HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path(), temp.path(), false);
-            QCoreApplication::processEvents(); controller.m_tick.stop();
+            QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
             controller.m_qr = "old-qr"; controller.m_challenge = "old-code"; controller.m_cooldown = 60;
             switchRelay(controller, relayB);
             QTRY_VERIFY(!controller.busy());
@@ -555,7 +555,7 @@ private slots:
         }
         {
             HostController relaunched(temp.path() + "/missing-runtime", temp.path(), temp.path(), temp.path(), false);
-            QCoreApplication::processEvents(); relaunched.m_tick.stop();
+            QCoreApplication::processEvents(); relaunched.m_tick.stop(); QTRY_VERIFY(!relaunched.credentialsLoading());
             QCOMPARE(relaunched.m_credential, a.value("credential").toString());
             switchRelay(relaunched, relayB); QTRY_VERIFY(!relaunched.busy());
             QCOMPARE(relaunched.m_credential, b.value("credential").toString());
@@ -581,7 +581,7 @@ private slots:
         QFile blocker(temp.path() + "/relay-activations");
         QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.close();
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path(), temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         switchRelay(controller, relayUrl() + "/other"); QTRY_VERIFY(!controller.busy());
         QCOMPARE(controller.relayUrl(), relayUrl()); QVERIFY(controller.activated());
         QCOMPARE(CredentialStore::load(path), a);
@@ -654,7 +654,7 @@ private slots:
         const auto cleanup = qScopeGuard([&] { clearCredentials(temp.path()); });
         QVERIFY(CredentialStore::save(temp.path() + "/activation.dat", activation("")));
         HostController controller(temp.path() + "/missing-runtime", temp.path(), temp.path(), temp.path(), false);
-        QCoreApplication::processEvents(); controller.m_tick.stop();
+        QCoreApplication::processEvents(); controller.m_tick.stop(); QTRY_VERIFY(!controller.credentialsLoading());
         settleRelayFixture();
         m_deferNextPolicy = true; controller.refreshRegistrationPolicy();
         QTRY_VERIFY(m_deferredPolicy);

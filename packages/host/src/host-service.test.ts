@@ -3246,6 +3246,30 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
+  // HOST-PREP-05 (ADR-0081 §5-3): DeepSeek session discovery used to run before relay.start(), so a slow
+  // Web handshake kept phones away from the whole Host. Discovery now follows the Relay and never holds a pause.
+  it("connects the Relay and pauses without waiting for a slow DeepSeek discovery", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-after-relay-"));
+    relay = await startRelayLocal(stateDir);
+    const client: DshConnection = { onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}) };
+    const runtime = new DshRuntime(client, { list: async () => [],
+      read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }), close: async () => {} });
+    let discovered!: () => void;
+    const discovery = vi.spyOn(runtime, "start").mockImplementation(() => new Promise<void>(resolve => { discovered = resolve; }));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+    try {
+      await host.start();
+      expect(host.relayState).toBe("connected");
+      await vi.waitFor(() => expect(discovery).toHaveBeenCalledTimes(1));
+      const stopping = Date.now();
+      await host.stop();
+      expect(Date.now() - stopping).toBeLessThan(2_000);
+      host = undefined;
+    } finally { discovered?.(); await runtime.stop(); }
+  });
+
   it.each(["prestarted", "recovered"])("announces %s browser DSH sessions and shares messages over E2E without APP activation", async mode => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-discovery-host-"));
     relay = await startRelayLocal(stateDir);

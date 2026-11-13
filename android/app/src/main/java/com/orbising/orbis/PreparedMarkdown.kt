@@ -14,10 +14,14 @@ import org.commonmark.node.Heading
 import org.commonmark.node.Image
 import org.commonmark.node.Node
 import org.commonmark.node.Paragraph
+import org.commonmark.node.Text
+import org.commonmark.node.FencedCodeBlock
+import org.commonmark.node.IndentedCodeBlock
+import org.commonmark.node.HtmlBlock
 import org.commonmark.ext.gfm.tables.TableCell
 
 /** Immutable after publication. Neither a cache lookup nor drawing parses Markdown. */
-internal class PreparedMarkdown(val blocks: List<Node>, val inline: Map<Node, AnnotatedString>)
+internal class PreparedMarkdown(val blocks: List<Node>, val inline: Map<Node, AnnotatedString>, val mathHtml: Map<Node, String> = emptyMap())
 
 internal class MarkdownDocumentCache(private val maxCharacters: Int = 2 * 1024 * 1024) {
     private val lock = Any()
@@ -30,20 +34,36 @@ internal class MarkdownDocumentCache(private val maxCharacters: Int = 2 * 1024 *
     suspend fun resolve(text: String): PreparedMarkdown = withContext(Dispatchers.Default) {
         worker.withLock {
             peek(text)?.let { return@withLock it }
-            val blocks = parseMarkdown(text)
+            val math = MathMarkupEngine.protect(text)
+            val blocks = if (math?.bypass == true) listOf(Paragraph().also { it.appendChild(Text(text)) })
+                else parseMarkdown(math?.text ?: text)
             val inline = IdentityHashMap<Node, AnnotatedString>()
+            val mathHtml = IdentityHashMap<Node, String>()
             markdownDescendants(blocks).forEach { node ->
-                if (node is Paragraph || node is Heading || node is TableCell || node is Image)
-                    inline[node] = renderMarkdownInline(node)
+                // Parser context wins over a speculative scan; internal markers never reach code.
+                if (math != null) when (node) {
+                    is FencedCodeBlock -> node.literal = MathMarkupEngine.restore(AnnotatedString(node.literal), math).text
+                    is IndentedCodeBlock -> node.literal = MathMarkupEngine.restore(AnnotatedString(node.literal), math).text
+                    is HtmlBlock -> node.literal = MathMarkupEngine.restore(AnnotatedString(node.literal), math).text
+                }
+                if (node is Paragraph || node is Heading || node is TableCell || node is Image) {
+                    val value = renderMarkdownInline(node)
+                    if (math != null) {
+                        if (mathHtml.size < 32) MathMarkupEngine.html(value, math)?.let { mathHtml[node] = it }
+                        inline[node] = MathMarkupEngine.restore(value, math)
+                    } else inline[node] = value
+                }
             }
-            val result = PreparedMarkdown(blocks, inline)
-            if (text.length <= maxCharacters) {
+            val result = PreparedMarkdown(blocks, inline, mathHtml)
+            val cost = text.length + mathHtml.values.sumOf { it.length }
+            if (cost <= maxCharacters) {
                 synchronized(lock) {
                     documents[text] = result
-                    characters += text.length
+                    characters += cost
                     while ((characters > maxCharacters || documents.size > 256) && documents.size > 1) {
                         val oldest = documents.entries.iterator()
-                        characters -= oldest.next().key.length
+                        val entry = oldest.next()
+                        characters -= entry.key.length + entry.value.mathHtml.values.sumOf { it.length }
                         oldest.remove()
                     }
                 }

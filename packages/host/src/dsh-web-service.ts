@@ -19,7 +19,12 @@ export interface DshWebService {
   stop(): Promise<void>;
 }
 
-type Options = { cli?: PiCommand; timeoutMs?: number; port?: number };
+/**
+ * HOST-ACTIVITY-04: what a start or restart is waiting for. `waiting` means another starter holds the
+ * service lock (up to a minute); the desktop shows each stage instead of a single unchanging line.
+ */
+export type DshWebServiceStage = "waiting" | "stopping" | "starting";
+type Options = { cli?: PiCommand; timeoutMs?: number; port?: number; onStage?: (stage: DshWebServiceStage) => void };
 type Descriptor = { version: 1; owner: "orbis"; home: string; pid: number; url: string; cli: PiCommand };
 const starting = new Map<string, Promise<DshWebService>>();
 const execute = promisify(execFile);
@@ -122,12 +127,15 @@ async function ensureLocalService(home: string, env: NodeJS.ProcessEnv, options:
   const path = join(home, "cache", "orbis-web.json");
   return withServiceLock(home, options.timeoutMs ?? 60_000, async deadline => {
     const current = await readDescriptor(path, home);
-    return current ? handle(current.url, current.cli) : startLocalService(home, env, options, deadline);
-  });
+    if (current) return handle(current.url, current.cli);
+    options.onStage?.("starting");
+    return startLocalService(home, env, options, deadline);
+  }, options.onStage);
 }
 
 /** Update completion is the explicit exception to leaving the persistent browser service running. */
-export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cli: PiCommand): Promise<boolean> {
+export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cli: PiCommand,
+  onStage?: (stage: DshWebServiceStage) => void): Promise<boolean> {
   const home = dshHome(env);
   return withServiceLock(home, 60_000, async deadline => {
     const path = join(home, "cache", "orbis-web.json");
@@ -155,6 +163,7 @@ export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cl
       + `$item = Get-CimInstance Win32_Process -Filter "ProcessId=$ancestor" -ErrorAction Stop; $ancestor = [int]$item.ParentProcessId } }`],
     { windowsHide: true, timeout: 10_000 });
     if (!stdout.trim().split(/\s+/).includes(String(current.pid))) throw new Error("DeepSeek Web 进程记录已失效，请手动重启");
+    onStage?.("stopping");
     // The recorded root may now be a package-manager launcher. Its authenticated
     // listening descendant must be in that exact tree before terminating it.
     await execute(join(env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(current.pid), "/T", "/F"],
@@ -164,18 +173,21 @@ export async function restartDshWebServiceAfterUpdate(env: NodeJS.ProcessEnv, cl
     if (alive(current.pid) || await existsPort(port)) throw new Error("DeepSeek Web 尚未退出或端口未释放，请稍后重试");
     await unlink(path);
     // Keep the same port/home, but always launch the newly verified CLI and publish its fresh token.
+    onStage?.("starting");
     await startLocalService(home, env, { cli, port }, deadline);
     return true;
-  });
+  }, onStage);
 }
 
-async function withServiceLock<T>(home: string, timeoutMs: number, action: (deadline: number) => Promise<T>): Promise<T> {
+async function withServiceLock<T>(home: string, timeoutMs: number, action: (deadline: number) => Promise<T>,
+  onStage?: (stage: DshWebServiceStage) => void): Promise<T> {
   const path = join(home, "cache", "orbis-web.json");
   await mkdir(dirname(path), { recursive: true });
   const lockPath = `${path}.lock`;
   const lockId = randomUUID();
   const deadline = Date.now() + timeoutMs;
   let lock: FileHandle | undefined;
+  let waiting = false;
   while (!lock) {
     try {
       lock = await open(lockPath, "wx", 0o600);
@@ -187,6 +199,7 @@ async function withServiceLock<T>(home: string, timeoutMs: number, action: (dead
         if (typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 && !alive(owner.pid)) { await unlink(lockPath); continue; }
       } catch { /* The other creator may be writing or releasing the lock. */ }
       if (Date.now() >= deadline) throw new Error("另一个 DeepSeek Web 正在启动，请稍后重试");
+      if (!waiting) { waiting = true; onStage?.("waiting"); }
       await delay(100);
     }
   }

@@ -7,6 +7,8 @@ export default tseslint.config(
       "**/dist/**",
       // Unmodified third-party GSAP runtime; license retained alongside it.
       "packages/relay/src/web/vendor/gsap.min.js",
+      // Pinned KaTeX distribution, with upstream license and integrity manifest.
+      "shared/math/katex.min.js",
       "node_modules/**",
       "agent/**",
       "android/**",
@@ -25,6 +27,13 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ["shared/math/view.js"],
+    languageOptions: { globals: {
+      window: "readonly", document: "readonly", katex: "readonly", ResizeObserver: "readonly",
+    } },
+    rules: { "@typescript-eslint/no-unused-vars": ["error", { caughtErrorsIgnorePattern: "^_" }] },
+  },
   {
     files: ["packages/windows-host/src/qml/**/*.js"],
     // Qt library scripts export their top-level variables to QML. Blank the

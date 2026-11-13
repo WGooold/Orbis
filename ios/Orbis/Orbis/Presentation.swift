@@ -534,6 +534,7 @@ struct MarkdownTextSection: Identifiable, Equatable {
     let text: String
     var rows: [[String]] = []
     var inlineRows: [[AttributedString]] = []
+    var mathRows: [[String?]] = []
 }
 
 func markdownTextSections(_ text: String) -> [MarkdownTextSection] {
@@ -758,18 +759,35 @@ private func preparedMarkdownImage(_ value: String) -> (String, URL)? {
 final class PreparedMarkdownDocument: @unchecked Sendable {
     let rows: [MarkdownRow]
     let length: Int
+    let mathHTML: [String: String]
+    let mathCost: Int
     init(_ text: String) {
+        let math = MathMarkupEngine.shared.protect(text)
+        if math?.bypass == true {
+            self.rows = [MarkdownRow(id: "math-source-fallback", kind: .text(AttributedString(text)), base: 0, length: text.utf16.count)]
+            self.length = text.utf16.count; self.mathHTML = [:]; self.mathCost = 0
+            return
+        }
+        var mathHTML: [String: String] = [:]
+        var lastHTML: String?
+        var tableCost = 0
+        var mathFragments = 0
         func inline(_ text: String) -> AttributedString {
-            (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+            let value = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+            lastHTML = mathFragments < 32 ? math.flatMap { MathMarkupEngine.shared.html(value, prepared: $0) } : nil
+            if lastHTML != nil { mathFragments += 1 }
+            return math?.restore(value) ?? value
         }
         var rows: [MarkdownRow] = []
         var offset = 0
         func add(_ id: String, _ kind: MarkdownRow.Kind, _ length: Int) {
             rows.append(MarkdownRow(id: id, kind: kind, base: offset, length: length))
+            if let html = lastHTML { mathHTML[id] = html }
+            lastHTML = nil
             offset += length
         }
         func count(_ value: AttributedString) -> Int { String(value.characters).utf16.count }
-        for block in markdownBlocks(text) {
+        for block in markdownBlocks(math?.text ?? text) {
             if case .code(let language) = block.kind {
                 add("code-\(block.id)", .code(language, block.text), block.text.utf16.count)
                 continue
@@ -778,7 +796,18 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
                 let id = "text-\(block.id)-\(section.id)"
                 if section.kind == .table {
                     var table = section
-                    table.inlineRows = section.rows.map { $0.map(inline) }
+                    table.inlineRows = section.rows.map { row in
+                        var html: [String?] = []
+                        let values = row.map { cell in
+                            let value = inline(cell)
+                            html.append(lastHTML)
+                            tableCost += lastHTML?.utf16.count ?? 0
+                            return value
+                        }
+                        table.mathRows.append(html)
+                        return values
+                    }
+                    lastHTML = nil
                     add(id, .table(table), 0); continue
                 }
                 let line = section.text.trimmingCharacters(in: .whitespaces)
@@ -786,7 +815,7 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
                 let hashes = line.prefix(while: { $0 == "#" }).count
                 if line.isEmpty { add(id, .spacer, 0) }
                 else if ["---", "***", "___"].contains(line) { add(id, .divider, 0) }
-                else if line.hasPrefix("!["), let image = preparedMarkdownImage(line) { add(id, .image(image.0, image.1), 0) }
+                else if line.hasPrefix("!["), let image = preparedMarkdownImage(line) { add(id, .image(math?.restore(image.0) ?? image.0, image.1), 0) }
                 else if line.hasPrefix("> ") {
                     let value = inline(String(line.dropFirst(2))); add(id, .quote(value), count(value))
                 } else if (1...6).contains(hashes), line.dropFirst(hashes).hasPrefix(" ") {
@@ -802,6 +831,8 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
         }
         self.rows = rows
         self.length = offset
+        self.mathHTML = mathHTML
+        self.mathCost = tableCost + mathHTML.values.reduce(0) { $0 + $1.utf16.count }
     }
 }
 
@@ -810,7 +841,7 @@ final class MarkdownDocumentCache: @unchecked Sendable {
     private let store = NSCache<NSString, PreparedMarkdownDocument>()
     init() { store.countLimit = 256; store.totalCostLimit = 4 * 1024 * 1024 }
     func cached(_ text: String) -> PreparedMarkdownDocument? { store.object(forKey: text as NSString) }
-    func insert(_ value: PreparedMarkdownDocument, text: String) { store.setObject(value, forKey: text as NSString, cost: text.utf16.count) }
+    func insert(_ value: PreparedMarkdownDocument, text: String) { store.setObject(value, forKey: text as NSString, cost: text.utf16.count + value.mathCost) }
 }
 
 actor MarkdownParsingWorker {

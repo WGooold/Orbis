@@ -16,4 +16,14 @@ class DshDesktopEntryTest {
         assertEquals(listOf("claude"), agentVariants("claude"))
         assertEquals(DrawerAgentFilter.DeepSeekDesktop, drawerAgentFilter("dshDesktop"))
     }
+
+    // DeepSeek Desktop sessions activate as headless like Codex Desktop, but the Desktop window is on the computer,
+    // so the launch notice must not say the session has no window there.
+    @Test
+    fun desktopEntriesOwnTheirComputerWindow() {
+        assertEquals(true, ownsComputerWindow("dshDesktop"))
+        assertEquals(true, ownsComputerWindow("codexDesktop"))
+        assertEquals(false, ownsComputerWindow("dsh"))
+        assertEquals(false, ownsComputerWindow("codex"))
+    }
 }

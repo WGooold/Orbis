@@ -90,35 +90,30 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     QDir().mkpath(m_dataDir);
     if (m_credentialDir.isEmpty()) m_credentialDir = m_dataDir;
     QDir().mkpath(m_credentialDir);
-    QString error;
-    auto stored = CredentialStore::load(activationPath(), &error);
-    // An upgrade must retain an activated installation's endpoint even when the
-    // compiled default changes. Fresh installs still use ORBIS_DEFAULT_RELAY.
-    if (!m_settings.contains("relayUrl") && validRelay(stored.value("relayUrl").toString())) {
-        m_settings.setValue("relayUrl", stored.value("relayUrl").toString());
-    }
-    if (CredentialStore::normalizedRelay(stored.value("relayUrl").toString()) == CredentialStore::normalizedRelay(relayUrl())) {
-        m_email = stored.value("email").toString();
-        m_credential = stored.value("credential").toString();
-        m_hostId = stored.value("hostId").toString();
-    }
-    if (!error.isEmpty()) setMessage(error);
+    // HOST-ACTIVITY-05: the macOS Keychain may wait for the user to authorize this read (a locked
+    // Keychain or a re-signed app). It used to run here on the UI thread, before the window existed.
+    loadStoredActivation();
     connect(&m_bridge, &QProcess::started, this, [this, automaticIntegrations] {
         command("initialize", {{"claudeIntegrationEnabled", automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
-            if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
-            m_hostId = actualId; m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
+            m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
             m_bridgeReady = true;
-            refreshRegistrationPolicy();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
             detectAgents(true);
             checkUpdatesInternal(false);
-            restoreActivation(relayUrl(), [this] {
-                if (!m_deferStartup && activated() && m_settings.value("runHost", true).toBool()) startHost();
+            // The stored activation names the Relay and Host ID to restore; it may still be waiting on the key store.
+            afterStoredActivation([this, actualId] {
+                if (!m_hostId.isEmpty() && m_hostId != actualId) { m_credential.clear(); setMessage("电脑身份与激活凭据不匹配，请重新验证邮箱"); }
+                m_hostId = actualId;
+                refreshRegistrationPolicy();
+                restoreActivation(relayUrl(), [this] {
+                    if (!m_deferStartup && activated() && m_settings.value("runHost", true).toBool()) startHost();
+                });
+                emit changed();
             });
             emit changed();
         });
@@ -139,11 +134,16 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
+        // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
+        m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false;
+        // 插件登记也属于这个内核进程；它退出后不再有“正在准备”。
+        m_preparations.clear();
         // The relaunched core starts paused; a change that was waiting to resume the old one no longer applies.
         m_settled.clear(); m_resumePending = false; m_relaySelectionPending = false; clearRunningFacts();
         // 接入分档说的是「现在接上了吗」：Host 核心没了就没有现在，留着会在诊断页上
         // 显示一个已经不成立的「已接入」。
         m_codexDesktop.clear();
+        m_dshDesktopOpen = "idle";
         m_claudeInstalled = false;
         m_claudeCompatible = false;
         m_claudeVersion.clear(); m_claudeMinimumVersion.clear(); m_claudeVersionError.clear();
@@ -187,6 +187,83 @@ void HostController::launchBridge() {
 static bool isProviderBackgroundRequest(const QString &method) {
     return method == "provider.check" || method == "provider.models";
 }
+/**
+ * HOST-LANE-01: requests the bridge runs beside connection commands (desktop-command-lanes.ts). They do
+ * not grey out unrelated controls; their own controls read activityKinds instead.
+ */
+static bool isBackgroundRequest(const QString &method) {
+    return isProviderBackgroundRequest(method) || method == "detect";
+}
+/**
+ * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
+ * 目的只有一个：按钮因为 busy 变灰时，用户能读到“正在做什么”。
+ */
+static QPair<QString, QString> activityFor(const QString &method, const QJsonObject &params) {
+    if (method == "initialize") return { "core", "正在启动 Host 核心" };
+    if (method == "start") return { "connect", "正在连接中继" };
+    if (method == "stop") return { "connect", "正在暂停连接" };
+    if (method == "detect") return { "agents", params.value("checkLatest").toBool() ? "正在检查 Agent 更新" : "正在检测 Agent" };
+    if (method == "pair") return { "pair", "正在生成二维码" };
+    // Registration runs over HTTP (api()); activation I/O has its own state, not a bridge command.
+    if (method == "replaceIdentity") return { "activation", "正在重新登记这台电脑" };
+    if (method == "restartDshServer") return { "dsh", "正在重启 DSH Server" };
+    // Not "agents": rows read that kind as "detection in progress", which a version switch is not.
+    if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
+    if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
+    if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
+    if (method == "rename") return { "host", "正在保存电脑名称" };
+    if (method.startsWith("provider.")) {
+        if (method == "provider.save") return { "provider", "正在保存供应商" };
+        if (method == "provider.saveCodexPreferences") return { "provider", "正在保存通用配置" };
+        if (method == "provider.switch") return { "provider", "正在切换供应商" };
+        if (method == "provider.remove") return { "provider", "正在删除供应商" };
+        if (method == "provider.open") return { "provider", "正在打开供应商" };
+        if (method == "provider.copy") return { "provider", "正在复制供应商" };
+        if (method == "provider.piDefault") return { "provider", "正在保存默认供应商" };
+        return { "provider", "正在读取供应商配置" };
+    }
+    return {};
+}
+QVariantMap HostController::activity() const {
+    if (m_activityOrder.isEmpty()) return {};
+    // Commands no longer finish in submission order (HOST-LANE-01). The connection card names the
+    // connection first; a detection that started earlier keeps running beside it.
+    auto id = m_activityOrder.first();
+    for (const auto candidate : m_activityOrder) {
+        const auto kind = m_activity.value(candidate).first;
+        if (kind == "core" || kind == "connect" || kind == "pair") { id = candidate; break; }
+    }
+    const auto entry = m_activity.value(id);
+    if (entry.first.isEmpty() && entry.second.isEmpty()) return {};
+    return { { "kind", entry.first }, { "text", entry.second } };
+}
+QStringList HostController::activityKinds() const {
+    QStringList kinds;
+    for (const auto id : m_activityOrder) {
+        const auto kind = m_activity.value(id).first;
+        if (!kind.isEmpty() && !kinds.contains(kind)) kinds.append(kind);
+    }
+    return kinds;
+}
+void HostController::updateActivity(const QString &method, const QString &text) {
+    for (auto it = m_methods.cbegin(); it != m_methods.cend(); ++it) {
+        if (it.value() == method && m_activity.contains(it.key())) m_activity[it.key()].second = text;
+    }
+}
+/**
+ * 与 startHost() 的守卫逐条对应，只用于告诉用户“现在为什么点了没用”。
+ * m_desiredRunning 表示已经在跑，不算阻塞。
+ */
+QString HostController::connectionBlockReason() const {
+    if (m_exiting) return "正在退出";
+    // A core that exited (crashed repeatedly, or an incomplete install) is not "starting"; its message says why.
+    if (!m_bridgeReady) return m_state == "error" ? "Host 核心未运行" : "Host 核心正在启动";
+    if (m_activationIO > 0) return m_systemAuthorizationWait ? "正在等待系统授权" : "正在读取激活信息";
+    if (m_relaySelectionPending) return "正在切换中继服务器";
+    if (!activated()) return "请先激活这台电脑";
+    if (agentInstalling()) return "正在安装 Agent，完成后会自动连接";
+    return {};
+}
 QStringList HostController::checkingProviderIds() const {
     QStringList ids;
     for (auto it = m_methods.cbegin(); it != m_methods.cend(); ++it) {
@@ -200,15 +277,32 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
-    if (!isProviderBackgroundRequest(method)) ++m_busy;
+    if (!isBackgroundRequest(method)) ++m_busy;
+    const auto activity = activityFor(method, params);
+    if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
     m_bridge.write(QJsonDocument(QJsonObject{{"id", id}, {"method", method}, {"params", params}}).toJson(QJsonDocument::Compact) + '\n');
     emit changed();
     return id;
 }
 void HostController::afterQueuedCommands(std::function<void()> next) {
+    // HOST-LANE-01: the bridge answers connection and background commands out of submission order, so
+    // the last request settling no longer means the earlier ones did. Wait for every request sent so far.
     const int last = m_nextId - 1;
-    if (m_pending.contains(last)) m_settled.insert(last, std::move(next));
-    else next();
+    if (!hasPendingUpTo(last)) { next(); return; }
+    m_settled.append({ last, std::move(next) });
+}
+bool HostController::hasPendingUpTo(int last) const {
+    for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it) if (it.key() <= last) return true;
+    return false;
+}
+void HostController::runSettled() {
+    // A continuation may queue more commands and more continuations; take only those that are due now.
+    for (int index = 0; index < m_settled.size();) {
+        if (hasPendingUpTo(m_settled.at(index).first)) { ++index; continue; }
+        auto next = m_settled.takeAt(index).second;
+        next();
+        index = 0;
+    }
 }
 bool HostController::pauseForChange() {
     if (!m_desiredRunning) return false;
@@ -224,7 +318,11 @@ void HostController::resumeAfterChange() {
     emit changed();
 }
 void HostController::clearRunningFacts() {
-    m_backends.clear(); m_runtimeCount = 0;
+    // A paused Host has released its DeepSeek Desktop connection; its lifecycle reports again on the next start.
+    m_backends.clear(); m_runtimeCount = 0; m_dshDesktop.clear();
+    // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
+    // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
+    m_preparations.remove("codex"); m_preparations.remove("dsh");
     QVariantList devices;
     for (const auto &entry : m_devices) { auto device = entry.toMap(); device.insert("path", "offline"); devices.append(device); }
     m_devices = devices;
@@ -234,8 +332,8 @@ void HostController::receiveLine(const QJsonObject &line) {
         int id = line.value("id").toInt();
         if (!m_pending.contains(id)) return;
         auto callback = m_pending.take(id); auto method = m_methods.take(id); m_requestParams.remove(id);
-        auto settled = m_settled.take(id);
-        if (!isProviderBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
+        if (!isBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
+        if (m_activity.remove(id)) m_activityOrder.removeAll(id);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
@@ -243,7 +341,7 @@ void HostController::receiveLine(const QJsonObject &line) {
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
         else if (callback) callback(line.value("result"));
-        if (settled) settled();
+        runSettled();
     } else {
         const auto event = line.value("event").toString();
         if (event == "state") {
@@ -289,7 +387,48 @@ void HostController::receiveLine(const QJsonObject &line) {
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
+        // HOST-PREP-01/04/05：Agent 后端与插件登记在后台准备（Codex 可能要下配套包，Claude 要跑插件命令，
+        // DeepSeek 要起本地服务）。它们只影响对应 Agent 何时可用，中继连接与手机早已就绪，
+        // 所以这里既不进 busy 也不碰 m_state。结束（ready / idle）即移除，失败保留到下次准备。
+        else if (event == "preparation") {
+            const auto kind = line.value("kind").toString();
+            const auto state = line.value("state").toString();
+            if (kind.isEmpty()) return;
+            if (state == "ready" || state == "idle") m_preparations.remove(kind);
+            else {
+                QVariantMap preparation{{ "state", state }};
+                if (line.contains("message")) preparation.insert("message", line.value("message").toString());
+                if (line.contains("download")) {
+                    const auto download = line.value("download").toObject();
+                    preparation.insert("receivedBytes", download.value("receivedBytes").toDouble());
+                    preparation.insert("totalBytes", download.value("totalBytes").toDouble());
+                }
+                m_preparations.insert(kind, preparation);
+            }
+            static const QHash<QString, QString> names{{"codex", "Codex 终端接入"}, {"claude", "Claude Code 插件登记"}, {"dsh", "DeepSeek Harness 后端"}};
+            const auto name = names.value(kind, kind);
+            if (state == "ready") appendLog(name + "已就绪");
+            else if (state == "error") appendLog(name + "失败：" + line.value("message").toString());
+            emit changed();
+            return;
+        }
+        // HOST-ACTIVITY-04: a DSH Server restart names the stage it is waiting on.
+        else if (event == "dshServer") {
+            static const QHash<QString, QString> stages{
+                {"waiting", "正在等待另一个 DSH Server 启动完成"}, {"stopping", "正在停止 DSH Server"},
+                {"starting", "正在启动 DSH Server"}, {"connecting", "正在连接 DSH Server"}, {"applying", "正在应用 DeepSeek 供应商配置"}};
+            const auto text = stages.value(line.value("stage").toString());
+            if (!text.isEmpty()) updateActivity("restartDshServer", text);
+        }
+        else if (event == "dshDesktop") { m_dshDesktop = line.value("status").toObject().toVariantMap(); }
+        // The open may wait for the user to quit a Desktop Orbis did not open, so it reports beside the command queue.
+        else if (event == "dshDesktopOpen") {
+            m_dshDesktopOpen = line.value("state").toString("idle");
+            if (line.contains("error")) setMessage(line.value("error").toString());
+        }
         else if (event == "claudeStatus") {
+            // 检测进行中时“未安装”只代表还没测完，界面不能把它当成结论。
+            m_claudeDetecting = line.value("detecting").toBool(false);
             m_claudeInstalled = line.value("installed").toBool();
             m_claudeCompatible = line.value("compatible").toBool(m_claudeInstalled);
             m_claudeVersion = line.value("version").toString();
@@ -441,10 +580,10 @@ void HostController::saveActivation(const QJsonValue &value, const QString &succ
     obj.insert("relayUrl", relayUrl());
     const auto path = activationPath();
     const auto generation = m_activationGeneration;
-    ++m_activationIO; emit changed();
+    beginActivationIO(); emit changed();
     auto *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, obj, successMessage, generation, start] {
-        const auto error = watcher->result(); watcher->deleteLater(); --m_activationIO;
+        const auto error = watcher->result(); watcher->deleteLater(); endActivationIO();
         if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
         if (!error.isEmpty()) { setMessage(error); emit changed(); return; }
         m_email = obj.value("email").toString(); m_credential = obj.value("credential").toString();
@@ -455,14 +594,66 @@ void HostController::saveActivation(const QJsonValue &value, const QString &succ
         QString error; CredentialStore::save(path, obj, &error); return error;
     }));
 }
+void HostController::beginActivationIO() {
+    if (m_activationIO++ > 0) return;
+#ifdef Q_OS_MACOS
+    // HOST-ACTIVITY-05: a Keychain read normally returns at once. Still waiting after a moment almost
+    // always means macOS is asking the user to allow it, so name that instead of "reading".
+    const auto generation = ++m_activationIOGeneration;
+    QTimer::singleShot(1500, this, [this, generation] {
+        if (m_activationIO > 0 && generation == m_activationIOGeneration) { m_systemAuthorizationWait = true; emit changed(); }
+    });
+#endif
+}
+void HostController::endActivationIO() {
+    m_activationIO = qMax(0, m_activationIO - 1);
+    if (m_activationIO == 0) { m_systemAuthorizationWait = false; ++m_activationIOGeneration; }
+}
+void HostController::loadStoredActivation() {
+    const auto path = activationPath();
+    const auto generation = m_activationGeneration;
+    const auto loader = s_credentialLoader ? s_credentialLoader : CredentialLoader([](const QString &file, QString *error) { return CredentialStore::load(file, error); });
+    m_credentialsLoading = true; beginActivationIO();
+    using Result = QPair<QJsonObject, QString>;
+    auto *watcher = new QFutureWatcher<Result>(this);
+    connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, generation] {
+        const auto result = watcher->result(); watcher->deleteLater(); endActivationIO();
+        m_credentialsLoading = false;
+        const auto &stored = result.first;
+        // An upgrade must retain an activated installation's endpoint even when the
+        // compiled default changes. Fresh installs still use ORBIS_DEFAULT_RELAY.
+        if (!m_settings.contains("relayUrl") && validRelay(stored.value("relayUrl").toString())) {
+            m_settings.setValue("relayUrl", stored.value("relayUrl").toString());
+        }
+        // A restore or save that started meanwhile owns the newer activation.
+        if (generation == m_activationGeneration
+            && CredentialStore::normalizedRelay(stored.value("relayUrl").toString()) == CredentialStore::normalizedRelay(relayUrl())) {
+            m_email = stored.value("email").toString();
+            m_credential = stored.value("credential").toString();
+            m_hostId = stored.value("hostId").toString();
+        }
+        if (!result.second.isEmpty()) setMessage(result.second);
+        auto pending = std::move(m_afterStoredActivation); m_afterStoredActivation.clear();
+        for (auto &next : pending) if (!m_shutdown) next();
+        emit changed();
+    });
+    watcher->setFuture(QtConcurrent::run(&m_activationPool, [path, loader] {
+        QString error; const auto value = loader(path, &error);
+        return Result{value, error};
+    }));
+}
+void HostController::afterStoredActivation(std::function<void()> next) {
+    if (m_credentialsLoading) m_afterStoredActivation.append(std::move(next));
+    else next();
+}
 void HostController::restoreActivation(const QString &relay, std::function<void()> done) {
     const auto generation = ++m_activationGeneration;
     const auto path = activationPath(), hostId = m_hostId;
-    ++m_activationIO; emit changed();
+    beginActivationIO(); emit changed();
     using Result = QPair<QJsonObject, QString>;
     auto *watcher = new QFutureWatcher<Result>(this);
     connect(watcher, &QFutureWatcher<Result>::finished, this, [this, watcher, relay, generation, done = std::move(done)] {
-        const auto result = watcher->result(); watcher->deleteLater(); --m_activationIO;
+        const auto result = watcher->result(); watcher->deleteLater(); endActivationIO();
         if (m_shutdown || generation != m_activationGeneration) { emit changed(); return; }
         if (!result.second.isEmpty()) {
             // An unreadable credential store still leaves this Relay's activation and key recovery available now.
@@ -489,11 +680,11 @@ void HostController::invalidateActivation() {
     setMessage("激活凭据已失效，请重新激活");
     // Native key stores may wait on the OS; persist the rejected state off the UI thread.
     const auto generation = m_activationGeneration;
-    ++m_activationIO;
+    beginActivationIO();
     auto *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, generation] {
         const auto error = watcher->result(); watcher->deleteLater();
-        --m_activationIO;
+        endActivationIO();
         if (!m_shutdown && generation == m_activationGeneration) {
             if (!error.isEmpty()) setMessage("无法重置激活凭据：" + error);
             // HOST-ACT-17: policy may have arrived while secure storage was still busy. Retry the
@@ -857,7 +1048,7 @@ QString HostController::diagnostics() const {
         for (const auto &key : {"path", "entry", "error", "installations", "copies"}) agent.remove(key);
         agents.append(agent);
     }
-    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"logs", QJsonArray::fromStringList(m_logs.snapshot())}};
+    QJsonObject result{{"version", version()}, {"state", m_state}, {"activated", activated()}, {"devices", m_devices.size()}, {"agents", agents}, {"codexDesktop", QJsonObject::fromVariantMap(m_codexDesktop)}, {"dshDesktop", QJsonObject::fromVariantMap(m_dshDesktop)}, {"logs", QJsonArray::fromStringList(m_logs.snapshot())}};
     return QString::fromUtf8(QJsonDocument(result).toJson());
 }
 void HostController::copyDiagnostics() { QApplication::clipboard()->setText(diagnostics()); setMessage("脱敏诊断信息已复制"); }

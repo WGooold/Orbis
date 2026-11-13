@@ -27,6 +27,7 @@ import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
 import { DshRuntime } from "./dsh-runtime.js";
+import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
@@ -148,6 +149,25 @@ async function runHost(
     catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
   }
 
+  // DeepSeek Desktop (ADR-0076): opened by this Host on a phone request and attached through its own API Peer.
+  // Stopping releases only that connection (DSH-DESKTOP-07).
+  let dshDesktopRuntime: DshRuntime | undefined;
+  const dshDesktopLifecycle = new DshDesktopLifecycle({
+    stateDir,
+    log: line => console.log(`[dsh-desktop] ${line}`),
+    onStatusChange: status => {
+      console.log(`[dsh-desktop] ${status.state} · ${status.reason}`);
+      service?.announceDshDesktopStatus();
+    },
+  });
+  const dshDesktopLaunchable = await dshDesktopLifecycle.isInstalled();
+  const connectDshDesktop = async (existingOnly: boolean): Promise<DshRuntime | undefined> => {
+    if (dshDesktopRuntime?.isReady()) return dshDesktopRuntime;
+    const runtime = existingOnly ? await dshDesktopLifecycle.connectExisting() : await dshDesktopLifecycle.ensure();
+    if (runtime) dshDesktopRuntime = runtime;
+    return runtime;
+  };
+
   try {
     service = await HostService.create({
       providers,
@@ -177,6 +197,11 @@ async function runHost(
         return runtime;
       },
       dshLaunchable,
+      dshDesktopLaunchable,
+      dshDesktopStatus: () => dshDesktopLifecycle.status,
+      ensureDshDesktopRuntime: () => connectDshDesktop(false),
+      recoverDshDesktopRuntime: () => connectDshDesktop(true),
+      onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
       claude: {},
       log: (line) => console.log(`[host] ${line}`),
       onStateChange: (state) => console.log(`[host] relay ${state}`),
@@ -190,6 +215,7 @@ async function runHost(
 
     await service.start();
     await codexDesktopLifecycle?.probe().catch(error => console.log(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
+    dshDesktopLifecycle.watch();
     console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
     if (service.lan !== undefined) {
       const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
@@ -205,7 +231,10 @@ async function runHost(
     await waitForSignal();
   } finally {
     try { await service?.stop(); }
-    finally { await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop()]); }
+    finally {
+      dshDesktopLifecycle.stop();
+      await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop(), dshDesktopRuntime?.stop()]);
+    }
   }
   console.log("[host] 已退出");
 }

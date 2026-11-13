@@ -9,6 +9,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [ADR-0077](adr/0077-cli-host-and-headless-validation.md)：CLI Host 产品化与无头运行调研；现有入口、逐后端缺口、Linux 有限证据及分阶段验证方案，提案未实现、未发布。
 - [ADR-0078](adr/0078-linux-desktop-host.md)：Linux 桌面 Host 适配；凭据、终端 / 浏览器、桌面集成、打包更新与验证门槛，提案未实现、未构建。
 - [ADR-0079](adr/0079-codex-vscode-integration.md)：Codex VS Code 独立来源与 app-server 接入边界；包装器为候选方案，dev-only 设置和 transport 尚待原型验证，未实现。
+- [ADR-0080](adr/0080-mobile-math-rendering.md)：移动端通用数学公式渲染；共用离线引擎、LaTeX / AMS 覆盖、原文回退、资源边界及验证证据，待用户验证。
+- [ADR-0081](adr/0081-host-startup-blocking-and-feedback.md)：Host 启动阻塞与界面反馈；终端 Codex 服务端包、Claude 插件登记、DSH 预启动与本地路由移出连接关键路径，桥命令分道（暂停可越过在途连接），钥匙串读取移出 UI 线程，统一的进行中说明、检测中三态与 DSH 重启阶段，并记录对首轮提交的审查。
 
 - [QUIC 诊断复核](architecture/native-quic-peer-project-review.md)。
 

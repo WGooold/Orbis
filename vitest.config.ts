@@ -15,7 +15,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/**/*.test.ts", "scripts/**/*.test.mjs"],
+    include: ["packages/**/*.test.ts", "scripts/**/*.test.mjs", "shared/math-tests/**/*.test.mjs"],
     exclude: ["packages/claude-mod/tests/**/*.test.ts"],
     testTimeout: 10_000,
   },

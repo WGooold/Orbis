@@ -1033,6 +1033,32 @@ export class HostService {
     this.#broadcastDeviceReady();
   }
 
+  /** Attach the terminal Codex backend once its app-server is ready, so Relay connectivity never waits for it. */
+  attachCodexRuntime(runtime: CodexRuntime): void {
+    if (runtime.kind !== "codex") return;
+    const existing = this.#backends.find(backend => backend.kind === "codex");
+    if (existing !== undefined && existing !== runtime) this.detachCodexRuntime(existing as CodexRuntime);
+    this.#options.codexRuntime = runtime;
+    this.#attachCodexBackend(runtime);
+    runtime.markStarted();
+    this.#options.log?.(`Codex 后端已就绪（runtimeId=${runtime.runtimeId}）`);
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  /** Remove the terminal Codex backend (paused or being replaced). Terminal sessions go offline. */
+  detachCodexRuntime(runtime: CodexRuntime): void {
+    const index = this.#backends.indexOf(runtime);
+    if (index < 0 || runtime.kind !== "codex") return;
+    runtime.onMetadataChange = undefined;
+    runtime.onOffline = undefined;
+    runtime.onArchiveChange = undefined;
+    this.#backends.splice(index, 1);
+    if (this.#options.codexRuntime === runtime) delete this.#options.codexRuntime;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
   /** Attach a newly connected desktop proxy and immediately publish its capability. */
   attachCodexDesktopRuntime(runtime: CodexRuntime): void {
     const existing = this.#backends.find(backend => backend.kind === "codexDesktop");
@@ -1348,6 +1374,14 @@ export class HostService {
     return this.#ensureDshRuntime(true, kind);
   }
 
+  /**
+   * HOST-PREP-05: the desktop's DSH prestart, run after the Relay is online. It shares the slot with
+   * recovery and App requests, so a single Web service connection is started however they interleave.
+   */
+  prepareDshRuntime(): Promise<DshRuntime | undefined> {
+    return this.#ensureDshRuntime(false, "dsh");
+  }
+
   #scheduleDshRecovery(kind: DshKind = "dsh"): void {
     const slot = this.#dsh[kind];
     if (!(kind === "dsh" ? this.#options.recoverDshRuntime : this.#options.recoverDshDesktopRuntime) || this.#providerFactsClosing || this.#serviceClosed) return;
@@ -1621,15 +1655,27 @@ export class HostService {
       this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
     }
 
-    for (const kind of DSH_KINDS) {
-      try { await this.#dsh[kind].runtime?.start(); }
-      catch (error) { this.#options.log?.(`${kind === "dsh" ? "DeepSeek Web" : "DeepSeek Desktop"} 会话发现暂时失败，将自动重试：${describeError(error)}`); }
-    }
     await relay.start();
     this.#modelLifecycle = "running";
-    for (const kind of DSH_KINDS) this.#scheduleDshRecovery(kind);
+    // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
+    // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
+    // prestarted backend settled, so it cannot open a second connection beside one still starting.
+    for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
     this.refreshHostFacts();
     void this.refreshProviderFacts();
+  }
+
+  async #startDshBackend(kind: DshKind): Promise<void> {
+    const runtime = this.#dsh[kind].runtime;
+    if (runtime === undefined || this.#providerFactsClosing || this.#serviceClosed) return;
+    try { await runtime.start(); }
+    catch (error) {
+      this.#options.log?.(`${kind === "dsh" ? "DeepSeek Web" : "DeepSeek Desktop"} 会话发现暂时失败，将自动重试：${describeError(error)}`);
+      return;
+    }
+    if (this.#providerFactsClosing || this.#serviceClosed) return;
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   async stop(): Promise<void> {
@@ -1645,7 +1691,8 @@ export class HostService {
     this.#bootstrapReplayTimers.clear();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
-    for (const kind of DSH_KINDS) await this.#dsh[kind].starting?.catch(() => {});
+    // HOST-PREP-05: a DeepSeek start still in flight (a Web service lock may take a minute) does not hold
+    // the pause. Its pending attach sees #providerFactsClosing and stops the runtime it receives.
     this.#toolContentService.close();
     await this.#fileChangeTurns.close();
     await this.#fileChanges.close();
@@ -2629,7 +2676,10 @@ export class HostService {
           try {
             await this.#ensureDshRuntime(false, kind);
             backend = this.#backends.find(candidate => candidate.kind === kind);
-          } catch (error) { throw new ActivationError("agent_unsupported", `${kind === "dsh" ? "DeepSeek Harness" : "DeepSeek Harness Desktop"} 启动或接入失败：${describeError(error)}`); }
+          } catch (error) {
+            // Desktop failures are already short states (DSH-DESKTOP-09), shown on the phone as they are.
+            throw new ActivationError("agent_unsupported", kind === "dsh" ? `DeepSeek Harness 启动或接入失败：${describeError(error)}` : describeError(error));
+          }
         }
         if (backend === undefined) {
           throw new ActivationError(
@@ -2639,7 +2689,7 @@ export class HostService {
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未安装，或 Host 无法启动并接入它"
               : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它"
-              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek Harness Desktop 未安装，或 Host 无法接入它" : "未知的 agent 类型",
+              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek 桌面版不可用" : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -2662,12 +2712,14 @@ export class HostService {
         } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
       }
       if ((resumeKind === "dsh" || resumeKind === "dshDesktop") && this.#backends.every(backend => backend.kind !== resumeKind || !backend.isReady())) {
-        const product = resumeKind === "dsh" ? "DeepSeek Harness" : "DeepSeek Harness Desktop";
+        const product = resumeKind === "dsh" ? "DeepSeek Harness" : "DeepSeek 桌面版";
         try {
           const runtime = await this.#ensureDshRuntime(false, resumeKind);
           if (!runtime?.isReady()) throw new Error(`${product} 没有完成握手`);
         }
-        catch (error) { throw new ActivationError("agent_unsupported", `${product} 启动或接入失败：${describeError(error)}`); }
+        catch (error) {
+          throw new ActivationError("agent_unsupported", resumeKind === "dsh" ? `${product} 启动或接入失败：${describeError(error)}` : describeError(error));
+        }
       }
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;

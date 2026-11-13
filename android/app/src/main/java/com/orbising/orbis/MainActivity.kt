@@ -475,7 +475,7 @@ internal fun RemoteApp(
             val kind = agentBrand(activation.agentKind).title
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
-            val suffix = if (activation.spawnMode == "headless" && activation.agentKind != "codexDesktop") L10n.tr("，此会话无头（电脑上无窗口）") else ""
+            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind)) L10n.tr("，此会话无头（电脑上无窗口）") else ""
             Toast.makeText(context, L10n.tr("已在电脑上拉起 {0} 进程{1}，等待会话上线…", kind, suffix), Toast.LENGTH_LONG).show()
             model.clearActivationNotice()
         }
