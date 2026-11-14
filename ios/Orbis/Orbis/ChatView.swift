@@ -60,28 +60,85 @@ private struct ComposerText {
 /// IOS-CHAT-01: rows receive the small readiness value they render and a stable action owner.
 /// Progress on the connection is not an observation dependency of each text/tool subtree.
 struct ChatReadContext: Equatable {
-    let connection: HostConnection
-    let runtimeId: String
-    let sessionId: String?
+    let store: OrbisStore
+    let target: ChatActionContext
     let canRead: Bool
+    var connection: HostConnection { target.owner }
+    var runtimeId: String { target.runtimeId ?? "" }
+    var sessionId: String? { target.sessionId }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.connection === rhs.connection && lhs.runtimeId == rhs.runtimeId &&
-            lhs.sessionId == rhs.sessionId && lhs.canRead == rhs.canRead
+        lhs.store === rhs.store && lhs.target == rhs.target && lhs.canRead == rhs.canRead
     }
 
     @MainActor private var ownsTarget: Bool {
-        connection.selectedRuntime?.runtimeId == runtimeId && connection.selectedRuntime?.sessionId == sessionId
+        target.matches(store)
     }
-    @MainActor func openTool(_ locator: ToolLocator) -> Bool {
-        guard canRead, connection.canSend, ownsTarget else { return false }
-        connection.toolContent.open(runtimeId: runtimeId, locator: locator)
-        return true
+    @MainActor var admitsRead: Bool { canRead && connection.canSend && ownsTarget }
+    @MainActor func openTool(_ locator: ToolLocator) -> ToolContentReader.PresentationToken? {
+        guard admitsRead else { return nil }
+        return connection.toolContent.open(runtimeId: runtimeId, locator: locator)
     }
-    @MainActor func openEntry(_ entryId: String) -> String? {
-        guard canRead, connection.canSend, ownsTarget else { return nil }
-        connection.previewEntry(entryId)
-        return connection.entryPreview?.entryId ?? entryId
+    @MainActor func openEntry(_ entryId: String) -> EntryPreviewHandle? {
+        guard admitsRead else { return nil }
+        return connection.previewEntry(entryId)
+    }
+    @MainActor func retryEntry(_ expected: EntryPreviewHandle) -> EntryPreviewHandle? {
+        guard admitsRead else { return nil }
+        return connection.retryPreview(expected: expected)
+    }
+}
+
+private struct ChatToolPresentation {
+    let context: ChatReadContext
+    let token: ToolContentReader.PresentationToken
+}
+private struct ChatEntryPresentation {
+    let context: ChatReadContext
+    let handle: EntryPreviewHandle
+}
+
+/// Each presentation has its own overlay owner and immutable cleanup value.
+/// Replacing a row's detail retires only that overlay, even if a new one is above it.
+private struct ChatToolSheet: View {
+    let presentation: ChatToolPresentation
+    let title: String
+    let onDismiss: () -> Void
+    let onReplace: () -> Void
+    @State private var open = true
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .orbisBottomSheet(isPresented: $open, onDismiss: {
+                presentation.context.connection.toolContent.close(expected: presentation.token)
+                onDismiss()
+            }, retireIndependently: true) {
+                ToolDetailView(reader: presentation.context.connection.toolContent,
+                    presentation: presentation.token, context: presentation.context, title: title).orbisSheet([.large])
+                    #if DEBUG
+                    .overlay(alignment: .topTrailing) {
+                        if ProcessInfo.processInfo.arguments.contains("--preview-replace-detail") {
+                            Button("Replace detail", action: onReplace).font(.system(size: 10)).frame(minHeight: 44)
+                                .accessibilityIdentifier("preview-detail-replace")
+                                .accessibilityValue(String(describing: presentation.token))
+                        }
+                    }
+                    #endif
+            }
+    }
+}
+
+private struct ChatEntrySheet: View {
+    let presentation: ChatEntryPresentation
+    let onDismiss: () -> Void
+    @State private var open = true
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .orbisBottomSheet(isPresented: $open, onDismiss: {
+                presentation.handle.owner.dismissPreview(expected: presentation.handle)
+                onDismiss()
+            }, retireIndependently: true) {
+                FullMessageView(context: presentation.context, initialHandle: presentation.handle).orbisSheet([.large])
+            }
     }
 }
 
@@ -93,6 +150,15 @@ private enum ChatFollow {
     static let topPadding: CGFloat = 4
 }
 
+private struct ChatInterestOwnership {
+    let target: ChatActionContext
+    let lease: AgentInterestLease
+}
+private struct ChatGitPollKey: Equatable {
+    let target: ChatActionContext
+    let active: Bool
+}
+
 /// IOS-CHAT-02: stable page shell. Regional publishers update their own subtrees.
 struct ChatView: View {
     let store: OrbisStore
@@ -102,12 +168,16 @@ struct ChatView: View {
     @ObservedObject private var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.orbisPageActivity) private var pageActivity
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.orbisVisualActive) private var visualActive
     let onBack: () -> Void
     let onHistory: () -> Void
     let onDownloads: () -> Void
     @State private var sendFlight = MessageSendFlight()
     @State private var downloadFlight = DownloadFlight()
     @State private var acceptedSends = PassthroughSubject<Set<String>, Never>()
+    @State private var interest: ChatInterestOwnership?
     @FocusState private var composerFocused: Bool
     private var runtime: RuntimeSummary { screens.snapshot.runtime ?? fallbackRuntime }
     private var accent: Color { OrbisPalette(scheme).agent(screens.snapshot.kind) }
@@ -139,23 +209,34 @@ struct ChatView: View {
             .downloadFlightHost(downloadFlight).messageSendFlightHost(sendFlight)
             .onChange(of: composerFocused) { _, focused in if target.matches(store) { store.noteComposerFocus(focused) } }
             .onAppear { if target.matches(store), store.takeComposerFocus(runtime.runtimeId) { DispatchQueue.main.async { if target.matches(store) { composerFocused = true } } } }
-            .modifier(TurnFileReviewPresenter(changes: target.owner.turnFileChanges))
-            .orbisTaskAfterArrival(id: target.identity) {
-                guard target.matches(store) else { return }
-                let runtime = self.runtime, agent = target.owner.agentState
-                agent.setInterest(runtime: runtime, owner: "chat", domains: AgentState.chatDomains)
-                defer { agent.setInterest(runtime: runtime, owner: "chat", domains: []) }
-                store.refreshWorkingBranch()
+            .modifier(TurnFileReviewPresenter(changes: target.owner.turnFileChanges,
+                context: ChatReadContext(store: store, target: target, canRead: screens.snapshot.canSend)))
+            .onChange(of: target, initial: true) { _, _ in reconcileInterest() }
+            .onChange(of: pageActivity.hasArrived, initial: true) { _, _ in reconcileInterest() }
+            #if DEBUG
+            .onChange(of: pageActivity.pollsGit(sceneActive: scenePhase == .active), initial: true) { _, active in
+                ChatLifecycleProbe.shared.gitActive = active
+            }
+            .onChange(of: visualActive, initial: true) { _, active in ChatLifecycleProbe.shared.visualActive = active }
+            #endif
+            .onDisappear { releaseInterest() }
+            .task(id: ChatGitPollKey(target: target, active: pageActivity.pollsGit(sceneActive: scenePhase == .active))) {
+                guard !Task.isCancelled, pageActivity.pollsGit(sceneActive: scenePhase == .active), target.matches(store) else { return }
+                #if DEBUG
+                ChatLifecycleProbe.shared.gitActive = true
+                #endif
+                target.owner.refreshWorkingBranch()
                 while !Task.isCancelled {
-                    do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
-                    guard target.matches(store) else { return }
-                    store.refreshWorkingBranch()
+                    do { try await Task.sleep(for: gitPollInterval) } catch { return }
+                    guard !Task.isCancelled, target.matches(store) else { return }
+                    target.owner.refreshWorkingBranch()
                 }
             }
             #if DEBUG
             .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
             .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
             .overlay(alignment: .topLeading) { if ChatUpdateProbe.enabled { ChatUpdateReport() } }
+            .overlay(alignment: .bottomLeading) { if ChatLifecycleProbe.enabled { ChatLifecycleReport() } }
             .overlay(alignment: .topTrailing) {
                 if ProcessInfo.processInfo.arguments.contains("--preview-source-controls") { PreviewChatSourceControl().padding(.top, 60) }
             }
@@ -163,6 +244,32 @@ struct ChatView: View {
                 if ChatComposerLayoutProbe.enabled { PreviewComposerLayoutControl().padding(.top, 60) }
             }
             #endif
+    }
+
+    private var gitPollInterval: Duration {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-fast-git-poll") { return .milliseconds(350) }
+        #endif
+        return .seconds(15)
+    }
+
+    private func reconcileInterest() {
+        if let interest, interest.target != target { releaseInterest() }
+        guard interest == nil, pageActivity.hasArrived, target.matches(store), let runtimeId = target.runtimeId,
+              let lease = target.owner.acquireChatInterest(runtimeId: runtimeId, sessionId: target.sessionId) else { return }
+        interest = ChatInterestOwnership(target: target, lease: lease)
+        #if DEBUG
+        ChatLifecycleProbe.shared.acquired()
+        #endif
+    }
+
+    private func releaseInterest() {
+        guard let held = interest else { return }
+        held.target.owner.releaseChatInterest(held.lease)
+        interest = nil
+        #if DEBUG
+        ChatLifecycleProbe.shared.released()
+        #endif
     }
 }
 
@@ -177,6 +284,7 @@ private struct ChatNoticesRegion<Question: View>: View, Equatable {
     let onBack: () -> Void
     @ViewBuilder let question: () -> Question
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.orbisVisualActive) private var visualActive
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.store === rhs.store && lhs.screens === rhs.screens && lhs.target == rhs.target && lhs.showQuestion == rhs.showQuestion &&
         lhs.latestQuestion == rhs.latestQuestion && lhs.fallbackRuntime.runtimeId == rhs.fallbackRuntime.runtimeId &&
@@ -203,12 +311,12 @@ private struct ChatNoticesRegion<Question: View>: View, Equatable {
                 }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
                 ZStack(alignment: .top) {
-                    if showQuestion && !hasNotices { question().transition(reduceMotion ? .identity : InteractionMotion.notice) }
+                    if showQuestion && !hasNotices { question().transition(reduceMotion || !visualActive ? .identity : InteractionMotion.notice) }
                     if hasNotices {
                         RuntimeNoticesView(store: store, screens: screens, target: target, updates: screens.notices, runtimeId: runtime.runtimeId,
                                            supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
                     }
-                }.animation(reduceMotion ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
+                }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
             }
         }
     }
@@ -301,6 +409,7 @@ private struct ChatTranscriptView: View {
     @ObservedObject var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.orbisVisualActive) private var visualActive
     @FocusState.Binding var composerFocused: Bool
     let sendFlight: MessageSendFlight
     let acceptedSends: PassthroughSubject<Set<String>, Never>
@@ -378,11 +487,10 @@ private struct ChatTranscriptView: View {
         let kind = self.kind
         let transcript = facts.transcript
         let questionID = latestQuestion?.messageId
-        let readContext = ChatReadContext(connection: target.owner, runtimeId: target.runtimeId ?? runtime.runtimeId,
-                                         sessionId: target.sessionId, canRead: target.matches(store) && facts.canSend)
+        let readContext = ChatReadContext(store: store, target: target, canRead: facts.canSend)
         let streamingMessageIds = facts.connection == .secured && !facts.syncing && !facts.cached ? facts.streaming : []
         replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
-            ready: policy.hasPositioned && facts.connection == .secured && !facts.syncing && !facts.cached,
+            ready: visualActive && policy.hasPositioned && facts.connection == .secured && !facts.syncing && !facts.cached,
             following: policy.following, now: ProcessInfo.processInfo.systemUptime)
         let rewindOptions = facts.rewind
         return GeometryReader { viewport in
@@ -415,7 +523,7 @@ private struct ChatTranscriptView: View {
                                 firstRow: row.id == transcript.firstMessageId,
                                 questionID: row.id == questionID ? questionID : nil))
                     }
-                    LiveToolsView(inventory: target.owner.toolInventories, runtimeId: runtime.runtimeId, canRead: target.matches(store) && facts.canSend).id("chat-live-tools")
+                    LiveToolsView(inventory: target.owner.toolInventories, runtimeId: runtime.runtimeId, context: readContext).id("chat-live-tools")
                         .modifier(ChatRowViewportObserver(viewportHeight: viewport.size.height))
                     // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
                     Color.clear.frame(height: 4).id(ChatFollow.bottomID)
@@ -460,12 +568,12 @@ private struct ChatTranscriptView: View {
                             .transition(.opacity)
                     }
                 }
-                .animation(reduceMotion ? nil : .orbisFade, value: policy.showJump)
+                .animation(reduceMotion || !visualActive ? nil : .orbisFade, value: policy.showJump)
                 .onChange(of: facts.historyRevision) { _, _ in
                     sendFlight.clear()
                     updatePolicy { $0.resetContext() }
                 }
-                .animation(reduceMotion ? nil : .orbisFade, value: facts.actionFeedback)
+                .animation(reduceMotion || !visualActive ? nil : .orbisFade, value: facts.actionFeedback)
                 .onChange(of: facts.historyPageRevision) { _, _ in
                     // Native identity anchoring preserves the current row AND its offset,
                     // including if the reader scrolled while the older page was in flight.
@@ -556,7 +664,7 @@ private struct ChatTranscriptView: View {
         return ids.compactMap { id in tasks.first { $0.id == id } }
     }
     private func beginSendFeedback(existing: Set<String>) {
-        guard target.matches(store) else { return }
+        guard visualActive, target.matches(store) else { return }
         // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
         let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
         guard created.count == 1, let send = created.first else { return }
@@ -1031,6 +1139,7 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
 struct ChatMessageRow: View, Equatable {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @Environment(\.orbisVisualActive) private var visualActive
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
@@ -1089,10 +1198,10 @@ struct ChatMessageRow: View, Equatable {
                     }
                     if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
-                        TurnChangeCards(changes: changes, anchors: changeAnchors)
+                        TurnChangeCards(changes: changes, context: readContext, anchors: changeAnchors)
                     }
                     ForEach(timings, id: \.turnId) { timing in
-                        TimelineView(.animation(minimumInterval: 1, paused: timing.durationMs != nil)) { context in
+                        TimelineView(.animation(minimumInterval: 1, paused: !visualActive || timing.durationMs != nil)) { context in
                             let elapsed = timing.durationMs.map(Double.init) ?? max(0, context.date.timeIntervalSince1970 * 1000 - Double(timing.startedAt))
                             Text(String(format: timing.durationMs == nil ? L10n.tr("本轮已运行 %.1f 秒") : L10n.tr("本轮耗时 %.1f 秒"), elapsed / 1000))
                                 .font(.orbisCaption(mono: true)).foregroundStyle(OrbisPalette(scheme).secondary)
@@ -1338,38 +1447,50 @@ private struct TruncatedMessageContent: View {
     @Environment(\.colorScheme) private var scheme
     let message: ChatMessage
     let readContext: ChatReadContext?
-    @State private var fullOpen = false
-    @State private var fullEntryId = ""
+    @State private var presentation: ChatEntryPresentation?
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 12) {
             if let truncated = message.content.first(where: { $0.truncated == true }) {
                 OrbisStatusWithInfo(title: L10n.tr("内容已截断"), message:
                     (truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
                     + (readContext?.canRead == true ? "" : "\n" + L10n.tr("连接电脑并继续此会话后可取回完整内容。")))
                 OrbisTextButton(title: L10n.tr("查看完整内容"), symbol: "doc.text.magnifyingglass") {
-                    guard let entryId = readContext?.openEntry(message.messageId) else { return }
-                    fullEntryId = entryId
-                    fullOpen = true
+                    guard let readContext, let handle = readContext.openEntry(message.messageId) else { return }
+                    presentation = ChatEntryPresentation(context: readContext, handle: handle)
                 }.disabled(readContext?.canRead != true).accessibilityIdentifier("full-entry-" + message.messageId)
             }
-        }.orbisBottomSheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
+        }.background {
+            if let presentation {
+                ChatEntrySheet(presentation: presentation) {
+                    if self.presentation?.handle == presentation.handle { self.presentation = nil }
+                }.id(presentation.handle.requestId)
+            }
+        }
     }
 }
 
 private struct FullMessageView: View {
-    @EnvironmentObject private var store: OrbisStore
+    let context: ChatReadContext
+    @ObservedObject private var connection: HostConnection
     @OrbisDismiss private var dismiss
+    @OrbisRetire private var retire
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
-    let entryId: String
-    private var preview: EntryPreview? { store.entryPreview?.entryId == entryId ? store.entryPreview : nil }
+    @State private var handle: EntryPreviewHandle
+    init(context: ChatReadContext, initialHandle: EntryPreviewHandle) {
+        self.context = context; _connection = ObservedObject(wrappedValue: initialHandle.owner)
+        _handle = State(initialValue: initialHandle)
+    }
+    private var preview: EntryPreview? { connection.ownsEntryPreview(handle) ? connection.entryPreview : nil }
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr("完整内容"), closes: true, back: { dismiss() }) {
+            OrbisPageHeader(title: L10n.tr("完整内容"), closes: true, back: {
+                if connection.ownsEntryPreview(handle) { dismiss() } else { retire() }
+            }) {
                 OrbisCopyButton(label: L10n.tr("复制完整内容"), size: 40) {
                     guard let message = preview?.message else { return "" }
                     return fullMessageText(message)
-                }.disabled(preview?.message == nil).accessibilityIdentifier("copy-full-entry-" + entryId)
+                }.disabled(preview?.message == nil).accessibilityIdentifier("copy-full-entry-" + handle.entryId)
             }
             if preview?.loading == true { ProgressView(L10n.tr("正在取回…")) }
             if let message = preview?.message {
@@ -1379,11 +1500,17 @@ private struct FullMessageView: View {
                 }
             } else if preview?.loading != true {
                 OrbisNotice(text: preview?.error ?? L10n.tr("当前没有可显示的完整内容。"), error: true).padding(.horizontal, 20)
-                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { store.previewEntry(entryId) }.disabled(!store.canSend).padding(.horizontal, 20)
+                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {
+                    if let next = context.retryEntry(handle) { handle = next }
+                }.disabled(!context.target.matches(context.store) || !connection.canSend).padding(.horizontal, 20)
+                    .accessibilityIdentifier("full-entry-retry")
             }
             Spacer(minLength: 0)
         }.foregroundStyle(OrbisPalette(scheme).text).background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onDisappear { if preview != nil { store.dismissPreview() } }
+            .onDisappear { connection.dismissPreview(expected: handle) }
+            .onChange(of: connection.entryPreview?.requestId) { _, _ in
+                if !connection.ownsEntryPreview(handle) { retire() }
+            }
     }
 }
 
@@ -1438,7 +1565,7 @@ struct CompactDisclosure<Content: View>: View {
 struct ToolSummaryView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
-    @State private var detailOpen = false
+    @State private var presentation: ChatToolPresentation?
     let summary: ToolSummary
     let readContext: ChatReadContext?
     var body: some View {
@@ -1458,7 +1585,8 @@ struct ToolSummaryView: View {
                     ForEach(summary.contents, id: \.part) { part in
                         if part.availability != "absent" {
                             OrbisActionButton(title: L10n.tr("查看") + toolPartTitle(part.part), symbol: "doc.text.magnifyingglass") {
-                                detailOpen = readContext.openTool(ToolLocator(tool: tool, part: part.part))
+                                guard let token = readContext.openTool(ToolLocator(tool: tool, part: part.part)) else { return }
+                                presentation = ChatToolPresentation(context: readContext, token: token)
                             }.disabled(!readContext.canRead || part.readCapability == "none" || !["readable", "pending"].contains(part.availability))
                             if ["temporarily-unavailable", "unrecoverable"].contains(part.availability) {
                                 Text(part.availability == "unrecoverable" ? L10n.tr("此部分内容已无法恢复") : L10n.tr("来源暂时无法提供此部分内容")).font(.orbisCaption()).foregroundStyle(.secondary)
@@ -1467,9 +1595,16 @@ struct ToolSummaryView: View {
                     }
                 }
             }
-        }.orbisBottomSheet(isPresented: $detailOpen, onDismiss: { readContext?.connection.toolContent.close() }) {
-            if let readContext {
-                ToolDetailView(reader: readContext.connection.toolContent, title: summary.toolName).orbisSheet([.large])
+        }.background {
+            if let presentation {
+                ChatToolSheet(presentation: presentation, title: summary.toolName, onDismiss: {
+                    if self.presentation?.token == presentation.token { self.presentation = nil }
+                }, onReplace: {
+                    let reader = presentation.context.connection.toolContent
+                    guard reader.isCurrent(presentation.token), let locator = reader.locator,
+                          let next = presentation.context.openTool(locator) else { return }
+                    self.presentation = ChatToolPresentation(context: presentation.context, token: next)
+                }).id(presentation.token)
             }
         }
     }
@@ -1525,6 +1660,7 @@ extension Text {
 
 struct MarkdownMessage: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.orbisFileActions) private var fileActions
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
@@ -1535,6 +1671,7 @@ struct MarkdownMessage: View {
     let text: String
     let streaming: Bool
     @State private var clock: RevealClock
+    @State private var revealCatchUp = OrbisRevealCatchUp()
     @State private var settleTick = 0
     @StateObject private var preparation: MarkdownPreparation
 
@@ -1551,7 +1688,9 @@ struct MarkdownMessage: View {
         let _ = ChatUpdateProbe.shared.rendered(.markdown)
         #endif
         // Preserve the measured row while a streamed replacement is parsed off-main.
-        let prepared = MarkdownDocuments.cached(text) ?? preparation.prepared?.document
+        let cached = MarkdownDocuments.cached(text)
+        let prepared = cached ?? preparation.prepared?.document
+        let preparedSource = cached != nil ? text : preparation.prepared?.text
         let rows = prepared?.rows ?? []
         let length = prepared?.length ?? 0
         #if DEBUG
@@ -1561,8 +1700,8 @@ struct MarkdownMessage: View {
         #endif
         let revealEnabled = streaming && !reduceMotion
         // When the stream ends, characters already queued finish revealing instead of jumping in.
-        let animating = !reduceMotion && settleTick >= 0 && clock.isAnimating(at: referenceNow)
-        let visibleClock = revealEnabled || animating ? clock : RevealClock(known: length)
+        let animating = visualActive && !reduceMotion && settleTick >= 0 && clock.isAnimating(at: referenceNow)
+        let visibleClock = visualActive && (revealEnabled || animating) ? clock : RevealClock(known: length)
         TimelineView(.animation(minimumInterval: nil, paused: !animating)) { context in
             #if DEBUG
             let renderTime = previewRevealTime ?? max(context.date.timeIntervalSinceReferenceDate, Date().timeIntervalSinceReferenceDate)
@@ -1578,10 +1717,11 @@ struct MarkdownMessage: View {
                 preparation.update(text, streaming: streaming)
             }
             .onDisappear { preparation.cancel() }
-            .onChange(of: preparation.prepared?.document.length) { _, next in
-                guard let next else { return }
-                if revealEnabled { clock.observe(length: next, at: referenceNow) }
-                else { clock = RevealClock(known: next) }
+            .onChange(of: preparation.prepared?.text) { _, _ in
+                guard let prepared, let preparedSource else { return }
+                let reveals = revealCatchUp.allowsReveal(preparedSource: preparedSource, currentSource: text, active: visualActive)
+                if reveals && revealEnabled { clock.observe(length: prepared.length, at: referenceNow) }
+                else { clock = RevealClock(known: prepared.length) }
             }
             .environment(\.openURL, OpenURLAction { url in
                 if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
@@ -1590,7 +1730,9 @@ struct MarkdownMessage: View {
                 return .handled
             })
             .onChange(of: text) { previous, value in
-                if revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: referenceNow) }
+                revealCatchUp.sourceChanged(value, active: visualActive)
+                let reveals = revealCatchUp.allowsReveal(preparedSource: preparedSource, currentSource: value, active: visualActive)
+                if reveals && revealEnabled && value.hasPrefix(previous) { clock.observe(length: length, at: referenceNow) }
                 else { clock = RevealClock(known: length) }
             }
             // Starting to stream takes the current text as the baseline; ending lets the queue drain.
@@ -1598,11 +1740,18 @@ struct MarkdownMessage: View {
                 preparation.update(text, streaming: streaming)
                 if enabled { clock = RevealClock(known: length) }
             }
+            // Hidden updates become the new baseline. Returning never replays
+            // an old stream, and the same renderer/editor subtree stays mounted.
+            .onChange(of: visualActive, initial: true) { _, active in
+                revealCatchUp.visibilityChanged(active: active, source: text, preparedSource: preparedSource)
+                clock = RevealClock(known: length)
+            }
             .task(id: clock.end) {
                 // Pause the timeline once the last character has settled.
                 let wait = clock.end - Date().timeIntervalSinceReferenceDate
-                guard wait > 0 else { return }
-                try? await Task.sleep(nanoseconds: UInt64((wait + 0.05) * 1_000_000_000))
+                guard visualActive, wait > 0 else { return }
+                do { try await Task.sleep(nanoseconds: UInt64((wait + 0.05) * 1_000_000_000)) } catch { return }
+                guard visualActive, !Task.isCancelled else { return }
                 settleTick += 1
             }
     }
@@ -2025,6 +2174,7 @@ private struct SessionModelConfigurationView: View {
 private struct RuntimeInfoView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var agent: AgentState
+    @Environment(\.orbisVisualActive) private var visualActive
     @OrbisDismiss private var dismiss
     let target: ChatActionContext
     let fallbackRuntime: RuntimeSummary
@@ -2056,7 +2206,7 @@ private struct RuntimeInfoView: View {
                             StatusFact(label: L10n.tr("重试"), value: activity(execution["retry"]))
                             StatusFact(label: L10n.tr("上下文压缩"), value: activity(execution["compaction"]))
                             if let start = execution["turn"]["startedAt"].number {
-                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                TimelineView(OrbisPausablePeriodicSchedule(interval: 1, paused: !visualActive)) { context in
                                     let duration = execution["turn"]["durationMs"].number ?? max(0, context.date.timeIntervalSince1970 * 1000 - start)
                                     StatusFact(label: execution["turn"]["durationMs"] == .null ? L10n.tr("本轮已运行") : L10n.tr("本轮耗时"), value: String(format: L10n.tr("%.1f 秒"), duration / 1000))
                                 }

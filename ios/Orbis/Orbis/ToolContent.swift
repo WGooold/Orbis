@@ -72,6 +72,9 @@ private final class ToolExportFile: @unchecked Sendable {
 
 @MainActor
 final class ToolContentReader: ObservableObject {
+    /// IOS-CHAT-05: one UI presentation, independent of the wire viewer/read leases.
+    struct PresentationToken: Hashable { fileprivate let id = UUID() }
+    @Published private(set) var currentPresentation: PresentationToken?
     @Published private(set) var text = ""
     @Published private(set) var loading = false
     @Published private(set) var error: String?
@@ -100,20 +103,29 @@ final class ToolContentReader: ObservableObject {
     private var exportFile: ToolExportFile?
     private var exportID: UUID?
     private var exportResumeEpoch: String?
+    private var exportCleanupID: UUID?
 
-    func open(runtimeId: String, locator: ToolLocator) {
+    @discardableResult
+    func open(runtimeId: String, locator: ToolLocator) -> PresentationToken {
         close(); self.runtimeId = runtimeId; self.locator = locator
+        let presentation = PresentationToken()
+        currentPresentation = presentation
         lastEpoch = nil
         exportedBytes = 0; exportComplete = false; exportedPath = nil; exportError = nil
         viewerId = UUID().uuidString; text = ""; gaps = []; throughOffset = 0; final = false; discardedPrefix = false
         load(offset: 0)
+        return presentation
     }
+    func isCurrent(_ expected: PresentationToken) -> Bool { currentPresentation == expected }
+    func loadNext(expected: PresentationToken) { guard isCurrent(expected) else { return }; loadNext() }
     func loadNext() { if !exporting, let nextCursor { load(offset: nextCursor) } }
+    func retry(expected: PresentationToken) { guard isCurrent(expected) else { return }; retry() }
     func retry() {
         guard !exporting, retryAfter.map({ $0 <= Date() }) ?? true else { return }
         if let nextCursor { load(offset: nextCursor) }
         else { cancelRead(); read = nil; lastEpoch = nil; text = ""; gaps = []; throughOffset = 0; discardedPrefix = false; load(offset: 0) }
     }
+    func follow(_ enabled: Bool, expected: PresentationToken) { guard isCurrent(expected) else { return }; follow(enabled) }
     func follow(_ enabled: Bool) {
         following = enabled && !exporting
         followTask?.cancel(); followTask = nil
@@ -121,8 +133,10 @@ final class ToolContentReader: ObservableObject {
     }
     /// Starts a new fixed read from byte zero. The destination is published only
     /// after every page is validated and written; existing files are preserved.
+    func export(to destination: URL, expected: PresentationToken) { guard isCurrent(expected) else { return }; export(to: destination) }
     func export(to destination: URL) {
         guard !exporting, runtimeId != nil, locator != nil else { return }
+        exportCleanupID = nil
         cancelRead(); timeout?.cancel(); request = nil; loading = false; follow(false)
         exportResumeEpoch = lastEpoch
         read = nil; lastEpoch = nil; viewerId = UUID().uuidString
@@ -140,6 +154,7 @@ final class ToolContentReader: ObservableObject {
             }
         }
     }
+    func cancelExport(expected: PresentationToken) { guard isCurrent(expected) else { return }; cancelExport() }
     func cancelExport() { abortExport(L10n.tr("导出已取消。")) }
     private func abortExport(_ message: String?) {
         guard exporting || exportFile != nil else { return }
@@ -149,9 +164,14 @@ final class ToolContentReader: ObservableObject {
         restoreViewerAfterExport()
         exportError = message
         if let message { error = message }
+        let presentation = currentPresentation, cleanupID = UUID()
+        exportCleanupID = cleanupID
         Task { [weak self] in
             do { try await file?.cancel() }
-            catch { self?.exportError = L10n.tr("未完成的导出文件无法删除：{0}", error.localizedDescription) }
+            catch {
+                guard let self, let presentation, self.isCurrent(presentation), self.exportCleanupID == cleanupID else { return }
+                self.exportError = L10n.tr("未完成的导出文件无法删除：{0}", error.localizedDescription)
+            }
         }
     }
     private func writeExportPage(_ page: ToolContentPage) {
@@ -271,8 +291,11 @@ final class ToolContentReader: ObservableObject {
             _ = send(runtimeId, ["type": "session.tool.content.cancel", "runtimeId": runtimeId, "requestId": UUID().uuidString, "viewerId": viewerId, "readId": read?.readId ?? "cancel-pending"])
         }
     }
+    func close(expected: PresentationToken) { guard isCurrent(expected) else { return }; close() }
     func close() {
+        currentPresentation = nil
         abortExport(nil)
+        exportCleanupID = nil
         cancelRead(); timeout?.cancel(); followTask?.cancel(); following = false; loading = false
         locator = nil; runtimeId = nil; read = nil; request = nil; nextCursor = nil; error = nil; retryAfter = nil
         lastEpoch = nil

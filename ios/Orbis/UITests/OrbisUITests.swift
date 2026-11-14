@@ -2252,6 +2252,95 @@ final class OrbisUITests: XCTestCase {
         capture("chat-downloads-returned", app: app)
     }
 
+    // IOS-CHAT-05: use the real page cover/return and real source patches. The
+    // mounted chat keeps its lease/draft while only top-stationary Git polls run.
+    func testCoveredChatKeepsSourceLeaseAndDraftWhileGitPollingPauses() {
+        let app = launch("viewport", arguments: ["--probe-chat-lifecycle", "--preview-fast-git-poll", "--preview-source-controls", "--preview-viewport-rows", "--probe-accessibility-reach"])
+        let report = app.staticTexts["chat-lifecycle-report"]
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(report.waitForExistence(timeout: 8))
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        func counts() -> [String: Int] {
+            Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { field -> (String, Int)? in
+                let pair = field.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2, let value = Int(pair[1]) else { return nil }
+                return (String(pair[0]), value)
+            })
+        }
+        let polling = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in counts()["git", default: 0] >= 3 }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [polling], timeout: 5), .completed)
+        composer.tap(); composer.typeText("覆盖页面期间保留的草稿")
+        waitReachable(app, "nativeTextInputFocused|true", true)
+        let composerFrame = composer.frame
+        let composerCenter = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: composerFrame.midX - app.frame.minX, dy: composerFrame.midY - app.frame.minY))
+        let before = counts()
+        app.buttons["preview-chat-source-batch"].tap()
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        waitReachable(app, "chat-composer|", false)
+        waitReachable(app, "nativeTextInputFocused|false", true)
+        // A mounted hidden TextField may remain exists/isHittable in XCTest's
+        // snapshot. Send an actual coordinate tap and inspect the native responder.
+        func nativeInputSample() -> Int {
+            let lines = ((app.staticTexts["accessibility-reach"].value as? String) ?? "").split(separator: "\n")
+            return lines.first { $0.hasPrefix("nativeTextInputSample|") }
+                .flatMap { Int($0.split(separator: "|").last ?? "") } ?? -1
+        }
+        composerCenter.tap()
+        let tapCompletedSample = nativeInputSample()
+        let observedTap = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in nativeInputSample() > tapCompletedSample }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [observedTap], timeout: 3), .completed)
+        waitReachable(app, "nativeTextInputFocused|false", true)
+        waitReachable(app, "|下载", true)
+        waitReachable(app, "chat-composer|", false)
+        // The fixture waits two seconds, then applies six real source patches.
+        Thread.sleep(forTimeInterval: 3)
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                    withVelocity: .slow, thenHoldForDuration: 0.1)
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        waitReachable(app, "chat-composer|", true)
+        XCTAssertTrue(report.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "覆盖页面期间保留的草稿")
+        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let current = counts()
+            return current["git", default: 0] > before["git", default: 0] &&
+                current["hiddenSource", default: 0] >= before["hiddenSource", default: 0] + 6
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 5), .completed)
+        let after = counts()
+        XCTAssertEqual(after["acquired"], 1)
+        XCTAssertEqual(after["released"], 0)
+        XCTAssertEqual(after["coveredGit"], before["coveredGit"])
+        XCTAssertEqual(after["arrivals"], before["arrivals"], "Returning must not replay arrivals for covered source rows")
+        XCTAssertTrue(app.staticTexts["新增消息 6"].waitForExistence(timeout: 5))
+        capture("covered-chat-source-returned", app: app)
+    }
+
+    // IOS-CHAT-05: a replacement read gets a new overlay owner. Retiring A must
+    // leave B usable; this exercises the real overlay and its disappearance cleanup.
+    func testReplacingToolDetailRetiresOnlyTheOldOverlayOwner() {
+        let app = launch("tool", arguments: ["--preview-replace-detail"])
+        let summary = app.buttons["展开read，已完成"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 8)); summary.tap()
+        app.buttons["查看输出"].tap()
+        let replace = app.buttons["preview-detail-replace"]
+        XCTAssertTrue(replace.waitForExistence(timeout: 5))
+        let first = replace.value as? String
+        replace.tap()
+        let changed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            replace.exists && replace.value as? String != first
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed)
+        let export = app.buttons["tool-export"]
+        XCTAssertTrue(export.waitForExistence(timeout: 3)); XCTAssertTrue(export.isEnabled)
+        export.tap()
+        XCTAssertTrue(app.buttons["tool-export-share"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Sources checked: 18")).firstMatch.exists)
+        capture("detail-replacement-retained-new-owner", app: app)
+    }
+
     // ADR-0054 / ADR-0058 M16: the history page has the chat's download button and its page returns there.
     func testHistoryDownloadsReturnToHistory() {
         let app = launch("history")
@@ -3791,6 +3880,23 @@ final class OrbisUITests: XCTestCase {
         interactions.buttons["填写验证说明"].firstMatch.tap()
         XCTAssertTrue((input.value as? String)?.contains("保留输入草稿") == true)
         capture("interaction-draft-restored", app: interactions)
+    }
+
+    // IOS-CHAT-05: this enters the full-content flow directly so the independent
+    // read/retry/attribution assertions do not depend on the supplement-info copy.
+    func testFullEntryRetryKeepsCanonicalContentAndCurrentRequest() {
+        let app = launch("truncated", arguments: ["--preview-full-entry-retry"])
+        let open = app.buttons["full-entry-truncated-message"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8)); open.tap()
+        let retry = app.buttons["full-entry-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["完整内容读取失败，请重试。"].exists)
+        retry.tap()
+        XCTAssertTrue(app.staticTexts["完整返回内容：这条消息已按需从电脑取回。"].waitForExistence(timeout: 5))
+        let copy = app.buttons["copy-full-entry-node-1"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 3)); XCTAssertTrue(copy.isEnabled)
+        XCTAssertFalse(retry.exists)
+        capture("full-entry-retry-canonical-owner", app: app)
     }
 
     func testTruncatedContentAndToolArguments() {

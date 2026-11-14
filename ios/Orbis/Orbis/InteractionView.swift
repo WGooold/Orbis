@@ -93,6 +93,7 @@ private struct InteractionRequestView: View {
     let connected: Bool
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.openURL) private var openURL
     @Environment(\.orbisAccent) private var pageAccent
     let request: InteractionRequest
@@ -112,7 +113,7 @@ private struct InteractionRequestView: View {
     private var valid: Bool { request.acceptsResponse(draftValue.response(for: request)) }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(OrbisPausablePeriodicSchedule(interval: 1, paused: !visualActive)) { context in
             let expired = Int64(context.date.timeIntervalSince1970 * 1000) >= request.expiresAt
             let p = OrbisPalette(scheme)
             VStack(alignment: .leading, spacing: 0) {

@@ -77,6 +77,7 @@ struct OrbisPressedGlyph: ViewModifier {
     @Environment(\.orbisGlyphPressed) private var pressed
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.orbisVisualActive) private var visualActive
     let activation: Int
     @State private var progress: Double = 0
     @State private var feedback = GlyphFeedbackState()
@@ -85,12 +86,22 @@ struct OrbisPressedGlyph: ViewModifier {
         let activation: Int
         let reduced: Bool
         let enabled: Bool
+        let active: Bool
     }
     func body(content: Content) -> some View {
         content
             .scaleEffect(reduced ? 1 : 1 - progress * (1 - MotionGeometry.glyphPressedScale))
             .opacity(1 - progress * (1 - MotionGeometry.glyphPressedOpacity))
-            .task(id: Input(pressed: pressed, activation: activation, reduced: reduced, enabled: enabled)) {
+            .task(id: Input(pressed: pressed, activation: activation, reduced: reduced, enabled: enabled, active: visualActive)) {
+                guard visualActive else {
+                    // Consume the latest activation without carrying decorative feedback
+                    // into a retained page's next visible interval.
+                    _ = feedback.update(pressed: false, activation: activation, enabled: false)
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { progress = 0 }
+                    return
+                }
                 let response = feedback.update(pressed: pressed, activation: activation, enabled: enabled)
                 if reduced || !enabled {
                     var transaction = Transaction(animation: nil)
@@ -106,12 +117,14 @@ struct OrbisPressedGlyph: ViewModifier {
                     withAnimation(InteractionMotion.glyphRelease) { progress = 0 }
                     do { try await Task.sleep(for: .seconds(MotionGeometry.glyphReleaseDuration)) }
                     catch { return }
+                    guard !Task.isCancelled else { return }
                     feedback.released()
                 case .activate:
                     // Keyboard / VoiceOver, or a tap coalesced into one display frame.
                     withAnimation(InteractionMotion.glyphPress) { progress = 1 }
                     do { try await Task.sleep(for: .seconds(MotionGeometry.glyphPressDuration)) }
                     catch { return }
+                    guard !Task.isCancelled else { return }
                     withAnimation(InteractionMotion.glyphRelease) { progress = 0 }
                 case .reset:
                     progress = 0
@@ -124,14 +137,15 @@ struct OrbisPressedGlyph: ViewModifier {
 /// Geometry-stable discrete labels; streaming text and editable text keep their own rendering.
 struct OrbisMotionText: View {
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisVisualActive) private var visualActive
     @State private var appeared = false
     let value: String
     init(_ value: String) { self.value = value }
     var body: some View {
         Text(value).contentTransition(.opacity)
             .opacity(reduced || appeared ? 1 : 0)
-            .task { withAnimation(reduced ? nil : InteractionMotion.state) { appeared = true } }
-            .animation(reduced ? nil : InteractionMotion.state, value: value)
+            .task(id: visualActive) { withAnimation(reduced || !visualActive ? nil : InteractionMotion.state) { appeared = true } }
+            .animation(reduced || !visualActive ? nil : InteractionMotion.state, value: value)
     }
 }
 
@@ -171,6 +185,7 @@ enum InteractionMotion {
 }
 
 private struct ReplyCardMeasurement: Equatable {
+    var active = true
     var size: CGSize = .zero
     var parts: [ReplyCardPart] = []
     var live = false
@@ -186,18 +201,27 @@ private final class ReplyCardAppearance: ObservableObject {
     let entering: Bool
     init(arrivals: ReplyCardArrivals?, id: String) {
         entering = arrivals?.claim(id, now: ProcessInfo.processInfo.systemUptime) ?? false
+        #if DEBUG
+        if entering { ChatLifecycleProbe.shared.arrivalClaimed() }
+        #endif
     }
+}
+private final class ReplyCardActivity {
+    var latest: ReplyCardMeasurement?
+    var needsCatchUp = false
 }
 
 /// Measure at the final width, then reveal only height. The surface is outside the clip,
 /// so its rounded bottom edge and shadow grow with the card without scaling the text.
 struct OrbisReplyCard: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisVisualActive) private var visualActive
     @StateObject private var appearance: ReplyCardAppearance
     @State private var growth = ReplyCardGrowth()
     @State private var height = ReplyCardHeight()
     @State private var opacity = ReplyCardHeight()
     @State private var animating = false
+    @State private var activity = ReplyCardActivity()
     let parts: [ReplyCardPart]
     let live: Bool
 
@@ -207,25 +231,26 @@ struct OrbisReplyCard: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(paused: !animating)) { clock in
-            let now = clock.date.timeIntervalSinceReferenceDate
+        TimelineView(.animation(paused: !visualActive || !animating)) { clock in
+            let now = max(clock.date.timeIntervalSinceReferenceDate, Date.timeIntervalSinceReferenceDate)
             content
             .fixedSize(horizontal: false, vertical: true)
             .background(GeometryReader { geometry in
                 Color.clear.preference(key: ReplyCardMeasurementKey.self,
-                    value: ReplyCardMeasurement(size: geometry.size, parts: parts, live: live, reduced: reduced))
+                    value: ReplyCardMeasurement(active: visualActive, size: geometry.size, parts: parts, live: live, reduced: reduced))
             })
             // Only live reply growth owns a clipping height. At rest, a nested disclosure
             // must lay out the surface itself rather than snapping to a second measured height.
-            .frame(height: reduced ? nil : (height.isAnimating(at: now) ? height.value(at: now) :
+            .frame(height: reduced || !visualActive ? nil : (height.isAnimating(at: now) ? height.value(at: now) :
                 (height.target == nil && appearance.entering ? 0 : nil)), alignment: .top)
             .clipped()
             .neuSurface(radius: OrbisRadius.card, intensity: 0.65, padding: 16)
-            .opacity(reduced ? 1 : Double(opacity.value(at: now) ?? (appearance.entering ? 0 : 1)))
+            .opacity(reduced || !visualActive ? 1 : Double(opacity.value(at: now) ?? (appearance.entering ? 0 : 1)))
             .transaction { transaction in
-                if reduced { transaction.animation = nil; transaction.disablesAnimations = true }
+                if reduced || !visualActive { transaction.animation = nil; transaction.disablesAnimations = true }
             }
             .onAppear {
+                guard visualActive else { settleMotion(); return }
                 guard appearance.entering, opacity.target == nil else { return }
                 let now = Date.timeIntervalSinceReferenceDate
                 opacity.retarget(1, at: now, animated: !reduced, duration: MotionGeometry.replyArrivalDuration, initial: 0)
@@ -237,29 +262,43 @@ struct OrbisReplyCard: ViewModifier {
         }
             .onPreferenceChange(ReplyCardMeasurementKey.self) { measurement in
                 guard let measurement, measurement.size.width > 0 else { return }
+                activity.latest = measurement
+                // A hidden source may change every token. Retain only the newest facts;
+                // do not compare append prefixes or retarget visual state while covered.
+                guard visualActive, measurement.active else { activity.needsCatchUp = true; return }
+                let catchingUp = activity.needsCatchUp
+                activity.needsCatchUp = false
+                if catchingUp { growth = ReplyCardGrowth() }
                 let now = Date.timeIntervalSinceReferenceDate
                 let first = height.target == nil
                 let animate = growth.update(size: measurement.size, parts: measurement.parts,
-                    live: measurement.live, reduced: measurement.reduced, entering: appearance.entering)
+                    live: measurement.live, reduced: measurement.reduced || catchingUp, entering: appearance.entering && !catchingUp)
                 guard height.target != measurement.size.height || (!animate && height.isAnimating(at: now)) ||
-                        (measurement.reduced && opacity.isAnimating(at: now)) else { return }
+                        (measurement.reduced && opacity.isAnimating(at: now)) || catchingUp else { return }
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
                     height.retarget(measurement.size.height, at: now, animated: animate,
                         duration: first ? MotionGeometry.replyArrivalDuration : MotionGeometry.replyGrowthDuration,
                         initial: appearance.entering ? 0 : nil)
-                    if measurement.reduced { opacity.retarget(1, at: now, animated: false, duration: 0) }
+                    if measurement.reduced || catchingUp { opacity.retarget(1, at: now, animated: false, duration: 0) }
                     animating = height.isAnimating(at: now) || opacity.isAnimating(at: now)
                 }
             }
-            .onDisappear {
-                if let target = height.target {
-                    height.retarget(target, at: Date.timeIntervalSinceReferenceDate, animated: false, duration: 0)
-                }
-                opacity.retarget(1, at: Date.timeIntervalSinceReferenceDate, animated: false, duration: 0)
-                animating = false
-            }
+            .onChange(of: visualActive) { _, active in if !active { settleMotion() } }
+            .onDisappear { settleMotion() }
+    }
+
+    private func settleMotion() {
+        activity.needsCatchUp = true
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            let now = Date.timeIntervalSinceReferenceDate
+            height.retarget(activity.latest?.size.height ?? height.target ?? 0, at: now, animated: false, duration: 0)
+            opacity.retarget(1, at: now, animated: false, duration: 0)
+            animating = false
+        }
     }
 }
 
@@ -313,6 +352,7 @@ struct OrbisTouchOrigin: UIViewRepresentable {
 }
 
 struct OrbisSelectionFill: View {
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let selected: Bool
@@ -330,13 +370,14 @@ struct OrbisSelectionFill: View {
                 .position(point)
                 .clipShape(shape)
                 .overlay { shape.strokeBorder(color.opacity(selected ? 1 : 0), lineWidth: 1) }
-                .animation(reduceMotion ? nil : selected ? InteractionMotion.selection : InteractionMotion.state, value: selected)
+                .animation(reduceMotion || !visualActive ? nil : selected ? InteractionMotion.selection : InteractionMotion.state, value: selected)
         }.allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 
 /// Copy controls share a fixed slot and the same transition into success and back to copy.
 struct OrbisCopyGlyph: View {
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.orbisGlyphActivation) private var inheritedActivation
     let copied: Bool
@@ -355,7 +396,7 @@ struct OrbisCopyGlyph: View {
         }
         .font(.system(size: size, weight: .medium))
         .frame(width: size, height: size)
-        .animation(reduced ? nil : InteractionMotion.copyTransition, value: copied)
+        .animation(reduced || !visualActive ? nil : InteractionMotion.copyTransition, value: copied)
         .modifier(OrbisPressedGlyph(activation: activation ?? inheritedActivation))
         .accessibilityHidden(true)
     }
@@ -363,6 +404,7 @@ struct OrbisCopyGlyph: View {
 
 /// Stable glyph slot. State morphs keep their meaning; every action shares quiet pressure.
 struct OrbisMotionGlyph: View {
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let symbol: String
     let size: CGFloat
@@ -374,11 +416,11 @@ struct OrbisMotionGlyph: View {
             if morphFrom == "line.3.horizontal" {
                 MenuCloseLines(progress: symbol == "xmark" ? 1 : 0)
                     .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .animation(reduceMotion ? nil : InteractionMotion.toolbar, value: symbol)
+                    .animation(reduceMotion || !visualActive ? nil : InteractionMotion.toolbar, value: symbol)
             } else if morphFrom == "arrow.left" {
                 BackCloseLines(progress: symbol == "xmark" ? 1 : 0)
                     .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .animation(reduceMotion ? nil : InteractionMotion.toolbar, value: symbol)
+                    .animation(reduceMotion || !visualActive ? nil : InteractionMotion.toolbar, value: symbol)
             } else if symbol == "arrow.down.to.line" {
                 Path { p in
                     p.move(to: CGPoint(x: size * 0.18, y: size * 0.85)); p.addLine(to: CGPoint(x: size * 0.82, y: size * 0.85))
@@ -388,7 +430,7 @@ struct OrbisMotionGlyph: View {
             } else {
                 Image(systemName: symbol).font(.system(size: size, weight: .medium))
                     .contentTransition(.opacity)
-                    .animation(reduceMotion ? nil : InteractionMotion.state, value: symbol)
+                    .animation(reduceMotion || !visualActive ? nil : InteractionMotion.state, value: symbol)
             }
         }.frame(width: size, height: size)
             .modifier(OrbisPressedGlyph(activation: activation))
@@ -576,6 +618,7 @@ private struct OrbisMenuScrollObserver: UIViewRepresentable {
 
 /// Both action groups keep one layout slot. Only the active group can receive input or focus.
 struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let selecting: Bool
     @ViewBuilder let normal: (CGFloat) -> Normal
@@ -585,16 +628,16 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
             normal(selecting ? 1 : 0)
                 .zIndex(selecting ? 0 : 1)
                 .opacity(selecting ? 0 : 1)
-                .animation(reduceMotion ? nil : InteractionMotion.state.delay(selecting ? 0 : 0.1), value: selecting)
+                .animation(reduceMotion || !visualActive ? nil : InteractionMotion.state.delay(selecting ? 0 : 0.1), value: selecting)
                 .disabled(selecting).allowsHitTesting(!selecting).accessibilityHidden(selecting)
             // Hidden sizing content has no controls. The active branch is removed on exit,
             // so a child Button's accessibility configuration cannot retain stale actions.
             selected.hidden().allowsHitTesting(false).accessibilityHidden(true)
             if selecting {
                 selected.zIndex(1)
-                    .transition(.opacity.animation(reduceMotion ? nil : .easeOut(duration: 0.1).delay(0.16)))
+                    .transition(.opacity.animation(reduceMotion || !visualActive ? nil : .easeOut(duration: 0.1).delay(0.16)))
             }
-        }.animation(reduceMotion ? nil : InteractionMotion.toolbar, value: selecting)
+        }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.toolbar, value: selecting)
     }
 }
 
@@ -614,6 +657,7 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     let viewport = OrbisAnchor()
     var targets: [String: OrbisAnchor] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
+    private var work = OrbisVisualWorkGate()
     #if DEBUG
     private var previewProgress: CGFloat? {
         ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-send-progress=") }
@@ -627,8 +671,9 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     #endif
 
     func launch(_ send: PendingSend, following: Bool, reduceMotion: Bool) {
-        guard !reduceMotion, !composer.frame.isEmpty, !root.frame.isEmpty,
+        guard work.active, !reduceMotion, !composer.frame.isEmpty, !root.frame.isEmpty,
               items.count < 3, !items.contains(where: { $0.id == send.messageId }) else { return }
+        let generation = work.generation
         let source = composer.frame
         let fallback = CGRect(x: root.frame.maxX - min(source.width, 180) - 20, y: source.minY - 72,
                               width: min(source.width, 180), height: min(source.height, 72))
@@ -637,7 +682,8 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
         tasks[send.messageId] = Task { @MainActor [weak self] in
             // Allow the newly accepted row to lay out. This never delays submission or clearing the composer.
             await MotionLayoutFrames.wait()
-            guard !Task.isCancelled, let self, let index = self.items.firstIndex(where: { $0.id == send.messageId }) else { return }
+            guard !Task.isCancelled, let self, self.work.permits(generation),
+                  let index = self.items.firstIndex(where: { $0.id == send.messageId }) else { return }
             if following, !send.showsInQueue, !send.queueOwned, let target = self.targets[send.messageId]?.frame, target.intersects(self.root.frame), target.maxY <= source.minY {
                 self.items[index].target = target
                 self.items[index].landsOnRow = true
@@ -656,15 +702,24 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
             withAnimation(InteractionMotion.send, completionCriteria: .removed) {
                 self.items[index].progress = 1
             } completion: { [weak self] in
+                guard let self, self.work.permits(generation) else { return }
                 withTransaction(Transaction(animation: nil)) {
-                    self?.items.removeAll { $0.id == send.messageId }
+                    self.items.removeAll { $0.id == send.messageId }
                 }
             }
             self.tasks[send.messageId] = nil
         }
     }
+    func setVisualActive(_ active: Bool) {
+        work.setActive(active)
+        if !active { cancelFlights() }
+    }
     func cancelFlights() {
-        tasks.values.forEach { $0.cancel() }; tasks = [:]; items = []
+        work.invalidate()
+        tasks.values.forEach { $0.cancel() }; tasks = [:]
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { if !items.isEmpty { items = [] } }
     }
     // Rows unregister on disappearance. A covered/backgrounded page may resume with
     // the same rows, so cancelling motion must preserve their live landing anchors.
@@ -715,7 +770,7 @@ extension View {
 
 private struct MessageSendFlightHost: ViewModifier {
     @ObservedObject var flight: MessageSendFlight
-    @Environment(\.scenePhase) private var scene
+    @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
@@ -750,9 +805,9 @@ private struct MessageSendFlightHost: ViewModifier {
                 if viewportSize != .zero && size != viewportSize { flight.cancelFlights() }
                 viewportSize = size
             }
-            .onChange(of: scene) { _, phase in if phase != .active { flight.clear() } }
-            .onChange(of: reduceMotion) { _, reduced in if reduced { flight.clear() } }
-            .onDisappear { flight.clear() }
+            .onChange(of: visualActive, initial: true) { _, active in flight.setVisualActive(active) }
+            .onChange(of: reduceMotion) { _, reduced in if reduced { flight.cancelFlights() } }
+            .onDisappear { flight.cancelFlights() }
     }
 }
 /// Render the same bubble (including Markdown and attachments) as a noninteractive Canvas
@@ -884,12 +939,26 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
 /// A dial crossing gives one small state-duration pulse, cancelled on reuse.
 struct OrbisDialPulse: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
+    @Environment(\.orbisVisualActive) private var visualActive
     let trigger: Int
     let peak: CGFloat
     @State private var scale: CGFloat = 1
+    @State private var observedTrigger: Int?
+    private struct Input: Equatable {
+        let trigger: Int
+        let active: Bool
+        let reduced: Bool
+    }
     func body(content: Content) -> some View {
-        content.scaleEffect(reduced ? 1 : scale).task(id: trigger) {
-            guard trigger > 0, !reduced else { scale = 1; return }
+        content.scaleEffect(reduced || !visualActive ? 1 : scale).task(id: Input(trigger: trigger, active: visualActive, reduced: reduced)) {
+            let changed = observedTrigger != trigger
+            observedTrigger = trigger
+            guard changed, trigger > 0, !reduced, visualActive else {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { scale = 1 }
+                return
+            }
             withAnimation(.timingCurve(0.2, 0, 0, 1, duration: 0.08)) { scale = peak }
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled else { return }

@@ -109,7 +109,7 @@ struct ChatScreenSnapshot {
             context: runtime?.contextUsage, permissions: runtime?.permissionManagement, tasks: runtime?.backgroundTasks)
     }
     var workingBranchKey: [String?] {
-        [workingBranch?.requestId, workingBranch?.sessionId, workingBranch?.cwd,
+        [workingBranch?.sessionId, workingBranch?.cwd,
          workingBranch?.branch, workingBranch?.commit, workingBranch?.loaded.description]
     }
     func sameTranscript(as old: Self) -> Bool {
@@ -153,6 +153,12 @@ struct ChatActionContext: Equatable {
     let sessionId: String?
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.owner === rhs.owner && lhs.identity == rhs.identity }
+    @MainActor static func capture(_ store: OrbisStore) -> Self {
+        let runtime = store.selectedRuntime
+        return Self(owner: store.activeConnection,
+            identity: runtime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "",
+            runtimeId: runtime?.runtimeId, sessionId: runtime?.sessionId)
+    }
     @MainActor func matches(_ store: OrbisStore) -> Bool {
         guard store.activeConnection === owner else { return false }
         return identity == (store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "")

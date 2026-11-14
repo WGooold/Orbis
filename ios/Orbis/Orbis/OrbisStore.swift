@@ -12,6 +12,17 @@ struct HomeRuntimeCard: Equatable, Identifiable {
     var id: String { runtime.runtimeId }
 }
 
+/// IOS-CHAT-05: a detail presentation owns one request on its original source.
+/// A delayed dismissal or retry cannot replace a newer presentation on that source.
+struct EntryPreviewHandle: Equatable {
+    let owner: HostConnection
+    let requestId: String
+    let runtimeId: String
+    let sessionId: String
+    let entryId: String
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.owner === rhs.owner && lhs.requestId == rhs.requestId }
+}
+
 enum HomePresentation: Equatable {
     case preparing
     case ready([HomeRuntimeCard])
@@ -724,6 +735,9 @@ final class HostConnection: ObservableObject {
             }
             if !ids.isEmpty { self.errorMessage = message; self.updateSyncing(); self.dispatchSyncDemands() }
         }
+        // Bind the source before a cached/offline page can acquire its lease.
+        // A later first connection then preserves that mounted page's ownership.
+        agentState.setConnection(selectedHost, connected: false)
         if autoConnect, let selectedHostId { connect(hostId: selectedHostId) }
     }
 
@@ -954,11 +968,22 @@ final class HostConnection: ObservableObject {
         _ = transport.send(["type": "runtime.git.request", "protocolVersion": orbisProtocolVersion, "runtimeId": runtime.runtimeId, "requestId": id])
     }
 
-    func previewEntry(_ entryId: String) {
-        guard let runtime = selectedRuntime, let sessionId = runtime.sessionId else { return }
+    func acquireChatInterest(runtimeId: String, sessionId: String?) -> AgentInterestLease? {
+        let current = runtimeIndex[runtimeId] ?? selectedRuntime.flatMap { $0.runtimeId == runtimeId ? $0 : nil }
+        guard let current, current.sessionId == sessionId else { return nil }
+        return agentState.retainInterest(runtime: current, domains: AgentState.chatDomains)
+    }
+
+    func releaseChatInterest(_ lease: AgentInterestLease) {
+        agentState.releaseInterest(lease, currentRuntime: runtimeIndex[lease.runtimeId])
+    }
+
+    @discardableResult
+    func previewEntry(_ entryId: String) -> EntryPreviewHandle? {
+        guard let runtime = selectedRuntime, let sessionId = runtime.sessionId else { return nil }
         let entryId = displayMessageIds[runtime.runtimeId]?.first(where: { $0.value == entryId })?.key ?? entryId
         if selectedOfflineSession != nil || connection != .secured {
-            guard let host = selectedHost else { return }
+            guard let host = selectedHost else { return nil }
             let id = UUID().uuidString, generation = connectionGeneration
             entryPreview = EntryPreview(requestId: id, runtimeId: runtime.runtimeId, sessionId: sessionId, entryId: entryId)
             runAsyncTransaction { [weak self] in
@@ -969,24 +994,39 @@ final class HostConnection: ObservableObject {
                 self.entryPreview?.loading = false
                 if self.entryPreview?.message == nil { self.entryPreview?.error = L10n.tr("此节点没有可显示的缓存内容。") }
             }
-            return
+            return currentEntryPreviewHandle
         }
-        guard canSend else { return }
+        guard canSend else { return nil }
         previewTimeout?.cancel()
         let id = UUID().uuidString
         entryPreview = EntryPreview(requestId: id, runtimeId: runtime.runtimeId, sessionId: sessionId, entryId: entryId)
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: id, command: ["type": "session.entry.request", "requestId": id,
                      "sessionId": sessionId, "entryId": entryId]) else {
-            entryPreview?.loading = false; entryPreview?.error = L10n.tr("预览请求未送达。"); return
+            entryPreview?.loading = false; entryPreview?.error = L10n.tr("预览请求未送达。"); return currentEntryPreviewHandle
         }
         previewTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.entryPreview?.requestId == id else { return }
             self.entryPreview?.loading = false; self.entryPreview?.error = L10n.tr("预览读取超时，请重试。")
         }
+        return currentEntryPreviewHandle
     }
 
     func dismissPreview() { previewTimeout?.cancel(); entryPreview = nil }
+    var currentEntryPreviewHandle: EntryPreviewHandle? {
+        entryPreview.map { EntryPreviewHandle(owner: self, requestId: $0.requestId,
+            runtimeId: $0.runtimeId, sessionId: $0.sessionId, entryId: $0.entryId) }
+    }
+    func ownsEntryPreview(_ expected: EntryPreviewHandle) -> Bool {
+        expected.owner === self && entryPreview?.requestId == expected.requestId
+    }
+    func dismissPreview(expected: EntryPreviewHandle) { if ownsEntryPreview(expected) { dismissPreview() } }
+    @discardableResult
+    func retryPreview(expected: EntryPreviewHandle) -> EntryPreviewHandle? {
+        guard ownsEntryPreview(expected), selectedRuntime?.runtimeId == expected.runtimeId,
+              selectedRuntime?.sessionId == expected.sessionId else { return nil }
+        return previewEntry(expected.entryId)
+    }
 
     private var chatRewindRevision = 0
     private(set) var rewindPreparationCount = 0

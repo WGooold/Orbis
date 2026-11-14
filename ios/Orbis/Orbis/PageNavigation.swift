@@ -363,6 +363,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
         let entering = moving && (motion.phase == .entering || motion.phase == .expanding)
         content
             .environment(\.orbisPageEntering, entering)
+            .environment(\.orbisPageActivity, OrbisPageActivity(isTop: isTop && !unreachable,
+                isStationary: motion.phase == .idle, hasArrived: !entering))
             .environment(\.orbisBackPriorityClaim, backClaim)
             .environment(\.orbisVisible, !unreachable || source)
             .disabled(suppressTaps)
@@ -493,7 +495,14 @@ private struct HorizontalBounds: Shape {
 }
 
 private struct OrbisPageEnteringKey: EnvironmentKey { static let defaultValue = false }
+private struct OrbisPageActivityKey: EnvironmentKey {
+    static let defaultValue = OrbisPageActivity(isTop: true, isStationary: true, hasArrived: true)
+}
 extension EnvironmentValues {
+    var orbisPageActivity: OrbisPageActivity {
+        get { self[OrbisPageActivityKey.self] }
+        set { self[OrbisPageActivityKey.self] = newValue }
+    }
     /// True while this page's own entrance is in flight, including its first frame at the start.
     var orbisPageEntering: Bool {
         get { self[OrbisPageEnteringKey.self] }

@@ -281,8 +281,9 @@ struct PreviewHomeRefreshReport: View {
 @MainActor
 func makePreviewStore(screen: String) -> OrbisStore {
     PreviewHomeRefreshProbe.shared.reads = 0
+    ChatLifecycleProbe.shared.reset()
     let transport = PreviewTransport(screen: screen)
-    PreviewViewportUpdates.schedule = screen == "viewport" && ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag")
+    PreviewViewportUpdates.schedule = screen == "viewport" && (ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag") || ChatLifecycleProbe.enabled)
         ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
     PreviewViewportUpdates.advance = screen == "viewport" ? { [weak transport] in transport?.advanceViewport() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
@@ -392,6 +393,7 @@ private final class PreviewTransport: OrbisTransport {
     private var providerRevision = 1
     private var viewportTail = 0
     private var viewportSeeded = false
+    private var fullEntryFailed = false
     private var viewportUpdates: Task<Void, Never>?
     private var viewportRows: Bool { ProcessInfo.processInfo.arguments.contains("--preview-viewport-rows") }
     private var keyboardStream: Bool { ProcessInfo.processInfo.arguments.contains("--preview-keyboard-stream") }
@@ -527,6 +529,7 @@ private final class PreviewTransport: OrbisTransport {
     }
 
     private func appendViewportContent() {
+        ChatLifecycleProbe.shared.sourceUpdated()
         viewportTail += 1
         let base = sourceSequence
         sourceSequence += 1
@@ -809,6 +812,7 @@ private final class PreviewTransport: OrbisTransport {
             receive?(["type": "session.browse.result", "requestId": object["requestId"]!, "path": object["path"] as? String ?? "/Projects", "parent": "/",
                       "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
         } else if object["type"] as? String == "runtime.git.request" {
+            ChatLifecycleProbe.shared.gitRequested()
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")
             // The regular Git poll only reports Git facts. A single initial seed and the
             // explicit preview control own source updates, independently of test duration.
@@ -865,6 +869,11 @@ private final class PreviewTransport: OrbisTransport {
                     "text": content, "nextCursor": end < text.utf8.count ? end as Any : NSNull(), "gaps": []]
                 event(page, runtimeId: runtime)
             } else if type == "session.entry.request" {
+                if ProcessInfo.processInfo.arguments.contains("--preview-full-entry-retry"), !fullEntryFailed {
+                    fullEntryFailed = true
+                    event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "error": "完整内容读取失败，请重试。"], runtimeId: runtime)
+                    return
+                }
                 let index = command["entryId"] as? String == "node-1" ? 0 : 1
                 let full = screen == "truncated" ? message("truncated-message", role: "assistant", text: "完整返回内容：这条消息已按需从电脑取回。") : ProcessInfo.processInfo.arguments.contains("--preview-history-artifact") ? messages.last! : messages[index]
                 event(["type": "session.entry.result", "requestId": command["requestId"]!, "entryId": command["entryId"]!, "entry": ["data": ["message": full]]], runtimeId: runtime)
@@ -1195,15 +1204,61 @@ struct ChatUpdateReport: View {
     }
 }
 
+/// IOS-CHAT-05: record actual wire requests and source deliveries without making
+/// the measured chat observe a test counter. The report owns its own timeline.
+final class ChatLifecycleProbe {
+    static let shared = ChatLifecycleProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-chat-lifecycle")
+    var gitActive = false
+    var visualActive = false
+    private var acquiredCount = 0
+    private var releasedCount = 0
+    private var gitCount = 0
+    private var coveredGitCount = 0
+    private var hiddenSourceCount = 0
+    private var arrivalCount = 0
+    func reset() {
+        gitActive = false; visualActive = false
+        acquiredCount = 0; releasedCount = 0; gitCount = 0; coveredGitCount = 0; hiddenSourceCount = 0; arrivalCount = 0
+    }
+    func acquired() { if Self.enabled { acquiredCount += 1 } }
+    func released() { if Self.enabled { releasedCount += 1 } }
+    func gitRequested() {
+        guard Self.enabled else { return }
+        gitCount += 1
+        if !gitActive { coveredGitCount += 1 }
+    }
+    func sourceUpdated() { if Self.enabled && !visualActive { hiddenSourceCount += 1 } }
+    func arrivalClaimed() { if Self.enabled { arrivalCount += 1 } }
+    var report: String {
+        "acquired=\(acquiredCount);released=\(releasedCount);git=\(gitCount);coveredGit=\(coveredGitCount);hiddenSource=\(hiddenSourceCount);arrivals=\(arrivalCount)"
+    }
+}
+
+struct ChatLifecycleReport: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            Text(ChatLifecycleProbe.shared.report).font(.system(size: 1)).frame(height: 1)
+                .accessibilityIdentifier("chat-lifecycle-report").allowsHitTesting(false)
+        }
+    }
+}
+
 /// A local source trigger keeps the measured page/navigation free of test-control state.
 struct PreviewChatSourceControl: View {
     @State private var requests = 0
     var body: some View {
-        Button {
-            PreviewViewportUpdates.advance?()
-            requests += 1
-        } label: { Text("Source update").font(.system(size: 10)).frame(minWidth: 44, minHeight: 44) }
-            .accessibilityIdentifier("preview-chat-source-update").accessibilityValue(String(requests))
+        VStack {
+            Button {
+                PreviewViewportUpdates.advance?()
+                requests += 1
+            } label: { Text("Source update").font(.system(size: 10)).frame(minWidth: 44, minHeight: 44) }
+                .accessibilityIdentifier("preview-chat-source-update").accessibilityValue(String(requests))
+            if ChatLifecycleProbe.enabled {
+                Button("Delayed source batch") { PreviewViewportUpdates.schedule?() }
+                    .font(.system(size: 10)).frame(minHeight: 44).accessibilityIdentifier("preview-chat-source-batch")
+            }
+        }
     }
 }
 
@@ -1368,6 +1423,21 @@ enum AccessibilityReachProbe {
         return lines
     }
 
+    /// XCUITest can report a retained hidden TextField as hittable. Inspect the
+    /// actual native responder separately; this also works with a hardware keyboard.
+    @MainActor static func nativeTextInputFocused() -> Bool {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows).first(where: \.isKeyWindow) else { return false }
+        var budget = 4_000
+        func focused(_ view: UIView) -> Bool {
+            guard budget > 0 else { return false }
+            budget -= 1
+            if view.isFirstResponder && view is UITextInput { return true }
+            return view.subviews.contains(where: focused)
+        }
+        return focused(window)
+    }
+
     @MainActor private static func walk(_ item: Any, into lines: inout [String], budget: inout Int) {
         guard budget > 0, let object = item as? NSObject else { return }
         budget -= 1
@@ -1405,8 +1475,13 @@ struct AccessibilityReachReport: View {
             .accessibilityIdentifier("accessibility-reach").accessibilityValue(report)
             .allowsHitTesting(false)
             .task {
+                var sample = 0
                 while !Task.isCancelled {
-                    report = AccessibilityReachProbe.reachable().joined(separator: "\n")
+                    sample += 1
+                    report = (AccessibilityReachProbe.reachable() + [
+                        "nativeTextInputFocused|\(AccessibilityReachProbe.nativeTextInputFocused())",
+                        "nativeTextInputSample|\(sample)"
+                    ]).joined(separator: "\n")
                     try? await Task.sleep(nanoseconds: 250_000_000)
                 }
             }

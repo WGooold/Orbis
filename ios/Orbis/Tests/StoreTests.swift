@@ -1499,6 +1499,73 @@ struct StoreTests {
         #expect(request["entryId"] as? String == "e1")
     }
 
+    /// IOS-CHAT-05: the initial Host binding exists before an offline page can
+    /// retain domains, so its first authenticated connection keeps that lease.
+    @Test func offlinePageLeaseSurvivesTheInitialHostConnection() async throws {
+        let transport = TestTransport()
+        let source = HostConnection(secure: MemorySecureStore(), transport: transport, autoConnect: false, preferences: nil)
+        transport.drain = { [weak source] in await source?.waitForPendingEvents() }
+        let summary = try JSONDecoder().decode(RuntimeSummary.self, from: JSONSerialization.data(withJSONObject: runtime("a")))
+        let lease = try #require(source.agentState.retainInterest(runtime: summary, domains: AgentState.chatDomains))
+        source.connect(hostId: "host-1")
+        await transport.ready([runtime("a")])
+        let request = try #require(transport.sent.last {
+            $0["type"] as? String == "agent.state.request" && $0["scope"] as? String == "agent" && $0["runtimeId"] as? String == "a"
+        })
+        #expect(AgentState.chatDomains.isSubset(of: Set(request["domains"] as? [String] ?? [])))
+        source.releaseChatInterest(lease)
+        let released = try #require(transport.sent.last {
+            $0["type"] as? String == "agent.state.request" && $0["scope"] as? String == "agent" && $0["runtimeId"] as? String == "a"
+        })
+        #expect(Set(released["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        source.shutdown()
+    }
+
+    /// A stale page releases against the original source's current runtime,
+    /// never by replaying the session captured before catalog replacement.
+    @Test func chatInterestCleanupDoesNotReplayAReplacedSession() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let source = try #require(store.connection(for: "host-1"))
+        let lease = try #require(source.acquireChatInterest(runtimeId: "a", sessionId: "session-a"))
+        await transport.ready([runtime("a", session: "replacement")])
+        let count = transport.sent.count
+        source.releaseChatInterest(lease)
+        #expect(transport.sent.count == count)
+        let request = try #require(transport.sent.last { $0["type"] as? String == "agent.state.request" })
+        #expect(request["sessionId"] as? String == "replacement")
+        #expect(Set(request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+    }
+
+    /// Retry rotates the exact read while preserving the canonical entry. Old
+    /// completion, close and retry callbacks cannot consume the replacement.
+    @Test func entryPreviewHandlesFenceRetriesCompletionAndCleanup() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(checkpoint(try #require(transport.syncCommands.last), ids: [1]))
+        let source = try #require(store.connection(for: "host-1"))
+        let first = try #require(source.previewEntry("m1"))
+        let retried = try #require(source.retryPreview(expected: first))
+        #expect(first != retried)
+        #expect(retried.entryId == "e1")
+        let retryCommand = try #require(transport.sent.last?["command"] as? [String: Any])
+        #expect(retryCommand["entryId"] as? String == "e1")
+        let count = transport.sent.count
+        source.dismissPreview(expected: first)
+        #expect(source.retryPreview(expected: first) == nil)
+        #expect(transport.sent.count == count)
+        await transport.event(["type": "session.entry.result", "requestId": first.requestId, "entryId": "e1",
+            "entry": ["data": ["message": message("old", text: "stale")]]], sequence: 2)
+        #expect(source.entryPreview?.message == nil)
+        await transport.event(["type": "session.entry.result", "requestId": retried.requestId, "entryId": "e1",
+            "entry": ["data": ["message": message("current", text: "fresh")]]], sequence: 3)
+        #expect(source.entryPreview?.message?.text == "fresh")
+        let newer = try #require(source.previewEntry("other"))
+        source.dismissPreview(expected: retried)
+        #expect(source.ownsEntryPreview(newer))
+        #expect(source.retryPreview(expected: retried) == nil)
+        source.dismissPreview(expected: newer)
+        #expect(source.entryPreview == nil)
+    }
+
     @Test func refreshDuringToolInventoryReadWaitsAndVerifiedOldReferenceFinishes() async throws {
         let (store, transport) = setup(); await transport.ready([runtime("a")])
         func tool(_ revision: Int) -> [String: Any] {

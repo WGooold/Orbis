@@ -203,6 +203,9 @@ struct TurnFileDetail {
 /// reached after an explicit open or a settled page transition, can request text.
 @MainActor
 final class TurnFileChanges: ObservableObject {
+    /// IOS-CHAT-05: sheet lifetime, not the per-file protocol viewer lease.
+    struct PresentationToken: Hashable { fileprivate let id = UUID() }
+    @Published private(set) var currentPresentation: PresentationToken?
     @Published private(set) var summaries: [String: TurnChangeSummary] = [:]
     @Published private(set) var summaryRevision: UInt64 = 0
     @Published private(set) var manifests: [String: TurnFileManifest] = [:]
@@ -279,14 +282,20 @@ final class TurnFileChanges: ObservableObject {
         guard let opened, let current = summaries[opened.changeSetId] else { return false }
         return current.manifestVersion != opened.manifestVersion
     }
-    func open(_ summary: TurnChangeSummary, fileId: String? = nil) {
-        guard summary.agent == agent else { return }
+    @discardableResult
+    func open(_ summary: TurnChangeSummary, fileId: String? = nil) -> PresentationToken? {
+        guard summary.agent == agent else { return nil }
         closeViewer(); opened = summary; suspended = false; viewerId = UUID().uuidString
+        let presentation = PresentationToken()
+        currentPresentation = presentation
         let files = manifest(summary).files
         selectedFileId = fileId ?? files.first?.fileId
         if let selectedFileId { selectFile(selectedFileId) }
         if files.isEmpty { loadFiles(summary) }
+        return presentation
     }
+    func isCurrent(_ expected: PresentationToken) -> Bool { currentPresentation == expected }
+    func selectFile(_ fileId: String, expected: PresentationToken) { guard isCurrent(expected) else { return }; selectFile(fileId) }
     func selectFile(_ fileId: String) {
         guard let file = viewerFiles.first(where: { $0.fileId == fileId }), opened != nil else { return }
         cancelDetail(); selectedFileId = fileId; suspended = false
@@ -295,6 +304,7 @@ final class TurnFileChanges: ObservableObject {
         trimDetailCache(protecting: key)
         if details[key]?.started != true { loadNext() }
     }
+    func loadNext(expected: PresentationToken) { guard isCurrent(expected) else { return }; loadNext() }
     func loadNext() {
         guard !suspended, let summary = opened, let file = selectedFile else { return }
         let key = detailKey(file)
@@ -312,14 +322,20 @@ final class TurnFileChanges: ObservableObject {
             state.loading = false; state.error = L10n.tr("差异读取未送达，请连接电脑后重试。"); details[key] = state
         }
     }
+    func rememberScroll(_ line: Int?, file: TurnFileMetadata, expected: PresentationToken) {
+        guard isCurrent(expected) else { return }; rememberScroll(line, file: file)
+    }
     func rememberScroll(_ line: Int?, file: TurnFileMetadata) {
         let key = detailKey(file)
         guard details[key] != nil else { return }
         readingPositions[key] = line
     }
+    func suspend(expected: PresentationToken) { guard isCurrent(expected) else { return }; suspend() }
     func suspend() { cancelDetail(); suspended = true }
+    func resume(expected: PresentationToken) { guard isCurrent(expected) else { return }; resume() }
     func resume() { guard opened != nil else { return }; suspended = false; if currentDetail.lines.isEmpty { loadNext() } }
-    func closeViewer() { cancelDetail(); opened = nil; selectedFileId = nil; suspended = false }
+    func closeViewer(expected: PresentationToken) { guard isCurrent(expected) else { return }; closeViewer() }
+    func closeViewer() { currentPresentation = nil; cancelDetail(); opened = nil; selectedFileId = nil; suspended = false }
     func clear() {
         closeViewer(); timeouts.values.forEach { $0.cancel() }; timeouts = [:]; requests = [:]
         detailParseTokens = [:]

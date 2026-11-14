@@ -101,6 +101,15 @@ struct ModelInterests: Equatable {
     var domains: Set<String> { values.values.reduce(into: []) { $0.formUnion($1) } }
 }
 
+/// IOS-CHAT-05: a mounted page owns one exact interest, independently of other
+/// pages using the same label or a replacement session reusing the runtime ID.
+struct AgentInterestLease: Hashable {
+    fileprivate let stateId: UUID
+    fileprivate let token: UUID
+    let runtimeId: String
+    let sessionId: String
+}
+
 /// FT-G05: fixed-catalog paging with a single active selector and atomic completion.
 struct MenuOptionsLoader {
     private struct Read {
@@ -194,6 +203,8 @@ final class AgentState: ObservableObject {
     private var retiredEpochs: Set<String> = []
     private var reads: [String: Read] = [:]
     private var interests: [String: ModelInterests] = [:]
+    private var leaseStateId = UUID()
+    private var pageInterests: [AgentInterestLease: Set<String>] = [:]
     private var preferredFormat: String? = "compact-v2"
     private var timeouts: [String: Task<Void, Never>] = [:]
     private struct Read {
@@ -210,7 +221,10 @@ final class AgentState: ObservableObject {
         let key = pairing.map(FileTransfers.pairingKey)
         guard hostKey != key || self.connected != connected else { return }
         timeouts.values.forEach { $0.cancel() }; timeouts = [:]; reads = [:]
-        if key != hostKey { snapshots = [:]; retiredEpochs = []; interests = [:] }
+        if key != hostKey {
+            snapshots = [:]; retiredEpochs = []; interests = [:]
+            pageInterests = [:]; leaseStateId = UUID()
+        }
         for id in snapshots.keys { snapshots[id]?.pending = [] }
         hostKey = key; self.connected = connected; epoch = nil
         preferredFormat = "compact-v2"
@@ -239,9 +253,31 @@ final class AgentState: ObservableObject {
         subscribe(runtime: runtime)
     }
 
+    @discardableResult
+    func retainInterest(runtime: RuntimeSummary, domains: Set<String>) -> AgentInterestLease? {
+        let domains = domains.intersection(Self.domainNames)
+        guard let session = runtime.sessionId, !session.isEmpty, !domains.isEmpty else { return nil }
+        let lease = AgentInterestLease(stateId: leaseStateId, token: UUID(), runtimeId: runtime.runtimeId, sessionId: session)
+        pageInterests[lease] = domains
+        subscribe(runtime: runtime)
+        return lease
+    }
+
+    /// The original connection supplies its current canonical runtime. Cleanup
+    /// never replays the RuntimeSummary captured when the old page appeared.
+    func releaseInterest(_ lease: AgentInterestLease, currentRuntime: RuntimeSummary?) {
+        guard lease.stateId == leaseStateId, pageInterests.removeValue(forKey: lease) != nil else { return }
+        guard let currentRuntime, currentRuntime.runtimeId == lease.runtimeId,
+              currentRuntime.sessionId == lease.sessionId else { return }
+        subscribe(runtime: currentRuntime)
+    }
+
     func subscribe(runtime: RuntimeSummary, force: Bool = false) {
         guard connected, let session = runtime.sessionId, !session.isEmpty else { return }
-        let wanted = Self.homeDomains.union(interests[runtime.runtimeId]?.domains ?? [])
+        let pageDomains = pageInterests.reduce(into: Set<String>()) { result, entry in
+            if entry.key.runtimeId == runtime.runtimeId && entry.key.sessionId == session { result.formUnion(entry.value) }
+        }
+        let wanted = Self.homeDomains.union(interests[runtime.runtimeId]?.domains ?? []).union(pageDomains)
         // A request without agentKind is already bound by runtime/session. Learning the kind
         // from identity must not replace that live subscription and restart its pending reads.
         if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
@@ -272,7 +308,12 @@ final class AgentState: ObservableObject {
         }
     }
 
-    func remove(runtimeId: String) { removeRead(runtimeId); snapshots[runtimeId] = nil; interests[runtimeId] = nil }
+    func remove(runtimeId: String) {
+        removeRead(runtimeId); snapshots[runtimeId] = nil; interests[runtimeId] = nil
+        // Source invalidation can also precede the first ready/reconnect snapshot.
+        // Mounted pages keep their exact leases until page/target cleanup; a
+        // replacement session cannot use them because subscribe filters sessionId.
+    }
     func owns(_ domain: String, runtimeId: String) -> Bool {
         snapshots[runtimeId]?.domains[domain] != nil && reads.values.contains { $0.runtimeId == runtimeId && $0.domains.contains(domain) }
     }

@@ -29,6 +29,56 @@ struct TurnFileChangesTests {
     private func expired(_ request: [String: Any]) -> [String: Any] {
         ["type": "session.changes.failed", "requestId": request["requestId"]!, "runtimeId": "runtime", "reason": "expired"]
     }
+
+    // IOS-CHAT-05: old sheet/pager callbacks cannot mutate a replacement presentation,
+    // including reopening the same version on the same model while old cleanup repeats.
+    @Test func obsoletePresentationCannotCloseSuspendSelectOrPageAReplacementReview() async throws {
+        let changes = TurnFileChanges(); var sent: [[String: Any]] = []
+        changes.send = { _, value in sent.append(value); return true }
+        changes.observe(runtimeId: "runtime", agent: agent, entryIds: [], turnIds: [])
+        let old = try #require(changes.open(summary()))
+        let oldRead = try #require(sent.last)
+        await receiveDetail(detailPage(oldRead, text: " old cache\n", cursor: "old-next"), in: changes)
+        changes.rememberScroll(2, file: file, expected: old)
+        changes.closeViewer(expected: old)
+        changes.closeViewer(expected: old)
+        #expect(changes.currentPresentation == nil)
+
+        let secondFile = summary().preview[1]
+        let current = try #require(changes.open(summary(), fileId: secondFile.fileId))
+        let currentRead = try #require(sent.last)
+        await receiveDetail(detailPage(currentRead, text: " current cache\n", cursor: "current-next"), in: changes)
+        changes.rememberScroll(3, file: secondFile, expected: current)
+        #expect(current != old && changes.isCurrent(current) && !changes.isCurrent(old))
+        let count = sent.count
+        changes.selectFile(file.fileId, expected: old)
+        changes.loadNext(expected: old)
+        changes.rememberScroll(99, file: secondFile, expected: old)
+        changes.suspend(expected: old)
+        changes.resume(expected: old)
+        changes.closeViewer(expected: old)
+        changes.closeViewer(expected: old)
+        await receiveDetail(detailPage(oldRead, text: "stale"), in: changes)
+        #expect(sent.count == count && changes.isCurrent(current))
+        #expect(changes.selectedFileId == secondFile.fileId && !changes.suspended)
+        #expect(changes.currentDetail.lines.map(\.text) == [" current cache"])
+        #expect(changes.currentDetail.scrollLine == 3)
+
+        changes.selectFile(file.fileId, expected: current)
+        #expect(changes.isCurrent(current) && changes.selectedFileId == file.fileId)
+        #expect(changes.currentDetail.scrollLine == 2)
+        changes.loadNext(expected: current)
+        #expect(sent.last?["cursor"] as? String == "old-next")
+        #expect(sent.last?["viewerId"] as? String != currentRead["viewerId"] as? String)
+        changes.suspend(expected: current)
+        #expect(changes.isCurrent(current) && changes.suspended)
+        changes.resume(expected: current)
+        #expect(changes.isCurrent(current) && !changes.suspended)
+        changes.closeViewer(expected: current)
+        #expect(changes.currentPresentation == nil && changes.opened == nil)
+        changes.clear()
+    }
+
     @Test func nativeToolMetadataExplainsCoverageAndRequiresExplicitDetailReads() async throws {
         let changes = TurnFileChanges(); var sent: [[String: Any]] = []
         changes.send = { _, value in sent.append(value); return true }

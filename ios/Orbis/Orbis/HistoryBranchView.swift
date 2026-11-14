@@ -1,5 +1,10 @@
 import SwiftUI
 
+private struct HistoryOptionsKey: Equatable {
+    let target: ChatActionContext
+    let catalog: String?
+}
+
 struct HistoryBranchView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
@@ -9,6 +14,9 @@ struct HistoryBranchView: View {
     let onDownloads: () -> Void
     @State private var query = ""
     @State private var selected: RuntimeOption?
+    @State private var previewHandle: EntryPreviewHandle?
+    @State private var previewTarget: ChatActionContext?
+    @State private var menuTarget: ChatActionContext?
     @State private var showOtherBranches = false
     @State private var showDetails = false
     @State private var actionPending = false
@@ -17,6 +25,11 @@ struct HistoryBranchView: View {
     @State private var openingDownloads = false
     @State private var scrolledToCurrent = false
     @FocusState private var searchFocused: Bool
+
+    private var ownedPreview: EntryPreview? {
+        guard let previewHandle, previewHandle.owner.ownsEntryPreview(previewHandle) else { return nil }
+        return previewHandle.owner.entryPreview
+    }
 
     private var options: [RuntimeOption] {
         guard let id = store.selectedRuntimeId else { return [] }
@@ -36,6 +49,7 @@ struct HistoryBranchView: View {
     }
 
     var body: some View {
+        let target = ChatActionContext.capture(store)
         VStack(spacing: 12) {
             OrbisPageHeader(title: L10n.tr("历史与分支"), titleLineLimit: 2, back: onBack) {
                 OrbisMenuIconButton(symbol: "line.3.horizontal.decrease", label: L10n.tr("筛选历史"),
@@ -58,11 +72,13 @@ struct HistoryBranchView: View {
             if options.isEmpty && (optionCatalog?.count ?? 0) > 0 {
                 ProgressView(L10n.tr("读取中…")).padding(24)
                 OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {
-                    if let id = store.selectedRuntimeId { store.loadMenuOptions(runtimeId: id, name: "tree") }
+                    if target.matches(store), let id = target.runtimeId { target.owner.loadMenuOptions(runtimeId: id, name: "tree") }
                 }.padding(.horizontal, 24)
             } else if options.isEmpty {
                 OrbisEmptyState(symbol: "clock.arrow.circlepath", title: L10n.tr("当前会话尚未提供历史分支"))
-                OrbisActionButton(title: L10n.tr("刷新会话"), symbol: "arrow.clockwise", action: store.refresh).padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
+                OrbisActionButton(title: L10n.tr("刷新会话"), symbol: "arrow.clockwise") {
+                    if target.matches(store) { target.owner.refresh() }
+                }.padding(.horizontal, 24).padding(.bottom, 24).disabled(!store.canSend)
             } else {
                 ScrollViewReader { proxy in
                     HStack {
@@ -97,17 +113,26 @@ struct HistoryBranchView: View {
             .onChange(of: store.historyRevision) { _, _ in onBack() }
             .onChange(of: store.pendingActionIds) { _, ids in if ids.isEmpty { actionPending = false } }
             .onAppear { openingDownloads = false }
-            .task(id: optionCatalog?.id) {
-                if let id = store.selectedRuntimeId { store.loadMenuOptions(runtimeId: id, name: "tree") }
+            .task(id: HistoryOptionsKey(target: target, catalog: optionCatalog?.id)) {
+                if let old = menuTarget, old != target, old.ownsRuntime, let id = old.runtimeId {
+                    old.owner.cancelMenuOptions(runtimeId: id, name: "tree")
+                }
+                menuTarget = target
+                if target.matches(store), let id = target.runtimeId { target.owner.loadMenuOptions(runtimeId: id, name: "tree") }
             }
+            .onChange(of: target) { _, _ in dismissOwnedPreview(); selected = nil }
             .onDisappear {
-                if let id = store.selectedRuntimeId { store.cancelMenuOptions(runtimeId: id, name: "tree") }
-                if !openingDownloads { store.dismissPreview() }
+                if let target = menuTarget, target.ownsRuntime, let id = target.runtimeId { target.owner.cancelMenuOptions(runtimeId: id, name: "tree") }
+                if !openingDownloads { dismissOwnedPreview() }
             }
     }
 
     private func node(_ option: RuntimeOption) -> some View {
-        OrbisMotionButton { selected = option; store.previewEntry(option.value) } label: {
+        let target = ChatActionContext.capture(store)
+        return OrbisMotionButton {
+            guard target.matches(store), let handle = target.owner.previewEntry(option.value) else { return }
+            selected = option; previewTarget = target; previewHandle = handle
+        } label: {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
                     Text(role(option)).fontWeight(.semibold)
@@ -123,32 +148,52 @@ struct HistoryBranchView: View {
     }
 
     private func preview(_ option: RuntimeOption) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let handle = previewHandle, target = previewTarget, displayed = ownedPreview
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(L10n.tr("正在预览")).font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).accent)
                 Spacer()
-                OrbisIconButton(symbol: "xmark", label: L10n.tr("退出预览"), size: 32) { selected = nil; store.dismissPreview() }
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("退出预览"), size: 32) {
+                    if previewHandle == handle { selected = nil; dismissOwnedPreview() }
+                }
             }
             ScrollView {
-                if store.entryPreview?.loading == true { ProgressView(L10n.tr("读取中…")).font(.orbisCaption()).padding(20) }
-                else if let message = store.entryPreview?.message {
+                if displayed?.loading == true { ProgressView(L10n.tr("读取中…")).font(.orbisCaption()).padding(20) }
+                else if let message = displayed?.message {
                     ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) },
-                                   readContext: store.selectedRuntime.map { ChatReadContext(connection: store.activeConnection,
-                                       runtimeId: $0.runtimeId, sessionId: $0.sessionId, canRead: store.canSend) })
-                } else { Text(store.entryPreview?.error ?? L10n.tr("该节点没有可预览的消息内容。")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
+                                   readContext: target.map { ChatReadContext(store: store, target: $0, canRead: $0.owner.canSend) })
+                } else {
+                    Text(displayed?.error ?? L10n.tr("该节点没有可预览的消息内容。")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(12)
+                    if displayed?.error != nil {
+                        OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { retryOwnedPreview(expected: handle, target: target) }
+                            .accessibilityIdentifier("history-preview-retry")
+                    }
+                }
             }.frame(maxHeight: 160)
             if store.isViewingCachedSession {
-                OrbisActionButton(title: L10n.tr("查看这个分支的缓存"), symbol: "arrow.triangle.branch") { store.selectCachedBranch(option.value); selected = nil; store.dismissPreview() }
-                    .disabled(store.entryPreview?.loading == true)
+                OrbisActionButton(title: L10n.tr("查看这个分支的缓存"), symbol: "arrow.triangle.branch") {
+                    guard previewHandle == handle, target?.matches(store) == true else { return }
+                    store.selectCachedBranch(option.value); selected = nil; dismissOwnedPreview()
+                }.disabled(displayed?.loading == true)
             } else if ["user", "assistant"].contains(option.tree?.role ?? "") {
                 // The pending state lives in the button's own title, so the panel never grows.
                 OrbisActionButton(title: actionPending ? L10n.tr("正在切换分支…") : option.tree?.role == "user" ? L10n.tr("编辑这条消息并重新开始") : L10n.tr("从这条回复后继续"),
                                   symbol: "arrow.turn.down.right") {
+                    guard previewHandle == handle, target?.matches(store) == true else { return }
                     actionPending = store.moveHistory(to: option)
                     if actionPending { OrbisHaptics.commit() }
-                }.disabled(actionPending || !store.canSend || !store.pendingActionIds.isEmpty || store.entryPreview?.loading == true)
+                }.disabled(actionPending || !store.canSend || !store.pendingActionIds.isEmpty || displayed?.loading == true)
             }
         }.neuSurface(radius: OrbisRadius.card, padding: 12).padding(.horizontal, 20).padding(.bottom, 12)
+    }
+    private func dismissOwnedPreview() {
+        if let previewHandle { previewHandle.owner.dismissPreview(expected: previewHandle) }
+        previewHandle = nil; previewTarget = nil
+    }
+    private func retryOwnedPreview(expected: EntryPreviewHandle?, target: ChatActionContext?) {
+        guard let expected, previewHandle == expected, target?.matches(store) == true,
+              let next = expected.owner.retryPreview(expected: expected) else { return }
+        self.previewHandle = next
     }
     private func role(_ option: RuntimeOption) -> String {
         switch option.tree?.role { case "user": return L10n.tr("你的消息"); case "assistant": return L10n.tr("助手回复"); case "toolResult", "tool": return L10n.tr("工具"); default: return L10n.tr("记录") }

@@ -121,6 +121,76 @@ struct ToolContentTests {
     }
     private func exportRoot() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("orbis-tool-export-" + UUID().uuidString) }
 
+    // IOS-CHAT-05: a sheet's delayed actions/cleanup keep the token from its open,
+    // even when the same reader immediately presents the same tool again.
+    @Test func obsoletePresentationCannotOperateOnOrCloseAReplacementTool() throws {
+        let root = exportRoot(), destination = root.appendingPathComponent("stale.txt")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reader = ToolContentReader(); var sent: [[String: Any]] = []
+        reader.send = { _, request in sent.append(request); return true }
+        let old = reader.open(runtimeId: "runtime", locator: locator)
+        let oldRequest = try #require(sent.last)
+        reader.close(expected: old)
+        reader.close(expected: old)
+        #expect(reader.currentPresentation == nil)
+        let current = reader.open(runtimeId: "runtime", locator: locator)
+        #expect(current != old && reader.isCurrent(current) && !reader.isCurrent(old))
+        reader.consume(try page(sent.last!, text: "a", from: 0, through: 1, end: 3), runtimeId: "runtime")
+        reader.follow(true, expected: current)
+        let count = sent.count
+        reader.loadNext(expected: old)
+        reader.retry(expected: old)
+        reader.follow(false, expected: old)
+        reader.export(to: destination, expected: old)
+        reader.cancelExport(expected: old)
+        reader.close(expected: old)
+        reader.close(expected: old)
+        reader.consume(try page(oldRequest, text: "old", from: 0, through: 3, end: 3), runtimeId: "runtime")
+        #expect(sent.count == count && reader.isCurrent(current))
+        #expect(reader.text == "a" && reader.nextCursor == 1 && reader.following)
+        #expect(!reader.exporting && reader.exportError == nil && !FileManager.default.fileExists(atPath: root.path))
+        reader.loadNext(expected: current)
+        #expect(sent.last?["offset"] as? Int64 == 1)
+        reader.close(expected: current)
+        #expect(reader.currentPresentation == nil)
+    }
+
+    // IOS-CHAT-05: export acquires and retires wire viewers inside one presentation.
+    // Its original sheet token must keep authorizing cancel/continue/close throughout.
+    @Test func presentationTokenSurvivesExportViewerRotationAndRejectsOldCancellation() async throws {
+        for cancel in [false, true] {
+            let root = exportRoot(), destination = root.appendingPathComponent("output.txt")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let reader = ToolContentReader(); var sent: [[String: Any]] = []
+            reader.send = { _, request in sent.append(request); return true }
+            let old = reader.open(runtimeId: "runtime", locator: locator)
+            let current = reader.open(runtimeId: "runtime", locator: locator)
+            let original = try #require(sent.last)
+            reader.consume(try page(original, text: "a", from: 0, through: 1, end: 3), runtimeId: "runtime")
+            reader.export(to: destination, expected: current)
+            try await waitFor { reader.exporting && sent.last?["type"] as? String == "session.tool.content.read" &&
+                sent.last?["requestId"] as? String != original["requestId"] as? String }
+            let exportRead = try #require(sent.last)
+            #expect(exportRead["viewerId"] as? String != original["viewerId"] as? String)
+            reader.cancelExport(expected: old)
+            reader.close(expected: old)
+            #expect(reader.exporting && reader.isCurrent(current))
+            if cancel { reader.cancelExport(expected: current) }
+            else {
+                reader.consume(try page(exportRead, text: "abc", from: 0, through: 3, end: 3), runtimeId: "runtime")
+                try await waitFor { reader.exportComplete }
+            }
+            #expect(reader.isCurrent(current) && !reader.exporting && reader.text == "a")
+            reader.loadNext(expected: current)
+            #expect(sent.last?["offset"] as? Int64 == 1)
+            #expect(sent.last?["viewerId"] as? String != exportRead["viewerId"] as? String)
+            #expect(reader.currentPresentation == current)
+            reader.close(expected: current)
+            #expect(reader.currentPresentation == nil)
+            if cancel { try await waitFor { ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).isEmpty } }
+        }
+    }
+
     @Test func toolExportStreamsFixedUTF8PagesToDiskWithoutFillingTheDetailCache() async throws {
         let root = exportRoot(), destination = root.appendingPathComponent("output.txt")
         defer { try? FileManager.default.removeItem(at: root) }

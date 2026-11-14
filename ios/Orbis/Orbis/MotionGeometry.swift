@@ -233,6 +233,80 @@ enum MotionGeometry {
     }
 }
 
+/// IOS-CHAT-05: network polling follows the top page at rest; visual work also
+/// includes the source revealed during a return and uses orbisVisible instead.
+struct OrbisPageActivity: Equatable {
+    let isTop: Bool
+    let isStationary: Bool
+    let hasArrived: Bool
+
+    func pollsGit(sceneActive: Bool) -> Bool { sceneActive && isTop && isStationary && hasArrived }
+}
+
+/// Parser completion can lag visibility. Keep the newest hidden source as a
+/// baseline until its prepared document (or a foreground successor) is consumed.
+struct OrbisRevealCatchUp {
+    private(set) var hiddenSource: String?
+
+    mutating func sourceChanged(_ source: String, active: Bool) {
+        if !active { hiddenSource = source }
+    }
+
+    mutating func visibilityChanged(active: Bool, source: String, preparedSource: String?) {
+        if !active { hiddenSource = source }
+        else if let preparedSource { consumeIfCaughtUp(preparedSource, currentSource: source) }
+    }
+
+    mutating func allowsReveal(preparedSource: String?, currentSource: String, active: Bool) -> Bool {
+        guard active else { return false }
+        guard hiddenSource != nil else { return true }
+        if let preparedSource { consumeIfCaughtUp(preparedSource, currentSource: currentSource) }
+        return false
+    }
+
+    private mutating func consumeIfCaughtUp(_ prepared: String, currentSource: String) {
+        guard let hiddenSource else { return }
+        if prepared == hiddenSource || prepared.hasPrefix(hiddenSource) || prepared == currentSource {
+            self.hiddenSource = nil
+        }
+    }
+}
+
+/// A paused periodic schedule emits its current frame once and owns no future
+/// ticks. The SwiftUI adapter supplies the current absolute start on resumption.
+struct OrbisPeriodicEntries: Sequence {
+    let start: Date
+    let interval: TimeInterval
+    let paused: Bool
+
+    init(start: Date, interval: TimeInterval, paused: Bool) {
+        self.start = start; self.interval = interval.isFinite && interval > 0 ? interval : 1; self.paused = paused
+    }
+    struct Iterator: IteratorProtocol {
+        var nextDate: Date?
+        let interval: TimeInterval
+        let paused: Bool
+        mutating func next() -> Date? {
+            guard let value = nextDate else { return nil }
+            nextDate = paused ? nil : value.addingTimeInterval(interval)
+            return value
+        }
+    }
+    func makeIterator() -> Iterator { Iterator(nextDate: start, interval: interval, paused: paused) }
+}
+
+/// Decorative work queued before hide/cancel cannot revive after a later show.
+struct OrbisVisualWorkGate {
+    private(set) var active = true
+    private(set) var generation = 0
+    mutating func setActive(_ value: Bool) {
+        guard active != value else { return }
+        active = value; invalidate()
+    }
+    mutating func invalidate() { generation &+= 1 }
+    func permits(_ captured: Int) -> Bool { active && captured == generation }
+}
+
 /// IOS-CHAT-03: the editor owns its natural height at one remaining width. The
 /// side actions keep their measured touch targets and all three children share a bottom edge.
 struct ChatComposerRowGeometry: Equatable {

@@ -1,8 +1,16 @@
 import SwiftUI
 import UIKit
 
+/// New review actions require the source that built this UI to remain the Hub target.
+/// Connection readiness is deliberately not part of ownership: cached files stay browsable.
+@MainActor private func ownsTurnChanges(_ changes: TurnFileChanges, context: ChatReadContext?) -> Bool {
+    guard let context else { return false }
+    return context.target.matches(context.store) && context.connection.turnFileChanges === changes
+}
+
 struct TurnChangeCards: View {
     @ObservedObject var changes: TurnFileChanges
+    let context: ChatReadContext?
     let anchors: Set<String>
     @State private var matching: [TurnChangeSummary] = []
     var body: some View {
@@ -10,7 +18,7 @@ struct TurnChangeCards: View {
         let summaries = changes.summaries
         let agent = changes.summaryProjectionAgent
         ForEach(matching) { summary in
-            TurnChangeCard(changes: changes, summary: summary)
+            TurnChangeCard(changes: changes, context: context, summary: summary)
         }
         .task(id: query) {
             let result = await TurnChangeBackgroundWorker.shared.matching(query, summaries: summaries, agent: agent)
@@ -24,6 +32,7 @@ struct TurnChangeCards: View {
 /// header opens the viewer, one compact line per file, and a single caveat line when needed.
 private struct TurnChangeCard: View {
     @ObservedObject var changes: TurnFileChanges
+    let context: ChatReadContext?
     let summary: TurnChangeSummary
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -40,14 +49,14 @@ private struct TurnChangeCard: View {
                 header(p, ready: ready, count: count, opens: ready && !files.isEmpty)
                 ForEach(files) { file in
                     ChangeHairline()
-                    OrbisMotionButton { changes.open(summary, fileId: file.fileId) } label: { ChangeFileLine(file: file) }
+                    OrbisMotionButton { open(fileId: file.fileId) } label: { ChangeFileLine(file: file) }
                         .buttonStyle(.plain).accessibilityIdentifier("turn-change-file-" + file.fileId)
                 }
                 if ready && count > 4 {
                     ChangeHairline()
                     OrbisMotionButton {
                         withAnimation(reduceMotion ? nil : .orbisCollapse) { expanded.toggle() }
-                        if expanded && !manifest.started { changes.loadFiles(summary) }
+                        if expanded && !manifest.started { loadFiles() }
                     } label: {
                         HStack(spacing: 6) {
                             Text(expanded ? L10n.tr("收起") : L10n.tr("还有 {0} 个文件", count - 4))
@@ -59,7 +68,7 @@ private struct TurnChangeCard: View {
                 }
                 if expanded && !manifest.complete && !manifest.loading && (manifest.started || manifest.error != nil) {
                     ChangeHairline()
-                    OrbisMotionButton { changes.loadFiles(summary) } label: {
+                    OrbisMotionButton { loadFiles() } label: {
                         Text(manifest.error == nil ? L10n.tr("载入更多文件") : L10n.tr("重新读取文件清单"))
                             .font(.orbisCaption()).foregroundStyle(manifest.error == nil ? p.accent : p.error)
                             .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
@@ -88,7 +97,7 @@ private struct TurnChangeCard: View {
             }
         }.font(.orbisLabel()).foregroundStyle(p.secondary).frame(minHeight: 40).contentShape(Rectangle())
         if opens {
-            OrbisMotionButton { changes.open(summary) } label: { row }.buttonStyle(.plain)
+            OrbisMotionButton { open() } label: { row }.buttonStyle(.plain)
                 .accessibilityLabel(L10n.tr("查看详情，") + title).accessibilityIdentifier("turn-changes-open-" + summary.reviewTurnId)
         } else {
             row.accessibilityElement(children: .combine)
@@ -98,6 +107,14 @@ private struct TurnChangeCard: View {
     /// One line for what the counts cannot show: incomplete capture or concurrent edits.
     private var caveat: String? {
         turnChangeCoverageNote(summary)
+    }
+    private func open(fileId: String? = nil) {
+        guard ownsTurnChanges(changes, context: context) else { return }
+        changes.open(summary, fileId: fileId)
+    }
+    private func loadFiles() {
+        guard ownsTurnChanges(changes, context: context) else { return }
+        changes.loadFiles(summary)
     }
 }
 
@@ -157,15 +174,24 @@ private struct ChangeFileLine: View {
 /// The chat screen presents the viewer, not the lazily built transcript row that owns the card:
 /// a row recycled while the agent keeps writing must not take an open review with it.
 struct TurnFileReviewPresenter: ViewModifier {
+    private struct Presentation: Identifiable {
+        let id: TurnFileChanges.PresentationToken
+        let changes: TurnFileChanges
+        let context: ChatReadContext
+    }
     @ObservedObject var changes: TurnFileChanges
-    @State private var showing = false
+    let context: ChatReadContext
+    @State private var presentation: Presentation?
     func body(content: Content) -> some View {
         // The opened version stays until the sheet has left the screen, so closing slides the
-        // same file out instead of an empty placeholder.
-        content.sheet(isPresented: $showing, onDismiss: { changes.closeViewer() }) {
-            TurnFileReviewView(changes: changes)
+        // same file out instead of an empty placeholder. Cleanup belongs to that sheet's
+        // immutable item, never to whichever viewer the shared model opens next.
+        content.sheet(item: $presentation) { item in
+            TurnFileReviewView(changes: item.changes, context: item.context, presentation: item.id).id(item.id)
         }
-        .onChange(of: changes.opened != nil, initial: true) { _, open in showing = open }
+        .onChange(of: changes.currentPresentation, initial: true) { _, token in
+            presentation = token.map { Presentation(id: $0, changes: changes, context: context) }
+        }
     }
 }
 
@@ -208,6 +234,8 @@ struct ReviewFileNameText: View {
 /// own well.
 struct TurnFileReviewView: View {
     @ObservedObject var changes: TurnFileChanges
+    let context: ChatReadContext
+    let presentation: TurnFileChanges.PresentationToken
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -230,14 +258,16 @@ struct TurnFileReviewView: View {
             header(p)
             if changes.newerVersionAvailable { OrbisStatusWithInfo(title: L10n.tr("有新版本"), message: L10n.tr("本轮概况已更新，当前保持打开时的版本。")).padding(.horizontal, 16) }
             if changes.suspended {
-                OrbisActionButton(title: L10n.tr("继续读取"), symbol: "play") { changes.resume() }.padding(.horizontal, 16)
+                OrbisActionButton(title: L10n.tr("继续读取"), symbol: "play") {
+                    if ownsTurnChanges(changes, context: context) { changes.resume(expected: presentation) }
+                }.padding(.horizontal, 16)
             }
             if !files.isEmpty {
-                SettledFilePager(changes: changes, files: files, requestedFile: requestedFile, navigation: navigation, reduceMotion: pageReduceMotion)
+                SettledFilePager(changes: changes, context: context, presentation: presentation, files: files, requestedFile: requestedFile, navigation: navigation, reduceMotion: pageReduceMotion)
                     .accessibilityIdentifier("turn-change-pager")
             } else if let summary = changes.opened, let error = changes.manifest(summary).error {
                 OrbisNotice(text: error, error: true).padding(.horizontal, 16)
-                OrbisActionButton(title: L10n.tr("重新读取文件清单"), symbol: "arrow.clockwise") { changes.loadFiles(summary) }.padding(.horizontal, 16)
+                OrbisActionButton(title: L10n.tr("重新读取文件清单"), symbol: "arrow.clockwise") { loadFiles(summary) }.padding(.horizontal, 16)
                 Spacer()
             } else {
                 OrbisEmptyState(symbol: "doc", title: L10n.tr("正在读取文件清单")).frame(maxHeight: .infinity)
@@ -251,7 +281,7 @@ struct TurnFileReviewView: View {
                 OrbisIconButton(symbol: "chevron.right", label: L10n.tr("下一个文件"), size: 44) { request(files[index + 1].fileId) }.disabled(index + 1 >= files.count)
             }.padding(.horizontal, 20)
             if let summary = changes.opened, index + 1 >= files.count, !changes.manifest(summary).complete, (summary.fileCount ?? 0) > files.count {
-                OrbisTextButton(title: L10n.tr("载入更多文件"), symbol: "doc", loading: changes.manifest(summary).loading) { changes.loadFiles(summary) }
+                OrbisTextButton(title: L10n.tr("载入更多文件"), symbol: "doc", loading: changes.manifest(summary).loading) { loadFiles(summary) }
             }
         }.padding(.bottom, 4)
             .foregroundStyle(p.text)
@@ -266,9 +296,8 @@ struct TurnFileReviewView: View {
                 if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() }
             }
             #endif
-            .onChange(of: scenePhase) { _, phase in if phase != .active { changes.suspend() } }
-            .onChange(of: changes.opened == nil) { _, closed in if closed { dismiss() } }
-            .onDisappear { changes.closeViewer() }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { changes.suspend(expected: presentation) } }
+            .onDisappear { changes.closeViewer(expected: presentation) }
     }
     private func header(_ p: OrbisPalette) -> some View {
         VStack(spacing: 0) {
@@ -276,7 +305,7 @@ struct TurnFileReviewView: View {
                 .neuSurface(inset: true, radius: 3, intensity: 0.35, concentric: false)
                 .padding(.top, 7).accessibilityHidden(true)
             OrbisHeader {
-                OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭"), action: { dismiss() })
+                OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭"), action: { if changes.isCurrent(presentation) { dismiss() } })
             } title: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n.tr("本轮文件差异")).font(.orbisTitle()).lineLimit(1).accessibilityAddTraits(.isHeader)
@@ -288,7 +317,14 @@ struct TurnFileReviewView: View {
         }.background(SheetDismissZone())
             .accessibilityElement(children: .contain).accessibilityIdentifier("turn-change-header")
     }
-    private func request(_ file: String) { requestedFile = file; navigation += 1 }
+    private func request(_ file: String) {
+        guard changes.isCurrent(presentation), ownsTurnChanges(changes, context: context) else { return }
+        requestedFile = file; navigation += 1
+    }
+    private func loadFiles(_ summary: TurnChangeSummary) {
+        guard changes.isCurrent(presentation), ownsTurnChanges(changes, context: context) else { return }
+        changes.loadFiles(summary)
+    }
 }
 
 /// The header's footprint for the sheet's own pull-to-close. At every touch-down in the
@@ -329,6 +365,8 @@ private struct SheetDismissZone: UIViewRepresentable {
 /// controllers is metadata/cache-only and never opens a network read.
 private struct SettledFilePager: UIViewControllerRepresentable {
     @ObservedObject var changes: TurnFileChanges
+    let context: ChatReadContext
+    let presentation: TurnFileChanges.PresentationToken
     let files: [TurnFileMetadata]
     let requestedFile: String?
     let navigation: Int
@@ -337,51 +375,83 @@ private struct SettledFilePager: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIPageViewController {
         let page = UIPageViewController(transitionStyle: .scroll, navigationOrientation: .horizontal)
         page.dataSource = context.coordinator; page.delegate = context.coordinator
-        if let file = files.first(where: { $0.fileId == changes.selectedFileId }) ?? files.first {
+        if context.coordinator.isCurrent, let file = files.first(where: { $0.fileId == changes.selectedFileId }) ?? files.first {
             page.setViewControllers([context.coordinator.controller(file)], direction: .forward, animated: false)
         }
         return page
     }
     func updateUIViewController(_ page: UIPageViewController, context: Context) {
         context.coordinator.parent = self
-        guard navigation != context.coordinator.navigation, let target = requestedFile,
+        guard context.coordinator.isCurrent, navigation != context.coordinator.navigation, let target = requestedFile,
               let file = files.first(where: { $0.fileId == target }), !context.coordinator.transitioning else { return }
         context.coordinator.navigation = navigation
         let current = files.firstIndex { $0.fileId == changes.selectedFileId } ?? 0
         let next = files.firstIndex { $0.fileId == target } ?? current
         context.coordinator.transitioning = true
+        let transition = UUID()
+        context.coordinator.transition = transition
         page.setViewControllers([context.coordinator.controller(file)], direction: next < current ? .reverse : .forward, animated: !reduceMotion) { completed in
+            guard context.coordinator.isCurrent, context.coordinator.transition == transition else { return }
+            context.coordinator.transition = nil
             context.coordinator.transitioning = false
-            if completed { changes.selectFile(target) }
+            if completed { context.coordinator.owner.selectFile(target, expected: context.coordinator.presentation) }
         }
+    }
+    static func dismantleUIViewController(_ page: UIPageViewController, coordinator: Coordinator) {
+        coordinator.retired = true; coordinator.transition = nil
+        page.dataSource = nil; page.delegate = nil
     }
     final class Page: UIHostingController<DiffFilePage> {
         let fileId: String
-        init(file: TurnFileMetadata, changes: TurnFileChanges) { fileId = file.fileId; super.init(rootView: DiffFilePage(changes: changes, file: file)); view.backgroundColor = .clear }
+        let presentation: TurnFileChanges.PresentationToken
+        init(file: TurnFileMetadata, changes: TurnFileChanges, context: ChatReadContext, presentation: TurnFileChanges.PresentationToken) {
+            fileId = file.fileId; self.presentation = presentation
+            super.init(rootView: DiffFilePage(changes: changes, context: context, presentation: presentation, file: file)); view.backgroundColor = .clear
+        }
         @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
     }
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+    @MainActor final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: SettledFilePager
+        let owner: TurnFileChanges
+        let context: ChatReadContext
+        let presentation: TurnFileChanges.PresentationToken
         var navigation = 0
         var transitioning = false
-        init(_ parent: SettledFilePager) { self.parent = parent }
-        func controller(_ file: TurnFileMetadata) -> Page { Page(file: file, changes: parent.changes) }
+        var transition: UUID?
+        var retired = false
+        var isCurrent: Bool {
+            !retired && parent.changes === owner && parent.presentation == presentation &&
+                owner.isCurrent(presentation) && ownsTurnChanges(owner, context: context)
+        }
+        init(_ parent: SettledFilePager) {
+            self.parent = parent; owner = parent.changes; context = parent.context; presentation = parent.presentation
+        }
+        func controller(_ file: TurnFileMetadata) -> Page { Page(file: file, changes: owner, context: context, presentation: presentation) }
         func pageViewController(_ page: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? { adjacent(viewController, delta: -1) }
         func pageViewController(_ page: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? { adjacent(viewController, delta: 1) }
         private func adjacent(_ controller: UIViewController, delta: Int) -> UIViewController? {
-            guard let current = controller as? Page, let index = parent.files.firstIndex(where: { $0.fileId == current.fileId }), parent.files.indices.contains(index + delta) else { return nil }
+            guard isCurrent, let current = controller as? Page, current.presentation == presentation,
+                  let index = parent.files.firstIndex(where: { $0.fileId == current.fileId }), parent.files.indices.contains(index + delta) else { return nil }
             return self.controller(parent.files[index + delta])
         }
-        func pageViewController(_ page: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) { transitioning = true }
+        func pageViewController(_ page: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
+            guard isCurrent, pendingViewControllers.allSatisfy({ ($0 as? Page)?.presentation == presentation }) else { return }
+            transitioning = true
+        }
         func pageViewController(_ page: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+            guard isCurrent else { return }
             transitioning = false
-            if completed, let selected = page.viewControllers?.first as? Page { parent.changes.selectFile(selected.fileId) }
+            if completed, let selected = page.viewControllers?.first as? Page, selected.presentation == presentation {
+                owner.selectFile(selected.fileId, expected: presentation)
+            }
         }
     }
 }
 
 private struct DiffFilePage: View {
     @ObservedObject var changes: TurnFileChanges
+    let context: ChatReadContext
+    let presentation: TurnFileChanges.PresentationToken
     let file: TurnFileMetadata
     @Environment(\.colorScheme) private var scheme
     // Outside the root's environment: follows the settings itself and passes them on (PERF-12).
@@ -392,7 +462,7 @@ private struct DiffFilePage: View {
     @State private var pageEdgeArmed = true
     var body: some View {
         let detail = changes.detail(for: file)
-        let selected = changes.selectedFileId == file.fileId
+        let selected = changes.isCurrent(presentation) && changes.selectedFileId == file.fileId
         // Monospaced caption digits are 7.2pt wide; gutters fit the widest number read so far.
         let gutter = CGFloat(detail.parser.gutterDigits) * 7.5
         VStack(alignment: .leading, spacing: 10) {
@@ -403,20 +473,20 @@ private struct DiffFilePage: View {
                     VStack(spacing: 10) {
                         if let error = detail.error {
                             OrbisNotice(text: error, error: file.detail == "available")
-                            if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { changes.loadNext() }.disabled(!selected || changes.suspended) }
+                            if file.detail == "available" && !detail.limitReached { OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { loadNext() }.disabled(!selected || changes.suspended) }
                         } else if detail.loading {
                             ProgressView(L10n.tr("读取差异…")).font(.orbisLabel())
                         } else if detail.eof {
                             Text(detail.lines.isEmpty ? L10n.tr("此文件没有文本差异") : L10n.tr("已显示完整差异")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         } else if selected {
-                            OrbisActionButton(title: L10n.tr("继续读取"), symbol: "arrow.down") { changes.loadNext() }.disabled(changes.suspended)
+                            OrbisActionButton(title: L10n.tr("继续读取"), symbol: "arrow.down") { loadNext() }.disabled(changes.suspended)
                         } else {
                             Text(L10n.tr("切换到此文件后读取差异")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
                     }.padding(16).frame(maxWidth: .infinity, minHeight: 80)
                         .onAppear {
                             if selected && userScrolled && pageEdgeArmed && detail.nextCursor != nil && detail.error == nil {
-                                pageEdgeArmed = false; changes.loadNext()
+                                pageEdgeArmed = false; loadNext()
                             }
                         }.onDisappear { pageEdgeArmed = true }
                 }.scrollTargetLayout()
@@ -424,12 +494,16 @@ private struct DiffFilePage: View {
                     .background(DiffScrollObservation { userScrolled = true })
             }.scrollPosition(id: $position, anchor: .top)
                 .onAppear { if !restored { position = detail.scrollLine; restored = true } }
-                .onChange(of: position) { _, value in if selected && restored { changes.rememberScroll(value, file: file) } }
+                .onChange(of: position) { _, value in if selected && restored { changes.rememberScroll(value, file: file, expected: presentation) } }
                 .background(OrbisPalette(scheme).well)
                 .clipShape(RoundedRectangle(cornerRadius: OrbisRadius.control, style: .continuous))
                 .accessibilityIdentifier("turn-change-diff")
         }.padding(.horizontal, 16)
             .modifier(OrbisDisplayPreferences())
+    }
+    private func loadNext() {
+        guard ownsTurnChanges(changes, context: context), changes.selectedFileId == file.fileId else { return }
+        changes.loadNext(expected: presentation)
     }
 }
 

@@ -3,15 +3,23 @@ import UIKit
 
 struct ToolDetailView: View {
     @OrbisDismiss private var dismiss
+    @OrbisRetire private var retire
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var reader: ToolContentReader
+    let presentation: ToolContentReader.PresentationToken
+    let context: ChatReadContext
     let title: String
+    private var admitsRead: Bool { reader.isCurrent(presentation) && context.admitsRead }
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: title, closes: true, back: { dismiss() }) {
-                OrbisCopyButton(label: L10n.tr("复制已读取内容"), size: 40) { reader.text }.disabled(reader.text.isEmpty)
+            OrbisPageHeader(title: title, closes: true, back: {
+                if reader.isCurrent(presentation) { dismiss() } else { retire() }
+            }) {
+                OrbisCopyButton(label: L10n.tr("复制已读取内容"), size: 40) {
+                    reader.isCurrent(presentation) ? reader.text : ""
+                }.disabled(reader.text.isEmpty)
             }
             HStack {
                 Text(toolPartTitle(reader.locator?.part ?? "output")).font(.orbisLabel(.semibold))
@@ -30,10 +38,14 @@ struct ToolDetailView: View {
                 if let error = reader.error {
                     VStack(spacing: 12) {
                         OrbisNotice(text: error, error: true)
-                        OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise", action: reader.retry)
+                        OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") {
+                            if admitsRead { reader.retry(expected: presentation) }
+                        }.disabled(!admitsRead)
                     }
                 } else if reader.nextCursor != nil {
-                    OrbisActionButton(title: reader.loading ? L10n.tr("正在读取…") : L10n.tr("读取下一页"), symbol: "arrow.down", action: reader.loadNext).disabled(reader.loading || reader.exporting)
+                    OrbisActionButton(title: reader.loading ? L10n.tr("正在读取…") : L10n.tr("读取下一页"), symbol: "arrow.down") {
+                        if admitsRead { reader.loadNext(expected: presentation) }
+                    }.disabled(!admitsRead || reader.loading || reader.exporting)
                 } else if reader.loading {
                     ProgressView().controlSize(.small)
                 } else {
@@ -42,10 +54,10 @@ struct ToolDetailView: View {
             }.frame(maxWidth: .infinity, minHeight: 52).padding(.horizontal, 24)
             if reader.exporting {
                 ProgressView(L10n.tr("正在导出，{0}", byteCount(reader.exportedBytes))).font(.orbisCaption()).accessibilityIdentifier("tool-export-progress")
-                OrbisActionButton(title: L10n.tr("取消导出"), symbol: "xmark", action: reader.cancelExport).padding(.horizontal, 24)
+                OrbisActionButton(title: L10n.tr("取消导出"), symbol: "xmark") { reader.cancelExport(expected: presentation) }.padding(.horizontal, 24)
             } else {
                 HStack(spacing: 12) {
-                    OrbisActionButton(title: L10n.tr("导出当前部分"), symbol: "square.and.arrow.down", action: export).disabled(reader.loading).accessibilityIdentifier("tool-export")
+                    OrbisActionButton(title: L10n.tr("导出当前部分"), symbol: "square.and.arrow.down", action: export).disabled(!admitsRead || reader.loading).accessibilityIdentifier("tool-export")
                     if reader.exportComplete, let path = reader.exportedPath {
                         ShareLink(item: URL(fileURLWithPath: path)) { Label(L10n.tr("分享导出文件"), systemImage: "square.and.arrow.up").font(.orbisCaption()).frame(minHeight: 48) }
                             .buttonStyle(NeuButtonStyle()).accessibilityIdentifier("tool-export-share")
@@ -53,24 +65,27 @@ struct ToolDetailView: View {
                 }.padding(.horizontal, 24)
                 if reader.exportComplete { Text(L10n.tr("已导出 {0}", byteCount(reader.exportedBytes))).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
             }
-            Toggle(L10n.tr("跟随输出"), isOn: Binding(get: { reader.following }, set: reader.follow))
+            Toggle(L10n.tr("跟随输出"), isOn: Binding(get: { reader.following }, set: { enabled in
+                if !enabled || admitsRead { reader.follow(enabled, expected: presentation) }
+            }))
                 .toggleStyle(NeuToggleStyle())
-                .font(.orbisBody()).padding(.horizontal, 24).padding(.bottom, 24).disabled(reader.exporting || (reader.final && reader.nextCursor == nil))
+                .font(.orbisBody()).padding(.horizontal, 24).padding(.bottom, 24).disabled(!admitsRead || reader.exporting || (reader.final && reader.nextCursor == nil))
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onDisappear { reader.close() }
-            .onChange(of: scenePhase) { _, phase in if phase != .active { reader.close(); dismiss() } }
-            .onChange(of: reader.locator) { _, locator in if locator == nil { dismiss() } }
+            .opacity(reader.isCurrent(presentation) ? 1 : 0).disabled(!reader.isCurrent(presentation))
+            .onDisappear { reader.close(expected: presentation) }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { reader.close(expected: presentation); retire() } }
+            .onChange(of: reader.currentPresentation) { _, _ in if !reader.isCurrent(presentation) { retire() } }
     }
     private func export() {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        reader.export(to: documents.appendingPathComponent("Tool Exports", isDirectory: true).appendingPathComponent("tool-" + UUID().uuidString + ".txt"))
+        guard admitsRead, let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        reader.export(to: documents.appendingPathComponent("Tool Exports", isDirectory: true).appendingPathComponent("tool-" + UUID().uuidString + ".txt"), expected: presentation)
     }
 }
 
 struct LiveToolsView: View {
     @ObservedObject var inventory: ToolInventories
     let runtimeId: String
-    let canRead: Bool
+    let context: ChatReadContext
     var body: some View {
         let loading = inventory.loading.contains(runtimeId), error = inventory.errors[runtimeId]
         // Nothing at all when idle: an empty stack would still take a row of list spacing above the composer.
@@ -79,7 +94,9 @@ struct LiveToolsView: View {
                 if loading { ProgressView(L10n.tr("正在同步工具活动…")).font(.orbisCaption()) }
                 if let error {
                     OrbisNotice(text: error, error: true)
-                    OrbisActionButton(title: L10n.tr("重试工具清单"), symbol: "arrow.clockwise") { inventory.retry(runtimeId) }.disabled(!canRead)
+                    OrbisActionButton(title: L10n.tr("重试工具清单"), symbol: "arrow.clockwise") {
+                        if context.admitsRead { inventory.retry(runtimeId) }
+                    }.disabled(!context.admitsRead)
                 }
             }
         }

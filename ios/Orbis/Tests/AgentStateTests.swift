@@ -69,6 +69,125 @@ struct AgentStateTests {
         #expect((h.request["known"] as? [[String: Any]])?.contains { $0["domain"] as? String == "model" } == true)
     }
 
+    // IOS-CHAT-05: mounted pages own independent leases. Releasing one page, or
+    // delivering its cleanup twice, cannot unsubscribe another page or legacy owner.
+    @Test func overlappingPageLeasesReleaseOnlyTheirOwnDomains() throws {
+        let h = Harness()
+        h.state.setInterest(runtime: h.runtime, owner: "parser-fixture", domains: [])
+        h.state.setInterest(runtime: h.runtime, owner: "inspector", domains: ["records"])
+        let first = try #require(h.state.retainInterest(runtime: h.runtime, domains: AgentState.chatDomains))
+        let second = try #require(h.state.retainInterest(runtime: h.runtime, domains: AgentState.chatDomains))
+        #expect(first != second)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(AgentState.chatDomains).union(["records"]))
+        let count = h.sent.count
+        h.state.releaseInterest(first, currentRuntime: h.runtime)
+        h.state.releaseInterest(first, currentRuntime: h.runtime)
+        #expect(h.sent.count == count, "The second page still owns all chat domains")
+        h.state.releaseInterest(second, currentRuntime: h.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(["records"]))
+        let released = h.sent.count
+        h.state.releaseInterest(second, currentRuntime: h.runtime)
+        #expect(h.sent.count == released)
+        h.state.setInterest(runtime: h.runtime, owner: "inspector", domains: [])
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+    }
+
+    // A runtime can learn its kind or be reused by a new session while old page
+    // cleanup is queued. Neither event may restore the old session's subscription.
+    @Test func pageLeaseCleanupUsesTheCanonicalSessionAndLearnedKind() throws {
+        let h = Harness()
+        h.state.setInterest(runtime: h.runtime, owner: "parser-fixture", domains: [])
+        h.runtime.agentKind = nil
+        let old = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["model"]))
+        let untyped = h.request, count = h.sent.count
+        h.runtime.agentKind = "pi"
+        let overlapping = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["model"]))
+        h.state.releaseInterest(old, currentRuntime: h.runtime)
+        #expect(h.sent.count == count, "Learning kind preserves a compatible live read")
+        h.state.releaseInterest(overlapping, currentRuntime: h.runtime)
+        #expect(h.request["agentKind"] as? String == "pi")
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+
+        let retired = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["model"]))
+        h.runtime.sessionId = "replacement-session"
+        let current = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["context"]))
+        let replacementRead = h.request, replacementCount = h.sent.count
+        #expect(replacementRead["sessionId"] as? String == "replacement-session")
+        #expect(Set(replacementRead["domains"] as? [String] ?? []) == AgentState.homeDomains.union(["context"]))
+        h.state.releaseInterest(retired, currentRuntime: h.runtime)
+        h.state.releaseInterest(retired, currentRuntime: h.runtime)
+        #expect(h.sent.count == replacementCount)
+        h.receive([domain("model", ["provider": "p", "id": "obsolete"])], request: untyped)
+        #expect(h.runtime.model == nil)
+        #expect(h.request["requestId"] as? String == replacementRead["requestId"] as? String)
+        h.state.releaseInterest(current, currentRuntime: h.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        #expect(h.request["sessionId"] as? String == "replacement-session")
+    }
+
+    // A mounted lease survives a reconnect to its own Host, but cannot be used
+    // against another AgentState or a replacement Host generation.
+    @Test func pageLeasesSurviveOwnReconnectAndRejectForeignOrRetiredOwners() throws {
+        let h = Harness(), other = Harness()
+        h.state.setInterest(runtime: h.runtime, owner: "parser-fixture", domains: [])
+        other.state.setInterest(runtime: other.runtime, owner: "parser-fixture", domains: [])
+        let lease = try #require(h.state.retainInterest(runtime: h.runtime, domains: AgentState.chatDomains))
+        let foreign = try #require(other.state.retainInterest(runtime: other.runtime, domains: ["records"]))
+        let count = h.sent.count
+        h.state.releaseInterest(foreign, currentRuntime: h.runtime)
+        #expect(h.sent.count == count)
+        h.connect(false)
+        h.connect()
+        h.state.subscribe(runtime: h.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(AgentState.chatDomains))
+        h.connect(host: "replacement-host")
+        h.state.subscribe(runtime: h.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        let current = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["context"]))
+        let replacementCount = h.sent.count
+        h.state.releaseInterest(lease, currentRuntime: h.runtime)
+        #expect(h.sent.count == replacementCount)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(["context"]))
+        h.state.releaseInterest(current, currentRuntime: h.runtime)
+        other.state.releaseInterest(foreign, currentRuntime: other.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        #expect(Set(other.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+    }
+
+    // IOS-CHAT-05: dropping source facts must not dispose mounted page ownership.
+    // Resubscription reuses only same-session leases; exact cleanup stays idempotent.
+    @Test func removingAgentFactsKeepsMountedLeasesUntilTheirOwnCleanup() throws {
+        let h = Harness()
+        h.state.setInterest(runtime: h.runtime, owner: "parser-fixture", domains: [])
+        let lease = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["model"]))
+        let beforeRemove = h.sent.count
+        h.state.remove(runtimeId: h.runtime.runtimeId)
+        #expect(h.sent.count == beforeRemove, "Invalidating facts does not start a subscription")
+        #expect(h.state.snapshots.isEmpty)
+        h.state.subscribe(runtime: h.runtime)
+        #expect(h.sent.count == beforeRemove + 1)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains.union(["model"]))
+        h.state.releaseInterest(lease, currentRuntime: h.runtime)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        let released = h.sent.count
+        h.state.releaseInterest(lease, currentRuntime: h.runtime)
+        #expect(h.sent.count == released)
+
+        let retired = try #require(h.state.retainInterest(runtime: h.runtime, domains: ["model"]))
+        let beforeReplacement = h.sent.count
+        h.state.remove(runtimeId: h.runtime.runtimeId)
+        #expect(h.sent.count == beforeReplacement)
+        h.runtime.sessionId = "replacement-session"
+        h.state.subscribe(runtime: h.runtime)
+        #expect(h.request["sessionId"] as? String == "replacement-session")
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+        let replacement = h.sent.count
+        h.state.releaseInterest(retired, currentRuntime: h.runtime)
+        h.state.releaseInterest(retired, currentRuntime: h.runtime)
+        #expect(h.sent.count == replacement)
+        #expect(Set(h.request["domains"] as? [String] ?? []) == AgentState.homeDomains)
+    }
+
     // FT-G04: an old strict Host rejects the format by the original request ID;
     // retry only this read without the extension and never reuse format versions.
     @Test func compactIdentityAndStrictOldHostFallbackKeepIndependentVersions() {

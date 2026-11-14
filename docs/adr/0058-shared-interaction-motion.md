@@ -126,7 +126,7 @@
 | IOS-CHAT-02 | 导航与会话各区域的展示发布边界、来源重绑 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-03 | 原生输入框确定宽度测量及有界缓存 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-04 | 视口策略、显式命令和用户移动归属 | 已实施，定向验证及既有失败对照完成；待用户验证 |
-| IOS-CHAT-05 | 页面工作生命周期与组合回归 | 待实施 |
+| IOS-CHAT-05 | 页面工作生命周期与组合回归 | 已实施，定向验证及既有失败对照完成；待用户验证 |
 
 IOS-CHAT-01 将草稿、Slash 选择、发送选项、附件选择及权限面板交给 `ChatComposerView`。消息中的文件动作通过稳定环境引用传递，工具与完整内容读取使用带连接／会话归属的 `ChatReadContext`；详情保持原 reader 观察。放回输入框沿用 `saveDraft`／`draftRevision`。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[HistoryBranchView.swift](../../ios/Orbis/Orbis/HistoryBranchView.swift)。
 
@@ -145,3 +145,12 @@ IOS-CHAT-03 自动验证：Swift 定向 11/11、设备定向 5/5；新增 [Compo
 IOS-CHAT-04 将跟随／阅读／真实交互、提醒、分页边沿及显式滚动命令集中到纯 `ChatViewportPolicy`；像素事实保留在原生引用盒，仅离散状态实际变化时发布。iOS 17／18 执行命令前核对当前页面目标、请求序号及上下文／用户移动代次；展开工具继续同步冻结，历史完成保持既有 connection 级语义。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[MotionGeometry.swift](../../ios/Orbis/Orbis/MotionGeometry.swift)，回归见 [ChatViewportTests.swift](../../ios/Orbis/Tests/ChatViewportTests.swift) 与 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
 
 IOS-CHAT-04 自动验证：Swift 定向 22/22，设备定向共 9 项通过、1 项按既有可见软件键盘前提跳过、2 项原问题提醒用例失败；后两项均在 source 更新后出现 30pt 阅读锚点上移。`e5135ce` 同设备对照在首项同一锚点及原断言精确复现；第二项对照在提醒存在性断言提前失败，不能据此声称其锚点判定已完成。该静止阅读问题在 [ADR-0060](0060-mobile-relay-history-performance.md) 已记录，原断言和首次证据保留。独立的定位提问→native idle→source 更新用例通过，确认保持位置且不恢复跟随；无可见键盘环境下的输入区缩放回归通过。实际构建、对照、复核和清理见 [.artifacts/ios-chat-control-20261114/ticket04-review.json](../../.artifacts/ios-chat-control-20261114/ticket04-review.json)；真机观感、iOS 17 原生适配器运行与用户验收待完成。
+
+
+2026-11-15，IOS-CHAT-05 将页面业务订阅与可见工作分开管理。挂载的会话通过原连接、Host 代次、runtime／session 和精确 token 保有 Agent interest lease；覆盖或后台不释放，实际离开才释放，来源快照失效不销毁页面租约。历史兴趣仍由原导航拥有。Git 核对只在场景前台、页面置顶、转场停稳且入场完成时执行，恢复时立即核对，后续沿用 15 秒周期。实现见 [AgentState.swift](../../ios/Orbis/Orbis/AgentState.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[PageNavigation.swift](../../ios/Orbis/Orbis/PageNavigation.swift) 与 [OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift)。
+
+隐藏页面暂停逐帧／周期视觉工作、文字揭示与飞行动画，来源投影及必要读取保持原同步语义；返回时直接采用最新正文和高度，不补播隐藏期间的变化，后续前台追加仍使用既有动效。工具、完整正文、历史和文件差异使用固定来源与 presentation／request 归属；新动作核对当前目标，迟到回调与清理只作用于原请求。旧弹层独立退役，不能级联关闭替换后的弹层；全文入口以单一布局容器持有一个弹层 owner。实现见 [InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[ToolContent.swift](../../ios/Orbis/Orbis/ToolContent.swift)、[TurnFileChangesView.swift](../../ios/Orbis/Orbis/TurnFileChangesView.swift) 与 [HistoryBranchView.swift](../../ios/Orbis/Orbis/HistoryBranchView.swift)。
+
+IOS-CHAT-05 自动验证：最终候选 Swift 定向 88/88、iOS 模拟器构建通过；组合 UI 回归分批执行，原 16 项中 13 项有通过证据、3 项原断言仍失败，并非一次全绿运行。通过项包括真实覆盖／返回期间 lease 与草稿保持、Git 暂停、六次隐藏来源更新及 arrival 不补播，原生输入焦点正反对照与覆盖后的实际坐标点击，详情替换后导出、全文失败重试和严格单一弹层查询，以及输入、发送／下载飞行、展开、阅读与输入区缩放。测试用途见 [AgentStateTests.swift](../../ios/Orbis/Tests/AgentStateTests.swift)、[VisualActivityGeometryTests.swift](../../ios/Orbis/Tests/VisualActivityGeometryTests.swift)、[ReplyCardMotionTests.swift](../../ios/Orbis/Tests/ReplyCardMotionTests.swift)、[ToolContentTests.swift](../../ios/Orbis/Tests/ToolContentTests.swift)、[TurnFileChangesTests.swift](../../ios/Orbis/Tests/TurnFileChangesTests.swift) 与 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
+
+未通过项及边界：两项问题提醒用例仍发生 source 更新后的阅读锚点位移；首项与 IOS-CHAT-03 对照同断言精确复现，第二项对照被提醒存在性前置断言阻断。文件变更缓存 UI 用例停在汇总卡片入口存在断言，任务前 `59d7d46e` 同设备同断言复现；该版本的原生文件变更用例也在同类入口断言失败。本轮因此没有取得 Turn sheet 打开、滑页、缓存回切及原生关闭的 UI 通过证据；原断言和首次失败保留。实际构建、分批结果、对照、独立复核和清理见 [.artifacts/ios-chat-control-20261114/ticket05-review.json](../../.artifacts/ios-chat-control-20261114/ticket05-review.json)。真机中文组字与体感、真实前后台 UI 往返、iOS 17 原生适配器运行、生产周期长时间运行及交叉版本验收待完成；部署、安装与用户验收分别记录。
