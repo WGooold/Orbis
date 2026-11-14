@@ -318,6 +318,11 @@ export class DshWebRuntime implements AgentBackend {
     if (codes.has("dsh.recovery") && !session.following) this.#discovery.retry();
   }
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
+  async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+    const session = this.#sessions.get(runtimeId);
+    return session && !session.closing && this.#publicId(session.id) === sessionId
+      ? session.entries.find(entry => entry.entryId === entryId) : undefined;
+  }
   directoryEntries(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => this.#metadata(session)); }
   currentProvider(): Promise<string | undefined> { return Promise.resolve(this.#flavor.managesProvider ? "deepseek-web" : undefined); }
   /** Web initializes a fresh profile's account default (DSH-ACCOUNT-01); Desktop's profile belongs to Desktop. */

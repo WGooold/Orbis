@@ -1191,6 +1191,25 @@ describe("DeepSeek Web runtime adapter", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  // FT-G12-DETAIL-01: DSH keeps the native reply for explicit detail reads after a bounded preview.
+  it("reads a full DSH reply after publishing its truncated history preview", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const text = "DSH reply🙂".repeat(12_000);
+    const records = [{ event: { seq: 0, time: 1000, type: "assistant/message",
+      data: { message: { id: "native", content: [{ type: "text", text }] } } } }];
+    f.follows()[0]!.frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: 0, records, assistantStream: { revision: 0 } });
+    const base = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/page" ? Promise.resolve({ records }) : base(method, args));
+    f.runtime.dispatchCommand("dsh:browser", "detail-preview", { type: "session.sync", sessionId: "dsh:browser", syncId: "detail-preview", range: "preview" });
+    await vi.waitFor(() => expect(f.events.some(({ event }) => event.type === "session.snapshot" && event.syncId === "detail-preview")).toBe(true));
+    const page = f.events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "detail-preview")!.event;
+    if (page.type !== "session.snapshot") throw new Error("missing preview");
+    expect(page.display?.entries[0]?.message?.content[0]).toMatchObject({ truncated: true });
+    expect((await f.runtime.readSessionEntry("dsh:browser", "dsh:browser", "dsh:browser:web:0"))?.data.message)
+      .toMatchObject({ content: [{ type: "text", text }] });
+    expect(await f.runtime.readSessionEntry("dsh:browser", "wrong", "dsh:browser:web:0")).toBeUndefined();
+  });
+
   // DSH-HISTORY-02: a bounded reconnect tail can open a hole in a previously complete
   // native cache. Catchup must load that hole instead of trusting the old complete flag.
   it("fills an internal history gap after a bounded follow replaces a previously complete view", async () => {

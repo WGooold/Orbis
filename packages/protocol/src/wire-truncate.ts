@@ -17,7 +17,11 @@ export const WIRE_FIELD_LIMIT_BYTES = 64 * 1024;
  */
 export const WIRE_ENTRY_LIMIT_BYTES = 24 * 1024;
 /** 递归深度上限：原生 data 可能嵌套很深，超过就当普通值处理。 */
-const MAX_DEPTH = 8;
+const MAX_DEPTH = 32;
+/** Fixed live text target; complete inventories and their identities remain authoritative. */
+export const WIRE_LIVE_LIMIT_BYTES = 8 * 1024;
+const IDENTITY_FIELDS = new Set(["id", "entryId", "parentId", "messageId", "clientMessageId", "toolCallId",
+  "firstKeptEntryId", "type", "role", "timestamp", "toolName", "turnId", "epoch", "checkpointId"]);
 
 const encoder = new TextEncoder();
 
@@ -41,12 +45,16 @@ function marker(originalBytes: number): string {
 }
 
 /**
- * 截断一个字符串。已经带标记的串直接返回，保证幂等（重复投影结果一致）。
+ * 截断一个字符串。收紧已有投影时保留原始大小，同一预算下保持幂等。
  */
 export function truncateWireText(text: string, limit = WIRE_FIELD_LIMIT_BYTES): string {
   const bytes = byteLength(text);
   if (bytes <= limit) return text;
-  const suffix = marker(bytes);
+  // Tightening an already projected legacy field must retain the original size, otherwise
+  // raw commit and recovery page normalize to different text at the same entry identity.
+  const previous = /…（已截断，原始 (\d+) 字节）$/u.exec(text);
+  const originalBytes = previous === null ? bytes : Math.max(bytes, Number(previous[1]));
+  const suffix = marker(originalBytes);
   const budget = limit - byteLength(suffix);
   return cutToBytes(text, budget) + suffix;
 }
@@ -59,24 +67,26 @@ export function truncateWireValue(value: unknown, limit = WIRE_FIELD_LIMIT_BYTES
   if (typeof value === "string") return truncateWireText(value, limit);
   if (value === null || typeof value !== "object") return value;
   if (depth >= MAX_DEPTH) return value;
-  if (Array.isArray(value)) return value.map((item) => truncateWireValue(item, limit, depth + 1));
+  if (Array.isArray(value)) {
+    const projected = value.map((item) => truncateWireValue(item, limit, depth + 1));
+    return projected.every((item, index) => item === value[index]) ? value : projected;
+  }
   const record = value as Record<string, unknown>;
   // ADR-0038 §5：内容块被截断时带上结构化标记（客户端可显示原始字节数）；
   // 文本里仍保留可见提示，因为绝大多数渲染路径只读 `text`。
-  if ((record.type === "text" || record.type === "thinking") && typeof record.text === "string") {
-    const text = record.text;
-    const bytes = byteLength(text);
-    if (bytes > limit) {
-      return { ...record, text: truncateWireText(text, limit), truncated: true as const, originalBytes: bytes };
-    }
-    return record;
-  }
   let changed = false;
   const next: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(record)) {
-    const projected = truncateWireValue(child, limit, depth + 1);
+    const projected = IDENTITY_FIELDS.has(key) ? child : truncateWireValue(child, limit, depth + 1);
     if (projected !== child) changed = true;
     next[key] = projected;
+  }
+  if (record.type === "text" || record.type === "thinking") {
+    const field = record.type === "thinking" && typeof record.thinking === "string" ? "thinking" : "text";
+    if (typeof record[field] === "string" && next[field] !== record[field]) {
+      next.truncated = true;
+      next.originalBytes = typeof record.originalBytes === "number" ? record.originalBytes : byteLength(record[field]);
+    }
   }
   return changed ? next : value;
 }
@@ -86,22 +96,50 @@ export function truncateWireLive<T>(live: T, limit = WIRE_FIELD_LIMIT_BYTES): T 
   return truncateWireValue(live, limit) as T;
 }
 
+/** Project at the source, before assigning a published seq. Snapshot and patch must reuse it.
+ * Inventories and their identities are never dropped to meet a text target. */
+export function projectWireLive<T>(live: T): T {
+  for (let limit = WIRE_FIELD_LIMIT_BYTES; ; limit = Math.floor(limit / 2)) {
+    const candidate = truncateWireLive(live, limit);
+    if (byteLength(JSON.stringify(candidate)) <= WIRE_LIVE_LIMIT_BYTES || limit <= 128) return candidate;
+  }
+}
+
 /**
  * 单条 Entry 的线路投影。
  *
  * 先按字段上限截断；若整条仍超条目预算，就按同一顺序继续收紧字段上限直到装得下
- * （ADR-0038 §3 的"逐次折半"）。装不下时返回最后一次结果——精确的 1MB 兜底仍然存在，
- * 这里不做丢弃决定。
+ * （ADR-0038 §3 的"逐次折半"）。大量短字段 / 深层数据仍超限时保留节点身份、压缩边界与
+ * 可展开的正文摘要；完整原文由源端保留，通过独立条目读取返回。
  */
 export function truncateWireEntry<T extends { data: Record<string, unknown> }>(
   entry: T,
   entryLimit = WIRE_ENTRY_LIMIT_BYTES,
 ): T {
   let limit = WIRE_FIELD_LIMIT_BYTES;
+  const originalBytes = typeof (entry.data.wireTruncation as { originalBytes?: unknown } | undefined)?.originalBytes === "number"
+    ? (entry.data.wireTruncation as { originalBytes: number }).originalBytes : byteLength(JSON.stringify(entry.data));
   for (;;) {
-    const data = truncateWireValue(entry.data, limit) as Record<string, unknown>;
+    let data = truncateWireValue(entry.data, limit) as Record<string, unknown>;
+    if (data !== entry.data) data = { ...data, wireTruncation: { originalBytes } };
     const candidate = data === entry.data ? entry : { ...entry, data };
-    if (byteLength(JSON.stringify(candidate)) <= entryLimit || limit <= 1024) return candidate;
+    if (byteLength(JSON.stringify(candidate)) <= entryLimit) return candidate;
+    if (limit <= 1024) {
+      const original = entry.data;
+      const message = original.message !== null && typeof original.message === "object" && !Array.isArray(original.message)
+        ? original.message as Record<string, unknown> : undefined;
+      const pick = (value: Record<string, unknown>, keys: readonly string[]) =>
+        Object.fromEntries(keys.filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+      const content = [{ type: "text", text: marker(originalBytes), truncated: true, originalBytes }];
+      const preview: Record<string, unknown> = {
+        ...pick(original, ["firstKeptEntryId", "display"]),
+        ...(typeof original.summary === "string" ? { summary: truncateWireText(original.summary, 1024) } : {}),
+        ...(message ? { message: { ...pick(message, ["messageId", "role", "timestamp", "clientMessageId", "toolCallId", "toolName", "isError", "stopReason"]), content } } : {}),
+        ...(original.content === undefined ? {} : { content }),
+        wireTruncation: { originalBytes },
+      };
+      return { ...entry, data: preview };
+    }
     limit = Math.floor(limit / 2);
   }
 }

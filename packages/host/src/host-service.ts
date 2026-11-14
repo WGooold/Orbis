@@ -63,7 +63,6 @@ import {
   type RelayToDeviceMessage,
   type RuntimeMetadata,
   type RuntimeEvent,
-  SESSION_SYNC_MAX_BYTES,
   assertToolWireBudget,
   agentKeyId,
 } from "@orbis/protocol";
@@ -108,6 +107,7 @@ import { HostLoopbackServer, type CodexLaunchRequest, type CodexLaunchResult } f
 import { HostPairingService, requestPairingCode, type OpenedPairingWindow } from "./pairing.js";
 import { describePath, type PathChange } from "./path.js";
 import { SessionSyncTasks } from "./session-sync-tasks.js";
+import { readFullSessionEntry } from "./session-entry-read.js";
 import { NotificationStore } from "./notification-store.js";
 import { HostRelayClient, type HostRelayState, type RelayAuthenticationError } from "./relay-client.js";
 import { browseDirectory, listPiSessions } from "./sessions.js";
@@ -337,7 +337,8 @@ export class HostService {
    * 更小的 `msg` 序号。按道各记一份之后，插队变得无害。
    */
   readonly #eventSequences = new Map<string, number>();
-  readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null>();
+  // undefined = capability offered but no accepted interest; null = explicitly closed.
+  readonly #historyInterests = new Map<string, { runtimeId: string; sessionId: string } | null | undefined>();
   readonly #catalogQueryDevices = new Set<string>();
   /**
    * ADR-0032 的统一状态模型：单写者 Registry + 适配层事实投影。
@@ -1974,7 +1975,7 @@ export class HostService {
       return;
     }
     if (message.type === "session.history.capabilities.request") {
-      this.#historyInterests.set(deviceId, null);
+      if (!this.#historyInterests.has(deviceId)) this.#historyInterests.set(deviceId, undefined);
       this.#sendToDevice(deviceId, { type: "session.history.capabilities", protocolVersion: PROTOCOL_VERSION,
         requestId: message.requestId, format: "v1", maxPageBytes: 65536 });
       return;
@@ -1985,6 +1986,7 @@ export class HostService {
         scope?.kind === "agent" && scope.key.sessionId === message.sessionId);
       if (accepted) this.#historyInterests.set(deviceId, message.runtimeId === null ? null :
         { runtimeId: message.runtimeId, sessionId: message.sessionId! });
+      else if (this.#historyInterests.has(deviceId)) this.#historyInterests.set(deviceId, undefined);
       this.#sendToDevice(deviceId, { type: "session.history.interest.result", protocolVersion: PROTOCOL_VERSION,
         requestId: message.requestId, accepted });
       return;
@@ -2234,19 +2236,29 @@ export class HostService {
     }
     // ADR-0038 §8：按需取回未截断的条目。只回请求设备；超过单条线路上限按确定性失败拒绝。
     if (command.type === "session.entry.request") {
-      const scope = this.#agentFacts.scopeOf(runtimeId);
-      const entry = scope === undefined ? undefined : this.#conversationState.entry(scope, command.entryId);
-      const event: RuntimeEvent = scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId
-        ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_mismatch" }
-        : entry === undefined
-        ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "entry_not_found" }
-        : Buffer.byteLength(JSON.stringify(entry), "utf8") > SESSION_SYNC_MAX_BYTES
-          ? { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_entry_too_large" }
-          : { type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, entry };
-      this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
+      void this.#readSessionEntry(deviceId, runtimeId, command);
       return;
     }
     this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
+  }
+
+  async #readSessionEntry(deviceId: string, runtimeId: string, command: Extract<import("@orbis/protocol").RuntimeCommand, { type: "session.entry.request" }>): Promise<void> {
+    const scope = this.#agentFacts.scopeOf(runtimeId), link = this.#links.get(deviceId);
+    if (scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId) {
+      this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "session.entry.result",
+        requestId: command.requestId, entryId: command.entryId, error: "session_mismatch" }));
+      return;
+    }
+    const backend = this.#backends.find(candidate => candidate.ownsRuntime(runtimeId));
+    const event = await readFullSessionEntry(command.requestId, command.entryId, this.#conversationState.entry(scope, command.entryId),
+      backend?.readSessionEntry ? () => backend.readSessionEntry!(runtimeId, command.sessionId, command.entryId) : undefined);
+    // Native reads may finish after a reconnect or runtime replacement. Only the requesting owner receives them.
+    const current = this.#agentFacts.scopeOf(runtimeId);
+    if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
+    this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId,
+      current?.kind === "agent" && agentKeyId(current.key) === agentKeyId(scope.key) ? event : {
+        type: "session.entry.result", requestId: command.requestId, entryId: command.entryId, error: "session_mismatch",
+      }));
   }
 
   #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand): void {
@@ -3046,7 +3058,7 @@ export class HostService {
       const sessionId = "sessionId" in message.event ? message.event.sessionId : scope?.kind === "agent" ? scope.key.sessionId : undefined;
       for (const [deviceId, link] of this.#links) {
         const interest = this.#historyInterests.get(deviceId);
-        if (this.#historyInterests.has(deviceId) &&
+        if (interest !== undefined &&
             (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
         if (hidden && !this.#showsDshDesktop(deviceId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }

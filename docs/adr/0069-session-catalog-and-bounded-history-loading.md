@@ -306,3 +306,10 @@ Status: accepted（FT-G11 / FT-G12 已实施并集成；自动验证见第 8 节
 - `FT-G11-PREVIEW-01`：Host 合并各后端目录后按 `modifiedAt` 降序建立固定库存，再执行原有条数 / 字节边界及分组预览。同时间条目保留原相对顺序；五条网络预览包含该目录最近会话，后续游标仍读取同一快照。实现见 `host-state-facts.ts`，混合后端、Android 100 条请求、字节限页与完整续页回归见 [host-catalog-range.test.ts](../../packages/host/src/host-catalog-range.test.ts)。
 - `FT-G11-PREVIEW-02`：Android 轻量首页及当前 Host 快照保留已有 `catalogQuery`，使预览覆盖、目录总数与全局 provider 筛选到达侧栏；纯元数据变化可发布，正文流式更新继续复用目录树和首页，沿用 ADR-0060 的后台投影与 ADR-0046 V21 的视口规则。实现见 `HomeUiSnapshot.kt`，回归见 [HomeUiSnapshotTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomeUiSnapshotTest.kt)。
 - 首次失败证据保留于 `.artifacts/catalog-pagination-audit-20261114/`；最终生产代码验证见 `.artifacts/catalog-preview-fix-20261114/`。本次不改变查询协议、分页预算、实时刷新调度或界面展开规则；真机视觉 / 手感及用户验收通过关联 QA 任务记录。
+
+### 8.7 2026-11-14 长回复、复杂条目与兴趣协商修复
+
+- `FT-G12-PAYLOAD-01–05`：display v3 保留既有 `truncated/originalBytes`，覆盖文本、两种 thinking 形状、字符串正文及摘要。来源发布前按独立 8 KiB 正文目标投影 live，patch / preview 复用同 seq 的表示；库存与身份保留。canonical 与 display 共用 24 KiB 单条投影，Codex 同时计入 display 的字节数。大量短字段或深层数据仍过大时，保留节点身份、父关系、压缩边界与可展开摘要，使历史页能够继续前进。旧适配器原文提交与截断恢复页的归一保留原始文本字节数，条目级估算大小不参与内容身份比较。实现见 `wire-truncate.ts`、`display-entries.ts`、`session-source.ts`、`codex-runtime.ts`、`agent-conversation-state.ts`。
+- `FT-G12-DETAIL-01`：Host 的明确原文读取在缓存仅含线路投影时转到后端原文。Codex / DSH 读取其已加载原始条目；Claude 刷新原生转录后读取来源条目；Pi 按会话文件头定位本地转录，兼容未更新的扩展。响应继续只发给请求设备，核对会话归属，完整 envelope 保持 1 MiB 上限；不存在或读取失败返回明确错误。实现见 `session-entry-read.ts`、`agent-backend.ts`、`sessions.ts` 及各适配器。
+- `FT-G12-INTEREST-01`：能力探测与已接受兴趣分开记录。首次兴趣未接受或目标被拒绝时保留旧广播恢复路径；明确关闭后停止正文推送，重复能力探测保留已有兴趣。实现见 `host-service.ts`。
+- 回归见 [载荷专项](../../packages/protocol/src/history-payload-regression.test.ts)、[原文读取](../../packages/host/src/session-entry-read.test.ts)、各适配器测试及 [隔离端到端](../../packages/host/src/host-service.test.ts)。本轮 629 项协议 / 适配器、13 项隔离端到端、10 项 `v0.1.17 / v0.1.19` 原始协议源码与当前 Host 状态模型兼容对照通过；类型检查和变更文件 lint 通过。失败与最终证据见 [verification.json](../../.artifacts/2026-11-14-history-fix/verification.json)。未部署，未执行完整旧包、Windows 原生或手机 UI 验收。

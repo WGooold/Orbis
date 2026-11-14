@@ -28,7 +28,7 @@ import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource } from "@orbis/protocol";
+import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource, WireTruncator, projectWireLive } from "@orbis/protocol";
 import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, configurationMutationError, type RuntimeInputState } from "@orbis/protocol";
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
@@ -1231,6 +1231,11 @@ export class CodexRuntime implements AgentBackend {
   /** 裸 `codex` 与 `codex:<threadId>` 都归本后端。 */
   ownsRuntime(runtimeId: string): boolean {
     return runtimeId === this.runtimeId || runtimeId.startsWith(`${this.runtimeId}:`);
+  }
+
+  async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+    const id = this.#threadIdOf(runtimeId), thread = id === undefined ? undefined : this.#threads.get(id);
+    return thread && this.#publicSessionId(thread.id) === sessionId ? thread.entries.find(entry => entry.entryId === entryId) : undefined;
   }
 
   /** 从对外 runtimeId 反解 threadId；裸 `codex` 落到最近激活的 thread（兼容）。 */
@@ -4354,7 +4359,7 @@ export class CodexRuntime implements AgentBackend {
   /** Publish a complete versioned live projection. Missing or late patches are recoverable via sync. */
   #publishSourcePatch(thread: ThreadState): void {
     const source = this.#sourceCheckpoint(thread);
-    const committed = thread.sourceCommittedEntries;
+    const committed = this.#wireTruncator.entries(thread.sourceCommittedEntries);
     thread.sourceCommittedEntries = [];
     const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
       type: "session.patch",
@@ -4367,19 +4372,21 @@ export class CodexRuntime implements AgentBackend {
       headCompleteness: source.checkpoint.headCompleteness,
       live: source.live,
     };
-    // A normal commit hands live content to canonical storage in one transaction. Large native
-    // replays still use bounded checkpoint/pages; never truncate an immutable Entry to fit here.
+    // The source keeps originals; patch and recovery use the same deterministic wire entries.
     if (source.version.ready && committed.length > 0 && committed.length <= 256) {
-      const withEntries = { ...patch, entries: committed };
+      const projected = new Map(thread.entries.map(entry => [entry.entryId, entry]));
+      for (const entry of committed) projected.set(entry.entryId, entry);
+      const display = displayBatchFor(committed, projected, patch.head.leafId);
+      const withEntries = { ...patch, entries: committed, ...(display === undefined ? {} : { display }) };
       if (Buffer.byteLength(JSON.stringify(withEntries), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
         patch.entries = committed;
-        // 与 Pi/DSH 共用的源类同一套做法：显示投影跟这批条目绑在同一份 patch 上。
-        const display = displayBatchFor(committed, new Map(thread.entries.map(entry => [entry.entryId, entry])), patch.head.leafId);
         if (display !== undefined) patch.display = display;
       }
     }
     this.#emit(thread.id, patch);
   }
+
+  readonly #wireTruncator = new WireTruncator();
 
   #setLiveMessage(thread: ThreadState, value: SessionLiveMessage): void {
     thread.liveMessages.set(value.message.messageId, value);
@@ -4399,13 +4406,13 @@ export class CodexRuntime implements AgentBackend {
     if (!inventory) { inventory = new ToolInventorySource(event => this.#emit(thread.id, event)); this.#toolInventories.set(thread.id, inventory); }
     const toolInventory = inventory.prepare(this.runtimeIdFor(thread.id), { epoch: thread.sourceEpoch, seq: thread.sourceSeq },
       [...thread.liveTools.values()].flatMap(tool => tool.summary ? [tool.summary] : []), replay);
-    return {
+    return projectWireLive({
       complete: thread.sourceReady && (!thread.turnInProgress || turn !== null),
       turn,
       messages: [...thread.liveMessages.values()].filter(item => !item.message.content.every(part => part.type === "tool_call"))
         .map(item => ({ ...item, order: Math.max(0, thread.itemOrder.indexOf(item.message.messageId)) })),
       tools: [], ...(toolInventory === undefined ? {} : { toolInventory }),
-    };
+    });
   }
 
   #sourceCheckpoint(thread: ThreadState, replay = false): { version: SessionSourceEpoch; live: SessionLiveState; checkpoint: SessionCheckpoint } {

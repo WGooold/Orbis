@@ -90,7 +90,12 @@ const truncatedRevisions = new WeakMap<object, string>();
 function truncatedRevision(entry: RemoteSessionEntry): string {
   const cached = truncatedRevisions.get(entry);
   if (cached !== undefined) return cached;
-  const revision = contentRevision(truncateWireEntry(entry));
+  const projected = truncateWireEntry(entry);
+  // A released adapter cannot report the full JSON byte count after it already truncated
+  // native fields. This advisory size is not content identity; normalized bodies still are.
+  const data = { ...projected.data };
+  delete data.wireTruncation;
+  const revision = contentRevision({ ...projected, data });
   truncatedRevisions.set(entry, revision);
   return revision;
 }

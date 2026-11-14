@@ -17,11 +17,11 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import type { AgentKind, AgentSessionSummary, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SpawnMode, SessionConfigurationCatalog, SessionConfigurationValues } from "@orbis/protocol";
+import type { AgentKind, AgentSessionSummary, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SpawnMode, SessionConfigurationCatalog, SessionConfigurationValues } from "@orbis/protocol";
 import { ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 
 import { ActivationError, type SessionSpawner } from "./spawner.js";
-import { defaultPiSessionsRoot, listPiSessions, localHostname } from "./sessions.js";
+import { defaultPiSessionsRoot, listPiSessions, localHostname, readPiSessionEntry } from "./sessions.js";
 import { piArchiveRoot, SessionArchiveError, setPiSessionArchived } from "./session-archive.js";
 import type { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import type { ClaudeHookBridge } from "./claude-hook-bridge.js";
@@ -55,6 +55,8 @@ export type AgentActivateContext = {
 
 export interface AgentBackend {
   readonly kind: AgentKind;
+  /** Device-private full entry read; never publish native details into the shared event stream. */
+  readSessionEntry?(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined>;
   /** Device-private content access; never returns raw content through the shared event sink. */
   readonly toolContents?: ToolContentReader | undefined;
   setToolContentStore?(store: ToolContentStore, hostId: string): void;
@@ -118,6 +120,11 @@ export class PiBackend implements AgentBackend {
 
   ownsRuntime(runtimeId: string): boolean {
     return this.#options.runtimeIds().includes(runtimeId);
+  }
+
+  async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+    if (!this.ownsRuntime(runtimeId) || this.#options.runtimeMetadata?.().find(item => item.runtimeId === runtimeId)?.sessionId !== sessionId) return undefined;
+    return readPiSessionEntry(this.#options.sessionsRoot ?? defaultPiSessionsRoot(), sessionId, entryId);
   }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
@@ -437,6 +444,10 @@ export class ClaudeBackend implements AgentBackend {
     }
     emit(snapshot);
     this.announce(runtimeId);
+  }
+
+  readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+    return this.#options.modsBridge.readSessionEntry(runtimeId, sessionId, entryId);
   }
 
   #configDirs(): string[] {

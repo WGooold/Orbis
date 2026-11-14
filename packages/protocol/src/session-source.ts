@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { WIRE_FIELD_LIMIT_BYTES, truncateWireLive } from "./wire-truncate.js";
+import { projectWireLive, WireTruncator } from "./wire-truncate.js";
 import { appendFileSync } from "node:fs";
 import type {
   RemoteSessionEntry, RuntimeEvent, SessionCheckpoint, SessionLiveMessage, SessionLiveState,
@@ -60,6 +60,7 @@ export class RecoverableSessionSource {
   #complete = false;
   #head: string | null = null;
   #entries = new Map<string, RemoteSessionEntry>();
+  readonly #truncator = new WireTruncator();
   #messages = new Map<string, SessionLiveMessage>();
   #tools = new Map<string, SessionLiveTool>();
   /**
@@ -86,6 +87,9 @@ export class RecoverableSessionSource {
   readonly #orders = new Map<string, number>();
   #order = 0;
   get version(): SessionSourceEpoch { return { epoch: this.#epoch, seq: this.#seq, ready: this.#ready }; }
+
+  /** Explicit full-content reads bypass the immutable wire projection. */
+  entry(entryId: string): RemoteSessionEntry | undefined { return this.#entries.get(entryId); }
 
   /**
    * `coalesceMs > 0` 时，状态变化最多每 N 毫秒发布一条 patch（ADR-0035 §15）。
@@ -524,60 +528,43 @@ export class RecoverableSessionSource {
   }
 
   /**
-   * 构造有界 patch。流式正文过大时缩紧正文预算，已 reconcile 的历史条目仍必须随连续 seq 发出；
-   * 如果连空 live 都超预算，就先仅发 canonical 条目，live 状态随后在 sync/checkpoint 收敛。
+   * 构造有界 patch。live 使用独立固定正文预算，与 preview 保持同 seq 同表示；
+   * 历史条目使用同一线路投影。整批仍装不下时以新代次进入有界恢复。
    */
   #flush(): void {
     if (process.env.ORBIS_SEQ_DEBUG) { try { appendFileSync(process.env.ORBIS_SEQ_DEBUG, `FLUSH ${this.#sessionId.slice(0, 24)} seq=${this.#seq + 1} ready=${this.#ready} complete=${this.#complete} committed=${this.#committed.length} msg=${this.#messages.size} tools=${this.#tools.size} turn=${this.#turn?.turnId ?? "-"}\n`); } catch { /* debug only */ } }
     this.#dirty = false;
     if (this.#messages.size > (this.#toolInventory ? 4352 : 256) || this.#tools.size > (this.#toolInventory ? 4096 : 256)) { this.#committed = []; return; }
-    const committed = this.#committed;
-    if (this.#ready && committed.length > 256) {
+    if (this.#ready && this.#committed.length > 256) {
       this.#recoverOversizedCommit();
       return;
     }
     const current = this.#currentSnapshot(this.#seq + 1);
     // If canonical entries are pending, never publish the new head without them. Otherwise the
     // receiver cannot build the parent chain and its projection becomes empty.
-    const batches: readonly RemoteSessionEntry[][] = this.#ready && committed.length > 0
-      ? [committed] : [[]];
-    let chosen: { patch: Extract<RuntimeEvent, { type: "session.patch" }>; entryCount: number } | undefined;
-    for (const batch of batches) {
-      for (let limit = WIRE_FIELD_LIMIT_BYTES; ; limit = Math.floor(limit / 2)) {
-        const live = limit === WIRE_FIELD_LIMIT_BYTES
-          ? structuredClone(current.live)
-          : truncateWireLive(structuredClone(current.live), limit);
-        const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
-          type: "session.patch", sessionId: this.#sessionId, source: current.version,
-          baseSeq: this.#seq, seq: this.#seq + 1,
-          checkpointId: `${this.#epoch}:${this.#seq + 1}`, head: current.checkpoint.head,
-          headCompleteness: current.checkpoint.headCompleteness, live,
-        };
-        if (batch.length > 0) {
-          patch.entries = [...batch];
-          const display = displayBatchFor(batch, this.#entries, this.#head, { boundaryParentId: this.#boundaryParentId });
-          if (display !== undefined) patch.display = display;
-        }
-        if (Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES <= SESSION_SYNC_PAGE_BYTES) {
-          chosen = { patch, entryCount: batch.length };
-          break;
-        }
-        if (limit <= 2 * 1024) break;
-      }
-      if (chosen !== undefined) break;
+    const committed = this.#ready ? this.#truncator.entries(this.#committed) : [];
+    const patch: Extract<RuntimeEvent, { type: "session.patch" }> = {
+      type: "session.patch", sessionId: this.#sessionId, source: current.version,
+      baseSeq: this.#seq, seq: this.#seq + 1,
+      checkpointId: `${this.#epoch}:${this.#seq + 1}`, head: current.checkpoint.head,
+      headCompleteness: current.checkpoint.headCompleteness, live: projectWireLive(current.live),
+    };
+    if (committed.length > 0) {
+      patch.entries = committed;
+      const projected = new Map(this.#entries);
+      for (const entry of committed) projected.set(entry.entryId, entry);
+      const display = displayBatchFor(committed, projected, this.#head, { boundaryParentId: this.#boundaryParentId });
+      if (display !== undefined) patch.display = display;
     }
-    if (chosen === undefined) {
+    if (Buffer.byteLength(JSON.stringify(patch), "utf8") + SESSION_SYNC_WRAPPER_BYTES > SESSION_SYNC_PAGE_BYTES) {
       // Retrying an indivisible canonical batch cannot make it fit. A new checkpoint is the
       // explicit recovery boundary; never keep serving the old head as a current baseline.
       if (this.#ready && committed.length > 0) this.#recoverOversizedCommit();
       return;
     }
     this.#seq += 1;
-    chosen.patch.seq = this.#seq;
-    chosen.patch.source = { ...current.version, seq: this.#seq };
-    chosen.patch.checkpointId = `${this.#epoch}:${this.#seq}`;
     this.#committed = [];
-    this.#published = { seq: this.#seq, ready: this.#ready, complete: this.#complete, head: this.#head, live: chosen.patch.live };
-    this.#publish(chosen.patch);
+    this.#published = { seq: this.#seq, ready: this.#ready, complete: this.#complete, head: this.#head, live: patch.live };
+    this.#publish(patch);
   }
 }

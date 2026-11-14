@@ -40,6 +40,7 @@ import {
   PROTOCOL_VERSION,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
+  selectSessionSyncSnapshot,
   EnvelopeReassembler,
   fragmentEnvelope,
   decodeArtifactChunkFrame,
@@ -1833,6 +1834,17 @@ describe("host end-to-end over relay", () => {
     device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: 19, requestId: "history-format" }));
     expect(await readMatching(device, message => message.requestId === "history-format"))
       .toMatchObject({ type: "session.history.capabilities", format: "v1", maxPageBytes: 65536 });
+    // FT-G12-INTEREST-01: capability discovery is not an accepted interest. Lost replies
+    // and a temporarily rejected target must keep the deployed broadcast recovery path alive.
+    runtime.publish(1, { type: "message.delta", messageId: "negotiating", delta: "before interest" });
+    expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "message.delta"))
+      .toMatchObject({ event: { delta: "before interest" } });
+    device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-rejected",
+      runtimeId: "runtime", sessionId: "wrong-session" }));
+    expect(await readMatching(device, message => message.requestId === "history-rejected")).toMatchObject({ accepted: false });
+    runtime.publish(2, { type: "message.delta", messageId: "negotiating", delta: "after rejection" });
+    expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "message.delta"))
+      .toMatchObject({ event: { delta: "after rejection" } });
     device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-interest",
       runtimeId: "runtime", sessionId: "session" }));
     expect(await readMatching(device, message => message.requestId === "history-interest"))
@@ -1863,6 +1875,9 @@ describe("host end-to-end over relay", () => {
       device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: 19, requestId: "history-close",
         runtimeId: null, sessionId: null }));
       expect(await readMatching(device, message => message.requestId === "history-close")).toMatchObject({ accepted: true });
+      // Duplicate capability probes must not reopen an explicitly closed interest.
+      device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: 19, requestId: "history-format-again" }));
+      await readMatching(device, message => message.requestId === "history-format-again");
       const next = structuredClone(fixture.patch.event);
       next.source.seq = 3; next.baseSeq = 2; next.seq = 3; next.checkpointId = "checkpoint-3";
       next.live.messages[0].finished = true;
@@ -1902,6 +1917,49 @@ describe("host end-to-end over relay", () => {
       expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "message.delta"))
         .toMatchObject({ event: { delta: "visible legacy body" } });
     }
+  });
+
+  // FT-G12-DETAIL-01: real E2E detail reads must reach the native Pi transcript after
+  // the Host has only a truncated preview, including a deployed non-compact client.
+  it.each([false, true])("reads full native text after a truncated snapshot (compact=%s)", async compact => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-full-entry-"));
+    const sessionsRoot = join(stateDir, "sessions"), group = join(sessionsRoot, "work");
+    await mkdir(group, { recursive: true });
+    const text = "完整回复🙂".repeat(10_000);
+    const native = { id: "long", parentId: null, type: "message", timestamp: "2026-11-14T00:00:00.000Z",
+      message: { role: "assistant", content: [{ type: "text", text }] } };
+    await writeFile(join(group, "history.jsonl"), [JSON.stringify({ type: "session", id: "session", cwd: stateDir }), JSON.stringify(native)].join("\n") + "\n");
+    relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "runtime", sessionId: "session", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    if (compact) {
+      device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: 19, requestId: "format", scope: "agent",
+        runtimeId: "runtime", stateFormat: "compact-v2", domains: ["identity"], subscribe: true }));
+      await readMatching(device, message => message.requestId === "format");
+    }
+    device.sendCommand("runtime", "sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
+    const forwarded = await runtime.next();
+    const original = { entryId: native.id, parentId: native.parentId, type: native.type, timestamp: native.timestamp, data: { message: native.message } };
+    const snapshot = selectSessionSyncSnapshot([original], "session", "long", { sessionId: "session", syncId: (forwarded.command as { syncId: string }).syncId, range: "preview" }, [], {
+      version: { epoch: "source", seq: 1, ready: true }, live: { complete: true, turn: null, messages: [], tools: [] },
+      checkpoint: { checkpointId: "source:1", head: { leafId: "long" }, headCompleteness: "complete", inventoryComplete: true },
+    });
+    runtime.publish(1, snapshot);
+    const preview = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot");
+    expect((preview.event as typeof snapshot).display?.entries[0]?.message?.content[0]).toMatchObject({ truncated: true });
+    device.sendCommand("runtime", "detail", { type: "session.entry.request", sessionId: "session", requestId: "detail", entryId: "long" });
+    const detail = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "session.entry.result");
+    expect(detail.event).toEqual({ type: "session.entry.result", requestId: "detail", entryId: "long", entry: original });
+    device.sendCommand("runtime", "wrong", { type: "session.entry.request", sessionId: "other", requestId: "wrong", entryId: "long" });
+    expect(await readMatching(device, message => (message.event as { requestId?: string } | undefined)?.requestId === "wrong"))
+      .toMatchObject({ event: { error: "session_mismatch" } });
   });
 
   // FT-G12-COMPAT-01 / ADR-0064: bounded history is a Host transaction option, not a

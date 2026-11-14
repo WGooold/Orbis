@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SESSION_SYNC_PAGE_BYTES, type AgentExecutionState, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
+import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, RuntimeEventSchema, type AgentExecutionState, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
@@ -559,6 +559,33 @@ describe("Codex recoverable source checkpoints", () => {
       h.server.onExit?.(0);
       vi.useRealTimers();
     }
+  });
+
+  // FT-G12-PAYLOAD-02/04: Codex uses the same live and entry projection for patches and recovery,
+  // budgets the display copy too, and retains the original for explicit detail reads.
+  it("keeps long live and committed replies bounded without changing their source epoch", async () => {
+    const h = makeHarness();
+    try {
+      await activate(h);
+      h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+      const text = "答案🙂".repeat(15_000);
+      h.notify("item/agentMessage/delta", { threadId: "th-1", turnId: "t", itemId: "answer", delta: text });
+      const livePatch = h.events.filter(event => event.type === "session.patch").at(-1)!;
+      expect(syncHistory(h)!.live).toEqual(livePatch.live);
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: agent("answer", text) });
+      const patch = h.events.filter(event => event.type === "session.patch").at(-1)!;
+      const snapshot = syncHistory(h)!;
+      expect(patch.source.epoch).toBe(livePatch.source.epoch);
+      expect(patch.entries).toEqual(snapshot.entries);
+      expect(patch.display).toEqual(snapshot.display);
+      for (const event of [livePatch, patch, snapshot]) {
+        expect(RuntimeEventSchema.safeParse(event).success).toBe(true);
+        expect(Buffer.byteLength(JSON.stringify(event)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+      }
+      const original = await h.runtime.readSessionEntry("codex:th-1", snapshot.sessionId, "answer");
+      expect(original?.data.message).toMatchObject({ content: [{ type: "text", text }] });
+      expect(await h.runtime.readSessionEntry("codex:th-1", "wrong-session", "answer")).toBeUndefined();
+    } finally { h.server.onExit?.(0); }
   });
 
   it("ADR-0049: a coalesced user item reaches the phone as a canonical Entry that declares its client id", async () => {

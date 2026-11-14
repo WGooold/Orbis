@@ -372,6 +372,13 @@ export class ClaudeModsBridge {
     return this.#sessions.get(runtimeId) === session ? snapshot : undefined;
   }
 
+  async readSessionEntry(runtimeId: string, sessionId: string, entryId: string) {
+    const session = this.#sessions.get(runtimeId);
+    if (!session || session.runtime.sessionId !== sessionId) return undefined;
+    await session.history.refresh();
+    return this.#sessions.get(runtimeId) === session ? session.history.source.entry(entryId) : undefined;
+  }
+
   sendCommand(runtimeId: string, commandId: string, command: ClaudeModsCommand): ClaudeModsCommandResult {
     const session = this.#sessions.get(runtimeId);
     if (session === undefined) return "offline";

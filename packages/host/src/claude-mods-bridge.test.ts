@@ -309,6 +309,24 @@ describe("ClaudeModsBridge", () => {
     await expect(bridge.sync(current.runtimeId, request)).resolves.toMatchObject({ type: "session.snapshot", sessionId: "session-1", syncId: "sync-1", entries: [] });
   });
 
+  // FT-G12-DETAIL-01: the on-demand native reader must survive a truncated history projection.
+  it("reads the complete Claude reply independently of the wire preview", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-claude-full-entry-")), path = join(root, "session.jsonl");
+    const text = "Claude reply🙂".repeat(12_000);
+    const bridge = bridgeWith({ createHistory: (id, config, publish) => new ClaudeSessionHistory(id, config, publish,
+      { locate: async () => path, settleTimeoutMs: 0 }) });
+    try {
+      await writeFile(path, JSON.stringify({ type: "assistant", uuid: "answer", parentUuid: null,
+        message: { role: "assistant", content: [{ type: "text", text }] } }) + "\n");
+      const current = online(bridge);
+      const page = await bridge.sync(current.runtimeId, { type: "session.sync", sessionId: "session-1", syncId: "preview", range: "preview" });
+      expect(page?.display?.entries[0]?.message?.content[0]).toMatchObject({ truncated: true });
+      expect((await bridge.readSessionEntry(current.runtimeId, "session-1", "answer"))?.data.message)
+        .toMatchObject({ content: [{ type: "text", text }] });
+      expect(await bridge.readSessionEntry(current.runtimeId, "wrong", "answer")).toBeUndefined();
+    } finally { bridge.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   // CLAUDE-LIVE-01: renewing the same native writer retains its source and step identity;
   // old-generation events and command results remain fenced out.
   it("keeps the running source and publishes new chunks across a same-instance handshake", async () => {

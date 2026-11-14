@@ -9,10 +9,31 @@
  *   目录，下载选择器也显示文件；`hasSessions` 用扫描出的 cwd 集合判定。
  */
 import { open, readdir, stat, access } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import { homedir, hostname, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import type { AgentSessionSummary, BrowseEntry } from "@orbis/protocol";
+import { RemoteSessionEntrySchema, stripInlineMedia, type RemoteSessionEntry } from "@orbis/protocol";
+
+/** Resolve by the native session header, never by a client-supplied file path. Works with old Pi extensions. */
+export async function readPiSessionEntry(root: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+  const path = (await listPiSessions({ root })).files.get(sessionId);
+  if (path === undefined) return undefined;
+  const input = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+      if (!row || row.id !== entryId || row.type === "session") continue;
+      const { id, parentId, type, timestamp, ...data } = row;
+      return RemoteSessionEntrySchema.parse({ entryId: id, parentId: parentId ?? null, type, timestamp, data: stripInlineMedia(data) });
+    }
+    return undefined;
+  } finally { lines.close(); input.destroy(); }
+}
 
 /** 单次扫描最多读的会话文件数：磁盘扫描是给人看列表用的，不是索引重建。 */
 const MAX_SESSION_FILES = 500;

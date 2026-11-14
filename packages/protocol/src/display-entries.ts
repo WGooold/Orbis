@@ -139,12 +139,24 @@ export function projectDisplayEntries(
   const trimmed = trimAtCompaction(path);
   return {
     projectionVersion: DISPLAY_PROJECTION_VERSION,
-    entries: trimmed.path.flatMap(projectEntry),
+    entries: trimmed.path.flatMap(entry => projectEntry(entry).map(row => withWireTruncation(entry, row))),
     headEntryId: leafId,
     compactionEntryId: trimmed.compactionEntryId,
     windowStart: trimmed.windowStart,
     status,
   };
+}
+
+/** Repair existing v3 truncation metadata, retaining the deployed clients' projection version. */
+function withWireTruncation(entry: RemoteSessionEntry, row: DisplayEntry): DisplayEntry {
+  const originalBytes = asNumber(asRecord(entry.data["wireTruncation"])?.["originalBytes"]);
+  if (!originalBytes || !row.message || row.message.content.some(block =>
+    (block.type === "text" || block.type === "thinking") && block.truncated)) return row;
+  const content = [...row.message.content];
+  const index = content.findIndex(block => block.type === "text" || block.type === "thinking");
+  if (index >= 0) content[index] = { ...content[index] as Extract<RemoteContent, { type: "text" | "thinking" }>, truncated: true, originalBytes };
+  else content.push({ type: "text", text: `…（已截断，原始 ${originalBytes} 字节）`, truncated: true, originalBytes });
+  return { ...row, message: { ...row.message, content } };
 }
 
 /** 从叶子沿 parentId 回溯并反转成时间顺序；同时报告路径为什么可能不完整。 */
@@ -331,9 +343,9 @@ function contentBlocks(value: unknown): RemoteContent[] {
     const block = asRecord(raw);
     if (block === undefined) continue;
     switch (asString(block["type"])) {
-      case "text": blocks.push({ type: "text", text: asString(block["text"]) ?? "" }); break;
+      case "text": blocks.push({ type: "text", text: asString(block["text"]) ?? "", ...truncationFields(block) }); break;
       case "thinking":
-        blocks.push({ type: "thinking", text: asString(block["thinking"]) ?? asString(block["text"]) ?? "" });
+        blocks.push({ type: "thinking", text: asString(block["thinking"]) ?? asString(block["text"]) ?? "", ...truncationFields(block) });
         break;
       case "toolCall":
       case "tool_call":
@@ -348,6 +360,11 @@ function contentBlocks(value: unknown): RemoteContent[] {
     }
   }
   return blocks;
+}
+
+function truncationFields(block: Record<string, unknown>): { truncated?: true; originalBytes?: number } {
+  const originalBytes = asNumber(block["originalBytes"]);
+  return block["truncated"] === true ? { truncated: true, ...(originalBytes ? { originalBytes } : {}) } : {};
 }
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>

@@ -6,6 +6,8 @@
 
 2026-11-07：历史窗口实现按 [ADR-0069](0069-session-catalog-and-bounded-history-loading.md) 将 session snapshot / patch 的线路页改为 32 KiB 目标、64 KiB 硬上限；单条 Entry 投影缩至 24 KiB，为 snapshot 中重复出现的 display 投影留出空间。本文早期页上限只代表旧实现。
 
+2026-11-14：修复及证据见 [ADR-0069 §8.7](0069-session-catalog-and-bounded-history-loading.md#87-2026-11-14-长回复复杂条目与兴趣协商修复)。字段缩减仍超预算的条目使用保留身份和压缩边界的可展开摘要；来源保留原文，Host 明确原文读取绕过截断缓存。live 在来源发布前使用独立正文目标，patch 与 preview 保持同版本同表示。display v3 补回既有截断标记，旧字段二次缩减保留原始字节数。以下早期“结构完全保留 / 单条不可缩减即失败”的描述由本次摘要兜底补充。
+
 Status: accepted（2026-10-22 实现 §1–§7：`packages/protocol/src/wire-truncate.ts` 在 `prepareSessionSync` 与 `RecoverableSessionSource.#flush` 两个出口做确定性截断；内容块带 `truncated: true` + `originalBytes`，文本里同时保留"…（已截断，原始 N 字节）"以便任何只读 `text` 的渲染路径也能看见。§8 的"取全文"入口已实现：设备可用 `session.entry.request{requestId,sessionId,entryId}` 按需取回未截断的原文（只回请求设备；超过单条上限按确定性失败拒绝），App 在会话顶部给出「查看完整内容」入口）
 
 关联：[ADR-0013](0013-bounded-session-sync-and-shared-tree-ingestion.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0034](0034-image-content-references.md)、[ADR-0035](0035-incremental-session-reconcile.md)、[ADR-0037](0037-session-sync-transaction-contract.md)

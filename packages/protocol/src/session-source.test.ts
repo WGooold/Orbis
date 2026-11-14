@@ -48,18 +48,22 @@ describe("recoverable source", () => {
     const source = new RecoverableSessionSource("session", patch => patches.push(patch));
     source.transaction(() => { source.reconcile([entry], entry.entryId); source.setAvailability(true, true); });
     const before = source.published();
-    const large = { ...entry, entryId: "large", parentId: entry.entryId,
-      data: { message: { role: "assistant", content: "x".repeat(SESSION_SYNC_PAGE_BYTES) } } };
-    source.reconcile([entry, large], large.entryId);
+    // A single reply now fits through the shared wire projection; an indivisible multi-entry
+    // replay still needs the existing epoch recovery boundary.
+    const batch = Array.from({ length: 4 }, (_, index) => ({ ...entry, entryId: `large-${index}`,
+      parentId: index === 0 ? entry.entryId : `large-${index - 1}`,
+      data: { message: { role: "assistant", content: "x".repeat(SESSION_SYNC_PAGE_BYTES) } } }));
+    const large = batch.at(-1)!;
+    source.reconcile([entry, ...batch], large.entryId);
     expect(source.version.epoch).not.toBe(before.version.epoch);
     expect(patches.some(patch => patch.source.epoch === source.version.epoch && !patch.source.ready)).toBe(true);
-    const recovered = selectSessionSyncSnapshot([entry, large], "session", large.entryId,
+    const recovered = selectSessionSyncSnapshot([entry, ...batch], "session", large.entryId,
       { sessionId: "session", syncId: "recovery", range: "preview", knownState: {
         epoch: before.version.epoch, seq: before.version.seq, head: before.checkpoint.head,
       } }, [], source.published());
     expect(recovered.selection).toBe("snapshot");
-    expect(recovered.cursor.leafId).toBe("large");
-    expect(source.published().checkpoint.head.leafId).toBe("large");
+    expect(recovered.cursor.leafId).toBe(large.entryId);
+    expect(source.published().checkpoint.head.leafId).toBe(large.entryId);
     expect(large.data.message.content.length).toBe(SESSION_SYNC_PAGE_BYTES);
   });
 

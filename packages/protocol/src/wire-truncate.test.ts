@@ -4,6 +4,15 @@ import {
 } from "./index.js";
 
 describe("wire truncation (ADR-0038)", () => {
+  // FT-G12-PAYLOAD-05: normalization must agree for a legacy 64-KiB field and its original.
+  it("preserves original size when tightening a previously truncated field", () => {
+    const text = "x".repeat(150_000);
+    expect(truncateWireText(truncateWireText(text, 64 * 1024), 16 * 1024)).toBe(truncateWireText(text, 16 * 1024));
+    const content = [{ type: "text", text: "small" }];
+    expect(truncateWireValue(content)).toBe(content);
+    const block = truncateWireValue({ type: "thinking", thinking: text }, 64 * 1024);
+    expect(truncateWireValue(block, 16 * 1024)).toEqual(truncateWireValue({ type: "thinking", thinking: text }, 16 * 1024));
+  });
   it("is deterministic and idempotent, and never splits a UTF-8 character", () => {
     const source = "中文🙂".repeat(20_000);
     const once = truncateWireText(source);

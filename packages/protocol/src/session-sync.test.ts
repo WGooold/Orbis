@@ -66,8 +66,8 @@ describe("bounded Session ranges", () => {
   });
 
   // ADR-0038 / ADR-0069：单条线路投影必须同时适配 canonical 与 display 双表示；
-  // 页目标是 32 KiB，64 KiB hard 上限之外的单条不跳过，而是确定性失败。
-  it("truncates a single large Entry, and still fails on one that cannot be reduced", () => {
+  // 页目标是 32 KiB，结构开销过大的单条保留可展开摘要，不跳过 canonical 节点。
+  it("truncates a single large Entry and summarizes one with excessive structure", () => {
     const tree = entries(2, "x".repeat(400_000));
     const snapshot = selectSessionSyncSnapshot(tree, "s", "2", { ...request, range: "catchup" });
     expect(snapshot.entries.map((entry) => entry.entryId)).toEqual(["1"]);
@@ -81,8 +81,10 @@ describe("bounded Session ranges", () => {
     for (let index = 0; index < 3_000; index += 1) wide[`f${index}`] = "y".repeat(2_000);
     // 条目不可变（ADR-0035）：修正内容一律换新对象，不能原地改（截断结果按对象身份缓存）。
     const replaced = [{ ...tree[0]! }, { ...tree[1]!, data: wide }];
-    expect(() => selectSessionSyncSnapshot(replaced, "s", "2", { ...request, range: "catchup", knownLeafId: "1" }))
-      .toThrow("session_entry_too_large");
+    const widePage = selectSessionSyncSnapshot(replaced, "s", "2", { ...request, range: "catchup", knownLeafId: "1" });
+    expect(widePage.entries.map(entry => entry.entryId)).toEqual(["2"]);
+    expect(widePage.entries[0]?.data.wireTruncation).toEqual({ originalBytes: Buffer.byteLength(JSON.stringify(wide)) });
+    expect(Buffer.byteLength(JSON.stringify(widePage)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
   });
 
   it("keeps a large message plus its duplicated display projection under the hard page limit", () => {
