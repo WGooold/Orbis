@@ -63,6 +63,8 @@ Claude 已有独立于主回合的后台任务库存；Codex / Desktop 与 DSH �
 
 ## 实现、验证与交付
 
+2026-11-14，SC88（S33）：修复 Android 优先使用最低协议、兼容 Host 因而删除所有后端任务清单的问题。任务 UI 与 Host 的旧端投影保持原契约；Android 协商最高共同业务格式，最低为 18，并独立处理 Relay 外层。选择规则与旧实现验证见 [ADR-0064](0064-protocol-compatibility.md) 及 `.artifacts/subagent-display-fix-20261114/verification.json`。自动验证、候选包与人工验收分别记录。
+
 - 公共模型与事实：[agent-tasks.ts](../../packages/host/src/agent-tasks.ts)、[agent-state-facts.ts](../../packages/host/src/agent-state-facts.ts)。
 - 原生投影：[codex-agent-tasks.ts](../../packages/host/src/codex-agent-tasks.ts)、[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[dsh-agent-tasks.ts](../../packages/host/src/dsh-agent-tasks.ts)、[dsh-web-discovery.ts](../../packages/host/src/dsh-web-discovery.ts)、[claude-mods-bridge.ts](../../packages/host/src/claude-mods-bridge.ts)。
 - 双端模型与提示：[Models.swift](../../ios/Orbis/Orbis/Models.swift)、[AgentState.swift](../../ios/Orbis/Orbis/AgentState.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt)、[AgentModelProjection.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelProjection.kt)、[BackgroundTasks.kt](../../android/app/src/main/java/com/orbising/orbis/BackgroundTasks.kt)。

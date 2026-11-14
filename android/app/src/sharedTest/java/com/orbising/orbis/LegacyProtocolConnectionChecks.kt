@@ -16,6 +16,39 @@ import org.junit.Test
 abstract class LegacyProtocolConnectionChecks {
     private val psk = ByteArray(32) { (it + 7).toByte() }
 
+    // SC88: a dual-version Host must keep protocol-19 task inventories, including
+    // when the Relay's independent outer connection still uses protocol 18.
+    @Test fun compatibleRelayPreservesSubagentsForEveryBackend() = compatibleHostPreservesTasks(false)
+    @Test fun compatibleRelaySelectsItsHighestCommonOuterVersion() = compatibleHostPreservesTasks(false, 19)
+    @Test fun compatibleLanPreservesSubagentsForEveryBackend() = compatibleHostPreservesTasks(true)
+
+    private fun compatibleHostPreservesTasks(direct: Boolean, relayVersion: Int = 18) {
+        val peer = StrictPeer(relayVersion, direct = direct, compatible = true)
+        val server = MockWebServer(); repeat(2) { server.enqueue(MockResponse().withWebSocketUpgrade(peer)) }; server.start()
+        val relay = if (direct) MockWebServer().apply { enqueue(MockResponse().setResponseCode(503)); start() } else server
+        val http = OkHttpClient(); val client = RelayClient(http)
+        val messages = LinkedBlockingQueue<String>()
+        try {
+            client.connect(DeviceCredential("ws://127.0.0.1:${relay.port}", "phone", "relay-secret"),
+                onMessage = { text, channel -> if (channel != null) messages.add(text) }, onOpen = {}, onClosed = {},
+                e2eOptions = options(if (direct) listOf(LanEndpoint("127.0.0.1", server.port)) else emptyList()))
+            assertTrue(peer.ready.await(5, TimeUnit.SECONDS))
+            assertNotNull(messages.poll(3, TimeUnit.SECONDS))
+            for (kind in listOf("pi", "claude", "codex", "codexDesktop", "dsh")) {
+                peer.sendTasks(kind)
+                val snapshot = messages.poll(3, TimeUnit.SECONDS)!!
+                val runtime = RuntimeSummary("runtime", kind, "/synthetic", "running", sessionId = "session", agentKind = kind)
+                val state = RemoteState(hostId = "host", runtimes = mapOf("runtime" to runtime), agentStateRequests = setOf("tasks-$kind"))
+                val projected = RelayReducer().reduce(state, snapshot, channel = "ctl")
+                assertEquals("$kind lost its task inventory on ${if (direct) "LAN" else "Relay"}: $snapshot", true,
+                    projected.runtimes["runtime"]?.backgroundTasks?.visible)
+                assertEquals("child", projected.runtimes["runtime"]?.backgroundTasks?.items?.single()?.id)
+            }
+            assertEquals(if (!direct && relayVersion == 18) 2 else 1, server.requestCount)
+            assertTrue(peer.errors.toString(), peer.errors.isEmpty())
+        } finally { close(client, peer, server, http); if (direct) relay.close() }
+    }
+
     @Test fun strict18CarriesRequestsAcksAndFileChunks() {
         val peer = StrictPeer(18)
         withConnection(peer) { client, messages, _ ->
@@ -60,8 +93,8 @@ abstract class LegacyProtocolConnectionChecks {
         }
     }
 
-    @Test fun explicitVersionRejectionTries19Once() {
-        val peer = StrictPeer(19)
+    @Test fun explicitVersionRejectionTriesNextSupportedVersionOnce() {
+        val peer = StrictPeer(18)
         val server = MockWebServer()
         val attempts = LinkedBlockingQueue<Int>()
         val closed = AtomicInteger()
@@ -82,11 +115,11 @@ abstract class LegacyProtocolConnectionChecks {
         try {
             connect(client, server, messages, closed)
             assertTrue(peer.ready.await(5, TimeUnit.SECONDS))
-            assertEquals(18, attempts.poll(1, TimeUnit.SECONDS))
-            assertEquals(19, peer.authentication.poll(1, TimeUnit.SECONDS))
+            assertEquals(19, attempts.poll(1, TimeUnit.SECONDS))
+            assertEquals(18, peer.authentication.poll(1, TimeUnit.SECONDS))
             assertEquals(2, server.requestCount)
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("protocolVersion", 19); put("requestId", "only-once") }))
-            assertEquals(19, Json.parseToJsonElement(peer.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8)).jsonObject["protocolVersion"]!!.jsonPrimitive.int)
+            assertEquals(18, Json.parseToJsonElement(peer.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8)).jsonObject["protocolVersion"]!!.jsonPrimitive.int)
             assertEquals(0, closed.get())
             assertFalse(messages.any { it.contains("protocol.error") })
             assertTrue(peer.errors.isEmpty())
@@ -118,14 +151,15 @@ abstract class LegacyProtocolConnectionChecks {
     @Test fun strictLan18WorksWithoutRelayAndReceivesNoRelayCredential() {
         val peer = StrictPeer(18, direct = true)
         val relay = MockWebServer(); relay.enqueue(MockResponse().setResponseCode(503)); relay.start()
-        val server = MockWebServer(); server.enqueue(MockResponse().withWebSocketUpgrade(peer)); server.start()
+        val server = MockWebServer()
+        repeat(2) { server.enqueue(MockResponse().withWebSocketUpgrade(peer)) }; server.start()
         val http = OkHttpClient(); val client = RelayClient(http); val selected = CountDownLatch(1)
         client.onPathChanged = { path, _ -> if (path == "lan") selected.countDown() }
         try {
             client.connect(DeviceCredential("ws://127.0.0.1:${relay.port}", "phone", "relay-secret"),
                 onMessage = { _, _ -> }, onOpen = {}, onClosed = {},
                 e2eOptions = options(listOf(LanEndpoint("127.0.0.1", server.port))))
-            assertTrue(peer.ready.await(4, TimeUnit.SECONDS))
+            assertTrue(peer.ready.await(8, TimeUnit.SECONDS))
             peer.sendJson("""{"type":"device.path","protocolVersion":18,"path":"lan"}""")
             assertTrue(selected.await(3, TimeUnit.SECONDS))
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("protocolVersion", 19); put("requestId", "lan-18") }))
@@ -137,9 +171,9 @@ abstract class LegacyProtocolConnectionChecks {
         } finally { close(client, peer, server, http); relay.close() }
     }
 
-    @Test fun strictLan19IsProbedOnlyAfterAnUnconfirmedHs1TimesOut() {
+    @Test fun strictLan18IsProbedOnlyAfterAnUnconfirmedHs1TimesOut() {
         val ignored = LinkedBlockingQueue<JsonObject>()
-        val peer = StrictPeer(19, direct = true)
+        val peer = StrictPeer(18, direct = true)
         val relay = MockWebServer(); relay.enqueue(MockResponse().setResponseCode(503)); relay.start()
         val server = MockWebServer()
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
@@ -153,17 +187,17 @@ abstract class LegacyProtocolConnectionChecks {
             client.connect(DeviceCredential("ws://127.0.0.1:${relay.port}", "phone", "relay-secret"),
                 onMessage = { _, _ -> }, onOpen = {}, onClosed = {},
                 e2eOptions = options(listOf(LanEndpoint("127.0.0.1", server.port))))
-            assertTrue("A fresh 19 handshake must follow the unanswered 18 HS1", peer.ready.await(8, TimeUnit.SECONDS))
+            assertTrue("A fresh 18 handshake must follow the unanswered 19 HS1", peer.ready.await(8, TimeUnit.SECONDS))
             assertEquals(2, server.requestCount)
             assertEquals(1, ignored.size)
             val probe = ignored.single()
-            assertEquals(18, probe["protocolVersion"]!!.jsonPrimitive.int)
+            assertEquals(19, probe["protocolVersion"]!!.jsonPrimitive.int)
             val envelope = E2eJson.json.decodeFromJsonElement<EnvelopeV2>(probe["envelope"]!!)
             assertEquals("hs1", PlaintextEnvelope.read<HandshakeHello>(envelope, "hs").type)
-            peer.sendJson("""{"type":"device.path","protocolVersion":19,"path":"lan"}""")
+            peer.sendJson("""{"type":"device.path","protocolVersion":18,"path":"lan"}""")
             assertTrue(selected.await(3, TimeUnit.SECONDS))
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("protocolVersion", 19); put("requestId", "lan-19") }))
-            assertEquals(19, Json.parseToJsonElement(peer.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8)).jsonObject["protocolVersion"]!!.jsonPrimitive.int)
+            assertEquals(18, Json.parseToJsonElement(peer.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8)).jsonObject["protocolVersion"]!!.jsonPrimitive.int)
             assertTrue(peer.errors.isEmpty())
         } finally { close(client, peer, server, http); relay.close() }
     }
@@ -178,7 +212,7 @@ abstract class LegacyProtocolConnectionChecks {
     }
 
     private fun withConnection(peer: StrictPeer, block: (RelayClient, LinkedBlockingQueue<String>, LinkedBlockingQueue<ByteArray>) -> Unit) {
-        val server = MockWebServer(); server.enqueue(MockResponse().withWebSocketUpgrade(peer)); server.start()
+        val server = MockWebServer(); repeat(2) { server.enqueue(MockResponse().withWebSocketUpgrade(peer)) }; server.start()
         val http = OkHttpClient(); val client = RelayClient(http)
         val messages = LinkedBlockingQueue<String>(); val binaries = LinkedBlockingQueue<ByteArray>()
         try {
@@ -197,7 +231,7 @@ abstract class LegacyProtocolConnectionChecks {
         http.dispatcher.executorService.shutdownNow(); http.connectionPool.evictAll()
     }
 
-    private inner class StrictPeer(val version: Int, val direct: Boolean = false) : WebSocketListener() {
+    private inner class StrictPeer(val version: Int, val direct: Boolean = false, val compatible: Boolean = false) : WebSocketListener() {
         val ready = CountDownLatch(1)
         val authentication = LinkedBlockingQueue<Int>()
         val received = LinkedBlockingQueue<Pair<String, ByteArray>>()
@@ -207,13 +241,23 @@ abstract class LegacyProtocolConnectionChecks {
         private var keys: SessionKeys? = null
         private var devicePublic: ByteArray? = null
         private var channel: E2eChannel? = null
+        private var wireVersion = version
+        private var businessVersion: Int? = if (compatible) null else version
         private val pieces = EnvelopeReassembler()
         override fun onOpen(ws: WebSocket, response: Response) { socket = ws }
         override fun onClosing(ws: WebSocket, code: Int, reason: String) { ws.close(code, reason) }
         override fun onMessage(ws: WebSocket, text: String) {
             try {
                 val value = Json.parseToJsonElement(text).jsonObject
-                check(value["protocolVersion"]!!.jsonPrimitive.int == version) { "wrong outer version: $text" }
+                if (!direct && value["protocolVersion"] != JsonPrimitive(version)) {
+                    if (value["type"] == JsonPrimitive("device.authenticate"))
+                        ws.send("""{"type":"protocol.error","code":"protocol_version_mismatch","message":"Fixture version mismatch"}""")
+                    return
+                }
+                if (compatible && direct && keys == null) wireVersion = value["protocolVersion"]!!.jsonPrimitive.int.also { check(it in 18..19) }
+                // Released strict LAN silently discards an unsupported initial HS1.
+                if (!compatible && direct && keys == null && value["protocolVersion"]!!.jsonPrimitive.int != version) return
+                check(value["protocolVersion"]!!.jsonPrimitive.int == wireVersion) { "wrong outer version: $text" }
                 if (value["type"]!!.jsonPrimitive.content == "device.authenticate") {
                     check(!direct)
                     check(value.keys == setOf("type", "protocolVersion", "credential"))
@@ -236,14 +280,24 @@ abstract class LegacyProtocolConnectionChecks {
                         val confirm = PlaintextEnvelope.read<HandshakeConfirmBody>(envelope, "hs")
                         check(Crypto.constantTimeEqual(Crypto.fromBase64Url(confirm.macD, "macD"), HandshakeE2e.handshakeMacFromDevice(keys!!, keyPair.publicRaw, devicePublic!!)))
                         channel = E2eChannel(keys!!, E2eChannel.ROLE_HOST)
-                        sendJson("""{"type":"device.ready","protocolVersion":$version,"deviceId":"phone","notificationEpoch":null,"runtimes":[],"agents":[]}""")
-                        ready.countDown()
+                        if (!compatible || direct) {
+                            businessVersion = if (compatible) wireVersion else version
+                            announceReady()
+                        }
                     }
                 } else {
                     val bytes = channel!!.open(envelope) ?: return
                     if (envelope.hdr.k == "data") {
                         val payload = Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject
-                        if (payload.containsKey("protocolVersion")) check(payload["protocolVersion"]!!.jsonPrimitive.int == version) { "wrong inner version: $payload" }
+                        // The unchanged Host-18 parser ignores a version-19 discovery
+                        // probe (no command/request identity); its own ready selects 18.
+                        if (!compatible && payload["type"] == JsonPrimitive("host.lan.request") &&
+                            payload["protocolVersion"] != JsonPrimitive(version)) return
+                        if (businessVersion == null) {
+                            businessVersion = payload["protocolVersion"]!!.jsonPrimitive.int.also { check(it in 18..19) }
+                            announceReady()
+                        }
+                        if (payload.containsKey("protocolVersion")) check(payload["protocolVersion"]!!.jsonPrimitive.int == businessVersion) { "wrong inner version: $payload" }
                         if (payload["type"]!!.jsonPrimitive.content == "host.lan.request") return
                     }
                     if (envelope.hdr.k == "bin") check(bytes[4] == version.toByte())
@@ -251,10 +305,21 @@ abstract class LegacyProtocolConnectionChecks {
                 }
             } catch (error: Throwable) { errors.add(error.message ?: error.toString()); ws.close(1008, "invalid_message") }
         }
+        private fun announceReady() {
+            sendJson("""{"type":"device.ready","protocolVersion":$businessVersion,"deviceId":"phone","notificationEpoch":null,"runtimes":[],"agents":[]}""")
+            ready.countDown()
+        }
+        fun sendTasks(kind: String) {
+            val tasks = if (businessVersion == 19) """, "tasks":{"availability":"ready","truncated":false,"items":[{"id":"child","title":"Synthetic child","kind":"agent","status":"running"}]}""" else ""
+            sendJson("""{"type":"agent.state.snapshot","protocolVersion":$businessVersion,"requestId":"tasks-$kind","scope":"agent",
+                "runtimeId":"runtime","sessionId":"session","agentKind":"$kind","modelEpoch":"epoch",
+                "domains":[{"domain":"execution","modelEpoch":"epoch","revision":1,"checkedAt":1,"availability":"ready","completeness":"complete",
+                "value":{"phase":"running","waitingFor":[],"retry":"unavailable","compaction":"unavailable"$tasks}}],"missing":[],"truncated":false}""")
+        }
         fun sendJson(text: String) = sendFrame(channel!!.seal("data", "host", "host", "phone", text.toByteArray(), "ctl"))
         fun sendChunk(bytes: ByteArray) = sendFrame(channel!!.seal("bin", "host", "host", "phone", bytes, "bulk"))
         private fun sendFrame(envelope: EnvelopeV2) {
-            for (piece in EnvelopePieces.fragment(envelope)) check(socket!!.send(E2eJson.json.encodeToString(V2Frame("v2.frame", version, piece))))
+            for (piece in EnvelopePieces.fragment(envelope)) check(socket!!.send(E2eJson.json.encodeToString(V2Frame("v2.frame", wireVersion, piece))))
         }
     }
 }

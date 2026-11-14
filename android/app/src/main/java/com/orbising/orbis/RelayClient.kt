@@ -380,18 +380,18 @@ class RelayClient internal constructor(
                         if (!isCurrent(ws)) return
                         traceIncoming(text)
                         val notice = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                        val nextVersion = nextSupportedProtocolVersion(connection.relayProtocolVersion)
                         if (notice?.get("type") == JsonPrimitive("protocol.error") &&
                             notice["code"] == JsonPrimitive("protocol_version_mismatch") &&
-                            connection.relayProtocolVersion == INITIAL_WIRE_PROTOCOL_VERSION && !relayAuthenticated &&
+                            nextVersion != null && !relayAuthenticated &&
                             synchronized(connection.lock) { connection.channel == null }
                         ) {
                             // Retry only an explicit pre-session version rejection; no business replay.
-                            connection.relayProtocolVersion = PROTOCOL_VERSION
-                            connection.hostProtocolVersion = PROTOCOL_VERSION
+                            connection.relayProtocolVersion = nextVersion
                             retryingAuthentication = true
                             this@RelayClient.webSocket = null
                             retire(ws)
-                            trace("protocol.relay.retry version=$PROTOCOL_VERSION reason=protocol_version_mismatch")
+                            trace("protocol.relay.retry version=$nextVersion reason=protocol_version_mismatch")
                             openRelay()
                             return
                         }
@@ -883,13 +883,14 @@ class RelayClient internal constructor(
     }
 
     /** 发 HS1。每次连接/换路都换一套临时密钥（spec §6.2）。 */
-    private fun startHandshake(state: E2eSession, preservePending: Boolean = false) {
+    private fun startHandshake(state: E2eSession, preservePending: Boolean = false, proposedVersion: Int = INITIAL_WIRE_PROTOCOL_VERSION) {
         val pskRoot = state.options.pskRoot ?: return
         val handshake = DeviceHandshake(pskRoot, supportsHistoryStreams = webSocket?.supportsHistoryStreams == true)
         synchronized(state.lock) {
             state.handshake = handshake
             state.channel = null
             state.bootstrapReady = false
+            state.hostProtocolVersion = proposedVersion
             if (!preservePending) state.pending.clear()
         }
         // 新会话 = 新的序号空间：上一条会话留下的半截消息永远凑不齐了。
@@ -941,14 +942,14 @@ class RelayClient internal constructor(
             return true
         }
         val envelope = frame.envelope
-        runCatching { handleE2eEnvelope(state, envelope, onMessage, frame.protocolVersion) }
+        runCatching { handleE2eEnvelope(state, envelope, onMessage) }
             .onFailure { error ->
                 trace("e2e.error kind=${error::class.simpleName} message=${error.message ?: "<none>"}")
             }
         return true
     }
 
-    private fun handleE2eEnvelope(state: E2eSession, incoming: EnvelopeV2, onMessage: (String, String?) -> Unit, protocolVersion: Int) {
+    private fun handleE2eEnvelope(state: E2eSession, incoming: EnvelopeV2, onMessage: (String, String?) -> Unit) {
         // 片先拼回整条信封：解密、序号检查、`ch` 校验都只认完整信封——片层自己什么都不判
         // （见 EnvelopePieces.kt），否则就会存在第二份合法性真相。半截消息在这里直接返回。
         val envelope = state.reassembler.accept(incoming) ?: return
@@ -972,7 +973,6 @@ class RelayClient internal constructor(
                     throw Crypto.E2eCryptoException("malformed", L10n.tr("期望 hs2，收到 {0}", hs2.type))
                 }
                 val hs3 = handshake.accept(hs2)
-                state.hostProtocolVersion = protocolVersion
                 sendV2Frame(
                     PlaintextEnvelope.build(
                         "hs", room = state.room, from = state.options.deviceId, to = state.options.hostId,
@@ -983,13 +983,13 @@ class RelayClient internal constructor(
                     state.channel = E2eChannel(handshake.sessionKeys(), E2eChannel.ROLE_DEVICE)
                 }
                 trace("e2e.hs.confirmed hostId=${state.options.hostId}")
-                // WS retains its existing single-stream handshake contract.
-                if (webSocket?.kind == RelayTransportKind.WS) activateRelay(state)
-                else {
-                    // ADR-0064: Host binds this path's business version from the first
-                    // encrypted request. ctl remains available before bootstrap.
-                    sealAndSend(state, buildJsonObject { put("type", "host.lan.request"); put("protocolVersion", state.hostProtocolVersion) })
-                }
+                // SC88: Relay rewrites the outer frame version; it cannot select Host
+                // features. Offer our highest implemented business format through a
+                // read-only probe, descending only on explicit compatibility rejection.
+                // Strict released Hosts ignore an unsupported discovery request and
+                // announce their own encrypted ready (18/19). Keep commands queued
+                // until that confirmation on both WS and QUIC; never replay input.
+                sealAndSend(state, buildJsonObject { put("type", "host.lan.request"); put("protocolVersion", state.hostProtocolVersion) })
             }
             "ping" -> {
                 val channel = synchronized(state.lock) { state.channel }
@@ -1014,9 +1014,30 @@ class RelayClient internal constructor(
                 val plaintext = synchronized(state.lock) { channel.open(envelope) } ?: return
                 val text = plaintext.toString(Charsets.UTF_8)
                 val message = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                if (!state.bootstrapReady && envelope.hdr.ch == "ctl" &&
+                    message?.get("type") == JsonPrimitive("protocol.error") &&
+                    message["code"] == JsonPrimitive("protocol_version_mismatch") &&
+                    !message.containsKey("requestId") && !message.containsKey("commandId")) {
+                    nextSupportedProtocolVersion(state.hostProtocolVersion)?.let { next ->
+                        startHandshake(state, preservePending = true, proposedVersion = next)
+                        return
+                    }
+                }
                 if (message?.get("type") == JsonPrimitive("device.ready")) {
-                    supportedProtocolVersion(message["protocolVersion"])?.let { state.hostProtocolVersion = it }
-                    if (!state.bootstrapReady && envelope.hdr.ch == "ctl") activateRelay(state)
+                    val announced = supportedProtocolVersion(message["protocolVersion"])
+                    val version = announced?.let { highestCommonProtocolVersion(SUPPORTED_PROTOCOL_VERSIONS, listOf(it)) }
+                    if (version == null || state.bootstrapReady && version != state.hostProtocolVersion) {
+                        onMessage(buildJsonObject {
+                            put("type", "protocol.error"); put("code", "protocol_version_mismatch")
+                            put("message", PROTOCOL_VERSION_MISMATCH_ERROR)
+                        }.toString(), envelope.hdr.ch)
+                        return
+                    }
+                    if (!state.bootstrapReady) {
+                        require(envelope.hdr.ch == "ctl") { "Host bootstrap must arrive on ctl" }
+                        state.hostProtocolVersion = version
+                        activateRelay(state)
+                    }
                 }
                 if (handlePathControl(text)) return
                 // 把 `hdr.ch` 一并交出去：接收侧要按它分优先级派发，否则分片会堵住控制帧。

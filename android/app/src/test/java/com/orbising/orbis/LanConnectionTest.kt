@@ -47,7 +47,7 @@ class LanConnectionTest {
         try {
             client.connect(
                 DeviceCredential("ws://127.0.0.1:${relayServer.port}", "phone", "relay-only-secret"),
-                onMessage = { text, _ -> messages.add(text) },
+                onMessage = { text, _ -> if (!text.contains("\"device.ready\"")) messages.add(text) },
                 onBinaryMessage = { binaries.add(it) },
                 onOpen = {}, onClosed = { closed.incrementAndGet() },
                 e2eOptions = E2eConnectOptions("host", "phone", X25519KeyPair.generate(), pskRoot = psk),
@@ -189,6 +189,8 @@ class LanConnectionTest {
                     check(Crypto.constantTimeEqual(Crypto.fromBase64Url(confirm.macD, "macD"),
                         HandshakeE2e.handshakeMacFromDevice(keys!!, keyPair.publicRaw, devicePublic!!)))
                     channel = E2eChannel(keys!!, E2eChannel.ROLE_HOST)
+                    // Real Hosts confirm their business codec before queued input is released.
+                    send("""{"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,"deviceId":"phone","runtimes":[]}""")
                     ready.countDown()
                 }
             } else {

@@ -8,6 +8,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProtocolCompatibilityTest {
+    // SC88: select the highest actual intersection, including noncontiguous/future
+    // sets and three participants when all three parse the same representation.
+    @Test fun `negotiation uses the highest common implemented version without filling gaps`() {
+        assertEquals(21, highestCommonProtocolVersion(setOf(18, 19, 21), setOf(18, 21, 22)))
+        assertEquals(18, highestCommonProtocolVersion(setOf(18, 19, 21), setOf(18, 21), setOf(18, 19)))
+        assertNull(highestCommonProtocolVersion(setOf(18, 21), setOf(19, 20)))
+        assertNull(highestCommonProtocolVersion(setOf(18), emptySet()))
+        assertNull(highestCommonProtocolVersion(setOf(17, 18), setOf(16, 17)))
+        assertEquals(18, highestCommonProtocolVersion(setOf(17, 18), setOf(17, 18)))
+        assertNull(highestCommonProtocolVersion())
+        assertEquals(SUPPORTED_PROTOCOL_VERSIONS.maxOrNull(), INITIAL_WIRE_PROTOCOL_VERSION)
+        assertTrue(PROTOCOL_VERSION in SUPPORTED_PROTOCOL_VERSIONS)
+        assertEquals(PREFERRED_PROTOCOL_VERSIONS.drop(1), PREFERRED_PROTOCOL_VERSIONS.mapNotNull(::nextSupportedProtocolVersion))
+        assertNull(nextSupportedProtocolVersion(-1))
+    }
     @Test fun `18 and 19 are supported but unimplemented formats and malformed versions are rejected`() {
         for (literal in listOf("18", "19")) {
             assertNotNull(supportedProtocolVersion(Json.parseToJsonElement(literal)))
