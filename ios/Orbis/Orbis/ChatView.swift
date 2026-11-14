@@ -11,10 +11,8 @@ private struct ChatBottomPreference: PreferenceKey {
 
 final class ChatScrollMetrics {
     var bottomDistance: CGFloat = 0
-    var firstVisibleRow: String?
     var userScrolling = false
-    var rowFrames: [String: CGRect] = [:]
-    var viewportHeight: CGFloat = 0
+    var viewport = ChatViewportFacts()
 }
 
 private struct ChatQuestionJump: Equatable {
@@ -22,9 +20,27 @@ private struct ChatQuestionJump: Equatable {
     let request = UUID()
 }
 
-private struct ChatRowsPreference: PreferenceKey {
-    static var defaultValue: [String: CGRect] = [:]
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
+private struct ChatViewportPreference: PreferenceKey {
+    static var defaultValue: ChatViewportFacts { ChatViewportFacts() }
+    static func reduce(value: inout ChatViewportFacts, nextValue: () -> ChatViewportFacts) { value.merge(nextValue()) }
+}
+
+/// Do not propagate every scroll pixel through the preference tree. Geometry
+/// stays local to the row; only crossing a visibility/paging boundary publishes.
+private struct ChatRowViewportObserver: ViewModifier {
+    let viewportHeight: CGFloat
+    var firstRow = false
+    var questionID: String?
+    @State private var facts = ChatViewportFacts()
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: ChatViewportFacts.self) { geometry in
+                ChatViewportFacts(frame: geometry.frame(in: .named("chat-viewport")),
+                                  viewportHeight: viewportHeight, firstRow: firstRow, questionID: questionID)
+            } action: { facts = $0 }
+            .preference(key: ChatViewportPreference.self, value: facts)
+    }
 }
 
 private struct ChatReadingInteractionKey: EnvironmentKey {
@@ -81,7 +97,7 @@ struct ChatView: View {
     @State private var permissionsOpen = false
     @State private var runtimeInfoOpen = false
     @State private var filePickerOpen = false
-    @State private var historyAnchor: String?
+    @State private var awaitingHistoryPage = false
     @State private var topArmed = false
     @StateObject private var downloadFlight = DownloadFlight()
     @FocusState private var composerFocused: Bool
@@ -203,7 +219,7 @@ struct ChatView: View {
                 runtimeInfoOpen = false
                 sendFlight.clear()
                 hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
-                suppressQuestionPaging = false; metrics.rowFrames = [:]
+                suppressQuestionPaging = false; metrics.viewport = ChatViewportFacts()
             }
     }
 
@@ -235,13 +251,7 @@ struct ChatView: View {
     }
 
     private func updateQuestionVisibility() {
-        let visibleFrames = metrics.rowFrames.values.contains { $0.maxY > 0 && $0.minY < metrics.viewportHeight }
-        let outside = latestQuestion.map { question in
-            guard visibleFrames else { return false }
-            guard let frame = metrics.rowFrames[question.messageId] else { return true }
-            // A small dead band keeps the reminder quiet at the viewport boundary.
-            return frame.maxY < -8 || frame.minY > metrics.viewportHeight + 8
-        } ?? false
+        let outside = metrics.viewport.questionOutsideViewport(latestQuestion?.messageId)
         if outside != questionOutsideViewport { questionOutsideViewport = outside }
     }
 
@@ -306,6 +316,7 @@ struct ChatView: View {
     private var conversation: some View {
         let kind = self.kind
         let transcript = store.chatTranscript
+        let questionID = latestQuestion?.messageId
         let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
         replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
             ready: hasPositioned && store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession,
@@ -321,6 +332,7 @@ struct ChatView: View {
                     }
                     ForEach(transcript.rows) { row in
                         ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
+                                       toolText: transcript.toolTextByRow[row.id] ?? [:],
                                        timings: transcript.timingsByRow[row.id] ?? [],
                                        changes: store.turnFileChanges,
                                        changeAnchors: turnEndChangeAnchors(row),
@@ -336,10 +348,12 @@ struct ChatView: View {
                                 OrbisHaptics.commit()
                             }
                         }, onPending: { action in pendingAction(action, messageId: row.messages.first?.messageId) }).equatable().id(row.id)
-                            .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: [row.id: geometry.frame(in: .named("chat-viewport"))]) })
+                            .modifier(ChatRowViewportObserver(viewportHeight: viewport.size.height,
+                                firstRow: row.id == transcript.firstMessageId,
+                                questionID: row.id == questionID ? questionID : nil))
                     }
                     LiveToolsView(runtime: runtime).id("chat-live-tools")
-                        .background(GeometryReader { geometry in Color.clear.preference(key: ChatRowsPreference.self, value: ["chat-live-tools": geometry.frame(in: .named("chat-viewport"))]) })
+                        .modifier(ChatRowViewportObserver(viewportHeight: viewport.size.height))
                     // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
                     Color.clear.frame(height: 4).id(ChatFollow.bottomID)
                         .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
@@ -357,21 +371,18 @@ struct ChatView: View {
                                              onDistance: bottomDistanceChanged,
                                              onInteraction: { userInteractionChanged($0) },
                                              onReading: { metrics.userScrolling = false; following = false }))
-                .onPreferenceChange(ChatRowsPreference.self) { frames in
-                    metrics.rowFrames = frames
-                    metrics.viewportHeight = viewport.size.height
+                .onPreferenceChange(ChatViewportPreference.self) { facts in
+                    metrics.viewport = facts
                     updateQuestionVisibility()
-                    metrics.firstVisibleRow = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.min { $0.value.minY < $1.value.minY }?.key
-                    let first = transcript.firstMessageId
-                    let atTop = first.flatMap { frames[$0] }.map { $0.minY >= -40 && $0.minY < viewport.size.height } ?? false
+                    let atTop = facts.firstRowNearTop
                     if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
-                    if atTop && topArmed && !suppressQuestionPaging && historyAnchor == nil && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
+                    if atTop && topArmed && !suppressQuestionPaging && !awaitingHistoryPage && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
                         topArmed = false; loadOlder()
                     }
                 }
-                .onChange(of: viewport.size.height) { _, height in
-                    metrics.viewportHeight = height
-                    updateQuestionVisibility()
+                .onChange(of: hasPositioned) { _, positioned in
+                    // No pixel-by-pixel preference callback follows initial positioning now.
+                    if positioned && !metrics.viewport.firstRowNearTop { topArmed = true }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if showJump && !transcript.rows.isEmpty {
@@ -404,10 +415,10 @@ struct ChatView: View {
                 .onChange(of: store.historyPageRevision) { _, _ in
                     // Native identity anchoring preserves the current row AND its offset,
                     // including if the reader scrolled while the older page was in flight.
-                    self.historyAnchor = nil
+                    awaitingHistoryPage = false
                 }
                 .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
-                    if old && !loading && store.historyErrors[runtime.runtimeId] != nil { historyAnchor = nil }
+                    if old && !loading && store.historyErrors[runtime.runtimeId] != nil { awaitingHistoryPage = false }
                 }
         }
     }
@@ -575,8 +586,8 @@ struct ChatView: View {
     }
 
     private func loadOlder() {
-        let anchor = metrics.firstVisibleRow
-        if store.loadOlderHistory() { historyAnchor = anchor; following = false }
+        // The native scroll position owns the reading anchor; this only gates paging.
+        if store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
     }
 
     private func commandArguments(_ command: SlashCommand) -> String {
@@ -799,6 +810,7 @@ struct ChatMessageRow: View, Equatable {
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
+    var toolText: [String: PreparedChatToolText] = [:]
     var timings: [SessionTurnTiming] = []
     var changes: TurnFileChanges?
     var changeAnchors: Set<String> = []
@@ -844,7 +856,7 @@ struct ChatMessageRow: View, Equatable {
                         ForEach(content.prose) { message in
                             MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
                         }
-                        if !content.tools.isEmpty { ChatToolGroup(calls: content.tools, results: toolResults) }
+                        if !content.tools.isEmpty { ChatToolGroup(calls: content.tools, results: toolResults, prepared: toolText) }
                     }
                     if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
@@ -1004,6 +1016,7 @@ private struct PendingSendStatus: View {
 private struct ChatToolGroup: View {
     let calls: [ChatCardTool]
     let results: [String: ChatMessage]
+    let prepared: [String: PreparedChatToolText]
     @State private var visible = chatToolPageSize
     private func summary(_ call: ChatCardTool) -> ToolSummary? { call.block.toolCallId.flatMap { results[$0]?.toolSummary } ?? call.block.summary }
     private var phase: String {
@@ -1017,12 +1030,12 @@ private struct ChatToolGroup: View {
     }
     var body: some View {
         if calls.count == 1 {
-            MessageContentView(message: calls[0].displayMessage, toolResults: results)
+            MessageContentView(message: calls[0].displayMessage, toolResults: results, preparedTool: prepared[calls[0].id])
         } else {
             CompactDisclosure(title: L10n.tr("{0} 次工具调用", calls.count), detail: phase, symbol: "wrench.and.screwdriver") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(calls.prefix(visible))) { call in
-                        MessageContentView(message: call.displayMessage, toolResults: results)
+                        MessageContentView(message: call.displayMessage, toolResults: results, preparedTool: prepared[call.id])
                     }
                     if visible < calls.count {
                         OrbisActionButton(title: L10n.tr("显示更多工具（剩余 {0} 项）", calls.count - visible)) { visible += chatToolPageSize }
@@ -1041,6 +1054,7 @@ private struct MessageContentView: View {
     let message: ChatMessage
     var toolResults: [String: ChatMessage] = [:]
     var streaming = false
+    var preparedTool: PreparedChatToolText?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let summary = message.toolSummary { ToolSummaryView(summary: summary) }
@@ -1058,10 +1072,12 @@ private struct MessageContentView: View {
                         let status = result?.isError == true ? L10n.tr("执行失败") : live ? L10n.tr("参数接收中") : L10n.tr("已完成")
                         CompactDisclosure(title: content.toolName ?? result?.toolName ?? message.toolName ?? L10n.tr("工具"), detail: status, symbol: "wrench.and.screwdriver") {
                             VStack(alignment: .leading, spacing: 10) {
-                                if let arguments = toolArgumentsText(content), !arguments.isEmpty {
+                                if let arguments = preparedTool.map(\.arguments) ?? toolArgumentsText(content), !arguments.isEmpty {
                                     Text(arguments).font(.orbisCaption(mono: true)).textSelection(.enabled)
                                 }
-                                if let result { Text(fullMessageText(result)).font(.orbisCaption(mono: true)).textSelection(.enabled) }
+                                if let result {
+                                    Text(preparedTool?.result ?? fullMessageText(result)).font(.orbisCaption(mono: true)).textSelection(.enabled)
+                                }
                             }
                         }
                     }

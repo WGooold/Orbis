@@ -334,6 +334,17 @@ func fullMessageText(_ message: ChatMessage) -> String {
     }.joined(separator: "\n\n")
 }
 
+/// The transcript worker formats legacy tool payloads before a lazy row mounts.
+/// Expanding or scrolling a retained disclosure only reads the prepared strings.
+struct PreparedChatToolText {
+    let arguments: String?
+    let result: String?
+    init(content: ChatContent, result: ChatMessage?) {
+        arguments = toolArgumentsText(content)
+        self.result = result.map(fullMessageText)
+    }
+}
+
 func desktopAttachTitle(_ state: String?) -> String {
     ["attached": L10n.tr("已接入"), "closed": L10n.tr("未接入"), "notInstalled": L10n.tr("未安装"), "unsupported": L10n.tr("不可用"), "error": L10n.tr("接入失败")][state ?? ""] ?? L10n.tr("未知")
 }
@@ -347,6 +358,7 @@ struct ChatTranscript {
     let questions: [ChatQuestion]
     /// Only the tool results and timings that belong to each row, so an unchanged row compares equal.
     let toolResultsByRow: [String: [String: ChatMessage]]
+    let toolTextByRow: [String: [String: PreparedChatToolText]]
     let timingsByRow: [String: [SessionTurnTiming]]
     let changeAnchorsByRow: [String: Set<String>]
     let contentRevision: UUID
@@ -358,7 +370,9 @@ struct ChatTranscript {
     }
 
     init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = [],
-         displayIds: [String: String] = [:], aliases: [String: String] = [:], contentRevision: UUID = UUID()) {
+         displayIds: [String: String] = [:], aliases: [String: String] = [:], contentRevision: UUID = UUID(),
+         previous: ChatTranscript? = nil,
+         prepareToolText: (ChatContent, ChatMessage?) -> PreparedChatToolText = { PreparedChatToolText(content: $0, result: $1) }) {
         let presentation = chatPresentation(messages)
         let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
         let turnIds = Dictionary(timings.compactMap { timing in timing.messageId.map { ($0, timing.turnId) } }, uniquingKeysWith: { _, last in last })
@@ -373,6 +387,7 @@ struct ChatTranscript {
         firstMessageId = presentation.messages.first?.messageId
         questions = presentation.messages.compactMap(ChatQuestion.init)
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
+        var toolText: [String: [String: PreparedChatToolText]] = [:]
         var anchorsByMessage: [String: Set<String>] = [:], rowAnchors: [String: Set<String>] = [:]
         for (entry, message) in displayIds { anchorsByMessage[message, default: []].insert(entry) }
         for (message, entry) in aliases { anchorsByMessage[message, default: []].insert(entry) }
@@ -382,6 +397,22 @@ struct ChatTranscript {
             }
             let owned = Dictionary(calls.compactMap { id in presentation.toolResults[id].map { (id, $0) } }, uniquingKeysWith: { first, _ in first })
             if !owned.isEmpty { results[row.id] = owned }
+            if previousByID[row.id]?.contentRevision == row.contentRevision,
+               (previous?.toolResultsByRow[row.id] ?? [:]) == owned,
+               let cached = previous?.toolTextByRow[row.id] {
+                toolText[row.id] = cached
+            } else {
+                var prepared: [String: PreparedChatToolText] = [:]
+                for message in row.messages {
+                    for (index, block) in message.content.enumerated() where ["tool_call", "toolCall"].contains(block.type) {
+                        let result = block.toolCallId.flatMap { owned[$0] }
+                        guard block.summary == nil, result?.toolSummary == nil else { continue }
+                        let id = ChatCardTool(message: message, block: block, index: index).id
+                        prepared[id] = prepareToolText(block, result)
+                    }
+                }
+                toolText[row.id] = prepared
+            }
             let rowTiming = row.messages.filter { row.completedIds.contains($0.messageId) }.flatMap { timingsByMessage[$0.messageId] ?? [] }
             if !rowTiming.isEmpty { rowTimings[row.id] = rowTiming }
             let turn = row.copyMessages ?? row.messages
@@ -392,6 +423,7 @@ struct ChatTranscript {
             }
         }
         toolResultsByRow = results; timingsByRow = rowTimings
+        toolTextByRow = toolText
         changeAnchorsByRow = rowAnchors
         self.contentRevision = contentRevision
     }
@@ -913,6 +945,7 @@ final class MarkdownPreparation: ObservableObject {
 
 /// The UI submits immutable snapshots; one owner coalesces snapshots without dropping events.
 actor ChatTranscriptWorker {
+    private let prepareToolText: @Sendable (ChatContent, ChatMessage?) -> PreparedChatToolText
     private var identity: String?
     private var previousRows: [ChatRow] = []
     private var changeEntries: [String] = []
@@ -921,10 +954,14 @@ actor ChatTranscriptWorker {
     private var messageToken = UUID()
     private var previousInput: ChatPublicationInput?
     private var previousTranscript: ChatTranscript?
+    init(prepareToolText: @escaping @Sendable (ChatContent, ChatMessage?) -> PreparedChatToolText = { PreparedChatToolText(content: $0, result: $1) }) {
+        self.prepareToolText = prepareToolText
+    }
     func resolve(identity: String, messages: [ChatMessage], timings: [String: SessionTurnTiming]) -> ChatTranscript {
-        previousInput = nil; previousTranscript = nil
-        let next = ChatTranscript(messages: messages, turnTimings: timings, previousRows: self.identity == identity ? previousRows : [])
-        self.identity = identity; previousRows = next.rows
+        previousInput = nil
+        let next = ChatTranscript(messages: messages, turnTimings: timings, previousRows: self.identity == identity ? previousRows : [],
+            previous: self.identity == identity ? previousTranscript : nil, prepareToolText: prepareToolText)
+        self.identity = identity; previousRows = next.rows; previousTranscript = next
         return next
     }
 
@@ -940,7 +977,8 @@ actor ChatTranscriptWorker {
             transcript = cached
         } else {
             transcript = ChatTranscript(messages: publishedMessages, turnTimings: input.timings,
-                previousRows: self.identity == identity ? previousRows : [], displayIds: input.displayIds, aliases: input.aliases)
+                previousRows: self.identity == identity ? previousRows : [], displayIds: input.displayIds, aliases: input.aliases,
+                previous: self.identity == identity ? previousTranscript : nil, prepareToolText: prepareToolText)
         }
         previousInput = input; previousTranscript = transcript
         let messageIds = Set(publishedMessages.map(\.messageId))

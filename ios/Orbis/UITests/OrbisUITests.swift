@@ -2747,6 +2747,35 @@ final class OrbisUITests: XCTestCase {
         app.terminate()
     }
 
+    // PERF-11: traverse many lazily mounted history cards in both directions; the
+    // same gesture sequence is also the Time Profiler baseline/candidate workload.
+    func testLongTranscriptScrollsBothWaysAndReturnsToLatest() {
+        let app = launch("tool", arguments: ["--preview-long-transcript"])
+        let latest = app.staticTexts["源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 8))
+        XCTAssertTrue(latest.isHittable)
+        let transcript = app.scrollViews.firstMatch
+        let header = app.buttons["chat-title"].frame
+        for direction in [1.0, -1.0, 1.0] {
+            print("SCROLL_PROBE direction=\(direction) start=\(Date().timeIntervalSince1970)")
+            for _ in 0..<5 {
+                let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: direction > 0 ? 0.25 : 0.75))
+                let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: direction > 0 ? 0.75 : 0.25))
+                start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
+            }
+            print("SCROLL_PROBE direction=\(direction) end=\(Date().timeIntervalSince1970)")
+            XCTAssertEqual(app.buttons["chat-title"].frame, header)
+        }
+        XCTAssertFalse(latest.isHittable)
+        let jump = app.buttons["跳到最新消息"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 3))
+        capture("long-transcript-reading", app: app)
+        jump.tap()
+        XCTAssertTrue(latest.isHittable)
+        XCTAssertFalse(jump.exists)
+        capture("long-transcript-back-at-latest", app: app)
+    }
+
     // SC90: endpoints miss scroll reversals. Sample the actual viewport across a
     // long lazy jump, including the button's disappearance and settling frames.
     func testJumpToLatestMovesContinuouslyWithoutReversing() throws {

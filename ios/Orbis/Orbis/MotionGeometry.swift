@@ -1,6 +1,41 @@
 import Foundation
 import CoreGraphics
 
+/// PERF-11: scrolling only publishes viewport boundary crossings. Pixel offsets
+/// are native scroll state; the chat needs visibility, paging and question facts.
+struct ChatViewportFacts: Equatable {
+    struct Question: Equatable {
+        let id: String
+        let outside: Bool
+    }
+    var hasVisibleRows = false
+    var firstRowNearTop = false
+    var question: Question?
+
+    init() {}
+    init(frame: CGRect, viewportHeight: CGFloat, firstRow: Bool, questionID: String?) {
+        hasVisibleRows = frame.maxY > 0 && frame.minY < viewportHeight
+        firstRowNearTop = firstRow && frame.minY >= -40 && frame.minY < viewportHeight
+        if let questionID {
+            question = Question(id: questionID, outside: frame.maxY < -8 || frame.minY > viewportHeight + 8)
+        }
+    }
+
+    mutating func merge(_ next: Self) {
+        hasVisibleRows = hasVisibleRows || next.hasVisibleRows
+        firstRowNearTop = firstRowNearTop || next.firstRowNearTop
+        question = next.question ?? question
+    }
+
+    func questionOutsideViewport(_ id: String?) -> Bool {
+        guard hasVisibleRows, let id else { return false }
+        // A lazily released question is outside. A previous question's geometry
+        // cannot stand in for a newly published question with a different identity.
+        guard let question, question.id == id else { return true }
+        return question.outside
+    }
+}
+
 /// ADR-0058. Pure geometry shared by selection, send feedback and edge navigation.
 enum MotionGeometry {
     static let replyGrowthDuration = 0.18
