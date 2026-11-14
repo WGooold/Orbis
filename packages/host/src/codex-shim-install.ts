@@ -252,7 +252,9 @@ async function writeUserEnvironmentValue(name: string, value: string | undefined
 export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
   if (process.platform === "darwin") return ensureMacCodexDesktopEntry(launcher);
   if (process.platform !== "win32") return { state: "unsupported", detail: "Codex 桌面版只支持 Windows 与 macOS" };
-  const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
+  let current: string | undefined;
+  try { current = await readDesktopEntryStrict(); }
+  catch { return { state: "foreign", detail: "无法读取用户环境变量 CODEX_CLI_PATH，未改动桌面入口" }; }
   const decision = codexDesktopEntryDecision(current, launcher);
   if (decision.write !== undefined) {
     try { await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, decision.write); }
@@ -272,6 +274,26 @@ export async function removeCodexDesktopEntry(): Promise<void> {
   const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
   if (current === undefined || !looksLikeOrbisWrapperEntry(current)) return;
   await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
+}
+
+/** A failed registry read must never count as an absent user override. */
+async function readDesktopEntryStrict(): Promise<string | undefined> {
+  const script = "$ErrorActionPreference = 'Stop'; @{ value = [Environment]::GetEnvironmentVariable('CODEX_CLI_PATH', 'User') } | ConvertTo-Json -Compress";
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 10_000 });
+  const record = JSON.parse(stdout.trim()) as { value: unknown };
+  if (record.value === null || record.value === "") return undefined;
+  if (typeof record.value !== "string") throw new Error("无法读取 CODEX_CLI_PATH");
+  return record.value;
+}
+
+/** Recovery must report a failed write rather than silently claiming native launch is restored. */
+export async function suspendCodexDesktopEntry(): Promise<void> {
+  if (process.platform !== "win32") return;
+  const current = await readDesktopEntryStrict();
+  if (current === undefined) return;
+  if (!looksLikeOrbisWrapperEntry(current)) throw new Error("CODEX_CLI_PATH 不是 Orbis 入口，未修改");
+  await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined);
+  if (await readDesktopEntryStrict() !== undefined) throw new Error("CODEX_CLI_PATH 未成功移除");
 }
 /**
  * macOS 的入口在 launchd 用户会话里：从程序坞、启动台、Finder 打开的应用都从这里继承环境。

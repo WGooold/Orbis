@@ -26,6 +26,7 @@ import { CodexAppServer } from "./codex-daemon.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
+import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
@@ -131,6 +132,7 @@ async function runHost(
     onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
     onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
     resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+    resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
     desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
     launchApp: async () => {
       if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;

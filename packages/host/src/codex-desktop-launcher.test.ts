@@ -10,18 +10,23 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn() }));
+const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn(), suspend: vi.fn(), candidates: vi.fn(), select: vi.fn() }));
 const filesystem = vi.hoisted(() => ({ chmod: vi.fn() }));
 vi.mock("node:fs", async original => {
   const actual = await original<typeof import("node:fs")>();
   return { ...actual, chmodSync: filesystem.chmod.mockImplementation(actual.chmodSync) };
 });
 vi.mock("./codex-desktop-app.js", () => ({ launchCodexDesktopApp: activation.launch }));
-vi.mock("./codex-shim-install.js", () => ({ ensureCodexDesktopEntry: activation.ensureEntry }));
+vi.mock("./codex-shim-install.js", async original => ({ ...await original<typeof import("./codex-shim-install.js")>(), ensureCodexDesktopEntry: activation.ensureEntry, suspendCodexDesktopEntry: activation.suspend }));
+vi.mock("./codex-desktop-cli.js", () => ({ windowsDesktopCliCandidates: activation.candidates }));
+vi.mock("./codex-desktop-startup.js", async original => ({ ...await original<typeof import("./codex-desktop-startup.js")>(), selectStartupCli: activation.select }));
 
 import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
+import { readDesktopRecoveryReason, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+
+afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
 async function descriptor(value: unknown): Promise<string> {
   const dir = await testDirectory(join(tmpdir(), "orbis-desktop-endpoint-"));
@@ -60,6 +65,47 @@ describe("staged Codex wrapper runtime", () => {
     await writeFile(join(dir, "wrapper.js"), "wrapper-script");
     return { launcher: join(dir, "bin", "codex-launcher.exe"), node: join(dir, "node", "node.exe"), script: join(dir, "wrapper.js") };
   }
+
+  it.runIf(process.platform === "win32")("keeps native startup during recovery if no matching CLI passes preflight", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-recovery-"));
+    const endpoint = join(root, "state", "endpoint.json");
+    activation.suspend.mockResolvedValue(undefined);
+    await recoverNativeDesktop(endpoint, "EPERM");
+    activation.candidates.mockResolvedValue([]);
+    activation.select.mockRejectedValue(new Error("no matching CLI"));
+    activation.launch.mockResolvedValue(undefined);
+    vi.stubEnv("CODEX_CLI_PATH", "C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe");
+    await expect(launchCodexDesktopThroughWrapper(wrapper, endpoint, root)).resolves.toBe(true);
+    expect(activation.ensureEntry).not.toHaveBeenCalled();
+    expect(activation.launch).toHaveBeenCalledOnce();
+    expect(activation.launch.mock.calls[0]?.[0].CODEX_CLI_PATH).toBeUndefined();
+    expect(readDesktopRecoveryReason(endpoint)).toContain("已暂停");
+    expect(activation.candidates.mock.calls[0]?.[1].parentPid).toBe(0);
+  });
+
+  it.runIf(process.platform === "win32")("only re-enables wrapping after preflight and retains reopen guidance until bridge readiness", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-retry-"));
+    const endpoint = join(root, "state", "endpoint.json");
+    await recoverNativeDesktop(endpoint, "EPERM");
+    activation.candidates.mockResolvedValue([]);
+    activation.select.mockResolvedValue({ cli: { command: "current.exe" } });
+    activation.ensureEntry.mockResolvedValue({ state: "enabled" });
+    activation.launch.mockResolvedValue(undefined);
+    await expect(launchCodexDesktopThroughWrapper(wrapper, endpoint, root)).resolves.toBe(true);
+    expect(activation.select.mock.invocationCallOrder[0]).toBeLessThan(activation.ensureEntry.mock.invocationCallOrder[0]!);
+    expect(readDesktopRecoveryReason(endpoint, true)).toBeUndefined();
+    expect(readDesktopRecoveryReason(endpoint)).toContain("已通过启动检查");
+  });
+
+  it("does not override a foreign Desktop entry when registration refuses it", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-foreign-"));
+    activation.ensureEntry.mockResolvedValue({ state: "foreign" });
+    await expect(launchCodexDesktopThroughWrapper(wrapper, join(root, "endpoint.json"), root)).resolves.toBe(false);
+    expect(activation.launch).not.toHaveBeenCalled();
+  });
 
   it("stages only the two files the desktop app locks, and only copies what changed", async () => {
     const wrapper = await source();
@@ -132,7 +178,7 @@ describe("staged Codex wrapper runtime", () => {
     const root = await testDirectory(join(tmpdir(), "orbis-wrapper-activate-"));
     const endpointPath = join(root, "state", "codex-desktop-endpoint.json");
     let enabled!: () => void;
-    activation.ensureEntry.mockReset().mockImplementation(() => new Promise<void>(resolve => { enabled = resolve; }));
+    activation.ensureEntry.mockReset().mockImplementation(() => new Promise(resolve => { enabled = () => resolve({ state: "enabled" }); }));
     activation.launch.mockReset().mockResolvedValue(undefined);
     const opened = launchCodexDesktopThroughWrapper(wrapper, endpointPath, root);
     expect(activation.launch).not.toHaveBeenCalled();
@@ -146,7 +192,7 @@ describe("staged Codex wrapper runtime", () => {
       ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
     }));
     activation.launch.mockRejectedValueOnce(new Error("activation failed"));
-    activation.ensureEntry.mockResolvedValue(undefined);
+    activation.ensureEntry.mockResolvedValue({ state: "enabled" });
     await expect(launchCodexDesktopThroughWrapper(wrapper, endpointPath, root)).resolves.toBe(false);
   });
 });

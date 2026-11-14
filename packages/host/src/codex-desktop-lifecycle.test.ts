@@ -19,6 +19,29 @@ function server() {
 }
 
 describe("Codex desktop lifecycle", () => {
+  it("reports native recovery immediately instead of waiting or suggesting the same failed launch", async () => {
+    const reason = "Orbis 已暂停桌面接入，请自行完全退出并重新打开 Codex";
+    const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => undefined,
+      resolveStartupFailure: () => reason, launchApp: async () => {}, endpointWaitMs: 45_000 });
+    try {
+      expect(await lifecycle.probe()).toBeUndefined();
+      expect(lifecycle.status).toEqual({ state: "error", reason });
+      await expect(lifecycle.ensureReady()).rejects.toThrow(reason);
+      expect(lifecycle.status).toEqual({ state: "error", reason });
+    } finally { await lifecycle.stop(); }
+  });
+
+  it("lets a validated retry attach and gives a live endpoint precedence over a recovery marker", async () => {
+    let endpoint: string | undefined;
+    const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => endpoint,
+      resolveStartupFailure: waiting => waiting ? undefined : "请重新打开 Codex",
+      launchApp: async () => { endpoint = "ws://127.0.0.1:23456"; }, createExternal: async () => server() });
+    try {
+      expect(await lifecycle.probe()).toBeUndefined();
+      await lifecycle.ensureReady();
+      expect(lifecycle.status.state).toBe("attached");
+    } finally { await lifecycle.stop(); }
+  });
   // 端点模式（Orbis 包装器）：接入只看端点，不看守护进程控制套接字——后者在 Windows 上
   // 永远不成立。端点消失/换端口都必须把旧 runtime 摘掉，不能留一个连不上的会话目录。
   it("attaches through the wrapper endpoint and releases it when the endpoint goes away", async () => {
