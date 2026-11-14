@@ -23,4 +23,42 @@ class ReadReconcileScheduleTest {
         assertFalse(schedule.claim(140_000))
         assertTrue(schedule.claim(150_000))
     }
+    /** FT-G12-RESUME-01: restore only the acknowledged current interest. Lost
+     * ACKs retry with a fresh identity; close/reset and rejected writes cannot
+     * leave an old accepted window active or permanently suppress retry. */
+    @Test fun `history interests reject late acknowledgements and retry lost acknowledgements`() {
+        val interest = HistoryWindowInterest()
+        val sent = mutableListOf<String>()
+        fun publish(target: String, now: Long, accepted: Boolean = true) {
+            interest.publish(target, now) { id -> sent.add(id); accepted }
+        }
+        publish("a", 0); val first = sent[0]
+        publish("a", 19_999); assertEquals(1, sent.size)
+        publish("a", 20_000); val retry = sent[1]
+        assertFalse(interest.consume(first, true)); assertFalse(interest.confirms("a"))
+        assertTrue(interest.consume(retry, true)); assertTrue(interest.confirms("a"))
+        assertFalse(interest.consume(retry, true))
+        publish("a", 100_000); assertEquals(2, sent.size)
+        publish("closed", 100_001); assertFalse(interest.confirms("a"))
+        assertFalse(interest.consume(retry, true))
+        assertTrue(interest.consume(sent.last(), false))
+        publish("a", 100_002, false); assertFalse(interest.consume(sent.last(), true))
+        publish("a", 100_003); val beforeReset = sent.last()
+        interest.reset(); assertFalse(interest.consume(beforeReset, true))
+        assertFalse(interest.confirms("a"))
+    }
+
+    /** A refused close write cannot have changed the Host subscription. Keeping
+     * its confirmed target avoids manufacturing a source gap on rapid reopening. */
+    @Test fun `refused close keeps the last acknowledged subscription`() {
+        val interest = HistoryWindowInterest()
+        val sent = mutableListOf<String>()
+        interest.publish("a", 0) { sent.add(it); true }
+        assertTrue(interest.consume(sent.single(), true))
+        interest.publish("closed", 1) { false }
+        assertTrue(interest.confirms("a"))
+        interest.publish("a", 2) { sent.add(it); true }
+        assertEquals(1, sent.size)
+    }
+
 }

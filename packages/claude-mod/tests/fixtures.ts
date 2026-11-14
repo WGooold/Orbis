@@ -23,6 +23,8 @@ export function setup(on: On, options: { home?: string } = {}) {
     descriptorPresent: true,
     sessionId: "same-native-session",
     model: "test-model",
+    modelSetting: undefined as string | undefined,
+    effortSetting: undefined as string | undefined,
     reachable: true,
     generation: "first-generation",
     resumed: false,
@@ -58,8 +60,11 @@ export function setup(on: On, options: { home?: string } = {}) {
   on("session.usage", () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }));
   on("command.register", (_$, event) => ({ value: { command: event.name } }));
   on("command.list", () => ({ value: [] }));
-  on("config.list", () => ({ value: [] }));
-  on("settings.read", () => ({ value: {} }));
+  on("config.list", () => ({ value: world.modelSetting === undefined ? [] : [
+    { key: "model", label: "Model", kind: "choice", value: world.modelSetting,
+      provider: { plugin: "engine", tier: "core" }, isLocked: false },
+  ] }));
+  on("settings.read", () => ({ value: world.effortSetting === undefined ? {} : { effortLevel: world.effortSetting } }));
   on("turn.start", (_$, event) => ({ turnId: event.turnId }));
   on("turn.complete", (_$, event) => ({ text: event.answer }));
   on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });

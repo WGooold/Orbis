@@ -58,7 +58,7 @@ export type ClaudeModsCommand =
   | { type: "slash"; name: string; args: string }
   | { type: "stop" };
 
-/** What the TUI reports about itself; each field present replaces the previous value. */
+/** Present fields replace prior values; capable full snapshots also clear omitted effort. */
 export type ClaudeSessionState = {
   currentTurnConfiguration?: TurnConfiguration | null;
   model?: string;
@@ -437,6 +437,11 @@ export class ClaudeModsBridge {
     }
     if (parsed.type === "session.state") {
       const { currentTurnConfiguration, ...selected } = parsed.state;
+      // SC87: a capable plugin's model + current-turn report is a full effort
+      // snapshot. Its omission clears an invalidated observation; request-only
+      // deltas and older plugins keep the legacy partial-update semantics.
+      if (session.capabilities.has("configuration.effort.snapshot") && selected.model !== undefined
+        && currentTurnConfiguration !== undefined && selected.effort === undefined) delete session.state.effort;
       session.state = { ...session.state, ...selected };
       this.#observeConfiguration(session, currentTurnConfiguration);
       this.#publishMetadata(runtimeId, session);

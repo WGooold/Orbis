@@ -27,35 +27,45 @@ export class APNsSender {
   async send(deviceToken: string, hint: APNsWakeHint): Promise<"sent" | "invalid-token"> {
     if (!/^[a-fA-F0-9]{64,200}$/u.test(deviceToken)) throw new Error("Invalid APNs device token");
     if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(hint.eventId)) throw new Error("Invalid push event ID");
+    // Fail before opening a socket when local signing material is invalid.
+    const authorization = `bearer ${this.#providerToken()}`;
     const session = this.#getSession();
     const response = await new Promise<{ status: number; reason?: string }>((resolve, reject) => {
       const req = session.request({
         ":method": "POST", ":path": `/3/device/${deviceToken}`,
-        authorization: `bearer ${this.#providerToken()}`,
+        authorization,
         "apns-topic": this.#config.bundleId,
         "apns-push-type": "alert", "apns-priority": "10",
-        "apns-collapse-id": createHash("sha256").update(hint.eventId).digest("hex").slice(0, 32),
+        // These are short-lived hints, never a durable queue of business state.
+        "apns-expiration": String(Math.floor(Date.now() / 1000) + 300),
+        "apns-collapse-id": createHash("sha256").update(JSON.stringify([hint.hostId, hint.category, hint.eventId])).digest("hex").slice(0, 32),
       });
       let status = 0;
+      let finished = false;
       const chunks: Buffer[] = [];
       const timeout = setTimeout(() => { req.close(); reject(new Error("APNs request timed out")); }, 10_000);
       req.on("response", headers => { status = Number(headers[":status"] ?? 0); });
       req.on("data", chunk => chunks.push(Buffer.from(chunk)));
       req.on("end", () => {
+        finished = true;
         clearTimeout(timeout);
         let reason: string | undefined;
-        try { reason = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { reason?: unknown }).reason as string | undefined; } catch { /* HTTP status remains authoritative for malformed error bodies. */ }
+        try {
+          const value = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { reason?: unknown }).reason;
+          if (typeof value === "string" && /^[A-Za-z]{1,64}$/u.test(value)) reason = value;
+        } catch { /* HTTP status remains authoritative for malformed error bodies. */ }
         resolve({ status, ...(reason === undefined ? {} : { reason }) });
       });
       req.on("error", error => { clearTimeout(timeout); reject(error); });
+      req.on("close", () => { clearTimeout(timeout); if (!finished) reject(new Error("APNs stream closed before response")); });
       req.end(JSON.stringify({
         aps: { alert: { title: "Orbis", body: hint.category === "approval-requested" ? "有待处理的审批" : "任务已完成" }, sound: "default" },
         orbis: { v: 1, category: hint.category, eventId: hint.eventId, hostId: hint.hostId },
       }));
     });
     if (response.status === 200) return "sent";
-    if (response.status === 410) return "invalid-token";
-    throw new Error(`APNs request failed with HTTP ${response.status}`);
+    if (response.status === 410 || response.status === 400 && ["BadDeviceToken", "DeviceTokenNotForTopic"].includes(response.reason ?? "")) return "invalid-token";
+    throw new Error(`APNs request failed with HTTP ${response.status}${response.reason ? ` (${response.reason})` : ""}`);
   }
 
   close(): void { this.#session?.close(); this.#session = undefined; }
@@ -64,13 +74,14 @@ export class APNsSender {
     if (this.#session && !this.#session.closed && !this.#session.destroyed) return this.#session;
     const origin = this.#config.environment === "production" ? "https://api.push.apple.com" : "https://api.sandbox.push.apple.com";
     const session = connect(origin);
-    session.on("error", () => { if (this.#session === session) this.#session = undefined; });
+    session.on("error", () => { if (this.#session === session) this.#session = undefined; session.destroy(); });
+    session.on("goaway", () => { if (this.#session === session) this.#session = undefined; session.close(); });
     return this.#session = session;
   }
 
   #providerToken(): string {
     const now = Math.floor(Date.now() / 1000);
-    if (this.#jwt && now - this.#jwt.issuedAt < 50 * 60) return this.#jwt.value;
+    if (this.#jwt && now >= this.#jwt.issuedAt && now - this.#jwt.issuedAt < 50 * 60) return this.#jwt.value;
     const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: this.#config.keyId })).toString("base64url");
     const claims = Buffer.from(JSON.stringify({ iss: this.#config.teamId, iat: now })).toString("base64url");
     const unsigned = `${header}.${claims}`;

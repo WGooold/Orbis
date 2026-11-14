@@ -39,6 +39,9 @@ let reportedTasks: { connection: Connection; encoded: string; at: number } | und
 let permissionMode: string | undefined;
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 let selectedEffort: Effort | undefined;
+// settings.read() excludes --effort and native model defaults. Retain the first
+// main request's resolved effort only while its native selection inputs agree.
+let observedEffort: { sessionId: string; model: string; modelSetting: unknown; setting: unknown; value?: string } | undefined;
 let turnSelection: { turnId: string; model?: string; selectedModel?: string; effort?: Effort | number; captured: boolean } | undefined;
 let currentTurnConfiguration: { turnId: string; requestIndex?: number; model?: { provider: string; id: string }; thinkingLevel?: string | null } | null = null;
 
@@ -133,6 +136,14 @@ export const register: Register = on => {
         turnSelection.model = event.model;
         turnSelection.effort ??= event.effort;
         turnSelection.captured = true;
+        const [sessionId, model, rows, settings] = await Promise.all([
+          $.session.id().catch(() => undefined), $.session.model().catch(() => undefined), $.config.list().catch(() => undefined),
+          $.settings.read().catch(() => undefined),
+        ]);
+        // A fallback model (or a failed getter) cannot establish the selected session's effort.
+        observedEffort = sessionId !== undefined && model === event.model && rows !== undefined && settings !== undefined
+          ? { sessionId, model, modelSetting: rows.find(row => row.key === "model")?.value, setting: settings.effortLevel,
+            ...(event.effort === undefined ? {} : { value: String(event.effort) }) } : undefined;
       }
       // Native turn.step is the documented per-request setter. Pin a turn's
       // values so a phone change during streaming affects the next turn only.
@@ -315,7 +326,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     interactive: true, claudeVersion: version.version, bridgeVersion: "4",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed"],
+    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed", "configuration.effort.snapshot"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -368,8 +379,13 @@ async function reportState($: Api, force: boolean): Promise<void> {
     if (modelRow?.options !== undefined) state.modelOptions = modelRow.options.slice(0, 64);
     if (typeof modelRow?.value === "string" && modelRow.value.length > 0) state.modelSetting = modelRow.value;
     const settings = await $.settings.read().catch(() => undefined) as Record<string, unknown> | undefined;
+    if (observedEffort !== undefined && (target.sessionId !== observedEffort.sessionId
+      || model !== observedEffort.model || rows === undefined || settings === undefined
+      || modelRow?.value !== observedEffort.modelSetting || settings.effortLevel !== observedEffort.setting)) observedEffort = undefined;
     if (selectedEffort !== undefined) state.effort = selectedEffort;
-    else if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
+    else if (observedEffort !== undefined) {
+      if (observedEffort.value !== undefined) state.effort = observedEffort.value;
+    } else if (typeof settings?.effortLevel === "string" && settings.effortLevel.length > 0) state.effort = settings.effortLevel;
     // Read after asynchronous getters so a completed/replaced turn cannot be re-published.
     state.currentTurnConfiguration = currentTurnConfiguration;
     const encoded = JSON.stringify(state);

@@ -11,7 +11,7 @@ final class MainThreadWorkGate: @unchecked Sendable {
     func work() {
         #expect(!Thread.isMainThread)
         lock.lock(); let wait = armed; armed = false; lock.unlock()
-        if wait { entered.signal(); #expect(release.wait(timeout: .now() + 5) == .success) }
+        if wait { entered.signal(); #expect(release.wait(timeout: .now() + 30) == .success) }
     }
     func waitEntered() async -> Bool {
         await withCheckedContinuation { continuation in

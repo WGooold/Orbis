@@ -50,7 +50,9 @@ struct ContentView: View {
         #endif
     }
 
-    var body: some View {
+    // Separate type-checking boundaries keep this modifier chain within older
+    // CI compilers' limits while preserving the view tree and modifier order.
+    private var rootSurface: some View {
         ZStack {
             if store.pairings.isEmpty {
                 PairingEntryView(onCancel: nil, onCode: store.pair)
@@ -81,6 +83,10 @@ struct ContentView: View {
             drawer
         })
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { surfaceWidth = $0 }
+    }
+
+    private var rootWithNotices: some View {
+        rootSurface
         .overlay(alignment: .top) {
             if let error = store.errorMessage {
                 HStack(alignment: .top, spacing: 10) {
@@ -116,6 +122,10 @@ struct ContentView: View {
             }
         }
         #endif
+    }
+
+    private var rootWithNavigationUpdates: some View {
+        rootWithNotices
         .onChange(of: rootTab) { _, next in switchRoot(next) }
         .onChange(of: store.selectedHostId) { _, _ in
             store.hostState.setCatalogQuery(directoryState.networkQuery)
@@ -147,9 +157,14 @@ struct ContentView: View {
         .onChange(of: store.isPairing) { old, active in
             if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
         }
-        .onReceive(NotificationCenter.default.publisher(for: ReplyCompletionNotifications.remoteWake)) { notification in
-            guard let hostId = notification.userInfo?["hostId"] as? String,
-                  store.pairings.contains(where: { $0.hostId == hostId }) else { return }
+    }
+
+    private var rootWithSceneUpdates: some View {
+        rootWithNavigationUpdates
+        .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { hostId in
+            guard let hostId else { return }
+            ReplyCompletionNotifications.remoteOpens.consume()
+            guard store.pairings.contains(where: { $0.hostId == hostId }) else { return }
             store.connect(hostId: hostId)
             rootTab = .chat; displayedRoot = .chat
             navigation.replace(with: [.chat])
@@ -169,6 +184,10 @@ struct ContentView: View {
             if new != .active { store.toolContent.close() }
             if old == .background && new == .active { store.resumeForeground() }
         }
+    }
+
+    var body: some View {
+        rootWithSceneUpdates
         .overlay {
             if store.isPairing {
                 ZStack {
@@ -358,11 +377,17 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         Group {
+            #if compiler(>=6.4)
+            // 折叠屏分栏用的是 iOS 27.1 SDK 才有的 ArrangementView；CI 上的旧工具链
+            // 没有这些符号，编不过，所以按编译器版本选布局，行为在真机上不变。
             if #available(iOS 27.1, *) {
                 foldAwareContent(content)
             } else {
                 ordinaryContent(content)
             }
+            #else
+            ordinaryContent(content)
+            #endif
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
         .overlay {
@@ -417,6 +442,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     /// FOLD-01: only devices with a physical division use the system split arrangement.
     /// Include inactive divisions so changing the hinge angle preserves the view identity.
+    #if compiler(>=6.4)
     @available(iOS 27.1, *)
     @ViewBuilder
     private func foldAwareContent(_ content: Content) -> some View {
@@ -436,6 +462,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
             }
         }
     }
+    #endif
 
     private func ordinaryContent(_ content: Content) -> some View {
         GeometryReader { geometry in

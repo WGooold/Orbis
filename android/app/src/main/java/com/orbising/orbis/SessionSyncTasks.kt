@@ -21,7 +21,24 @@ internal const val SYNC_FAILURE_COOLDOWN_TICKS = 10
 internal const val MAX_PENDING_NOTICES = 10
 
 internal data class SessionSyncDispatch(val commandId: String, val task: PendingSessionSync)
-internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>)
+internal data class SessionSyncTick(val state: RemoteState, val send: List<SessionSyncDispatch>,
+    val recoverRuntimeIds: List<String> = emptyList())
+
+/** A resumed window owns a new source demand even while an older read is cooling
+ * down. Preserve the failure and its retry policy until the existing owner settles. */
+internal fun RemoteState.requestResumedHistoryRefresh(runtimeId: String, sessionId: String): RemoteState {
+    val runtime = runtimes[runtimeId] ?: return this
+    if (connection != RelayConnection.ONLINE || !e2eReady || selectedOfflineSessionId != null ||
+        selectedRuntimeId != runtimeId || !runtime.sessionGraphSync || runtime.sessionId != sessionId) return this
+    val refreshed = requestRuntimeRefresh(runtimeId)
+    if (refreshed !== this) return refreshed
+    if (runtimeId !in sessionSyncFailures && conversations[runtimeId]?.chatSyncError == null) return this
+    return copy(
+        sessionSyncDemandGenerations = sessionSyncDemandGenerations +
+            (runtimeId to ((sessionSyncDemandGenerations[runtimeId] ?: 0L) + 1)),
+        sessionSyncRequests = sessionSyncRequests + runtimeId,
+    )
+}
 
 /** Source metadata and buffered packets cannot acknowledge a committed client baseline. */
 internal fun RemoteState.appliedSessionState(runtimeId: String): SessionAppliedState? {
@@ -108,7 +125,9 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
     }
     // 失败必须会过期。以前 `sessionSyncFailures` 是死锁式的闩锁：只有"同步成功/手动重试/
     // 切会话/重连"才清，而卡死时永远等不到成功，于是这个会话就永久停更（现象：必须重开 App）。
-    for (runtimeId in next.sessionSyncFailures.keys.toList()) {
+    // Partial/unknown replies can retire the display error while recovery still
+    // owns a cooldown. Its clock must keep advancing independently of that error.
+    for (runtimeId in (next.sessionSyncFailures.keys + next.sessionSyncFailureCooldowns.keys).toList()) {
         val ticks = (next.sessionSyncFailureCooldowns[runtimeId] ?: 0) + 1
         next = if (ticks >= SYNC_FAILURE_COOLDOWN_TICKS) next.copy(
             sessionSyncFailures = next.sessionSyncFailures - runtimeId,
@@ -166,11 +185,28 @@ internal fun advanceSessionSyncTasks(state: RemoteState, now: Long, connectionGe
         active += 1
         if (task.range == "catchup") catchup += 1
     }
-    return SessionSyncTick(next.expireWaitingSessionReads(now).reconcileHistoryReads(), send)
+    next = next.expireWaitingSessionReads(now).reconcileHistoryReads()
+    // Releasing a clock-owned gate must wake the loader that previously yielded
+    // to it. Emit only on that transition, leaving retries to the existing policy.
+    val recover = next.sessionSyncRequests.filter { id ->
+        val runtime = next.runtimes[id]
+        val releasedCooldown = id in state.sessionSyncFailureCooldowns && id !in next.sessionSyncFailureCooldowns
+        val releasedCorrelation = state.sessionSyncCommands.values.any { it.runtimeId == id } &&
+            next.sessionSyncCommands.values.none { it.runtimeId == id }
+        (releasedCooldown || releasedCorrelation) && id == next.selectedRuntimeId &&
+            runtime?.sessionGraphSync == true && runtime.sessionId != null && id !in next.sessionSyncFailures &&
+            next.sessionSyncCommands.values.none { it.runtimeId == id } && !next.syncPreviewBlocked(id, runtime.sessionLeafId)
+    }
+    return SessionSyncTick(next, send, recover)
 }
 
 internal fun RemoteState.queueSessionSync(commandId: String, task: PendingSessionSync): RemoteState {
     if (task.historyOperationId?.let { !ownsHistoryRead(it) } == true) return this
+    // FT-G12-RESUME-01: source demand can arrive during a reserve's local disk IO.
+    // Recheck atomically at network admission and preserve its unspent allowance.
+    if (task.historyPrefetch != null && task.runtimeId in sessionSyncRequests) {
+        return finishHistoryRead(task.historyOperationId ?: "", SessionReadPhase.CANCELLED)
+    }
     if (syncPreviewBlocked(task) || sessionSyncCommands.values.any {
             it.runtimeId == task.runtimeId && it.sessionId == task.sessionId && it.range == task.range
         }) return this

@@ -21,7 +21,8 @@ internal fun RemoteState.sessionConfigFailure(runtimeId: String) = configFailure
     ?.takeIf { it.sessionId == runtimes[runtimeId]?.sessionId }
 
 internal data class SessionModelPresentation(val model: String?, val thinking: String?, val indicator: String?,
-    val current: RuntimeTurnConfiguration?, val active: Boolean, val supportsCurrent: Boolean = false)
+    val current: RuntimeTurnConfiguration?, val active: Boolean, val supportsCurrent: Boolean = false,
+    val selectionTitle: String? = null)
 
 internal fun List<RuntimeSlashCommand>.depthCommand(): String? =
     firstOrNull { it.name == "thinking" }?.name ?: firstOrNull { it.name == "effort" }?.name
@@ -51,12 +52,26 @@ internal fun RemoteState.sessionModelPresentation(runtimeId: String): SessionMod
     // Old Hosts cannot provide turn facts. In particular, never copy a selected
     // Codex model on a running transition: it may already be the next selection.
     val showTurn = runtime.status != "idle" && supportsCurrent && (runtime.isCodex || current?.model != null)
+    // SC86: duplicate selections disappear only with confirmed native identity
+    // and depth. Missing facts retain a neutral selection, never a future-change label.
+    val same = current?.model != null && runtime.model != null && !different &&
+        current.thinkingKnown && current.thinkingLevel == runtime.thinkingLevel
+    val selectionTitle = if (active && showTurn && same) null else L10n.tr(
+        if (different) { if (runtime.isCodex || runtime.agentKind == "claude") "下轮使用" else "后续选择" }
+        else "当前所选")
     val selectedLabel = runtime.model?.let(::modelLabel)
+    // Request facts may omit the catalog label (Pi/Claude). Only the exact
+    // provider/id can supply a fallback name; preserve a genuinely different request.
+    val currentLabel = current?.model?.let { actual ->
+        actual.name?.takeIf(String::isNotBlank)
+            ?: runtime.model?.takeIf { it.provider == actual.provider && it.id == actual.id }?.let(::modelLabel)
+            ?: modelLabel(actual)
+    }
     return SessionModelPresentation(
-        model = if (showTurn) current?.model?.let(::modelLabel) ?: L10n.tr("模型未确认")
+        model = if (showTurn) currentLabel ?: L10n.tr("模型未确认")
             else if (active && selectedLabel != null) L10n.tr("所选：{0}", selectedLabel) else selectedLabel,
         thinking = if (showTurn) current?.thinkingLevel else runtime.thinkingLevel,
-        indicator = indicator, current = current, active = active, supportsCurrent = supportsCurrent,
+        indicator = indicator, current = current, active = active, supportsCurrent = supportsCurrent, selectionTitle = selectionTitle,
     )
 }
 
@@ -79,14 +94,14 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
             if (presentation.active && presentation.supportsCurrent && (runtime.isCodex || presentation.current?.model != null)) {
                 Text(L10n.tr("本轮使用"), style = MaterialTheme.typography.labelMedium)
                 val current = presentation.current
-                Text(current?.model?.let(::modelLabel) ?: L10n.tr("模型未确认"), Modifier.testTag("session-current-model"))
+                Text(presentation.model ?: L10n.tr("模型未确认"), Modifier.testTag("session-current-model"))
                 if (current?.thinkingKnown == true) Text(current.thinkingLevel ?: L10n.tr("默认深度"))
             }
-            Text(L10n.tr(if (presentation.active && presentation.supportsCurrent && (runtime.isCodex || presentation.current?.model != null))
-                if (runtime.isCodex || runtime.agentKind == "claude") "下轮使用" else "后续选择"
-                else "当前所选"), style = MaterialTheme.typography.labelMedium)
-            Text(runtime.model?.let(::modelLabel) ?: L10n.tr("未确认"), Modifier.testTag("session-selected-model"))
-            Text(runtime.thinkingLevel ?: L10n.tr("默认深度"))
+            presentation.selectionTitle?.let { title ->
+                Text(title, style = MaterialTheme.typography.labelMedium)
+                Text(runtime.model?.let(::modelLabel) ?: L10n.tr("未确认"), Modifier.testTag("session-selected-model"))
+                Text(runtime.thinkingLevel ?: L10n.tr("默认深度"))
+            }
             state.sessionConfigFailure(runtimeId)?.let { failure ->
                 Text(failure.message, color = MaterialTheme.colorScheme.error)
                 NeumorphTextButton(L10n.tr("重试"), enabled = state.e2eReady, dismissOnClick = false,

@@ -20,7 +20,7 @@ export type CodexDesktopLifecycleOptions = {
    * 的守护进程控制套接字——后者在 Windows 上永远不成立（见 ADR-0022 的 Known limitation）。
    */
   resolveEndpoint?: () => Promise<string | undefined>;
-  launchApp?: () => Promise<void>;
+  launchApp?: (signal?: AbortSignal) => Promise<void>;
   createServer?: () => Promise<CodexAppServer>;
   createExternal?: (endpoint: string) => Promise<CodexAppServer>;
   onReady?: (runtime: CodexRuntime) => Promise<void> | void;
@@ -48,6 +48,9 @@ export class CodexDesktopLifecycle {
   #runtime: CodexRuntime | undefined;
   #watcher: NodeJS.Timeout | undefined;
   #starting: Promise<CodexRuntime> | undefined;
+  #probing: Promise<CodexRuntime | undefined> | undefined;
+  #generation = 0;
+  #abort = new AbortController();
   #stopping = false;
   /** 端点模式下当前接上的端点；端点变了就必须重接。 */
   #endpoint: string | undefined;
@@ -78,6 +81,15 @@ export class CodexDesktopLifecycle {
     this.#options.onStatusChange?.(this.#status);
   }
 
+  #current(generation: number): boolean { return !this.#stopping && generation === this.#generation; }
+  #assertCurrent(generation: number): void { if (!this.#current(generation)) throw new Error("Codex 桌面版正在关闭"); }
+  async #launch(generation: number): Promise<void> {
+    this.#assertCurrent(generation);
+    if (this.#options.launchApp) await this.#options.launchApp(this.#abort.signal);
+    else await launchCodexDesktopApp(process.env, this.#abort.signal);
+    this.#assertCurrent(generation);
+  }
+
   /** 未就绪的探测结果落到哪一档：查询失败、平台不支持、没装、还是装了但没开窗。 */
   #presenceStatus(presence: CodexDesktopPresence): void {
     // 查询本身坏了不能报成「未打开桌面版」：那会让人去重开一个本来就开着的应用。
@@ -103,89 +115,115 @@ export class CodexDesktopLifecycle {
    * 不要求另装 npm 版 Codex CLI：包装器用的是桌面版自带的那份，Host 只连它的 app-server。
    */
   async isInstalled(): Promise<boolean> {
+    const generation = this.#generation;
     try {
       const presence = await detectCodexDesktopPresence(this.#options.presence);
+      if (!this.#current(generation)) return false;
       if (presence.executable === undefined) { this.#presenceStatus(presence); return false; }
       return true;
     } catch (error) {
+      if (!this.#current(generation)) return false;
       this.#setStatus("error", `无法确认 Codex 桌面版状态：${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }
 
   /** Attach only when the desktop side is already reachable; used during Host startup. */
-  async probe(): Promise<CodexRuntime | undefined> {
-    if (this.#stopping) return undefined;
+  probe(): Promise<CodexRuntime | undefined> {
+    if (this.#stopping) return Promise.resolve(undefined);
     this.#startWatcher();
-    if (this.ready) return this.#runtime;
+    if (this.ready) return Promise.resolve(this.#runtime);
     if (this.#starting !== undefined) return this.#starting;
+    if (this.#probing !== undefined) return this.#probing;
+    const generation = this.#generation;
+    const pending = this.#probe(generation).finally(() => { if (this.#probing === pending) this.#probing = undefined; });
+    return this.#probing = pending;
+  }
+
+  async #probe(generation: number): Promise<CodexRuntime | undefined> {
     if (this.endpointMode) {
       const endpoint = await this.#readEndpoint();
-      if (endpoint === undefined) { await this.#reportNoEndpoint(); return undefined; }
-      this.#starting = this.#attachEndpoint(endpoint).finally(() => { this.#starting = undefined; });
-      return this.#starting;
+      if (!this.#current(generation)) return undefined;
+      if (endpoint === undefined) { await this.#reportNoEndpoint(generation); return undefined; }
+      return this.#attachEndpoint(endpoint, generation);
     }
     const presence = await detectCodexDesktopPresence(this.#options.presence);
+    if (!this.#current(generation)) return undefined;
     if (!presence.ready) { this.#presenceStatus(presence); return undefined; }
-    this.#starting = this.#attach(presence).finally(() => { this.#starting = undefined; });
-    return this.#starting;
+    return this.#attach(presence, generation);
   }
 
   /** Launch the desktop app when needed, then attach its app-server. */
   async ensureReady(): Promise<CodexRuntime> {
-    if (this.#stopping) throw new Error("Codex 桌面版正在关闭");
+    const generation = this.#generation;
+    this.#assertCurrent(generation);
     this.#startWatcher();
     if (this.ready) return this.#runtime!;
     if (this.#starting !== undefined) return this.#starting;
-    this.#starting = (this.endpointMode ? this.#ensureEndpointReady() : this.#ensureReadyInner())
-      .finally(() => { this.#starting = undefined; });
-    return this.#starting;
+    // Passive discovery and an explicit request share one native connection.
+    if (this.#probing !== undefined) {
+      const found = await this.#probing.catch(() => undefined);
+      this.#assertCurrent(generation);
+      if (found) return found;
+      if (this.#starting !== undefined) return this.#starting;
+    }
+    const pending = (this.endpointMode ? this.#ensureEndpointReady(generation) : this.#ensureReadyInner(generation))
+      .finally(() => { if (this.#starting === pending) this.#starting = undefined; });
+    return this.#starting = pending;
   }
 
   async stop(): Promise<void> {
+    // HOST-DESKTOP-CANCEL-01: invalidate slow reads/handshakes immediately.
+    // They release any late connection themselves; pause never waits for native discovery.
+    const generation = ++this.#generation;
     this.#stopping = true;
+    this.#abort.abort(); this.#abort = new AbortController();
     if (this.#watcher !== undefined) clearInterval(this.#watcher);
     this.#watcher = undefined;
-    await this.#starting?.catch(() => undefined);
+    this.#starting = undefined; this.#probing = undefined;
     const runtime = this.#runtime;
     this.#runtime = undefined;
     this.#endpoint = undefined;
     if (runtime !== undefined) await runtime.stop().catch(error => this.#options.log?.(`关闭 Codex 桌面连接失败：${error instanceof Error ? error.message : String(error)}`));
+    if (generation !== this.#generation) return;
     this.#stopping = false;
     this.#setStatus("closed", "Host 已暂停，Codex 桌面版接入已释放；重新连接后会再次接入");
   }
 
   /** 端点模式下的按需拉起：打开 GUI 只是手段，真正等的是它把端点交出来。 */
-  async #ensureEndpointReady(): Promise<CodexRuntime> {
+  async #ensureEndpointReady(generation: number): Promise<CodexRuntime> {
     const existing = await this.#readEndpoint();
-    if (existing !== undefined) return this.#attachEndpoint(existing);
-    await (this.#options.launchApp ?? launchCodexDesktopApp)();
+    this.#assertCurrent(generation);
+    if (existing !== undefined) return this.#attachEndpoint(existing, generation);
+    await this.#launch(generation);
     const deadline = Date.now() + (this.#options.endpointWaitMs ?? 45_000);
-    while (!this.#stopping && Date.now() < deadline) {
+    while (this.#current(generation) && Date.now() < deadline) {
       const endpoint = await this.#readEndpoint();
-      if (endpoint !== undefined) return this.#attachEndpoint(endpoint);
+      this.#assertCurrent(generation);
+      if (endpoint !== undefined) return this.#attachEndpoint(endpoint, generation);
       await delay(250);
     }
-    if (this.#stopping) throw new Error("Codex 桌面版正在关闭");
+    this.#assertCurrent(generation);
     const reason = "Codex 桌面版没有交出可接入的 app-server 端点";
     this.#setStatus("error", `${reason}；请手动打开 Codex 桌面版，或检查 Orbis 包装器是否随 Host 一起安装`);
     throw new Error(reason);
   }
 
-  async #ensureReadyInner(): Promise<CodexRuntime> {
+  async #ensureReadyInner(generation: number): Promise<CodexRuntime> {
     let presence = await detectCodexDesktopPresence(this.#options.presence);
+    this.#assertCurrent(generation);
     if (!presence.ready) {
       this.#presenceStatus(presence);
-      await (this.#options.launchApp ?? launchCodexDesktopApp)();
+      await this.#launch(generation);
       try {
         presence = await waitForCodexDesktop(this.#options.presence);
       } catch (error) {
-        this.#setStatus("error", `${error instanceof Error ? error.message : String(error)}；请手动打开 Codex 桌面版，Host 会自动接入`);
+        if (this.#current(generation)) this.#setStatus("error", `${error instanceof Error ? error.message : String(error)}；请手动打开 Codex 桌面版，Host 会自动接入`);
         throw error;
       }
     }
-    if (this.#stopping) throw new Error("Codex 桌面版正在关闭");
-    return this.#attach(presence);
+    this.#assertCurrent(generation);
+    return this.#attach(presence, generation);
   }
 
   async #readEndpoint(): Promise<string | undefined> {
@@ -198,57 +236,61 @@ export class CodexDesktopLifecycle {
     }
   }
 
-  async #reportNoEndpoint(): Promise<void> {
+  async #reportNoEndpoint(generation = this.#generation): Promise<void> {
     let presence: CodexDesktopPresence;
     try { presence = await detectCodexDesktopPresence(this.#options.presence); }
     catch (error) {
       this.#options.log?.(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    this.#presenceStatus(presence);
+    if (this.#current(generation) && !this.ready) this.#presenceStatus(presence);
   }
 
   /** 端点模式：接别人已经在跑的 app-server，自己不拥有任何进程。 */
-  #attachEndpoint(endpoint: string): Promise<CodexRuntime> {
+  #attachEndpoint(endpoint: string, generation: number): Promise<CodexRuntime> {
+    this.#assertCurrent(generation);
     if (this.ready && this.#endpoint === endpoint) return Promise.resolve(this.#runtime!);
     const attach = (async () => {
       const server = await (this.#options.createExternal ?? ((url: string) => CodexAppServer.createExternal(
         this.#options.log === undefined ? { endpoint: url } : { endpoint: url, log: this.#options.log },
       )))(endpoint);
-      this.#endpoint = endpoint;
-      return this.#mount(server, "已接入 Codex 桌面版 app-server（Orbis 包装器）");
+      if (this.#current(generation)) this.#endpoint = endpoint;
+      return this.#mount(server, "已接入 Codex 桌面版 app-server（Orbis 包装器）", generation);
     })();
     return attach.catch(error => {
-      if (!this.#stopping) this.#setStatus("error", describeAttachFailure(error));
+      if (this.#current(generation)) this.#setStatus("error", describeAttachFailure(error));
       throw error;
     });
   }
 
   /** 兼容路径：用官方 proxy 接桌面版守护进程（Windows 上不成立，见 ADR-0022）。 */
-  async #attach(presence?: CodexDesktopPresence): Promise<CodexRuntime> {
+  async #attach(presence: CodexDesktopPresence | undefined, generation: number): Promise<CodexRuntime> {
+    this.#assertCurrent(generation);
     if (this.ready) return this.#runtime!;
     let server: CodexAppServer;
     try {
       server = await (this.#options.createServer ?? (() => CodexAppServer.createDesktop(this.#options.log === undefined ? {} : { log: this.#options.log })))();
     } catch (error) {
-      this.#setStatus("error", describeAttachFailure(error));
+      if (this.#current(generation)) this.#setStatus("error", describeAttachFailure(error));
       throw error;
     }
     return this.#mount(server, presence?.title === undefined
       ? "已接入 Codex 桌面版 app-server"
-      : `已接入 Codex 桌面版 app-server（${presence.title}）`);
+      : `已接入 Codex 桌面版 app-server（${presence.title}）`, generation);
   }
 
   /** 挂载一条已握手的 app-server 连接：Host 先装事件出口，再标记就绪。 */
-  async #mount(server: CodexAppServer, reason: string): Promise<CodexRuntime> {
+  async #mount(server: CodexAppServer, reason: string, generation: number): Promise<CodexRuntime> {
+    if (!this.#current(generation)) { await server.stop().catch(() => {}); this.#assertCurrent(generation); }
     const runtime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
       ...(this.#options.desktopRefresh === undefined ? {} : { desktopRefresh: this.#options.desktopRefresh }), onEvent: () => {} });
     try {
-      if (this.#stopping) throw new Error("Codex 桌面版正在关闭");
+      this.#assertCurrent(generation);
       // HostService attaches the runtime and its event handlers in onReady. Marking it
       // before that callback can start desktop thread discovery before the Host can
       // publish the resulting metadata.
       await this.#options.onReady?.(runtime);
+      this.#assertCurrent(generation);
       if (!runtime.isReady()) runtime.markStarted();
       this.#runtime = runtime;
       this.#startWatcher();
@@ -259,13 +301,13 @@ export class CodexDesktopLifecycle {
       await runtime.stop().catch(stopError => this.#options.log?.(`关闭未挂载的 Codex 桌面连接失败：${stopError instanceof Error ? stopError.message : String(stopError)}`));
       const offline = this.#options.onOffline?.(runtime);
       if (offline instanceof Promise) await offline.catch(() => undefined);
-      if (!this.#stopping) this.#setStatus("error", describeAttachFailure(error));
+      if (this.#current(generation)) this.#setStatus("error", describeAttachFailure(error));
       throw error;
     }
   }
 
   #startWatcher(): void {
-    if (this.#watcher !== undefined) return;
+    if (this.#stopping || this.#watcher !== undefined) return;
     this.#watcher = setInterval(() => {
       void this.#checkPresence().catch(error => this.#options.log?.(`Codex 桌面版生命周期检查失败：${error instanceof Error ? error.message : String(error)}`));
     }, this.#options.pollIntervalMs ?? 2_000);
@@ -273,6 +315,7 @@ export class CodexDesktopLifecycle {
   }
 
   async #checkPresence(): Promise<void> {
+    const generation = this.#generation;
     if (this.#stopping) return;
     if (this.endpointMode) { await this.#checkEndpoint(); return; }
     const runtime = this.#runtime;
@@ -286,7 +329,7 @@ export class CodexDesktopLifecycle {
       this.#runtime = undefined;
       await this.#options.onOffline?.(runtime);
       await runtime.stop();
-      this.#setStatus("error", "Codex 桌面版 app-server 连接已断开；Host 会自动重试接入");
+      if (this.#current(generation) && !this.ready) this.#setStatus("error", "Codex 桌面版 app-server 连接已断开；Host 会自动重试接入");
       return;
     }
     let presence;
@@ -296,12 +339,12 @@ export class CodexDesktopLifecycle {
       this.#options.log?.(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    if (presence.ready) return;
+    if (!this.#current(generation) || this.#runtime !== runtime || presence.ready) return;
     this.#runtime = undefined;
     this.#options.log?.(`Codex 桌面版 GUI 已退出，释放 proxy：${presence.reason}`);
     await this.#options.onOffline?.(runtime);
     await runtime.stop();
-    this.#presenceStatus(presence);
+    if (this.#current(generation) && !this.ready) this.#presenceStatus(presence);
   }
 
   /**
@@ -311,8 +354,10 @@ export class CodexDesktopLifecycle {
    * 方式重启——两种情况都必须先把旧的 runtime 摘掉，不能留着一个连不上的会话目录。
    */
   async #checkEndpoint(): Promise<void> {
+    const generation = this.#generation;
     const runtime = this.#runtime;
     const endpoint = await this.#readEndpoint();
+    if (!this.#current(generation) || this.#runtime !== runtime) return;
     if (runtime !== undefined && (!runtime.isReady() || endpoint === undefined || endpoint !== this.#endpoint)) {
       this.#runtime = undefined;
       this.#endpoint = undefined;
@@ -320,9 +365,9 @@ export class CodexDesktopLifecycle {
       await runtime.stop().catch(() => undefined);
       if (endpoint !== undefined) this.#options.log?.("Codex 桌面版端点已变化，重新接入");
     }
-    if (this.#runtime !== undefined) return;
-    if (this.#starting !== undefined) return;
+    if (!this.#current(generation) || this.#runtime !== undefined) return;
+    if (this.#starting !== undefined || this.#probing !== undefined) return;
     if (endpoint !== undefined) await this.probe().catch(() => undefined);
-    else await this.#reportNoEndpoint();
+    else await this.#reportNoEndpoint(generation);
   }
 }

@@ -585,7 +585,10 @@ private final class PreviewTransport: OrbisTransport {
                     if name == "execution" { value["phase"] = "running" }
                     if name == "model", !ProcessInfo.processInfo.arguments.contains("--preview-old-turn-host") {
                         value["currentTurnSupported"] = true
-                        value["currentTurn"] = ["turnId": "preview-turn", "model": ["provider": "openai", "id": "gpt-5.3", "name": "GPT-5.3"], "thinkingLevel": "medium"]
+                        let unchanged = ProcessInfo.processInfo.arguments.contains("--preview-unchanged-turn")
+                        let currentModel = unchanged ? ["provider": "openai", "id": "gpt-5.4"] :
+                            ["provider": "openai", "id": "gpt-5.3", "name": "GPT-5.3"]
+                        value["currentTurn"] = ["turnId": "preview-turn", "model": currentModel, "thinkingLevel": unchanged ? "high" : "medium"]
                     }
                 }
                 if name == "execution", runtime == "preview-codex", ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") {

@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A07100010000000000000003 = {isa = PBXBuildFile; fileRef = A07110010000000000000003; };
+		A07100010000000000000002 = {isa = PBXBuildFile; fileRef = A07110010000000000000002; };
+		A07100010000000000000001 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07110010000000000000001; };
 		F08000010000000000000003 /* MathResources in Resources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000003; };
 		F08000010000000000000002 /* MathFragment.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000002; };
 		F08000010000000000000001 /* MathMarkup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000001; };
@@ -68,6 +71,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A07110010000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/PushLifecycleProbe.swift; sourceTree = SOURCE_ROOT; };
+		A07110010000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/PushRegistrationTests.swift; sourceTree = SOURCE_ROOT; };
+		A07110010000000000000001 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
 		F08010010000000000000003 /* MathResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = MathResources; sourceTree = "<group>"; };
 		F08010010000000000000002 /* MathFragment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathFragment.swift; sourceTree = "<group>"; };
 		F08010010000000000000001 /* MathMarkup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathMarkup.swift; sourceTree = "<group>"; };
@@ -187,6 +193,7 @@
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
 				A00110010000000000000032 /* OrbisHub.swift */,
 				A00110010000000000000031 /* Notifications.swift */,
+				A07110010000000000000001 /* PushRegistration.swift */,
 				A00110010000000000000030 /* SessionHistory.swift */,
 				A0011001000000000000002F /* HostCatalog.swift */,
 				AA7200010000000000000002 /* HostLocalStorage.swift */,
@@ -195,6 +202,8 @@
 				A0011001000000000000002A /* ToolContent.swift */,
                 B00110010000000000000001,
                 C06410010000000000000001,
+                A07110010000000000000002,
+                A07110010000000000000003,
 				A00110010000000000000029 /* DownloadView.swift */,
 				A00110010000000000000028 /* FileTransfers.swift */,
 				A00110010000000000000027 /* InteractionView.swift */,
@@ -353,6 +362,8 @@
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,
 				A00100010000000000000031 /* Notifications.swift in Sources */,
+				A07100010000000000000001 /* PushRegistration.swift in Sources */,
+                A07100010000000000000003,
 				A00100010000000000000030 /* SessionHistory.swift in Sources */,
 				A0010001000000000000002F /* HostCatalog.swift in Sources */,
 				AA7200010000000000000001 /* HostLocalStorage.swift in Sources */,
@@ -382,7 +393,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
-        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001, A07100010000000000000002); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */

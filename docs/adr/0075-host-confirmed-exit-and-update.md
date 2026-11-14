@@ -23,6 +23,7 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 | HOST-UPDATE-01 | 应用内 Host 更新先确认中断影响，再下载和校验；成功收尾后才打开安装包。重复点击只执行一次；下载、校验、收尾或启动安装包失败均保持可见失败状态。下载期间仍可请求退出。 |
 | HOST-UPDATE-02 | Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认。取消或失败暂停安装。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
 | HOST-LIVE-01 | 运行中的 Host 不再要求先手动暂停：常规设置中的启动参数（电脑名称、中继、预启动开关、DSH 启动链接）、Agent 安装 / 批量更新和 DSH Server 重启由 Host 自行暂停、执行并恢复连接；终端接入开关与登录启动仍即时生效。操作按钮写明“并重新连接”，有在线会话时确认页显示会暂时断开的会话数。 |
+| HOST-LIVE-02 | 退出期间完成的变更不再自动恢复连接。启动入口在改写运行意图前核对退出状态；收尾失败后，原先暂停的 Host 保持可由用户重新启动。 |
 
 暂停连接继续只释放 Host 的连接及适配器，不等同于退出。显式配置的外部 DSH URL 与独立终端沿用所属启动器的生命周期。若收尾期间 Orbis 管理的后台被重新启动，报告失败并要求关闭该应用后重试。DSH 的管理范围沿用同一 `DSH_HOME` 下的 Orbis 服务记录。
 
@@ -103,6 +104,8 @@ Codex 桌面端开着时的真实退出、重新打开 Host 后重新接入，**
 | 当前工作树 | 桌面运行时 21 项通过，类型检查与 ESLint 通过，macOS Qt 6.8.3 构建与 10 组 CTest 全部通过；汇总见 [verification.json](../../.artifacts/host-live-config-20261112/verification.json)。 |
 
 真实 Relay、真实手机与 Windows 上的暂停 / 恢复未执行，**待用户验证**。
+
+2026-11-13 `HOST-LIVE-02`：`HostLiveChangeTest::lateChangeCompletionDuringExitKeepsHostRestartable` 复现变更续作在退出期间把状态置为连接中，但实际启动命令被拒绝，收尾失败后也无法再次启动。`startHost` 增加退出 / 关闭守卫。首次失败保留在 [before/checks/result.json](../../.artifacts/recent-risk-fixes-20261113/native/before/checks/result.json)；修复后激活、退出、运行中变更三组 Qt 回归全部通过，见 [after/checks/tests.txt](../../.artifacts/recent-risk-fixes-20261113/native/after/checks/tests.txt)。验证使用 macOS Qt 6.8.3、隔离桥接进程及 `ORBIS_NO_KEYCHAIN=1`，没有操作真实 Host 或系统激活凭据；Windows 构建和用户验收待完成。
 
 ## Windows 必须补做的验证
 
