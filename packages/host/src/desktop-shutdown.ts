@@ -1,11 +1,13 @@
 import { readFile, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { findDshWebService, validateDshWebUrl } from "./dsh-web-service.js";
-import { listeningPids, processCommand, processTable, processTree, sameProcess, stopOwnedProcesses, type ProcessIdentity } from "./owned-processes.js";
+import { resolveStateDir } from "@orbis/e2e";
+import { dshDesktopStateDirectory } from "./dsh-desktop-app.js";
+import { isProcessChild, listeningPids, processCommand, processTable, processTree, sameProcess, stopOwnedProcesses, type ProcessIdentity } from "./owned-processes.js";
 
 export type ShutdownRequest = { bridgePid: number; stateDir?: string; runtimeRoot: string; integrations: boolean; externalDsh: boolean };
 type Descriptor = { path: string; text: string; root: ProcessIdentity; port: number };
@@ -20,6 +22,68 @@ export function commandRunsScript(command: string, script: string, platform = pr
   const start = command.indexOf(script);
   return start >= 0 && (start === 0 || /[\s"']/u.test(command[start - 1]!))
     && (start + script.length === command.length || /[\s"']/u.test(command[start + script.length]!));
+}
+
+const identityKey = (row: ProcessIdentity): string => JSON.stringify([row.pid, row.started, row.executable]);
+const executablePath = (path: string): string => process.platform === "win32" ? path.replaceAll("\\", "/").toLowerCase() : path;
+
+/** HOST-EXIT-07: an independent Desktop is not owned just because Host launched it. Keep the
+ * observed identity graph so a Desktop's already captured children remain protected after reparenting.
+ * The local launch record is sufficient: a missing/starting backend must never authorize termination.
+ */
+export function preserveDshDesktop(stateDir: string, owned: Map<number, ProcessIdentity>, bridge?: ProcessIdentity, readCommand = processCommand) {
+  const seen = new Map<string, ProcessIdentity>();
+  const descendants = new Map<string, Set<string>>();
+  const roots = new Set<string>();
+  const commands = new Map<string, string>();
+  return async (rows: ProcessIdentity[]): Promise<ProcessIdentity[]> => {
+    const relevant = new Map<number, ProcessIdentity>();
+    const current = new Map(rows.map(row => [row.pid, row]));
+    // processTree retains the captured root object. Build new edges only from the current parent:
+    // an old parent PID can now belong to an unrelated process, including a new Desktop instance.
+    const remember = (row: ProcessIdentity) => { const now = current.get(row.pid); if (now && sameProcess(now, row)) relevant.set(row.pid, now); };
+    for (const owner of owned.values()) for (const row of processTree(rows, owner)) remember(row);
+    // Continue observing independent descendants after their original Host parent has exited.
+    for (const key of roots) {
+      const root = seen.get(key)!;
+      for (const row of processTree(rows, root)) remember(row);
+    }
+    for (const row of relevant.values()) {
+      const key = identityKey(row); seen.set(key, row);
+      const parent = relevant.get(row.parent);
+      if (parent && isProcessChild(parent, row)) {
+        const parentKey = identityKey(parent);
+        const children = descendants.get(parentKey) ?? new Set<string>(); children.add(key); descendants.set(parentKey, children);
+      }
+    }
+    const stored = await descriptor(join(dshDesktopStateDirectory(stateDir), "endpoint.json"));
+    if (stored) {
+      const value = stored.value;
+      if (!value || value.version !== 1 || value.owner !== "orbis" || !Number.isSafeInteger(value.pid) || Number(value.pid) < 0
+        || typeof value.executable !== "string" || !isAbsolute(value.executable)) throw new Error("无法确认 DeepSeek 桌面版进程归属，请重试");
+      const wanted = executablePath(value.executable);
+      for (const [key, row] of seen) {
+        if (bridge && sameProcess(bridge, row)) continue;
+        let matches = executablePath(row.executable) === wanted;
+        // Script fixtures/launchers have an interpreter as comm. Require the executable itself or
+        // its first script argument, never a matching path elsewhere in unrelated command arguments.
+        if (!matches && relevant.has(row.pid) && sameProcess(relevant.get(row.pid)!, row)) {
+          let command = commands.get(key);
+          if (command === undefined) { command = executablePath(await readCommand(row.pid)); commands.set(key, command); }
+          const actualCommand = command;
+          const forms = (path: string) => [path, `"${path}"`, `'${path}'`];
+          const prefix = (text: string) => actualCommand === text || actualCommand.startsWith(text + " ");
+          matches = forms(wanted).some(prefix) || forms(executablePath(row.executable)).some(executable => forms(wanted).some(script => prefix(`${executable} ${script}`)));
+        }
+        if (matches) roots.add(key);
+      }
+    }
+    const protectedKeys = new Set(roots);
+    for (const key of protectedKeys) for (const child of descendants.get(key) ?? []) protectedKeys.add(child);
+    // Every protected descendant can acquire new children after its original root exits.
+    for (const key of protectedKeys) roots.add(key);
+    return [...protectedKeys].map(key => seen.get(key)!);
+  };
 }
 
 /** Runs in a separate process so a wedged desktop command queue cannot block cleanup. */
@@ -41,6 +105,8 @@ export async function prepareDesktopShutdown(request: ShutdownRequest, parentPid
       throw new Error("Host 核心进程身份已变化，请重试");
     addTree(bridge);
   }
+  const preserve = preserveDshDesktop(resolveStateDir(request.stateDir?.trim() || process.env.ORBIS_HOST_STATE_DIR?.trim() || undefined), owned, bridge);
+  await preserve(rows);
   const attachDescriptor = async (path: string, stored: { text: string }, root: ProcessIdentity, port: number) => {
     const tree = processTree(rows, root);
     const listeners = await listeningPids(port);
@@ -73,11 +139,12 @@ export async function prepareDesktopShutdown(request: ShutdownRequest, parentPid
       // Retain identities even after reparenting, and collect late children while their owner lives.
       do {
         const current = await processTable();
-        for (const owner of [...owned.values()]) for (const row of processTree(current, owner)) owned.set(row.pid, row);
+        const preserved = await preserve(current);
+        for (const owner of [...owned.values()]) for (const row of processTree(current, owner, preserved)) owned.set(row.pid, row);
         if (!bridge || !current.some(row => sameProcess(row, bridge))) break;
         await delay(200);
       } while (Date.now() < deadline);
-      await stopOwnedProcesses([...owned.values()]);
+      await stopOwnedProcesses([...owned.values()], undefined, preserve);
       for (const entry of descriptors) {
         if ((await listeningPids(entry.port)).length > 0) throw new Error("后台端口仍被占用，请关闭相关应用后重试");
         // A replacement process may publish the same path while cleanup is running.

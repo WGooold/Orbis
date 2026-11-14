@@ -266,11 +266,15 @@ export async function latestDshDesktopUrl(logPath: string): Promise<string | und
 }
 
 async function writeDescriptor(stateDir: string, descriptor: DshDesktopDescriptor): Promise<void> {
+  await writeDescriptorText(stateDir, JSON.stringify(descriptor));
+}
+
+async function writeDescriptorText(stateDir: string, text: string): Promise<void> {
   const path = descriptorPath(stateDir);
   await mkdir(dshDesktopStateDirectory(stateDir), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
   const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(JSON.stringify(descriptor)); } finally { await file.close(); }
+  try { await file.writeFile(text); } finally { await file.close(); }
   await rename(temporary, path);
 }
 
@@ -377,18 +381,40 @@ async function launchOnce(installation: DshDesktopInstallation, stateDir: string
   if (options.signal?.aborted) { await output.close(); options.signal.throwIfAborted(); }
   let exitCode: number | null | undefined;
   let spawnError: Error | undefined;
-  const child = (options.spawnDesktop ?? spawn)(installation.executable, [], {
-    cwd: homedir(), detached: true, env: dshDesktopLaunchEnvironment(options.env ?? process.env), stdio: ["ignore", output.fd, output.fd],
-  });
+  // HOST-EXIT-07: publish the exact independent executable before spawn. Shutdown can otherwise
+  // capture the detached child in the gap before its PID is recorded. Existing readers treat PID 0
+  // as not ready; no endpoint or network response is needed to recognize this ownership boundary.
+  const intent: DshDesktopDescriptor = { version: 1, owner: "orbis", pid: 0, executable: installation.executable,
+    archive: installation.archive, logPath, launchedAt: Date.now() };
+  let previousDescriptor: string | undefined;
+  const clearIntent = async () => {
+    const path = descriptorPath(stateDir);
+    if (await readFile(path, "utf8").catch(() => "") !== JSON.stringify(intent)) return;
+    if (previousDescriptor === undefined) await unlink(path);
+    else await writeDescriptorText(stateDir, previousDescriptor);
+  };
+  try {
+    previousDescriptor = await readFile(descriptorPath(stateDir), "utf8").catch(error => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error;
+    });
+    await writeDescriptor(stateDir, intent); options.signal?.throwIfAborted();
+  }
+  catch (error) { await output.close(); await clearIntent(); throw error; }
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = (options.spawnDesktop ?? spawn)(installation.executable, [], {
+      cwd: homedir(), detached: true, env: dshDesktopLaunchEnvironment(options.env ?? process.env), stdio: ["ignore", output.fd, output.fd],
+    });
+  } catch (error) { await output.close(); await clearIntent(); throw error; }
   child.once("error", error => { spawnError = error; });
   child.once("exit", code => { exitCode = code; });
   await output.close();
   if (child.pid === undefined) {
     await delay(0);
+    await clearIntent();
     throw new Error(`无法打开 DeepSeek 桌面版：${spawnError?.message ?? "启动失败"}`);
   }
-  const descriptor: DshDesktopDescriptor = { version: 1, owner: "orbis", pid: child.pid, executable: installation.executable,
-    archive: installation.archive, logPath, launchedAt: Date.now() };
+  const descriptor: DshDesktopDescriptor = { ...intent, pid: child.pid };
   await writeDescriptor(stateDir, descriptor);
   child.unref();
   const deadline = Date.now() + (options.timeoutMs ?? 120_000);

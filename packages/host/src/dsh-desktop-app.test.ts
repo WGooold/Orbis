@@ -2,6 +2,7 @@
 // the endpoint only of a Desktop it launched itself, a Desktop opened elsewhere is reported as such, and
 // nothing here terminates Desktop. The fake executable stands in for Electron forwarding Host stdout.
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -103,6 +104,24 @@ describe("Desktop installation discovery", () => {
 });
 
 describe.skipIf(process.platform === "win32")("Orbis-owned Desktop launch", () => {
+  // HOST-EXIT-07: shutdown must see the independent executable even between spawn and PID publication.
+  // A failed spawn removes only its own intent and restores any older usable record byte-for-byte.
+  it.each([false, true])("publishes a PID-less intent before spawn and restores prior state on failure (prior record=%s)", async prior => {
+    const state = await temp(); const path = join(state, "dsh-desktop", "endpoint.json");
+    const previous = JSON.stringify({ version: 1, owner: "orbis", pid: 424242, executable: "/previous/Desktop", url: "retained" });
+    if (prior) { await mkdir(join(path, ".."), { recursive: true }); await writeFile(path, previous); }
+    const installation = { root: state, executable: join(state, "missing-desktop"), archive: join(state, "app.asar"), version: "test" };
+    const spawnDesktop = vi.fn((...args: Parameters<typeof spawn>) => {
+      expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ version: 1, owner: "orbis", pid: 0, executable: installation.executable });
+      return spawn(...args);
+    }) as unknown as typeof spawn;
+    await expect(launchDshDesktop(installation, state, { spawnDesktop })).rejects.toThrow("无法打开");
+    expect(spawnDesktop).toHaveBeenCalledOnce();
+    if (prior) expect(await readFile(path, "utf8")).toBe(previous);
+    else await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(pendingDshDesktopLaunch(state)).toBeUndefined();
+  });
+
   // DSH-DESKTOP-10: the public open call returns before mkdir/open finish;
   // cancellation in that gap must reach the actual process-spawn boundary.
   it("does not spawn when its owner cancels during launch preparation", async () => {

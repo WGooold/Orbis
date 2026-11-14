@@ -20,6 +20,7 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 | HOST-EXIT-04 | 进程身份由 PID、创建时间和可执行路径共同确定。核心进程还须匹配直接父进程和脚本；每次发信号前重新核对身份。保留已采集的后代身份以应对父进程先退出，不按 node / codex 名称批量清理。 |
 | HOST-EXIT-05 | 收尾验证成功后将退出许可暴露给 QML，窗口关闭不再进入托盘隐藏或确认流程。排队关闭窗口和托盘，并结束应用事件循环；已确认的退出不再重新请求平台 Quit。取消和收尾失败不授予退出许可。 |
 | HOST-EXIT-06 | Codex 桌面桥接沿用 Codex 桌面端的生命周期：退出和更新都不停止它，也不核验它的端点记录；Host 再次开始连接后按端点记录重新接入。收尾失败时 Host 窗口回到前台显示原因。 |
+| HOST-EXIT-07 | Host 退出和更新保留由 Host 打开的 DeepSeek Desktop 及其后代。独立启动记录在创建进程前发布，初始快照、后续扫描与逐次终止均核对同一归属边界；Desktop 后端尚未就绪不改变归属。 |
 | HOST-UPDATE-01 | 应用内 Host 更新先确认中断影响，再下载和校验；成功收尾后才打开安装包。重复点击只执行一次；下载、校验、收尾或启动安装包失败均保持可见失败状态。下载期间仍可请求退出。 |
 | HOST-UPDATE-02 | Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认。取消或失败暂停安装。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
 | HOST-LIVE-01 | 运行中的 Host 不再要求先手动暂停：常规设置中的启动参数（电脑名称、中继、预启动开关、DSH 启动链接）、Agent 安装 / 批量更新和 DSH Server 重启由 Host 自行暂停、执行并恢复连接；终端接入开关与登录启动仍即时生效。操作按钮写明“并重新连接”，有在线会话时确认页显示会暂时断开的会话数。 |
@@ -88,6 +89,16 @@ Host 更新的哈希与文件提交移到后台线程，使用独立临时目录
 | 本机安装 | 用户先退出 ChatGPT 与旧 Host 后安装到 `/Applications/OrbisHost.app` 并启动，运行中的二进制哈希与候选一致，回退保留为 `/Applications/.OrbisHost-rollback-codex-respawn-20261113.app`；[记录](../../.artifacts/host-exit-codex-respawn-20261113/verification.json)。 |
 
 Codex 桌面端开着时的真实退出、重新打开 Host 后重新接入，**待用户验证**；Windows 安装目录在桥接运行时可覆盖仍待 Windows 验证。
+
+## HOST-EXIT-07：保留 Host 打开的独立 DeepSeek Desktop
+
+2026-11-14，F05-01 复现实际启动器以 `detached` 打开的 Desktop 仍被采集为核心后代，核心退出后被收尾程序终止，违反 [DSH-DESKTOP-07](0076-deepseek-harness-desktop-integration.md)。同版正对照只退出核心时 Desktop 存活；加入实际清理后失败。原始失败与调查保留在 [report.md](../../.artifacts/chain-verification-2026-11-14/05-host-lifecycle/report.md) 和 [固定基线结果](../../.artifacts/chain-verification-2026-11-14/05-host-lifecycle/dsh-exit-probe-fixed-head/result.json)。
+
+[desktop-shutdown.ts](../../packages/host/src/desktop-shutdown.ts) 与 [owned-processes.ts](../../packages/host/src/owned-processes.ts) 在全部收尾阶段排除独立 Desktop 的进程身份及已观察到的后代关系，父进程退出或改挂后仍保留保护；记录晚到时撤销已采集的清理归属。保护读取本地 version-1 启动记录，不要求 URL 或健康端点。[dsh-desktop-app.ts](../../packages/host/src/dsh-desktop-app.ts) 在 `spawn` 前发布同格式的 `pid: 0` 启动意图，现有接入读取器视其为未就绪；创建进程前取消或创建失败恢复原记录。图中新边使用当前父身份，Windows 数字创建时间还须确认父不晚于子；异步读取保护后、发信号前再次核对目标身份。
+
+回归源码：[desktop-shutdown.test.ts](../../packages/host/src/desktop-shutdown.test.ts)、[dsh-desktop-app.test.ts](../../packages/host/src/dsh-desktop-app.test.ts)。最终相关 Node 回归 8 文件、218 项通过；真实源码启动器与退出清理的合成进程探针 2/2 通过，Desktop 在两组中均存活，测试进程已清理。Windows 保留旧父 PID 的两项新增断言修复前失败、修复后通过。日志、命令、来源哈希和复核证据见 [修复报告](../../.artifacts/chain-verification-2026-11-14/05-host-lifecycle/fix/report.md)。
+
+本轮实现与自动验证完成，未部署或替换用户安装。Windows 父子关系由确定性数据验证，尚未执行 Windows 原生进程枚举和安装更新；真实 Desktop 与任务跨 Host 退出、更新继续运行，**待用户验证**。
 
 ## HOST-LIVE-01：运行中修改无需手动暂停
 

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { commandRunsScript, prepareDesktopShutdown } from "./desktop-shutdown.js";
+import { commandRunsScript, prepareDesktopShutdown, preserveDshDesktop } from "./desktop-shutdown.js";
 import { processTable, processTree, sameProcess, stopOwnedProcesses, type ProcessIdentity } from "./owned-processes.js";
 import { ensureDshWebService } from "./dsh-web-service.js";
 
@@ -59,6 +59,54 @@ describe("confirmed desktop shutdown", () => {
     expect(rows.some(row => row.pid === child.pid || row.pid === descendant)).toBe(false);
     expect(rows.some(row => row.pid === sibling.pid)).toBe(true);
   }, 30_000);
+
+  // HOST-EXIT-07: detached Desktop remains a bridge descendant until the bridge exits. Its root
+  // and backend survive all cleanup snapshots, including a PID-less launch intent and a late record.
+  it.each(["recorded", "late-record", "launch-intent"] as const)("preserves independent Desktop and its backend during confirmed exit (%s)", async mode => {
+    const f = await fixture();
+    const desktop = join(f.root, "desktop.js");
+    await writeFile(desktop, `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();console.log(child.pid);setInterval(()=>{},1000);`);
+    const bridge = await start(f.root, `const {spawn}=require('node:child_process');const desktop=spawn(process.execPath,[${JSON.stringify(desktop)}],{detached:true,stdio:['ignore','pipe','ignore']});desktop.stdout.once('data',data=>{console.log(JSON.stringify({desktop:desktop.pid,backend:Number(String(data))}));desktop.stdout.destroy();desktop.unref()});setInterval(()=>{},1000);`);
+    const ids = JSON.parse(String((await once(bridge.stdout!, "data"))[0])) as { desktop: number; backend: number }; pids.push(ids.desktop, ids.backend);
+    const path = join(f.stateDir, "dsh-desktop", "endpoint.json"); await mkdir(join(path, ".."), { recursive: true });
+    const stored = JSON.stringify({ version: 1, owner: "orbis", pid: mode === "launch-intent" ? 0 : ids.desktop, executable: desktop,
+      archive: join(f.root, "app.asar"), logPath: join(f.root, "desktop.log"), launchedAt: Date.now() });
+    if (mode !== "late-record") await writeFile(path, stored);
+    const cleanup = await prepareDesktopShutdown({ ...f.request, bridgePid: bridge.pid! });
+    if (mode === "late-record") await writeFile(path, stored);
+    await cleanup.finish(0);
+    const rows = await processTable();
+    expect(rows.some(row => row.pid === bridge.pid)).toBe(false);
+    expect(rows.some(row => row.pid === ids.desktop)).toBe(true);
+    expect(rows.some(row => row.pid === ids.backend)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(stored);
+  }, 30_000);
+
+  // Protect observed descendants by their captured identity after Desktop itself exits. A stale
+  // PID or a matching pathname used as an unrelated argument must not exempt a real Host backend.
+  it("retains a protected reparented backend without protecting an unrelated argument match", async () => {
+    const f = await fixture(); const desktop = join(f.root, "desktop.js");
+    await writeFile(desktop, `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});child.unref();console.log(child.pid);setInterval(()=>{},1000);`);
+    const bridge = await start(f.root, `const {spawn}=require('node:child_process');const desktop=spawn(process.execPath,[${JSON.stringify(desktop)}],{detached:true,stdio:['ignore','pipe','ignore']});const other=spawn(process.execPath,['-e','setInterval(()=>{},1000)',${JSON.stringify(desktop)}],{stdio:'ignore'});desktop.stdout.once('data',data=>{console.log(JSON.stringify({desktop:desktop.pid,backend:Number(String(data)),other:other.pid}));desktop.stdout.destroy();desktop.unref()});setInterval(()=>{},1000);`);
+    const ids = JSON.parse(String((await once(bridge.stdout!, "data"))[0])) as { desktop: number; backend: number; other: number }; pids.push(ids.desktop, ids.backend, ids.other);
+    const path = join(f.stateDir, "dsh-desktop", "endpoint.json"); await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, JSON.stringify({ version: 1, owner: "orbis", pid: ids.desktop, executable: desktop }));
+    const cleanup = await prepareDesktopShutdown({ ...f.request, bridgePid: bridge.pid! });
+    process.kill(ids.desktop, "SIGTERM");
+    await vi.waitFor(async () => expect((await processTable()).some(row => row.pid === ids.desktop)).toBe(false));
+    await cleanup.finish(0);
+    const rows = await processTable();
+    expect(rows.some(row => row.pid === ids.backend)).toBe(true);
+    expect(rows.some(row => row.pid === ids.other || row.pid === bridge.pid)).toBe(false);
+  }, 30_000);
+
+  it("refuses an unreadable independent Desktop record before terminating its bridge", async () => {
+    const f = await fixture(); const bridge = await start(f.root, "setInterval(()=>{},1000)");
+    const path = join(f.stateDir, "dsh-desktop", "endpoint.json"); await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, "{broken");
+    await expect(prepareDesktopShutdown({ ...f.request, bridgePid: bridge.pid! })).rejects.toThrow("记录无法读取");
+    expect((await processTable()).some(row => row.pid === bridge.pid)).toBe(true);
+  });
 
   it("refuses a recycled bridge PID whose command is unrelated", async () => {
     const f = await fixture(); const child = await start(f.root, "setInterval(() => {}, 1000)", "unrelated.js");
@@ -173,9 +221,64 @@ describe("process identity protection", () => {
     await stopOwnedProcesses([owner], { table: async () => rows, signal, wait: async () => {} });
     expect(signal).not.toHaveBeenCalled();
   });
+
+  // Windows preserves a child's original ParentProcessId after exit. CreationDate ticks must
+  // reject a replacement parent born later than that child, while admitting its genuine children.
+  it("does not adopt or stop an older Windows orphan whose parent PID was reused", async () => {
+    const parent = { ...owner, started: "638987000000000002" };
+    const orphan = { ...owner, pid: 424243, parent: parent.pid, started: "638987000000000001" };
+    const child = { ...owner, pid: 424244, parent: parent.pid, started: "638987000000000003" };
+    let rows = [parent, orphan, child];
+    expect(processTree(rows, parent)).toEqual([parent, child]);
+    const signal = vi.fn((pid: number) => { rows = rows.filter(row => row.pid !== pid); });
+    await stopOwnedProcesses([parent], { table: async () => rows, signal, wait: async () => {} });
+    expect(signal.mock.calls).toEqual([[parent.pid, "SIGTERM"], [child.pid, "SIGTERM"]]);
+    expect(rows).toEqual([orphan]);
+  });
   it("reports failure when an owned process remains after escalation", async () => {
     const signal = vi.fn();
     await expect(stopOwnedProcesses([owner], { table: async () => [owner], signal, wait: async () => {} })).rejects.toThrow("尚未退出");
     expect(signal.mock.calls).toEqual([[owner.pid, "SIGTERM"], [owner.pid, "SIGKILL"]]);
+  });
+
+  // HOST-EXIT-07: protection can appear only after the first tree expansion. Every signal and
+  // escalation must re-evaluate it; protected processes do not count as unfinished cleanup.
+  it("rechecks late independent-process protection before signalling an already captured child", async () => {
+    const desktop = { ...owner, pid: 424243, parent: owner.pid, executable: "/independent/Desktop" };
+    const backend = { ...owner, pid: 424244, parent: desktop.pid };
+    let rows = [owner, desktop, backend]; let scans = 0;
+    const signal = vi.fn((pid: number) => { rows = rows.filter(row => row.pid !== pid); });
+    await stopOwnedProcesses([owner], { table: async () => rows, signal, wait: async () => {} }, async () => ++scans < 3 ? [] : [desktop, backend]);
+    expect(signal.mock.calls).toEqual([[owner.pid, "SIGTERM"]]);
+    expect(rows).toEqual([desktop, backend]);
+  });
+
+  it("rechecks process identity after asynchronous protection lookup before sending a signal", async () => {
+    const replacement = { ...owner, started: "replacement-during-protection" };
+    let rows = [owner]; let scans = 0; const signal = vi.fn();
+    await stopOwnedProcesses([owner], { table: async () => rows, signal, wait: async () => {} }, async () => {
+      if (++scans === 2) rows = [replacement];
+      return [];
+    });
+    expect(signal).not.toHaveBeenCalled();
+  });
+
+  // HOST-EXIT-07: remember real historical edges, but never attach an orphan's cached parent PID
+  // to a replacement process. Otherwise an unrelated Desktop can exempt a genuine Host worker.
+  it.each(["unix", "windows"] as const)("does not connect an orphaned Host worker to a Desktop that reused its old parent's PID (%s)", async platform => {
+    const f = await fixture();
+    const bridge = { ...owner, pid: 424240, parent: 1, started: "638987000000000000" };
+    const original = { ...owner, pid: 424241, parent: bridge.pid, started: "638987000000000001" };
+    const worker = { ...owner, pid: 424242, parent: original.pid, started: "638987000000000002", executable: "/owned/worker" };
+    const owned = new Map([bridge, original, worker].map(row => [row.pid, row]));
+    const preserve = preserveDshDesktop(f.stateDir, owned, bridge, async () => "");
+    expect(await preserve([bridge, original, worker])).toEqual([]);
+    const desktop = { ...original, started: "638987000000000003", executable: "/independent/Desktop" };
+    const orphan = { ...worker, parent: platform === "windows" ? original.pid : 1 };
+    const path = join(f.stateDir, "dsh-desktop", "endpoint.json"); await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, JSON.stringify({ version: 1, owner: "orbis", pid: desktop.pid, executable: desktop.executable }));
+    const preserved = await preserve([bridge, desktop, orphan]);
+    expect(preserved).toEqual([desktop]);
+    expect(preserved.some(row => sameProcess(row, worker))).toBe(false);
   });
 });
