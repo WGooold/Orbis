@@ -24,6 +24,29 @@ enum OrbisAppearance: String, CaseIterable {
     }
 }
 
+/// The stored appearance for palettes built without one. Palettes are built in most view
+/// bodies, so the preference is read once and again only after defaults change, not on every
+/// body (PERF-10). Views still re-render through their `@AppStorage("orbis.appearance")`.
+enum OrbisAppearanceSetting {
+    private static let lock = NSLock()
+    private static var cached: OrbisAppearance?
+    private static var generation = 0
+    private static let invalidation = NotificationCenter.default.addObserver(
+        forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { _ in
+        lock.lock(); cached = nil; generation &+= 1; lock.unlock()
+    }
+    static var current: OrbisAppearance {
+        _ = invalidation
+        lock.lock(); let hit = cached, read = generation; lock.unlock()
+        if let hit { return hit }
+        // Defaults are read outside the lock: a change notification may arrive on any thread,
+        // including during this read. A read overtaken by a change is used once, not cached.
+        let value = OrbisAppearance(rawValue: UserDefaults.standard.string(forKey: "orbis.appearance") ?? "mist") ?? .mist
+        lock.lock(); if generation == read { cached = value }; lock.unlock()
+        return value
+    }
+}
+
 /// The design specification's four themes share one semantic palette. Recesses
 /// keep their parent material; only the paired inner shadows describe depth.
 struct OrbisPalette {
@@ -31,7 +54,7 @@ struct OrbisPalette {
     let appearance: OrbisAppearance
     init(_ scheme: ColorScheme, appearance: OrbisAppearance? = nil) {
         dark = scheme == .dark
-        self.appearance = appearance ?? OrbisAppearance(rawValue: UserDefaults.standard.string(forKey: "orbis.appearance") ?? "mist") ?? .mist
+        self.appearance = appearance ?? OrbisAppearanceSetting.current
     }
     private var sage: Bool { appearance == .sage }
     private func material(_ mistLight: UInt32, _ mistDark: UInt32, _ sageLight: UInt32, _ sageDark: UInt32) -> Color {
@@ -900,12 +923,11 @@ final class OrbisAnchor {
 }
 
 extension View {
+    /// Reports the initial frame and every change, like the GeometryReader it replaces, without a
+    /// background view per anchored row; every user message carries anchors, so a long chat built
+    /// them all on entry (PERF-10).
     func orbisAnchor(_ anchor: OrbisAnchor) -> some View {
-        background(GeometryReader { proxy in
-            Color.clear
-                .onAppear { anchor.frame = proxy.frame(in: .global) }
-                .onChange(of: proxy.frame(in: .global)) { _, frame in anchor.frame = frame }
-        })
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { anchor.frame = $0 }
     }
 }
 

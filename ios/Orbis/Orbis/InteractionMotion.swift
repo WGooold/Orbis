@@ -1,19 +1,39 @@
 import SwiftUI
 
-struct OrbisBackPriority: Equatable {
-    let key: String
-    let action: () -> Void
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+/// Content of a page can claim its back swipe: a selection consumes the swipe before the page
+/// returns. Each page layer owns one claim and reads it only while a swipe moves or ends, so
+/// claiming never re-renders the page. A preference did the same but made every view of every
+/// mounted page combine it whenever a page was built (PERF-10).
+@MainActor final class OrbisBackPriorityClaim {
+    private(set) var key: String?
+    private(set) var action: (() -> Void)?
+    func set(_ key: String, action: (() -> Void)?) {
+        if let action { self.key = key; self.action = action }
+        else if self.key == key { self.key = nil; self.action = nil }
+    }
 }
-struct OrbisBackPriorityKey: PreferenceKey {
-    static var defaultValue: OrbisBackPriority? { nil }
-    static func reduce(value: inout OrbisBackPriority?, nextValue: () -> OrbisBackPriority?) {
-        value = nextValue() ?? value
+private struct OrbisBackPriorityClaimKey: EnvironmentKey { static let defaultValue: OrbisBackPriorityClaim? = nil }
+extension EnvironmentValues {
+    var orbisBackPriorityClaim: OrbisBackPriorityClaim? {
+        get { self[OrbisBackPriorityClaimKey.self] }
+        set { self[OrbisBackPriorityClaimKey.self] = newValue }
+    }
+}
+private struct OrbisBackPriorityClaimer: ViewModifier {
+    @Environment(\.orbisBackPriorityClaim) private var claim
+    let key: String
+    let active: Bool
+    let action: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .onAppear { if active { claim?.set(key, action: action) } }
+            .onChange(of: active) { _, active in claim?.set(key, action: active ? action : nil) }
+            .onDisappear { claim?.set(key, action: nil) }
     }
 }
 extension View {
     func orbisBackPriority(_ key: String, active: Bool, action: @escaping () -> Void) -> some View {
-        preference(key: OrbisBackPriorityKey.self, value: active ? OrbisBackPriority(key: key, action: action) : nil)
+        modifier(OrbisBackPriorityClaimer(key: key, active: active, action: action))
     }
 }
 import UIKit
@@ -649,12 +669,13 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
 }
 
 /// Layout rendezvous uses display frames, not an assumed 60 Hz wall-clock delay.
-@MainActor private final class MotionLayoutFrames: NSObject {
+@MainActor final class MotionLayoutFrames: NSObject {
     private var link: CADisplayLink?
     private var remaining = 2
     private var continuation: CheckedContinuation<Void, Never>?
-    static func wait() async {
+    static func wait(frames count: Int = 2) async {
         let frames = MotionLayoutFrames()
+        frames.remaining = max(1, count)
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 frames.continuation = continuation

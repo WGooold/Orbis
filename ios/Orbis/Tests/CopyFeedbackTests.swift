@@ -1,6 +1,7 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - 复制反馈 / M05（M05、V16、SC23、MOT-08）
 import Foundation
+import Combine
 import Testing
 @testable import OrbisCore
 
@@ -82,6 +83,21 @@ struct CopyFeedbackTests {
         await timer.finish(1)
         await settle()
         #expect(!feedback.copied)
+        await timer.finishAll()
+    }
+
+    // PERF-10: a lazy list clears every copy button it removes; idle ones must not publish.
+    @Test func clearingIdleFeedbackPublishesNothing() async {
+        let timer = Timer()
+        let feedback = OrbisCopyFeedback { await timer.sleep($0) }
+        var publications = 0
+        let observation = feedback.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+        feedback.clear()
+        #expect(publications == 0)
+        feedback.perform {}
+        feedback.clear()
+        #expect(publications == 2 && !feedback.copied)
         await timer.finishAll()
     }
 

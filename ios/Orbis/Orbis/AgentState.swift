@@ -64,6 +64,10 @@ final class SharedSessionContent {
 struct PreparedSessionEnvelope: @unchecked Sendable {
     let message: [String: Any]
     let payload: Data
+    /// A session.snapshot's canonical fingerprint and wire size, prepared with the expansion so
+    /// the UI actor never serialises and hashes a whole snapshot (PERF-10).
+    var snapshotFingerprint: String?
+    var snapshotWireBytes: Int?
 }
 
 /// One worker per connection generation. Only successfully committed source
@@ -76,7 +80,13 @@ actor SharedSessionContentWorker {
         beforeWork?()
         let expanded = try content.expand(envelope, epoch: epoch, seq: seq)
         let bytes = envelope["sharedContent"] == nil ? payload : nil
-        return PreparedSessionEnvelope(message: expanded, payload: try bytes ?? JSONSerialization.data(withJSONObject: expanded))
+        var prepared = PreparedSessionEnvelope(message: expanded, payload: try bytes ?? JSONSerialization.data(withJSONObject: expanded))
+        if let event = expanded["event"] as? [String: Any], event["type"] as? String == "session.snapshot" {
+            prepared.snapshotFingerprint = sessionSnapshotFingerprint(event)
+            prepared.snapshotWireBytes = payload?.count
+                ?? (try? JSONSerialization.data(withJSONObject: envelope, options: [.withoutEscapingSlashes]).count)
+        }
+        return prepared
     }
     func remember(_ event: [String: Any], runtime: String) {
         beforeWork?()

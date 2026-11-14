@@ -878,6 +878,52 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(card.waitForExistence(timeout: 5))
         }
     }
+
+    // PERF-10: a push builds the long chat before its slide starts, then neither the slide nor a
+    // return (back control or swipe) loses frames to main-thread work. Records always print;
+    // frame budgets apply only on an explicit device baseline, like the entry timing above.
+    func testPageMotionKeepsFramesDuringChatEntryAndReturn() {
+        let app = launch("entry", arguments: ["--measure-page-motion", "--preview-entry-long-turn"])
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        let report = app.staticTexts["page-motion-metrics"]
+        let budget = ProcessInfo.processInfo.environment["ORBIS_PERFORMANCE_REGRESSION"] == "1"
+        var count = 0
+        func record(_ kind: String) -> [String: Double] {
+            count += 1
+            let done = NSPredicate(format: "label BEGINSWITH %@", "count=\(count);")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: done, object: report)], timeout: 10), .completed)
+            print("OrbisPageMotion \(kind) \(report.label)")
+            let values = Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { part -> (String, Double)? in
+                let pair = part.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2, let number = Double(pair[1]) else { return nil }
+                return (String(pair[0]), number)
+            })
+            XCTAssertGreaterThan(values["frames"] ?? 0, 3, "the motion must be measured over its own frames")
+            if budget {
+                XCTAssertEqual(values["long"], 0, kind + " dropped frames")
+                XCTAssertLessThan(values["maxGapMs"] ?? .infinity, 34, kind)
+            }
+            return values
+        }
+        for entry in 1...2 {
+            card.tap()
+            let push = record("push-\(entry)")
+            XCTAssertGreaterThan(push["startMs"] ?? 0, 0, "the slide starts after the page is built")
+            XCTAssertTrue(app.staticTexts["ENTRY_LATEST"].waitForExistence(timeout: 5))
+            if entry == 1 {
+                app.buttons["返回"].firstMatch.tap()
+            } else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
+                    .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+                           withVelocity: .slow, thenHoldForDuration: 0.1)
+            }
+            _ = record(entry == 1 ? "return-control" : "return-swipe")
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+            XCTAssertTrue(card.isHittable)
+        }
+    }
+
     func testClosedDisclosureDefersWorkAcrossChatReentryAndRetainsState() {
         let app = launch("disclosure")
         let disclosure = app.buttons["展开Detail 0"]
@@ -3237,6 +3283,33 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
         XCTAssertTrue(active.evaluate(with: card), "选择和取消选择不能暂停下载")
         capture("download-card-active", app: app)
+    }
+
+    // M14 / PERF-10: a selection on a full page consumes the back swipe; the next swipe returns.
+    func testDownloadSelectionConsumesBackSwipeBeforeReturning() {
+        let app = launch("downloads")
+        let path = app.textFields["download-path"]
+        XCTAssertTrue(path.waitForExistence(timeout: 8))
+        path.tap(); path.typeText("/preview/report.zip")
+        app.buttons["按路径下载"].tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.press(forDuration: 0.8)
+        let selection = app.staticTexts["已选择 1 项"]
+        XCTAssertTrue(selection.waitForExistence(timeout: 3))
+        let y = card.frame.midY - app.frame.minY
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        func swipeBack() {
+            origin.withOffset(CGVector(dx: app.frame.width * 0.15, dy: y))
+                .press(forDuration: 0.05, thenDragTo: origin.withOffset(CGVector(dx: app.frame.width * 0.88, dy: y)),
+                       withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        swipeBack()
+        XCTAssertTrue(selection.waitForNonExistence(timeout: 3), "the swipe clears the selection")
+        XCTAssertTrue(path.exists, "the page stays while a selection consumes the swipe")
+        swipeBack()
+        XCTAssertTrue(app.buttons["打开会话目录"].waitForExistence(timeout: 3))
+        XCTAssertTrue(path.waitForNonExistence(timeout: 3))
     }
 
     /// Optional visual evidence; enable ORBIS_CAPTURE_UI=1 in the test runner environment.

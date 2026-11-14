@@ -29,7 +29,10 @@ final class OrbisCopyFeedback: ObservableObject {
         }
     }
 
+    /// Clearing idle feedback publishes nothing: every copy button clears as it leaves, and a lazy
+    /// list removes many while a page is being built (PERF-10).
     func clear() {
+        guard copied || reset != nil else { return }
         reset?.cancel()
         reset = nil
         copied = false

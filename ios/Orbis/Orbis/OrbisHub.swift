@@ -67,6 +67,8 @@ final class OrbisStore: ObservableObject {
     private var homeSurfaceKey: HomeSurfaceKey?
     private var directorySurfaceKey: DirectorySurfaceKey?
     private var publicationScheduled = false
+    private var publicationsHeld = false
+    private var publicationHoldLimit: Task<Void, Never>?
     private var cleanupTasks: [UUID: Task<Void, Never>] = [:]
     // FT-G12-RESUME-01: navigation/scene visibility belongs to the selected Host
     // projection and must follow it even when the chat view remains mounted.
@@ -119,16 +121,42 @@ final class OrbisStore: ObservableObject {
 
     private func publishChanges(hostId: String) {
         changedHosts.insert(hostId)
-        guard !publicationScheduled else { return }
+        schedulePublication()
+    }
+
+    private func schedulePublication() {
+        guard !publicationScheduled, !publicationsHeld else { return }
         publicationScheduled = true
         Task { [weak self] in
             // Published notifies before mutation; capture final, whole-event facts after yielding.
             await Task.yield()
             guard let self else { return }
-            let changed = self.changedHosts; self.changedHosts = []
             self.publicationScheduled = false
+            // A hold that began meanwhile keeps the changes for its release.
+            guard !self.publicationsHeld else { return }
+            let changed = self.changedHosts; self.changedHosts = []
             let menuChanged = self.refreshScreenPublications()
             if menuChanged || self.selectedHostId.map(changed.contains) == true { self.objectWillChange.send() }
+        }
+    }
+
+    /// PERF-10: while a full page moves, Host changes wait and publish once it rests. Each
+    /// publication re-renders whole mounted pages, and one landing between the transition's
+    /// frames stalls it. Facts are untouched, so a page built during the hold still reads current
+    /// state. The limit releases a hold whose end was never reported; holding again while held
+    /// starts a new limit, so each phase of one motion gets its own.
+    func holdScreenPublications(_ hold: Bool, limit: Duration = .seconds(1)) {
+        guard hold || publicationsHeld else { return }
+        publicationsHeld = hold
+        publicationHoldLimit?.cancel(); publicationHoldLimit = nil
+        if hold {
+            publicationHoldLimit = Task { [weak self] in
+                try? await Task.sleep(for: limit)
+                guard !Task.isCancelled else { return }
+                self?.holdScreenPublications(false)
+            }
+        } else if !changedHosts.isEmpty {
+            schedulePublication()
         }
     }
 
