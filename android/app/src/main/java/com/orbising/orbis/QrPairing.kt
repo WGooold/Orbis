@@ -1,9 +1,12 @@
 package com.orbising.orbis
 
 import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,29 +15,47 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.draw.clip
-import com.orbising.orbis.NeumorphDialog as AlertDialog
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PhotoLibrary
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -120,9 +141,11 @@ private data class PairingQrV2Payload(
     val lan: List<LanEndpoint> = emptyList(),
 )
 
+/** Returns the rejection reason, or null once the payload started pairing. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QrScannerDialog(
-    onPayload: (String) -> Unit,
+fun QrScannerSheet(
+    onPayload: (String) -> String?,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -132,6 +155,7 @@ fun QrScannerDialog(
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
     var error by remember { mutableStateOf<String?>(null) }
+    var scannerID by remember { mutableIntStateOf(0) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> hasPermission = granted }
@@ -154,7 +178,8 @@ fun QrScannerDialog(
             }
             val raw = read?.firstNotNullOfOrNull { it.rawValue }
             ContextCompat.getMainExecutor(context).execute {
-                if (raw != null) onPayloadUpdated(raw) else error = "这张图片里没有找到二维码"
+                if (raw == null) error = L10n.tr("这张图片里没有找到二维码")
+                else error = onPayloadUpdated(raw)
             }
         }
     }
@@ -166,82 +191,101 @@ fun QrScannerDialog(
         if (!hasPermission) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(L10n.tr("扫描配对二维码")) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    fun accept(raw: String) {
+        error = onPayloadUpdated(raw)
+    }
+
+    val failure = error ?: if (hasPermission) null
+        else L10n.tr("请在系统设置中允许相机权限，或返回粘贴配对内容。")
+
+    OrbisBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight()) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 8.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                NeumorphIconButton(
+                    onClick = sheetCloseAction(onDismiss),
+                    icon = OrbisSymbols.Close,
+                    contentDescription = L10n.tr("关闭"),
+                )
+                Text(L10n.tr("扫描配对二维码"), style = MaterialTheme.typography.titleLarge)
+            }
+            Column(
+                Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())
+                    .padding(start = 24.dp, top = 20.dp, end = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
                 if (hasPermission) {
-                    QrCameraPreview(
-                        context = context,
-                        lifecycleOwner = lifecycleOwner,
-                        onPayload = onPayloadUpdated,
-                    )
-                } else {
-                    Text(L10n.tr("相机权限未开启"))
-                    NeumorphActionButton(
-                        onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                        text = L10n.tr("允许相机权限"),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    key(scannerID) {
+                        QrCameraPreview(context, lifecycleOwner, onPayload = ::accept)
+                    }
                 }
-                Text(
-                    L10n.tr("也可以直接从相册里选一张二维码截图"),
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
-                NeumorphActionButton(
-                    onClick = {
+                if (failure != null) {
+                    PairingNotice(failure)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        NeumorphActionButton(
+                            onClick = {
+                                error = null
+                                if (hasPermission) scannerID++
+                                else permissionLauncher.launch(Manifest.permission.CAMERA)
+                            },
+                            text = L10n.tr("重新扫描"),
+                            icon = OrbisSymbols.Refresh,
+                            modifier = Modifier.weight(1f),
+                        )
+                        NeumorphActionButton(
+                            onClick = { openAppSettings(context) },
+                            text = L10n.tr("相机设置"),
+                            icon = OrbisSymbols.Settings,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().clip(RemoteUi.ControlShape).clickable {
                         imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    text = L10n.tr("从相册选图"),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (error != null) {
-                    Text(error ?: "", modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                    }.padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.PhotoLibrary, contentDescription = null,
+                        modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.width(8.dp))
+                    Text(L10n.tr("从相册选图"), style = MaterialTheme.typography.bodyLarge)
                 }
             }
-        },
-        confirmButton = { NeumorphTextButton(text = L10n.tr("取消"), onClick = onDismiss) },
-    )
+            NeumorphActionButton(
+                onClick = sheetCloseAction(onDismiss),
+                text = L10n.tr("取消"),
+                modifier = Modifier.fillMaxWidth()
+                    .padding(start = 24.dp, top = 16.dp, end = 24.dp, bottom = 20.dp),
+            )
+        }
+    }
 }
 
-/**
- * 没有相机或扫不了码时（例如另一台手机在测、二维码不在手边），
- * 直接粘贴电脑端 `orbis pair --print-payload` 输出的载荷即可。
- */
+private fun openAppSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+        Uri.fromParts("package", context.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
+}
+
+/** One raised notice for pairing failures, shared by the entry page and the scanner. */
 @Composable
-fun ManualPairingDialog(
-    onPayload: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var text by remember { mutableStateOf("") }
-    val trimmed = text.trim()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(L10n.tr("手动输入配对载荷")) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(L10n.tr("在电脑上运行 orbis pair --print-payload，把整段内容粘贴到这里（与二维码内容相同）。"))
-                NeumorphTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text(L10n.tr("pairing payload")) },
-                    minLines = 4,
-                    maxLines = 8,
-                )
-            }
-        },
-        dismissButton = { NeumorphTextButton(text = L10n.tr("取消"), onClick = onDismiss) },
-        confirmButton = {
-            NeumorphTextButton(
-                text = L10n.tr("连接"),
-                onClick = { onPayload(trimmed) },
-                enabled = trimmed.isNotEmpty(),
+internal fun PairingNotice(text: String, error: Boolean = true) {
+    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, contentPadding = 16.dp) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
+            Icon(
+                if (error) OrbisSymbols.Error else OrbisSymbols.Info,
+                contentDescription = null,
+                tint = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
-        },
-    )
+            Text(text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
 }
 
 @SuppressLint("UnsafeOptInUsageError")
@@ -313,10 +357,11 @@ private fun QrCameraPreview(
         }
     }
 
-    NeumorphSurface(style = NeumorphStyle.Pressed, shape = RemoteUi.CardShape) {
+    NeumorphSurface(style = NeumorphStyle.Pressed, shape = RoundedCornerShape(20.dp), contentPadding = 6.dp) {
         AndroidView(
             factory = { previewView },
-            modifier = Modifier.fillMaxWidth().padding(8.dp).aspectRatio(1f).clip(RemoteUi.ControlShape),
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(14.dp))
+                .semantics { contentDescription = L10n.tr("二维码相机取景框") },
         )
     }
 }

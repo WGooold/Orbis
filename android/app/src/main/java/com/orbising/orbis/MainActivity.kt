@@ -63,6 +63,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
@@ -76,6 +77,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AttachFile
@@ -183,8 +185,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -626,8 +630,22 @@ private fun PairingScreen(
     onCancel: (() -> Unit)? = null,
 ) {
     var scannerOpen by remember { mutableStateOf(false) }
-    var scanError by remember { mutableStateOf<String?>(null) }
-    var manualPairingOpen by remember { mutableStateOf(false) }
+    var manualOpen by remember { mutableStateOf(false) }
+    var manualCode by remember { mutableStateOf("") }
+    var validationError by remember { mutableStateOf<String?>(null) }
+    val chevronRotation by animateFloatAsState(if (manualOpen) 180f else 0f,
+        tween(InteractionMotion.duration(InteractionMotion.Selection)), label = "pairing-manual-chevron")
+    // 扫码与手动粘贴走同一条校验与连接路径。
+    fun validateAndPair(raw: String): String? {
+        val v2 = parsePairingQrV2(raw)
+        if (v2 == null) {
+            return if (parsePairingQrPayload(raw) == null) L10n.tr("二维码无效或不是 Orbis 配对二维码")
+            else L10n.tr("这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair")
+        }
+        clearError()
+        pair(v2.relayUrl, v2.code, raw)
+        return null
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -651,7 +669,7 @@ private fun PairingScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            NeumorphSurface(Modifier.size(76.dp), style = NeumorphStyle.Pressed) {
+            NeumorphSurface(Modifier.size(76.dp), shape = RoundedCornerShape(20.dp), style = NeumorphStyle.Pressed) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Image(
                         painter = painterResource(R.drawable.orbis_mark),
@@ -665,54 +683,105 @@ private fun PairingScreen(
                 Text(L10n.tr("连接你的电脑"), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 InlineInfoButton(L10n.tr("电脑端请前往 orbising.com 下载并激活 Orbis Host（完全免费），获取配对二维码后用 APP 扫描。"), L10n.tr("连接你的电脑"), "pairing-info")
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(28.dp))
             NeumorphActionButton(
                 onClick = {
-                    scanError = null
+                    validationError = null
                     scannerOpen = true
                 },
-                text = if (pairingInProgress) L10n.tr("正在连接…") else L10n.tr("扫码配对"),
+                text = L10n.tr("扫码配对"),
                 icon = OrbisSymbols.QrCodeScanner,
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !pairingInProgress,
             )
-            NeumorphTextButton(
-                text = L10n.tr("手动输入配对载荷"),
-                onClick = { scanError = null; manualPairingOpen = true },
-                modifier = Modifier.fillMaxWidth(),
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.weight(1f).height(2.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant))
+                Text(L10n.tr("手动输入"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.weight(1f).height(2.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant))
+            }
+            NeumorphSurface(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                shape = RemoteUi.ControlShape,
+                style = if (manualOpen) NeumorphStyle.Pressed else NeumorphStyle.Raised,
+                shadowScale = 0.5f,
+                onClick = { manualOpen = !manualOpen },
                 enabled = !pairingInProgress,
-            )
-            Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
-                if (pairingInProgress) CircularProgressIndicator(Modifier.size(24.dp))
-                else Text(error ?: scanError.orEmpty(), color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Rounded.ContentPaste, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp))
+                    Text(L10n.tr("粘贴配对二维码内容"), modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp).rotate(chevronRotation))
+                }
+            }
+            OrbisCollapse(expanded = manualOpen) {
+                Column(Modifier.padding(top = 16.dp, start = 4.dp, end = 4.dp, bottom = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(
+                        value = manualCode,
+                        onValueChange = { manualCode = it },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = L10n.tr("配对二维码 JSON 内容") },
+                        placeholder = { Text(L10n.tr("粘贴电脑端二维码的 JSON 内容")) },
+                        enabled = !pairingInProgress,
+                        minLines = 5,
+                        maxLines = 9,
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            autoCorrectEnabled = false,
+                            keyboardType = KeyboardType.Ascii,
+                        ),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    )
+                    NeumorphActionButton(
+                        onClick = {
+                            val failure = validateAndPair(manualCode)
+                            validationError = failure
+                            if (failure == null) {
+                                manualCode = ""
+                                manualOpen = false
+                            }
+                        },
+                        text = L10n.tr("连接"),
+                        icon = Icons.Rounded.Link,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = manualCode.trim().isNotEmpty() && !pairingInProgress,
+                    )
+                }
+            }
+            val notice = listOfNotNull(error, validationError).distinct().joinToString("\n")
+            if (notice.isNotEmpty()) Box(Modifier.padding(top = 16.dp)) { PairingNotice(notice) }
+            if (pairingInProgress) Row(
+                Modifier.fillMaxWidth().padding(top = 16.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(L10n.tr("正在连接…"), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
-    // 扫码与手动粘贴走同一条校验与连接路径。
-    fun handlePairingPayload(raw: String) {
-        val v2 = parsePairingQrV2(raw)
-        if (v2 == null) {
-            val v1 = parsePairingQrPayload(raw)
-            scanError = if (v1 == null) L10n.tr("二维码无效或不是 Orbis 配对二维码")
-            else L10n.tr("这是旧版二维码（无端到端加密材料）：请在电脑上重新执行 orbis pair")
-        } else {
-            scanError = null
-            clearError()
-            pair(v2.relayUrl, v2.code, raw)
-        }
-        manualPairingOpen = false
-        scannerOpen = false
-    }
-    if (manualPairingOpen) {
-        ManualPairingDialog(
-            onPayload = { raw -> handlePairingPayload(raw) },
-            onDismiss = { manualPairingOpen = false },
-        )
-    }
     if (scannerOpen) {
-        QrScannerDialog(
-            onPayload = { raw -> handlePairingPayload(raw) },
+        QrScannerSheet(
+            onPayload = { raw ->
+                val failure = validateAndPair(raw)
+                if (failure == null) {
+                    validationError = null
+                    scannerOpen = false
+                }
+                failure
+            },
             onDismiss = { scannerOpen = false },
         )
     }
