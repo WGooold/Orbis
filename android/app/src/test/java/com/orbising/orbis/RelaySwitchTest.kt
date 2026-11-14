@@ -101,7 +101,11 @@ class RelaySwitchTest {
         } finally { client.disconnect() }
     }
 
-    @Test fun quicWaitsForAuthenticatedBootstrapAndNeverReplaysAcceptedInputAfterSwitch() {
+    @Test fun quicWaitsForAuthenticatedBootstrapAndNeverReplaysAcceptedInputAfterSwitch() = checkAuthenticatedBootstrap(RelayTransportMode.QUIC)
+    // SC88: WS must obey the same business-version confirmation gate as QUIC.
+    @Test fun wsWaitsForAuthenticatedBootstrapAndNeverReplaysAcceptedInputAfterSwitch() = checkAuthenticatedBootstrap(RelayTransportMode.WS)
+
+    private fun checkAuthenticatedBootstrap(mode: RelayTransportMode) {
         val sockets = CopyOnWriteArrayList<Socket>()
         val root = ByteArray(32) { 7 }
         val client = RelayClient(socketFactory = { _, mode, listener -> Socket(mode, listener).also { sockets.add(it) } })
@@ -118,7 +122,7 @@ class RelaySwitchTest {
         }
         try {
             client.connect(DeviceCredential("wss://relay.invalid", "phone", "test"), onMessage = { _, _ -> },
-                onOpen = {}, onClosed = {}, e2eOptions = E2eConnectOptions("host", "phone", X25519KeyPair.generate(), pskRoot = root), relayMode = RelayTransportMode.QUIC)
+                onOpen = {}, onClosed = {}, e2eOptions = E2eConnectOptions("host", "phone", X25519KeyPair.generate(), pskRoot = root), relayMode = mode)
             val first = sockets[0]; first.ready()
             val host = establish(first)
             assertFalse(client.hasE2eChannel()); assertFalse(first.businessEnabled)
@@ -137,13 +141,68 @@ class RelaySwitchTest {
             val delivered = first.sent.mapNotNull { runCatching { E2eJson.decode<V2Frame>(it, "v2.frame") }.getOrNull() }
                 .filter { it.envelope.hdr.k == "data" }.mapNotNull { host.open(it.envelope)?.toString(Charsets.UTF_8) }
             assertEquals(1, delivered.count { it.contains("accepted-once") })
-            client.setRelayTransportMode(RelayTransportMode.WS)
+            client.setRelayTransportMode(if (mode == RelayTransportMode.WS) RelayTransportMode.QUIC else RelayTransportMode.WS)
             val next = sockets[1]; next.ready()
             awaitCondition { next.authentications == 1 && next.sent.size >= 2 }
             val nextHost = establish(next)
             val after = next.sent.mapNotNull { runCatching { E2eJson.decode<V2Frame>(it, "v2.frame") }.getOrNull() }
                 .filter { it.envelope.hdr.k == "data" }.mapNotNull { nextHost.open(it.envelope)?.toString(Charsets.UTF_8) }
             assertFalse(after.any { it.contains("accepted-once") })
+        } finally { client.disconnect() }
+    }
+
+    // SC88: a compatibility rejection can retry a read-only offer with fresh keys,
+    // while pending input keeps its identity and is sent once after confirmation.
+    @Test fun hostVersionProbeFallsBackBeforeBusinessAndRenegotiatesOnReconnect() {
+        val sockets = CopyOnWriteArrayList<Socket>()
+        val messages = CopyOnWriteArrayList<String>()
+        val root = ByteArray(32) { 7 }
+        val client = RelayClient(socketFactory = { _, mode, listener -> Socket(mode, listener).also { sockets.add(it) } })
+        fun frame(envelope: EnvelopeV2) = E2eJson.json.encodeToString(V2Frame("v2.frame", PROTOCOL_VERSION, envelope))
+        fun establish(socket: Socket): E2eChannel {
+            val hs1 = socket.sent.mapNotNull { runCatching { E2eJson.decode<V2Frame>(it, "v2.frame") }.getOrNull() }
+                .last { it.envelope.hdr.k == "hs" }.envelope
+            val hello = PlaintextEnvelope.read<HandshakeHello>(hs1, "hs")
+            val key = X25519KeyPair.generate(); val devicePublic = Crypto.fromBase64Url(hello.ePubD, "ePubD")
+            val keys = HandshakeE2e.deriveSessionKeys(Crypto.deriveSharedSecret(key.privateRaw, devicePublic), root, key.publicRaw, devicePublic)
+            socket.listener.onMessage(socket, frame(PlaintextEnvelope.build("hs", "host", "host", "phone", HandshakeAcceptBody(
+                "hs2", Crypto.toBase64Url(key.publicRaw), Crypto.toBase64Url(HandshakeE2e.handshakeMacFromHost(keys, key.publicRaw, devicePublic))))))
+            return E2eChannel(keys, E2eChannel.ROLE_HOST)
+        }
+        fun data(socket: Socket, host: E2eChannel, from: Int): List<String> = socket.sent.drop(from)
+            .mapNotNull { runCatching { E2eJson.decode<V2Frame>(it, "v2.frame") }.getOrNull() }
+            .filter { it.envelope.hdr.k == "data" }.mapNotNull { host.open(it.envelope)?.toString(Charsets.UTF_8) }
+        fun send(socket: Socket, host: E2eChannel, text: String) =
+            socket.listener.onMessage(socket, frame(host.seal("data", "host", "host", "phone", text.toByteArray(), "ctl")))
+        try {
+            client.connect(DeviceCredential("wss://relay.invalid", "phone", "test"), onMessage = { text, _ -> messages.add(text) },
+                onOpen = {}, onClosed = {}, e2eOptions = E2eConnectOptions("host", "phone", X25519KeyPair.generate(), pskRoot = root))
+            val socket = sockets.single(); socket.ready(); val first = establish(socket)
+            assertTrue(data(socket, first, 0).single().contains("\"protocolVersion\":${PREFERRED_PROTOCOL_VERSIONS.first()}"))
+            assertEquals("same-command", client.sendUserMessage("runtime", "synthetic", "same-message", commandId = "same-command"))
+            assertFalse(client.hasE2eChannel())
+            val retryStart = socket.sent.size
+            send(socket, first, """{"type":"protocol.error","code":"protocol_version_mismatch","message":"unsupported offer"}""")
+            val retried = establish(socket)
+            val offered = data(socket, retried, retryStart)
+            assertEquals(1, offered.size)
+            assertTrue(offered.single().contains("\"protocolVersion\":${PREFERRED_PROTOCOL_VERSIONS[1]}"))
+            val confirmedStart = socket.sent.size
+            send(socket, retried, """{"type":"device.ready","protocolVersion":${PREFERRED_PROTOCOL_VERSIONS[1]}}""")
+            val delivered = data(socket, retried, confirmedStart)
+            assertEquals(1, delivered.count { it.contains("same-command") && it.contains("same-message") })
+            assertTrue(client.hasE2eChannel())
+            assertFalse(messages.any { it.contains("protocol.error") })
+            val reconnectStart = socket.sent.size
+            socket.listener.onMessage(socket, """{"type":"host.online","protocolVersion":$PROTOCOL_VERSION,"hostId":"host"}""")
+            val renewed = establish(socket)
+            assertFalse(client.hasE2eChannel())
+            val renewedOffer = data(socket, renewed, reconnectStart)
+            assertEquals(1, renewedOffer.size)
+            assertTrue(renewedOffer.single().contains("\"protocolVersion\":${PREFERRED_PROTOCOL_VERSIONS.first()}"))
+            send(socket, renewed, """{"type":"device.ready","protocolVersion":999}""")
+            assertFalse(client.hasE2eChannel())
+            assertTrue(messages.last().contains("protocol_version_mismatch"))
         } finally { client.disconnect() }
     }
 

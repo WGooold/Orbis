@@ -59,7 +59,7 @@ internal class LanTransport(
                 for (url in urls) {
                     // Legacy LAN has no version-error response: a discarded HS1 just times out.
                     // A second format is probed on a fresh socket/key only before HS3 or any command.
-                    for (version in MIN_PROTOCOL_VERSION..PROTOCOL_VERSION) {
+                    for (version in PREFERRED_PROTOCOL_VERSIONS) {
                         if (!isActive) return@launch
                         val next = Attempt(version)
                         synchronized(lock) {

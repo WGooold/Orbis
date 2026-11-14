@@ -35,6 +35,10 @@ Claude 后台子任务提交 `20a9898` 将共享协议、Android 和 iOS 从 18 
 
 连接在认证边界选择双方实际实现的共同格式，功能在已有认证通道按能力启用。Relay 路由版本与端到端业务版本分别管理，旧 strict 握手使用其原格式。
 
+2026-11-14，SC88（S33）：最低版本保持 18，从实际实现的版本集合中选择最高共同版本，不把区间内的整数视为已支持。App–Relay 外层与 App–Host 业务层分别选择；Relay 只转发完整密文，不以其外层版本限制 Host 的任务清单。若同一表示由多方解析，选择各方支持集合的最高交集；交集为空时明确报不兼容。
+
+已发布端没有版本集合公告，沿用从高到低的兼容探测：Relay 仅在认证前明确拒绝格式时建立新连接尝试下一候选；LAN 仅在未完成 HS1 的超时后换连接与密钥；Host 通过只读发现请求和加密 `device.ready` 确认业务格式。WS／QUIC 均在确认前保留排队命令，业务格式在握手代次内固定；重连重新选择，认证失败不触发降级，已提交输入不重放。实现见 Android `ProtocolCompatibility.kt`、`RelayClient.kt`、`LanTransport.kt`；回归见 `LegacyProtocolConnectionChecks.kt`、`ProtocolCompatibilityTest.kt`、`RelaySwitchTest.kt`、`PublishedHostNegotiationTest.kt`。原始失败、已安装 Host 0.1.19 与 v0.1.14 原始模块的隔离互通、重连／回退、制品与验收状态见 `.artifacts/subagent-display-fix-20261114/verification.json`。
+
 ### 3. 采用兼容的 schema 演进
 
 schema 保持既有字段语义，按消息类别声明扩展性；影响副作用的新功能在能力确认后发送。未知操作以关联错误终结，状态与二进制布局保持完整验证。
