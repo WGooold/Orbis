@@ -62,6 +62,34 @@ private struct ComposerText {
     let text: String
 }
 
+/// IOS-CHAT-01: rows receive the small readiness value they render and a stable action owner.
+/// Progress on the connection is not an observation dependency of each text/tool subtree.
+struct ChatReadContext: Equatable {
+    let connection: HostConnection
+    let runtimeId: String
+    let sessionId: String?
+    let canRead: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.connection === rhs.connection && lhs.runtimeId == rhs.runtimeId &&
+            lhs.sessionId == rhs.sessionId && lhs.canRead == rhs.canRead
+    }
+
+    @MainActor private var ownsTarget: Bool {
+        connection.selectedRuntime?.runtimeId == runtimeId && connection.selectedRuntime?.sessionId == sessionId
+    }
+    @MainActor func openTool(_ locator: ToolLocator) -> Bool {
+        guard canRead, connection.canSend, ownsTarget else { return false }
+        connection.toolContent.open(runtimeId: runtimeId, locator: locator)
+        return true
+    }
+    @MainActor func openEntry(_ entryId: String) -> String? {
+        guard canRead, connection.canSend, ownsTarget else { return nil }
+        connection.previewEntry(entryId)
+        return connection.entryPreview?.entryId ?? entryId
+    }
+}
+
 /// The transcript has exactly one viewport policy: within one line of the bottom it follows
 /// new content, dragging or opening a disclosure stops following, and past three lines a jump-to-latest
 /// button appears. Nothing else moves the viewport on the reader's behalf.
@@ -100,20 +128,13 @@ struct ChatView: View {
     @State private var lastScrollTowardEarlier = false
     @State private var questionJumpRequest: ChatQuestionJump?
     @State private var suppressQuestionPaging = false
-    @State private var selectedCommand: String?
-    @State private var deliveryChoices = false
-    @State private var permissionsOpen = false
     @State private var runtimeInfoOpen = false
-    @State private var filePickerOpen = false
     @State private var awaitingHistoryPage = false
     @State private var topArmed = false
-    @State private var composerText: ComposerText?
     @StateObject private var downloadFlight = DownloadFlight()
     @FocusState private var composerFocused: Bool
 
     private var kind: String? { store.agentKind(runtime) }
-    /// Claude Code 只能等当前回合结束后提交（没有 Steer）；附件和其他后端一样以路径交给它。
-    private var claudeComposer: Bool { kind == "claude" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var latestQuestion: ChatQuestion? {
         store.chatTranscript.latestQuestion(excluding: Set(store.pendingSends.items.map(\.messageId)))
@@ -123,36 +144,10 @@ struct ChatView: View {
         guard let projection = notifications.visibleProjection(runtime.runtimeId) else { return false }
         return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
     }
-    /// PERF-12 (Android parity): the text being typed is this page's state. A keystroke re-renders this
-    /// page only (rows are equatable) and is persisted without publishing the store; a draft the store
-    /// writes itself (command result, restored copy, launch) advances `draftRevision` and replaces it.
-    private var draft: Binding<String> {
-        Binding(get: {
-            if let composerText, composerText.key == localSessionKey(host: store.selectedHost, runtime: runtime),
-               composerText.revision == store.draftRevision { return composerText.text }
-            return store.draft(for: runtime)
-        }, set: { text in
-            composerText = ComposerText(key: localSessionKey(host: store.selectedHost, runtime: runtime), revision: store.draftRevision, text: text)
-            store.editDraft(text, for: runtime)
-        })
-    }
-    private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
-    private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
-    private var attachments: [FileTransfer] {
-        transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
-    }
-    private var canSubmit: Bool {
-        // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
-        guard store.canSend, !transfers.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
-              !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
-        if slash {
-            guard let command, draft.wrappedValue.hasPrefix("/" + command.name), store.pendingActionIds.isEmpty else { return false }
-            return command.argument?.required != true || !commandArguments(command).isEmpty
-        }
-        return true
-    }
-
     var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.page)
+        #endif
         VStack(spacing: 0) {
             header
             conversation.overlay(alignment: .top) {
@@ -180,7 +175,10 @@ struct ChatView: View {
                                 value: showQuestionReminder && !hasRuntimeNotices && latestQuestion != nil)
                 }
             }
-            if store.isViewingCachedSession { cachedComposer } else { composer }
+            if store.isViewingCachedSession { cachedComposer } else {
+                ChatComposerView(runtime: runtime, composerFocused: $composerFocused,
+                                 sendFlight: sendFlight, onHistory: onHistory, onAcceptedSend: beginSendFeedback)
+            }
         }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
             #if DEBUG
             // Headless Device Hub can attach a hardware keyboard. The explicit fixture also
@@ -197,24 +195,12 @@ struct ChatView: View {
             #if DEBUG
             .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
             .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
+            .overlay(alignment: .topLeading) { if ChatUpdateProbe.enabled { ChatUpdateReport() } }
             #endif
-            .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                switch result {
-                case .success(let urls): transfers.upload(urls: Array(urls.prefix(max(0, 10 - attachments.count))), runtime: runtime)
-                case .failure(let error): transfers.error = error.localizedDescription
-                }
-            }
-            .orbisBottomSheet(isPresented: $permissionsOpen) {
-                PermissionsView(runtime: runtime).orbisSheet([.large])
-            }
             .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
                 SessionModelConfigurationView(runtime: runtime).orbisSheet([.medium, .large])
             }
             .modifier(TurnFileReviewPresenter(changes: store.turnFileChanges))
-            .onChange(of: draft.wrappedValue) { _, next in
-                if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
-                if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
-            }
             // Subscriptions start once the page has arrived; publishing them inside the entrance
             // forced the whole chat to lay out between its frames (PERF-10).
             .orbisTaskAfterArrival(id: runtime.runtimeId) {
@@ -226,15 +212,6 @@ struct ChatView: View {
                     store.refreshWorkingBranch()
                 }
             }
-            .task(id: command?.argument?.optionCatalog?.id) {
-                guard let command else { return }
-                store.loadMenuOptions(runtimeId: runtime.runtimeId, name: command.name)
-            }
-            .onChange(of: selectedCommand) { old, _ in
-                if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
-            }
-            .onDisappear { if let selectedCommand { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: selectedCommand) } }
-            .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
             .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
             .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in
                 runtimeInfoOpen = false
@@ -338,6 +315,8 @@ struct ChatView: View {
         let kind = self.kind
         let transcript = store.chatTranscript
         let questionID = latestQuestion?.messageId
+        let readContext = ChatReadContext(connection: store.activeConnection, runtimeId: runtime.runtimeId,
+                                         sessionId: runtime.sessionId, canRead: store.canSend)
         let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
         replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
             ready: hasPositioned && store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession,
@@ -355,7 +334,7 @@ struct ChatView: View {
                         ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
                                        toolText: transcript.toolTextByRow[row.id] ?? [:],
                                        timings: transcript.timingsByRow[row.id] ?? [],
-                                       changes: store.turnFileChanges,
+                                       changes: store.turnFileChanges, readContext: readContext,
                                        changeAnchors: turnEndChangeAnchors(row),
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                        replyArrivals: replyArrivals,
@@ -511,7 +490,98 @@ struct ChatView: View {
         jumpRequest += 1
     }
 
-    private var composer: some View {
+    private func loadOlder() {
+        // The native scroll position owns the reading anchor; this only gates paging.
+        if store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
+    }
+
+    private func pendingAction(_ action: PendingSendAction, messageId: String?) {
+        guard let messageId else { return }
+        switch action {
+        case .resend:
+            let existing = Set(store.pendingSends.items.map(\.messageId))
+            if store.resendPendingSend(messageId) { OrbisHaptics.commit(); beginSendFeedback(existing: existing) }
+        case .restore:
+            guard let text = store.restorePendingSend(messageId) else { return }
+            let draft = store.draft(for: runtime)
+            // The editor owns its local text; external restores use the existing revision channel.
+            store.saveDraft(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : draft + "\n" + text, for: runtime)
+            composerFocused = true
+        case .discard: store.discardPendingSend(messageId)
+        case .check: store.refresh()
+        case .cancel: _ = store.cancelQueuedMessage(messageId)
+        }
+    }
+
+    /// 本地待发送消息的附件，按发送时的顺序；上传任务已被清理的不显示。
+    private func pendingUploads(_ messageId: String?) -> [FileTransfer] {
+        guard let ids = store.pendingSends.item(messageId)?.uploadIds, !ids.isEmpty else { return [] }
+        let tasks = transfers.currentTasks
+        return ids.compactMap { id in tasks.first { $0.id == id } }
+    }
+    private func beginSendFeedback(existing: Set<String>) {
+        // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
+        let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
+        guard created.count == 1, let send = created.first else { return }
+        sendFlight.launch(send, following: following, reduceMotion: reduceMotion)
+    }
+
+}
+
+/// IOS-CHAT-01: editor state and its local presentation belong to this subtree. A keystroke
+/// persists through HostConnection without invalidating ChatView's transcript/navigation state.
+private struct ChatComposerView: View {
+    @EnvironmentObject private var store: OrbisStore
+    @EnvironmentObject private var transfers: FileTransfers
+    @EnvironmentObject private var agent: AgentState
+    @Environment(\.colorScheme) private var scheme
+    let runtime: RuntimeSummary
+    @FocusState.Binding var composerFocused: Bool
+    let sendFlight: MessageSendFlight
+    let onHistory: () -> Void
+    let onAcceptedSend: (Set<String>) -> Void
+    @State private var selectedCommand: String?
+    @State private var deliveryChoices = false
+    @State private var permissionsOpen = false
+    @State private var filePickerOpen = false
+    @State private var composerText: ComposerText?
+
+    private var kind: String? { store.agentKind(runtime) }
+    private var claudeComposer: Bool { kind == "claude" }
+    private var accent: Color { OrbisPalette(scheme).agent(kind) }
+    /// PERF-12 / IOS-CHAT-01: typed text belongs to the editor subtree and persists without
+    /// invalidating the transcript owner. A store-originated draft (command result, restored copy,
+    /// launch) advances `draftRevision` and replaces it.
+    private var draft: Binding<String> {
+        Binding(get: {
+            if let composerText, composerText.key == localSessionKey(host: store.selectedHost, runtime: runtime),
+               composerText.revision == store.draftRevision { return composerText.text }
+            return store.draft(for: runtime)
+        }, set: { text in
+            composerText = ComposerText(key: localSessionKey(host: store.selectedHost, runtime: runtime), revision: store.draftRevision, text: text)
+            store.editDraft(text, for: runtime)
+        })
+    }
+    private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
+    private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
+    private var attachments: [FileTransfer] {
+        transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
+    }
+    private var canSubmit: Bool {
+        // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
+        guard store.canSend, !transfers.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
+              !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
+        if slash {
+            guard let command, draft.wrappedValue.hasPrefix("/" + command.name), store.pendingActionIds.isEmpty else { return false }
+            return command.argument?.required != true || !commandArguments(command).isEmpty
+        }
+        return true
+    }
+
+    var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.composer)
+        #endif
         let p = OrbisPalette(scheme)
         return VStack(spacing: 0) {
             InteractionWorkspaceView(runtimeId: runtime.runtimeId)
@@ -594,6 +664,28 @@ struct ChatView: View {
                 }
             }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
         }.padding(.top, 4).background(p.base)
+            .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                switch result {
+                case .success(let urls): transfers.upload(urls: Array(urls.prefix(max(0, 10 - attachments.count))), runtime: runtime)
+                case .failure(let error): transfers.error = error.localizedDescription
+                }
+            }
+            .orbisBottomSheet(isPresented: $permissionsOpen) {
+                PermissionsView(runtime: runtime).orbisSheet([.large])
+            }
+            .onChange(of: draft.wrappedValue) { _, next in
+                if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
+                if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
+            }
+            .task(id: command?.argument?.optionCatalog?.id) {
+                guard let command else { return }
+                store.loadMenuOptions(runtimeId: runtime.runtimeId, name: command.name)
+            }
+            .onChange(of: selectedCommand) { old, _ in
+                if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
+            }
+            .onDisappear { if let selectedCommand { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: selectedCommand) } }
+            .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
     }
 
     private func domainReady(_ name: String) -> Bool {
@@ -606,31 +698,9 @@ struct ChatView: View {
         return branch.branch ?? branch.commit.map { L10n.tr("{0}（分离 HEAD）", String($0.prefix(8))) } ?? (branch.loaded ? L10n.tr("未获取到 Git 分支") : L10n.tr("分支信息待同步"))
     }
 
-    private func loadOlder() {
-        // The native scroll position owns the reading anchor; this only gates paging.
-        if store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
-    }
-
     private func commandArguments(_ command: SlashCommand) -> String {
         String(draft.wrappedValue.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    private func pendingAction(_ action: PendingSendAction, messageId: String?) {
-        guard let messageId else { return }
-        switch action {
-        case .resend:
-            let existing = Set(store.pendingSends.items.map(\.messageId))
-            if store.resendPendingSend(messageId) { OrbisHaptics.commit(); beginSendFeedback(existing: existing) }
-        case .restore:
-            guard let text = store.restorePendingSend(messageId) else { return }
-            let current = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            draft.wrappedValue = current.isEmpty ? text : draft.wrappedValue + "\n" + text
-            composerFocused = true
-        case .discard: store.discardPendingSend(messageId)
-        case .check: store.refresh()
-        case .cancel: _ = store.cancelQueuedMessage(messageId)
-        }
-    }
-
     private func submit(delivery: String? = nil) {
         guard canSubmit else { return }
         let existing = Set(store.pendingSends.items.map(\.messageId))
@@ -640,7 +710,7 @@ struct ChatView: View {
         if slash, let command { accepted = store.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : draft.wrappedValue) }
         else { accepted = store.sendMessage(draft.wrappedValue.isEmpty ? "请查看附件。" : draft.wrappedValue, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
-            beginSendFeedback(existing: existing)
+            onAcceptedSend(existing)
             OrbisHaptics.commit()
             if !slash || messageSlash {
                 // 交给消息的附件离开输入框，仍在上传的继续上传（不取消）。
@@ -649,19 +719,6 @@ struct ChatView: View {
             deliveryChoices = false
         }
     }
-    /// 本地待发送消息的附件，按发送时的顺序；上传任务已被清理的不显示。
-    private func pendingUploads(_ messageId: String?) -> [FileTransfer] {
-        guard let ids = store.pendingSends.item(messageId)?.uploadIds, !ids.isEmpty else { return [] }
-        let tasks = transfers.currentTasks
-        return ids.compactMap { id in tasks.first { $0.id == id } }
-    }
-    private func beginSendFeedback(existing: Set<String>) {
-        // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
-        let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
-        guard created.count == 1, let send = created.first else { return }
-        sendFlight.launch(send, following: following, reduceMotion: reduceMotion)
-    }
-
 }
 
 private final class ChatNativeReadingMetrics {
@@ -834,6 +891,7 @@ struct ChatMessageRow: View, Equatable {
     var toolText: [String: PreparedChatToolText] = [:]
     var timings: [SessionTurnTiming] = []
     var changes: TurnFileChanges?
+    var readContext: ChatReadContext?
     var changeAnchors: Set<String> = []
     var streamingMessageIds: Set<String> = []
     var replyArrivals: ReplyCardArrivals? = nil
@@ -849,11 +907,15 @@ struct ChatMessageRow: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row.contentRevision == rhs.row.contentRevision && lhs.kind == rhs.kind && lhs.toolResults == rhs.toolResults &&
             lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes &&
+            lhs.readContext == rhs.readContext &&
             lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption &&
             lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads &&
             lhs.canResend == rhs.canResend
     }
     var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.row)
+        #endif
         VStack(alignment: .trailing, spacing: 2) {
             HStack(alignment: .top, spacing: 0) {
                 if row.isUser { Spacer(minLength: 36) }
@@ -870,14 +932,14 @@ struct ChatMessageRow: View, Equatable {
                     }
                     if row.isUser {
                         ForEach(row.messages) { message in
-                            MessageContentView(message: message, toolResults: toolResults, streaming: false)
+                            MessageContentView(message: message, toolResults: toolResults, streaming: false, readContext: readContext)
                         }
                     } else {
                         let content = assistantCardContent(row.messages)
                         ForEach(content.prose) { message in
-                            MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId))
+                            MessageContentView(message: message, toolResults: toolResults, streaming: streamingMessageIds.contains(message.messageId), readContext: readContext)
                         }
-                        if !content.tools.isEmpty { ChatToolGroup(calls: content.tools, results: toolResults, prepared: toolText) }
+                        if !content.tools.isEmpty { ChatToolGroup(calls: content.tools, results: toolResults, prepared: toolText, readContext: readContext) }
                     }
                     if row.isUser && !uploads.isEmpty { PendingAttachments(tasks: uploads) }
                     if !row.isUser, let changes {
@@ -1038,6 +1100,7 @@ private struct ChatToolGroup: View {
     let calls: [ChatCardTool]
     let results: [String: ChatMessage]
     let prepared: [String: PreparedChatToolText]
+    let readContext: ChatReadContext?
     @State private var visible = chatToolPageSize
     private func summary(_ call: ChatCardTool) -> ToolSummary? { call.block.toolCallId.flatMap { results[$0]?.toolSummary } ?? call.block.summary }
     private var phase: String {
@@ -1051,12 +1114,12 @@ private struct ChatToolGroup: View {
     }
     var body: some View {
         if calls.count == 1 {
-            MessageContentView(message: calls[0].displayMessage, toolResults: results, preparedTool: prepared[calls[0].id])
+            MessageContentView(message: calls[0].displayMessage, toolResults: results, preparedTool: prepared[calls[0].id], readContext: readContext)
         } else {
             CompactDisclosure(title: L10n.tr("{0} 次工具调用", calls.count), detail: phase, symbol: "wrench.and.screwdriver") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(calls.prefix(visible))) { call in
-                        MessageContentView(message: call.displayMessage, toolResults: results, preparedTool: prepared[call.id])
+                        MessageContentView(message: call.displayMessage, toolResults: results, preparedTool: prepared[call.id], readContext: readContext)
                     }
                     if visible < calls.count {
                         OrbisActionButton(title: L10n.tr("显示更多工具（剩余 {0} 项）", calls.count - visible)) { visible += chatToolPageSize }
@@ -1068,7 +1131,7 @@ private struct ChatToolGroup: View {
 }
 
 private struct MessageContentView: View {
-    @EnvironmentObject private var transfers: FileTransfers
+    @Environment(\.orbisFileActions) private var fileActions
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -1076,9 +1139,10 @@ private struct MessageContentView: View {
     var toolResults: [String: ChatMessage] = [:]
     var streaming = false
     var preparedTool: PreparedChatToolText?
+    var readContext: ChatReadContext?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let summary = message.toolSummary { ToolSummaryView(summary: summary) }
+            if let summary = message.toolSummary { ToolSummaryView(summary: summary, readContext: readContext) }
             ForEach(Array(message.content.enumerated()), id: \.offset) { _, content in
                 switch content.type {
                 case "thinking":
@@ -1087,7 +1151,7 @@ private struct MessageContentView: View {
                     }
                 case "tool_call", "toolCall":
                     let result = content.toolCallId.flatMap { toolResults[$0] }
-                    if let summary = result?.toolSummary ?? content.summary { ToolSummaryView(summary: summary) }
+                    if let summary = result?.toolSummary ?? content.summary { ToolSummaryView(summary: summary, readContext: readContext) }
                     else {
                         let live = content.toolCallId == nil && content.arguments == nil && content.text?.isEmpty == false
                         let status = result?.isError == true ? L10n.tr("执行失败") : live ? L10n.tr("参数接收中") : L10n.tr("已完成")
@@ -1104,7 +1168,7 @@ private struct MessageContentView: View {
                     }
                 case "artifact":
                     if let file = content.artifact {
-                        OrbisMotionButton { if transfers.download(artifact: file) { downloadFlight?.launch() } } label: {
+                        OrbisMotionButton { if fileActions?.download(artifact: file) == true { downloadFlight?.launch() } } label: {
                             HStack(spacing: 8) {
                                 OrbisActionSymbol(systemName: "arrow.down.doc")
                                 FileNameText(name: file.fileName)
@@ -1118,16 +1182,16 @@ private struct MessageContentView: View {
                     }
                 }
             }
-            if message.content.contains(where: { $0.truncated == true }) { TruncatedMessageContent(message: message) }
+            if message.content.contains(where: { $0.truncated == true }) { TruncatedMessageContent(message: message, readContext: readContext) }
             if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
         }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
     }
 }
 
 private struct TruncatedMessageContent: View {
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     let message: ChatMessage
+    let readContext: ChatReadContext?
     @State private var fullOpen = false
     @State private var fullEntryId = ""
     var body: some View {
@@ -1135,12 +1199,12 @@ private struct TruncatedMessageContent: View {
             if let truncated = message.content.first(where: { $0.truncated == true }) {
                 OrbisStatusWithInfo(title: L10n.tr("内容已截断"), message:
                     (truncated.originalBytes.map { L10n.tr("有内容因超长被截断（原始 {0} 字节）", $0.formatted()) } ?? L10n.tr("有内容因超长被截断。"))
-                    + (store.canSend ? "" : "\n" + L10n.tr("连接电脑并继续此会话后可取回完整内容。")))
+                    + (readContext?.canRead == true ? "" : "\n" + L10n.tr("连接电脑并继续此会话后可取回完整内容。")))
                 OrbisTextButton(title: L10n.tr("查看完整内容"), symbol: "doc.text.magnifyingglass") {
-                    store.previewEntry(message.messageId)
-                    fullEntryId = store.entryPreview?.entryId ?? message.messageId
+                    guard let entryId = readContext?.openEntry(message.messageId) else { return }
+                    fullEntryId = entryId
                     fullOpen = true
-                }.disabled(!store.canSend).accessibilityIdentifier("full-entry-" + message.messageId)
+                }.disabled(readContext?.canRead != true).accessibilityIdentifier("full-entry-" + message.messageId)
             }
         }.orbisBottomSheet(isPresented: $fullOpen) { FullMessageView(entryId: fullEntryId).orbisSheet([.large]) }
     }
@@ -1226,11 +1290,11 @@ struct CompactDisclosure<Content: View>: View {
 }
 
 struct ToolSummaryView: View {
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @State private var detailOpen = false
     let summary: ToolSummary
+    let readContext: ChatReadContext?
     var body: some View {
         CompactDisclosure(title: summary.toolName, detail: phase, symbol: summary.isError == true ? "exclamationmark.circle" : "wrench.and.screwdriver") {
             VStack(alignment: .leading, spacing: 10) {
@@ -1244,12 +1308,12 @@ struct ToolSummaryView: View {
                     Text(part.text).font(.orbisCaption(mono: true)).textSelection(.enabled)
                     if part.omitted { Text(L10n.tr("已省略部分内容")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                 }
-                if let tool = summary.tool, let runtime = store.selectedRuntime {
+                if let tool = summary.tool, let readContext {
                     ForEach(summary.contents, id: \.part) { part in
                         if part.availability != "absent" {
                             OrbisActionButton(title: L10n.tr("查看") + toolPartTitle(part.part), symbol: "doc.text.magnifyingglass") {
-                                store.toolContent.open(runtimeId: runtime.runtimeId, locator: ToolLocator(tool: tool, part: part.part)); detailOpen = true
-                            }.disabled(!store.canSend || part.readCapability == "none" || !["readable", "pending"].contains(part.availability))
+                                detailOpen = readContext.openTool(ToolLocator(tool: tool, part: part.part))
+                            }.disabled(!readContext.canRead || part.readCapability == "none" || !["readable", "pending"].contains(part.availability))
                             if ["temporarily-unavailable", "unrecoverable"].contains(part.availability) {
                                 Text(part.availability == "unrecoverable" ? L10n.tr("此部分内容已无法恢复") : L10n.tr("来源暂时无法提供此部分内容")).font(.orbisCaption()).foregroundStyle(.secondary)
                             }
@@ -1257,8 +1321,10 @@ struct ToolSummaryView: View {
                     }
                 }
             }
-        }.orbisBottomSheet(isPresented: $detailOpen, onDismiss: { store.toolContent.close() }) {
-            ToolDetailView(reader: store.toolContent, title: summary.toolName).orbisSheet([.large])
+        }.orbisBottomSheet(isPresented: $detailOpen, onDismiss: { readContext?.connection.toolContent.close() }) {
+            if let readContext {
+                ToolDetailView(reader: readContext.connection.toolContent, title: summary.toolName).orbisSheet([.large])
+            }
         }
     }
     private var phase: String {
@@ -1313,7 +1379,7 @@ extension Text {
 
 struct MarkdownMessage: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @EnvironmentObject private var transfers: FileTransfers
+    @Environment(\.orbisFileActions) private var fileActions
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -1335,6 +1401,9 @@ struct MarkdownMessage: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.markdown)
+        #endif
         // Preserve the measured row while a streamed replacement is parsed off-main.
         let prepared = MarkdownDocuments.cached(text) ?? preparation.prepared?.document
         let rows = prepared?.rows ?? []
@@ -1371,7 +1440,7 @@ struct MarkdownMessage: View {
             .environment(\.openURL, OpenURLAction { url in
                 if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
                 let path = url.isFileURL ? url.path : url.absoluteString.removingPercentEncoding ?? url.absoluteString
-                if transfers.download(path: path) { downloadFlight?.launch() }
+                if fileActions?.download(path: path) == true { downloadFlight?.launch() }
                 return .handled
             })
             .onChange(of: text) { previous, value in

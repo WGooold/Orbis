@@ -29,7 +29,7 @@ struct MathRenderingPreview: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Button("Complete") { completed = true }.accessibilityIdentifier("math-complete")
-                MarkdownMessage(text: source, streaming: !completed).environmentObject(store.transfers)
+                MarkdownMessage(text: source, streaming: !completed).environment(\.orbisFileActions, store.transfers)
             }.padding(20)
         }.background(OrbisPalette(scheme).base).foregroundStyle(OrbisPalette(scheme).text)
     }
@@ -82,7 +82,7 @@ struct StreamingRevealPreview: View {
             Button("下一帧 \(stage)") { stage = min(5, stage + 1) }
                 .accessibilityIdentifier("reveal-next-frame")
             MarkdownMessage(text: text, streaming: stage < 4)
-                .environmentObject(store.transfers)
+                .environment(\.orbisFileActions, store.transfers)
                 .environment(\.previewRevealTime, [0, 1, 1.05, 1.08, 1.2, 2][stage])
             Spacer()
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -149,7 +149,7 @@ struct ReplyCardMotionPreview: View {
             Spacer()
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(OrbisPalette(scheme).base)
-            .environmentObject(store.transfers)
+            .environment(\.orbisFileActions, store.transfers)
     }
 }
 
@@ -1161,8 +1161,34 @@ struct PageMotionReport: View {
     }
 }
 
-/// Opt-in fixture diagnostics. The draw callback measures app rendering, not source-sync latency
-/// or the display's physical presentation time. No message text or identity is recorded.
+/// IOS-CHAT-01: opt-in body-evaluation counts without publishing into the measured view tree.
+@MainActor
+final class ChatUpdateProbe {
+    enum Region: String { case page, composer, row, markdown }
+    static let shared = ChatUpdateProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-chat-updates")
+    private var counts: [Region: Int] = [:]
+    func rendered(_ region: Region) {
+        guard Self.enabled else { return }
+        counts[region, default: 0] += 1
+    }
+    var report: String {
+        [Region.page, .composer, .row, .markdown].map { "\($0.rawValue)=\(counts[$0, default: 0])" }.joined(separator: ";")
+    }
+}
+
+/// Poll inside a separate subtree: publishing the counters would itself invalidate the measured page.
+struct ChatUpdateReport: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            Text(ChatUpdateProbe.shared.report).font(.system(size: 1)).frame(height: 1)
+                .accessibilityIdentifier("chat-update-report").allowsHitTesting(false)
+        }
+    }
+}
+
+/// The entry draw callback measures app rendering, not source-sync latency or the display's
+/// physical presentation time. No message text or identity is recorded.
 @MainActor
 final class ChatEntryProbe: ObservableObject {
     static let shared = ChatEntryProbe()

@@ -77,6 +77,7 @@ struct ContentView: View {
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .environmentObject(store.transfers)
+        .environment(\.orbisFileActions, store.transfers)
         .environmentObject(store.toolInventories)
         .environmentObject(store.hostState)
         .environmentObject(store.notifications)

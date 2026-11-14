@@ -257,6 +257,19 @@ extension EnvironmentValues {
     var orbisVisible: Bool { get { self[OrbisVisibleKey.self] } set { self[OrbisVisibleKey.self] = newValue } }
 }
 
+/// A stable action recipient, deliberately not an ObservableObject subscription. Message text
+/// can start a download without being invalidated by every transfer's progress publication.
+private struct OrbisFileActionsKey: EnvironmentKey {
+    static let defaultValue: FileTransfers? = nil
+}
+
+extension EnvironmentValues {
+    var orbisFileActions: FileTransfers? {
+        get { self[OrbisFileActionsKey.self] }
+        set { self[OrbisFileActionsKey.self] = newValue }
+    }
+}
+
 private struct NeuSurface: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
     let inset: Bool
@@ -798,6 +811,7 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
         let _ = liveSheet.update {
             AnyView(sheet().environmentObject(store).environmentObject(store.hostState)
                 .environmentObject(store.transfers).environmentObject(store.toolInventories)
+                .environment(\.orbisFileActions, store.transfers)
                 .environmentObject(store.notifications).environmentObject(store.agentState)
                 .environment(\.orbisAccent, accent).tint(accent ?? OrbisPalette(scheme).accent))
         }

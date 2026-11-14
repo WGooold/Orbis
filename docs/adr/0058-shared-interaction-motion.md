@@ -115,3 +115,21 @@
 2026-11-08：SC53 的凸起呼吸效果已被 M28 实心 / 空心状态点与绕行弧取代。旧证据保存在 `.artifacts/ui-regression/20261107-home-raised-sync-dot/`；本轮验证与安装验收见 [ADR-0070](0070-unified-design-and-interaction.md)。
 
 2026-11-09 M10 / SC59：左滑露出关闭区时，进度环靠近卡片右缘并保留 12dp 留白及浅色底轨，拖动初段即可辨认进度；恢复关闭区弹性滑入、淡入缩放和文字交叉渐变，固定文字槽保持排版稳定。超过 40% 后保留 4% 回差，轻微回拖不重启文案动画，松手触发与可见上膛状态一致。实现见 [iOS 首页](../../ios/Orbis/Orbis/ContentView.swift) 与 [Android 首页](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)，回归见 [iOS UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift) 与 [Android 设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/HomeSwipeCloseInstrumentedTest.kt)。初版回归、动画修订构建与手机安装证据见 [.artifacts/home-swipe-close-20261109](../../.artifacts/home-swipe-close-20261109/)；最终手势观感待用户验证。
+
+## 2026-11-14：iOS 会话 UI 控制对齐（分阶段实施）
+
+会话 UI 按区域观察展示状态，后台转录继续复用现有串行 worker、稳定行身份和同会话中间结果发布。页面身份与内容异步拥有权分别管理；布局、视口意图和页面工作具有各自明确的拥有者。Android 的不可变展示投影、确定宽度测量及用户移动代次作为对齐依据。
+
+| Ticket | 实施范围 | 状态 |
+| --- | --- | --- |
+| IOS-CHAT-01 | 输入子树拥有草稿与局部面板；消息正文与工具的动作依赖独立于全局观察 | 已实施，定向自动验证通过；待用户验证 |
+| IOS-CHAT-02 | 导航与会话各区域的展示发布边界、来源重绑 | 待实施 |
+| IOS-CHAT-03 | 原生输入框确定宽度测量及有界缓存 | 待实施 |
+| IOS-CHAT-04 | 视口策略、显式命令和用户移动归属 | 待实施 |
+| IOS-CHAT-05 | 页面工作生命周期与组合回归 | 待实施 |
+
+IOS-CHAT-01 将草稿、Slash 选择、发送选项、附件选择及权限面板交给 `ChatComposerView`。消息中的文件动作通过稳定环境引用传递，工具与完整内容读取使用带连接／会话归属的 `ChatReadContext`；详情保持原 reader 观察。放回输入框沿用 `saveDraft`／`draftRevision`。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[HistoryBranchView.swift](../../ios/Orbis/Orbis/HistoryBranchView.swift)。
+
+回归用途见 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift) 的 `testComposerEditsDoNotRebuildTranscriptOwner` 及草稿、附件恢复、工具读取用例；实际构建、自动验证、对照和清理证据见 [.artifacts/ios-chat-control-20261114](../../.artifacts/ios-chat-control-20261114/)。部署与用户验收单独记录。
+
+IOS-CHAT-01 自动验证：Swift 定向 6/6、最终设备定向 5/5，通过输入子树计数、草稿往返、失败附件恢复、乐观发送与工具详情。`testTruncatedContentAndToolArguments` 首轮停在截断补充文案的存在断言，`59d7d46e` 同设备对照同断言失败，保留原断言与首次证据。模拟器为 Orbis iOS Standard 2／iOS 27.0；真机中文组字、输入体感与最终用户验收待完成。

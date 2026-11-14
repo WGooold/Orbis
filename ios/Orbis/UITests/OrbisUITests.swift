@@ -2730,6 +2730,43 @@ final class OrbisUITests: XCTestCase {
                       "Composer value: \(String(describing: composer.value))")
     }
 
+    // IOS-CHAT-01: typing is editor-local even with retained pages, a long transcript and
+    // production preferences. Counters poll from their own subtree so they cannot mask a rebuild.
+    func testComposerEditsDoNotRebuildTranscriptOwner() {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-standard-preferences", "--probe-chat-updates"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let report = app.staticTexts["chat-update-report"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 2))
+        // Background Markdown preparation must settle before attributing any new work to typing.
+        var previousReport = ""
+        var stableSince = Date()
+        let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let current = report.label
+            if current != previousReport { previousReport = current; stableSince = Date() }
+            return Date().timeIntervalSince(stableSince) >= 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 12), .completed)
+        func counts() -> [String: Int] {
+            Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { field -> (String, Int)? in
+                let pair = field.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2, let value = Int(pair[1]) else { return nil }
+                return (String(pair[0]), value)
+            })
+        }
+        let before = counts()
+        XCTAssertGreaterThan(before["page", default: 0], 0)
+        composer.typeText("local editor update")
+        Thread.sleep(forTimeInterval: 0.3)
+        let after = counts()
+        XCTAssertTrue((composer.value as? String)?.contains("local editor update") == true)
+        XCTAssertGreaterThan(after["composer", default: 0], before["composer", default: 0])
+        for region in ["page", "row", "markdown"] {
+            XCTAssertEqual(after[region], before[region], "Typing rebuilt \(region): \(before) -> \(after)")
+        }
+    }
+
     // SC89 / S31: nested tool-group expansion keeps both reading anchors and retained state.
     func testToolGroupAndNestedCallKeepTheirReadingPosition() {
         let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-tool-group"])

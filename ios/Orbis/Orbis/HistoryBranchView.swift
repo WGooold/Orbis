@@ -132,7 +132,9 @@ struct HistoryBranchView: View {
             ScrollView {
                 if store.entryPreview?.loading == true { ProgressView(L10n.tr("读取中…")).font(.orbisCaption()).padding(20) }
                 else if let message = store.entryPreview?.message {
-                    ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) })
+                    ChatMessageRow(row: ChatRow(messages: [message]), kind: store.selectedRuntime.flatMap { store.agentKind($0) },
+                                   readContext: store.selectedRuntime.map { ChatReadContext(connection: store.activeConnection,
+                                       runtimeId: $0.runtimeId, sessionId: $0.sessionId, canRead: store.canSend) })
                 } else { Text(store.entryPreview?.error ?? L10n.tr("该节点没有可预览的消息内容。")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(12) }
             }.frame(maxHeight: 160)
             if store.isViewingCachedSession {
