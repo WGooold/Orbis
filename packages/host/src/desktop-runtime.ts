@@ -50,6 +50,7 @@ import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.j
 import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
 import { usageTemplate } from "./provider-usage-templates.js";
 import { agentCommandForEntry, agentInvocation, agentPowerShellScript, resolveAgentPackage } from "./agent-command.js";
+import type { DesktopQaConfiguration } from "./desktop-qa.js";
 
 const execute = promisify(execFile);
 
@@ -123,6 +124,7 @@ async function terminalWorkspace(cwd: string | undefined): Promise<string> {
 /** Owns only the Host process started by the desktop app. No TCP management endpoint is exposed. */
 export class DesktopRuntime {
   readonly #stateDir: string;
+  readonly #qa: DesktopQaConfiguration | undefined;
   #claudeIntegrationInstalled = false;
   /**
    * HOST-PREP-04：自动登记 Claude Code 插件（最多 4 个 `claude` 子命令，每个 60 s）在后台进行，
@@ -170,8 +172,9 @@ export class DesktopRuntime {
   readonly #providers: ProviderManager;
   readonly #usage: ProviderUsageCache;
 
-  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths) {
+  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration) {
     this.#emit = emit;
+    this.#qa = qa;
     this.#stateDir = resolveStateDir(stateDir);
     // DeepSeek Web 热加载配置文件，只有它能在有会话运行时应用配置变更；
     // 其他 Agent 的 apply 会重载自己的运行时，所以仍然要求空闲。
@@ -197,8 +200,10 @@ export class DesktopRuntime {
   async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
-    await adoptLoginShellEnvironment(line => this.log(line));
-    await adoptWindowsEnvironment();
+    if (!this.#qa) {
+      await adoptLoginShellEnvironment(line => this.log(line));
+      await adoptWindowsEnvironment();
+    }
     // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
     // it may run four `claude` commands, and the desktop must not look frozen meanwhile.
     this.#ensureClaudeIntegration(settings);
@@ -218,7 +223,7 @@ export class DesktopRuntime {
 
   #managedRoot(): string { return agentInstallRoot(); }
   async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
-    if (settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
+    if (!this.#qa && settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
     const managed = this.#managedRoot();
     let selectedCodex: string | undefined;
     try { selectedCodex = await readCodexSelection(); this.#selectionError = false; }
@@ -288,7 +293,7 @@ export class DesktopRuntime {
   }
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
-    await adoptWindowsEnvironment();
+    if (!this.#qa) await adoptWindowsEnvironment();
     await this.#environment(settings);
     this.#scheduleClaudeDetection();
     const managed = this.#managedRoot();
@@ -330,8 +335,8 @@ export class DesktopRuntime {
         const context = { managedEntry, usingManaged: entry !== undefined && installationSource(entry, managed) === "managed" };
         const runtime = this.#packagedRuntime();
         try {
-          if (runtime !== undefined && process.platform === "win32") await syncWindowsPiCommand({ ...context, runtimeRoot: runtime.root, managedRoot: managed });
-          if (runtime !== undefined && process.platform === "darwin") await refreshMacPiCommand(runtime.node, managed);
+          if (!this.#qa && runtime !== undefined && process.platform === "win32") await syncWindowsPiCommand({ ...context, runtimeRoot: runtime.root, managedRoot: managed });
+          if (!this.#qa && runtime !== undefined && process.platform === "darwin") await refreshMacPiCommand(runtime.node, managed);
         } catch (error) { this.log(`维护终端 pi 命令失败：${error instanceof Error ? error.message : String(error)}`); }
         const command = await piCommandStatus(context);
         status.terminalCommand = runtime === undefined && command.state === "available" ? "unavailable" : command.state;
@@ -339,11 +344,11 @@ export class DesktopRuntime {
       }
       if (kind === "dsh") {
         // DeepSeek Desktop is its own entry: installing it registers no dsh command (ADR-0076 F01).
-        status.desktopInstalled = await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled();
+        status.desktopInstalled = !this.#qa && await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled();
       }
       if (kind === "codex") {
         // 桌面版自带 CLI，是否装了 npm 版 codex 与能否接入桌面版无关。
-        status.desktopInstalled = await new CodexDesktopLifecycle().isInstalled();
+        status.desktopInstalled = !this.#qa && await new CodexDesktopLifecycle().isInstalled();
         const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
         const shim = await codexShimStatus(runtimeRoot);
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
@@ -361,7 +366,7 @@ export class DesktopRuntime {
         }
         // 终端接入默认启用：Host 真的在跑（用户在用它）且 Codex 兼容时静默装好 shim，
         // 不再让普通用户看到“终端接入”这个概念。需要提权的系统 PATH 冲突不在这里弹 UAC。
-        if (entry !== undefined && shouldAutoEnableCodexTerminal({ platform: process.platform, hostRunning: this.#desired !== undefined,
+        if (!this.#qa && entry !== undefined && shouldAutoEnableCodexTerminal({ platform: process.platform, hostRunning: this.#desired !== undefined,
           installed: local.installed, compatible: status.terminalCompatible, state: shim.state, needsElevation: shim.needsElevation })) {
           await this.#autoEnableCodexTerminal(runtimeRoot, entry);
         }
@@ -443,6 +448,7 @@ export class DesktopRuntime {
 
   /** macOS 的 `pi` 命令要一次管理员授权：装 Pi 时顺势请求一次，之后由设置页按钮安装或移除；Windows 自动维护。 */
   async piCommand(action: string): Promise<AgentInstallStatus[]> {
+    if (this.#qa) throw new Error("QA Host 不修改系统终端命令");
     if (process.platform !== "darwin") throw new Error("Windows 会自动维护 pi 命令");
     if (action === "install") {
       const runtime = this.#packagedRuntime();
@@ -458,6 +464,7 @@ export class DesktopRuntime {
   }
 
   async setPiIntegration(enabled: boolean): Promise<void> {
+    if (this.#qa) throw new Error("QA Host 不修改全局 Pi 集成");
     if (process.platform !== "darwin") throw new Error("Pi 集成开关仅用于 macOS；Windows 由安装器维护");
     const extensionDir = fileURLToPath(new URL("../../pi-extension/", import.meta.url));
     if (!extensionDir.includes(".app/Contents/Resources/runtime/")) {
@@ -471,6 +478,7 @@ export class DesktopRuntime {
   }
 
   async setClaudeIntegration(enabled: boolean, allowMissing = false, signal?: AbortSignal): Promise<void> {
+    if (this.#qa) throw new Error("QA Host 不修改全局 Claude 集成");
     const pluginDir = fileURLToPath(new URL("../../claude-mod/", import.meta.url));
     if (!/[\\/]runtime[\\/]packages[\\/]claude-mod[\\/]?$/u.test(pluginDir)) {
       this.log("开发运行时不改动 Claude Code 配置；打包后的 Orbis Host 才会登记 Claude Code 插件");
@@ -508,7 +516,7 @@ export class DesktopRuntime {
    * command must not prevent the Host from opening or connecting; the result is reported as an event.
    */
   #ensureClaudeIntegration(settings: Pick<DesktopSettings, "claudeIntegrationEnabled">): void {
-    if (settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled || this.#claudeIntegrationTask !== undefined) return;
+    if (this.#qa || settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled || this.#claudeIntegrationTask !== undefined) return;
     const abort = this.#claudeIntegrationAbort = new AbortController();
     this.#emit({ event: "preparation", kind: "claude", state: "preparing" });
     const task: Promise<void> = this.setClaudeIntegration(true, true, abort.signal).then(() => {
@@ -544,8 +552,10 @@ export class DesktopRuntime {
     // HOST-LANE-01: a pause no longer queues behind this start. One that lands before the Host is
     // marked running cancels it here; one that lands later abandons the attempt through #desired.
     const generation = this.#lifecycleGeneration;
+    if (this.#qa) settings = { ...settings, relayUrl: this.#qa.activation.relayUrl, credential: this.#qa.activation.credential,
+      lanPort: 0, piIntegrationEnabled: false, claudeIntegrationEnabled: false };
     settings.relayUrl = validateDesktopRelay(settings.relayUrl);
-    if (!/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
+    if (!this.#qa && !/^orbis_host_[\w-]{43}$/.test(settings.credential)) throw new Error("请先通过 QQ 邮箱注册并激活这台电脑");
     if (this.#desired) throw new Error("Host 已在运行，请先暂停连接");
     // HOST-LIVE-01: the desktop resumes right after a change it paused for. An attempt that the
     // pause abandoned mid-handshake still disposes what it created, so wait for it instead of failing.
@@ -554,7 +564,7 @@ export class DesktopRuntime {
     await this.#checkExistingHost();
     if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
     await this.#environment(settings);
-    if (process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
+    if (!this.#qa && process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
       // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
       await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
     }
@@ -628,7 +638,7 @@ export class DesktopRuntime {
       let dshLaunchable = false;
       try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
       catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
-      const codexDesktopLaunchable = await desktopLifecycle.isInstalled();
+      const codexDesktopLaunchable = !this.#qa && await desktopLifecycle.isInstalled();
       const connectDshRuntime = async (existingOnly = false): Promise<DshRuntime | undefined> => {
         if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
         const env = await this.#providers.environment("dsh");
@@ -651,9 +661,13 @@ export class DesktopRuntime {
           this.#service?.announceDshDesktopStatus();
         },
       });
-      const dshDesktopLaunchable = await dshDesktopLifecycle.isInstalled();
+      const dshDesktopLaunchable = !this.#qa && await dshDesktopLifecycle.isInstalled();
       if (this.#desired !== settings) { await this.#dispose(); return; }
       const connectDshDesktop = async (existingOnly = false): Promise<DshRuntime | undefined> => {
+        if (this.#qa) {
+          if (existingOnly) return undefined;
+          throw new Error("QA Host 不连接正式 DeepSeek 桌面会话");
+        }
         if (this.#desired !== settings) {
           if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek Desktop 接入");
           return undefined;
@@ -678,6 +692,7 @@ export class DesktopRuntime {
           return { kind, installed: status?.installed ?? null, version: status?.version ?? null };
         }),
         stateDir: this.#stateDir, relayUrl: settings.relayUrl, credential: settings.credential,
+        ...(this.#qa ? { sessionsRoot: join(this.#qa.home, ".pi", "agent", "sessions") } : {}),
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
         // 终端 Codex 后端在后台接入（见 #prepareCodex）。启动时它可能还没就绪：
         // 这里只给接入点，不等待它，否则一次下载就能把手机挡在中继外面。
@@ -689,6 +704,7 @@ export class DesktopRuntime {
           return runtime.prepareTerminalLaunch(request.cwd);
         },
         ensureCodexDesktop: async () => {
+          if (this.#qa) throw new Error("QA Host 不连接正式 Codex 桌面会话");
           if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
           return desktopLifecycle.ensureReady();
         },
@@ -702,7 +718,7 @@ export class DesktopRuntime {
         ensureDshDesktopRuntime: () => connectDshDesktop(),
         recoverDshDesktopRuntime: () => connectDshDesktop(true),
         onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
-        claude: { launcher: this.#claudeLauncher() },
+        claude: { launcher: this.#claudeLauncher(), ...(this.#qa ? { configDir: join(this.#qa.home, ".claude") } : {}) },
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
         // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。
@@ -729,10 +745,10 @@ export class DesktopRuntime {
         })]);
       } finally { if (deadline) clearTimeout(deadline); }
       this.#attempt = 0;
-      if (this.#codexDesktopLifecycle !== undefined) {
+      if (!this.#qa && this.#codexDesktopLifecycle !== undefined) {
         await this.#codexDesktopLifecycle.probe().catch(error => this.log(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`));
       }
-      this.#dshDesktopLifecycle?.watch();
+      if (!this.#qa) this.#dshDesktopLifecycle?.watch();
       this.status();
       // 中继已经连上、手机已经可用；Codex 后端（可能要先下载配套包）与 DeepSeek Web 后端在后台接。
       if (settings.codexEnabled) void this.#prepareCodex(settings);
@@ -1094,6 +1110,7 @@ export class DesktopRuntime {
   }
 
   async enableCodexTerminal(runtimeRoot: string): Promise<AgentInstallStatus[]> {
+    if (this.#qa) throw new Error("QA Host 不修改系统终端命令");
     if (process.platform !== "win32") throw new Error("终端接入仅支持 Windows");
     const codex = this.#detected.get("codex");
     if (!codex?.installed || !codex.entry) throw new Error("请先检测并安装可运行的 Codex");
@@ -1265,6 +1282,7 @@ export class DesktopRuntime {
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
+    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop")) throw new Error("QA Host 不打开正式桌面会话");
     if (kind === "dsh") {
       const env = await this.#providers.environment("dsh");
       const service = await ensureDshWebService(env);

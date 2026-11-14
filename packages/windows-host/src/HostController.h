@@ -251,6 +251,7 @@ signals:
     void exitFailed();
 private:
     friend class HostActivationTest;
+    friend class HostQaActivationTest;
     friend class HostExitTest;
     friend class HostLiveChangeTest;
     using Callback = std::function<void(const QJsonValue &)>;
@@ -301,6 +302,8 @@ private:
     QString diagnostics() const;
     QString activationPath() const { return m_credentialDir + "/activation.dat"; }
     QString m_runtimeRoot, m_dataDir, m_hostStateDir, m_credentialDir;
+    bool m_qaMode = false;
+    QString m_qaRelay, m_qaCredential;
     QSettings m_settings;
     QThreadPool m_activationPool;
     int m_activationIO = 0, m_activationGeneration = 0, m_activationIOGeneration = 0;

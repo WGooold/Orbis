@@ -1,7 +1,9 @@
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 
 // These tests render macOS launch scripts on every runner. Execute the fake
@@ -53,6 +55,23 @@ async function setup() {
 }
 
 describe("TerminalClaudeLauncher", () => {
+  // QA-ACT-02: Terminal's login shell must not restore production secrets or ~/.claude.
+  it.skipIf(process.platform === "win32")("runs a QA Claude launch script with only isolated configuration", async () => {
+    const root = await testDirectory(join(tmpdir(), "orbis-qa-claude-terminal-"));
+    const home = join(root, "home");
+    const configDir = join(home, ".claude");
+    const path = join(root, "launch.command");
+    await writeFile(path, posixScript({ cwd: root, claude: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify(process.env))"], launchId: "qa-launch", stateDir: join(root, "state"), configDir,
+      env: { PATH: "/usr/bin:/bin", HOME: home, ORBIS_QA_HOME: home, ORBIS_NO_KEYCHAIN: "1", ANTHROPIC_API_KEY: "not-a-launch-setting" } }));
+    const { stdout } = await promisify(execFile)("/bin/sh", [path], {
+      env: { PATH: "/usr/bin:/bin", HOME: "/formal-home", ANTHROPIC_API_KEY: "formal-fixture", CLAUDE_CONFIG_DIR: "/formal-config" },
+    });
+    const result = JSON.parse(stdout);
+    expect(result).toMatchObject({ HOME: home, CLAUDE_CONFIG_DIR: configDir, ORBIS_STATE_DIR: join(root, "state"), ORBIS_CLAUDE_LAUNCH_ID: "qa-launch" });
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
   // CLAUDE-MODS-MIN-02: a wrapper that cannot report a version still reaches
   // the original authentication, terminal launch and native handshake path.
   it("does not block a usable TUI solely because the version probe is unreadable", async () => {

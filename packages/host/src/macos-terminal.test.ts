@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const terminal = vi.hoisted(() => ({ spawn: vi.fn(), pi: vi.fn(), codex: vi.fn(), claude: vi.fn() }));
@@ -116,6 +118,26 @@ describe("macOS terminal launch", () => {
     expect(script).toContain("'PI_SKIP_VERSION_CHECK=1'");
     expect(script).toContain("'/My Projects/pi.js' '--approve' '-e'");
     expect(script.replaceAll("\\", "/")).toContain("/pi-extension/dist/index.js'");
+  });
+
+  // QA-ACT-02: the newly opened Terminal may have the person's account keys and HOME;
+  // execute the generated script to prove neither reaches an isolated QA CLI.
+  it.skipIf(process.platform === "win32")("starts QA terminal commands with private roots and no inherited login credentials", async () => {
+    const home = join(workspace, "qa-home");
+    await openMacAgentTerminal({ stateDir: workspace, cwd: workspace, command: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+      env: { PATH: "/usr/bin:/bin", HOME: home, ORBIS_QA_HOME: home, CODEX_HOME: join(home, ".codex"),
+        ORBIS_STATE_DIR: join(workspace, "qa-state"), ORBIS_NO_KEYCHAIN: "1", ANTHROPIC_API_KEY: "must-not-copy" } });
+    const args = terminal.spawn.mock.calls[0]![1] as string[];
+    const script = await readFile(args[2]!, "utf8");
+    expect(script).toContain("exec /usr/bin/env '-i'");
+    expect(script).not.toContain("must-not-copy");
+    const { stdout } = await promisify(execFile)("/bin/sh", [args[2]!], {
+      env: { PATH: "/usr/bin:/bin", HOME: "/formal-home", ANTHROPIC_API_KEY: "formal-fixture" },
+    });
+    const result = JSON.parse(stdout);
+    expect(result).toMatchObject({ HOME: home, CODEX_HOME: join(home, ".codex"), ORBIS_STATE_DIR: join(workspace, "qa-state"), ORBIS_NO_KEYCHAIN: "1" });
+    expect(result.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it("reports failed Terminal open and removes its launch file without requiring automation", async () => {

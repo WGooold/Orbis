@@ -151,6 +151,29 @@ private slots:
         m_hostKeyRecovery = false; m_recoveryAccepted = true; m_requests.clear();
     }
 
+    void productionIgnoresQaActivationFile() {
+        // HOST-QA-01: a production binary must keep its normal credential store,
+        // even if a QA manifest happens to be placed beside its runtime.
+        QTemporaryDir temp;
+        const auto runtime = temp.path() + "/runtime";
+        QDir().mkpath(runtime);
+        QFile manifest(runtime + "/qa-activation.json");
+        QVERIFY(manifest.open(QIODevice::WriteOnly));
+        manifest.write(QJsonDocument(QJsonObject{{"version", 1}, {"environmentId", "qa-fixture"},
+            {"relayUrl", "wss://qa.example.test"}, {"credential", "qa-fixture-credential-123456"}}).toJson());
+        manifest.close();
+        int reads = 0;
+        HostController::s_credentialLoader = [this, &reads](const QString &, QString *) {
+            ++reads; return activation("owner@qq.com");
+        };
+        const auto reset = qScopeGuard([] { HostController::s_credentialLoader = {}; });
+        HostController host(runtime, temp.path() + "/desktop", temp.path() + "/state", temp.path() + "/credential", false);
+        QTRY_VERIFY(!host.credentialsLoading());
+        QCOMPARE(reads, 1); QVERIFY(!host.m_qaMode);
+        QCOMPARE(host.m_credential, QString("orbis_host_rejected"));
+        QCOMPARE(host.relayUrl(), relayUrl());
+    }
+
     void claudeVersionStatusRecoversAfterUpgrade() {
         // CLAUDE-MODS-MIN-01: stale version failures must clear on refresh; the
         // native bridge still accepts the older installed-only status event.

@@ -2,11 +2,18 @@ import { access, chmod, cp, mkdir, readFile, readdir, realpath, writeFile } from
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { parseQaPackageOptions, loadPackageQaActivation, stageQaActivation } from "./qa-package-options.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(process.argv[2] ?? ".artifacts/host/OrbisHost/runtime");
+const options = parseQaPackageOptions(process.argv.slice(2));
+const output = resolve(options.output ?? ".artifacts/host/OrbisHost/runtime");
 if (!output.startsWith(resolve(root, ".artifacts") + sep)) throw new Error("Runtime output must be inside this worktree's .artifacts directory");
+const activation = options.activationFile
+  ? await loadPackageQaActivation(options.activationFile, (await import("../packages/protocol/dist/qa-activation.js")).parseQaActivation)
+  : undefined;
 await mkdir(output, { recursive: true });
+// Invalidate any stale QA manifest immediately, including failed repackaging.
+await stageQaActivation(output, undefined);
 await writeFile(join(output, "package.json"), JSON.stringify({ name: "orbis-host-runtime", private: true, type: "module", version: "0.1.0" }, null, 2));
 await cp(join(root, "LICENSE"), join(output, "LICENSE"));
 await cp(join(root, "THIRD-PARTY-NOTICES.md"), join(output, "THIRD-PARTY-NOTICES.md"));
@@ -57,7 +64,7 @@ async function bundle(source, target) {
   }
 }
 
-for (const name of ["host", "pi-extension"]) await bundle(join(root, "packages", name), join(output, "packages", name));
+for (const name of ["host", "pi-extension", ...(activation ? ["relay"] : [])]) await bundle(join(root, "packages", name), join(output, "packages", name));
 const quicNative = join(output, "packages", "host", "native");
 execFileSync(process.execPath, [join(root, "scripts", "build-host-quic.mjs"), quicNative], { stdio: "inherit" });
 const quicInventory = JSON.parse(await readFile(join(quicNative, "DEPENDENCIES.json"), "utf8"));
@@ -108,4 +115,5 @@ if (!windows) {
   await cp(license, join(output, "node", "LICENSE"));
 }
 await writeFile(join(output, "DEPENDENCIES.json"), JSON.stringify({ node: process.version, packages: inventory, nativeQuic: quicInventory }, null, 2));
+await stageQaActivation(output, activation);
 console.log(`Packaged Node ${process.version} and ${inventory.length} runtime packages into ${output}`);

@@ -9,7 +9,7 @@ import { hasDesktopSession } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
 import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
 import { CLAUDE_STARTUP_ENV } from "./agent-startup.js";
-import { AGENT_LAUNCH_ENV_KEYS, agentPowerShellScript } from "./agent-command.js";
+import { agentTerminalEnvironment, agentPowerShellScript } from "./agent-command.js";
 import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 import { requireClaudeModsVersion } from "./claude-version.js";
 
@@ -183,18 +183,24 @@ type ScriptInput = { cwd: string; claude: string; args: readonly string[]; launc
 /** Terminal runs it in the person's login shell; it removes itself before handing over to Claude. */
 export function posixScript(input: ScriptInput): string {
   const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  const environment = agentTerminalEnvironment(input.env ?? {});
+  const qa = input.env?.ORBIS_QA_HOME ? { ...environment, ...CLAUDE_STARTUP_ENV,
+    ORBIS_CLAUDE_LAUNCH_ID: input.launchId, ORBIS_STATE_DIR: input.stateDir,
+    ...(input.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: input.configDir }) } : undefined;
+  const invocation = [...(qa ? ["/usr/bin/env", "-i", ...Object.entries(qa).map(([key, value]) => `${key}=${value}`)] : []),
+    input.claude, ...input.args].map(quote).join(" ");
   return [
     "#!/bin/sh",
     `cd -- ${quote(input.cwd)} || exit 1`,
     `export ORBIS_CLAUDE_LAUNCH_ID=${quote(input.launchId)}`,
     `export ORBIS_STATE_DIR=${quote(input.stateDir)}`,
-    ...AGENT_LAUNCH_ENV_KEYS.flatMap(key => input.env?.[key] === undefined ? [] : [`export ${key}=${quote(input.env[key])}`]),
+    ...Object.entries(environment).map(([key, value]) => `export ${key}=${quote(value)}`),
     ...Object.entries(CLAUDE_STARTUP_ENV).map(([key, value]) => `export ${key}=${quote(value)}`),
     ...(input.configDir === undefined ? ["unset CLAUDE_CONFIG_DIR"] : [`export CLAUDE_CONFIG_DIR=${quote(input.configDir)}`]),
     ...(input.startedFile === undefined ? [] : ["[ -t 0 ] || exit 1", `/usr/bin/touch -- ${quote(input.startedFile)} || exit 1`]),
     "rm -f -- \"$0\"",
-    ...(input.settingsFile === undefined ? [`exec ${[input.claude, ...input.args].map(quote).join(" ")}`]
-      : [`trap ${quote(`rm -f -- ${quote(input.settingsFile)}`)} EXIT`, [input.claude, ...input.args].map(quote).join(" "), "result=$?", 'exit "$result"']),
+    ...(input.settingsFile === undefined ? [`exec ${invocation}`]
+      : [`trap ${quote(`rm -f -- ${quote(input.settingsFile)}`)} EXIT`, invocation, "result=$?", 'exit "$result"']),
     "",
   ].join("\n");
 }

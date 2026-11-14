@@ -36,6 +36,8 @@ export interface RelayServerOptions {
   port?: number;
   host?: string;
   runtimeCredentials?: string[];
+  /** QA-ACT-01: only this explicitly configured token may pair its one currently connected Host. */
+  qaPairingCredential?: string;
   deviceCredentials?: RelayDeviceCredential[];
   adminToken?: string;
   pairingTtlMs?: number;
@@ -666,7 +668,15 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       }
       if (request.method === "POST" && path === "/v1/pairing-codes") {
         const authorization = request.headers.authorization;
-        const hostId = authorization?.startsWith("Bearer ") ? options.registration?.hostForCredential(authorization.slice(7)) : undefined;
+        const bearer = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+        let hostId = bearer ? options.registration?.hostForCredential(bearer) : undefined;
+        if (hostId === undefined && bearer && options.qaPairingCredential && hasCredential([hashCredential(options.qaPairingCredential)], bearer)) {
+          const credentialHash = hashCredential(bearer).toString("hex");
+          const hosts = [...runtimes].filter(([, runtime]) => runtime.credentialHash === credentialHash && runtime.socket.readyState === WebSocket.OPEN);
+          // Ambiguous credentials never pair a phone to an arbitrary Host.
+          if (hosts.length > 1) { jsonResponse(response, 409, { error: "qa_host_ambiguous" }); return; }
+          hostId = hosts[0]?.[0];
+        }
         if (hostId !== undefined && admin.isDisabled(hostId)) {
           jsonResponse(response, 403, { error: "host_disabled" });
           return;

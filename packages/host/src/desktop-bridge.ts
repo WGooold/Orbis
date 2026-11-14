@@ -4,12 +4,16 @@ import { ProviderError } from "./provider-manager.js";
 import { join } from "node:path";
 import { AgentStateRangeRequestSchema } from "@orbis/protocol";
 import { DesktopCommandLanes } from "./desktop-command-lanes.js";
+import { loadDesktopQa } from "./desktop-qa.js";
 
 // stdout is exclusively a JSON-lines pipe to the parent Qt process. Host diagnostics use events or stderr.
 const output = (value: unknown): void => { process.stdout.write(`${JSON.stringify(value)}\n`); };
 console.log = (...values: unknown[]) => console.error(...values);
 const providerTestRoot = process.env.ORBIS_PROVIDER_TEST_ROOT;
-const runtime = new DesktopRuntime(output, process.env.ORBIS_HOST_STATE_DIR, providerTestRoot ? { codex: join(providerTestRoot, "codex"), pi: join(providerTestRoot, "pi"), dsh: join(providerTestRoot, "dsh") } : undefined);
+const qa = await loadDesktopQa(process.env);
+const providerPaths = qa ? { codex: join(qa.home, ".codex"), pi: join(qa.home, ".pi", "agent"), dsh: join(qa.home, ".dsh"), claude: join(qa.home, ".claude") }
+  : providerTestRoot ? { codex: join(providerTestRoot, "codex"), pi: join(providerTestRoot, "pi"), dsh: join(providerTestRoot, "dsh") } : undefined;
+const runtime = new DesktopRuntime(output, process.env.ORBIS_HOST_STATE_DIR, providerPaths, qa);
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 // HOST-LANE-01: connect / pause / pair no longer wait behind a slow Agent detection; see desktop-command-lanes.ts.
 const commands = new DesktopCommandLanes();

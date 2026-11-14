@@ -3,7 +3,10 @@ import { RegistrationAuthority } from "./registration.js";
 import { verificationMailer } from "./verification-mail.js";
 import { orbisEnvironment } from "@orbis/protocol";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { qaRelayOptions } from "./qa-config.js";
 
+async function productionRelay() {
 const port = Number(process.env.PORT ?? 8787);
 const runtimeCredential = orbisEnvironment(process.env, "RUNTIME_CREDENTIAL");
 const adminToken = orbisEnvironment(process.env, "ADMIN_TOKEN");
@@ -22,7 +25,7 @@ const registration = await RegistrationAuthority.create({
   ...(sendMail === undefined ? {} : { sendMail }),
 });
 
-const relay = await createRelayServer({
+return createRelayServer({
   ...(process.env.ORBIS_QUIC_PORT === undefined ? {} : { quicPort: Number(process.env.ORBIS_QUIC_PORT) }),
   quicHistoryStreamsEnabled: process.env["ORBIS_RELAY_QUIC_HISTORY_STREAMS"] === "1",
   quicHostEnabled: process.env.ORBIS_QUIC_HOST_ENABLED === "1",
@@ -45,7 +48,11 @@ const relay = await createRelayServer({
   ...(process.env.ORBIS_RELEASE_COMMIT ? { buildCommit: process.env.ORBIS_RELEASE_COMMIT } : {}),
   stateFile,
 });
-console.log(`Orbis Relay listening at ${relay.url}`);
+}
+
+const qa = await qaRelayOptions(process.argv.slice(2), process.env, fileURLToPath(new URL("../../../", import.meta.url)));
+const relay = qa ? await createRelayServer(qa) : await productionRelay();
+console.log(`Orbis Relay${qa ? " QA" : ""} listening at ${relay.url}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => void relay.close().then(() => process.exit(0)));

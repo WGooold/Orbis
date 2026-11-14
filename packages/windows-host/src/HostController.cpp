@@ -1,5 +1,6 @@
 #include "HostController.h"
 #include "CredentialStore.h"
+#include "QaActivation.h"
 #include "StartupSettings.h"
 #include <QCoreApplication>
 #include <QApplication>
@@ -49,6 +50,25 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
     m_activationPool.setMaxThreadCount(1);
     m_automaticIntegrations = automaticIntegrations;
+#ifdef ORBIS_QA_BUILD
+    m_qaMode = true;
+    QString qaError;
+    const auto qa = QaActivation::load(m_runtimeRoot, &qaError);
+    if (!qa || !QaActivation::prepareDirectories(m_dataDir)) {
+        m_state = "error";
+        setMessage(qa ? "无法创建测试环境目录" : qaError);
+        return;
+    }
+    m_qaRelay = qa->relayUrl;
+    m_settings.setValue("relayUrl", m_qaRelay);
+    m_settings.setValue("autoStart", false);
+    m_qaCredential = qa->credential;
+    m_credential = m_qaCredential;
+    m_credentialDir = m_dataDir;
+    if (m_hostStateDir.isEmpty()) m_hostStateDir = m_dataDir + "/host";
+    m_verificationRequired = false;
+    m_automaticIntegrations = false;
+#endif
     m_installLauncher = [](const QString &path) {
 #ifdef Q_OS_MACOS
         return QProcess::startDetached("open", {path});
@@ -92,9 +112,9 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     QDir().mkpath(m_credentialDir);
     // HOST-ACTIVITY-05: the macOS Keychain may wait for the user to authorize this read (a locked
     // Keychain or a re-signed app). It used to run here on the UI thread, before the window existed.
-    loadStoredActivation();
-    connect(&m_bridge, &QProcess::started, this, [this, automaticIntegrations] {
-        command("initialize", {{"claudeIntegrationEnabled", automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
+    if (!m_qaMode) loadStoredActivation();
+    connect(&m_bridge, &QProcess::started, this, [this] {
+        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
@@ -176,7 +196,8 @@ void HostController::launchBridge() {
 #endif
     const auto entry = m_runtimeRoot + "/packages/host/dist/desktop-bridge.js";
     if (node.isEmpty() || !QFile::exists(entry)) { m_state = "error"; setMessage("安装不完整：未找到内置 Host 或 Node.js，请重新安装客户端"); return; }
-    auto env = QProcessEnvironment::systemEnvironment();
+    auto env = m_qaMode ? QaActivation::processEnvironment(m_runtimeRoot, m_dataDir, m_hostStateDir)
+                        : QProcessEnvironment::systemEnvironment();
     if (!m_hostStateDir.isEmpty()) env.insert("ORBIS_HOST_STATE_DIR", m_hostStateDir);
     m_bridge.setProcessEnvironment(env);
     m_bridge.setWorkingDirectory(m_runtimeRoot);
@@ -494,6 +515,7 @@ void HostController::handleRegistrationError(const QJsonObject &result, bool mai
     emit changed();
 }
 void HostController::requestCode(const QString &email) {
+    if (m_qaMode) return;
     const auto normalized = email.trimmed().toLower();
     if (!QRegularExpression("^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?@qq\\.com$").match(normalized).hasMatch()) { setMessage("注册仅支持 @qq.com 邮箱"); return; }
     if (!m_bridgeReady || m_cooldown > 0 || busy()) return;
@@ -504,6 +526,7 @@ void HostController::requestCode(const QString &email) {
     });
 }
 void HostController::activate(const QString &email, const QString &code) {
+    if (m_qaMode) return;
     if (!m_bridgeReady || busy()) return;
     const auto normalized = email.trimmed().toLower();
     if (m_challenge.isEmpty() || normalized != m_challengeEmail) { setMessage("请先为这个 QQ 邮箱获取验证码"); return; }
@@ -511,6 +534,7 @@ void HostController::activate(const QString &email, const QString &code) {
     api("/v1/registration/activate", withHostKey({{"email", normalized}, {"hostId", m_hostId}, {"challengeId", m_challenge}, {"code", code.trimmed()}}), [this](const QJsonValue &value) { saveActivation(value, "QQ 邮箱验证成功，这台电脑已激活"); });
 }
 void HostController::activateWithoutEmail() {
+    if (m_qaMode) return;
     if (!m_bridgeReady || busy() || activated() || m_verificationRequired || !m_registrationAvailable) return;
     api("/v1/registration/activate", withHostKey({{"hostId", m_hostId}}), [this](const QJsonValue &value) { saveActivation(value, "这台电脑已激活，可以开始连接"); });
 }
@@ -575,6 +599,7 @@ void HostController::replaceIdentity() {
     });
 }
 void HostController::saveActivation(const QJsonValue &value, const QString &successMessage, bool start) {
+    if (m_qaMode) return;
     auto obj = value.toObject();
     if (obj.value("hostId").toString() != m_hostId || !obj.value("credential").toString().startsWith("orbis_host_")) { setMessage("服务器返回了无效的激活凭据"); return; }
     obj.insert("relayUrl", relayUrl());
@@ -610,6 +635,7 @@ void HostController::endActivationIO() {
     if (m_activationIO == 0) { m_systemAuthorizationWait = false; ++m_activationIOGeneration; }
 }
 void HostController::loadStoredActivation() {
+    if (m_qaMode) return;
     const auto path = activationPath();
     const auto generation = m_activationGeneration;
     const auto loader = s_credentialLoader ? s_credentialLoader : CredentialLoader([](const QString &file, QString *error) { return CredentialStore::load(file, error); });
@@ -647,6 +673,12 @@ void HostController::afterStoredActivation(std::function<void()> next) {
     else next();
 }
 void HostController::restoreActivation(const QString &relay, std::function<void()> done) {
+    if (m_qaMode) {
+        if (CredentialStore::normalizedRelay(relay) != CredentialStore::normalizedRelay(m_qaRelay)) {
+            setMessage("测试版中继由打包配置固定"); return;
+        }
+        done(); emit changed(); return;
+    }
     const auto generation = ++m_activationGeneration;
     const auto path = activationPath(), hostId = m_hostId;
     beginActivationIO(); emit changed();
@@ -673,6 +705,12 @@ void HostController::restoreActivation(const QString &relay, std::function<void(
 }
 void HostController::invalidateActivation() {
     if (m_credential.isEmpty()) return;
+    if (m_qaMode) {
+        m_credential.clear(); m_qr.clear(); m_pairExpires = 0;
+        m_state = "error";
+        setMessage("测试环境激活凭证不匹配，请使用同一套测试包");
+        emit changed(); return;
+    }
     const QJsonObject recovery{{"email", m_email}, {"hostId", m_hostId}, {"relayUrl", relayUrl()}};
     m_credential.clear(); m_qr.clear(); m_challenge.clear(); m_challengeEmail.clear(); m_cooldown = 0;
     m_verificationRequired = !m_email.isEmpty();
@@ -702,6 +740,7 @@ void HostController::invalidateActivation() {
     refreshRegistrationPolicy();
 }
 void HostController::refreshRegistrationPolicy() {
+    if (m_qaMode) return;
     if (!validRelay(relayUrl())) return;
     QUrl url(relayUrl() + "/v1/registration/status"); url.setScheme(url.scheme() == "wss" ? "https" : "http");
     QNetworkRequest request(url); request.setTransferTimeout(15000);
@@ -959,6 +998,10 @@ void HostController::openAgentTui(const QString &kind) {
     });
 }
 void HostController::setAutoStart(bool enabled) {
+    if (m_qaMode) {
+        if (enabled) setMessage("测试版由 QA 启动");
+        return;
+    }
     if (enabled == autoStart()) return;
 #if defined(Q_OS_WIN)
     QSettings startupRegistry("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
@@ -980,6 +1023,9 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     if (busy()) return;
     const auto normalized = CredentialStore::normalizedRelay(relay);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
+    if (m_qaMode && normalized != CredentialStore::normalizedRelay(m_qaRelay)) {
+        setMessage("测试版中继由打包配置固定"); return;
+    }
     if (!dshUrl.trimmed().isEmpty()) {
         const QUrl web(dshUrl.trimmed());
         const auto query = QUrlQuery(web).queryItems();
@@ -1062,6 +1108,10 @@ void HostController::exportDiagnostics() {
 }
 void HostController::checkUpdates() { checkUpdatesInternal(true); }
 void HostController::checkUpdatesInternal(bool announce) {
+    if (m_qaMode) {
+        if (announce) setMessage("测试版通过 QA 更新");
+        return;
+    }
     const QUrl siteUrl("https://orbising.com/v1/site");
     QNetworkRequest request(siteUrl); request.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION); request.setTransferTimeout(15000);
     auto *reply = m_network.get(request);
@@ -1269,6 +1319,7 @@ void HostController::clearDownload() {
 }
 void HostController::appendLog(QString message) {
     if (message.isEmpty()) return;
+    if (!m_qaCredential.isEmpty()) message.replace(m_qaCredential, "[credential]");
     message.replace(QRegularExpression("orbis_host_[A-Za-z0-9_-]+"), "[credential]");
     message.replace(QRegularExpression("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"), "[email]");
     message.replace(QDir::homePath(), "[user]", Qt::CaseInsensitive);

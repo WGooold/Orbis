@@ -8,6 +8,7 @@ import { SessionConfigurationReadSchema, SessionConfigurationSaveSchema, Configu
   SessionConfigurationResultSchema, SessionLaunchResultSchema } from "./session-configuration.js";
 export * from "./session-configuration.js";
 export { orbisEnvironment } from "./product-environment.js";
+export { parseQaActivation, type QaActivation } from "./qa-activation.js";
 import {
   StateDeltaSchema, AgentKindSchema, AgentStateRequestSchema, AgentStateSnapshotSchema, AgentActivitySchema, AgentDeliveryItemSchema, AgentTaskInventorySchema,
   DiagnosticsPageMessageSchema, DiagnosticsRequestSchema,

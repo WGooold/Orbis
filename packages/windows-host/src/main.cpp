@@ -1,4 +1,5 @@
 #include "HostController.h"
+#include "QaActivation.h"
 #include "ExitGuard.h"
 #include <QApplication>
 #include <QCommandLineParser>
@@ -53,7 +54,13 @@ int main(int argc, char *argv[]) {
         std::fprintf(stderr, "%s\n", message.toUtf8().constData()); std::fflush(stderr);
     });
     QApplication app(argc, argv);
-    app.setOrganizationName("Orbis"); app.setApplicationName("Orbis Host"); app.setApplicationVersion(ORBIS_VERSION);
+    app.setOrganizationName("Orbis");
+#ifdef ORBIS_QA_BUILD
+    app.setApplicationName("Orbis Host QA");
+#else
+    app.setApplicationName("Orbis Host");
+#endif
+    app.setApplicationVersion(ORBIS_VERSION);
 #ifdef Q_OS_MACOS
     app.setWindowIcon(QIcon(":/src/assets/orbis-macos.png"));
 #else
@@ -79,13 +86,35 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
     parser.addOption({"smoke-guide", "Walk the overview through activation, connection, pairing and open steps with synthetic bridge events"});
     parser.process(app);
+    QString runtimeRoot = parser.value("runtime-root");
+    if (runtimeRoot.isEmpty()) {
+#ifdef Q_OS_MACOS
+        runtimeRoot = app.applicationDirPath() + "/../Resources/runtime";
+#else
+        runtimeRoot = app.applicationDirPath() + "/runtime";
+#endif
+    }
+    runtimeRoot = QDir(runtimeRoot).absolutePath();
     const auto sharedDataDir = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).absolutePath();
-    QString dataDir = parser.value("data-dir"); if (dataDir.isEmpty()) dataDir = sharedDataDir;
+    QString dataDir = parser.value("data-dir");
+#ifdef ORBIS_QA_BUILD
+    QString qaError;
+    const auto qaActivation = QaActivation::load(runtimeRoot, &qaError);
+    if (!qaActivation) { std::fprintf(stderr, "%s\n", qPrintable(qaError)); return 5; }
+    if (dataDir.isEmpty()) dataDir = sharedDataDir + '/' + qaActivation->environmentId;
+#else
+    if (dataDir.isEmpty()) dataDir = sharedDataDir;
+#endif
     dataDir = QDir(dataDir).absolutePath(); QDir().mkpath(dataDir);
     // Normal launches from a portable package and an installed package share
     // one user credential store. Smoke tests keep their explicitly isolated
     // data and credentials so they cannot touch the user's activated Host.
-    const auto credentialDir = parser.isSet("smoke-test") ? dataDir : sharedDataDir;
+    const auto credentialDir =
+#ifdef ORBIS_QA_BUILD
+        dataDir;
+#else
+        parser.isSet("smoke-test") ? dataDir : sharedDataDir;
+#endif
     if (parser.isSet("smoke-test") && parser.isSet("smoke-providers")) qputenv("ORBIS_PROVIDER_TEST_ROOT", (dataDir + "/test-agents").toUtf8());
     const auto serverName = "OrbisHost-" + QString::fromLatin1(QCryptographicHash::hash(dataDir.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
     QLockFile lock(dataDir + "/desktop.lock"); lock.setStaleLockTime(0);
@@ -103,15 +132,10 @@ int main(int argc, char *argv[]) {
     }
     QLocalServer instance; instance.setSocketOptions(QLocalServer::UserAccessOption);
     if (!instance.listen(serverName)) return 2;
-    QString runtimeRoot = parser.value("runtime-root");
-    if (runtimeRoot.isEmpty()) {
-#ifdef Q_OS_MACOS
-        runtimeRoot = app.applicationDirPath() + "/../Resources/runtime";
-#else
-        runtimeRoot = app.applicationDirPath() + "/runtime";
-#endif
-    }
     QString hostStateDir = parser.value("host-state-dir");
+#ifdef ORBIS_QA_BUILD
+    if (hostStateDir.isEmpty()) hostStateDir = dataDir + "/host";
+#endif
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
     if (parser.isSet("prepare-update")) controller.deferStartup();
@@ -134,6 +158,7 @@ int main(int argc, char *argv[]) {
     if (engine.rootObjects().isEmpty()) return 3;
     auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     if (!window) return 4;
+    window->setTitle(app.applicationName());
     auto show = [window] { window->showNormal(); window->raise(); window->requestActivate(); };
     QPointer<QLocalSocket> installerClient;
     const auto replyInstaller = [&](const QByteArray &reply) {
@@ -168,7 +193,7 @@ int main(int argc, char *argv[]) {
     menu.addAction("暂停连接", &controller, &HostController::stopHost);
     menu.addSeparator();
     auto *exitAction = menu.addAction("退出 Orbis", &controller, &HostController::requestExit);
-    tray.setContextMenu(&menu); tray.setToolTip("Orbis Host");
+    tray.setContextMenu(&menu); tray.setToolTip(app.applicationName());
     if (QSystemTrayIcon::isSystemTrayAvailable()) { app.setQuitOnLastWindowClosed(false); tray.show(); }
     QObject::connect(&tray, &QSystemTrayIcon::activated, &app, [show](QSystemTrayIcon::ActivationReason reason) { if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) show(); });
     QObject::connect(&controller, &HostController::notification, &tray, [&tray](const QString &title, const QString &body) { tray.showMessage(title, body, QSystemTrayIcon::Information, 4000); });
