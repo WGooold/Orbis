@@ -15,6 +15,7 @@ import { resolveCodexTerminalServer } from "./codex-terminal-server.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
+import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -605,6 +606,7 @@ export class DesktopRuntime {
           if (this.#desired === settings && this.#codexDesktopLifecycle === desktopLifecycle) this.#service?.detachCodexDesktopRuntime(runtime);
         },
         resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+        resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
         desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
         launchApp: async signal => {
           if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;

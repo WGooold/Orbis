@@ -20,6 +20,8 @@ export type CodexDesktopLifecycleOptions = {
    * 的守护进程控制套接字——后者在 Windows 上永远不成立（见 ADR-0022 的 Known limitation）。
    */
   resolveEndpoint?: () => Promise<string | undefined>;
+  /** Persisted wrapper recovery; retrying markers wait for an endpoint during launch. */
+  resolveStartupFailure?: (duringStartup?: boolean) => string | undefined;
   launchApp?: (signal?: AbortSignal) => Promise<void>;
   createServer?: () => Promise<CodexAppServer>;
   createExternal?: (endpoint: string) => Promise<CodexAppServer>;
@@ -201,9 +203,13 @@ export class CodexDesktopLifecycle {
       const endpoint = await this.#readEndpoint();
       this.#assertCurrent(generation);
       if (endpoint !== undefined) return this.#attachEndpoint(endpoint, generation);
+      const failure = this.#options.resolveStartupFailure?.(true);
+      if (failure !== undefined) { this.#setStatus("error", failure); throw new Error(failure); }
       await delay(250);
     }
     this.#assertCurrent(generation);
+    const recovery = this.#options.resolveStartupFailure?.();
+    if (recovery !== undefined) { this.#setStatus("error", recovery); throw new Error(recovery); }
     const reason = "Codex 桌面版没有交出可接入的 app-server 端点";
     this.#setStatus("error", `${reason}；请手动打开 Codex 桌面版，或检查 Orbis 包装器是否随 Host 一起安装`);
     throw new Error(reason);
@@ -237,6 +243,9 @@ export class CodexDesktopLifecycle {
   }
 
   async #reportNoEndpoint(generation = this.#generation): Promise<void> {
+    if (!this.#current(generation)) return;
+    const failure = this.#options.resolveStartupFailure?.();
+    if (failure !== undefined) { this.#setStatus("error", failure); return; }
     let presence: CodexDesktopPresence;
     try { presence = await detectCodexDesktopPresence(this.#options.presence); }
     catch (error) {

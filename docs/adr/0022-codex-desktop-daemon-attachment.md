@@ -47,7 +47,7 @@ Desktop integration requires a compatible installed Codex CLI and a running, rea
 
 `codex app-server proxy` cannot reach the desktop application's app-server on Windows: the GUI's only WebSocket/daemon branch is gated behind `process.platform !== "win32"`, so it always spawns its own app-server as a private stdio child, and the managed daemon that the proxy does reach is a different, SSH-oriented server. The attach point has to be created on the desktop side instead.
 
-Orbis therefore ships a wrapper and makes the desktop application run its app-server through it. `CODEX_CLI_PATH` (read by the desktop application as a CLI override) points at `codex-launcher.exe`, a small Windows PE binary; it hands the arguments and the inherited stdio to `node codex-desktop-wrapper.js`. The wrapper starts the real CLI as `app-server … --listen ws://127.0.0.1:<free port>`, bridges the GUI's stdio to that endpoint, and publishes the endpoint as `codex-desktop-endpoint.json` in the Host state directory. Every non-`app-server` invocation is passed through untouched, and a wrapper that cannot start falls back to the real CLI, so the desktop application can never be broken by Orbis: the worst case is an unattachable session.
+Orbis therefore ships a wrapper and makes the desktop application run its app-server through it. `CODEX_CLI_PATH` (read by the desktop application as a CLI override) points at `codex-launcher.exe`, a small Windows PE binary; it hands the arguments and the inherited stdio to `node codex-desktop-wrapper.js`. The wrapper starts the real CLI as `app-server … --listen ws://127.0.0.1:<free port>`, bridges the GUI's stdio to that endpoint, and publishes the endpoint as `codex-desktop-endpoint.json` in the Host state directory. Every non-`app-server` invocation is passed through. A transport setup failure before GUI input can fall back to the same CLI after stopping its failed child. The earlier claim that this could never break native startup was incorrect: if no selected executable can start, Desktop receives no startup-policy JSON. The recovery and retry boundary below supersedes that claim.
 
 Host reads that descriptor (loopback websocket plus a live bridge process only), attaches as an ordinary second WebSocket client with `initialize` and `thread/loaded/list`, and keeps the rest of the desktop behaviour described above — namespaced `codex-desktop:<thread>` IDs, `thread/resume` without overrides, offline/online transitions and one published attach bracket. Nothing about the GUI's own transport changes, and the app-server serves both clients natively, which is the same multi-client shape the terminal backend already relies on.
 
@@ -79,6 +79,60 @@ The macOS desktop application (`com.openai.codex`, installed as `ChatGPT.app` �
 - The wrapper resolves the real CLI from its parent process, which is the GUI main process: `<app>/Contents/Resources/codex-cli/bin/codex`. That CLI and `codex-code-mode-host` update in place with the application, so the Windows install-race wait does not apply.
 - The entry is the launchd user-session environment (`launchctl setenv CODEX_CLI_PATH …`), which apps opened from the Dock, Launchpad, Finder or Spotlight inherit. A LaunchAgent (`~/Library/LaunchAgents/dev.orbis.codex-desktop-entry.plist`) sets it again at every login. The ownership rules match Windows: a foreign value is reported and left alone. An application that is already running keeps its old environment and has to be reopened.
 - Presence means the bundle's main executable is in `ps`. Electron helpers live under `Contents/Frameworks` and do not match. Launch and thread links use `open -b com.openai.codex`, passing the wrapper variables with `--env`.
+
+### Revision 2026-11-14: reuse version-matched official CLI files and recover native startup
+
+The reported Windows failure used Desktop `26.1103.7773.0`: the wrapper selected
+the package CLI, its spawn failed with `EPERM`, and the one-shot policy query
+returned no JSON. An existing official local copy with the same SHA-256 worked.
+This does not establish that all WindowsApps executables require package
+identity: on the development machine the installed `26.1106.6628.0` CLI runs
+from ordinary Node. A temporary deny-execute ACL reproduces the failure shape;
+the reported machine's exact security-policy cause remains unconfirmed.
+
+Windows selection is now tied first to the GUI ancestor's actual package. If
+ancestry cannot be established, only the current user's AppX registration is
+considered, with the startup client version when supplied. Ambiguous installs
+are not resolved by highest version, modification time, or another user's
+machine-level registration.
+
+The wrapper uses existing executables in this order: a matching explicit
+`ORBIS_CODEX_REAL`, a matching official `%LOCALAPPDATA%/OpenAI/Codex/bin` copy,
+then the launching GUI's package CLI. Matching compares SHA-256 for the CLI
+and every known runtime companion shipped by that package (code-mode host,
+command runner and sandbox setup). Stale pins and incomplete copies are
+skipped, including after an update. An explicit manual override is still
+allowed when installation discovery is unavailable, subject to startup
+protocol validation. Orbis neither downloads nor copies Codex executables,
+and does not create or update the official cache. Its optional local metadata
+cache contains only file identities and hashes, invalidated on file changes.
+
+`--print-startup-config` without `--startup-sign-out` is the read-only
+compatibility probe. The wrapper buffers its response and forwards the chosen
+candidate's original stdout, stderr and exit code; native policy/auth/config
+error objects remain errors and are never replaced by fabricated success JSON.
+Both synchronous and asynchronous OS spawn failures can select another
+candidate. Ordinary commands and sign-out are never replayed after successful
+spawn, including nonzero exit. The long-running server is probed first; a
+failed bridge child must close before stdio fallback, and no GUI requests may
+have been sent before that fallback.
+
+If all matching candidates fail, the wrapper removes only the Orbis-owned
+user `CODEX_CLI_PATH`, verifies removal, and writes a recovery diagnostic beside
+the endpoint file. A foreign value or failed registry read/write is preserved
+and reported. Host shows the specific recovery reason instead of repeatedly
+recommending the same failing entry. The user must fully close and reopen
+Desktop to regain its native component-selection/provisioning behavior;
+Orbis cannot change the environment of an already-running GUI. This may cost
+one failed launch and user-controlled reopen. No application is automatically
+terminated, and Host need not restart.
+
+On a later Orbis launch request, recovery remains active until a read-only
+preflight succeeds against existing files. Otherwise Host activates the
+registered GUI with the Orbis override removed. Successful preflight permits
+re-enabling the wrapper, but retains guidance for a GUI already running in
+native mode. The recovery marker is cleared only when a bridge becomes ready;
+a live endpoint takes precedence over a stale marker.
 
 ### Withdrawn: proxy through the desktop daemon
 

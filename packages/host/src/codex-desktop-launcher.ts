@@ -17,6 +17,9 @@ import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import { renderMacCodexLauncher } from "./codex-desktop-macos.js";
 import { ensureCodexDesktopEntry } from "./codex-shim-install.js";
 import type { DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
+import { windowsDesktopCliCandidates } from "./codex-desktop-cli.js";
+import { selectStartupCli, startupProbeArgs } from "./codex-desktop-startup.js";
+import { desktopDigestCachePath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryReason, recoverNativeDesktop } from "./codex-desktop-recovery.js";
 
 export type CodexDesktopWrapper = {
   /** 桌面版要启动的 CLI（我们的包装器，不是真 codex）。 */
@@ -240,6 +243,21 @@ export async function launchCodexDesktopThroughWrapper(
   signal?: AbortSignal,
 ): Promise<boolean> {
   signal?.throwIfAborted();
+  const recovering = process.platform === "win32" && readDesktopRecoveryReason(endpointPath) !== undefined;
+  if (recovering) {
+    try {
+      const candidates = await windowsDesktopCliCandidates(process.env, { parentPid: 0, digestCacheFile: desktopDigestCachePath(endpointPath) });
+      signal?.throwIfAborted();
+      await selectStartupCli(candidates, startupProbeArgs([]), process.env, () => {});
+    } catch (error) {
+      signal?.throwIfAborted();
+      await recoverNativeDesktop(endpointPath, error);
+      signal?.throwIfAborted();
+      await launchCodexDesktopApp(nativeDesktopEnvironment(process.env), signal);
+      return true;
+    }
+  }
+  signal?.throwIfAborted();
   // 两个二进制擕不过去（目标被占/权限）就用安装目录里那份现成副本：宁可暂时锁着，
   // 也不要因为“刷新失败”而不开窗。JS 一直用安装目录里的真实实现（只读一次，不会被锁）。
   const staged = stageCodexWrapper(wrapper, root, endpointPath);
@@ -248,8 +266,10 @@ export async function launchCodexDesktopThroughWrapper(
     : wrapper;
   try {
     // 等待用户入口就位，避免首次打开时 Shell 先启动了未包装的 GUI。
-    await ensureCodexDesktopEntry(effective.launcher);
+    const entry = await ensureCodexDesktopEntry(effective.launcher);
     signal?.throwIfAborted();
+    if (entry.state !== "enabled") return false;
+    if (recovering) markDesktopRecoveryRetry(endpointPath);
     await launchCodexDesktopApp({
       ...process.env,
       CODEX_CLI_PATH: effective.launcher,

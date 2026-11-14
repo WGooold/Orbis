@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: registry.exec }));
-import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry } from "./codex-shim-install.js";
+import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry, suspendCodexDesktopEntry, ensureCodexDesktopEntry } from "./codex-shim-install.js";
 
 let root: string | undefined;
 afterEach(async () => {
@@ -15,6 +15,30 @@ afterEach(async () => {
 });
 
 describe("Codex user PATH registration", () => {
+  it.runIf(process.platform === "win32")("never treats an unreadable user entry as permission to replace it", async () => {
+    registry.exec.mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("access denied")));
+    expect(await ensureCodexDesktopEntry("C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe")).toMatchObject({ state: "foreign", detail: expect.stringContaining("无法读取") });
+    expect(registry.exec).toHaveBeenCalledOnce();
+  });
+
+  it.runIf(process.platform === "win32")("removes only an owned Desktop entry and verifies the registry result", async () => {
+    let current: string | null = "C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe";
+    registry.exec.mockImplementation((_program, args: string[], _options, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
+      if (args[0] === "delete") current = null;
+      callback(null, { stdout: JSON.stringify({ value: current }), stderr: "" });
+    });
+    await suspendCodexDesktopEntry();
+    expect(current).toBeNull();
+    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(1);
+    registry.exec.mockClear();
+    current = "C:\\custom\\codex.exe";
+    await expect(suspendCodexDesktopEntry()).rejects.toThrow("不是 Orbis");
+    expect(current).toBe("C:\\custom\\codex.exe");
+    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(0);
+    registry.exec.mockReset().mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("access denied")));
+    await expect(suspendCodexDesktopEntry()).rejects.toThrow("access denied");
+    expect(registry.exec).toHaveBeenCalledOnce();
+  });
   it("never writes the inherited system PATH into HKCU or mutates it after a failed registry read", async () => {
     root = await mkdtemp(join(tmpdir(), "orbis-shim-path-"));
     vi.stubEnv("LOCALAPPDATA", join(root, "user"));
