@@ -197,7 +197,7 @@ export function agentInvocation(cli: AgentCommand, args: readonly string[], env:
   const argv = [...cli.prefixArgs, ...args];
   if (platform !== "win32") return { command: cli.command, args: argv };
   if (/\.ps1$/iu.test(cli.command)) {
-    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    const quote = (value: string) => `'${value.replace(/['\u2018\u2019\u201A\u201B]/gu, "$&$&")}'`;
     const script = `$ErrorActionPreference = 'Stop'; & ${[cli.command, ...argv].map(quote).join(" ")}; exit $LASTEXITCODE`;
     return { command: join(env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] };
@@ -223,7 +223,7 @@ export function agentInvocation(cli: AgentCommand, args: readonly string[], env:
  * ProcessStartInfo avoids PowerShell re-quoting a cmd /c command line. */
 export function agentPowerShellScript(cli: AgentCommand, args: readonly string[], env: NodeJS.ProcessEnv = process.env): string {
   const invocation = agentInvocation(cli, args, env, "win32");
-  const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const quote = (value: string) => `'${value.replace(/['\u2018\u2019\u201A\u201B]/gu, "$&$&")}'`;
   if (!invocation.windowsVerbatimArguments) return ["&", invocation.command, ...invocation.args]
     .map((value, index) => index === 0 ? value : quote(value)).join(" ");
   return `$orbisStartInfo = New-Object System.Diagnostics.ProcessStartInfo; `

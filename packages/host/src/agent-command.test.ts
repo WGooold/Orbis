@@ -168,6 +168,54 @@ describe("Windows script invocation", () => {
       .toEqual({ command: "C:\\claude.exe", args: ["a & b"] });
   });
 
+  const powerShell = process.env.ORBIS_TEST_POWERSHELL || (process.platform === "win32"
+    ? join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : undefined);
+  // Keep fixture JSON UTF-8 on Windows PowerShell 5.1; this does not alter generated argv.
+  const powerShellUtf8 = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); $OutputEncoding = [Console]::OutputEncoding; ";
+  // WIN-CONSOLE-02: use the real parser; typographic quotes must not end path/argv literals.
+  // Windows exercises its installed PowerShell; other platforms can provide a portable runtime.
+  it.runIf(!!powerShell)("preserves every single-quote variant in native, batch and ps1 script literals", async () => {
+    const cases = ["", "'", "\u2018", "\u2019", "\u201A", "\u201B"].flatMap(quote => ["exe", "cmd", "ps1"].map(ext => {
+      const cli = { command: `C:\\用户${quote}s Tools\\agent.${ext}`, prefixArgs: [`prefix${quote}arg`] };
+      const args = ["--model", `model${quote}value`];
+      const invocation = agentInvocation(cli, args, { ComSpec: "cmd.exe" }, "win32");
+      return {
+        script: ext === "ps1" ? Buffer.from(invocation.args.at(-1)!, "base64").toString("utf16le")
+          : agentPowerShellScript(cli, args, { ComSpec: "cmd.exe" }),
+        expected: ext === "cmd" ? [invocation.command, invocation.args.join(" ")] : [cli.command, ...cli.prefixArgs, ...args],
+      };
+    }));
+    const script = powerShellUtf8 + `$cases = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:ORBIS_TEST_PS_CASES)) | ConvertFrom-Json; `
+      + `$result = @(foreach ($case in $cases) { $tokens = $null; $errors = $null; `
+      + `$ast = [System.Management.Automation.Language.Parser]::ParseInput($case.script, [ref]$tokens, [ref]$errors); `
+      + `$literals = @($ast.FindAll({param($node) $node -is [System.Management.Automation.Language.StringConstantExpressionAst]}, $true) | ForEach-Object { $_.Value }); `
+      + `@{ errors = @($errors | ForEach-Object { $_.ErrorId }); literals = $literals } }); `
+      + `ConvertTo-Json -InputObject $result -Depth 4 -Compress`;
+    const { stdout } = await execute(powerShell!, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+      timeout: 10_000, env: { ...process.env, ORBIS_TEST_PS_CASES: Buffer.from(JSON.stringify(cases)).toString("base64") },
+    });
+    const results = JSON.parse(stdout) as Array<{ errors: string[]; literals: string[] }>;
+    expect(results).toHaveLength(cases.length);
+    for (const [index, result] of results.entries()) {
+      expect(result.errors, cases[index]!.script).toEqual([]);
+      expect(result.literals).toEqual(expect.arrayContaining(cases[index]!.expected));
+    }
+  });
+
+  // WIN-CONSOLE-02: a syntactically valid script can silently remove smart quotes from argv.
+  it.runIf(!!powerShell)("round trips typographic quotes through actual native and ps1 invocation", async () => {
+    const root = await fixture();
+    const args = ["用户's Tools", "left‘value", "right’value", "low‚value", "reversed‛value", "space value"];
+    const native = agentPowerShellScript({ command: process.execPath,
+      prefixArgs: ["-e", "console.log(JSON.stringify(process.argv.slice(1)))", "--"] }, args);
+    const entry = await file(join(root, "用户‘s’‚‛ Tools.ps1"), "[Console]::Out.WriteLine((ConvertTo-Json -InputObject @($args) -Compress)); exit 0\n");
+    const invocation = agentInvocation({ command: entry, prefixArgs: [] }, args, {}, "win32");
+    for (const script of [native, Buffer.from(invocation.args.at(-1)!, "base64").toString("utf16le")]) {
+      const { stdout } = await execute(powerShell!, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(powerShellUtf8 + script, "utf16le").toString("base64")], { timeout: 10_000 });
+      expect(JSON.parse(stdout)).toEqual(args);
+    }
+  }, 15_000);
+
   // Execute the parser boundaries on Windows CI; POSIX cannot validate cmd.exe behavior.
   it.runIf(process.platform === "win32")("round trips batch argv and RPC stdin through a real Windows interpreter", async () => {
     const root = await fixture();

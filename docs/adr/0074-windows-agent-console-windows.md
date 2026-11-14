@@ -4,7 +4,7 @@
 
 Status: accepted（已实现并通过自动验证；未部署，Windows 实机验收待用户验证）
 
-关联：[ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)。场景编号 WIN-CONSOLE-01。
+关联：[ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)。场景编号 WIN-CONSOLE-01、WIN-CONSOLE-02。
 
 ## 问题
 
@@ -49,6 +49,12 @@ Windows 总能打开控制台窗口，Pi 的有头启动不再以 PATH 上存在
 自动验证：类型检查、eslint 与上述 Node 回归通过；本机没有 PowerShell，启动脚本只做逐字断言，ShellExecute、默认终端转交和提权行为未执行。命令、日志与首次失败记录见 [verification.json](../../.artifacts/windows-console-launch-20261112/verification.json)。
 
 未部署，Windows 实机验收待用户验证。
+
+### WIN-CONSOLE-02：内层 Agent 路径与参数保留弯单引号
+
+2026-11-14：路径或参数包含 U+2018 / U+2019 / U+201A / U+201B 时，内层 Agent 脚本也应按 PowerShell 字面量规则转义。`agentInvocation` 的 `.ps1` EncodedCommand 与 `agentPowerShellScript` 的 native / cmd 包装层现与外层窗口启动器一致，双写 ASCII 及四种弯单引号。外层 base64 包装不能修复内层脚本的引号遗漏。实现与回归见 [agent-command.ts](../../packages/host/src/agent-command.ts)、[agent-command.test.ts](../../packages/host/src/agent-command.test.ts)。
+
+官方便携 PowerShell 7.5.4（macOS arm64）实际 Parser 在原代码的 18 组中拒绝 12 组；真实 native / ps1 执行的 6 组中 2 组丢失参数字符或找不到脚本。相同探针修复后分别 18/18、6/6 通过，新增两项回归由失败转为通过；两文件定向回归 19 通过，1 个既有 Windows cmd 用例跳过。证据及运行时校验和见 [repair.md](../../.artifacts/chain-verification-2026-11-14/04-agent-launch/repair-w04-01/repair.md)。测试 fixture 单独设定 UTF-8 输出以适配 PowerShell 5.1 日志编码，产品脚本未改变编码策略。Windows PowerShell 5.1、cmd.exe 实际参数转交、执行策略及原生控制台仍未执行；未部署，待用户验证。
 
 ## Windows 待测试项目（待用户验证）
 
