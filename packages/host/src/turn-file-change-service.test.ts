@@ -239,6 +239,50 @@ describe("Host turn file changes", () => {
     await begin("partial", false); await writeFile(join(workspace, "a.txt"), "new\n"); const summary = await finish();
     expect(summary.coverage).toBe("partial"); expect(summary.reasons).toContain("start-boundary-unconfirmed"); expect(summary.reasons).toContain("capture-entry-budget");
   });
+  // Different scan cutoffs must not turn unchanged PNG/XML resources into a turn's file changes.
+  it.each([
+    { beforeEntries: 1, afterEntries: 100, modified: false },
+    { beforeEntries: 100, afterEntries: 1, modified: false },
+    { beforeEntries: 1, afterEntries: 100, modified: true },
+    { beforeEntries: 100, afterEntries: 1, modified: true },
+  ])("counts only confirmed changes across scan cutoffs: %j", async ({ beforeEntries, afterEntries, modified }) => {
+    await service.close();
+    const captureBudget = { maxEntries: beforeEntries, maxMs: 10_000 };
+    service = new TurnFileChangeService({ ...options(), captureBudget });
+    execFileSync("git", ["init", "-q", workspace]);
+    await writeFile(join(workspace, "a.txt"), "before\n");
+    await mkdir(join(workspace, "resources"));
+    for (let index = 0; index < 12; index++) {
+      await writeFile(join(workspace, "resources", `${index}.png`), Buffer.from([0, 1, 2]));
+      await writeFile(join(workspace, "resources", `${index}.xml`), "<resource/>\n");
+    }
+    execFileSync("git", ["-C", workspace, "add", "."]);
+    await begin();
+    if (modified) await writeFile(join(workspace, "a.txt"), "after\n");
+    captureBudget.maxEntries = afterEntries;
+    const summary = await finish();
+    expect(summary).toMatchObject({ state: "ready", coverage: "partial", fileCount: modified ? 1 : 0,
+      addedFiles: 0, deletedFiles: 0, modifiedFiles: modified ? 1 : 0,
+      reasons: expect.arrayContaining(["capture-entry-budget"]) });
+    expect(summary.preview.map(file => file.path)).toEqual(modified ? ["a.txt"] : []);
+    await service.request("phone", runtimeId, { type: "session.changes.read", runtimeId, agent, requestId: "manifest",
+      changeSetId: summary.changeSetId, manifestVersion: 1, cursor: null, maxItems: 100 });
+    expect(events.at(-1)).toMatchObject({ type: "session.changes.page", totalCount: modified ? 1 : 0,
+      files: modified ? [expect.objectContaining({ path: "a.txt", changeKind: "modified" })] : [] });
+  });
+  // A file whose bytes could not be captured has no comparable content identity, even if its path is known.
+  it.each([
+    { beforeBytes: 32, afterBytes: 1024 },
+    { beforeBytes: 1024, afterBytes: 32 },
+  ])("does not report an unchanged file after an interrupted read: %j", async ({ beforeBytes, afterBytes }) => {
+    await service.close();
+    const captureBudget = { maxBytes: beforeBytes, maxMs: 10_000 };
+    service = new TurnFileChangeService({ ...options(), captureBudget });
+    await writeFile(join(workspace, "image.png"), Buffer.alloc(128));
+    await begin(); captureBudget.maxBytes = afterBytes;
+    expect(await finish()).toMatchObject({ state: "ready", coverage: "partial", fileCount: 0, preview: [],
+      reasons: expect.arrayContaining(["capture-byte-budget"]) });
+  });
   it("does not traverse symlinks and distinguishes binary and oversize metadata", async (context) => {
     await service.close(); service = new TurnFileChangeService({ ...options(), captureBudget: { maxFileBytes: 100 } });
     await writeFile(join(directory, "outside"), "secret"); await begin();

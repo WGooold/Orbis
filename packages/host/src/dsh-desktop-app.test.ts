@@ -103,6 +103,44 @@ describe("Desktop installation discovery", () => {
 });
 
 describe.skipIf(process.platform === "win32")("Orbis-owned Desktop launch", () => {
+  // DSH-DESKTOP-10: the public open call returns before mkdir/open finish;
+  // cancellation in that gap must reach the actual process-spawn boundary.
+  it("does not spawn when its owner cancels during launch preparation", async () => {
+    const abort = new AbortController();
+    const state = await temp();
+    const spawnDesktop = vi.fn(() => { throw new Error("unexpected Desktop launch"); }) as unknown as typeof spawn;
+    const pending = launchDshDesktop({ root: "/test", executable: "/test/app", archive: "/test/archive", version: "test" },
+      state, { signal: abort.signal, spawnDesktop });
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(spawnDesktop).not.toHaveBeenCalled();
+    expect(pendingDshDesktopLaunch(state)).toBeUndefined();
+  });
+
+  it.each([false, true])("keeps an independent shared-launch caller valid when its owner cancels (caller cancelled=%s)", async cancelled => {
+    const port = await tokenEndpoint(new Set(["retry-token-abcdefghijkl"]));
+    const root = join(await temp(), "DeepSeek Harness.app");
+    const state = await temp();
+    await install(root, "darwin", `#!/bin/sh\necho "dsh web: http://127.0.0.1:${port}/?token=retry-token-abcdefghijkl"\nexec sleep 30\n`);
+    const installation = (await inspectDshDesktopInstallation(root, "darwin"))!;
+    const owner = new AbortController(), caller = new AbortController();
+    const counting = vi.fn((...args: Parameters<typeof spawn>) => spawn(...args)) as unknown as typeof spawn;
+    const original = launchDshDesktop(installation, state, { signal: owner.signal, spawnDesktop: counting }).catch(error => error);
+    const joined = launchDshDesktop(installation, state, { signal: caller.signal, spawnDesktop: counting }).catch(error => error);
+    owner.abort(); if (cancelled) caller.abort();
+    expect(await original).toBe(owner.signal.reason);
+    const result = await joined;
+    if (cancelled) {
+      expect(result).toBe(caller.signal.reason); expect(counting).not.toHaveBeenCalled();
+    } else {
+      expect(result).not.toBeInstanceOf(Error);
+      pids.push(result.descriptor.pid);
+      expect(counting).toHaveBeenCalledOnce();
+      expect(result.url).toContain("retry-token");
+    }
+    expect(pendingDshDesktopLaunch(state)).toBeUndefined();
+  });
+
   it("captures the forwarded URL in a private log, records only Orbis's instance and keeps Node switches out of Desktop", async () => {
     const tokens = new Set(["first-token-abcdefghijkl"]);
     const port = await tokenEndpoint(tokens);

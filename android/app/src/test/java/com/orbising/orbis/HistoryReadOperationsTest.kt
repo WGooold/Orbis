@@ -62,6 +62,31 @@ class HistoryReadOperationsTest {
         return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committed)
     }
 
+    // FT-G12-RESUME-01: a source request can arrive while a reserve reads disk.
+    // Its remote continuation must yield without spending or resetting the reserve.
+    @Test fun `source demand arriving during local prefetch takes the next remote slot`() {
+        val budget = SessionHistoryPrefetch("window", "tail", beforeEntryId = "tail")
+            .addingResponse(10, 20_000, 1)
+        val local = initial().beginHistoryRead("r", "reserve", budget).state
+        val demand = local.requestRuntimeRefresh("r")
+        val deferred = demand.queueSessionSync("reserve-command", PendingSessionSync(
+            "r", "s", "reserve-sync", "history", "tail", beforeEntryId = "tail",
+            historyOperationId = "reserve", historyPrefetch = budget))
+        assertTrue(deferred.sessionSyncCommands.isEmpty())
+        assertTrue("r" in deferred.sessionSyncRequests)
+        assertEquals(SessionReadPhase.CANCELLED, deferred.sessionReads["reserve"]?.phase)
+        assertEquals(budget, deferred.sessionReads["reserve"]?.historyPrefetch)
+        val recovery = deferred.requestedSessionRecovery("r", 0, "recovery")
+        assertEquals("preview", recovery?.range)
+        val source = deferred.beginSessionRead("r", SessionReadKind.SOURCE, "source").state
+            .queueSessionSync("source-command", recovery!!.copy(historyOperationId = "source"))
+        assertEquals("preview", advanceSessionSyncTasks(source, 1, 0).send.single().task.range)
+        val confirmed = deferred.copy(sessionSyncRequests = emptySet())
+        val resumed = confirmed.beginHistoryRead("r", "resume", budget)
+        assertEquals("resume", resumed.acceptance.operationId)
+        assertEquals(budget, resumed.state.sessionReads["resume"]?.historyPrefetch)
+    }
+
     @Test fun `canonical ancestors without display rows remain remotely loadable instead of proving history end`() {
         val base = initial()
         val graph = base.sessionGraphs.getValue("s").withFixtureEntries(listOf(entry("older", null), entry("tail", "older")))

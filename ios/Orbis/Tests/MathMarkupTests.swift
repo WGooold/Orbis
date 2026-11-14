@@ -11,7 +11,7 @@ struct MathMarkupTests {
         for fixture in fixtures {
             let source = try #require(fixture["source"] as? String), count = try #require(fixture["count"] as? Int)
             if let prepared = MathMarkupEngine.shared.protect(source) {
-                #expect(!prepared.bypass)
+                #expect(!prepared.bypass, "\(prepared.value["bypassReason"] ?? "no reason")")
                 let tokens = try #require(prepared.value["tokens"] as? [[String: Any]])
                 #expect(tokens.filter { $0["pending"] as? Bool == false }.count == count)
                 #expect(prepared.restore(prepared.text) == source)
@@ -52,7 +52,7 @@ struct MathMarkupTests {
         #expect(PreparedMarkdownDocument(#"Price $5 and $10; `\(x\)`"#).mathHTML.isEmpty)
         let pending = PreparedMarkdownDocument(#"\(\frac{a}"# + "\n\nfollowing")
         #expect(pending.mathHTML.isEmpty)
-        #expect(pending.rows.count == 2)
+        #expect(pending.rows.count == 2, "\(pending.mathHTML.count) fragments rendered")
         guard case .text(let raw) = pending.rows[0].kind else { Issue.record("Expected source fallback"); return }
         #expect(String(raw.characters) == #"\(\frac{a}"#)
     }

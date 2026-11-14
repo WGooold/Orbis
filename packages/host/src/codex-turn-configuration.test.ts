@@ -123,6 +123,17 @@ it("does not reuse an old turn's configuration for an external new turn or after
   expect(h.metadata().currentTurnConfiguration).toEqual({ turnId: "external" });
 });
 
+// SC86: Codex enriches both request and selection through the same model catalog.
+it("uses the same catalog name for an unchanged Codex request and selection", async () => {
+  const h = await harness();
+  await vi.waitFor(() => expect(h.metadata().currentTurnConfiguration?.model?.id).toBe("a"));
+  h.server.onNotification?.("thread/settings/updated", { threadId: "thread",
+    threadSettings: { model: "a", modelProvider: "fixture", effort: "low" } });
+  expect(h.metadata().model).toEqual({ provider: "fixture", id: "a", name: "A" });
+  expect(h.metadata().currentTurnConfiguration?.model).toEqual(h.metadata().model);
+  expect(h.metadata().currentTurnConfiguration?.thinkingLevel).toBe(h.metadata().thinkingLevel);
+});
+
 it("keeps an early reroute authoritative when a rollout read is still in flight", async () => {
   const h = await harness();
   h.server.onNotification?.("model/rerouted", { threadId: "thread", turnId: "active", fromModel: "a", toModel: "b" });

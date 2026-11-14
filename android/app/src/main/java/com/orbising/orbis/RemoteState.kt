@@ -2466,6 +2466,8 @@ class RelayReducer(
         var nextRuntimeSessionViews = state.runtimeSessionViews
         var nextSessionSyncCommands = state.sessionSyncCommands
         var nextSessionSyncFailures = state.sessionSyncFailures
+        var nextSessionSyncFailureCooldowns = state.sessionSyncFailureCooldowns
+        var nextSessionSyncBlockedTargets = state.sessionSyncBlockedTargets
         var nextBranchGenerations = state.sessionBranchGenerations
         var nextSessionSyncRequests = state.sessionSyncRequests
         var nextSessionHistory = state.sessionHistory
@@ -2908,6 +2910,13 @@ class RelayReducer(
                 }
                 if (!staleTarget) {
                     if (!isCanonicalPage) nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
+                    // A committed source checkpoint also releases its previous failure
+                    // policy, so a newer demand can start after an exhausted late reply.
+                    if (!isCanonicalPage && sourceReadyCheckpoint) {
+                        nextSessionSyncFailureCooldowns = nextSessionSyncFailureCooldowns - runtimeId
+                        nextSessionSyncBlockedTargets = nextSessionSyncBlockedTargets
+                            .filterNot { it.startsWith("$runtimeId\u0000") }.toSet()
+                    }
                     nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
                     nextSessions = nextSessions + (
                         snapshot.sessionId to (nextSessions[snapshot.sessionId] ?: SessionCatalogEntry(snapshot.sessionId))
@@ -3398,6 +3407,8 @@ class RelayReducer(
             runtimeSessionViews = nextRuntimeSessionViews,
             sessionSyncCommands = nextSessionSyncCommands,
             sessionSyncFailures = nextSessionSyncFailures,
+            sessionSyncFailureCooldowns = nextSessionSyncFailureCooldowns,
+            sessionSyncBlockedTargets = nextSessionSyncBlockedTargets,
             sessionBranchGenerations = nextBranchGenerations,
             sessionSyncRequests = nextSessionSyncRequests,
             sessionHistory = nextSessionHistory,

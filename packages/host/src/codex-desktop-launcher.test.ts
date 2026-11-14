@@ -144,10 +144,37 @@ describe("staged Codex wrapper runtime", () => {
       CODEX_CLI_PATH: staged.launcher,
       ORBIS_CODEX_WRAPPER_SCRIPT: staged.script,
       ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
-    }));
+    }), undefined);
     activation.launch.mockRejectedValueOnce(new Error("activation failed"));
     activation.ensureEntry.mockResolvedValue(undefined);
     await expect(launchCodexDesktopThroughWrapper(wrapper, endpointPath, root)).resolves.toBe(false);
+  });
+
+  // HOST-DESKTOP-CANCEL-01: stop can arrive while the native wrapper entry is
+  // being registered. Cancellation must not launch the GUI or request fallback.
+  it("cancels wrapper activation before opening the application", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-cancel-"));
+    const abort = new AbortController();
+    let enabled!: () => void;
+    activation.ensureEntry.mockReset().mockImplementation(() => new Promise<void>(resolve => { enabled = resolve; }));
+    activation.launch.mockReset().mockResolvedValue(undefined);
+    const opened = launchCodexDesktopThroughWrapper(wrapper, join(root, "endpoint.json"), root, abort.signal);
+    const result = opened.catch(error => error);
+    abort.abort(new Error("cancelled wrapper launch"));
+    enabled();
+    expect(await result).toEqual(abort.signal.reason);
+    expect(activation.launch).not.toHaveBeenCalled();
+
+    const live = new AbortController();
+    activation.ensureEntry.mockResolvedValue(undefined);
+    activation.launch.mockImplementationOnce(async (_env, signal: AbortSignal) => {
+      expect(signal).toBe(live.signal);
+      live.abort(new Error("cancelled native activation"));
+      throw live.signal.reason;
+    });
+    await expect(launchCodexDesktopThroughWrapper(wrapper, join(root, "endpoint.json"), root, live.signal))
+      .rejects.toThrow("cancelled native activation");
   });
 });
 

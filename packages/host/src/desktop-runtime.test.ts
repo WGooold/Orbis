@@ -9,12 +9,14 @@ import { RegistrationAuthority } from "../../relay/src/registration.js";
 import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 import { CodexAppServer } from "./codex-daemon.js";
+import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
+import { RelayAuthenticationError } from "./relay-client.js";
 import type { DshConnection } from "./dsh-client.js";
 
 describe("desktop Host lifecycle", () => {
@@ -46,6 +48,109 @@ describe("desktop Host lifecycle", () => {
       await runtime.stop();
       expect(client.stop).toHaveBeenCalledTimes(1);
     } finally { await runtime.close(); await dsh.stop(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // HOST-DESKTOP-CANCEL-01: invalidate desktop discovery before waiting for the
+  // service drain, so a slow shutdown cannot authorize a late GUI launch.
+  it.each(["stop", "close"] as const)("cancels Desktop lifecycles and makes concurrent %s await the original service drain", async action => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-slow-stop-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    vi.spyOn(CodexDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(CodexDesktopLifecycle.prototype, "probe").mockResolvedValue(undefined);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "watch").mockImplementation(() => {});
+    const codexStop = vi.spyOn(CodexDesktopLifecycle.prototype, "stop");
+    const dshStop = vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "stop");
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    let release = (): void => {};
+    let held = false;
+    let stopping: Promise<void> | undefined;
+    let overlapping: Promise<void> | undefined;
+    const originalStop = HostService.prototype.stop;
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      codexStop.mockClear(); dshStop.mockClear();
+      vi.spyOn(HostService.prototype, "stop").mockImplementationOnce(async function (this: HostService) {
+        held = true;
+        await new Promise<void>(resolve => { release = resolve; });
+        await originalStop.call(this);
+      });
+      stopping = runtime.stop();
+      await vi.waitFor(() => expect(held).toBe(true));
+      expect(codexStop).toHaveBeenCalledOnce();
+      expect(dshStop).toHaveBeenCalledOnce();
+      let finished = false;
+      overlapping = runtime[action]().then(() => { finished = true; });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(finished).toBe(false);
+      // close may also wait for unrelated background tasks; its internal stop
+      // must itself remain pending instead of announcing a completed pause early.
+      expect(events.filter(event => event.event === "state" && event.state === "stopped")).toHaveLength(0);
+      release(); await Promise.all([stopping, overlapping]);
+    } finally { release(); await Promise.all([stopping, overlapping]); await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects a queued Desktop ensure from the service abandoned by pause", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-stale-ensure-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    vi.spyOn(CodexDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(CodexDesktopLifecycle.prototype, "probe").mockResolvedValue(undefined);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "watch").mockImplementation(() => {});
+    const ensure = vi.spyOn(CodexDesktopLifecycle.prototype, "ensureReady").mockRejectedValue(new Error("unexpected stale launch"));
+    const create = vi.spyOn(HostService, "create");
+    const runtime = new DesktopRuntime(() => {}, join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      const stale = create.mock.calls[0]![0].ensureCodexDesktop!;
+      await runtime.stop();
+      await expect(stale()).rejects.toThrow("已取消 Codex 桌面版接入");
+      expect(ensure).not.toHaveBeenCalled();
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // HOST-DESKTOP-CANCEL-01: activation loss retains desired settings until its
+  // service drain finishes. The disposed lifecycle must reject already queued
+  // session requests so they cannot leave a new native connection without an owner.
+  it("revokes a queued Desktop ensure before activation-loss disposal finishes draining", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-activation-dispose-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    vi.spyOn(CodexDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(CodexDesktopLifecycle.prototype, "probe").mockResolvedValue(undefined);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "watch").mockImplementation(() => {});
+    const ensure = vi.spyOn(CodexDesktopLifecycle.prototype, "ensureReady").mockRejectedValue(new Error("unexpected stale launch"));
+    const create = vi.spyOn(HostService, "create");
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    let release = (): void => {};
+    let draining = false;
+    const originalStop = HostService.prototype.stop;
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      const old = create.mock.calls[0]![0];
+      vi.spyOn(HostService.prototype, "stop").mockImplementationOnce(async function (this: HostService) {
+        draining = true;
+        await new Promise<void>(resolve => { release = resolve; });
+        await originalStop.call(this);
+      });
+      old.onRelayAuthenticationError!(new RelayAuthenticationError("unauthorized", "fixture activation revoked"));
+      await vi.waitFor(() => expect(draining).toBe(true));
+      await expect(old.ensureCodexDesktop!()).rejects.toThrow("已取消 Codex 桌面版接入");
+      expect(ensure).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(events.some(event => event.activationRequired === true)).toBe(true));
+    } finally { release(); await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
   });
 
   it.each([undefined, "/local/bin/claude"])("reports native Claude availability %s independently of managed npm Agents", async executable => {
@@ -172,12 +277,15 @@ describe("desktop Host lifecycle", () => {
     const events: DesktopEvent[] = [];
     const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const install = vi.spyOn(runtime, "setClaudeIntegration").mockRejectedValueOnce(new Error("plugin command failed")).mockResolvedValue(undefined);
+    // Native version detection finishes independently and may be the latest
+    // event; registration recovery is judged by its own preparation state.
+    const preparation = () => events.filter(event => event.event === "preparation" && event.kind === "claude").at(-1);
     try {
       await runtime.initialize();
-      await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ event: "preparation", kind: "claude", state: "error" }));
+      await vi.waitFor(() => expect(preparation()).toMatchObject({ event: "preparation", kind: "claude", state: "error" }));
       await runtime.configureClaudeIntegration(true);
       // Without this the desktop kept showing "插件未登记" after the user fixed it from Settings.
-      expect(events.at(-1)).toEqual({ event: "preparation", kind: "claude", state: "idle" });
+      expect(preparation()).toEqual({ event: "preparation", kind: "claude", state: "idle" });
     } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 

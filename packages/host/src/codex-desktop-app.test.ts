@@ -26,6 +26,17 @@ function script(): string {
 }
 
 describe("registered Codex desktop activation", () => {
+  // HOST-DESKTOP-CANCEL-01: the last native boundary must obey cancellation,
+  // including cancellation already requested before any process exists.
+  it("does not spawn when cancelled and passes cancellation to the native launcher", async () => {
+    const cancelled = new AbortController();
+    cancelled.abort(new Error("cancelled native launch"));
+    await expect(launchCodexDesktopApp({}, cancelled.signal)).rejects.toThrow("cancelled native launch");
+    expect(activation.spawn).not.toHaveBeenCalled();
+    const live = new AbortController();
+    await launchCodexDesktopApp({}, live.signal);
+    expect(activation.spawn).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ signal: live.signal }));
+  });
   it.runIf(process.platform === "darwin")("reopens a local thread in the Codex bundle without restarting the Mac app", async () => {
     await openCodexDesktopThread("thread-123", "local");
     expect(activation.spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/open", [

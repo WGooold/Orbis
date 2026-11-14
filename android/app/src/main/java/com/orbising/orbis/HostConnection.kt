@@ -352,8 +352,7 @@ internal class HostConnection(
     @Volatile private var historyWindowRequestId: String? = null
     @Volatile private var historyWindowSupported = false
     @Volatile private var visibleHistoryRuntimeId: String? = null
-    @Volatile private var historyInterestTarget: String? = null
-    @Volatile private var historyInterestRequestId: String? = null
+    private val historyInterest = HistoryWindowInterest()
     private val historyReconcileSchedules = java.util.concurrent.ConcurrentHashMap<String, ReadReconcileSchedule>()
 
     private fun historyReconcileSchedule(runtimeId: String): ReadReconcileSchedule = historyReconcileSchedules.getOrPut(
@@ -361,6 +360,7 @@ internal class HostConnection(
     ) { ReadReconcileSchedule() }
 
     fun reconcileRuntime(runtimeId: String) {
+        sendHistoryInterest()
         if (visibleHistoryRuntimeId == runtimeId && mutableState.value.selectedRuntimeId == runtimeId &&
             historyReconcileSchedule(runtimeId).claim(System.currentTimeMillis())) refreshRuntime(runtimeId)
     }
@@ -1316,23 +1316,25 @@ internal class HostConnection(
     }
 
     /** Explicit refresh re-enables synchronization after a recoverable failure. */
-    fun refreshRuntime(runtimeId: String? = mutableState.value.selectedRuntimeId, explicitRetry: Boolean = false): Boolean {
+    fun refreshRuntime(runtimeId: String? = mutableState.value.selectedRuntimeId, explicitRetry: Boolean = false,
+        resumedHistorySession: String? = null): Boolean {
         val id = runtimeId ?: return false
         refreshAgentModel(id, force = explicitRetry)
-        if (!explicitRetry && (id in mutableState.value.sessionSyncFailures ||
-                mutableState.value.conversations[id]?.chatSyncError != null)) return false
         if (explicitRetry) updateState { it.retrySessionSync(id) }
         // Deciding whether a refresh is still needed and publishing that decision must be one
         // atomic step, otherwise a loader write landing in between drops the requested refresh.
         var accepted = false
         var refreshed = mutableState.value
         updateState { current ->
-            val next = current.requestRuntimeRefresh(id)
+            val next = if (resumedHistorySession != null) current.requestResumedHistoryRefresh(id, resumedHistorySession)
+                else current.requestRuntimeRefresh(id)
             accepted = next !== current
             if (accepted) refreshed = next
             next
         }
         if (!accepted) return false
+        // An accepted interest records demand without bypassing an existing failure.
+        if (id in refreshed.sessionSyncFailures || refreshed.conversations[id]?.chatSyncError != null) return true
         val pairedDevice = device ?: return true
         val runtime = refreshed.runtimes[id] ?: return true
         if (refreshed.connection != RelayConnection.ONLINE) return true
@@ -1501,6 +1503,8 @@ internal class HostConnection(
         val state = mutableState.value
         if (visibleHistoryRuntimeId != runtime.runtimeId || !historyWindowSupported || !shouldConnect || state.connection != RelayConnection.ONLINE || !state.e2eReady ||
             state.selectedRuntimeId != runtime.runtimeId || state.selectedOfflineSessionId != null ||
+            !historyInterest.confirms("${runtime.runtimeId}\u0000${runtime.sessionId}") ||
+            runtime.runtimeId in state.sessionSyncRequests ||
             state.sessionHistory[runtime.runtimeId]?.hasOlder != true) return
         val scopeId = automaticHistoryScope(runtime) ?: return
         if (continued != null && continued.scopeId != scopeId) return
@@ -1537,7 +1541,6 @@ internal class HostConnection(
     fun setHistoryWindowVisible(runtimeId: String, visible: Boolean) {
         if (visible) {
             visibleHistoryRuntimeId = runtimeId
-            mutableState.value.runtimes[runtimeId]?.let(::startAutomaticHistoryPrefetch)
         } else if (visibleHistoryRuntimeId == runtimeId) {
             visibleHistoryRuntimeId = null
             cancelAutomaticHistoryReads(runtimeId)
@@ -1551,14 +1554,14 @@ internal class HostConnection(
         val runtime = visibleHistoryRuntimeId?.takeIf { it == state.selectedRuntimeId }?.let { state.runtimes[it] }
             ?.takeIf { it.sessionId != null }
         val target = runtime?.let { "${it.runtimeId}\u0000${it.sessionId}" } ?: "closed"
-        if (historyInterestTarget == target) return
-        val requestId = UUID.randomUUID().toString()
-        if (relay.sendDeviceMessage(buildJsonObject {
-            put("type", "session.history.interest"); put("protocolVersion", PROTOCOL_VERSION)
-            put("requestId", requestId)
-            put("runtimeId", runtime?.runtimeId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
-            put("sessionId", runtime?.sessionId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
-        })) { historyInterestTarget = target; historyInterestRequestId = requestId }
+        historyInterest.publish(target, System.currentTimeMillis()) { requestId ->
+            relay.sendDeviceMessage(buildJsonObject {
+                put("type", "session.history.interest"); put("protocolVersion", PROTOCOL_VERSION)
+                put("requestId", requestId)
+                put("runtimeId", runtime?.runtimeId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+                put("sessionId", runtime?.sessionId?.let(::JsonPrimitive) ?: kotlinx.serialization.json.JsonNull)
+            })
+        }
     }
 
     private fun requestHistoryRange(
@@ -2697,9 +2700,21 @@ internal class HostConnection(
                     }
                     continue
                 }
-                if (interactiveChannel != null && historyInterestRequestId != null && incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull == historyInterestRequestId) {
-                    if (incomingMessage?.get("accepted")?.jsonPrimitive?.booleanOrNull != true) historyInterestTarget = null
-                    historyInterestRequestId = null
+                if (interactiveChannel != null && historyInterest.consume(
+                        incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull,
+                        incomingMessage?.get("type")?.jsonPrimitive?.contentOrNull == "session.history.interest.result" &&
+                            incomingMessage["accepted"]?.jsonPrimitive?.booleanOrNull == true)) {
+                    // FT-G12-RESUME-01: resume only the acknowledged current target.
+                    // A source demand survives an older preview; prefetch cannot overtake it.
+                    val current = mutableState.value
+                    val runtime = visibleHistoryRuntimeId?.takeIf { it == current.selectedRuntimeId }
+                        ?.let(current.runtimes::get)?.takeIf { it.sessionId != null }
+                    if (historyWindowSupported && current.e2eReady && current.selectedOfflineSessionId == null &&
+                        runtime != null && historyInterest.confirms("${runtime.runtimeId}\u0000${runtime.sessionId}")) {
+                        historyReconcileSchedule(runtime.runtimeId).started(System.currentTimeMillis())
+                        cancelAutomaticHistoryReads(runtime.runtimeId)
+                        refreshRuntime(runtime.runtimeId, resumedHistorySession = runtime.sessionId)
+                    }
                     continue
                 }
                 if (interactiveChannel != null && historyWindowRequestId != null && incomingMessage?.get("requestId")?.jsonPrimitive?.contentOrNull == historyWindowRequestId) {
@@ -2708,7 +2723,6 @@ internal class HostConnection(
                         incomingMessage?.get("maxPageBytes")?.jsonPrimitive?.intOrNull == 65536
                     historyWindowRequestId = null
                     sendHistoryInterest()
-                    if (historyWindowSupported) mutableState.value.selectedRuntimeId?.let { mutableState.value.runtimes[it] }?.let(::startAutomaticHistoryPrefetch)
                     continue
                 }
                 if (interactiveChannel != null && incomingMessage != null && incomingRead?.needsLegacyRetry(incomingMessage) == true) {
@@ -2935,7 +2949,7 @@ internal class HostConnection(
                     if (deviceReadyArrived && currentGeneration == generation) {
                         catalogReads.connect()
                         historyWindowSupported = false
-                        historyInterestTarget = null
+                        historyInterest.reset()
                         historyWindowRequestId = UUID.randomUUID().toString()
                         relay.sendDeviceMessage(buildJsonObject {
                             put("type", "session.history.capabilities.request"); put("protocolVersion", PROTOCOL_VERSION)
@@ -3598,11 +3612,12 @@ internal class HostConnection(
 
     private fun runSessionSyncScheduler() {
         val pairedDevice = device ?: return
+        val connectionGeneration = generation
         val state = mutableState.value
         if (!shouldConnect || state.connection != RelayConnection.ONLINE || !state.e2eReady) return
         var tick = SessionSyncTick(state, emptyList())
         updateState { current ->
-            advanceSessionSyncTasks(current, System.currentTimeMillis(), generation).also { tick = it }.state
+            advanceSessionSyncTasks(current, System.currentTimeMillis(), connectionGeneration).also { tick = it }.state
         }
         for ((commandId, pending) in tick.send) {
             if (device != pairedDevice || pending.connectionGeneration != generation ||
@@ -3618,6 +3633,15 @@ internal class HostConnection(
             ) }.getOrNull()
             // A temporary lack of path consumes an attempt; the bounded policy owns retry timing.
             Log.i(RELOAD_TRACE_TAG, "session.sync.send syncId=${pending.syncId} range=${pending.range} attempt=${pending.attempts} sent=${sent != null}")
+        }
+        if (tick.recoverRuntimeIds.isNotEmpty() && device == pairedDevice && generation == connectionGeneration) {
+            val current = mutableState.value
+            if (shouldConnect && current.connection == RelayConnection.ONLINE && current.e2eReady) {
+                val recover = tick.recoverRuntimeIds.mapNotNull { id -> current.runtimes[id]?.takeIf {
+                    id == current.selectedRuntimeId && it.sessionId == tick.state.runtimes[id]?.sessionId
+                } }
+                scheduleSessionGraphLoad(pairedDevice, recover)
+            }
         }
         // 背压用掉重试额度后会撤掉需求（否则每条消息都会再要一次，变成重试风暴）。
         // 撤掉之后就没有人再要了：会话一安静，画面就会停在旧快照上。这里低频复活，

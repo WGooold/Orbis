@@ -283,34 +283,35 @@ export class TurnFileChangeService {
         const old = before.files[path], next = after.files[path];
         if (pairKey(old) === pairKey(next) && !old?.unavailable && !next?.unavailable) continue;
         const uncertain = (!old && !before.complete) || (!next && !after.complete) || old?.unavailable || next?.unavailable;
+        // A missing/unreadable capture is not evidence of a change. Incomplete scans can
+        // stop at different paths; counting their unmatched tails invents changed files.
+        if (uncertain) continue;
         const metadata: FileChangeMetadata = {
-          fileId: digest(path), path, changeKind: uncertain ? "unknown" : !old ? "added" : !next ? "deleted" : old.kind !== next.kind ? "type-changed" : "modified",
+          fileId: digest(path), path, changeKind: !old ? "added" : !next ? "deleted" : old.kind !== next.kind ? "type-changed" : "modified",
           fileKind: "unknown", additions: null, deletions: null, beforeBytes: old?.bytes ?? null, afterBytes: next?.bytes ?? null,
           contentVersion: digest(JSON.stringify([pairKey(old), pairKey(next), "jsdiff-9.0.0-lines-v1"])), detail: "not-captured",
         };
         const file: Comparison = { metadata, ...(old ? { before: old } : {}), ...(next ? { after: next } : {}) };
-        if (!uncertain) {
-          const kind = next?.kind ?? old?.kind;
-          if (kind !== "file" || old && old.kind !== "file" || next && next.kind !== "file") {
-            metadata.fileKind = kind === "file" ? "unknown" : kind ?? "unknown"; metadata.detail = "unsupported";
-          } else if (old?.contentUnavailable || next?.contentUnavailable) { metadata.detail = "not-captured"; }
-          else if (old && !old.blob || next && !next.blob) { metadata.detail = "too-large"; }
-          else if (Date.now() >= comparisonDeadline) { metadata.detail = "busy"; record.summary.reasons.push("comparison-turn-budget"); }
+        const kind = next?.kind ?? old?.kind;
+        if (kind !== "file" || old && old.kind !== "file" || next && next.kind !== "file") {
+          metadata.fileKind = kind === "file" ? "unknown" : kind ?? "unknown"; metadata.detail = "unsupported";
+        } else if (old?.contentUnavailable || next?.contentUnavailable) { metadata.detail = "not-captured"; }
+        else if (old && !old.blob || next && !next.blob) { metadata.detail = "too-large"; }
+        else if (Date.now() >= comparisonDeadline) { metadata.detail = "busy"; record.summary.reasons.push("comparison-turn-budget"); }
+        else {
+          const [oldText, nextText] = await Promise.all([readCapturedText(this.#options.directory, old), readCapturedText(this.#options.directory, next)]);
+          if (oldText === undefined || nextText === undefined) { metadata.fileKind = "binary"; metadata.detail = "binary"; }
           else {
-            const [oldText, nextText] = await Promise.all([readCapturedText(this.#options.directory, old), readCapturedText(this.#options.directory, next)]);
-            if (oldText === undefined || nextText === undefined) { metadata.fileKind = "binary"; metadata.detail = "binary"; }
+            metadata.fileKind = "text";
+            if ((oldText.match(/\n/g)?.length ?? 0) > 100_000 || (nextText.match(/\n/g)?.length ?? 0) > 100_000) metadata.detail = "too-large";
             else {
-              metadata.fileKind = "text";
-              if ((oldText.match(/\n/g)?.length ?? 0) > 100_000 || (nextText.match(/\n/g)?.length ?? 0) > 100_000) metadata.detail = "too-large";
-              else {
-                let index = indexes.get(metadata.contentVersion);
-                if (!indexes.has(metadata.contentVersion)) { index = await compareTurnText(oldText, nextText); if (indexes.size < 128) indexes.set(metadata.contentVersion, index); }
-                if (index && indexBytes + jsonBytes(index) <= 8 * 1024 * 1024) {
-                  indexBytes += jsonBytes(index); file.index = index; metadata.additions = index.additions; metadata.deletions = index.deletions; metadata.detail = "available";
-                } else {
-                  metadata.detail = "busy";
-                  record.summary.reasons.push(index ? "comparison-index-budget" : "comparison-time-budget");
-                }
+              let index = indexes.get(metadata.contentVersion);
+              if (!indexes.has(metadata.contentVersion)) { index = await compareTurnText(oldText, nextText); if (indexes.size < 128) indexes.set(metadata.contentVersion, index); }
+              if (index && indexBytes + jsonBytes(index) <= 8 * 1024 * 1024) {
+                indexBytes += jsonBytes(index); file.index = index; metadata.additions = index.additions; metadata.deletions = index.deletions; metadata.detail = "available";
+              } else {
+                metadata.detail = "busy";
+                record.summary.reasons.push(index ? "comparison-index-budget" : "comparison-time-budget");
               }
             }
           }

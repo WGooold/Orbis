@@ -294,3 +294,9 @@ Status: accepted（FT-G11 / FT-G12 已实施并集成；自动验证见第 8 节
 - 当前集成自动结果与边界见 [integration-results.json](../../.artifacts/catalog-history-integration-20261113/integration-results.json)。Node 171 项、Swift 115 项与 Android 156 项通过；此前首页基线失败用例在本次集成中通过。初次合并的差分游标失败、Swift 异步编译失败及测试夹具修正前结果分别保留原日志。
 - 实际旧实现对照为 `v0.1.19 / 757dd9df`：[协议解析与选择器](../../.artifacts/catalog-history-integration-20261113/release-wire-final/verification.json)验证新旧双向及同版正对照、旧严格 schema 拒绝新增请求与字段、旧选择器大页穿过当前事务协调者；[旧 iOS 目录解析器](../../.artifacts/catalog-history-integration-20261113/release-app/release-app-compat.json)从发布源码原样编译，接受过滤后的 22 页并拒绝含未知 DSH Desktop 类型的负对照。该验证使用隔离合成数据，完整旧包 UI、真实网络收益与部署验收单独完成。
 - 待用户验证：多目录展开、全库存搜索及 provider 筛选；长聊天首屏后停止自动补根、向上翻页与回到实时内容；切 Host / 聊天、退后台和重连后无错位或串会话。安装候选与正式验收由统一回归页面登记。
+
+### 8.5 2026-11-14 窗口恢复与来源读取优先级
+
+- `FT-G12-RESUME-01`：当前可见兴趣得到认证且准确匹配的接受回执后，立即登记一次来源核对，绕过周期核对冷却；旧读取不能结算新需求。关闭、切会话、切 Host 与重连替换回执身份，丢失回执在后续核对入口达到 20 秒时重发，重复回执不重复读取。
+- 可见窗口归属跟随当前 Host：iOS Hub 转交导航 / scene 可见状态，Android 聊天生命周期任务包含 Host 身份；无 Session 的 Runtime 使用两个 null 关闭兴趣。自动预取等待兴趣确认，连续页和本地读取转网络时均让位于未完成的来源需求，沿用原范围及剩余额度。
+- 回归见 [iOS Store](../../ios/Orbis/Tests/StoreTests.swift)、[多 Host](../../ios/Orbis/Tests/MultiHostTests.swift)、[Android 读取归属](../../android/app/src/test/java/com/orbising/orbis/HistoryReadOperationsTest.kt)及两端 `ReadReconcileSchedule` 测试。[本次自动证据](../../.artifacts/recent-risk-fixes-20261113/mobile/verification.json)：Swift 109 项、Android 34 项通过，Android Debug 生产源码编译通过；新增预取时序用例修复前的失败证据保留。设备上的前后台 / 多 Host 切换、安装候选及用户验收待完成。

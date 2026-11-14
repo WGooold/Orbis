@@ -318,8 +318,8 @@ void HostController::resumeAfterChange() {
     emit changed();
 }
 void HostController::clearRunningFacts() {
-    // A paused Host has released its DeepSeek Desktop connection; its lifecycle reports again on the next start.
-    m_backends.clear(); m_runtimeCount = 0; m_dshDesktop.clear();
+    // Desktop connections belong to this Host run; their lifecycles report again on the next start.
+    m_backends.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear();
     // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
     // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
     m_preparations.remove("codex"); m_preparations.remove("dsh");
@@ -731,7 +731,9 @@ void HostController::refreshRegistrationPolicy() {
 }
 QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}, {"dshWebUrl", dshWebUrl()}}; }
 void HostController::startHost() {
-    if (!activated() || !m_bridgeReady || m_desiredRunning || agentInstalling() || m_activationIO > 0 || m_relaySelectionPending) return;
+    // HOST-LIVE-02: late change continuations must not claim a restart while
+    // command() rejects new work for exit; cleanup failure must remain recoverable.
+    if (m_exiting || m_shutdown || !activated() || !m_bridgeReady || m_desiredRunning || agentInstalling() || m_activationIO > 0 || m_relaySelectionPending) return;
     m_desiredRunning = true; m_resumePending = false; m_state = "connecting"; m_settings.setValue("runHost", true);
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());

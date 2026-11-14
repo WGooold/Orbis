@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RuntimeEvent, ToolContentReadRequest } from "@orbis/protocol";
+import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, type RuntimeEvent, type ToolContentReadRequest } from "@orbis/protocol";
 import { ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { CodexAppServer } from "./codex-daemon.js";
@@ -31,8 +31,9 @@ async function harness(desktop = false, producerBytes = 64 * 1024 * 1024) {
     read: null, offset: 0, maxBytes: 16384,
   });
   const activate = async (id = "session") => runtime.activate({ type: "resume", sessionId: desktop ? "codex-desktop:" + id : id });
-  const sync = (id = "session") => {
-    const index = events.length; runtime.handleCommand({ type: "session.sync", sessionId: desktop ? "codex-desktop:" + id : id, syncId: "s", range: "preview" }, "sync", id);
+  const sync = (id = "session", history?: { beforeEntryId: string; targetLeafId: string | null }) => {
+    const index = events.length; runtime.handleCommand({ type: "session.sync", sessionId: desktop ? "codex-desktop:" + id : id,
+      syncId: "s", range: history ? "history" : "preview", ...history }, "sync", id);
     return events.slice(index).find(event => event.type === "session.snapshot");
   };
   return { runtime, server, store, rpc, events, request, activate, sync };
@@ -67,8 +68,24 @@ describe("Codex backend private tool content integration", () => {
     notify("item/completed", { item: { id: "stream", type: "commandExecution", command: "large command", status: "completed", aggregatedOutput: "final" } });
     const committed = h.sync()!;
     expect(committed.live?.toolInventory?.totalCount).toBe(0);
-    expect(committed.entries.filter(entry => entry.entryId.startsWith("parallel"))).toHaveLength(16);
-    expect(JSON.stringify(committed)).not.toContain("PRIVATE_TOOL_RESULT_");
+    // Bounded preview pages may split tool call/result rows. Follow their real
+    // history boundary before checking that all eight completions were retained.
+    const committedEntries = [...committed.entries];
+    let page = committed;
+    for (;;) {
+      expect(Buffer.byteLength(JSON.stringify(page)) + SESSION_SYNC_WRAPPER_BYTES).toBeLessThanOrEqual(SESSION_SYNC_PAGE_BYTES);
+      expect(JSON.stringify(page)).not.toContain("PRIVATE_TOOL_RESULT_");
+      if (!page.hasOlder) break;
+      const beforeEntryId = page.entries[0]!.entryId;
+      page = h.sync("session", { beforeEntryId, targetLeafId: committed.cursor.leafId })!;
+      expect(page).toMatchObject({ range: "history", beforeEntryId, source: committed.source, cursor: committed.cursor });
+      expect(page.entries.length).toBeGreaterThan(0);
+      expect(page.entries.every(entry => committedEntries.every(existing => existing.entryId !== entry.entryId))).toBe(true);
+      committedEntries.unshift(...page.entries);
+    }
+    expect(committedEntries.filter(entry => entry.entryId.startsWith("parallel"))).toHaveLength(16);
+    expect(committedEntries.filter(entry => entry.entryId.startsWith("parallel")).map(entry => entry.entryId))
+      .toEqual(Array.from({ length: 8 }, (_, i) => [`parallel-${i}`, `parallel-${i}:result`]).flat());
     h.server.onExit?.(0);
     await expect(h.runtime.toolContents.read("viewer", { ...request, read: output.read })).rejects.toMatchObject({ reason: "content_unavailable" });
   });

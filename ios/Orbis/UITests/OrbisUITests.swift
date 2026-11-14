@@ -1021,7 +1021,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(app.staticTexts["session-current-model"].label, legacy ? "模型未确认" : "GPT-5.3")
             XCTAssertEqual(app.staticTexts["session-selected-model"].label, "GPT-5.4")
             XCTAssertTrue(app.staticTexts["本轮使用"].exists)
-            XCTAssertTrue(app.staticTexts["下轮使用"].exists)
+            XCTAssertTrue(app.staticTexts[legacy ? "当前所选" : "下轮使用"].exists)
             capture(legacy ? "session-config-old-host" : "session-config-current-next", app: app)
             app.buttons["session-config-model"].tap()
             let option = app.buttons["session-config-option-model-a"]
@@ -1033,6 +1033,19 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue((title.value as? String)?.contains("保存中") == true)
             app.terminate()
         }
+    }
+
+    // SC86: an unchanged running selection must not create a next-turn section.
+    func testUnchangedSessionModelPanelShowsOneConfiguration() {
+        let app = launch("chat", arguments: ["--preview-current-turn", "--preview-unchanged-turn", "--preview-reduce-motion"])
+        let title = app.descendants(matching: .any)["chat-title"].firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 8)); title.tap()
+        XCTAssertTrue(app.staticTexts["模型与深度"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["session-current-model"].label, "GPT-5.4")
+        XCTAssertFalse(app.staticTexts["session-selected-model"].exists)
+        XCTAssertFalse(app.staticTexts["下轮使用"].exists)
+        XCTAssertFalse(app.staticTexts["后续选择"].exists)
+        capture("session-config-unchanged", app: app)
     }
 
     /// V10 r27 / ADR-0049 §6.1–§6.2：附件还在上传时发送，气泡立即出现并带着附件（缩略图、文件名、进度），

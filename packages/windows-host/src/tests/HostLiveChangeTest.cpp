@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QSemaphore>
 #include <QSettings>
@@ -237,6 +238,29 @@ private slots:
         host.receiveLine({{"id", 900}, {"result", QJsonObject{}}});
         QVERIFY(resumed);
     }
+    // HOST-LIVE-02: a change finishing during exit cannot claim a restart whose
+    // bridge command is rejected. If cleanup fails, the paused Host stays restartable.
+    void lateChangeCompletionDuringExitKeepsHostRestartable() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        QVERIFY(host.pauseForChange());
+        QTRY_COMPARE(host.state(), QString("stopped"));
+        QTRY_VERIFY(!host.busy());
+        host.m_pending.insert(930, {}); host.m_methods.insert(930, "rename");
+        host.m_nextId = 931; ++host.m_busy;
+        host.afterQueuedCommands([&host] { host.resumeAfterChange(); });
+
+        // beginExit owns these flags before its asynchronous cleanup worker replies.
+        host.m_exiting = true; host.m_shutdown = true;
+        host.receiveLine({{"id", 930}, {"result", QJsonObject{}}});
+        host.failExit("fixture cleanup failed");
+        QVERIFY(!host.desiredRunning());
+        QCOMPARE(host.state(), QString("stopped"));
+        QVERIFY(!host.resumePending());
+        host.startHost();
+        QTRY_COMPARE(host.state(), QString("connected"));
+        QTRY_VERIFY(!host.busy());
+    }
     // HOST-LANE-01 / HOST-PREP-04/05: a background detection no longer greys out unrelated controls, each
     // control reads its own in-flight kind, and background preparation is reported per Agent.
     void backgroundWorkStaysOutOfTheWay() {
@@ -298,6 +322,49 @@ private slots:
         QVERIFY(host.backends().isEmpty()); QCOMPARE(host.runtimeCount(), 0);
         QCOMPARE(host.devices().size(), 1);
         QCOMPARE(host.devices().first().toMap().value("path").toString(), QString("offline"));
+    }
+    // HOST-DESKTOP-CANCEL-01: disposed lifecycles cannot publish their closing
+    // status. The native diagnostics must drop both Desktop facts on the owning
+    // connection's terminal event and accept the next run's new publication.
+    void desktopFactsFollowConnectionLifetime_data() {
+        QTest::addColumn<bool>("activationLost");
+        QTest::newRow("paused") << false;
+        QTest::newRow("activation-lost") << true;
+    }
+    void desktopFactsFollowConnectionLifetime() {
+        QFETCH(bool, activationLost);
+        auto &host = *m_host;
+        connectHost(host, root());
+        const QJsonObject attached{{"state", "attached"}, {"reason", "fixture previous run"}};
+        host.receiveLine({{"event", "codexDesktop"}, {"status", attached}});
+        host.receiveLine({{"event", "dshDesktop"}, {"status", attached}});
+        QCOMPARE(host.codexDesktop().value("state").toString(), QString("attached"));
+        QCOMPARE(host.dshDesktop().value("state").toString(), QString("attached"));
+        if (activationLost) {
+            // Credential persistence has its own tests; keep this UI-state
+            // regression independent of the developer's native key store.
+            host.m_credential.clear();
+            host.receiveLine({{"event", "state"}, {"state", "error"}, {"activationRequired", true}});
+            QCOMPARE(host.state(), QString("error"));
+        } else {
+            host.stopHost();
+            QTRY_COMPARE(host.state(), QString("stopped"));
+            settle(host);
+        }
+        QVERIFY(host.codexDesktop().isEmpty());
+        QVERIFY(host.dshDesktop().isEmpty());
+        const auto diagnostic = QJsonDocument::fromJson(host.diagnostics().toUtf8()).object();
+        QVERIFY(diagnostic.value("codexDesktop").toObject().isEmpty());
+        QVERIFY(diagnostic.value("dshDesktop").toObject().isEmpty());
+        host.m_credential = "orbis_host_fixture";
+        host.startHost();
+        QTRY_COMPARE(host.state(), QString("connected"));
+        QTRY_VERIFY(!host.busy());
+        QVERIFY(host.codexDesktop().isEmpty());
+        host.receiveLine({{"event", "codexDesktop"},
+            {"status", QJsonObject{{"state", "attached"}, {"reason", "fixture current run"}}}});
+        QCOMPARE(host.codexDesktop().value("state").toString(), QString("attached"));
+        QCOMPARE(host.codexDesktop().value("reason").toString(), QString("fixture current run"));
     }
 };
 QTEST_MAIN(HostLiveChangeTest)

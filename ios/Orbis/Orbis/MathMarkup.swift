@@ -23,7 +23,16 @@ struct MathMarkup {
 enum MathResources {
     static var root: URL? {
         #if SWIFT_PACKAGE
-        Bundle.module.url(forResource: "MathResources", withExtension: nil)
+        // 资源目录在仓库里是软链接（shared/math）。有些 SwiftPM 工具链把它原样拷进
+        // 资源包，链接就悬空了；这时退回源码树，测试仍能在任何机器上跑。
+        let bundled = Bundle.module.url(forResource: "MathResources", withExtension: nil)
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("MathResources")
+        let file = FileManager.default
+        if let bundled, file.fileExists(atPath: bundled.appendingPathComponent("core.js").path) {
+            return bundled
+        }
+        return file.fileExists(atPath: source.appendingPathComponent("core.js").path) ? source : bundled
         #else
         Bundle.main.url(forResource: "MathResources", withExtension: nil)
         #endif
@@ -36,15 +45,23 @@ final class MathMarkupEngine: @unchecked Sendable {
     static let shared = MathMarkupEngine()
     private let lock = NSLock()
     private var context: JSContext?
+    /// Why the engine fell back to plain text; shown by the tests so a broken runner says so.
+    private(set) var diagnosis = ""
 
     private func call(_ method: String, _ arguments: [Any]) -> [String: Any]? {
         lock.lock(); defer { lock.unlock() }
         if context == nil {
-            guard let url = MathResources.root?.appendingPathComponent("core.js"),
-                  let source = try? String(contentsOf: url, encoding: .utf8),
-                  let next = JSContext() else { return nil }
+            diagnose("")
+            guard let root = MathResources.root else { diagnose("缺少 MathResources 资源包"); return nil }
+            let url = root.appendingPathComponent("core.js")
+            guard let source = try? String(contentsOf: url, encoding: .utf8) else {
+                diagnose("读不到 \(url.path)"); return nil
+            }
+            guard let next = JSContext() else { diagnose("JavaScriptCore 不可用"); return nil }
             next.evaluateScript(source)
-            guard next.exception == nil else { return nil }
+            if let exception = next.exception {
+                diagnose("core.js 抛出 \(exception)"); return nil
+            }
             context = next
         }
         guard let context else { return nil }
@@ -55,13 +72,18 @@ final class MathMarkupEngine: @unchecked Sendable {
         return result?.toDictionary() as? [String: Any]
     }
 
+    private func diagnose(_ reason: String) {
+        diagnosis = reason
+    }
+
     func protect(_ text: String) -> MathMarkup? {
         guard text.contains("$") || text.contains(#"\("#) || text.contains(#"\["#)
                 || text.contains(#"\begin{"#) || text.contains("math") else { return nil }
         guard let value = call("protect", [text]),
               let transformed = value["text"] as? String, let prefix = value["prefix"] as? String,
               let tokens = value["tokens"] as? [[String: Any]] else {
-            return MathMarkup(text: text, prefix: "", tokens: [], value: ["bypass": true])
+            return MathMarkup(text: text, prefix: "", tokens: [],
+                              value: ["bypass": true, "bypassReason": diagnosis.isEmpty ? "引擎没有返回结果" : diagnosis])
         }
         return MathMarkup(text: transformed, prefix: prefix, tokens: tokens.compactMap {
             guard let marker = $0["marker"] as? String, let raw = $0["raw"] as? String else { return nil }

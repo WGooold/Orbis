@@ -881,6 +881,8 @@ enum LocalizationCatalog {
         "执行状态": "Execution status",
         "扩展": "Extension",
         "扫描配对二维码": "Scan pairing QR code",
+        "从相册选图": "Choose a photo",
+        "这张图片里没有找到二维码": "No QR code found in this image",
         "扫码配对": "Scan to pair",
         "批量移除已停止：": "Bulk removal stopped: ",
         "批量移除已停止：{0}": "Bulk removal stopped: {0}",

@@ -333,11 +333,12 @@ export function dshDesktopLaunchEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proc
   return launch;
 }
 
-const launches = new Map<string, Promise<DshDesktopEndpoint>>();
+type DshDesktopLaunchOptions = { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn; signal?: AbortSignal };
+const launches = new Map<string, { pending: Promise<DshDesktopEndpoint>; signal?: AbortSignal }>();
 
 /** The Orbis launch in progress for this state directory, if any. */
 export function pendingDshDesktopLaunch(stateDir: string): Promise<DshDesktopEndpoint> | undefined {
-  return launches.get(resolve(stateDir));
+  return launches.get(resolve(stateDir))?.pending;
 }
 
 /**
@@ -346,21 +347,34 @@ export function pendingDshDesktopLaunch(stateDir: string): Promise<DshDesktopEnd
  * Concurrent callers for one state directory (an App request, the Host UI, a paused Host's open) share
  * one launch: a second spawn would replace the shared log and endpoint record with a handoff process.
  */
-export function launchDshDesktop(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn } = {}): Promise<DshDesktopEndpoint> {
+export function launchDshDesktop(installation: DshDesktopInstallation, stateDir: string, options: DshDesktopLaunchOptions = {}): Promise<DshDesktopEndpoint> {
+  options.signal?.throwIfAborted();
   const key = resolve(stateDir);
   const existing = launches.get(key);
-  if (existing !== undefined) return existing;
-  const pending = launchOnce(installation, stateDir, options).finally(() => { if (launches.get(key) === pending) launches.delete(key); });
-  launches.set(key, pending);
+  if (existing !== undefined) return existing.pending.catch(error => {
+    options.signal?.throwIfAborted();
+    // A still-authorized Host UI open can join an App launch cancelled by pause.
+    // Only the owner's pre-spawn cancellation is retried; ordinary failures stay failures.
+    if (existing.signal?.aborted && error === existing.signal.reason) return launchDshDesktop(installation, stateDir, options);
+    throw error;
+  });
+  const pending = launchOnce(installation, stateDir, options).finally(() => { if (launches.get(key)?.pending === pending) launches.delete(key); });
+  launches.set(key, { pending, ...(options.signal ? { signal: options.signal } : {}) });
   return pending;
 }
 
-async function launchOnce(installation: DshDesktopInstallation, stateDir: string, options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; spawnDesktop?: typeof spawn }): Promise<DshDesktopEndpoint> {
+async function launchOnce(installation: DshDesktopInstallation, stateDir: string, options: DshDesktopLaunchOptions): Promise<DshDesktopEndpoint> {
+  options.signal?.throwIfAborted();
   const directory = dshDesktopStateDirectory(stateDir);
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  options.signal?.throwIfAborted();
   const logPath = join(directory, "desktop-output.log");
   await unlink(logPath).catch(() => {});
+  options.signal?.throwIfAborted();
   const output = await open(logPath, "wx", 0o600);
+  // DSH-DESKTOP-10: cancellation before spawn must not open a late Desktop.
+  // Once spawned, keep capturing its endpoint for future recovery; Desktop owns its lifetime.
+  if (options.signal?.aborted) { await output.close(); options.signal.throwIfAborted(); }
   let exitCode: number | null | undefined;
   let spawnError: Error | undefined;
   const child = (options.spawnDesktop ?? spawn)(installation.executable, [], {

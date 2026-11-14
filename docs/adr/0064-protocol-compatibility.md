@@ -55,6 +55,8 @@ schema 保持既有字段语义，按消息类别声明扩展性；影响副作�
 
 回归见 [transport.test.ts](../../packages/pi-extension/src/transport.test.ts) 和 [loopback-server.test.ts](../../packages/host/src/loopback-server.test.ts)，覆盖注册、更新、能力缺失／无效、回退重连及原始数据保留。v0.1.15／0.1.16／0.1.17 原始实现的隔离互通、元数据更新、命令与同进程回退证据见 `.artifacts/pi-host-compatibility-fix-20261111/verification.json`；首次缺陷证据保留在 `.artifacts/compatibility-review-20261111/`。自动验证与部署、设备验收分别记录；未部署，待用户验证。
 
+2026-11-14，SC87：Claude 插件在既有 hello 能力列表声明 `configuration.effort.snapshot`，消息字段与 bridge version 4 保持不变。新 Host 仅对声明该能力且同时带顶层 `model` 与 `currentTurnConfiguration` 的完整状态，将缺失 `effort` 解释为清除旧深度；本轮增量帧与旧插件继续沿用缺失字段不更新的语义。旧 Host 忽略新能力并接受既有格式，仍保留其增量清除限制。以 v0.1.19 原始 Host／protocol 源码与候选源码分别回放真实隔离 Claude 元数据，覆盖旧／新插件状态、连续双轮及重连；证据见 `.artifacts/claude-effort-reporting-20261114/compatibility/`。
+
 ### 6. Relay＋Host 承担兼容，保留已安装 App（2026-11-05）
 
 Relay 适配认证路由外层，Host 在端到端业务边界按设备格式完整收发，App 沿用其已发布能力。业务适配保持加密、身份、原语义与真实回执；长期演进由 Host 保留旧 App 的基础互通。

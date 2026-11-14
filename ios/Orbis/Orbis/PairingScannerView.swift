@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import PhotosUI
 
 struct PairingEntryView: View {
     @EnvironmentObject private var store: OrbisStore
@@ -83,6 +84,7 @@ struct PairingScannerView: View {
     let onCode: (String) -> Void
     @State private var failure: String?
     @State private var scannerID = UUID()
+    @State private var picked: PhotosPickerItem?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -104,6 +106,24 @@ struct PairingScannerView: View {
                     }
                 }.padding(.horizontal, 24)
             }
+            PhotosPicker(selection: $picked, matching: .images, photoLibrary: .shared()) {
+                HStack(spacing: 8) {
+                    Image(systemName: "photo.on.rectangle")
+                    Text(L10n.tr("从相册选图"))
+                }.font(.orbisBody())
+            }
+            .onChange(of: picked) { _, item in
+                guard let item else { return }
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          let image = UIImage(data: data),
+                          let code = QRCapture.readCode(from: image)
+                    else { failure = L10n.tr("这张图片里没有找到二维码"); return }
+                    do { _ = try PairingQR.parse(code); onCode(code) }
+                    catch { failure = error.localizedDescription }
+                }
+            }
+            .padding(.horizontal, 24)
             Spacer(minLength: 12)
             OrbisActionButton(title: L10n.tr("取消"), action: { dismiss() }).padding(.horizontal, 24).padding(.bottom, 20)
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
@@ -157,6 +177,18 @@ private final class QRScannerController: UIViewController {
 
 /// AVCaptureSession configuration/start/stop can block; all of them run on the
 /// same background queue, including stopping when the scanner is dismissed.
+extension QRCapture {
+    /// Reading a screenshot or a shared image uses the same detector as the camera.
+    static func readCode(from image: UIImage) -> String? {
+        guard let ciImage = CIImage(image: image) else { return nil }
+        let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil,
+                                  options: [CIDetectorAccuracy: CIDetectorAccuracyHigh])
+        return detector?.features(in: ciImage)
+            .compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+            .first
+    }
+}
+
 private final class QRCapture: NSObject, AVCaptureMetadataOutputObjectsDelegate {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.orbising.orbis.camera")

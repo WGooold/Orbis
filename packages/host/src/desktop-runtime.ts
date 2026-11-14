@@ -136,6 +136,7 @@ export class DesktopRuntime {
   #claudeDetection: Promise<void> | undefined;
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
+  #disposing: Promise<void> | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
   /** 终端接入的准备（可能是一次上百 MB 的下载）：与中继连接和手机可用性无关，可随时取消。 */
@@ -584,27 +585,36 @@ export class DesktopRuntime {
     this.#emit({ event: "state", state: "connecting" });
     try {
       await this.#checkExistingHost();
+      if (this.#desired !== settings) return;
 
       // Codex Desktop is independent of the optional terminal backend. The Host only opens
       // it after an App session request; an already attached instance is reused by the lifecycle.
       const wrapper = resolveCodexWrapper();
       const endpointPath = codexDesktopEndpointPath(this.#stateDir);
       if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
-      // Closures below stay bound to this attempt's lifecycle: a pause clears the field while a
-      // service built by the abandoned attempt can still read its status.
+      // Closures below stay bound to this attempt's lifecycle. Disposal revokes
+      // its field before draining the service; activation loss and retry can
+      // keep the same settings while queued requests from that service settle.
       const desktopLifecycle = this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
         log: line => this.log(line),
-        onReady: runtime => this.#service?.attachCodexDesktopRuntime(runtime),
-        onOffline: runtime => this.#service?.detachCodexDesktopRuntime(runtime),
+        onReady: runtime => {
+          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
+          return this.#service?.attachCodexDesktopRuntime(runtime);
+        },
+        onOffline: runtime => {
+          if (this.#desired === settings && this.#codexDesktopLifecycle === desktopLifecycle) this.#service?.detachCodexDesktopRuntime(runtime);
+        },
         resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
         desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-        launchApp: async () => {
-          if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;
-          await launchCodexDesktopApp();
+        launchApp: async signal => {
+          if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;
+          signal?.throwIfAborted();
+          await launchCodexDesktopApp(process.env, signal);
         },
         // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
         // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
         onStatusChange: status => {
+          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) return;
           this.log(`Codex 桌面版接入：${status.state} · ${status.reason}`);
           this.#emit({ event: "codexDesktop", status });
           this.#service?.announceCodexDesktopStatus();
@@ -633,13 +643,19 @@ export class DesktopRuntime {
         stateDir: this.#stateDir,
         log: line => this.log(line),
         onStatusChange: status => {
+          if (this.#desired !== settings) return;
           this.log(`DeepSeek Desktop 接入：${status.state} · ${status.reason}`);
           this.#emit({ event: "dshDesktop", status });
           this.#service?.announceDshDesktopStatus();
         },
       });
       const dshDesktopLaunchable = await dshDesktopLifecycle.isInstalled();
+      if (this.#desired !== settings) { await this.#dispose(); return; }
       const connectDshDesktop = async (existingOnly = false): Promise<DshRuntime | undefined> => {
+        if (this.#desired !== settings) {
+          if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek Desktop 接入");
+          return undefined;
+        }
         if (this.#dshDesktopRuntime?.isReady()) return this.#dshDesktopRuntime;
         const runtime = existingOnly ? await dshDesktopLifecycle.connectExisting() : await dshDesktopLifecycle.ensure();
         if (this.#desired !== settings) {
@@ -670,7 +686,10 @@ export class DesktopRuntime {
             : this.#codexPrepare !== undefined ? "Codex 后端正在准备，请稍后重试" : "Codex 终端接入未就绪");
           return runtime.prepareTerminalLaunch(request.cwd);
         },
-        ensureCodexDesktop: () => desktopLifecycle.ensureReady(),
+        ensureCodexDesktop: async () => {
+          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
+          return desktopLifecycle.ensureReady();
+        },
         codexDesktopLaunchable,
         codexDesktopStatus: () => desktopLifecycle.status,
         ensureDshRuntime: () => connectDshRuntime(),
@@ -1307,24 +1326,35 @@ export class DesktopRuntime {
     await this.openAgent(kind, "tui", cwd);
   }
 
-  async #dispose(): Promise<void> {
-    // 取消在途的终端接入准备：先放掉订阅，下载和 app-server 拉起都会自己收尾。
+  #dispose(): Promise<void> {
+    // HOST-DESKTOP-CANCEL-01: revoke every lifecycle before the first await. A
+    // slow service drain cannot leave a Desktop launch or native probe authorized.
     const prepare = this.#codexPrepare; this.#codexPrepare = undefined; prepare?.abort();
     const service = this.#service; this.#service = undefined;
-    // The desktop drops running facts when paused; the next service must announce its status again.
-    this.#lastStatus = "";
-    await service?.stop().catch(error => this.log(String(error)));
-    await this.#stopCodex();
-    const desktopLifecycle = this.#codexDesktopLifecycle;
-    this.#codexDesktopLifecycle = undefined;
-    await desktopLifecycle?.stop().catch(error => this.log(String(error)));
-    const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
-    await dsh?.stop().catch(error => this.log(String(error)));
-    // Stopping closes only Orbis's API Peer; DeepSeek Harness Desktop is never terminated here.
+    const desktopLifecycle = this.#codexDesktopLifecycle; this.#codexDesktopLifecycle = undefined;
     this.#dshDesktopLifecycle?.stop(); this.#dshDesktopLifecycle = undefined;
+    const codex = this.#codex; this.#codex = undefined;
+    const codexRuntime = this.#codexRuntime; this.#codexRuntime = undefined;
+    const dsh = this.#dshRuntime; this.#dshRuntime = undefined;
     const dshDesktop = this.#dshDesktopRuntime; this.#dshDesktopRuntime = undefined;
-    await dshDesktop?.stop().catch(error => this.log(String(error)));
+    const desktopStopped = desktopLifecycle?.stop().catch(error => this.log(String(error)));
+    this.#lastStatus = "";
+    const drain = (async () => {
+      await service?.stop().catch(error => this.log(String(error)));
+      await codexRuntime?.stop().catch(error => this.log(String(error)));
+      await codex?.stop().catch(error => this.log(String(error)));
+      await desktopStopped;
+      await dsh?.stop().catch(error => this.log(String(error)));
+      // Stopping closes only Orbis's API Peer; DeepSeek Harness Desktop is never terminated here.
+      await dshDesktop?.stop().catch(error => this.log(String(error)));
+    })();
+    // stop and shutdown can overlap on their preemptive command lane. The next
+    // caller must join earlier owners, including resources captured before this call.
+    const pending = Promise.all([this.#disposing, drain]).then(() => undefined)
+      .finally(() => { if (this.#disposing === pending) this.#disposing = undefined; });
+    return this.#disposing = pending;
   }
+
   async stop(): Promise<void> {
     this.#lifecycleGeneration += 1;
     this.#desired = undefined;
@@ -1346,7 +1376,7 @@ export class DesktopRuntime {
       onWaiting: waiting => { if (!abort.signal.aborted) this.#emit({ event: "dshDesktopOpen", state: waiting ? "waiting" : "opening" }); },
     }).then(
       // Attach now rather than at the next recovery tick; a paused Host attaches when it starts.
-      async () => { await this.#service?.recoverDshRuntime("dshDesktop").catch(() => undefined); return undefined; },
+      async () => { if (!abort.signal.aborted) await this.#service?.recoverDshRuntime("dshDesktop").catch(() => undefined); return undefined; },
       (error: unknown) => error instanceof Error ? error.message : String(error),
     ).then(error => {
       this.#dshDesktopOpening = undefined;

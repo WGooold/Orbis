@@ -16,6 +16,121 @@ class SessionSyncTasksTest {
     private fun ack(state: RemoteState, id: String, sequence: Int = 1) = RelayReducer().reduce(state,
         """{"type":"runtime.event","runtimeId":"r0","sequence":$sequence,"event":{"type":"command.result","commandId":"$id","ok":true}}""")
 
+    // A resumed window must register its new demand during failure cooldown without
+    // clearing retry policy. Exercise both orders of late completion and clock recovery.
+    @Test fun `resumed demand survives a late preview before failure cooldown expires`() = resumedAfterExhaustion(false)
+    @Test fun `resumed demand survives a late preview after failure cooldown expires`() = resumedAfterExhaustion(true)
+
+    // Partial or unknown source replies must retain bounded retry policy rather
+    // than leaving an orphan cooldown after the displayed failure is removed.
+    @Test fun `partial late preview cooldown still expires`() = incompleteAfterExhaustion(true)
+    @Test fun `unknown late preview cooldown still expires`() = incompleteAfterExhaustion(false)
+
+    @Test fun `expired correlation wakes retained demand only after its old owner releases`() {
+        val baseline = initial().copy(connection = RelayConnection.ONLINE, e2eReady = true,
+            sessionSyncRequests = setOf("r0"), sessionSyncDemandGenerations = mapOf("r0" to 1L))
+        val sent = tick(baseline.queueSessionSync("old", task().copy(demandGeneration = 1L)), 0).state
+        var current = tick(sent, 150_000).state.requestResumedHistoryRefresh("r0", "s0")
+        repeat(SYNC_FAILURE_COOLDOWN_TICKS) { index ->
+            val waiting = tick(current, 151_000L + index * 1_000L)
+            assertTrue(waiting.recoverRuntimeIds.isEmpty())
+            current = waiting.state
+        }
+        assertTrue(current.sessionSyncFailureCooldowns.isEmpty())
+        assertTrue("old" in current.sessionSyncCommands)
+        val released = tick(current, 300_000)
+        assertEquals(listOf("r0"), released.recoverRuntimeIds)
+        assertTrue(released.state.sessionSyncCommands.isEmpty())
+        assertTrue(tick(released.state, 300_001).recoverRuntimeIds.isEmpty())
+        val recovery = released.state.requestedSessionRecovery(released.recoverRuntimeIds.single(), 7, "fresh")!!
+        assertEquals("fresh", tick(released.state.queueSessionSync("fresh-command", recovery), 300_001).send.single().task.syncId)
+    }
+
+    private fun incompleteAfterExhaustion(sourceReady: Boolean) {
+        val now = System.currentTimeMillis()
+        val baseline = initial().copy(connection = RelayConnection.ONLINE, e2eReady = true,
+            sessionSyncRequests = setOf("r0"), sessionSyncDemandGenerations = mapOf("r0" to 1L))
+        val sent = tick(baseline.queueSessionSync("old", task().copy(demandGeneration = 1L)), now - 150_000).state
+        val exhausted = tick(sent, now).state.copy(sessionSyncBlockedTargets = setOf("r0\u0000other-leaf"))
+        val resumed = exhausted.requestResumedHistoryRefresh("r0", "s0")
+        val payload = """{"type":"runtime.event","runtimeId":"r0","sequence":2,"event":{
+          "type":"session.snapshot","sessionId":"s0","syncId":"sync0-preview","mode":"replace",
+          "range":"preview","targetLeafId":"leaf","complete":true,"cursor":{"leafId":"leaf"},
+          "source":{"epoch":"fixture-source","seq":2,"ready":$sourceReady},
+          "checkpoint":{"checkpointId":"partial","head":{"leafId":"leaf"},"headCompleteness":"complete","inventoryComplete":false},
+          "live":{"complete":false,"messages":[],"tools":[]},
+          "entries":[{"entryId":"leaf","parentId":null,"type":"message","timestamp":"1",
+          "data":{"message":{"role":"user","content":"partial"}}}]}}"""
+        var partial = FixtureRelayReducer().reduceSourceSnapshot(resumed, payload)
+        assertTrue(partial.sessionSyncFailures.isEmpty())
+        assertEquals(exhausted.sessionSyncFailureCooldowns, partial.sessionSyncFailureCooldowns)
+        assertTrue("r0" in partial.sessionSyncRequests)
+        repeat(SYNC_FAILURE_COOLDOWN_TICKS - 1) { index -> partial = tick(partial, now + (index + 1) * 1_000).state }
+        assertTrue("r0" in partial.sessionSyncFailureCooldowns)
+        val blocked = partial.copy(sessionSyncBlockedTargets = setOf("r0\u0000leaf"))
+        assertTrue(tick(blocked, now + SYNC_FAILURE_COOLDOWN_TICKS * 1_000).recoverRuntimeIds.isEmpty())
+        val released = tick(partial, now + SYNC_FAILURE_COOLDOWN_TICKS * 1_000)
+        partial = released.state
+        assertTrue(partial.sessionSyncFailureCooldowns.isEmpty())
+        assertEquals(exhausted.sessionSyncBlockedTargets, partial.sessionSyncBlockedTargets)
+        assertEquals(listOf("r0"), released.recoverRuntimeIds)
+        assertTrue(tick(partial, now + 10_001).recoverRuntimeIds.isEmpty())
+        val successor = partial.requestedSessionRecovery(released.recoverRuntimeIds.single(), 7, "fresh")!!
+        val dispatched = tick(partial.queueSessionSync("fresh-command", successor), now + 11_000)
+        assertEquals("fresh", dispatched.send.single().task.syncId)
+        val freshPayload = payload.replace("\"syncId\":\"sync0-preview\"", "\"syncId\":\"fresh\"")
+            .replace("\"sequence\":2", "\"sequence\":3").replace("\"seq\":2", "\"seq\":3")
+            .replace("\"ready\":$sourceReady", "\"ready\":true")
+            .replace("\"inventoryComplete\":false", "\"inventoryComplete\":true")
+            .replace("\"complete\":false", "\"complete\":true").replace("\"content\":\"partial\"", "\"content\":\"current\"")
+        val confirmed = FixtureRelayReducer().reduceSourceSnapshot(dispatched.state, freshPayload)
+        assertTrue(confirmed.sessionSyncRequests.isEmpty())
+        assertTrue(confirmed.sessionSyncCommands.isEmpty())
+        assertEquals("current", confirmed.conversations.getValue("r0").messages.single().content.single().text)
+    }
+
+    private fun resumedAfterExhaustion(cooldownFirst: Boolean) {
+        val baseline = initial().copy(connection = RelayConnection.ONLINE, e2eReady = true,
+            sessionSyncRequests = setOf("r0"), sessionSyncDemandGenerations = mapOf("r0" to 1L))
+        val sent = tick(baseline.queueSessionSync("old", task().copy(demandGeneration = 1L)), 0).state
+        val exhausted = tick(sent, 150_000).state
+        assertTrue("r0" in exhausted.sessionSyncFailures)
+        assertSame(exhausted, exhausted.requestRuntimeRefresh("r0"))
+        assertSame(exhausted, exhausted.requestResumedHistoryRefresh("r0", "replaced-session"))
+        var resumed = exhausted.requestResumedHistoryRefresh("r0", "s0")
+        assertTrue("r0" in resumed.sessionSyncRequests)
+        assertEquals(2L, resumed.sessionSyncDemandGenerations["r0"])
+        assertEquals(exhausted.sessionSyncFailures, resumed.sessionSyncFailures)
+        assertEquals(exhausted.sessionSyncFailureCooldowns, resumed.sessionSyncFailureCooldowns)
+        assertEquals(exhausted.sessionSyncBlockedTargets, resumed.sessionSyncBlockedTargets)
+        assertEquals(exhausted.conversations, resumed.conversations)
+        assertNull(resumed.requestedSessionRecovery("r0", 7, "premature"))
+        if (cooldownFirst) repeat(SYNC_FAILURE_COOLDOWN_TICKS) { index ->
+            val previous = resumed
+            resumed = tick(previous, 151_000L + index * 1_000L).state.trackSessionReadDemands(previous)
+        }
+        fun response(syncId: String, sequence: Int, text: String) = """{"type":"runtime.event","runtimeId":"r0","sequence":$sequence,"event":{
+          "type":"session.snapshot","sessionId":"s0","syncId":"$syncId","mode":"replace",
+          "range":"preview","targetLeafId":"leaf","complete":true,"cursor":{"leafId":"leaf"},
+          "entries":[{"entryId":"leaf","parentId":null,"type":"message","timestamp":"1",
+          "data":{"message":{"role":"user","content":"$text"}}}]}}"""
+        val completed = FixtureRelayReducer().reduceSourceSnapshot(resumed, response("sync0-preview", 2, "old"))
+        assertTrue(completed.sessionSyncFailures.isEmpty())
+        assertTrue(completed.sessionSyncFailureCooldowns.isEmpty())
+        assertTrue(completed.sessionSyncBlockedTargets.isEmpty())
+        assertTrue(completed.sessionSyncCommands.isEmpty())
+        assertTrue("r0" in completed.sessionSyncRequests)
+        val successor = completed.requestedSessionRecovery("r0", 7, "fresh")!!
+        assertEquals(2L, successor.demandGeneration)
+        val dispatched = tick(completed.queueSessionSync("fresh-command", successor), 162_000)
+        assertEquals("fresh", dispatched.send.single().task.syncId)
+        val fresh = dispatched.state
+        val confirmed = FixtureRelayReducer().reduceSourceSnapshot(fresh, response("fresh", 3, "current"))
+        assertTrue(confirmed.sessionSyncRequests.isEmpty())
+        assertTrue(confirmed.sessionSyncCommands.isEmpty())
+        assertEquals("current", confirmed.conversations.getValue("r0").messages.single().content.single().text)
+    }
+
     @Test fun `automatic history retries share their reserved byte and page allowance`() {
         val budget = SessionHistoryPrefetch("window", "leaf")
         var state = initial().queueSessionSync("reserve", task(range = "history").copy(historyPrefetch = budget))

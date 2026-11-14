@@ -15,6 +15,53 @@ class SessionModelPresentationTest {
     private fun state(runtime: RuntimeSummary = runtime()) = RemoteState(hostId = "h", e2eReady = true, runtimes = mapOf("r" to runtime))
     private fun presentation(runtime: RuntimeSummary) = state(runtime).sessionModelPresentation("r")
 
+    // SC86: compare native identity, not display names or opaque selection encodings.
+    @Test fun unchangedConfigurationsDoNotShowFutureSelectionsAcrossAgents() {
+        for ((kind, provider, id, option) in listOf(
+            listOf("pi", "deepseek", "deepseek-flash", "deepseek/deepseek-flash"),
+            listOf("codex", "openai", "gpt-6.1-sol", "gpt-6.1-sol"),
+            listOf("claude", "claude-code", "claude-opus-5-5", "opus"),
+            listOf("dsh", "deepseek-official", "deepseek-flash", """{"provider":"deepseek-official","model":"deepseek-flash"}"""))) {
+            val actual = RuntimeModelInfo(provider, id)
+            val current = RuntimeTurnConfiguration("turn", actual, "high", true)
+            val value = runtime().copy(agentKind = kind, model = actual.copy(name = "Display name"), thinkingLevel = "high",
+                modelSelection = SessionConfigurationValues(option, "high"), currentTurnConfiguration = current)
+            for (status in listOf("running", "waiting_local_interaction")) {
+                val view = presentation(value.copy(status = status))
+                assertNotNull(view.current); assertNull(view.indicator); assertNull(view.selectionTitle)
+                assertEquals("Display name", view.model); assertNull(view.current?.model?.name)
+            }
+            val changed = presentation(value.copy(thinkingLevel = "low"))
+            assertEquals(if (kind in listOf("codex", "claude")) "下轮使用" else "后续选择", changed.selectionTitle)
+            assertNotNull(changed.indicator)
+            assertNull(presentation(value).selectionTitle)
+            assertNotNull(presentation(value.copy(model = actual.copy(provider = "other-provider"))).indicator)
+            // Unlike iOS, Android prettifies an unlabeled request ID. A different
+            // selection must keep that original label, never borrow "Next model".
+            val originalLabel = when (kind) { "codex" -> "GPT 6.1 Sol"; "claude" -> "Claude Opus 5.5"; else -> "DeepSeek Flash" }
+            assertEquals(originalLabel, presentation(value.copy(model = actual.copy(provider = "other-provider", name = "Next model"))).model)
+            assertEquals(originalLabel, presentation(value.copy(model = actual.copy(id = "next-model", name = "Next model"))).model)
+            val unknown = value.copy(currentTurnConfiguration = current.copy(thinkingLevel = null, thinkingKnown = false))
+            assertNull(presentation(unknown).indicator)
+            assertEquals("当前所选", presentation(unknown).selectionTitle)
+            val default = value.copy(currentTurnConfiguration = current.copy(thinkingLevel = null))
+            assertEquals("当前所选", presentation(default).selectionTitle)
+            assertNull(presentation(default.copy(thinkingLevel = null)).selectionTitle)
+            assertEquals("当前所选", presentation(value.copy(status = "idle")).selectionTitle)
+            assertEquals("当前所选", presentation(value.copy(currentTurnConfiguration = null)).selectionTitle)
+        }
+    }
+
+    @Test fun piCatalogNameDoesNotAlternateWithTheResponseIdAcrossTurns() {
+        val model = RuntimeModelInfo("deepseek", "deepseek-flash", "DeepSeek V4.1 Flash")
+        for (turnId in listOf("first", "second", "third")) {
+            val value = runtime().copy(agentKind = "pi", model = model, thinkingLevel = "high", executionTurnId = turnId,
+                currentTurnConfiguration = RuntimeTurnConfiguration(turnId, model.copy(name = null), "high", true))
+            for (status in listOf("running", "waiting_local_interaction", "idle"))
+                assertEquals("DeepSeek V4.1 Flash", presentation(value.copy(status = status)).model)
+        }
+    }
+
     // S56 / SC80: unsupported/legacy adapters report selection, never a guessed current turn.
     @Test fun unsupportedAdaptersHaveAnExplicitSelectionWithoutAnEndlessUnknown() {
         for (kind in listOf("pi", "claude", "dsh")) {

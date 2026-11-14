@@ -11,7 +11,7 @@ import type { DshRuntime } from "./dsh-runtime.js";
 
 const installation: DshDesktopInstallation = { root: "/Applications/DeepSeek Harness.app", executable: "/x", archive: "/y", version: "0.2.2-rc.2" };
 const endpoint = { url: "http://127.0.0.1:4000/?token=abcdefghijklmnopq", descriptor: {} as never };
-const runtime = { kind: "dshDesktop" } as unknown as DshRuntime;
+const runtime = { kind: "dshDesktop", isReady: () => true, stop: async () => {} } as unknown as DshRuntime;
 
 function lifecycle(overrides: Partial<DshDesktopLifecycleOptions> = {}) {
   const statuses: DshDesktopAttach[] = [];
@@ -27,6 +27,14 @@ function lifecycle(overrides: Partial<DshDesktopLifecycleOptions> = {}) {
     ...overrides,
   };
   return { value: new DshDesktopLifecycle(options), options, statuses };
+}
+
+function gate<T>() {
+  let release!: (value: T) => void;
+  let enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const pending = new Promise<T>(resolve => { release = resolve; });
+  return { entered, release, wait: () => { enter(); return pending; } };
 }
 
 describe("Desktop lifecycle", () => {
@@ -91,6 +99,70 @@ describe("Desktop lifecycle", () => {
     await vi.waitFor(() => expect(value.value.status.state).toBe("closed"));
     expect(value.statuses.map(status => status.state)).toEqual(["attached", "error", "closed"]);
   });
+  // DSH-DESKTOP-10: stop fences every asynchronous discovery boundary, including
+  // a native API connection that completes after its owner has been disposed.
+  it.each(["installation", "endpoint", "process", "protocol"])("stops before a late %s result can launch or attach", async stage => {
+    const paused = gate<never>();
+    const value = lifecycle({
+      ...(stage === "installation" ? { findInstallation: paused.wait } : {}),
+      ...(stage === "endpoint" ? { readEndpoint: paused.wait } : {}),
+      ...(stage === "process" ? { isRunning: paused.wait } : {}),
+      ...(stage === "protocol" ? { prepareProtocol: paused.wait } : {}),
+    });
+    const rejected = expect(value.value.ensure()).rejects.toThrow("正在退出");
+    await paused.entered;
+    value.value.stop();
+    const beforeStop = value.statuses.slice();
+    const result = stage === "installation" ? installation : stage === "protocol"
+      ? { packageEntry: "/cache", dshVersion: "test", fingerprint: "test", files: 1 } : stage === "process" ? false : undefined;
+    paused.release(result as never);
+    await rejected;
+    if (stage !== "protocol") expect(value.options.launch).not.toHaveBeenCalled();
+    expect(value.options.connect).not.toHaveBeenCalled();
+    expect(value.statuses).toEqual(beforeStop);
+  });
+
+  it("releases a late connection and suppresses its attached status after stop", async () => {
+    const paused = gate<DshRuntime>();
+    const stop = vi.fn(async () => {});
+    const value = lifecycle({ readEndpoint: async () => endpoint, connect: paused.wait });
+    const rejected = expect(value.value.ensure()).rejects.toThrow("正在退出");
+    await paused.entered; value.value.stop();
+    paused.release({ ...runtime, stop } as unknown as DshRuntime);
+    await rejected;
+    expect(stop).toHaveBeenCalledOnce();
+    expect(value.statuses).toEqual([]);
+  });
+
+  it("keeps a pending probe from overwriting an attached or stopped lifecycle", async () => {
+    const paused = gate<boolean>();
+    const value = lifecycle({ isRunning: paused.wait });
+    const probe = value.value.probe();
+    await paused.entered;
+    value.options.readEndpoint = async () => endpoint;
+    await value.value.ensure();
+    paused.release(true); await probe;
+    expect(value.value.status.state).toBe("attached");
+    const finding = gate<typeof installation>();
+    const stopped = lifecycle({ findInstallation: finding.wait });
+    const pending = stopped.value.probe();
+    await finding.entered; stopped.value.stop(); finding.release(installation); await pending;
+    expect(stopped.statuses).toEqual([]);
+  });
+
+  it("shares an API connection between overlapping recovery and explicit requests", async () => {
+    const paused = gate<DshRuntime>();
+    const connect = vi.fn(paused.wait);
+    const value = lifecycle({ readEndpoint: async () => endpoint, connect });
+    const recovered = value.value.connectExisting();
+    await paused.entered;
+    const explicit = value.value.ensure();
+    paused.release(runtime);
+    expect(await recovered).toBe(runtime);
+    expect(await explicit).toBe(runtime);
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
 });
 
 describe("Host UI open", () => {
@@ -146,4 +218,25 @@ describe("Host UI open", () => {
     await expect(openDshDesktopFromHost(value.options)).rejects.toThrow("未找到");
     expect(value.options.launch).not.toHaveBeenCalled();
   });
+  // DSH-DESKTOP-10: abort during discovery or the final running→closed query
+  // must not reveal or launch Desktop after the Host has already exited.
+  it.each(["installation", "endpoint", "process", "exit"])("cancels opening during %s discovery", async stage => {
+    const paused = gate<never>();
+    const abort = new AbortController();
+    let queries = 0;
+    const value = opener({ signal: abort.signal,
+      ...(stage === "installation" ? { findInstallation: paused.wait } : {}),
+      ...(stage === "endpoint" ? { readEndpoint: paused.wait } : {}),
+      ...(stage === "process" ? { isRunning: paused.wait } : {}),
+      ...(stage === "exit" ? { isRunning: async () => ++queries === 1 ? true : paused.wait() } : {}),
+    });
+    const rejected = expect(openDshDesktopFromHost(value.options)).rejects.toThrow("已取消");
+    await paused.entered; abort.abort();
+    paused.release((stage === "installation" ? installation : stage === "endpoint" ? endpoint : false) as never);
+    await rejected;
+    expect(value.options.launch).not.toHaveBeenCalled();
+    expect(value.options.reveal).not.toHaveBeenCalled();
+    if (stage === "exit") expect(value.waiting).toEqual([true, false]);
+  });
+
 });

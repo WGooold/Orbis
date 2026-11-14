@@ -10,7 +10,22 @@ protocol SecureStorage {
 final class SecureStore: SecureStorage {
     static let shared = SecureStore()
     private let defaultsKey = "orbis.hostPairings"
-    private init() {}
+    private let namespace: String
+    private init() { namespace = "" }
+    #if DEBUG
+    init(testNamespace: String) {
+        precondition(testNamespace.hasPrefix("orbis.pushqa."))
+        namespace = testNamespace + "."
+    }
+    func clearPushTestingNamespace() {
+        guard namespace.hasPrefix("orbis.pushqa.") else { return }
+        for name in ["device.identity", defaultsKey, "orbis.pendingPushRemovals"] {
+            let service = namespace + name
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                kSecAttrAccount as String: service] as CFDictionary)
+        }
+    }
+    #endif
 
     func deviceIdentity() throws -> DeviceIdentity {
         if let raw = try read(service: "device.identity") { return try DeviceIdentity.load(raw: raw) }
@@ -29,7 +44,17 @@ final class SecureStore: SecureStorage {
         return value
     }
 
+    func pendingPushRemovals() throws -> [PushRegistrationTarget] {
+        guard let data = try read(service: "orbis.pendingPushRemovals") else { return [] }
+        return try JSONDecoder().decode([PushRegistrationTarget].self, from: data)
+    }
+
+    func savePendingPushRemovals(_ targets: [PushRegistrationTarget]) throws {
+        try save(JSONEncoder().encode(targets), service: "orbis.pendingPushRemovals")
+    }
+
     private func save(_ data: Data, service: String) throws {
+        let service = namespace + service
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: service]
         let attributes: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
@@ -41,6 +66,7 @@ final class SecureStore: SecureStorage {
     }
 
     private func read(service: String) throws -> Data? {
+        let service = namespace + service
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: service, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
