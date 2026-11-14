@@ -4,8 +4,10 @@ import SwiftUI
 struct ConnectionStatusView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var appearance = "mist"
-    @AppStorage("orbis.colorMode") private var colorMode = "system"
+    // Read through the root (PERF-12): this page stays mounted, and `@AppStorage` here would
+    // re-render it on every defaults write. Choices are stored to defaults directly.
+    @Environment(\.orbisAppearance) private var appearance
+    @Environment(\.orbisColorMode) private var colorMode
     @EnvironmentObject private var overlay: OrbisOverlay
     @State private var connectionOpen = false
     @State private var languageOpen = false
@@ -91,7 +93,7 @@ struct ConnectionStatusView: View {
                 themePreview(dark: false)
                 themePreview(dark: true)
             }
-            Toggle(isOn: Binding(get: { colorMode == "system" }, set: { colorMode = $0 ? "system" : scheme == .dark ? "dark" : "light" })) {
+            Toggle(isOn: Binding(get: { colorMode == "system" }, set: { UserDefaults.standard.set($0 ? "system" : scheme == .dark ? "dark" : "light", forKey: "orbis.colorMode") })) {
                 Text(L10n.tr("跟随系统")).font(.orbisBody(.semibold))
             }.toggleStyle(NeuToggleStyle()).accessibilityIdentifier("appearance-system")
             HStack {
@@ -99,7 +101,7 @@ struct ConnectionStatusView: View {
                 ForEach(OrbisAppearance.allCases, id: \.rawValue) { material in
                     let selected = appearance == material.rawValue
                     let palette = OrbisPalette(scheme, appearance: material)
-                    OrbisMotionButton { appearance = material.rawValue } label: {
+                    OrbisMotionButton { UserDefaults.standard.set(material.rawValue, forKey: "orbis.appearance") } label: {
                         HStack(spacing: 8) {
                             Circle().fill(palette.base).overlay { Circle().fill(palette.accent).frame(width: 8, height: 8) }
                                 .frame(width: 28, height: 28)
@@ -115,7 +117,7 @@ struct ConnectionStatusView: View {
     private func themePreview(dark: Bool) -> some View {
         let selected = colorMode == "system" ? (scheme == .dark) == dark : colorMode == (dark ? "dark" : "light")
         let p = OrbisPalette(dark ? .dark : .light)
-        return OrbisMotionButton { colorMode = dark ? "dark" : "light" } label: {
+        return OrbisMotionButton { UserDefaults.standard.set(dark ? "dark" : "light", forKey: "orbis.colorMode") } label: {
             VStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 6) {
                     RoundedRectangle(cornerRadius: 2).fill(p.secondary).frame(width: 44, height: 4)
@@ -254,7 +256,7 @@ struct AgentProvidersView: View {
     @EnvironmentObject private var host: HostState
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisAppearance) private var appearance
     @State private var selectedId: String?
     @State private var moving = false
     var root = false
@@ -615,7 +617,7 @@ private struct ProviderDialView: View {
 
 struct StatusSection<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
@@ -632,7 +634,7 @@ struct StatusSection<Content: View>: View {
 
 struct StatusFact: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let label: String
     /// A short qualifier shown beside the label in its own color, instead of joining them with a dot.
     var tag: String? = nil
@@ -657,7 +659,7 @@ struct StatusFact: View {
 /// One fact on a line: label on the left, value (with its state color) on the right, as on Android.
 struct StatusRow: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let label: String
     let value: String
     var tone: Color? = nil

@@ -293,6 +293,7 @@ final class OrbisStore: ObservableObject {
     var launchableAgents: [String]? { activeConnection.launchableAgents }
     var codexDesktop: CodexDesktopAttach? { activeConnection.codexDesktop }
     var drafts: [String: String] { activeConnection.drafts }
+    var draftRevision: Int { activeConnection.draftRevision }
     var pathRTT: Double? { activeConnection.pathRTT }
     var activationRevision: Int { activeConnection.activationRevision }
     var pendingActionIds: Set<String> { activeConnection.pendingActionIds }
@@ -327,6 +328,7 @@ final class OrbisStore: ObservableObject {
     func displayName(_ runtime: RuntimeSummary) -> String { activeConnection.displayName(runtime) }
     func displayName(_ session: SessionSummary) -> String { activeConnection.displayName(session) }
     func draft(for runtime: RuntimeSummary) -> String { activeConnection.draft(for: runtime) }
+    func editDraft(_ text: String, for runtime: RuntimeSummary) { activeConnection.editDraft(text, for: runtime) }
     func saveDraft(_ text: String, for runtime: RuntimeSummary) { activeConnection.saveDraft(text, for: runtime) }
     func refreshWorkingBranch() { activeConnection.refreshWorkingBranch() }
     func loadMenuOptions(runtimeId: String, name: String) { activeConnection.loadMenuOptions(runtimeId: runtimeId, name: name) }

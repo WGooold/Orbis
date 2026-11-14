@@ -7,7 +7,9 @@ import UIKit
 struct OrbisApp: App {
     @UIApplicationDelegateAdaptor(OrbisAppDelegate.self) private var appDelegate
     @StateObject private var store = OrbisStore()
-    @AppStorage("orbis.colorMode") private var colorMode = "system"
+    // Publishes only when a display preference changes (PERF-12); `@AppStorage` here would
+    // re-evaluate the window on every defaults write.
+    @ObservedObject private var display = OrbisDisplaySettings.shared
     @Environment(\.scenePhase) private var scenePhase
     init() {
         OrbisAppearance.migrate()
@@ -38,6 +40,10 @@ struct OrbisApp: App {
     }
     var body: some Scene {
         WindowGroup {
+            windowContent.modifier(OrbisDisplayPreferences())
+        }
+    }
+    @ViewBuilder private var windowContent: some View {
             #if DEBUG
             if PushLifecycleProbe.phase != nil {
                 PushLifecycleProbeView()
@@ -60,7 +66,6 @@ struct OrbisApp: App {
             #else
             appContent
             #endif
-        }
     }
     private var appContent: some View {
         ContentView().environmentObject(store)
@@ -89,6 +94,6 @@ struct OrbisApp: App {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
         #endif
-        return colorMode == "light" ? .light : colorMode == "dark" ? .dark : nil
+        return display.colorMode == "light" ? .light : display.colorMode == "dark" ? .dark : nil
     }
 }

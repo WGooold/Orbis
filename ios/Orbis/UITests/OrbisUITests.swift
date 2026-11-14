@@ -2714,6 +2714,22 @@ final class OrbisUITests: XCTestCase {
         capture("long-transcript-reopened-without-drag", app: app)
     }
 
+    // PERF-12: one uninterrupted typing burst over a long transcript, between idle gaps, so a Time
+    // Profiler run can isolate what a keystroke re-renders (iPad: drawer and root pages stay mounted;
+    // drafts persist to UserDefaults.standard as in the shipping app).
+    // The value is read only after the burst to keep XCTest snapshots out of the measured window.
+    func testTypingOverLongTranscriptKeepsTheDraft() {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-standard-preferences"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+        Thread.sleep(forTimeInterval: 2)
+        composer.typeText(String(repeating: "typing keeps the page still ", count: 4))
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertTrue((composer.value as? String)?.lowercased().contains("still typing keeps the page still") == true,
+                      "Composer value: \(String(describing: composer.value))")
+    }
+
     // SC89 / S31: nested tool-group expansion keeps both reading anchors and retained state.
     func testToolGroupAndNestedCallKeepTheirReadingPosition() {
         let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-tool-group"])

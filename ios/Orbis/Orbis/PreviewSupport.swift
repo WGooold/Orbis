@@ -287,7 +287,12 @@ func makePreviewStore(screen: String) -> OrbisStore {
     PreviewViewportUpdates.advance = screen == "viewport" ? { [weak transport] in transport?.advanceViewport() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
-    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: nil,
+    // PERF-12: persist like the shipping app (`UserDefaults.standard`) so a profile includes what a
+    // keystroke's draft write triggers; preview drafts start empty and files stay temporary.
+    let standardPreferences = ProcessInfo.processInfo.arguments.contains("--preview-standard-preferences")
+    if standardPreferences { UserDefaults.standard.removeObject(forKey: "orbis.sessionDrafts") }
+    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: standardPreferences ? .standard : nil,
+                           transferRoot: standardPreferences ? FileManager.default.temporaryDirectory.appendingPathComponent("orbis-preview-" + UUID().uuidString) : nil,
                            transportFactory: { pairing in pairing.hostId == "preview-host" ? transport : PreviewTransport(screen: screen, variant: 1) })
     PreviewViewportUpdates.changeList = { [weak store, weak transport] operation in
         transport?.changeList(operation)

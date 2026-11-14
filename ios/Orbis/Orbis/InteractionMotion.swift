@@ -517,7 +517,7 @@ private struct OrbisMessageTextSelection: View {
 /// SwiftUI Text can offer only whole-paragraph Copy/Share on those versions.
 private struct OrbisSelectableMessageText: UIViewRepresentable {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let text: String
 
     func makeUIView(context: Context) -> UITextView {
@@ -717,7 +717,7 @@ private struct MessageSendFlightHost: ViewModifier {
     @ObservedObject var flight: MessageSendFlight
     @Environment(\.scenePhase) private var scene
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var viewportSize: CGSize = .zero
     func body(content: Content) -> some View {

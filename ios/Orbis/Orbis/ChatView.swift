@@ -54,6 +54,14 @@ private extension EnvironmentValues {
     }
 }
 
+/// The composer's own copy of a draft, valid while it targets the same session and the store has not
+/// written that draft since.
+private struct ComposerText {
+    let key: String
+    let revision: Int
+    let text: String
+}
+
 /// The transcript has exactly one viewport policy: within one line of the bottom it follows
 /// new content, dragging or opening a disclosure stops following, and past three lines a jump-to-latest
 /// button appears. Nothing else moves the viewport on the reader's behalf.
@@ -73,7 +81,7 @@ struct ChatView: View {
     @EnvironmentObject private var agent: AgentState
     @EnvironmentObject private var notifications: RuntimeNotifications
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let runtime: RuntimeSummary
     let onBack: () -> Void
@@ -99,6 +107,7 @@ struct ChatView: View {
     @State private var filePickerOpen = false
     @State private var awaitingHistoryPage = false
     @State private var topArmed = false
+    @State private var composerText: ComposerText?
     @StateObject private var downloadFlight = DownloadFlight()
     @FocusState private var composerFocused: Bool
 
@@ -114,7 +123,19 @@ struct ChatView: View {
         guard let projection = notifications.visibleProjection(runtime.runtimeId) else { return false }
         return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
     }
-    private var draft: Binding<String> { Binding(get: { store.draft(for: runtime) }, set: { store.saveDraft($0, for: runtime) }) }
+    /// PERF-12 (Android parity): the text being typed is this page's state. A keystroke re-renders this
+    /// page only (rows are equatable) and is persisted without publishing the store; a draft the store
+    /// writes itself (command result, restored copy, launch) advances `draftRevision` and replaces it.
+    private var draft: Binding<String> {
+        Binding(get: {
+            if let composerText, composerText.key == localSessionKey(host: store.selectedHost, runtime: runtime),
+               composerText.revision == store.draftRevision { return composerText.text }
+            return store.draft(for: runtime)
+        }, set: { text in
+            composerText = ComposerText(key: localSessionKey(host: store.selectedHost, runtime: runtime), revision: store.draftRevision, text: text)
+            store.editDraft(text, for: runtime)
+        })
+    }
     private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
     private var attachments: [FileTransfer] {
@@ -806,7 +827,7 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
 /// Inputs are plain values so an unchanged row is skipped: it does not observe the whole store.
 struct ChatMessageRow: View, Equatable {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]
@@ -830,7 +851,7 @@ struct ChatMessageRow: View, Equatable {
             lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes &&
             lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption &&
             lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads &&
-            lhs.canResend == rhs.canResend && lhs.visualStyle == rhs.visualStyle
+            lhs.canResend == rhs.canResend
     }
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
@@ -912,7 +933,7 @@ enum PendingSendAction { case resend, restore, discard, check, cancel }
 /// 下方是与输入框附件条相同的上传状态与进度。只读：重试 / 放回 / 删除在气泡下方的操作区。
 private struct PendingAttachments: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let tasks: [FileTransfer]
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -941,7 +962,7 @@ func pendingAttachmentStatus(_ task: FileTransfer) -> String {
 /// 36pt 方形缩略图：本机暂存的图片按需降采样解码，其他文件或解码失败显示文件图标。
 private struct AttachmentThumbnail: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let task: FileTransfer
     @State private var image: UIImage?
     var body: some View {
@@ -970,7 +991,7 @@ private struct AttachmentThumbnail: View {
 /// 用户气泡下方原本放复制 / 回退的位置，替换为发送状态与恢复操作，不在聊天里另起提示行。
 private struct PendingSendStatus: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let state: PendingSend.State
     let canResend: Bool
     let rowId: String
@@ -1050,7 +1071,7 @@ private struct MessageContentView: View {
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let message: ChatMessage
     var toolResults: [String: ChatMessage] = [:]
     var streaming = false
@@ -1129,7 +1150,7 @@ private struct FullMessageView: View {
     @EnvironmentObject private var store: OrbisStore
     @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let entryId: String
     private var preview: EntryPreview? { store.entryPreview?.entryId == entryId ? store.entryPreview : nil }
     var body: some View {
@@ -1175,7 +1196,7 @@ func fileNameParts(_ name: String) -> (stem: String, ext: String) {
 
 struct CompactDisclosure<Content: View>: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.chatReadingInteraction) private var readingInteraction
     let title: String
@@ -1207,7 +1228,7 @@ struct CompactDisclosure<Content: View>: View {
 struct ToolSummaryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @State private var detailOpen = false
     let summary: ToolSummary
     var body: some View {
@@ -1295,7 +1316,7 @@ struct MarkdownMessage: View {
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     #if DEBUG
     @Environment(\.previewRevealTime) private var previewRevealTime
     #endif
@@ -1414,7 +1435,7 @@ struct MarkdownMessage: View {
 
 private struct CodeBlockView: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let text: String
     let language: String
     let clock: RevealClock
@@ -1438,7 +1459,7 @@ private struct CodeBlockView: View {
 private struct SlashPickerView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let runtime: RuntimeSummary
     @Binding var selected: String?
     @Binding var input: String
@@ -1499,7 +1520,7 @@ struct PermissionsView: View {
     @EnvironmentObject private var store: OrbisStore
     @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let runtime: RuntimeSummary
     @State private var proposedSetting: String?
     @State private var proposedValue: String?
@@ -1583,7 +1604,7 @@ private struct MarkdownTableView: View {
 
 private struct MarkdownImageView: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let alt: String
     let url: URL
     var body: some View {
@@ -1602,7 +1623,7 @@ private struct MarkdownImageView: View {
 struct QueuedMessagesView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
     var body: some View {
         let items = store.queuePanelItems(runtimeId)
@@ -1641,7 +1662,7 @@ struct RuntimeNoticesView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var notifications: RuntimeNotifications
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
     /// 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示核对提示。
     let supported: Bool

@@ -5,7 +5,7 @@ import PhotosUI
 struct PairingEntryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
     @State private var code = ""
     @State private var scannerOpen = false
@@ -79,7 +79,7 @@ struct PairingEntryView: View {
 struct PairingScannerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.openURL) private var openURL
     let onCode: (String) -> Void
     @State private var failure: String?

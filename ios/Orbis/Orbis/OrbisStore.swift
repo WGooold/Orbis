@@ -194,7 +194,11 @@ final class HostConnection: ObservableObject {
         return true
     }
     @Published private(set) var codexDesktop: CodexDesktopAttach?
-    @Published private(set) var drafts: [String: String] = [:]
+    /// PERF-12 (Android parity): the composer owns the text it is editing; a keystroke is stored and
+    /// persisted here without publishing. Writes that originate in the store advance `draftRevision`
+    /// so a visible composer reloads them.
+    private(set) var drafts: [String: String] = [:]
+    @Published private(set) var draftRevision = 0
     @Published private(set) var pathRTT: Double?
     @Published private(set) var activationRevision = 0
     @Published private(set) var pendingActionIds: Set<String> = []
@@ -763,16 +767,27 @@ final class HostConnection: ObservableObject {
         return sessionTitle(runtime: nil, session: session)
     }
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
+    /// A keystroke the composer already shows.
+    func editDraft(_ text: String, for runtime: RuntimeSummary) {
+        let key = localSessionKey(host: selectedHost, runtime: runtime)
+        updateDrafts(reload: false) { $0[key] = text.isEmpty ? nil : text }
+    }
+    /// A draft the visible composer has not seen yet.
     func saveDraft(_ text: String, for runtime: RuntimeSummary) {
         let key = localSessionKey(host: selectedHost, runtime: runtime)
-        drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
-        drafts[key] = text.isEmpty ? nil : text
-        preferences?.set(drafts, forKey: "orbis.sessionDrafts")
+        updateDrafts(reload: true) { $0[key] = text.isEmpty ? nil : text }
+    }
+    /// Every Host connection shares one preferences entry, so a write merges into what is stored now.
+    private func updateDrafts(reload: Bool, _ change: (inout [String: String]) -> Void) {
+        var next = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
+        change(&next)
+        drafts = next
+        preferences?.set(next, forKey: "orbis.sessionDrafts")
+        if reload { draftRevision &+= 1 }
     }
 
     func purgeLocalData() {
         guard let hostId = selectedHostId else { return }
-        drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
         if let host = pairings.first(where: { $0.hostId == hostId }) {
             transfers.removeAll(for: host)
             let prefix = hostKeyPrefix(host)
@@ -785,8 +800,7 @@ final class HostConnection: ObservableObject {
             preferences?.removeObject(forKey: lastSessionKey(host))
             historyWorker.invalidate(host: host)
             cleanupTask = Task { [historyWorker] in try? await historyWorker.remove(host: host) }
-            drafts = drafts.filter { !$0.key.hasPrefix(prefix) }
-            preferences?.set(drafts, forKey: "orbis.sessionDrafts")
+            updateDrafts(reload: true) { drafts in drafts = drafts.filter { !$0.key.hasPrefix(prefix) } }
         }
         pairings = []
         guard selectedHostId == hostId else { return }
@@ -2215,11 +2229,7 @@ final class HostConnection: ObservableObject {
     private func finishAction(_ id: String, succeeded: Bool, message: String? = nil, result: [String: Any]? = nil) {
         guard let action = runtimeActions.removeValue(forKey: id) else { return }
         if let submitted = composerActionDrafts.removeValue(forKey: id), succeeded {
-            drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
-            if drafts[submitted.key] == submitted.text {
-                drafts[submitted.key] = nil
-                preferences?.set(drafts, forKey: "orbis.sessionDrafts")
-            }
+            updateDrafts(reload: true) { if $0[submitted.key] == submitted.text { $0[submitted.key] = nil } }
         }
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
@@ -2373,16 +2383,16 @@ final class HostConnection: ObservableObject {
     /// 上次进程退出时还在等待的消息回到输入框，已有草稿则接在其后。
     private func restoreWaitingCopies() {
         guard let copies = preferences?.dictionary(forKey: Self.waitingCopiesKey) as? [String: [String: String]], !copies.isEmpty else { return }
-        drafts = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
         var kept: [String: [String: String]] = [:]
-        for (key, entries) in copies {
-            let live = entries.filter { pendingSends.item($0.key) != nil }
-            if !live.isEmpty { kept[key] = live }
-            let restored = entries.filter { pendingSends.item($0.key) == nil }.values.sorted()
-            guard !restored.isEmpty else { continue }
-            drafts[key] = ([drafts[key]].compactMap { $0 } + restored).joined(separator: "\n\n")
+        updateDrafts(reload: true) { drafts in
+            for (key, entries) in copies {
+                let live = entries.filter { pendingSends.item($0.key) != nil }
+                if !live.isEmpty { kept[key] = live }
+                let restored = entries.filter { pendingSends.item($0.key) == nil }.values.sorted()
+                guard !restored.isEmpty else { continue }
+                drafts[key] = ([drafts[key]].compactMap { $0 } + restored).joined(separator: "\n\n")
+            }
         }
-        preferences?.set(drafts, forKey: "orbis.sessionDrafts")
         preferences?.set(kept, forKey: Self.waitingCopiesKey)
     }
 

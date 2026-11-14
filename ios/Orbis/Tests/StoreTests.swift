@@ -1767,3 +1767,65 @@ struct StoreTests {
     }
 
 }
+
+/// PERF-12: a keystroke used to publish the whole Host connection, re-rendering every mounted
+/// page (iPad: drawer, three root pages and the chat). Android keeps the editor text local and
+/// only persists it; iOS must do the same while store-originated draft writes still reach a
+/// visible composer.
+extension StoreTests {
+    private final class PublicationCount { var value = 0 }
+
+    /// Lets the hub's coalesced publication (scheduled after a yield) run if anything was scheduled.
+    private func settlePublications(_ store: OrbisStore) async {
+        for _ in 0..<5 { await Task.yield() }
+        await store.waitForPendingEvents()
+        for _ in 0..<5 { await Task.yield() }
+    }
+
+    @Test func keystrokeDraftEditsPersistWithoutPublishingScreens() async throws {
+        let suite = "orbis-composer-draft-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let transport = TestTransport()
+        let store = OrbisStore(secure: MemorySecureStore(), transport: transport, preferences: preferences)
+        transport.drain = { [weak store] in await store?.waitForPendingEvents() }
+        await transport.ready([runtime("a")])
+        await settlePublications(store)
+        let selected = try #require(store.selectedRuntime)
+        let hub = PublicationCount(), connection = PublicationCount()
+        let observers = [store.objectWillChange.sink { _ in hub.value += 1 },
+                         store.activeConnection.objectWillChange.sink { _ in connection.value += 1 }]
+        defer { observers.forEach { $0.cancel() } }
+        let revision = store.draftRevision
+        for text in ["h", "he", "hel", "hello", "", "你", "你好"] {
+            store.editDraft(text, for: selected)
+            #expect(store.draft(for: selected) == text)
+        }
+        await settlePublications(store)
+        #expect(connection.value == 0)
+        #expect(hub.value == 0)
+        #expect(store.draftRevision == revision)
+        // Persisted immediately in the existing format, like Android's per-key apply().
+        let stored = preferences.dictionary(forKey: "orbis.sessionDrafts") as? [String: String]
+        #expect(stored?[localSessionKey(host: store.selectedHost, runtime: selected)] == "你好")
+    }
+
+    @Test func storeOriginatedDraftWritesAdvanceTheComposerRevision() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+            ["name": "skill", "source": "builtin", "argument": ["kind": "text", "required": true]]
+        ]]], sequence: 1, channel: "ctl")
+        let selected = try #require(store.selectedRuntime)
+        store.editDraft("/skill keep", for: selected)
+        let typed = store.draftRevision
+        #expect(store.executeSlash("skill", args: "keep", composerDraft: store.draft(for: selected)))
+        let id = try #require(transport.sent.last?["commandId"])
+        await transport.event(["type": "command.result", "commandId": id, "ok": true], sequence: 2, channel: "ctl")
+        #expect(store.draft(for: selected).isEmpty)
+        #expect(store.draftRevision != typed, "A visible composer must reload the cleared draft")
+        let cleared = store.draftRevision
+        store.saveDraft("restored by the store", for: selected)
+        #expect(store.draftRevision != cleared)
+        #expect(store.draft(for: selected) == "restored by the store")
+    }
+}

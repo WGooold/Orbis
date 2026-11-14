@@ -161,12 +161,12 @@ struct SessionDrawerView: View, Equatable {
     @ObservedObject var updates: ScreenPublication
     let renderedState: SessionDirectoryState
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.store === rhs.store && lhs.renderedState == rhs.renderedState && lhs.visualStyle == rhs.visualStyle
+        lhs.store === rhs.store && lhs.renderedState == rhs.renderedState
     }
 
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Binding var state: SessionDirectoryState
     @FocusState private var searchFocused: Bool
     @State private var selectedSessionIds: Set<String> = []
@@ -603,7 +603,7 @@ struct SessionDraftView: View {
     @Environment(\.orbisVisible) private var visible
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var overlay: OrbisOverlay
-    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisAppearance) private var appearance
     @AppStorage("orbis.lastDraftAgent") private var agent = "codex"
     @State private var text = ""
     let owner: HostConnection
@@ -754,9 +754,10 @@ struct SessionDraftView: View {
                 if !reduced { try? await Task.sleep(for: .milliseconds(120)) }
                 if !cancelling && visible && scenePhase == .active { focused = true }
             }
-            .onChange(of: text) { _, value in owner.saveDraft(value, for: draftRuntime) }
+            // PERF-12: the card owns its text; persisting a keystroke must not publish the Host.
+            .onChange(of: text) { _, value in owner.editDraft(value, for: draftRuntime) }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
-            .onChange(of: path) { _, value in owner.saveDraft(value ?? "", for: pathRuntime) }
+            .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
             .onChange(of: closeRequest) { _, _ in cancel() }
             .onChange(of: visible) { _, active in if !active { focused = false } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { focused = false } }
@@ -880,7 +881,7 @@ struct SessionDraftView: View {
 struct RemoteDirectoryView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {

@@ -164,3 +164,45 @@ MARKDOWN-LIVE-01（S11 / M04 / V09）纳入本轮后台呈现决策，修复提�
 | 右滑返回 | 长间隔 3–8，最长 43–54ms | 长间隔 0 / 0 / 7，最长 17 / 17 / 39ms |
 
 Swift 491/491；导航界面回归 18/18，探针用例 3/3。`testChatDownloadsReturnToSameChat` 在对照与本分支同样失败于 `XCTAssertFalse(composer.exists)`（iOS 27 快照列出 SwiftUI 已隐藏子树，见 ADR-0054 2026-11-13），为既有失败，断言保留。未覆盖：真机与渲染服务器合成开销、实时会话持续发布；右滑在第三次迭代两轮均出现长间隔，原因未确认。证据见 [.artifacts/ios-page-transition-perf-20261114](../../.artifacts/ios-page-transition-perf-20261114/) 与基线 [.artifacts/ios-page-transition-jank-20261113](../../.artifacts/ios-page-transition-jank-20261113/)。部署未进行；真机体感待用户验证。
+
+### 2026-11-14：iOS 输入框按键不再触发整个界面重算（PERF-12，待用户验证）
+
+对齐 Android 的两处结构。Android 输入框文本是聊天页的 `remember` 状态，按键只经 `DraftStore` 持久化，不写入 `RemoteState`；外观通过 `LocalOrbisPalette` 在根部提供，只在取值变化时重组。
+
+iOS 原先每次按键有两条全局失效路径：
+- **Host 发布。** `saveDraft` 发布 `@Published drafts`，Hub 再通知所有观察 store 的视图。
+- **`@AppStorage` 重算。** 同一次按键写入 `UserDefaults.standard`。SwiftUI 的 `@AppStorage` 在任何 defaults 写入时都会重新求值（`UserDefaultObserver.userDefaultsDidChange`，与键无关）。全应用有 79 处 `@AppStorage("orbis.appearance")`，仅用于跟随外观，因此消息行（绕过 `.equatable()`）、侧边栏、根页面都会随之重算。
+
+iPad 常驻侧边栏，根页面保持挂载（M14 / ADR-0054），两条路径叠加。目录缓存、选中电脑、待发副本等其他 defaults 写入同样会触发第二条路径。
+
+改动：
+- **按键写入。** `HostConnection.drafts` 不再发布。`editDraft` 处理按键：同步写内存，并合并写回 `orbis.sessionDrafts`（格式与跨 Host 合并不变），不发布。
+- **store 发起的写入。** 走 `saveDraft` / `updateDrafts(reload: true)` 并递增已发布的 `draftRevision`。范围：Slash 成功后清除提交的草稿、恢复未发出的消息、启动落地迁移、分支编辑文本、清除电脑数据。
+- **聊天页文本状态。** `ChatView` 持有输入文本（会话 key 与 `draftRevision`）；不一致时读取 store，因此切换会话和 store 写入都会替换页面状态。新建会话卡片改用 `editDraft`。每次按键仍重算聊天页，与 Android 在聊天屏幕层读取 `input` 的粒度一致；未变化的转录行由 `.equatable()` 跳过。
+- **外观设置。** `OrbisDisplaySettings` 统一读取外观与颜色模式，只在取值变化时发布。`OrbisDisplayPreferences` 在窗口根部、以及由 UIKit 托管的差异页内，以 `\.orbisAppearance`、`\.orbisColorMode` 提供给下层。原有读取改为环境值，设置页直接写 defaults。等值视图不再比较外观：环境变化会直接使依赖它的视图失效，回归见 `testMaterialAppearanceRefreshesMountedHomeCard`。
+- **仍保留 `@AppStorage` 的位置。** 仅剩新建会话卡片的 `orbis.lastDraftAgent`，只在卡片打开时挂载。
+
+评估后暂不改动：
+- **回复卡片 TimelineView 增高。** M24 要求尺寸与内容快照同批判定；它在非实时输出时暂停，不在输入路径上。
+- **持续输出时的 Host 发布。** 隐藏的根页面仍随每次 Host 发布重算；需要按属性观察（`@Observable` 迁移）或根页面发布门控。
+- **行内工具摘要。** `ToolSummaryView` / `TruncatedMessageContent` 只读取 `canSend` 与当前 runtime，可改为环境值传入，不需要迁移；尚未处理。
+- **每键 defaults 写入。** 仍在主线程合并写入整份草稿字典，约 0.3ms/键；改为后台写需同时调整 store 侧的读改写顺序。
+
+实现见 [OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift)、[OrbisHub.swift](../../ios/Orbis/Orbis/OrbisHub.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[SessionViews.swift](../../ios/Orbis/Orbis/SessionViews.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[OrbisApp.swift](../../ios/Orbis/Orbis/OrbisApp.swift)、[StatusViews.swift](../../ios/Orbis/Orbis/StatusViews.swift)、[TurnFileChangesView.swift](../../ios/Orbis/Orbis/TurnFileChangesView.swift)。回归见 [StoreTests.swift](../../ios/Orbis/Tests/StoreTests.swift) 的 `keystrokeDraftEditsPersistWithoutPublishingScreens`、`storeOriginatedDraftWritesAdvanceTheComposerRevision`。测量用例为 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift) 的 `testTypingOverLongTranscriptKeepsTheDraft`：DEBUG 参数 `--preview-standard-preferences` 让预览 store 像正式版一样写 `UserDefaults.standard`。
+
+验证（iPad Air 11-inch (M4) 模拟器，iOS 27.0，Debug，长会话夹具，同一段 112 字符连续输入约 1.85s；窗口取键盘输入样本的主簇）：
+
+| 构建 | preferences | 主线程 CPU | 输入期间聊天页以外的 body |
+| --- | --- | --- | --- |
+| 对照 | 无（预览） | 92% | ContentView、模型提供方页、设置页、侧边栏 |
+| 仅草稿改动 | 无 | 51% | 无 |
+| 仅草稿改动 | `.standard` | 76% | 消息行、侧边栏、模型提供方页、ContentView、HomeView；`UserDefaultObserver` 24 |
+| 草稿 + 根部环境值（`@AppStorage` 根读取） | `.standard` | 69% / 69% / 66% | 无；根部仍随每次写入重算，宿主视图渲染翻倍 |
+| 草稿 + `OrbisDisplaySettings` | `.standard` | 66% / 49% | 无 |
+
+- **测量局限。** 92% 的对照未走 defaults 写入，没有正式条件下的修改前数据。同一构建两次运行相差约 17 个百分点。百分比只作量级参考，可靠的结论是哪些视图随按键重算。对照与前两种构建各只测一次。模拟器上未出现多核占用（其他线程 ≤62ms），用户报告的 150% 未复现。
+- **单元测试。** 修改前，7 次按键触发连接发布 14 次、Hub 发布 1 次，用例失败；修改后通过。[DisplayPreferenceTests.swift](../../ios/Orbis/Tests/DisplayPreferenceTests.swift) 扫描源码：`@AppStorage` 只允许 `orbis.lastDraftAgent`，HEAD 有 79 处，会失败。连同相关套件共 169/169；Release 配置编译通过。
+- **二进制核对。** 对照不含 `editDraft` 符号，各候选含该符号。
+- **界面回归（Orbis iOS Standard 2）。** 草稿相关的 `testDraftSurvivesBackNavigationAndSlashRequiresSelection`、上传发送 / 失败恢复、`testDesignAlignmentRootDraftAndExplicitProtocolChoice`、`testMaterialAppearanceSwitchPersistsAcrossLaunches`、`testMaterialAppearanceRefreshesMountedHomeCard`、`testTypingOverLongTranscriptKeepsTheDraft` 通过。`testDraftHardwareReturnAndDesktopOnlySelection`（第 374 行）和 `testSendingWhileTheSessionStartsWaitsAndSubmitsOnceItIsOnline`（两版各 0/3，均止于发送后 1s 等待）在对照版同样失败，为既有失败，断言保留。`testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail`（第 819 行）与 `testTurnFileReviewDarkAppearance`（第 900 行）止于预览变更卡片按钮未出现，撤回本任务源码的对照构建同样失败，为既有失败。
+
+证据见 [.artifacts/ios-composer-draft-20261114](../../.artifacts/ios-composer-draft-20261114/verification.json)。部署未进行；共享测试看板 `orbis-qa` 连接失败，登记待补。iPad 真机输入体感、中文输入法组字、启动中输入后会话上线仍待用户验证。

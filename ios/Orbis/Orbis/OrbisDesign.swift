@@ -24,9 +24,57 @@ enum OrbisAppearance: String, CaseIterable {
     }
 }
 
+private struct OrbisAppearanceKey: EnvironmentKey { static let defaultValue = OrbisAppearance.mist.rawValue }
+private struct OrbisColorModeKey: EnvironmentKey { static let defaultValue = "system" }
+extension EnvironmentValues {
+    /// The stored appearance (Android: `LocalOrbisPalette`); views that follow it read this.
+    var orbisAppearance: String {
+        get { self[OrbisAppearanceKey.self] }
+        set { self[OrbisAppearanceKey.self] = newValue }
+    }
+    var orbisColorMode: String {
+        get { self[OrbisColorModeKey.self] }
+        set { self[OrbisColorModeKey.self] = newValue }
+    }
+}
+
+/// Display preferences, read from defaults in one place (PERF-12). SwiftUI re-evaluates every
+/// `@AppStorage` property on any `UserDefaults.standard` write, whatever its key — a draft keystroke,
+/// a catalog cache — and re-renders the window from there. This publishes only when the appearance
+/// or color mode actually changes. Writers store to `UserDefaults.standard` directly.
+@MainActor final class OrbisDisplaySettings: ObservableObject {
+    static let shared = OrbisDisplaySettings()
+    @Published private(set) var appearance = ""
+    @Published private(set) var colorMode = ""
+    private var observer: NSObjectProtocol?
+    private init() {
+        reload()
+        observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: nil) { [weak self] _ in
+            // Defaults can change on any thread; the comparison and publication happen on main.
+            if Thread.isMainThread { MainActor.assumeIsolated { self?.reload() } }
+            else { DispatchQueue.main.async { self?.reload() } }
+        }
+    }
+    private func reload() {
+        let appearance = UserDefaults.standard.string(forKey: "orbis.appearance") ?? OrbisAppearance.mist.rawValue
+        let colorMode = UserDefaults.standard.string(forKey: "orbis.colorMode") ?? "system"
+        if appearance != self.appearance { self.appearance = appearance }
+        if colorMode != self.colorMode { self.colorMode = colorMode }
+    }
+}
+
+/// Provides the display preferences to everything below; applied at the window root and by
+/// UIKit-hosted pages, which do not inherit the root's environment.
+struct OrbisDisplayPreferences: ViewModifier {
+    @ObservedObject private var settings = OrbisDisplaySettings.shared
+    func body(content: Content) -> some View {
+        content.environment(\.orbisAppearance, settings.appearance).environment(\.orbisColorMode, settings.colorMode)
+    }
+}
+
 /// The stored appearance for palettes built without one. Palettes are built in most view
 /// bodies, so the preference is read once and again only after defaults change, not on every
-/// body (PERF-10). Views still re-render through their `@AppStorage("orbis.appearance")`.
+/// body (PERF-10). Views re-render through `\.orbisAppearance`.
 enum OrbisAppearanceSetting {
     private static let lock = NSLock()
     private static var cached: OrbisAppearance?
@@ -227,7 +275,7 @@ private struct NeuSurface: ViewModifier {
 /// Signed depth interpolates through the flat material instead of swapping surfaces.
 private struct NeuDepthSurface: AnimatableModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisAppearance) private var appearance
     @Environment(\.orbisSurface) private var parent
     var depth: CGFloat
     let radius: CGFloat
@@ -288,7 +336,7 @@ private struct OrbisField: ViewModifier {
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisSurface) private var parent
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let focused: Bool
     let radius: CGFloat
 
@@ -309,7 +357,7 @@ private struct OrbisField: ViewModifier {
 /// so rows and headers separate by background steps instead of drawn lines.
 struct OrbisLayerFill: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisSurface) private var surface
     var offset = 1
     var opacity: Double = 1
@@ -474,7 +522,7 @@ struct NeuButtonStyle: ButtonStyle {
 struct OrbisSelectionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
     let selecting: Bool
@@ -505,7 +553,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
 /// Keep the slot even outside selection mode, so labels and cards never reflow.
 struct OrbisSelectionIndicator: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
     let selected: Bool
     let selecting: Bool
@@ -530,7 +578,7 @@ struct OrbisSelectionIndicator: View {
 struct OrbisIconButton: View {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let symbol: String
     let label: String
     var tint: Color? = nil
@@ -579,7 +627,7 @@ struct NeuIconButtonStyle: ButtonStyle {
 struct OrbisTextButton: View {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -609,7 +657,7 @@ struct OrbisTextButton: View {
 /// Raised when off, recessed with the accent check when on (Android `NeumorphCheckbox`).
 struct OrbisCheckbox: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
     let checked: Bool
     let label: String
@@ -631,7 +679,7 @@ struct OrbisCheckbox: View {
 /// Neutral material track and rounded square thumb: accent belongs to the ink.
 struct NeuToggleStyle: ToggleStyle {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisAppearance) private var appearance
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
@@ -658,7 +706,7 @@ struct NeuToggleStyle: ToggleStyle {
 /// Copy action whose glyph animates into success and restores after 2.5 seconds.
 struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.isEnabled) private var enabled
     let label: String
     var size: CGFloat = 28
@@ -686,7 +734,7 @@ struct OrbisCopyButton: View {
 /// recessed grab handle instead of the system indicator. Content starts outside any surface.
 private struct OrbisSheetChrome: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let detents: Set<PresentationDetent>
     func body(content: Content) -> some View {
         content.environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
@@ -953,7 +1001,7 @@ struct OrbisMenuIconButton: View {
     @Environment(\.isEnabled) private var enabled
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @State private var anchor = OrbisAnchor()
     let symbol: String
     let label: String
@@ -979,7 +1027,7 @@ struct OrbisMenuIconButton: View {
 /// A hand-drawn raised panel (menus, dialogs). Its content counts as nested inside one frame.
 private struct OrbisPanel: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let radius: CGFloat
     let padding: CGFloat
     func body(content: Content) -> some View {
@@ -990,7 +1038,7 @@ private struct OrbisPanel: ViewModifier {
 
 private struct OrbisOverlayLayer: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @ObservedObject var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
 
@@ -1076,7 +1124,7 @@ private struct OrbisPanelEntrance: AnimatableModifier {
 
 private struct OrbisMenuPanel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let request: OrbisOverlay.MenuRequest
     let anchor: CGRect
@@ -1209,7 +1257,7 @@ private struct OrbisMenuPanel: View {
 
 private struct OrbisMenuRow: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let item: OrbisMenuItem
     let action: () -> Void
     @StateObject private var feedback = OrbisCopyFeedback()
@@ -1254,7 +1302,7 @@ private struct OrbisMenuRow: View {
 /// Menu rows sit flat on the panel; only the checked or pressed row takes a recessed fill.
 private struct MenuRowStyle: ButtonStyle {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.isEnabled) private var enabled
     @Environment(\.orbisSurface) private var parent
     let selected: Bool
@@ -1271,7 +1319,7 @@ private struct MenuRowStyle: ButtonStyle {
 
 private struct OrbisDialogPanel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let request: OrbisOverlay.DialogRequest
     let onAction: (OrbisDialogAction) -> Void
     let onCancel: () -> Void
@@ -1328,7 +1376,7 @@ private struct OrbisDialogPanel: View {
 struct OrbisActionButton: View {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisAccent) private var pageAccent
     let title: String
     var symbol: String? = nil
@@ -1381,7 +1429,7 @@ struct OrbisPageHeader<Trailing: View>: View {
 /// Keep it behind the glyph/coin so it never clips a projected edge or intercepts a tap.
 struct AgentIconRecess: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     var radius: CGFloat = 16
 
     var body: some View {
@@ -1397,7 +1445,7 @@ struct AgentIconRecess: View {
 
 struct AgentEmblem: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let kind: String?
     var size: CGFloat = 44
     var recessed = true
@@ -1436,7 +1484,7 @@ private func agentAsset(_ kind: String?) -> String {
 
 struct RuntimeStatusLabel: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var appearance = "mist"
+    @Environment(\.orbisAppearance) private var appearance
     let status: String
     var syncing = false
     var title: String? = nil
@@ -1460,7 +1508,7 @@ struct RuntimeStatusLabel: View {
 
 struct OrbisEmptyState: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let symbol: String
     let title: String
     var body: some View {
@@ -1500,7 +1548,7 @@ struct OrbisStatusWithInfo: View {
 
 struct OrbisNotice: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     let text: String
     var error = false
     var body: some View {
@@ -1627,7 +1675,7 @@ private struct DownloadFlightHost: ViewModifier {
 
 private struct DownloadFlightTarget: ViewModifier {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
     func body(content: Content) -> some View {
@@ -1642,7 +1690,7 @@ private struct DownloadFlightTarget: ViewModifier {
 
 private struct DownloadFlightLayer: View {
     @Environment(\.colorScheme) private var scheme
-    @AppStorage("orbis.appearance") private var visualStyle = "mist"
+    @Environment(\.orbisAppearance) private var visualStyle
     /// Chat pages follow the agent's accent (X02).
     @Environment(\.orbisAccent) private var pageAccent
     @ObservedObject var flight: DownloadFlight
