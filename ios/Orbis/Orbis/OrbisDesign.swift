@@ -257,6 +257,15 @@ extension EnvironmentValues {
     var orbisVisible: Bool { get { self[OrbisVisibleKey.self] } set { self[OrbisVisibleKey.self] = newValue } }
 }
 
+/// Context forwarding is an action dependency, not a reason for every closed presenter to observe the Hub.
+private struct OrbisStoreReferenceKey: EnvironmentKey { static let defaultValue: OrbisStore? = nil }
+extension EnvironmentValues {
+    var orbisStoreReference: OrbisStore? {
+        get { self[OrbisStoreReferenceKey.self] }
+        set { self[OrbisStoreReferenceKey.self] = newValue }
+    }
+}
+
 /// A stable action recipient, deliberately not an ObservableObject subscription. Message text
 /// can start a download without being invalidated by every transfer's progress publication.
 private struct OrbisFileActionsKey: EnvironmentKey {
@@ -798,7 +807,7 @@ private struct OrbisLiveSheetContent: View {
 
 private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
     @EnvironmentObject private var overlay: OrbisOverlay
-    @EnvironmentObject private var store: OrbisStore
+    @Environment(\.orbisStoreReference) private var storeReference
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
     @Binding var presented: Bool
@@ -807,9 +816,13 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
     @State private var owner = UUID()
     // @State retains the source without subscribing the presenter to its publications.
     @State private var liveSheet = OrbisLiveSheetSource()
+    private var store: OrbisStore {
+        guard let storeReference else { preconditionFailure("A sheet requires an Orbis store action context") }
+        return storeReference
+    }
     func body(content: Content) -> some View {
         let _ = liveSheet.update {
-            AnyView(sheet().environmentObject(store).environmentObject(store.hostState)
+            AnyView(sheet().environmentObject(store).environment(\.orbisStoreReference, store).environmentObject(store.hostState)
                 .environmentObject(store.transfers).environmentObject(store.toolInventories)
                 .environment(\.orbisFileActions, store.transfers)
                 .environmentObject(store.notifications).environmentObject(store.agentState)

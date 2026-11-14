@@ -19,6 +19,7 @@ struct SessionChatProjectionResult {
     let state: SessionChatProjectionInput
     let toolReference: ToolReference?
     let hasLive: Bool
+    let displayIdsChanged: Bool
 }
 
 struct CachedPageProjection {
@@ -130,7 +131,8 @@ actor SessionChatProjectionWorker {
             state.messages.removeAll { retiredIds.contains($0.messageId) }
             state.liveIds.subtract(retiredIds); state.unfinishedIds.subtract(retiredIds)
         }
-        return SessionChatProjectionResult(state: state, toolReference: reference, hasLive: live != nil)
+        return SessionChatProjectionResult(state: state, toolReference: reference, hasLive: live != nil,
+            displayIdsChanged: state.displayIds != input.displayIds)
     }
 }
 

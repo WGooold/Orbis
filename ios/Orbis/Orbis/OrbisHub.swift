@@ -43,10 +43,10 @@ private struct DirectorySurfaceKey: Equatable {
 /// Selecting a Host changes only the recipient of interactive operations (ADR-0030).
 @MainActor
 final class OrbisStore: ObservableObject {
-    @Published private(set) var pairings: [HostPairing] = []
-    @Published private(set) var selectedHostId: String?
-    @Published private(set) var isPairing = false
-    @Published private var pairingError: String?
+    @Published private(set) var pairings: [HostPairing] = [] { didSet { hubFactsChanged() } }
+    @Published private(set) var selectedHostId: String? { didSet { hubFactsChanged() } }
+    @Published private(set) var isPairing = false { didSet { hubFactsChanged() } }
+    @Published private var pairingError: String? { didSet { hubFactsChanged() } }
     private let secure: SecureStorage
     private let preferences: UserDefaults?
     private let deviceName: String
@@ -61,12 +61,15 @@ final class OrbisStore: ObservableObject {
     private var pairingTransport: OrbisTransport?
     let homeUpdates = ScreenPublication()
     let directoryUpdates = ScreenPublication()
+    lazy var chatScreens = ChatScreenPublications(store: self)
+    var navigationUpdates: ScreenPublication { chatScreens.navigation }
     private var changedHosts: Set<String> = []
     private var menuFacts: [HostMenuFact] = []
     private var menuRevision = 0
     private var homeSurfaceKey: HomeSurfaceKey?
     private var directorySurfaceKey: DirectorySurfaceKey?
     private var publicationScheduled = false
+    private var screenPublicationsReady = false
     private var publicationsHeld = false
     private var publicationHoldLimit: Task<Void, Never>?
     private var cleanupTasks: [UUID: Task<Void, Never>] = [:]
@@ -101,7 +104,12 @@ final class OrbisStore: ObservableObject {
         for pairing in pairings { install(pairing, connect: autoConnect) }
         let saved = preferences?.string(forKey: "orbis.selectedHostId")
         selectedHostId = saved.flatMap { connections[$0] == nil ? nil : $0 } ?? pairings.first?.hostId
+        screenPublicationsReady = true
         refreshScreenPublications()
+    }
+
+    private func hubFactsChanged() {
+        if screenPublicationsReady { chatScreens.refresh(); schedulePublication() }
     }
 
     var hosts: [HostSnapshot] { pairings.compactMap { host in connections[host.hostId].map { HostSnapshot(pairing: host, connection: $0) } } }
@@ -148,6 +156,7 @@ final class OrbisStore: ObservableObject {
     func holdScreenPublications(_ hold: Bool, limit: Duration = .seconds(1)) {
         guard hold || publicationsHeld else { return }
         publicationsHeld = hold
+        chatScreens.hold(hold)
         publicationHoldLimit?.cancel(); publicationHoldLimit = nil
         if hold {
             publicationHoldLimit = Task { [weak self] in
@@ -172,6 +181,8 @@ final class OrbisStore: ObservableObject {
         let directory = DirectorySurfaceKey(host: selectedHostId, revision: active.directoryViewRevision,
                                              catalog: active.directoryCatalog.revision, menu: menuRevision)
         if directorySurfaceKey != directory { directorySurfaceKey = directory; directoryUpdates.invalidate() }
+        // Chat observes each business source directly; Hub's legacy forwarding must not
+        // schedule a second capture of the same event. Hub-owned facts refresh in didSet.
         return menuChanged
     }
 
@@ -198,8 +209,8 @@ final class OrbisStore: ObservableObject {
         guard let connection = connections[hostId], !started.contains(hostId) else { return }
         started.insert(hostId); connection.connect(hostId: hostId)
     }
-    func selectRuntime(hostId: String, runtimeId: String) { selectHost(hostId); connections[hostId]?.selectRuntime(runtimeId) }
-    func selectRuntime(_ runtimeId: String) { activeConnection.selectRuntime(runtimeId) }
+    func selectRuntime(hostId: String, runtimeId: String) { selectHost(hostId); connections[hostId]?.selectRuntime(runtimeId); chatScreens.refresh() }
+    func selectRuntime(_ runtimeId: String) { activeConnection.selectRuntime(runtimeId); chatScreens.refresh() }
     func reconnectSelectedHost() {
         guard let selectedHostId else { return }
         started.insert(selectedHostId); activeConnection.reconnectSelectedHost()
@@ -334,7 +345,11 @@ final class OrbisStore: ObservableObject {
     func loadMenuOptions(runtimeId: String, name: String) { activeConnection.loadMenuOptions(runtimeId: runtimeId, name: name) }
     func cancelMenuOptions(runtimeId: String, name: String) { activeConnection.cancelMenuOptions(runtimeId: runtimeId, name: name) }
     func previewEntry(_ entryId: String) { activeConnection.previewEntry(entryId) }
-    @discardableResult func openCachedSession(_ session: SessionSummary) -> Bool { activeConnection.openCachedSession(session) }
+    @discardableResult func openCachedSession(_ session: SessionSummary) -> Bool {
+        let opened = activeConnection.openCachedSession(session)
+        if opened { chatScreens.refresh() }
+        return opened
+    }
     func selectCachedBranch(_ leafId: String) { activeConnection.selectCachedBranch(leafId) }
     func dismissPreview() { activeConnection.dismissPreview() }
     func userMessageRewindOptions(for runtime: RuntimeSummary) -> [String: RuntimeOption] { activeConnection.userMessageRewindOptions(for: runtime) }
@@ -388,11 +403,13 @@ final class OrbisStore: ObservableObject {
     func waitForPendingEvents() async {
         for connection in Array(connections.values) { await connection.waitForPendingEvents() }
         await activeConnection.waitForScreenPublications()
+        await chatScreens.waitForPending()
         // Let observed Host changes publish their whole menu snapshot before this
         // explicit refresh consumes the same menu diff. Otherwise a fast test-side
         // refresh can clear the diff while the scheduled objectWillChange is pending.
         while publicationScheduled { await Task.yield() }
         refreshScreenPublications()
+        await chatScreens.waitForPending()
         while !cleanupTasks.isEmpty { for task in Array(cleanupTasks.values) { await task.value } }
     }
 }

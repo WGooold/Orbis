@@ -2762,8 +2762,48 @@ final class OrbisUITests: XCTestCase {
         let after = counts()
         XCTAssertTrue((composer.value as? String)?.contains("local editor update") == true)
         XCTAssertGreaterThan(after["composer", default: 0], before["composer", default: 0])
-        for region in ["page", "row", "markdown"] {
+        for region in ["navigation", "page", "header", "transcript", "notices", "workspace", "row", "markdown"] {
             XCTAssertEqual(after[region], before[region], "Typing rebuilt \(region): \(before) -> \(after)")
+        }
+    }
+
+    // IOS-CHAT-02: actual source patches update the transcript subtree while the stable
+    // navigation, header, editor and independent panels retain their body evaluations.
+    func testSourcePatchesOnlyRebuildTranscriptRegion() {
+        let app = launch("viewport", arguments: ["--probe-chat-updates", "--preview-source-controls", "--preview-reduce-motion"])
+        let report = app.staticTexts["chat-update-report"], trigger = app.buttons["preview-chat-source-update"]
+        XCTAssertTrue(report.waitForExistence(timeout: 8))
+        XCTAssertTrue(trigger.waitForExistence(timeout: 3))
+        var previousReport = "", stableSince = Date()
+        let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let current = report.label
+            if current != previousReport { previousReport = current; stableSince = Date() }
+            return Date().timeIntervalSince(stableSince) >= 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 12), .completed)
+        func counts() -> [String: Int] {
+            Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { field -> (String, Int)? in
+                let pair = field.split(separator: "=", maxSplits: 1)
+                guard pair.count == 2, let value = Int(pair[1]) else { return nil }
+                return (String(pair[0]), value)
+            })
+        }
+        let before = counts()
+        XCTAssertGreaterThan(before["transcript", default: 0], 0)
+        for _ in 0..<3 {
+            let previous = counts()["transcript", default: 0]
+            trigger.tap()
+            let applied = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                counts()["transcript", default: 0] > previous
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 5), .completed)
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        let after = counts()
+        XCTAssertEqual(trigger.value as? String, "3")
+        XCTAssertGreaterThan(after["transcript", default: 0], before["transcript", default: 0])
+        for region in ["navigation", "page", "header", "composer", "notices", "workspace"] {
+            XCTAssertEqual(after[region], before[region], "Source patches rebuilt \(region): \(before) -> \(after)")
         }
     }
 

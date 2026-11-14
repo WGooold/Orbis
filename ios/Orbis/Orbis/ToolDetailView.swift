@@ -68,18 +68,18 @@ struct ToolDetailView: View {
 }
 
 struct LiveToolsView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var inventory: ToolInventories
-    let runtime: RuntimeSummary
+    @ObservedObject var inventory: ToolInventories
+    let runtimeId: String
+    let canRead: Bool
     var body: some View {
-        let loading = inventory.loading.contains(runtime.runtimeId), error = inventory.errors[runtime.runtimeId]
+        let loading = inventory.loading.contains(runtimeId), error = inventory.errors[runtimeId]
         // Nothing at all when idle: an empty stack would still take a row of list spacing above the composer.
         if loading || error != nil {
             VStack(alignment: .leading, spacing: 12) {
                 if loading { ProgressView(L10n.tr("正在同步工具活动…")).font(.orbisCaption()) }
                 if let error {
                     OrbisNotice(text: error, error: true)
-                    OrbisActionButton(title: L10n.tr("重试工具清单"), symbol: "arrow.clockwise") { inventory.retry(runtime.runtimeId) }.disabled(!store.canSend)
+                    OrbisActionButton(title: L10n.tr("重试工具清单"), symbol: "arrow.clockwise") { inventory.retry(runtimeId) }.disabled(!canRead)
                 }
             }
         }

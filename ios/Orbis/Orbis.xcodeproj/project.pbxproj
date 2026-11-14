@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        C90200010000000000000001 /* ChatScreenPublications.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90210010000000000000001; };
 		A07100010000000000000003 = {isa = PBXBuildFile; fileRef = A07110010000000000000003; };
 		A07100010000000000000002 = {isa = PBXBuildFile; fileRef = A07110010000000000000002; };
 		A07100010000000000000001 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07110010000000000000001; };
@@ -71,6 +72,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        C90210010000000000000001 /* ChatScreenPublications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatScreenPublications.swift; sourceTree = "<group>"; };
 		A07110010000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/PushLifecycleProbe.swift; sourceTree = SOURCE_ROOT; };
 		A07110010000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/PushRegistrationTests.swift; sourceTree = SOURCE_ROOT; };
 		A07110010000000000000001 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
@@ -213,6 +215,7 @@
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
+                C90210010000000000000001 /* ChatScreenPublications.swift */,
 				F08010010000000000000003 /* MathResources */,
 				F08010010000000000000002 /* MathFragment.swift */,
 				F08010010000000000000001 /* MathMarkup.swift */,
@@ -379,6 +382,7 @@
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
+                C90200010000000000000001 /* ChatScreenPublications.swift in Sources */,
 				F08000010000000000000002 /* MathFragment.swift in Sources */,
 				F08000010000000000000001 /* MathMarkup.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UIKit
 import UniformTypeIdentifiers
 import ImageIO
@@ -99,22 +100,215 @@ private enum ChatFollow {
     static let topPadding: CGFloat = 4
 }
 
+/// IOS-CHAT-02: stable page shell. Regional publishers update their own subtrees.
 struct ChatView: View {
-    @StateObject private var sendFlight = MessageSendFlight()
-    #if DEBUG
-    @ObservedObject private var scrollProbe = PreviewChatScrollProbe.shared
-    #endif
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var transfers: FileTransfers
-    @EnvironmentObject private var agent: AgentState
-    @EnvironmentObject private var notifications: RuntimeNotifications
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    @ObservedObject private var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    let runtime: RuntimeSummary
     let onBack: () -> Void
     let onHistory: () -> Void
     let onDownloads: () -> Void
+    @State private var sendFlight = MessageSendFlight()
+    @State private var downloadFlight = DownloadFlight()
+    @State private var acceptedSends = PassthroughSubject<Set<String>, Never>()
+    @FocusState private var composerFocused: Bool
+    private var runtime: RuntimeSummary { screens.snapshot.runtime ?? fallbackRuntime }
+    private var accent: Color { OrbisPalette(scheme).agent(screens.snapshot.kind) }
+
+    init(store: OrbisStore, screens: ChatScreenPublications, target: ChatActionContext, fallbackRuntime: RuntimeSummary,
+         onBack: @escaping () -> Void, onHistory: @escaping () -> Void, onDownloads: @escaping () -> Void) {
+        self.store = store; self.screens = screens; self.target = target; self.fallbackRuntime = fallbackRuntime
+        self.onBack = onBack; self.onHistory = onHistory; self.onDownloads = onDownloads
+        _updates = ObservedObject(wrappedValue: screens.shell)
+    }
+    var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.page)
+        #endif
+        VStack(spacing: 0) {
+            ChatHeaderView(store: store, screens: screens, target: target, fallbackRuntime: fallbackRuntime, updates: screens.header,
+                           composerFocused: $composerFocused, downloadFlight: downloadFlight,
+                           onBack: onBack, onHistory: onHistory, onDownloads: onDownloads)
+            ChatTranscriptView(store: store, screens: screens, target: target, fallbackRuntime: fallbackRuntime, updates: screens.transcript,
+                               composerFocused: $composerFocused, sendFlight: sendFlight, acceptedSends: acceptedSends, onBack: onBack)
+            ChatComposerView(store: store, screens: screens, target: target, fallbackRuntime: fallbackRuntime, updates: screens.composer,
+                             composerFocused: $composerFocused, sendFlight: sendFlight, onHistory: onHistory,
+                             onAcceptedSend: { acceptedSends.send($0) })
+        }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+            #if DEBUG
+            .padding(.bottom, ProcessInfo.processInfo.arguments.contains("--preview-keyboard-resize") && composerFocused ? 300 : 0)
+            #endif
+            .background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
+            .downloadFlightHost(downloadFlight).messageSendFlightHost(sendFlight)
+            .onChange(of: composerFocused) { _, focused in if target.matches(store) { store.noteComposerFocus(focused) } }
+            .onAppear { if target.matches(store), store.takeComposerFocus(runtime.runtimeId) { DispatchQueue.main.async { if target.matches(store) { composerFocused = true } } } }
+            .modifier(TurnFileReviewPresenter(changes: target.owner.turnFileChanges))
+            .orbisTaskAfterArrival(id: target.identity) {
+                guard target.matches(store) else { return }
+                let runtime = self.runtime, agent = target.owner.agentState
+                agent.setInterest(runtime: runtime, owner: "chat", domains: AgentState.chatDomains)
+                defer { agent.setInterest(runtime: runtime, owner: "chat", domains: []) }
+                store.refreshWorkingBranch()
+                while !Task.isCancelled {
+                    do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
+                    guard target.matches(store) else { return }
+                    store.refreshWorkingBranch()
+                }
+            }
+            #if DEBUG
+            .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
+            .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
+            .overlay(alignment: .topLeading) { if ChatUpdateProbe.enabled { ChatUpdateReport() } }
+            .overlay(alignment: .topTrailing) {
+                if ProcessInfo.processInfo.arguments.contains("--preview-source-controls") { PreviewChatSourceControl().padding(.top, 60) }
+            }
+            #endif
+    }
+}
+
+private struct ChatNoticesRegion<Question: View>: View, Equatable {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    @ObservedObject var updates: ScreenPublication
+    let showQuestion: Bool
+    let latestQuestion: ChatQuestion?
+    let onBack: () -> Void
+    @ViewBuilder let question: () -> Question
+    @Environment(\.orbisReduceMotion) private var reduceMotion
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.screens === rhs.screens && lhs.target == rhs.target && lhs.showQuestion == rhs.showQuestion &&
+        lhs.latestQuestion == rhs.latestQuestion && lhs.fallbackRuntime.runtimeId == rhs.fallbackRuntime.runtimeId &&
+        lhs.fallbackRuntime.sessionId == rhs.fallbackRuntime.sessionId
+    }
+    private var facts: ChatScreenSnapshot { screens.snapshot }
+    private var runtime: RuntimeSummary { facts.runtime ?? fallbackRuntime }
+    private var hasNotices: Bool {
+        guard let projection = facts.notice else { return false }
+        return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
+    }
+    var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.notices)
+        #endif
+        Group {
+            if let launch = facts.launch, facts.isLaunchPage, launch.failure != nil || launch.unconfirmed {
+                VStack(alignment: .leading, spacing: 8) {
+                    OrbisStatusWithInfo(title: L10n.tr(launch.failure != nil ? "启动失败" : "启动未确认"), message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
+                    HStack(spacing: 12) {
+                        OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { if target.matches(store) { store.retryLaunch() } }.accessibilityIdentifier("launch-retry")
+                        OrbisActionButton(title: L10n.tr("返回"), action: onBack).accessibilityIdentifier("launch-back")
+                    }
+                }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
+            } else {
+                ZStack(alignment: .top) {
+                    if showQuestion && !hasNotices { question().transition(reduceMotion ? .identity : InteractionMotion.notice) }
+                    if hasNotices {
+                        RuntimeNoticesView(store: store, screens: screens, target: target, updates: screens.notices, runtimeId: runtime.runtimeId,
+                                           supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
+                    }
+                }.animation(reduceMotion ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
+            }
+        }
+    }
+}
+
+private struct ChatHeaderView: View {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    @ObservedObject var updates: ScreenPublication
+    #if DEBUG
+    @ObservedObject private var scrollProbe = PreviewChatScrollProbe.shared
+    #endif
+    @Environment(\.colorScheme) private var scheme
+    @FocusState.Binding var composerFocused: Bool
+    let downloadFlight: DownloadFlight
+    let onBack: () -> Void
+    let onHistory: () -> Void
+    let onDownloads: () -> Void
+    @State private var runtimeInfoOpen = false
+    private var facts: ChatScreenSnapshot { screens.snapshot }
+    private var runtime: RuntimeSummary { facts.runtime ?? fallbackRuntime }
+    private var kind: String? { facts.kind }
+    var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.header)
+        #endif
+        let p = OrbisPalette(scheme)
+        let presentation = facts.modelPresentation ?? .make(runtime: runtime, connected: false)
+        return OrbisHeader {
+            OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack)
+        } title: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    AgentEmblem(kind: kind, size: 18, recessed: false)
+                    OrbisMotionText(facts.displayName).font(.orbisBody(.semibold)).lineLimit(1)
+                }
+                HStack(spacing: 8) {
+                    if facts.connection == .secured {
+                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: facts.syncing, title: runtime.presentationTitle)
+                            .fixedSize(horizontal: true, vertical: false)
+                    } else {
+                        HStack(spacing: 5) {
+                            Circle().fill(facts.connection == .error ? p.error : p.warning)
+                                .frame(width: 7, height: 7).frame(width: 14, height: 14)
+                            OrbisMotionText(connectionTitle(facts.connection)).font(.orbisCaption()).lineLimit(1)
+                        }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
+                    }
+                    if let model = presentation.model {
+                        OrbisMotionText([model, presentation.thinking].compactMap { $0 }.joined(separator: " · "))
+                            .font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading).layoutPriority(1)
+                    }
+                    if let indicator = presentation.indicator {
+                        OrbisMotionText(indicator).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false).accessibilityIdentifier("chat-model-switching")
+                    }
+                }
+            }.contentShape(Rectangle()).onTapGesture { if target.matches(store) { composerFocused = false; runtimeInfoOpen = true } }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), facts.displayName, facts.connection == .secured ? runtime.presentationTitle : connectionTitle(facts.connection)))
+                .accessibilityValue(chatTitleValue([presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))
+                .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
+                .accessibilityAddTraits(.isButton)
+        } trailing: {
+            OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)
+            OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
+                .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
+        }
+        .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
+            SessionModelConfigurationView(target: target, fallbackRuntime: runtime).orbisSheet([.medium, .large])
+        }
+    }
+
+    private func chatTitleValue(_ value: String) -> String {
+        #if DEBUG
+        if PreviewChatScrollProbe.enabled { return scrollProbe.report }
+        #endif
+        return value
+    }
+
+}
+
+private struct ChatTranscriptView: View {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    @ObservedObject var updates: ScreenPublication
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduceMotion
+    @FocusState.Binding var composerFocused: Bool
+    let sendFlight: MessageSendFlight
+    let acceptedSends: PassthroughSubject<Set<String>, Never>
+    let onBack: () -> Void
     @State private var following = true
     @State private var replyArrivals = ReplyCardArrivals()
     @State private var jumpRequest = 0
@@ -128,97 +322,35 @@ struct ChatView: View {
     @State private var lastScrollTowardEarlier = false
     @State private var questionJumpRequest: ChatQuestionJump?
     @State private var suppressQuestionPaging = false
-    @State private var runtimeInfoOpen = false
     @State private var awaitingHistoryPage = false
     @State private var topArmed = false
-    @StateObject private var downloadFlight = DownloadFlight()
-    @FocusState private var composerFocused: Bool
 
-    private var kind: String? { store.agentKind(runtime) }
+
+    private var facts: ChatScreenSnapshot { screens.snapshot }
+    private var runtime: RuntimeSummary { facts.runtime ?? fallbackRuntime }
+    private var kind: String? { facts.kind }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
-    private var latestQuestion: ChatQuestion? {
-        store.chatTranscript.latestQuestion(excluding: Set(store.pendingSends.items.map(\.messageId)))
-    }
+    private var latestQuestion: ChatQuestion? { facts.transcript.latestQuestion(excluding: Set(facts.pending.items.map(\.messageId))) }
     private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && lastScrollTowardEarlier && showJump && questionOutsideViewport }
-    private var hasRuntimeNotices: Bool {
-        guard let projection = notifications.visibleProjection(runtime.runtimeId) else { return false }
-        return !projection.items.isEmpty || (["codex", "codexDesktop"].contains(runtime.agentKind) && !projection.complete)
-    }
     var body: some View {
         #if DEBUG
-        let _ = ChatUpdateProbe.shared.rendered(.page)
+        let _ = ChatUpdateProbe.shared.rendered(.transcript)
         #endif
-        VStack(spacing: 0) {
-            header
-            conversation.overlay(alignment: .top) {
-                if let launch = store.launching, store.isLaunchPage, launch.failure != nil || launch.unconfirmed {
-                    // ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。
-                        VStack(alignment: .leading, spacing: 8) {
-                            OrbisStatusWithInfo(title: L10n.tr(launch.failure != nil ? "启动失败" : "启动未确认"), message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
-                            HStack(spacing: 12) {
-                                OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { store.retryLaunch() }.accessibilityIdentifier("launch-retry")
-                                OrbisActionButton(title: L10n.tr("返回")) { onBack() }.accessibilityIdentifier("launch-back")
-                            }
-                        }.padding(.horizontal, 16)
-                            // 容器自身带标识；不加 .contain 时标识会下沉覆盖“重试”“返回”的标识。
-                            .accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
-                } else {
-                    ZStack(alignment: .top) {
-                        if showQuestionReminder && !hasRuntimeNotices, let question = latestQuestion {
-                            questionReminder(question).padding(.horizontal, 16).padding(.top, 6)
-                                .transition(reduceMotion ? .identity : InteractionMotion.notice)
-                        }
-                        if hasRuntimeNotices {
-                            RuntimeNoticesView(runtimeId: runtime.runtimeId, supported: ["codex", "codexDesktop"].contains(runtime.agentKind)).padding(.horizontal, 16)
-                        }
-                    }.animation(reduceMotion ? nil : InteractionMotion.panel,
-                                value: showQuestionReminder && !hasRuntimeNotices && latestQuestion != nil)
-                }
-            }
-            if store.isViewingCachedSession { cachedComposer } else {
-                ChatComposerView(runtime: runtime, composerFocused: $composerFocused,
-                                 sendFlight: sendFlight, onHistory: onHistory, onAcceptedSend: beginSendFeedback)
-            }
-        }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
-            #if DEBUG
-            // Headless Device Hub can attach a hardware keyboard. The explicit fixture also
-            // exercises the same viewport squeeze deterministically without changing release UI.
-            .padding(.bottom, ProcessInfo.processInfo.arguments.contains("--preview-keyboard-resize") && composerFocused ? 300 : 0)
-            #endif
-            .background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
-            .downloadFlightHost(downloadFlight)
-            .messageSendFlightHost(sendFlight)
-            .onChange(of: runtime.runtimeId) { _, _ in sendFlight.clear() }
-            // ADR-0049 §6.8：启动页上正在输入时会话上线，新页面接过输入框焦点，键盘不收起。
-            .onChange(of: composerFocused) { _, focused in store.noteComposerFocus(focused) }
-            .onAppear { if store.takeComposerFocus(runtime.runtimeId) { DispatchQueue.main.async { composerFocused = true } } }
-            #if DEBUG
-            .overlay(alignment: .top) { if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() } }
-            .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
-            .overlay(alignment: .topLeading) { if ChatUpdateProbe.enabled { ChatUpdateReport() } }
-            #endif
-            .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
-                SessionModelConfigurationView(runtime: runtime).orbisSheet([.medium, .large])
-            }
-            .modifier(TurnFileReviewPresenter(changes: store.turnFileChanges))
-            // Subscriptions start once the page has arrived; publishing them inside the entrance
-            // forced the whole chat to lay out between its frames (PERF-10).
-            .orbisTaskAfterArrival(id: runtime.runtimeId) {
-                agent.setInterest(runtime: runtime, owner: "chat", domains: AgentState.chatDomains)
-                defer { agent.setInterest(runtime: runtime, owner: "chat", domains: []) }
-                store.refreshWorkingBranch()
-                while !Task.isCancelled {
-                    do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { return }
-                    store.refreshWorkingBranch()
-                }
-            }
-            .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
-            .onChange(of: [store.selectedHostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]) { _, _ in
-                runtimeInfoOpen = false
-                sendFlight.clear()
-                hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
-                suppressQuestionPaging = false; metrics.viewport = ChatViewportFacts()
-            }
+        conversation.overlay(alignment: .top) {
+            ChatNoticesRegion(store: store, screens: screens, target: target, fallbackRuntime: fallbackRuntime,
+                              updates: screens.notices, showQuestion: showQuestionReminder && latestQuestion != nil,
+                              latestQuestion: latestQuestion,
+                              onBack: onBack) {
+                if let question = latestQuestion { questionReminder(question).padding(.horizontal, 16).padding(.top, 6) }
+            }.equatable()
+        }
+        .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
+        .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
+        .onChange(of: facts.identity) { _, _ in
+            sendFlight.clear()
+            hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
+            suppressQuestionPaging = false; metrics.viewport = ChatViewportFacts()
+        }
     }
 
     private func questionReminder(_ question: ChatQuestion) -> some View {
@@ -253,97 +385,45 @@ struct ChatView: View {
         if outside != questionOutsideViewport { questionOutsideViewport = outside }
     }
 
-    private var header: some View {
-        let p = OrbisPalette(scheme)
-        let presentation = store.sessionModelPresentation(runtime)
-        return OrbisHeader {
-            OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack)
-        } title: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    AgentEmblem(kind: kind, size: 18, recessed: false)
-                    OrbisMotionText(store.displayName(runtime)).font(.orbisBody(.semibold)).lineLimit(1)
-                }
-                HStack(spacing: 8) {
-                    if store.connection == .secured {
-                        RuntimeStatusLabel(status: runtime.presentationStatus, syncing: store.isSyncing, title: runtime.presentationTitle)
-                            .fixedSize(horizontal: true, vertical: false)
-                    } else {
-                        HStack(spacing: 5) {
-                            Circle().fill(store.connection == .error ? p.error : p.warning)
-                                .frame(width: 7, height: 7).frame(width: 14, height: 14)
-                            OrbisMotionText(connectionTitle(store.connection)).font(.orbisCaption()).lineLimit(1)
-                        }.foregroundStyle(p.secondary).fixedSize(horizontal: true, vertical: false)
-                    }
-                    if let model = presentation.model {
-                        OrbisMotionText([model, presentation.thinking].compactMap { $0 }.joined(separator: " · "))
-                            .font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading).layoutPriority(1)
-                    }
-                    if let indicator = presentation.indicator {
-                        OrbisMotionText(indicator).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false).accessibilityIdentifier("chat-model-switching")
-                    }
-                }
-            }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), store.displayName(runtime), store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection)))
-                .accessibilityValue(chatTitleValue([presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))
-                .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
-                .accessibilityAddTraits(.isButton)
-        } trailing: {
-            OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)
-            OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
-                .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
-        }
-    }
-
-    private func chatTitleValue(_ value: String) -> String {
-        #if DEBUG
-        if PreviewChatScrollProbe.enabled { return scrollProbe.report }
-        #endif
-        return value
-    }
-
     /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
     /// row, whichever of the turn's messages the Host anchored it to.
     private func turnEndChangeAnchors(_ row: ChatRow) -> Set<String> {
-        store.chatTranscript.changeAnchorsByRow[row.id] ?? []
+        facts.transcript.changeAnchorsByRow[row.id] ?? []
     }
 
     private var conversation: some View {
         let kind = self.kind
-        let transcript = store.chatTranscript
+        let transcript = facts.transcript
         let questionID = latestQuestion?.messageId
-        let readContext = ChatReadContext(connection: store.activeConnection, runtimeId: runtime.runtimeId,
-                                         sessionId: runtime.sessionId, canRead: store.canSend)
-        let streamingMessageIds = store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession ? store.streamingMessageIds : []
+        let readContext = ChatReadContext(connection: target.owner, runtimeId: target.runtimeId ?? runtime.runtimeId,
+                                         sessionId: target.sessionId, canRead: target.matches(store) && facts.canSend)
+        let streamingMessageIds = facts.connection == .secured && !facts.syncing && !facts.cached ? facts.streaming : []
         replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
-            ready: hasPositioned && store.connection == .secured && !store.isSyncing && !store.isViewingCachedSession,
+            ready: hasPositioned && facts.connection == .secured && !facts.syncing && !facts.cached,
             following: following, now: ProcessInfo.processInfo.systemUptime)
-        let rewindOptions = store.userMessageRewindOptions(for: runtime)
+        let rewindOptions = facts.rewind
         return GeometryReader { viewport in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     transcriptHeader.id("chat-header")
                     if transcript.rows.isEmpty {
-                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: store.isSyncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
+                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: facts.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
                             .frame(minHeight: max(180, viewport.size.height - 100))
                     }
                     ForEach(transcript.rows) { row in
                         ChatMessageRow(row: row, kind: kind, toolResults: transcript.toolResultsByRow[row.id] ?? [:],
                                        toolText: transcript.toolTextByRow[row.id] ?? [:],
                                        timings: transcript.timingsByRow[row.id] ?? [],
-                                       changes: store.turnFileChanges, readContext: readContext,
+                                       changes: target.owner.turnFileChanges, readContext: readContext,
                                        changeAnchors: turnEndChangeAnchors(row),
                                        streamingMessageIds: streamingMessageIds.intersection(row.messages.map(\.messageId)),
                                        replyArrivals: replyArrivals,
                                        rewindOption: row.isUser ? rewindOptions[row.id] : nil,
-                                       rewindEnabled: store.canSend && runtime.status == "idle" && store.pendingActionIds.isEmpty,
-                                       pending: row.isUser ? store.pendingSends.item(row.messages.first?.messageId)?.state : nil,
+                                       rewindEnabled: facts.canSend && runtime.status == "idle" && facts.pendingActions.isEmpty,
+                                       pending: row.isUser ? facts.pending.item(row.messages.first?.messageId)?.state : nil,
                                        uploads: row.isUser ? pendingUploads(row.messages.first?.messageId) : [],
-                                       canResend: store.canSend, onRewind: { option in
-                            if store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
+                                       canResend: facts.canSend, onRewind: { option in
+                            if target.matches(store), store.moveHistory(to: option, fallbackText: row.messages.first?.text) {
                                 composerFocused = false
                                 OrbisHaptics.commit()
                             }
@@ -352,7 +432,7 @@ struct ChatView: View {
                                 firstRow: row.id == transcript.firstMessageId,
                                 questionID: row.id == questionID ? questionID : nil))
                     }
-                    LiveToolsView(runtime: runtime).id("chat-live-tools")
+                    LiveToolsView(inventory: target.owner.toolInventories, runtimeId: runtime.runtimeId, canRead: target.matches(store) && facts.canSend).id("chat-live-tools")
                         .modifier(ChatRowViewportObserver(viewportHeight: viewport.size.height))
                     // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
                     Color.clear.frame(height: 4).id(ChatFollow.bottomID)
@@ -371,12 +451,12 @@ struct ChatView: View {
                                              onDistance: bottomDistanceChanged,
                                              onInteraction: { userInteractionChanged($0) },
                                              onReading: { metrics.userScrolling = false; following = false }))
-                .onPreferenceChange(ChatViewportPreference.self) { facts in
-                    metrics.viewport = facts
+                .onPreferenceChange(ChatViewportPreference.self) { viewportFacts in
+                    metrics.viewport = viewportFacts
                     updateQuestionVisibility()
-                    let atTop = facts.firstRowNearTop
+                    let atTop = viewportFacts.firstRowNearTop
                     if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
-                    if atTop && topArmed && !suppressQuestionPaging && !awaitingHistoryPage && !store.isSyncing && !store.historyLoading.contains(runtime.runtimeId) && store.historyErrors[runtime.runtimeId] == nil {
+                    if atTop && topArmed && !suppressQuestionPaging && !awaitingHistoryPage && !facts.syncing && !facts.historyLoading && facts.historyError == nil {
                         topArmed = false; loadOlder()
                     }
                 }
@@ -392,7 +472,7 @@ struct ChatView: View {
                     }
                 }
                 .overlay(alignment: .bottom) {
-                    if let feedback = store.actionFeedback {
+                    if let feedback = facts.actionFeedback {
                         Label(feedback, systemImage: "checkmark").font(.orbisCaption(.medium))
                             .foregroundStyle(OrbisPalette(scheme).success)
                             .padding(.horizontal, 14).frame(minHeight: 32)
@@ -406,46 +486,36 @@ struct ChatView: View {
                     if next { hasBrowsed = false }
                     updateJump()
                 }
-                .onChange(of: store.historyRevision) { _, _ in
+                .onChange(of: facts.historyRevision) { _, _ in
                     sendFlight.clear()
                     following = true; hasPositioned = false; hasBrowsed = false
                     questionOutsideViewport = false; questionJumpRequest = nil; suppressQuestionPaging = false
                 }
-                .animation(reduceMotion ? nil : .orbisFade, value: store.actionFeedback)
-                .onChange(of: store.historyPageRevision) { _, _ in
+                .animation(reduceMotion ? nil : .orbisFade, value: facts.actionFeedback)
+                .onChange(of: facts.historyPageRevision) { _, _ in
                     // Native identity anchoring preserves the current row AND its offset,
                     // including if the reader scrolled while the older page was in flight.
                     awaitingHistoryPage = false
                 }
-                .onChange(of: store.historyLoading.contains(runtime.runtimeId)) { old, loading in
-                    if old && !loading && store.historyErrors[runtime.runtimeId] != nil { awaitingHistoryPage = false }
+                .onChange(of: facts.historyLoading) { old, loading in
+                    if old && !loading && facts.historyError != nil { awaitingHistoryPage = false }
                 }
         }
-    }
-
-    private var cachedComposer: some View {
-        VStack(spacing: 10) {
-            OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话"))
-            if let session = store.sessions.first(where: { $0.sessionId == runtime.sessionId }) {
-                OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") { store.activate(session) }
-                    .disabled(store.connection != .secured || store.activatingSessionId != nil)
-            }
-        }.padding(16)
     }
 
     /// One row above the transcript. Its height never changes: an error replaces the
     /// paging action in place instead of adding a line.
     private var transcriptHeader: some View {
         let p = OrbisPalette(scheme)
-        let error = store.historyErrors[runtime.runtimeId]
-        let loading = store.historyLoading.contains(runtime.runtimeId)
-        let blocked = store.isSyncing || (!store.canSend && !store.isViewingCachedSession) || loading
+        let error = facts.historyError
+        let loading = facts.historyLoading
+        let blocked = facts.syncing || (!facts.canSend && !facts.cached) || loading
         return HStack(spacing: 10) {
             if let error {
                 Text(error).font(.orbisCaption()).foregroundStyle(p.error).lineLimit(1)
                 Spacer(minLength: 0)
                 OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
-            } else if store.hasOlderHistory[runtime.runtimeId] == true {
+            } else if facts.hasOlder {
                 OrbisTextButton(title: L10n.tr("更早的消息"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
                 Spacer(minLength: 0)
             } else {
@@ -459,7 +529,7 @@ struct ChatView: View {
     private func bottomDistanceChanged(_ distance: CGFloat) {
         metrics.bottomDistance = distance
         updateJump()
-        if distance.isFinite && !hasPositioned && !store.messages.isEmpty { hasPositioned = true }
+        if distance.isFinite && !hasPositioned && facts.hasMessages { hasPositioned = true }
     }
 
     private func userInteractionChanged(_ active: Bool) {
@@ -492,11 +562,11 @@ struct ChatView: View {
 
     private func loadOlder() {
         // The native scroll position owns the reading anchor; this only gates paging.
-        if store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
+        if target.matches(store), store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
     }
 
     private func pendingAction(_ action: PendingSendAction, messageId: String?) {
-        guard let messageId else { return }
+        guard target.matches(store), let messageId else { return }
         switch action {
         case .resend:
             let existing = Set(store.pendingSends.items.map(\.messageId))
@@ -515,11 +585,12 @@ struct ChatView: View {
 
     /// 本地待发送消息的附件，按发送时的顺序；上传任务已被清理的不显示。
     private func pendingUploads(_ messageId: String?) -> [FileTransfer] {
-        guard let ids = store.pendingSends.item(messageId)?.uploadIds, !ids.isEmpty else { return [] }
-        let tasks = transfers.currentTasks
+        guard let ids = facts.pending.item(messageId)?.uploadIds, !ids.isEmpty else { return [] }
+        let tasks = facts.uploads
         return ids.compactMap { id in tasks.first { $0.id == id } }
     }
     private func beginSendFeedback(existing: Set<String>) {
+        guard target.matches(store) else { return }
         // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
         let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
         guard created.count == 1, let send = created.first else { return }
@@ -530,12 +601,19 @@ struct ChatView: View {
 
 /// IOS-CHAT-01: editor state and its local presentation belong to this subtree. A keystroke
 /// persists through HostConnection without invalidating ChatView's transcript/navigation state.
-private struct ChatComposerView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var transfers: FileTransfers
-    @EnvironmentObject private var agent: AgentState
-    @Environment(\.colorScheme) private var scheme
+private struct ChatFileSelection {
+    let target: ChatActionContext
     let runtime: RuntimeSummary
+    let capacity: Int
+}
+
+private struct ChatComposerView: View {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    @ObservedObject var updates: ScreenPublication
+    @Environment(\.colorScheme) private var scheme
     @FocusState.Binding var composerFocused: Bool
     let sendFlight: MessageSendFlight
     let onHistory: () -> Void
@@ -545,8 +623,12 @@ private struct ChatComposerView: View {
     @State private var permissionsOpen = false
     @State private var filePickerOpen = false
     @State private var composerText: ComposerText?
+    @State private var fileSelection: ChatFileSelection?
 
-    private var kind: String? { store.agentKind(runtime) }
+    private var facts: ChatScreenSnapshot { screens.snapshot }
+    private var runtime: RuntimeSummary { facts.runtime ?? fallbackRuntime }
+    private var transfers: FileTransfers { target.owner.transfers }
+    private var kind: String? { facts.kind }
     private var claudeComposer: Bool { kind == "claude" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     /// PERF-12 / IOS-CHAT-01: typed text belongs to the editor subtree and persists without
@@ -554,25 +636,26 @@ private struct ChatComposerView: View {
     /// launch) advances `draftRevision` and replaces it.
     private var draft: Binding<String> {
         Binding(get: {
-            if let composerText, composerText.key == localSessionKey(host: store.selectedHost, runtime: runtime),
-               composerText.revision == store.draftRevision { return composerText.text }
-            return store.draft(for: runtime)
+            if let composerText, composerText.key == facts.identity,
+               composerText.revision == facts.draftRevision { return composerText.text }
+            return facts.draft
         }, set: { text in
-            composerText = ComposerText(key: localSessionKey(host: store.selectedHost, runtime: runtime), revision: store.draftRevision, text: text)
+            guard target.matches(store) else { return }
+            composerText = ComposerText(key: target.identity, revision: facts.draftRevision, text: text)
             store.editDraft(text, for: runtime)
         })
     }
     private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
-    private var command: SlashCommand? { (store.commands[runtime.runtimeId] ?? []).first { $0.name == selectedCommand } }
+    private var command: SlashCommand? { facts.commands.first { $0.name == selectedCommand } }
     private var attachments: [FileTransfer] {
-        transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
+        facts.attached
     }
     private var canSubmit: Bool {
         // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
-        guard store.canSend, !transfers.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
+        guard facts.canSend, !facts.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
               !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
         if slash {
-            guard let command, draft.wrappedValue.hasPrefix("/" + command.name), store.pendingActionIds.isEmpty else { return false }
+            guard let command, draft.wrappedValue.hasPrefix("/" + command.name), facts.pendingActions.isEmpty else { return false }
             return command.argument?.required != true || !commandArguments(command).isEmpty
         }
         return true
@@ -582,19 +665,25 @@ private struct ChatComposerView: View {
         #if DEBUG
         let _ = ChatUpdateProbe.shared.rendered(.composer)
         #endif
+        return Group {
+            if facts.cached { cachedComposer } else { editor }
+        }
+    }
+
+    private var editor: some View {
         let p = OrbisPalette(scheme)
         return VStack(spacing: 0) {
-            InteractionWorkspaceView(runtimeId: runtime.runtimeId)
+            InteractionWorkspaceView(store: store, screens: screens, target: target, updates: screens.workspace, runtimeId: runtime.runtimeId).equatable()
             if let tasks = runtime.backgroundTasks, tasks.visible {
                 BackgroundTasksView(tasks: tasks).id("\(runtime.runtimeId):\(runtime.sessionId ?? "")")
             }
-            if let percent = contextUsagePercent(runtime.contextUsage), domainReady("context") {
+            if let percent = contextUsagePercent(runtime.contextUsage), facts.contextReady {
                 GeometryReader { geometry in
                     Rectangle().fill(accent.opacity(0.15))
                         .overlay(alignment: .leading) { Rectangle().fill(percent >= 90 ? p.error : accent).frame(width: geometry.size.width * min(100, max(0, percent)) / 100) }
                 }.frame(height: 2).accessibilityLabel(L10n.tr("上下文已使用 {0}%", Int(percent)))
             } else { Color.clear.frame(height: 2) }
-            QueuedMessagesView(runtimeId: runtime.runtimeId)
+            QueuedMessagesView(store: store, screens: screens, target: target, updates: screens.workspace, runtimeId: runtime.runtimeId).equatable()
             OrbisCollapse(expanded: deliveryChoices) {
                 HStack(spacing: 12) {
                     OrbisActionButton(title: deliveryTitle("followUp"), tint: accent) { submit(delivery: "followUp") }
@@ -608,6 +697,7 @@ private struct ChatComposerView: View {
                     HStack(spacing: 12) {
                         Label(runtime.cwd, systemImage: "folder").lineLimit(1).truncationMode(.middle)
                         OrbisMotionButton {
+                            guard target.matches(store) else { return }
                             #if DEBUG
                             PreviewViewportUpdates.advance?()
                             PreviewViewportUpdates.schedule?()
@@ -631,12 +721,14 @@ private struct ChatComposerView: View {
                     }
                 }.padding(.horizontal, 20).padding(.top, 6)
             }
-            AttachmentStrip(runtime: runtime)
-            if slash { SlashPickerView(runtime: runtime, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
+            AttachmentStrip(store: store, target: target, transfers: target.owner.transfers, tasks: facts.attached, preparing: facts.preparing)
+            if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             HStack(alignment: .bottom, spacing: 10) {
                 OrbisIconButton(symbol: "paperclip", label: L10n.tr("发送文件到电脑"), tint: accent) {
+                    guard target.matches(store) else { return }
+                    fileSelection = ChatFileSelection(target: target, runtime: runtime, capacity: max(0, 10 - attachments.count))
                     composerFocused = false; filePickerOpen = true
-                }.disabled(!store.canSend || transfers.preparing || attachments.count >= 10)
+                }.disabled(!facts.canSend || facts.preparing || attachments.count >= 10)
                 TextField(L10n.tr("发给 {0}，/ 命令", agentTitle(kind)), text: draft, axis: .vertical)
                     .accessibilityIdentifier("chat-composer")
                     .font(.orbisBody()).lineLimit(1...6).focused($composerFocused)
@@ -653,8 +745,8 @@ private struct ChatComposerView: View {
                     .orbisField(focused: composerFocused).orbisAnchor(sendFlight.composer)
                 if runtime.status == "running" && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
-                        if store.stopRuntime() { OrbisHaptics.commit() }
-                    }.disabled(!store.canSend)
+                        if target.matches(store), store.stopRuntime() { OrbisHaptics.commit() }
+                    }.disabled(!facts.canSend)
                 } else {
                     OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送消息"), tint: accent) {
                         if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
@@ -665,36 +757,45 @@ private struct ChatComposerView: View {
             }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
         }.padding(.top, 4).background(p.base)
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                guard let selection = fileSelection else { return }
+                fileSelection = nil
+                guard selection.target.matches(store) else { return }
+                let transfers = selection.target.owner.transfers
                 switch result {
-                case .success(let urls): transfers.upload(urls: Array(urls.prefix(max(0, 10 - attachments.count))), runtime: runtime)
+                case .success(let urls): transfers.upload(urls: Array(urls.prefix(selection.capacity)), runtime: selection.runtime)
                 case .failure(let error): transfers.error = error.localizedDescription
                 }
             }
             .orbisBottomSheet(isPresented: $permissionsOpen) {
-                PermissionsView(runtime: runtime).orbisSheet([.large])
+                PermissionsView(target: target, runtime: runtime).orbisSheet([.large])
             }
             .onChange(of: draft.wrappedValue) { _, next in
                 if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
                 if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
             }
             .task(id: command?.argument?.optionCatalog?.id) {
-                guard let command else { return }
-                store.loadMenuOptions(runtimeId: runtime.runtimeId, name: command.name)
+                guard target.matches(store), let command, let runtimeId = target.runtimeId else { return }
+                target.owner.loadMenuOptions(runtimeId: runtimeId, name: command.name)
             }
             .onChange(of: selectedCommand) { old, _ in
-                if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
+                if target.ownsRuntime, let old, let runtimeId = target.runtimeId { target.owner.cancelMenuOptions(runtimeId: runtimeId, name: old) }
             }
-            .onDisappear { if let selectedCommand { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: selectedCommand) } }
+            .onDisappear { if target.ownsRuntime, let selectedCommand, let runtimeId = target.runtimeId { target.owner.cancelMenuOptions(runtimeId: runtimeId, name: selectedCommand) } }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
     }
 
-    private func domainReady(_ name: String) -> Bool {
-        guard let snapshot = agent.snapshots[runtime.runtimeId] else { return true }
-        return snapshot.missing[name] == nil && (snapshot.domains[name]?.availability ?? "ready") == "ready"
+    private var cachedComposer: some View {
+        VStack(spacing: 10) {
+            OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话"))
+            if let session = facts.cachedSession {
+                OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") { if target.matches(store) { store.activate(session) } }
+                    .disabled(facts.connection != .secured || facts.activatingSessionId != nil)
+            }
+        }.padding(16)
     }
 
     private var branchTitle: String {
-        guard let branch = store.workingBranches[runtime.runtimeId], branch.cwd == runtime.cwd, branch.sessionId == runtime.sessionId else { return L10n.tr("分支信息待同步") }
+        guard let branch = facts.workingBranch, branch.cwd == runtime.cwd, branch.sessionId == runtime.sessionId else { return L10n.tr("分支信息待同步") }
         return branch.branch ?? branch.commit.map { L10n.tr("{0}（分离 HEAD）", String($0.prefix(8))) } ?? (branch.loaded ? L10n.tr("未获取到 Git 分支") : L10n.tr("分支信息待同步"))
     }
 
@@ -702,7 +803,7 @@ private struct ChatComposerView: View {
         String(draft.wrappedValue.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     private func submit(delivery: String? = nil) {
-        guard canSubmit else { return }
+        guard target.matches(store), canSubmit else { return }
         let existing = Set(store.pendingSends.items.map(\.messageId))
         let accepted: Bool
         // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
@@ -1526,15 +1627,13 @@ private struct CodeBlockView: View {
 }
 
 private struct SlashPickerView: View {
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
-    let runtime: RuntimeSummary
+    let commands: [SlashCommand]
     @Binding var selected: String?
     @Binding var input: String
     let onHistory: () -> Void
     @State private var contentHeight: CGFloat = 0
-    private var commands: [SlashCommand] { store.commands[runtime.runtimeId] ?? [] }
     var body: some View {
         let p = OrbisPalette(scheme)
         ScrollView {
@@ -1590,6 +1689,7 @@ struct PermissionsView: View {
     @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    let target: ChatActionContext
     let runtime: RuntimeSummary
     @State private var proposedSetting: String?
     @State private var proposedValue: String?
@@ -1614,7 +1714,7 @@ struct PermissionsView: View {
                 Text(L10n.tr("电脑端管理")).font(.orbisLabel()); Spacer()
             }
             OrbisActionButton(title: L10n.tr("应用到当前会话")) {
-                guard let setting = proposedSetting, let value = proposedValue else { return }
+                guard target.matches(store), let setting = proposedSetting, let value = proposedValue else { return }
                 if store.updatePermission(settingId: setting, value: value) { dismiss() }
             }.disabled(!canApply)
                 .padding(.horizontal, 16).padding(.bottom, 16).accessibilityIdentifier("permissions-apply")
@@ -1689,13 +1789,19 @@ private struct MarkdownImageView: View {
 }
 
 
-struct QueuedMessagesView: View {
-    @EnvironmentObject private var store: OrbisStore
+struct QueuedMessagesView: View, Equatable {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    @ObservedObject var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.screens === rhs.screens && lhs.target == rhs.target && lhs.runtimeId == rhs.runtimeId
+    }
     var body: some View {
-        let items = store.queuePanelItems(runtimeId)
+        let items = screens.snapshot.queue
         if items.count == 1, let item = items.first {
             card(item).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 10)
                 .accessibilityElement(children: .contain).accessibilityIdentifier("queued-messages")
@@ -1714,9 +1820,9 @@ struct QueuedMessagesView: View {
                 Spacer(minLength: 8)
                 if item.state == "accepted" {
                     // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
-                    let unconfirmed = store.unconfirmedQueueCancellations(runtimeId).contains(item.queueId)
-                    OrbisTextButton(title: unconfirmed ? L10n.tr("撤回未确认") : L10n.tr("撤回"), symbol: "xmark") { _ = store.cancelQueuedMessage(item.queueId) }
-                        .disabled(!store.canSend || unconfirmed).accessibilityIdentifier("queue-cancel-" + item.queueId)
+                    let unconfirmed = screens.snapshot.queueCancellations.contains(item.queueId)
+                    OrbisTextButton(title: unconfirmed ? L10n.tr("撤回未确认") : L10n.tr("撤回"), symbol: "xmark") { if target.matches(store) { _ = store.cancelQueuedMessage(item.queueId) } }
+                        .disabled(!screens.snapshot.canSend || unconfirmed).accessibilityIdentifier("queue-cancel-" + item.queueId)
                 }
             }
             Text(item.text).font(.orbisCaption()).lineLimit(3).textSelection(.enabled)
@@ -1728,16 +1834,18 @@ struct QueuedMessagesView: View {
 /// Notices float over the top of the transcript. Each one is a single opaque banner that
 /// carries its own close action and, when unverified, the re-check action inside it.
 struct RuntimeNoticesView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var notifications: RuntimeNotifications
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    @ObservedObject var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
     /// 只有 Codex（含桌面版）会上报通知来源；其他运行时没有「待核对」可言，不显示核对提示。
     let supported: Bool
     var body: some View {
-        if let projection = notifications.visibleProjection(runtimeId), !projection.items.isEmpty || (supported && !projection.complete) {
-            let unverified = supported && (projection.verification == "unknown" || !projection.complete || store.connection != .secured)
+        if let projection = screens.snapshot.notice, !projection.items.isEmpty || (supported && !projection.complete) {
+            let unverified = supported && (projection.verification == "unknown" || !projection.complete || screens.snapshot.connection != .secured)
             ScrollView {
                 VStack(spacing: 8) {
                     if projection.items.isEmpty {
@@ -1746,7 +1854,7 @@ struct RuntimeNoticesView: View {
                     ForEach(Array(projection.items.enumerated()), id: \.element.id) { index, notice in
                         banner(text: notice.message, error: notice.severity != "info",
                                recheck: index == 0 && (unverified || (supported && notice.verification == "unknown")),
-                               close: { store.dismissNotification(runtimeId: runtimeId, notificationId: notice.notificationId) })
+                               close: { if target.matches(store) { store.dismissNotification(runtimeId: runtimeId, notificationId: notice.notificationId) } })
                     }
                 }.padding(.vertical, 6)
             }.frame(maxHeight: 180).scrollBounceBehavior(.basedOnSize).accessibilityIdentifier("runtime-notifications")
@@ -1764,16 +1872,16 @@ struct RuntimeNoticesView: View {
                 if recheck {
                     HStack(spacing: 10) {
                         Text(L10n.tr("通知状态待核对")).font(.orbisCaption()).foregroundStyle(p.secondary)
-                        OrbisMotionButton { notifications.sync(runtimeId: runtimeId) } label: {
+                        OrbisMotionButton { if target.matches(store) { target.owner.notifications.sync(runtimeId: runtimeId) } } label: {
                             Label { Text(L10n.tr("重新核对")) } icon: { OrbisActionSymbol(systemName: "arrow.clockwise") }
                                 .font(.orbisCaption(.semibold))
-                        }.buttonStyle(.plain).foregroundStyle(.tint).disabled(store.connection != .secured)
+                        }.buttonStyle(.plain).foregroundStyle(.tint).disabled(screens.snapshot.connection != .secured)
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if let close {
                 OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭通知"), size: 28, action: close)
-                    .orbisNested().disabled(store.connection != .secured)
+                    .orbisNested().disabled(screens.snapshot.connection != .secured)
             }
         }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
     }
@@ -1788,11 +1896,17 @@ private struct SessionModelConfigurationView: View {
     @OrbisDismiss private var dismiss
     @State private var setting: String?
     @State private var diagnosticsOpen = false
-    let runtime: RuntimeSummary
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    private var runtime: RuntimeSummary {
+        guard let current = target.owner.selectedRuntime, current.runtimeId == fallbackRuntime.runtimeId,
+              current.sessionId == fallbackRuntime.sessionId else { return fallbackRuntime }
+        return current
+    }
     private var commands: [SlashCommand] { store.commands[runtime.runtimeId] ?? [] }
     private var command: SlashCommand? { commands.first { $0.name == setting } }
     private func select(_ name: String, _ value: String) {
-        guard store.selectedRuntime?.runtimeId == runtime.runtimeId,
+        guard target.matches(store), store.selectedRuntime?.runtimeId == runtime.runtimeId,
               store.selectedRuntime?.sessionId == runtime.sessionId else { return }
         if store.executeSlash(name, args: value) { dismiss() }
     }
@@ -1829,7 +1943,7 @@ private struct SessionModelConfigurationView: View {
                         }
                     }
                     if presentation.indicator == L10n.tr("未确认") {
-                        OrbisActionButton(title: L10n.tr("核对配置")) { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
+                        OrbisActionButton(title: L10n.tr("核对配置")) { if target.matches(store) { agent.subscribe(runtime: runtime, force: true) } }.disabled(!store.canSend)
                     }
                     if let command {
                         OrbisActionButton(title: L10n.tr("返回")) { setting = nil }
@@ -1850,11 +1964,11 @@ private struct SessionModelConfigurationView: View {
             }.accessibilityIdentifier("session-model-configuration")
         }
         .onChange(of: setting) { old, next in
-            if let old { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: old) }
-            if let next { store.loadMenuOptions(runtimeId: runtime.runtimeId, name: next) }
+            if target.ownsRuntime, let old, let id = target.runtimeId { target.owner.cancelMenuOptions(runtimeId: id, name: old) }
+            if target.matches(store), let next, let id = target.runtimeId { target.owner.loadMenuOptions(runtimeId: id, name: next) }
         }
-        .onDisappear { if let setting { store.cancelMenuOptions(runtimeId: runtime.runtimeId, name: setting) } }
-        .orbisBottomSheet(isPresented: $diagnosticsOpen) { RuntimeInfoView(runtime: runtime).orbisSheet([.large]) }
+        .onDisappear { if target.ownsRuntime, let setting, let id = target.runtimeId { target.owner.cancelMenuOptions(runtimeId: id, name: setting) } }
+        .orbisBottomSheet(isPresented: $diagnosticsOpen) { RuntimeInfoView(target: target, fallbackRuntime: runtime).orbisSheet([.large]) }
     }
     private func configButton(_ title: String, name: String?) -> some View {
         OrbisActionButton(title: L10n.tr(title)) { setting = name }
@@ -1867,13 +1981,19 @@ private struct RuntimeInfoView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var agent: AgentState
     @OrbisDismiss private var dismiss
-    let runtime: RuntimeSummary
+    let target: ChatActionContext
+    let fallbackRuntime: RuntimeSummary
+    private var runtime: RuntimeSummary {
+        guard let current = target.owner.selectedRuntime, current.runtimeId == fallbackRuntime.runtimeId,
+              current.sessionId == fallbackRuntime.sessionId else { return fallbackRuntime }
+        return current
+    }
     private var snapshot: AgentSnapshot? { agent.snapshots[runtime.runtimeId] }
     private func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: L10n.tr("会话信息"), closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对会话状态")) { agent.subscribe(runtime: runtime, force: true) }.disabled(!store.canSend)
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对会话状态")) { if target.matches(store) { agent.subscribe(runtime: runtime, force: true) } }.disabled(!store.canSend)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -1901,7 +2021,7 @@ private struct RuntimeInfoView: View {
                     ForEach((store.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
                         StatusSection(title: command.source == "builtin" ? L10n.hostText(command.description ?? command.name) : command.description ?? command.name) {
                             ForEach(command.argument?.options ?? []) { option in
-                                OrbisActionButton(title: option.label) { _ = store.executeSlash(command.name, args: option.value) }.disabled(!store.canSend)
+                                OrbisActionButton(title: option.label) { if target.matches(store) { _ = store.executeSlash(command.name, args: option.value) } }.disabled(!store.canSend)
                             }
                         }
                     }

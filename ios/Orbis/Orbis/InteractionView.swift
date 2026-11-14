@@ -1,18 +1,27 @@
 import SwiftUI
 
-struct InteractionWorkspaceView: View {
-    @EnvironmentObject private var store: OrbisStore
+struct InteractionWorkspaceView: View, Equatable {
+    let store: OrbisStore
+    let screens: ChatScreenPublications
+    let target: ChatActionContext
+    @ObservedObject var updates: ScreenPublication
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.screens === rhs.screens && lhs.target == rhs.target && lhs.runtimeId == rhs.runtimeId
+    }
     @State private var selectedId: String?
     @State private var open = false
     @StateObject private var drafts = InteractionDraftCache(preferences: ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) ? nil : .standard)
     var body: some View {
         // ADR-0049 §6.5：正在回答的请求立即收起（草稿保留在缓存里），其他请求直接切到下一项。
-        let responding = store.respondingRequestIds(runtimeId)
-        let requests = (store.interactions[runtimeId] ?? []).filter { !responding.contains($0.requestId) }
-        let status = store.interactionStatus(runtimeId)
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.workspace)
+        #endif
+        let facts = screens.snapshot
+        let requests = facts.requests.filter { !facts.responding.contains($0.requestId) }
+        let status = facts.interactionText.map { (text: $0, pending: facts.interactionPending) }
         let inline = requests.count == 1 && requests[0].kind == "confirm"
         // No reserved space: the panel floats above the composer over the transcript,
         // so neither an empty slot nor an arriving request moves the input field.
@@ -69,17 +78,19 @@ struct InteractionWorkspaceView: View {
             else if inline { open = false }
             else if next.contains(where: { !old.contains($0) }) { open = true }
         }
-        .onChange(of: store.selectedHostId) { _, _ in open = false }
+        .onChange(of: screens.snapshot.identity) { _, _ in open = false }
     }
 
     private func requestView(_ request: InteractionRequest, inSheet: Bool) -> some View {
-        let key = interactionDraftKey(host: store.selectedHost, sessionId: store.runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId, request: request)
-        return InteractionRequestView(request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet).id(key)
+        let key = interactionDraftKey(host: screens.snapshot.host, sessionId: screens.snapshot.runtime?.sessionId, request: request)
+        return InteractionRequestView(store: store, target: target, connected: screens.snapshot.canSend, request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet).id(key)
     }
 }
 
 private struct InteractionRequestView: View {
-    @EnvironmentObject private var store: OrbisStore
+    let store: OrbisStore
+    let target: ChatActionContext
+    let connected: Bool
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.openURL) private var openURL
@@ -137,11 +148,12 @@ private struct InteractionRequestView: View {
                         }.frame(maxHeight: inSheet ? .infinity : 220).scrollBounceBehavior(.basedOnSize)
                         HStack(spacing: 12) {
                             OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? L10n.tr("拒绝") : L10n.tr("取消"))) {
+                                guard target.matches(store) else { return }
                                 let accepted = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
                                 if accepted && request.kind == "confirm" { OrbisHaptics.commit() }
                             }
                             OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交")), symbol: "checkmark") { submit() }.disabled(!valid)
-                        }.disabled(pending || expired || store.connection != .secured)
+                        }.disabled(pending || expired || !connected)
                     }.padding(.top, 8)
                 }
             }.neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: OrbisRadius.cardPadding)
@@ -233,6 +245,7 @@ private struct InteractionRequestView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func submit() {
+        guard target.matches(store) else { return }
         if store.respond(request, response: draftValue.response(for: request)) { OrbisHaptics.commit() }
     }
 }

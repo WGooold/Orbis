@@ -187,11 +187,13 @@ private struct DownloadBrowserView: View {
 }
 
 struct AttachmentStrip: View {
-    @EnvironmentObject private var transfers: FileTransfers
-    let runtime: RuntimeSummary
+    let store: OrbisStore
+    let target: ChatActionContext
+    let transfers: FileTransfers
+    let tasks: [FileTransfer]
+    let preparing: Bool
     var body: some View {
-        let tasks = transfers.currentTasks.filter { $0.direction == "upload" && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.attached }
-        if transfers.preparing { ProgressView(L10n.tr("正在准备附件…")).font(.orbisCaption()).padding(.top, 10) }
+        if preparing { ProgressView(L10n.tr("正在准备附件…")).font(.orbisCaption()).padding(.top, 10) }
         if !tasks.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
@@ -206,9 +208,9 @@ struct AttachmentStrip: View {
                                 }.font(.orbisCaption())
                             }.frame(maxWidth: 180, alignment: .leading)
                             if ["paused", "failed"].contains(task.status) {
-                                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重试上传"), size: 28) { transfers.restart(task.id) }
+                                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重试上传"), size: 28) { if target.matches(store) { transfers.restart(task.id) } }
                             }
-                            OrbisIconButton(symbol: "xmark", label: L10n.tr("移除附件 {0}", task.name), size: 28) { transfers.detach([task.id]) }
+                            OrbisIconButton(symbol: "xmark", label: L10n.tr("移除附件 {0}", task.name), size: 28) { if target.matches(store) { transfers.detach([task.id]) } }
                         }.padding(.horizontal, 12).padding(.vertical, 6).neuSurface(inset: true, radius: 14, intensity: 0.45)
                     }
                 }.padding(.horizontal, 16).padding(.vertical, 6).padding(.top, 4)

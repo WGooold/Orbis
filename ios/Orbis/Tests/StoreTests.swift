@@ -1829,3 +1829,170 @@ extension StoreTests {
         #expect(store.draft(for: selected) == "restored by the store")
     }
 }
+
+/// IOS-CHAT-02: source observations, page targets and regional publications are tested
+/// against the real Hub/HostConnection, including Published's pre-mutation delivery.
+extension StoreTests {
+    @Test func chatPublicationObservesAllFourSourcesAndCoalescesOneEvent() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await settlePublications(store)
+        let screens = store.chatScreens, source = store.activeConnection
+        let channels = [screens.navigation, screens.shell, screens.header, screens.transcript, screens.composer, screens.notices, screens.workspace]
+        let revisions = channels.map(\.revision)
+        let publishers = [source.objectWillChange, source.agentState.objectWillChange,
+                          source.transfers.objectWillChange, source.notifications.objectWillChange]
+        // Every independent business source reaches the bridge even when no display value changed.
+        for publisher in publishers {
+            let captured = screens.captureRevision
+            publisher.send()
+            await screens.waitForPending()
+            #expect(screens.captureRevision > captured)
+            #expect(channels.map(\.revision) == revisions)
+        }
+        await settlePublications(store)
+        let captured = screens.captureRevision
+        for publisher in publishers { publisher.send() }
+        await screens.waitForPending()
+        #expect(screens.captureRevision == captured + 1)
+        #expect(channels.map(\.revision) == revisions)
+    }
+
+    @Test func chatComposerPublishesFinalDraftAfterInstallingEverySnapshot() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await settlePublications(store)
+        let screens = store.chatScreens, selected = try #require(store.selectedRuntime)
+        let transcript = screens.transcript.revision, shell = screens.shell.revision, navigation = screens.navigation.revision
+        let composer = screens.composer.revision
+        var delivered: [String] = []
+        let observation = screens.composer.objectWillChange.sink {
+            delivered.append(screens.snapshot.draft)
+            #expect(screens.snapshot.identity == screens.navigationSnapshot.runtimeIdentity)
+            #expect(screens.snapshot.owner === screens.navigationSnapshot.source)
+        }
+        defer { observation.cancel() }
+        for draft in ["one", "two", "final"] { store.saveDraft(draft, for: selected) }
+        #expect(screens.snapshot.draft != "final", "willChange must not capture the pre-mutation value")
+        await screens.waitForPending()
+        #expect(delivered == ["final"])
+        #expect(screens.composer.revision == composer + 1)
+        #expect(screens.transcript.revision == transcript)
+        #expect(screens.shell.revision == shell)
+        #expect(screens.navigation.revision == navigation)
+    }
+
+    @Test func chatHoldFreezesSamePageButHandsOffANewSessionAtomically() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
+        store.selectRuntime("a"); await settlePublications(store)
+        let screens = store.chatScreens, old = screens.navigationSnapshot.actionContext
+        let selected = try #require(store.selectedRuntime), previous = screens.snapshot.draft
+        store.holdScreenPublications(true)
+        store.saveDraft("held-a", for: selected)
+        await screens.waitForPending()
+        #expect(screens.snapshot.draft == previous)
+        let oldIdentity = screens.snapshot.identity
+        store.selectRuntime("b")
+        #expect(!old.matches(store), "a late A editor callback is invalid before the queued handoff")
+        #expect(screens.snapshot.identity == oldIdentity)
+        #expect(screens.navigationSnapshot.runtimeIdentity == oldIdentity)
+        await screens.waitForPending()
+        #expect(screens.snapshot.runtime?.runtimeId == "b")
+        #expect(screens.navigationSnapshot.runtime?.runtimeId == "b")
+        #expect(screens.snapshot.identity == screens.navigationSnapshot.runtimeIdentity)
+        #expect(!old.matches(store), "reusing the bridge cannot reactivate an A callback")
+        let current = screens.navigationSnapshot.actionContext
+        #expect(current.matches(store))
+        let nextRuntime = try #require(store.selectedRuntime), currentDraft = screens.snapshot.draft
+        store.saveDraft("held-b", for: nextRuntime)
+        await screens.waitForPending()
+        #expect(screens.snapshot.draft == currentDraft)
+        store.holdScreenPublications(false)
+        await screens.waitForPending()
+        #expect(screens.snapshot.draft == "held-b")
+        #expect(current.matches(store))
+    }
+
+    @Test func replacedChatOwnerRejectsOldCallbacksAndOldSourcePublications() async throws {
+        let secure = MemorySecureStore(), first = TestTransport(), second = TestTransport()
+        secure.hosts.append(HostPairing(hostId: "host-2", hostName: "Second", hostPub: "second-public",
+            pskRoot: Base64URL.encode(Data(repeating: 2, count: 32)),
+            relay: RelayCredential(relayUrl: "wss://relay.example", deviceId: "device-2", credential: "test-only"), lan: []))
+        let store = OrbisStore(secure: secure, preferences: nil, transportFactory: { $0.hostId == "host-1" ? first : second })
+        first.drain = { [weak store] in await store?.waitForPendingEvents() }
+        second.drain = { [weak store] in await store?.waitForPendingEvents() }
+        await first.ready([runtime("a")]); await settlePublications(store)
+        let screens = store.chatScreens, old = screens.navigationSnapshot.actionContext
+        let oldRuntime = try #require(store.selectedRuntime)
+        old.owner.objectWillChange.send() // A callback was already queued when the owner changed.
+        store.selectHost("host-2")
+        #expect(!old.matches(store))
+        #expect(old.ownsRuntime, "switching Hosts still permits cleanup on the original owner")
+        await screens.waitForPending()
+        #expect(screens.snapshot.owner === store.activeConnection)
+        let captured = screens.captureRevision
+        old.owner.saveDraft("late callback", for: oldRuntime)
+        old.owner.agentState.objectWillChange.send()
+        old.owner.transfers.objectWillChange.send()
+        old.owner.notifications.objectWillChange.send()
+        await settlePublications(store)
+        #expect(screens.captureRevision == captured)
+        #expect(screens.snapshot.owner !== old.owner)
+        #expect(screens.snapshot.draft != "late callback")
+    }
+
+    @Test func reusedRuntimeIdCannotAuthorizeAnOldSessionActionOrMenuCleanup() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a", session: "first")])
+        await settlePublications(store)
+        let screens = store.chatScreens, old = screens.navigationSnapshot.actionContext
+        #expect(old.matches(store)); #expect(old.ownsRuntime)
+        await transport.ready([runtime("a", session: "replacement")])
+        await screens.waitForPending()
+        #expect(store.selectedRuntime?.runtimeId == "a")
+        #expect(screens.snapshot.runtime?.sessionId == "replacement")
+        #expect(!old.matches(store))
+        #expect(!old.ownsRuntime, "old onDisappear cannot cancel the replacement session's menu read")
+        #expect(screens.navigationSnapshot.actionContext.matches(store))
+    }
+
+    @Test func chatNotificationSourceOnlyPublishesNoticesAndHubMetadataOnlyNavigation() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let selected = try #require(store.selectedRuntime), notifications = store.activeConnection.notifications
+        notifications.ready(epoch: "notice-epoch", runtimes: [selected])
+        await settlePublications(store)
+        let screens = store.chatScreens
+        let channels = [screens.navigation, screens.shell, screens.header, screens.transcript, screens.composer, screens.workspace]
+        let revisions = channels.map(\.revision), notices = screens.notices.revision
+        #expect(notifications.consume(["type": "notification.snapshot", "protocolVersion": orbisProtocolVersion,
+            "hostEpoch": "notice-epoch", "runtimeId": selected.runtimeId, "sessionId": selected.sessionId!,
+            "revision": 1, "complete": true, "verification": "confirmed", "notifications": []]))
+        await screens.waitForPending()
+        #expect(screens.snapshot.notice?.revision == 1)
+        #expect(screens.notices.revision == notices + 1)
+        #expect(channels.map(\.revision) == revisions)
+        let navigation = screens.navigation.revision, regional = [screens.shell, screens.header, screens.transcript, screens.composer, screens.notices, screens.workspace].map(\.revision)
+        store.pair(from: "invalid pairing code")
+        await screens.waitForPending()
+        #expect(screens.navigationSnapshot.error != nil)
+        #expect(screens.navigation.revision == navigation + 1)
+        #expect([screens.shell, screens.header, screens.transcript, screens.composer, screens.notices, screens.workspace].map(\.revision) == regional)
+    }
+
+    @Test func chatRewindPreparationReusesLargeOptionsUntilCapabilitiesChange() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let selected = try #require(store.selectedRuntime)
+        let options: [[String: Any]] = (0..<2000).map { index in
+            ["value": "entry-\(index)", "label": "Question \(index)", "tree": [
+                "entryType": "message", "role": "user", "defaultHidden": false, "isCurrent": false, "isOnActivePath": true]]
+        }
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+            ["name": "tree", "source": "builtin", "argument": ["kind": "tree", "required": true, "options": options]]
+        ]]], sequence: 1, channel: "ctl")
+        #expect(store.userMessageRewindOptions(for: selected).count == 2000)
+        let owner = store.activeConnection, prepared = owner.rewindPreparationCount
+        for _ in 0..<50 { #expect(store.userMessageRewindOptions(for: selected).count == 2000) }
+        #expect(owner.rewindPreparationCount == prepared)
+        let target = store.chatScreens.navigationSnapshot.actionContext
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": []]], sequence: 2, channel: "ctl")
+        #expect(store.userMessageRewindOptions(for: selected).isEmpty)
+        #expect(target.matches(store), "capability/branch facts do not recreate the editor target")
+    }
+}

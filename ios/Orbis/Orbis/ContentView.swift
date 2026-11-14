@@ -8,8 +8,17 @@ private enum RootTab: String, CaseIterable {
 
 private enum AppPage: Hashable { case chat, pairing, status, providers, history, downloads }
 
+/// The legacy Hub may still publish for other pages; this wrapper does no page construction.
 struct ContentView: View {
     @EnvironmentObject private var store: OrbisStore
+    var body: some View { NavigationRoot(store: store).equatable().environment(\.orbisStoreReference, store) }
+}
+
+private struct NavigationRoot: View, Equatable {
+    let store: OrbisStore
+    @ObservedObject private var updates: ScreenPublication
+    private var facts: NavigationScreenSnapshot { store.chatScreens.navigationSnapshot }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.scenePhase) private var scenePhase
@@ -34,7 +43,9 @@ struct ContentView: View {
     @State private var previewListOperationCount = 0
     #endif
 
-    init() {
+    init(store: OrbisStore) {
+        self.store = store
+        _updates = ObservedObject(wrappedValue: store.navigationUpdates)
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
@@ -54,7 +65,7 @@ struct ContentView: View {
     // CI compilers' limits while preserving the view tree and modifier order.
     private var rootSurface: some View {
         ZStack {
-            if store.pairings.isEmpty {
+            if facts.pairings.isEmpty {
                 PairingEntryView(onCancel: nil, onCode: store.pair)
             } else {
                 // The root and every full page stay mounted under the page above them, so a
@@ -76,17 +87,17 @@ struct ContentView: View {
             }
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
-        .environmentObject(store.transfers)
-        .environment(\.orbisFileActions, store.transfers)
-        .environmentObject(store.toolInventories)
-        .environmentObject(store.hostState)
-        .environmentObject(store.notifications)
-        .environmentObject(store.agentState)
+        .environmentObject(facts.source.transfers)
+        .environment(\.orbisFileActions, facts.source.transfers)
+        .environmentObject(facts.source.toolInventories)
+        .environmentObject(facts.source.hostState)
+        .environmentObject(facts.source.notifications)
+        .environmentObject(facts.source.agentState)
         .tint(OrbisPalette(scheme).accent)
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: visualStyle)
-        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, hasHost: !store.pairings.isEmpty, edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !store.pairings.isEmpty && !store.isPairing) {
+        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, hasHost: !facts.pairings.isEmpty, edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !facts.pairings.isEmpty && !facts.pairing) {
             drawer
         })
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { surfaceWidth = $0 }
@@ -95,7 +106,7 @@ struct ContentView: View {
     private var rootWithNotices: some View {
         rootSurface
         .overlay(alignment: .top) {
-            if let error = store.errorMessage {
+            if let error = facts.error {
                 HStack(alignment: .top, spacing: 10) {
                     OrbisNotice(text: error, error: true)
                     OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭错误提示")) { store.errorMessage = nil }
@@ -103,7 +114,7 @@ struct ContentView: View {
                     .accessibilityElement(children: .contain)
             }
         }
-        .overlay(alignment: .bottom) { TransferErrorBanner(transfers: store.transfers) }
+        .overlay(alignment: .bottom) { TransferErrorBanner(transfers: facts.source.transfers) }
         .overlay(alignment: .bottom) {
             if draftNotice { OrbisNotice(text: L10n.tr("草稿已保留")).padding(.horizontal, 20).padding(.bottom, 88).transition(InteractionMotion.notice) }
         }
@@ -134,7 +145,7 @@ struct ContentView: View {
     private var rootWithNavigationUpdates: some View {
         rootWithNotices
         .onChange(of: rootTab) { _, next in switchRoot(next) }
-        .onChange(of: store.selectedHostId) { _, _ in
+        .onChange(of: facts.selectedHostId) { _, _ in
             store.hostState.setCatalogQuery(directoryState.networkQuery)
             store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
             overlay.dismissMenu()
@@ -142,7 +153,7 @@ struct ContentView: View {
         .onChange(of: surfaceWidth) { _, width in
             store.hostState.setCatalogVisible((drawerOpen || width >= 600) && scenePhase == .active)
         }
-        .onChange(of: store.pairings) { _, _ in overlay.dismissMenu() }
+        .onChange(of: facts.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
             store.setHistoryWindowVisible(scenePhase == .active && pages.last == .chat)
             overlay.dismissMenu()
@@ -154,15 +165,15 @@ struct ContentView: View {
             store.hostState.setCatalogVisible((open || surfaceWidth >= 600) && scenePhase == .active)
             overlay.dismissMenu()
         }
-        .onChange(of: store.activationRevision) { _, _ in
+        .onChange(of: facts.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
-            if store.selectedRuntime != nil { navigation.replace(with: [.chat]) }
+            if facts.runtime != nil { navigation.replace(with: [.chat]) }
         }
-        .onChange(of: store.selectedRuntimeId) { old, next in
+        .onChange(of: facts.selectedRuntimeId) { old, next in
             if old != nil && next == nil && navigation.pages.contains(.chat) { navigation.replace(with: []) }
         }
-        .onChange(of: store.isPairing) { old, active in
-            if old && !active && store.errorMessage == nil && store.selectedHost != nil { navigation.replace(with: []) }
+        .onChange(of: facts.pairing) { old, active in
+            if old && !active && facts.error == nil && facts.selectedHost != nil { navigation.replace(with: []) }
         }
     }
 
@@ -194,9 +205,12 @@ struct ContentView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatUpdateProbe.shared.rendered(.navigation)
+        #endif
         rootWithSceneUpdates
         .overlay {
-            if store.isPairing {
+            if facts.pairing {
                 ZStack {
                     OrbisPalette(scheme).scrim.opacity(0.25).ignoresSafeArea()
                     VStack(spacing: 14) {
@@ -254,9 +268,9 @@ struct ContentView: View {
     @ViewBuilder private func pageView(_ page: AppPage) -> some View {
         switch page {
         case .chat:
-            if let runtime = store.selectedRuntime {
-                ChatView(runtime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
-                    .id(localSessionKey(host: store.selectedHost, runtime: runtime))
+            if let runtime = facts.runtime {
+                ChatView(store: store, screens: store.chatScreens, target: facts.actionContext, fallbackRuntime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
+                    .id(facts.runtimeIdentity)
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
         case .status: ConnectionStatusView(onBack: back)

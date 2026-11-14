@@ -102,4 +102,32 @@ struct HomeHistoryPublicationTests {
         #expect(switched.transcript.contentRevision != anchors.transcript.contentRevision)
         #expect(switched.transcript.rows.first?.contentRevision != anchors.transcript.rows.first?.contentRevision)
     }
+
+    // IOS-CHAT-02: a large canonical map is compared in the existing projection actor;
+    // ordinary text corrections retain it, while a real message identity correction replaces it.
+    @Test func sourceTextPatchesRetainTheCanonicalMapOffMainActor() async {
+        let worker = SessionChatProjectionWorker(beforeResolve: { #expect(!Thread.isMainThread) })
+        let display = Dictionary(uniqueKeysWithValues: (0..<10_000).map { ("entry-\($0)", "message-\($0)") })
+        var input = SessionChatProjectionInput(event: [:], graph: nil, excludedEntries: [], messages: [],
+            displayIds: display, aliases: [:], liveIds: [], unfinishedIds: [], orders: [:])
+        for index in 0..<10 {
+            let message: [String: Any] = ["messageId": "message-1", "role": "assistant", "timestamp": 1,
+                "content": [["type": "text", "text": "Chunk \(index)"]]]
+            input = SessionChatProjectionInput(event: ["display": ["entries": [["entryId": "entry-1", "message": message]]]],
+                graph: nil, excludedEntries: [], messages: input.messages, displayIds: input.displayIds,
+                aliases: [:], liveIds: [], unfinishedIds: [], orders: [:])
+            let result = await worker.resolve(input)
+            #expect(!result.displayIdsChanged)
+            #expect(result.state.messages.first?.text == "Chunk \(index)")
+            input = result.state
+        }
+        let corrected: [String: Any] = ["messageId": "replacement", "role": "assistant", "timestamp": 1,
+            "content": [["type": "text", "text": "Corrected identity"]]]
+        let result = await worker.resolve(SessionChatProjectionInput(event: ["display": ["entries": [["entryId": "entry-1", "message": corrected]]]],
+            graph: nil, excludedEntries: [], messages: input.messages, displayIds: input.displayIds,
+            aliases: [:], liveIds: [], unfinishedIds: [], orders: [:]))
+        #expect(result.displayIdsChanged)
+        #expect(result.state.displayIds["entry-1"] == "replacement")
+        #expect(result.state.messages.map(\.messageId) == ["replacement"])
+    }
 }

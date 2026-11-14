@@ -1164,7 +1164,7 @@ struct PageMotionReport: View {
 /// IOS-CHAT-01: opt-in body-evaluation counts without publishing into the measured view tree.
 @MainActor
 final class ChatUpdateProbe {
-    enum Region: String { case page, composer, row, markdown }
+    enum Region: String { case navigation, page, header, transcript, composer, notices, workspace, row, markdown }
     static let shared = ChatUpdateProbe()
     static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-chat-updates")
     private var counts: [Region: Int] = [:]
@@ -1173,7 +1173,7 @@ final class ChatUpdateProbe {
         counts[region, default: 0] += 1
     }
     var report: String {
-        [Region.page, .composer, .row, .markdown].map { "\($0.rawValue)=\(counts[$0, default: 0])" }.joined(separator: ";")
+        [Region.navigation, .page, .header, .transcript, .composer, .notices, .workspace, .row, .markdown].map { "\($0.rawValue)=\(counts[$0, default: 0])" }.joined(separator: ";")
     }
 }
 
@@ -1184,6 +1184,18 @@ struct ChatUpdateReport: View {
             Text(ChatUpdateProbe.shared.report).font(.system(size: 1)).frame(height: 1)
                 .accessibilityIdentifier("chat-update-report").allowsHitTesting(false)
         }
+    }
+}
+
+/// A local source trigger keeps the measured page/navigation free of test-control state.
+struct PreviewChatSourceControl: View {
+    @State private var requests = 0
+    var body: some View {
+        Button {
+            PreviewViewportUpdates.advance?()
+            requests += 1
+        } label: { Text("Source update").font(.system(size: 10)).frame(minWidth: 44, minHeight: 44) }
+            .accessibilityIdentifier("preview-chat-source-update").accessibilityValue(String(requests))
     }
 }
 

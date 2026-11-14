@@ -40,7 +40,7 @@ struct OrbisApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            windowContent.modifier(OrbisDisplayPreferences())
+            windowContent.modifier(OrbisDisplayPreferences()).environment(\.orbisStoreReference, store)
         }
     }
     @ViewBuilder private var windowContent: some View {

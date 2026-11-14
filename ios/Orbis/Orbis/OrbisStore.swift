@@ -55,7 +55,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var activatingSessionId: String? { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var browse: DirectoryBrowse?
-    @Published private(set) var commands: [String: [SlashCommand]] = [:] { didSet { homeViewRevision &+= 1 } }
+    @Published private(set) var commands: [String: [SlashCommand]] = [:] { didSet { homeViewRevision &+= 1; chatRewindRevision &+= 1 } }
     @Published private(set) var supportedAgents: [String]?
     @Published private(set) var launchableAgents: [String]?
     @Published private(set) var sessionConfigurationSupported = false
@@ -562,7 +562,12 @@ final class HostConnection: ObservableObject {
     private var liveOrders: [String: [String: Int64]] = [:]
     private var liveToolReferences: [String: ToolReference] = [:]
     private var liveTools: [String: [ToolSummary]] = [:]
-    private var displayMessageIds: [String: [String: String]] = [:] { didSet { projectionInputRevision &+= 1 } }
+    private var displayMessageIds: [String: [String: String]] = [:] {
+        didSet {
+            projectionInputRevision &+= 1
+            chatRewindRevision &+= 1
+        }
+    }
     // 运行时临时 id → 持久化 entry id（turn.finished.persistedMessages / live.persistedEntryId）。
     // Codex 用 App 的 clientId、Pi 用流式 id 上屏，落盘后 entry 才是权威行；靠这张映射退掉临时行，绝不按文本猜。
     private var messageAliases: [String: [String: String]] = [:] { didSet { projectionInputRevision &+= 1 } }
@@ -983,15 +988,23 @@ final class HostConnection: ObservableObject {
 
     func dismissPreview() { previewTimeout?.cancel(); entryPreview = nil }
 
+    private var chatRewindRevision = 0
+    private(set) var rewindPreparationCount = 0
+    private var cachedRewindOptions: (key: String, revision: Int, options: [String: RuntimeOption])?
     func userMessageRewindOptions(for runtime: RuntimeSummary) -> [String: RuntimeOption] {
+        let key = localSessionKey(host: selectedHost, runtime: runtime)
+        if !isViewingCachedSession, let cached = cachedRewindOptions,
+           cached.key == key, cached.revision == chatRewindRevision { return cached.options }
         guard !isViewingCachedSession,
               let argument = commands[runtime.runtimeId]?.first(where: { $0.name == "tree" })?.argument,
               argument.kind == "tree" else { return [:] }
         var options: [String: RuntimeOption] = [:]
+        rewindPreparationCount &+= 1
         for option in argument.options ?? [] where option.tree?.role == "user" && option.tree?.isOnActivePath == true {
             let messageId = displayMessageIds[runtime.runtimeId]?[option.value] ?? option.value
             options[messageId] = option
         }
+        cachedRewindOptions = (key, chatRewindRevision, options)
         return options
     }
 
@@ -3502,7 +3515,9 @@ final class HostConnection: ObservableObject {
             if revision != projectionInputRevision { continue }
             let next = prepared.state
             conversations[runtimeId] = next.messages
-            displayMessageIds[runtimeId] = next.displayIds
+            // The existing worker compares the mapping off MainActor. Ordinary text chunks
+            // retain it, so they neither compare every Host map here nor rebuild rewind options.
+            if prepared.displayIdsChanged { displayMessageIds[runtimeId] = next.displayIds }
             messageAliases[runtimeId] = next.aliases
             liveMessageIds[runtimeId] = next.liveIds
             unfinishedLiveMessageIds[runtimeId] = next.unfinishedIds
