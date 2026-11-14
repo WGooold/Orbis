@@ -153,7 +153,7 @@ export class HostStateFacts {
       const sessions = [...new Map([...retained, ...state.sessions].map(session => {
         const normalized = AgentSessionSummarySchema.parse(session);
         return [JSON.stringify([normalized.agentKind, normalized.sessionId]), normalized] as const;
-      })).values()];
+      })).values()].sort((left, right) => right.modifiedAt - left.modifiedAt);
       const inventory = boundedArray(sessions.slice(0, CATALOG_INVENTORY_ENTRIES), CATALOG_INVENTORY_BYTES,
         items => ({ ...state, sessions: items }));
       const input = { ...state };

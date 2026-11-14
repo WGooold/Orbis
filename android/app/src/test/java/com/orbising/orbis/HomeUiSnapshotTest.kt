@@ -1,10 +1,55 @@
 package com.orbising.orbis
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
 class HomeUiSnapshotTest {
     private fun pairing(id: String) = HostPairing(id, id, "public", "root", emptyList(), "wss://example.test", "device", "credential")
+
+    private fun catalogState(): RemoteState {
+        val entry = SessionCatalogEntry("loaded", name = "Loaded", cwd = "/repo", agentKind = "codex", modelProvider = "one")
+        val result = CatalogQueryResult(CatalogQuery(agentKind = "codex", provider = "all"), "epoch", 1,
+            "snapshot", listOf(entry), 400, 30, "next-page", true, false,
+            listOf("one", "outside-loaded-page"), false, false,
+            previewsComplete = true, directoryTotals = mapOf("/repo" to 200))
+        return RemoteState(hostId = "h", sessions = mapOf(entry.sessionId to entry),
+            currentProviders = mapOf("codex" to "one"), catalogQuery = result)
+    }
+
+    // FT-G11-PREVIEW-02: retain query coverage/counts and global facets through the
+    // lightweight UI boundary, including a provider with no locally loaded rows.
+    @Test fun `query metadata reaches the drawer through both home state and selected host`() = runBlocking {
+        val source = catalogState()
+        val ui = HomeUiWorker().resolve(source, listOf(HostSnapshot(pairing("h"), source)), AppLanguage.Chinese)
+        assertSame(source.catalogQuery, ui.state.catalogQuery)
+        assertSame(source.catalogQuery, ui.hosts.single().state.catalogQuery)
+        val drawer = DrawerCatalogWorker().resolve(DrawerCatalogRequest(ui.hosts.single().state,
+            AppLanguage.Chinese, DrawerCatalogFilter("codex", false, "all", "one", "one", ""), ui.catalog))
+        assertTrue(drawer.options.any { it.key == providerFilterKey("outside-loaded-page") })
+        assertEquals(listOf("loaded"), drawer.content.sessions.map { it.sessionId })
+    }
+
+    // FT-G11-PREVIEW-02: metadata-only pages publish without rebuilding the tree;
+    // streaming transcript updates still reuse the same retained surface.
+    @Test fun `metadata changes publish while transcript changes reuse the catalog surface`() {
+        val worker = HomeUiWorker()
+        val source = catalogState()
+        fun resolve(state: RemoteState) = worker.resolve(state, listOf(HostSnapshot(pairing("h"), state)), AppLanguage.Chinese)
+        val before = resolve(source)
+        val changed = source.copy(catalogQuery = source.catalogQuery!!.copy(revision = 2, totalSessions = 401,
+            directoryTotals = mapOf("/repo" to 201), providers = listOf("one", "new-provider")))
+        val after = resolve(changed)
+        assertNotSame(before, after)
+        assertSame(before.catalog, after.catalog)
+        assertSame(changed.catalogQuery, after.state.catalogQuery)
+        repeat(60) { index ->
+            val message = ChatMessage("a", "assistant", listOf(RemoteContent("text", "$index")), 1)
+            assertSame(after, resolve(changed.copy(conversations = mapOf("r" to RuntimeConversation(messages = listOf(message))))))
+        }
+        assertTrue(after.state.conversations.isEmpty())
+        assertTrue(after.state.sessionGraphs.isEmpty())
+    }
 
     // S18 / SC72: selecting a computer must not turn another secured connection offline.
     @Test fun `online hosts stay online across selection changes`() {

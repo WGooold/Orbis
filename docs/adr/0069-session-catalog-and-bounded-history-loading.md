@@ -300,3 +300,9 @@ Status: accepted（FT-G11 / FT-G12 已实施并集成；自动验证见第 8 节
 - `FT-G12-RESUME-01`：当前可见兴趣得到认证且准确匹配的接受回执后，立即登记一次来源核对，绕过周期核对冷却；旧读取不能结算新需求。关闭、切会话、切 Host 与重连替换回执身份，丢失回执在后续核对入口达到 20 秒时重发，重复回执不重复读取。
 - 可见窗口归属跟随当前 Host：iOS Hub 转交导航 / scene 可见状态，Android 聊天生命周期任务包含 Host 身份；无 Session 的 Runtime 使用两个 null 关闭兴趣。自动预取等待兴趣确认，连续页和本地读取转网络时均让位于未完成的来源需求，沿用原范围及剩余额度。
 - 回归见 [iOS Store](../../ios/Orbis/Tests/StoreTests.swift)、[多 Host](../../ios/Orbis/Tests/MultiHostTests.swift)、[Android 读取归属](../../android/app/src/test/java/com/orbising/orbis/HistoryReadOperationsTest.kt)及两端 `ReadReconcileSchedule` 测试。[本次自动证据](../../.artifacts/recent-risk-fixes-20261113/mobile/verification.json)：Swift 109 项、Android 34 项通过，Android Debug 生产源码编译通过；新增预取时序用例修复前的失败证据保留。设备上的前后台 / 多 Host 切换、安装候选及用户验收待完成。
+
+### 8.6 2026-11-14 目录预览与 UI 元数据
+
+- `FT-G11-PREVIEW-01`：Host 合并各后端目录后按 `modifiedAt` 降序建立固定库存，再执行原有条数 / 字节边界及分组预览。同时间条目保留原相对顺序；五条网络预览包含该目录最近会话，后续游标仍读取同一快照。实现见 `host-state-facts.ts`，混合后端、Android 100 条请求、字节限页与完整续页回归见 [host-catalog-range.test.ts](../../packages/host/src/host-catalog-range.test.ts)。
+- `FT-G11-PREVIEW-02`：Android 轻量首页及当前 Host 快照保留已有 `catalogQuery`，使预览覆盖、目录总数与全局 provider 筛选到达侧栏；纯元数据变化可发布，正文流式更新继续复用目录树和首页，沿用 ADR-0060 的后台投影与 ADR-0046 V21 的视口规则。实现见 `HomeUiSnapshot.kt`，回归见 [HomeUiSnapshotTest.kt](../../android/app/src/test/java/com/orbising/orbis/HomeUiSnapshotTest.kt)。
+- 首次失败证据保留于 `.artifacts/catalog-pagination-audit-20261114/`；最终生产代码验证见 `.artifacts/catalog-preview-fix-20261114/`。本次不改变查询协议、分页预算、实时刷新调度或界面展开规则；真机视觉 / 手感及用户验收通过关联 QA 任务记录。
