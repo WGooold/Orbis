@@ -215,7 +215,10 @@ struct OrbisReplyCard: ViewModifier {
                 Color.clear.preference(key: ReplyCardMeasurementKey.self,
                     value: ReplyCardMeasurement(size: geometry.size, parts: parts, live: live, reduced: reduced))
             })
-            .frame(height: reduced ? nil : (height.value(at: now) ?? (appearance.entering ? 0 : nil)), alignment: .top)
+            // Only live reply growth owns a clipping height. At rest, a nested disclosure
+            // must lay out the surface itself rather than snapping to a second measured height.
+            .frame(height: reduced ? nil : (height.isAnimating(at: now) ? height.value(at: now) :
+                (height.target == nil && appearance.entering ? 0 : nil)), alignment: .top)
             .clipped()
             .neuSurface(radius: OrbisRadius.card, intensity: 0.65, padding: 16)
             .opacity(reduced ? 1 : Double(opacity.value(at: now) ?? (appearance.entering ? 0 : 1)))
@@ -853,7 +856,13 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
             var ancestor = view.superview
             while let candidate = ancestor {
                 if let found = candidate as? UIScrollView {
-                    scroll = found; found.panGestureRecognizer.addTarget(self, action: #selector(pan)); return
+                    scroll = found; found.panGestureRecognizer.addTarget(self, action: #selector(pan))
+                    #if DEBUG
+                    Task { @MainActor in
+                        if PreviewChatScrollProbe.enabled { PreviewChatScrollProbe.shared.scroll = found }
+                    }
+                    #endif
+                    return
                 }
                 ancestor = candidate.superview
             }

@@ -97,10 +97,16 @@ struct ReplyCardMotionPreview: View {
     @State private var text = "FIRST"
     @State private var showNew = false
     @State private var arrivals = ReplyCardArrivals()
+    @State private var expanded = false
+    @StateObject private var disclosureFrames = DisclosureFrameProbe()
+    private var measuresDisclosure: Bool { ProcessInfo.processInfo.arguments.contains("--preview-reply-disclosure") }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
-                Button("Append") { text += "\nSECOND\nTHIRD\nFOURTH" }.accessibilityIdentifier("reply-append")
+                Button("Append") {
+                    if measuresDisclosure { disclosureFrames.begin() }
+                    text += "\nSECOND\nTHIRD\nFOURTH"
+                }.accessibilityIdentifier("reply-append")
                 Button("Rewrite") { text = "REWRITTEN" }.accessibilityIdentifier("reply-rewrite")
                 Button("New") {
                     let now = ProcessInfo.processInfo.systemUptime
@@ -109,11 +115,30 @@ struct ReplyCardMotionPreview: View {
                     showNew = true
                 }.accessibilityIdentifier("reply-new")
             }
+            if measuresDisclosure {
+                Button("Toggle tool") { disclosureFrames.begin(); expanded.toggle() }
+                    .accessibilityIdentifier("reply-disclosure-toggle")
+                Text(disclosureFrames.report).font(.system(size: 1)).frame(height: 1)
+                    .accessibilityIdentifier("reply-disclosure-frames")
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text("ANCHOR").accessibilityIdentifier("reply-anchor")
-                MarkdownMessage(text: text, streaming: true)
+                if measuresDisclosure {
+                    // Couple the source and natural-size update in this layout fixture;
+                    // Markdown parsing/reveal has its own asynchronous presentation tests.
+                    Text(text)
+                } else {
+                    MarkdownMessage(text: text, streaming: true)
+                }
+                if measuresDisclosure {
+                    OrbisCollapse(expanded: expanded) {
+                        Text((1...8).map { "Tool output \($0)" }.joined(separator: "\n"))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(OrbisReplyCard(id: "old", parts: [.init(id: "text", text: text)], live: true, arrivals: nil))
+                .background { if measuresDisclosure { DisclosureFrameView(probe: disclosureFrames) } }
                 .accessibilityElement(children: .contain).accessibilityIdentifier("reply-card")
             if showNew {
                 VStack(alignment: .leading) { Text("NEW FIRST\nNEW SECOND\nNEW THIRD") }
@@ -128,11 +153,112 @@ struct ReplyCardMotionPreview: View {
     }
 }
 
+/// SC89: sample actual laid-out reply bounds while the nested disclosure animates.
+/// XCTest waits for idle after a tap, so endpoint snapshots alone miss a jump or reversal.
+private final class DisclosureFrameProbe: NSObject, ObservableObject {
+    @Published private(set) var report = "idle"
+    weak var view: UIView?
+    private var link: CADisplayLink?
+    private var samples: [[Double]] = []
+    private var generation = 0
+
+    func begin() {
+        link?.invalidate()
+        generation += 1
+        let current = generation
+        report = "recording"
+        samples = []; sample()
+        let link = CADisplayLink(target: self, selector: #selector(sample))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, self.generation == current else { return }
+            self.sample(); self.link?.invalidate(); self.link = nil
+            if let data = try? JSONSerialization.data(withJSONObject: self.samples),
+               let text = String(data: data, encoding: .utf8) { self.report = text }
+        }
+    }
+
+    @objc private func sample() {
+        guard let view, view.window != nil else { return }
+        let frame = view.convert(view.bounds, to: nil)
+        samples.append([Double(frame.minY), Double(frame.width), Double(frame.height)])
+    }
+}
+
+private struct DisclosureFrameView: UIViewRepresentable {
+    let probe: DisclosureFrameProbe
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(); view.isUserInteractionEnabled = false
+        probe.view = view
+        return view
+    }
+    func updateUIView(_ view: UIView, context: Context) { probe.view = view }
+}
+
 @MainActor
 enum PreviewViewportUpdates {
     static var schedule: (() -> Void)?
     static var advance: (() -> Void)?
     static var changeList: ((String) -> Void)?
+}
+
+/// SC90: record the native viewport during the real jump button action. Publishing
+/// only after sampling avoids adding per-frame SwiftUI updates to the measured path.
+@MainActor
+final class PreviewChatScrollProbe: NSObject, ObservableObject {
+    static let shared = PreviewChatScrollProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--preview-scroll-frames")
+    @Published private(set) var report = "idle"
+    weak var scroll: UIScrollView?
+    private weak var flight: MessageSendFlight?
+    private var link: CADisplayLink?
+    private var samples: [[String: Any]] = []
+    private var started: CFTimeInterval = 0
+    private var generation = 0
+
+    func begin(flight: MessageSendFlight) {
+        guard Self.enabled else { return }
+        self.flight = flight
+        link?.invalidate(); generation += 1
+        let current = generation
+        report = "recording"; samples = []; started = CACurrentMediaTime(); sample()
+        let link = CADisplayLink(target: self, selector: #selector(sample))
+        link.add(to: .main, forMode: .common); self.link = link
+        if ProcessInfo.processInfo.arguments.contains("--preview-jump-updates") {
+            Task { @MainActor [weak self] in
+                for _ in 0..<3 {
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    guard self?.generation == current else { return }
+                    PreviewViewportUpdates.advance?()
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.generation == current else { return }
+            self.sample(); self.link?.invalidate(); self.link = nil
+            if let data = try? JSONSerialization.data(withJSONObject: self.samples),
+               let text = String(data: data, encoding: .utf8) { self.report = text }
+        }
+    }
+
+    @objc private func sample() {
+        guard let scroll, scroll.window != nil else { return }
+        let offset = scroll.layer.presentation()?.bounds.origin.y ?? scroll.contentOffset.y
+        let bottom = scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height
+        var frames: [String: [Double]] = [:]
+        let viewport = scroll.convert(scroll.bounds, to: nil)
+        // Reuse the production row anchors; adding background views per lazy row
+        // would change the hierarchy being measured and its accessibility behavior.
+        for (id, anchor) in flight?.targets ?? [:] {
+            let frame = anchor.frame
+            if frame.intersects(viewport) {
+                frames[id] = [Double(frame.minY), Double(frame.width), Double(frame.height)]
+            }
+        }
+        samples.append(["time": CACurrentMediaTime() - started, "offset": Double(offset), "bottom": Double(bottom),
+                        "width": Double(scroll.bounds.width), "height": Double(scroll.bounds.height), "rows": frames])
+    }
 }
 
 @MainActor
@@ -910,8 +1036,17 @@ private final class PreviewTransport: OrbisTransport {
                 [message("tool-user-\(index)", role: "user", text: "检查第 \(index) 个源文件。"),
                  message("tool-assistant-\(index)", role: "assistant", text: "第 \(index) 个源文件检查完成。\n\n" + String(repeating: "历史消息用于验证懒加载后的首次定位。", count: 8))]
             } : []
+            let names = ProcessInfo.processInfo.arguments.contains("--preview-tool-group") ? ["read", "search", "exec"] : ["read"]
+            let calls: [[String: Any]] = names.enumerated().map { index, name in
+                var value = summary
+                value["toolName"] = name
+                let callID = index == 0 ? "preview-tool" : "preview-tool-\(index)"
+                var locator = summary["tool"] as? [String: Any] ?? [:]
+                locator["toolCallId"] = callID; value["tool"] = locator
+                return ["type": "tool_call", "toolCallId": callID, "toolName": name, "summary": value]
+            }
             return history + [message("m1", role: "user", text: "检查项目中的源文件。"), ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001,
-                "content": [["type": "tool_call", "toolName": "read", "summary": summary], ["type": "text", "text": "源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]]]]
+                "content": calls + [["type": "text", "text": "源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]]]]
         }
         return [message("m1", role: "user", text: "把 iOS 的 UI 和交互体验对齐到 Android，一个页面一个页面做。"),
          ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001, "content": [

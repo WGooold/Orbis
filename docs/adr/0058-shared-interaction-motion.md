@@ -99,8 +99,14 @@
 | SC85 | Codex 权限显示跟随原生已保存选项，实际执行下一轮生效；目录差异不阻塞确认，回执丢失后读取原生设置恢复；发送失败保留输入并显示权限原因 |
 | SC86 | 四家 Agent 的模型面板在本轮与所选模型、深度均确认相同时仅显示本轮；确认差异才显示下轮／后续选择，未知事实保留“当前所选” |
 | SC87 | Claude 回复结束后保留原生已确认的深度；模型、别名或设置变化使旧观察失效，手机后续选择不覆盖本轮事实 |
+| SC89 | iOS 单工具与嵌套工具组展开、收起时由内容自然高度带动回复表面，保留连续动效、阅读位置与内部状态 |
+| SC90 | iOS 跳到最新消息以稳定尾部行定位，懒加载高度修正不使可见卡片反向抽动；保留滚动动效、减少动画、后续跟随与手动阅读 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
+
+2026-11-14，SC89 / M03 / M24 / S31：iOS 回复表面只在回复增高或首次入场动画期间持有裁剪高度，其余时间采用内容自然高度，避免工具折叠与外层测量争用布局。实现见 [InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)；中间帧、长聊天锚点、嵌套工具组与减少动画回归见 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。修复前失败、自动验证、构建与资源清理记录见 [.artifacts/ios-tool-disclosure-20261114/verification.json](../../.artifacts/ios-tool-disclosure-20261114/verification.json)。未发布；真机观感待用户验证。
+
+2026-11-14，SC90 / SC42 / V01–V03：iOS 18+ 显式跳转使用既有尾部行身份与底部对齐，避免把懒加载的估算内容边缘作为动画目标；iOS 17 沿用原有尾部行路径。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)；原生可见卡片中间帧、不同距离、减少动画与更新期间跳转回归见 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。修复前反向位移、实际验证与资源清理记录见 [.artifacts/ios-jump-to-latest-20261114/verification.json](../../.artifacts/ios-jump-to-latest-20261114/verification.json)。未发布；真机观感待用户验证。
 
 2026-11-05 MOT-14 / SC03 / SC08 / SC36：Android 目录后台投影与 IO 首载保持既有动效与视口行为。对应 S19 / V21、PERF-07、R48 / R57 / R65，回归见 [DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)；实际验证与待验收项见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`。
 

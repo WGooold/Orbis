@@ -49,6 +49,9 @@ private enum ChatFollow {
 
 struct ChatView: View {
     @StateObject private var sendFlight = MessageSendFlight()
+    #if DEBUG
+    @ObservedObject private var scrollProbe = PreviewChatScrollProbe.shared
+    #endif
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @EnvironmentObject private var agent: AgentState
@@ -277,7 +280,7 @@ struct ChatView: View {
             }.contentShape(Rectangle()).onTapGesture { composerFocused = false; runtimeInfoOpen = true }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), store.displayName(runtime), store.connection == .secured ? runtime.presentationTitle : connectionTitle(store.connection)))
-                .accessibilityValue([presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · "))
+                .accessibilityValue(chatTitleValue([presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))
                 .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
@@ -285,6 +288,13 @@ struct ChatView: View {
             OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
                 .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
         }
+    }
+
+    private func chatTitleValue(_ value: String) -> String {
+        #if DEBUG
+        if PreviewChatScrollProbe.enabled { return scrollProbe.report }
+        #endif
+        return value
     }
 
     /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
@@ -460,6 +470,9 @@ struct ChatView: View {
     }
 
     private func jumpToLatest() {
+        #if DEBUG
+        PreviewChatScrollProbe.shared.begin(flight: sendFlight)
+        #endif
         hasBrowsed = false
         suppressQuestionPaging = false
         following = true
@@ -668,8 +681,8 @@ private struct ChatScrollObserver: ViewModifier {
     }
 }
 
-/// The native position owns both user motion and layout anchoring. An explicit bottom-edge
-/// request also survives lazy height estimates; a saved row ID is never replayed after a drag.
+/// The native position owns both user motion and layout anchoring. Target the stable
+/// tail row when jumping; the lazy stack's estimated content edge can move mid-animation.
 @available(iOS 18.0, *)
 private struct ChatNativeScrollPosition: ViewModifier {
     let following: Bool
@@ -697,7 +710,9 @@ private struct ChatNativeScrollPosition: ViewModifier {
             .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
             .onChange(of: jumpRequest) { _, _ in
                 metrics.frozen = false
-                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(edge: .bottom) }
+                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
+                    position.scrollTo(id: ChatFollow.bottomID, anchor: .bottom)
+                }
             }
             .onChange(of: questionJumpRequest) { _, request in
                 guard let request else { return }

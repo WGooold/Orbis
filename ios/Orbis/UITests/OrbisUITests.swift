@@ -625,6 +625,65 @@ final class OrbisUITests: XCTestCase {
         capture("streaming-reduced-motion-direct", app: app)
     }
 
+    // SC89 / M03: a tool disclosure must carry the surrounding reply surface through
+    // intermediate heights, without moving its header, overshooting or snapping on first open.
+    func testToolDisclosureAnimatesReplyLayoutContinuously() throws {
+        for reduced in [false, true] {
+            let app = launch("reply-motion", arguments: ["--preview-reply-disclosure"] + (reduced ? ["--preview-reduce-motion"] : []))
+            let toggle = app.buttons["reply-disclosure-toggle"]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+            for opening in [true, false, true] {
+                toggle.tap()
+                let samples = try replyDisclosureFrames(app)
+                let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
+                XCTAssertGreaterThan(samples.count, 3)
+                XCTAssertGreaterThan((last[2] - first[2]) * (opening ? 1 : -1), 100)
+                for sample in samples {
+                    XCTAssertEqual(sample[0], first[0], accuracy: 1, "Reply header moved during disclosure")
+                    XCTAssertEqual(sample[1], first[1], accuracy: 1, "Reply width changed during disclosure")
+                }
+                for (before, after) in zip(samples, samples.dropFirst()) {
+                    XCTAssertGreaterThanOrEqual((after[2] - before[2]) * (opening ? 1 : -1), -1,
+                                                "Disclosure reversed direction")
+                }
+                if !reduced {
+                    let low = min(first[2], last[2]), high = max(first[2], last[2])
+                    XCTAssertGreaterThan(samples.filter { $0[2] > low + 1 && $0[2] < high - 1 }.count, 2,
+                                         "Reply snapped instead of following the disclosure animation")
+                }
+            }
+            app.terminate()
+        }
+    }
+
+    // Keep the independent streaming-height animation when a disclosure uses natural layout.
+    func testReplyGrowthRemainsContinuousWithExpandedTool() throws {
+        let app = launch("reply-motion", arguments: ["--preview-reply-disclosure"])
+        let toggle = app.buttons["reply-disclosure-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+        toggle.tap()
+        _ = try replyDisclosureFrames(app)
+        app.buttons["reply-append"].tap()
+        let samples = try replyDisclosureFrames(app)
+        let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
+        XCTAssertGreaterThan(last[2] - first[2], 30)
+        XCTAssertGreaterThan(samples.filter { $0[2] > first[2] + 1 && $0[2] < last[2] - 1 }.count, 2)
+        for (before, after) in zip(samples, samples.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(after[2] - before[2], -1, "Streaming growth jumped then reversed")
+            XCTAssertEqual(after[0], first[0], accuracy: 1)
+            XCTAssertEqual(after[1], first[1], accuracy: 1)
+        }
+        app.terminate()
+    }
+
+    private func replyDisclosureFrames(_ app: XCUIApplication) throws -> [[Double]] {
+        let report = app.staticTexts["reply-disclosure-frames"]
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH '['"), object: report)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 3), .completed)
+        print("DISCLOSURE_FRAMES \(report.label)")
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(report.label.utf8)) as? [[Double]])
+    }
+
     func testHomeTopShowsNewAndPromotedSessions() {
         let app = launch("home", arguments: ["--preview-home-long-list", "--preview-viewport-controls"])
         let first = app.buttons["home-runtime-preview-codex"]
@@ -2653,6 +2712,142 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(disclosure.waitForExistence(timeout: 5))
         XCTAssertTrue(disclosure.isHittable)
         capture("long-transcript-reopened-without-drag", app: app)
+    }
+
+    // SC89 / S31: nested tool-group expansion keeps both reading anchors and retained state.
+    func testToolGroupAndNestedCallKeepTheirReadingPosition() {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-tool-group"])
+        let group = app.buttons["展开3 次工具调用，已完成"]
+        XCTAssertTrue(group.waitForExistence(timeout: 8))
+        let before = group.frame
+        // The group's accessibility frame includes expanded descendants. Touch the
+        // original header, not the center of that growing union (which can be tool text).
+        let groupHeader = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: before.midX, dy: before.midY))
+        group.tap()
+        let expandedGroup = app.buttons["收起3 次工具调用，已完成"]
+        XCTAssertTrue(expandedGroup.waitForExistence(timeout: 3))
+        XCTAssertEqual(expandedGroup.frame.minY, before.minY, accuracy: 1)
+        XCTAssertEqual(expandedGroup.frame.width, before.width, accuracy: 1)
+        let call = app.buttons["展开read，已完成"]
+        XCTAssertTrue(call.isHittable)
+        let callBefore = call.frame
+        call.tap()
+        let expandedCall = app.buttons["收起read，已完成"]
+        XCTAssertTrue(expandedCall.waitForExistence(timeout: 3))
+        XCTAssertEqual(expandedCall.frame.minY, callBefore.minY, accuracy: 1)
+        XCTAssertEqual(expandedGroup.frame.minY, before.minY, accuracy: 1)
+        capture("tool-group-nested-expanded", app: app)
+        groupHeader.tap()
+        XCTAssertTrue(group.isHittable)
+        XCTAssertEqual(group.frame.minY, before.minY, accuracy: 1)
+        groupHeader.tap()
+        XCTAssertTrue(expandedCall.waitForExistence(timeout: 3), "Nested tool state was lost on group collapse")
+        XCTAssertEqual(expandedCall.frame.minY, callBefore.minY, accuracy: 1)
+        app.terminate()
+    }
+
+    // SC90: endpoints miss scroll reversals. Sample the actual viewport across a
+    // long lazy jump, including the button's disappearance and settling frames.
+    func testJumpToLatestMovesContinuouslyWithoutReversing() throws {
+        try verifyJumpToLatest(reduced: false, distances: [5, 2, 9])
+    }
+
+    // SC90: the same tail target must settle immediately under reduced motion.
+    func testJumpToLatestRespectsReducedMotion() throws {
+        try verifyJumpToLatest(reduced: true, distances: [5])
+    }
+
+    private func verifyJumpToLatest(reduced: Bool, distances: [Int]) throws {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-scroll-frames"]
+            + (reduced ? ["--preview-reduce-motion"] : []))
+        defer { app.terminate() }
+        let latest = app.staticTexts["源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        for distance in distances {
+            for _ in 0..<distance {
+                let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.25))
+                let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.75))
+                start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
+            }
+            XCTAssertFalse(latest.isHittable)
+            let jump = app.buttons["跳到最新消息"]
+            XCTAssertTrue(jump.waitForExistence(timeout: 3))
+            jump.tap()
+            let samples = try chatScrollFrames(app)
+            try assertChatScrollMotion(samples, reduced: reduced)
+            XCTAssertTrue(latest.isHittable)
+            XCTAssertFalse(jump.exists)
+        }
+    }
+
+    // SC90 / V03: source patches arriving during the jump must still land at the
+    // newest content; a later user drag must cancel that explicit tail target.
+    func testJumpToLatestFollowsUpdatesAndAllowsReadingAgain() throws {
+        let app = launch("viewport", arguments: ["--preview-scroll-frames", "--preview-jump-updates"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        transcript.swipeDown(); transcript.swipeDown()
+        app.buttons["跳到最新消息"].tap()
+        let samples = try chatScrollFrames(app)
+        try assertChatScrollMotion(samples, stableRowSizes: false)
+        let newest = app.staticTexts["新增尾部 4"]
+        XCTAssertTrue(newest.isHittable, "The initial tail plus three patches must all be followed")
+        XCTAssertFalse(app.buttons["跳到最新消息"].exists)
+        transcript.swipeDown(); transcript.swipeDown()
+        let anchor = try XCTUnwrap(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+            .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > transcript.frame.minY + 10 && $0.frame.maxY < transcript.frame.maxY - 10 })
+        let before = anchor.frame
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
+        XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+        XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+    }
+
+    private func assertChatScrollMotion(_ samples: [ChatScrollFrame], reduced: Bool = false, stableRowSizes: Bool = true) throws {
+        let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
+        XCTAssertGreaterThan(first.bottom - first.offset, 300)
+        XCTAssertEqual(last.bottom - last.offset, 0, accuracy: 2)
+        let distance = samples.map { $0.bottom - $0.offset }
+        if reduced {
+            XCTAssertTrue(samples.filter { $0.time > 0.25 }.allSatisfy { abs($0.bottom - $0.offset) <= 2 })
+        } else {
+            XCTAssertGreaterThan(distance.filter { $0 > 2 && $0 < distance[0] - 2 }.count, 2)
+        }
+        var comparedRows = 0
+        for (before, after) in zip(samples, samples.dropFirst()) {
+            // Lazy estimates can change the total height without moving visible
+            // content. Compare the same rendered rows, not estimated bottom distance.
+            for (id, frame) in after.rows {
+                guard let previous = before.rows[id] else { continue }
+                comparedRows += 1
+                XCTAssertLessThanOrEqual(frame[0] - previous[0], 2, "Visible row reversed: \(id), \(previous) -> \(frame)")
+                XCTAssertEqual(frame[1], previous[1], accuracy: 1, "Visible row width changed: \(id)")
+                if stableRowSizes { XCTAssertEqual(frame[2], previous[2], accuracy: 1, "Visible row height changed: \(id)") }
+            }
+            XCTAssertEqual(after.width, first.width, accuracy: 1)
+            XCTAssertEqual(after.height, first.height, accuracy: 1)
+        }
+        XCTAssertGreaterThan(comparedRows, 3)
+    }
+
+    private struct ChatScrollFrame: Decodable {
+        let time: Double
+        let offset: Double
+        let bottom: Double
+        let width: Double
+        let height: Double
+        let rows: [String: [Double]]
+    }
+
+    private func chatScrollFrames(_ app: XCUIApplication) throws -> [ChatScrollFrame] {
+        let report = app.buttons["chat-title"]
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value BEGINSWITH '['"), object: report)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 4), .completed)
+        let json = try XCTUnwrap(report.value as? String)
+        print("CHAT_SCROLL_FRAMES \(json)")
+        return try JSONDecoder().decode([ChatScrollFrame].self, from: Data(json.utf8))
     }
 
     func testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump() {
