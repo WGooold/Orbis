@@ -125,7 +125,7 @@
 | IOS-CHAT-01 | 输入子树拥有草稿与局部面板；消息正文与工具的动作依赖独立于全局观察 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-02 | 导航与会话各区域的展示发布边界、来源重绑 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-03 | 原生输入框确定宽度测量及有界缓存 | 已实施，定向自动验证通过；待用户验证 |
-| IOS-CHAT-04 | 视口策略、显式命令和用户移动归属 | 待实施 |
+| IOS-CHAT-04 | 视口策略、显式命令和用户移动归属 | 已实施，定向验证及既有失败对照完成；待用户验证 |
 | IOS-CHAT-05 | 页面工作生命周期与组合回归 | 待实施 |
 
 IOS-CHAT-01 将草稿、Slash 选择、发送选项、附件选择及权限面板交给 `ChatComposerView`。消息中的文件动作通过稳定环境引用传递，工具与完整内容读取使用带连接／会话归属的 `ChatReadContext`；详情保持原 reader 观察。放回输入框沿用 `saveDraft`／`draftRevision`。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)、[HistoryBranchView.swift](../../ios/Orbis/Orbis/HistoryBranchView.swift)。
@@ -141,3 +141,7 @@ IOS-CHAT-02 自动验证：Swift 定向 16/16、设备定向 8/8；覆盖四源�
 IOS-CHAT-03 仅将输入行交给 `ChatComposerRowLayout`，按两侧实际按钮尺寸与 10pt 间距分配编辑器剩余宽度，测量和放置复用 `height:nil` 的同一提案；原生 TextField、焦点、按键与既有修饰链保持。缓存只保留 ideal 与最近有限宽度，`updateCache` 清除两者，遵守原生内部编辑及环境变化的布局有效性。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[MotionGeometry.swift](../../ios/Orbis/Orbis/MotionGeometry.swift)。
 
 IOS-CHAT-03 自动验证：Swift 定向 11/11、设备定向 5/5；新增 [ComposerRowGeometryTests.swift](../../ios/Orbis/Tests/ComposerRowGeometryTests.swift) 与实际原生输入行测量用例，覆盖长中文草稿收缩／增长、焦点保持、48pt 按钮槽与 10pt 间距，并回归 Slash／审批／流式内容下的键盘。测量提案附件记录父级 inf／299pt／151.5pt 高度提案，编辑器测量与放置均无指定高度；记录边界是 styled TextField 的 LayoutSubview，不代表 TextKit 内部或物理按键调用数。构建、设备、提案及截图证据见 [.artifacts/ios-chat-control-20261114/ticket03-check](../../.artifacts/ios-chat-control-20261114/ticket03-check/)。真机组字、观感与用户验收待完成。
+
+IOS-CHAT-04 将跟随／阅读／真实交互、提醒、分页边沿及显式滚动命令集中到纯 `ChatViewportPolicy`；像素事实保留在原生引用盒，仅离散状态实际变化时发布。iOS 17／18 执行命令前核对当前页面目标、请求序号及上下文／用户移动代次；展开工具继续同步冻结，历史完成保持既有 connection 级语义。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[MotionGeometry.swift](../../ios/Orbis/Orbis/MotionGeometry.swift)，回归见 [ChatViewportTests.swift](../../ios/Orbis/Tests/ChatViewportTests.swift) 与 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
+
+IOS-CHAT-04 自动验证：Swift 定向 22/22，设备定向共 9 项通过、1 项按既有可见软件键盘前提跳过、2 项原问题提醒用例失败；后两项均在 source 更新后出现 30pt 阅读锚点上移。`e5135ce` 同设备对照在首项同一锚点及原断言精确复现；第二项对照在提醒存在性断言提前失败，不能据此声称其锚点判定已完成。该静止阅读问题在 [ADR-0060](0060-mobile-relay-history-performance.md) 已记录，原断言和首次证据保留。独立的定位提问→native idle→source 更新用例通过，确认保持位置且不恢复跟随；无可见键盘环境下的输入区缩放回归通过。实际构建、对照、复核和清理见 [.artifacts/ios-chat-control-20261114/ticket04-review.json](../../.artifacts/ios-chat-control-20261114/ticket04-review.json)；真机观感、iOS 17 原生适配器运行与用户验收待完成。

@@ -3124,6 +3124,32 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // IOS-CHAT-04: after explicit question positioning, native idle and a later source
+    // publication cannot resume following. This reaches the command independently of
+    // the existing stationary-reading/source assertion in the broader reminder case.
+    func testQuestionLocationRemainsReadingAfterNativeIdleAndSourcePublication() {
+        let app = launch("viewport", arguments: ["--preview-question-reminder"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = app.scrollViews.firstMatch
+        let reminder = app.buttons["chat-question-reminder"]
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+            thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertTrue(reminder.waitForExistence(timeout: 3))
+        reminder.tap()
+        XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
+        let original = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "帮我比较这两种实现")).firstMatch
+        XCTAssertTrue(original.isHittable)
+        XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+        settle()
+        let locatedY = original.frame.minY
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
+        settle()
+        XCTAssertEqual(original.frame.minY, locatedY, accuracy: 1)
+        XCTAssertFalse(reminder.exists)
+        XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+    }
+
     func testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader() {
         let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-reduce-motion"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))

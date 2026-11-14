@@ -12,13 +12,7 @@ private struct ChatBottomPreference: PreferenceKey {
 
 final class ChatScrollMetrics {
     var bottomDistance: CGFloat = 0
-    var userScrolling = false
     var viewport = ChatViewportFacts()
-}
-
-private struct ChatQuestionJump: Equatable {
-    let rowID: String
-    let request = UUID()
 }
 
 private struct ChatViewportPreference: PreferenceKey {
@@ -95,7 +89,6 @@ struct ChatReadContext: Equatable {
 /// new content, dragging or opening a disclosure stops following, and past three lines a jump-to-latest
 /// button appears. Nothing else moves the viewport on the reader's behalf.
 private enum ChatFollow {
-    static let line: CGFloat = 20
     static let bottomID = "chat-bottom"
     static let topPadding: CGFloat = 4
 }
@@ -312,21 +305,11 @@ private struct ChatTranscriptView: View {
     let sendFlight: MessageSendFlight
     let acceptedSends: PassthroughSubject<Set<String>, Never>
     let onBack: () -> Void
-    @State private var following = true
+    @State private var policy = ChatViewportPolicy()
     @State private var replyArrivals = ReplyCardArrivals()
-    @State private var jumpRequest = 0
     /// Per-frame scroll facts live in a reference box: writing them must not re-render the chat.
-    /// Only `showJump` (derived from them) is view state, and it changes at a threshold.
+    /// Only discrete policy changes are assigned back to view state.
     @State private var metrics = ChatScrollMetrics()
-    @State private var showJump = false
-    @State private var hasPositioned = false
-    @State private var hasBrowsed = false
-    @State private var questionOutsideViewport = false
-    @State private var lastScrollTowardEarlier = false
-    @State private var questionJumpRequest: ChatQuestionJump?
-    @State private var suppressQuestionPaging = false
-    @State private var awaitingHistoryPage = false
-    @State private var topArmed = false
 
 
     private var facts: ChatScreenSnapshot { screens.snapshot }
@@ -334,7 +317,7 @@ private struct ChatTranscriptView: View {
     private var kind: String? { facts.kind }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var latestQuestion: ChatQuestion? { facts.transcript.latestQuestion(excluding: Set(facts.pending.items.map(\.messageId))) }
-    private var showQuestionReminder: Bool { hasPositioned && hasBrowsed && lastScrollTowardEarlier && showJump && questionOutsideViewport }
+    private var showQuestionReminder: Bool { policy.showQuestionReminder }
     var body: some View {
         #if DEBUG
         let _ = ChatUpdateProbe.shared.rendered(.transcript)
@@ -349,10 +332,10 @@ private struct ChatTranscriptView: View {
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
         .onChange(of: latestQuestion) { _, _ in updateQuestionVisibility() }
-        .onChange(of: facts.identity) { _, _ in
+        .onChange(of: target) { _, _ in
             sendFlight.clear()
-            hasBrowsed = false; lastScrollTowardEarlier = false; questionOutsideViewport = false; questionJumpRequest = nil
-            suppressQuestionPaging = false; metrics.viewport = ChatViewportFacts()
+            metrics.bottomDistance = 0; metrics.viewport = ChatViewportFacts()
+            updatePolicy { $0.resetContext() }
         }
     }
 
@@ -360,10 +343,7 @@ private struct ChatTranscriptView: View {
         let p = OrbisPalette(scheme)
         return OrbisMotionButton {
             composerFocused = false
-            metrics.userScrolling = false
-            following = false
-            suppressQuestionPaging = true
-            questionJumpRequest = ChatQuestionJump(rowID: question.messageId)
+            updatePolicy { $0.locateQuestion(question.messageId, bottomDistance: metrics.bottomDistance) }
         } label: {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
@@ -385,7 +365,7 @@ private struct ChatTranscriptView: View {
 
     private func updateQuestionVisibility() {
         let outside = metrics.viewport.questionOutsideViewport(latestQuestion?.messageId)
-        if outside != questionOutsideViewport { questionOutsideViewport = outside }
+        updatePolicy { $0.questionChanged(outside: outside) }
     }
 
     /// A long turn is virtualized into small rows. Its review card belongs after the turn's last
@@ -402,8 +382,8 @@ private struct ChatTranscriptView: View {
                                          sessionId: target.sessionId, canRead: target.matches(store) && facts.canSend)
         let streamingMessageIds = facts.connection == .secured && !facts.syncing && !facts.cached ? facts.streaming : []
         replyArrivals.observe(rows: transcript.rows.map { ($0.id, $0.messages.map(\.messageId)) },
-            ready: hasPositioned && facts.connection == .secured && !facts.syncing && !facts.cached,
-            following: following, now: ProcessInfo.processInfo.systemUptime)
+            ready: policy.hasPositioned && facts.connection == .secured && !facts.syncing && !facts.cached,
+            following: policy.following, now: ProcessInfo.processInfo.systemUptime)
         let rewindOptions = facts.rewind
         return GeometryReader { viewport in
             ScrollView {
@@ -442,33 +422,29 @@ private struct ChatTranscriptView: View {
                         .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
                 }.scrollTargetLayout()
                     .padding(.horizontal, 16).padding(.top, ChatFollow.topPadding)
-                    .background(OrbisScrollDirectionObserver { earlier in lastScrollTowardEarlier = earlier })
+                    .background(OrbisScrollDirectionObserver { earlier in updatePolicy { $0.directionChanged(towardEarlier: earlier) } })
                     .background {
                         if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                     }
             }.coordinateSpace(name: "chat-viewport").scrollDismissesKeyboard(.interactively)
                 .orbisAnchor(sendFlight.viewport)
 
-                .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: following, jumpRequest: jumpRequest,
-                                             questionJumpRequest: questionJumpRequest,
+                .modifier(ChatScrollObserver(viewportHeight: viewport.size.height, following: policy.following,
+                                             request: policy.request, contextGeneration: policy.contextGeneration,
+                                             requestIsCurrent: { target.matches(store) && policy.owns($0) },
                                              onDistance: bottomDistanceChanged,
                                              onInteraction: { userInteractionChanged($0) },
-                                             onReading: { metrics.userScrolling = false; following = false }))
+                                             onReading: { updatePolicy { $0.disclosureBegan(bottomDistance: metrics.bottomDistance) } }))
                 .onPreferenceChange(ChatViewportPreference.self) { viewportFacts in
                     metrics.viewport = viewportFacts
-                    updateQuestionVisibility()
-                    let atTop = viewportFacts.firstRowNearTop
-                    if !atTop && topArmed != hasPositioned { topArmed = hasPositioned }
-                    if atTop && topArmed && !suppressQuestionPaging && !awaitingHistoryPage && !facts.syncing && !facts.historyLoading && facts.historyError == nil {
-                        topArmed = false; loadOlder()
+                    let shouldPage = updatePolicy {
+                        $0.viewportChanged(viewportFacts, questionID: latestQuestion?.messageId,
+                                           canPage: !facts.syncing && !facts.historyLoading && facts.historyError == nil)
                     }
-                }
-                .onChange(of: hasPositioned) { _, positioned in
-                    // No pixel-by-pixel preference callback follows initial positioning now.
-                    if positioned && !metrics.viewport.firstRowNearTop { topArmed = true }
+                    if shouldPage { loadOlder() }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    if showJump && !transcript.rows.isEmpty {
+                    if policy.showJump && !transcript.rows.isEmpty {
                         OrbisIconButton(symbol: "arrow.down", label: L10n.tr("跳到最新消息"), tint: accent) { jumpToLatest() }
                             .padding(16)
                             .transition(.opacity.combined(with: .scale(scale: 0.85)))
@@ -484,24 +460,19 @@ private struct ChatTranscriptView: View {
                             .transition(.opacity)
                     }
                 }
-                .animation(reduceMotion ? nil : .orbisFade, value: showJump)
-                .onChange(of: following) { _, next in
-                    if next { hasBrowsed = false }
-                    updateJump()
-                }
+                .animation(reduceMotion ? nil : .orbisFade, value: policy.showJump)
                 .onChange(of: facts.historyRevision) { _, _ in
                     sendFlight.clear()
-                    following = true; hasPositioned = false; hasBrowsed = false
-                    questionOutsideViewport = false; questionJumpRequest = nil; suppressQuestionPaging = false
+                    updatePolicy { $0.resetContext() }
                 }
                 .animation(reduceMotion ? nil : .orbisFade, value: facts.actionFeedback)
                 .onChange(of: facts.historyPageRevision) { _, _ in
                     // Native identity anchoring preserves the current row AND its offset,
                     // including if the reader scrolled while the older page was in flight.
-                    awaitingHistoryPage = false
+                    updatePolicy { $0.olderPageFinished() }
                 }
                 .onChange(of: facts.historyLoading) { old, loading in
-                    if old && !loading && facts.historyError != nil { awaitingHistoryPage = false }
+                    if old && !loading && facts.historyError != nil { updatePolicy { $0.olderPageFinished() } }
                 }
         }
     }
@@ -531,41 +502,33 @@ private struct ChatTranscriptView: View {
     // Observe here; native anchors handle size changes and an actual scroll ending resumes following.
     private func bottomDistanceChanged(_ distance: CGFloat) {
         metrics.bottomDistance = distance
-        updateJump()
-        if distance.isFinite && !hasPositioned && facts.hasMessages { hasPositioned = true }
+        updatePolicy { $0.distanceChanged(distance, hasMessages: facts.hasMessages, firstRowNearTop: metrics.viewport.firstRowNearTop) }
     }
 
     private func userInteractionChanged(_ active: Bool) {
-        if active {
-            metrics.userScrolling = true
-            hasBrowsed = true
-            suppressQuestionPaging = false
-            following = false
-        } else {
-            guard metrics.userScrolling else { return }
-            metrics.userScrolling = false
-            if metrics.bottomDistance <= ChatFollow.line { following = true }
-        }
+        updatePolicy { $0.interactionChanged(active, bottomDistance: metrics.bottomDistance) }
     }
 
-    private func updateJump() {
-        let next = !following && metrics.bottomDistance > ChatFollow.line * 3
-        if next != showJump { showJump = next }
+    @discardableResult
+    private func updatePolicy<Result>(_ change: (inout ChatViewportPolicy) -> Result) -> Result {
+        var next = policy
+        let result = change(&next)
+        if next != policy { policy = next }
+        return result
     }
 
     private func jumpToLatest() {
         #if DEBUG
         PreviewChatScrollProbe.shared.begin(flight: sendFlight)
         #endif
-        hasBrowsed = false
-        suppressQuestionPaging = false
-        following = true
-        jumpRequest += 1
+        updatePolicy { $0.jumpToLatest() }
     }
 
     private func loadOlder() {
         // The native scroll position owns the reading anchor; this only gates paging.
-        if target.matches(store), store.loadOlderHistory() { awaitingHistoryPage = true; following = false }
+        if target.matches(store), store.loadOlderHistory() {
+            updatePolicy { $0.olderPageAccepted(bottomDistance: metrics.bottomDistance) }
+        }
     }
 
     private func pendingAction(_ action: PendingSendAction, messageId: String?) {
@@ -597,7 +560,7 @@ private struct ChatTranscriptView: View {
         // No text/time/index heuristic: one synchronous accepted submit creates one new App identity.
         let created = store.pendingSends.items.filter { !existing.contains($0.messageId) && $0.sessionId == runtime.sessionId }
         guard created.count == 1, let send = created.first else { return }
-        sendFlight.launch(send, following: following, reduceMotion: reduceMotion)
+        sendFlight.launch(send, following: policy.following, reduceMotion: reduceMotion)
     }
 
 }
@@ -909,8 +872,9 @@ private struct ChatNativeScrollFacts: Equatable {
 private struct ChatScrollObserver: ViewModifier {
     let viewportHeight: CGFloat
     let following: Bool
-    let jumpRequest: Int
-    let questionJumpRequest: ChatQuestionJump?
+    let request: ChatViewportPolicy.Request?
+    let contextGeneration: Int
+    let requestIsCurrent: (ChatViewportPolicy.Request) -> Bool
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     let onReading: () -> Void
@@ -920,20 +884,22 @@ private struct ChatScrollObserver: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content
-                .modifier(ChatNativeScrollPosition(following: following, jumpRequest: jumpRequest,
-                                                   questionJumpRequest: questionJumpRequest,
+                .modifier(ChatNativeScrollPosition(following: following, request: request,
+                                                   contextGeneration: contextGeneration, requestIsCurrent: requestIsCurrent,
                                                    onDistance: onDistance, onInteraction: onInteraction, onReading: onReading))
         } else {
             ScrollViewReader { proxy in content
                 .environment(\.chatReadingInteraction, onReading)
                 .scrollPosition(id: $readingRow)
                 .defaultScrollAnchor(following ? .bottom : nil)
-                .onChange(of: jumpRequest) { _, _ in
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { readingRow = ChatFollow.bottomID }
-                }
-                .onChange(of: questionJumpRequest) { _, request in
-                    guard let request else { return }
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { proxy.scrollTo(request.rowID, anchor: .top) }
+                .onChange(of: request) { _, request in
+                    guard let request, requestIsCurrent(request) else { return }
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
+                        switch request.target {
+                        case .latest: readingRow = ChatFollow.bottomID
+                        case .question(let id): proxy.scrollTo(id, anchor: .top)
+                        }
+                    }
                 }
                 .onPreferenceChange(ChatBottomPreference.self) { bottom in
                     onDistance(bottom.map { max(0, $0 - viewportHeight) } ?? .infinity)
@@ -948,8 +914,9 @@ private struct ChatScrollObserver: ViewModifier {
 @available(iOS 18.0, *)
 private struct ChatNativeScrollPosition: ViewModifier {
     let following: Bool
-    let jumpRequest: Int
-    let questionJumpRequest: ChatQuestionJump?
+    let request: ChatViewportPolicy.Request?
+    let contextGeneration: Int
+    let requestIsCurrent: (ChatViewportPolicy.Request) -> Bool
     let onDistance: (CGFloat) -> Void
     let onInteraction: (Bool) -> Void
     let onReading: () -> Void
@@ -970,15 +937,21 @@ private struct ChatNativeScrollPosition: ViewModifier {
             .scrollPosition($position)
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .defaultScrollAnchor(following ? .bottom : nil, for: .sizeChanges)
-            .onChange(of: jumpRequest) { _, _ in
-                metrics.frozen = false
+            .onChange(of: request) { _, request in
+                guard let request, requestIsCurrent(request) else { return }
                 withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) {
-                    position.scrollTo(id: ChatFollow.bottomID, anchor: .bottom)
+                    switch request.target {
+                    case .latest:
+                        metrics.frozen = false
+                        position.scrollTo(id: ChatFollow.bottomID, anchor: .bottom)
+                    case .question(let id): position.scrollTo(id: id, anchor: .top)
+                    }
                 }
             }
-            .onChange(of: questionJumpRequest) { _, request in
-                guard let request else { return }
-                withAnimation(reduceMotion ? nil : .smooth(duration: 0.3)) { position.scrollTo(id: request.rowID, anchor: .top) }
+            .onChange(of: contextGeneration) { _, _ in
+                // The offset still describes this same native scroll view. Clearing it to
+                // zero would corrupt the next synchronous freeze if layout did not change.
+                metrics.frozen = false
             }
             .onChange(of: following) { _, next in
                 if !next && !metrics.frozen { position.isPositionedByUser = true }

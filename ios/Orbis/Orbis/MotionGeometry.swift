@@ -36,6 +36,136 @@ struct ChatViewportFacts: Equatable {
     }
 }
 
+/// IOS-CHAT-04: discrete reading policy. Native scroll adapters retain pixel geometry and
+/// anchors; this value changes only when intent, a threshold or a paging edge changes.
+struct ChatViewportPolicy: Equatable {
+    static let line: CGFloat = 20
+
+    enum Mode: Equatable { case following, reading, interacting }
+    enum Target: Equatable { case latest, question(String) }
+    struct Request: Equatable {
+        let target: Target
+        let sequence: Int
+        let contextGeneration: Int
+        let interactionGeneration: Int
+    }
+
+    private(set) var mode: Mode = .following
+    private(set) var hasPositioned = false
+    private(set) var hasBrowsed = false
+    private(set) var lastScrollTowardEarlier = false
+    private(set) var questionOutsideViewport = false
+    private(set) var suppressQuestionPaging = false
+    private(set) var awaitingOlderPage = false
+    private(set) var topArmed = false
+    private(set) var showJump = false
+    private(set) var request: Request?
+    private(set) var contextGeneration = 0
+    private(set) var interactionGeneration = 0
+    private var requestSequence = 0
+
+    var following: Bool { mode == .following }
+    var showQuestionReminder: Bool {
+        hasPositioned && hasBrowsed && lastScrollTowardEarlier && showJump && questionOutsideViewport
+    }
+
+    mutating func distanceChanged(_ distance: CGFloat, hasMessages: Bool, firstRowNearTop: Bool) {
+        if distance.isFinite && !hasPositioned && hasMessages {
+            hasPositioned = true
+            if !firstRowNearTop { topArmed = true }
+        }
+        updateJump(distance)
+    }
+
+    /// Consume the edge even while a business read is blocked. Completion cannot replay
+    /// a top position: the reader must leave this boundary before it can arm again.
+    mutating func viewportChanged(_ viewport: ChatViewportFacts, questionID: String?, canPage: Bool) -> Bool {
+        questionChanged(outside: viewport.questionOutsideViewport(questionID))
+        guard viewport.firstRowNearTop else { topArmed = hasPositioned; return false }
+        guard topArmed else { return false }
+        topArmed = false
+        return canPage && !suppressQuestionPaging && !awaitingOlderPage
+    }
+
+    mutating func questionChanged(outside: Bool) { questionOutsideViewport = outside }
+    mutating func directionChanged(towardEarlier: Bool) { lastScrollTowardEarlier = towardEarlier }
+
+    mutating func interactionChanged(_ active: Bool, bottomDistance: CGFloat) {
+        if active {
+            if mode != .interacting { interactionGeneration += 1 }
+            mode = .interacting
+            hasBrowsed = true
+            suppressQuestionPaging = false
+            request = nil
+        } else {
+            // Programmatic scrolling and disclosure layout also report idle. Only a real
+            // native user interaction may finish by restoring bottom following.
+            guard mode == .interacting else { return }
+            mode = bottomDistance <= Self.line ? .following : .reading
+            if following { hasBrowsed = false }
+        }
+        updateJump(bottomDistance)
+    }
+
+    /// Called synchronously between native freeze and the disclosure's height mutation.
+    mutating func disclosureBegan(bottomDistance: CGFloat) {
+        interactionGeneration += 1
+        mode = .reading
+        request = nil
+        updateJump(bottomDistance)
+    }
+
+    mutating func jumpToLatest() {
+        mode = .following
+        hasBrowsed = false
+        suppressQuestionPaging = false
+        showJump = false
+        makeRequest(.latest)
+    }
+
+    mutating func locateQuestion(_ id: String, bottomDistance: CGFloat) {
+        mode = .reading
+        suppressQuestionPaging = true
+        makeRequest(.question(id))
+        updateJump(bottomDistance)
+    }
+
+    mutating func olderPageAccepted(bottomDistance: CGFloat) {
+        awaitingOlderPage = true
+        // Paging does not end a gesture already in flight. Native idle still belongs
+        // to that reader, including when they keep moving while the page is loading.
+        if mode != .interacting { mode = .reading }
+        request = nil
+        updateJump(bottomDistance)
+    }
+
+    mutating func olderPageFinished() { awaitingOlderPage = false }
+
+    /// A branch or source owner changed. Editor state and native anchoring are not owned
+    /// here, and resetting this value never issues a programmatic scroll request.
+    mutating func resetContext() {
+        let generation = contextGeneration + 1, sequence = requestSequence
+        self = Self()
+        contextGeneration = generation
+        requestSequence = sequence
+    }
+
+    func owns(_ candidate: Request) -> Bool {
+        request == candidate && candidate.contextGeneration == contextGeneration &&
+            candidate.interactionGeneration == interactionGeneration
+    }
+
+    private mutating func makeRequest(_ target: Target) {
+        requestSequence += 1
+        request = Request(target: target, sequence: requestSequence, contextGeneration: contextGeneration,
+                          interactionGeneration: interactionGeneration)
+    }
+
+    private mutating func updateJump(_ distance: CGFloat) {
+        showJump = !following && distance > Self.line * 3
+    }
+}
+
 /// ADR-0058. Pure geometry shared by selection, send feedback and edge navigation.
 enum MotionGeometry {
     static let replyGrowthDuration = 0.18
