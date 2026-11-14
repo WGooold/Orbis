@@ -166,6 +166,9 @@ struct ChatView: View {
             .overlay(alignment: .topTrailing) {
                 if ProcessInfo.processInfo.arguments.contains("--preview-source-controls") { PreviewChatSourceControl().padding(.top, 60) }
             }
+            .overlay(alignment: .topLeading) {
+                if ChatComposerLayoutProbe.enabled { PreviewComposerLayoutControl().padding(.top, 60) }
+            }
             #endif
     }
 }
@@ -607,6 +610,75 @@ private struct ChatFileSelection {
     let capacity: Int
 }
 
+/// IOS-CHAT-03: every finite row width reaches the same native editor with a
+/// definite remaining width and an unspecified height.
+private struct ChatComposerRowLayout: Layout {
+    struct Measurement {
+        let geometry: ChatComposerRowGeometry
+        let editorProposal: ProposedViewSize
+    }
+    typealias Cache = ChatComposerRowCache<Measurement>
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        // Text, marked text, intrinsic metrics and environment changes can all
+        // invalidate a LayoutSubview. A draft token cannot stand in for this lifecycle.
+        cache.invalidate()
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.invalidated()
+        #endif
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.requested(proposal)
+        #endif
+        return measurement(width: proposal.width, subviews: subviews, cache: &cache)?.geometry.size ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        guard let measured = measurement(width: bounds.width, subviews: subviews, cache: &cache) else { return }
+        let geometry = measured.geometry
+        let origin = CGPoint(x: bounds.minX, y: bounds.maxY - geometry.size.height)
+        subviews[0].place(at: CGPoint(x: origin.x + geometry.leading.minX, y: origin.y + geometry.leading.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(geometry.leading.size))
+        // Preserve the measuring proposal. Pinning the measured height here would
+        // send a second, different proposal through the multiline TextField.
+        subviews[1].place(at: CGPoint(x: origin.x + geometry.editor.minX, y: origin.y + geometry.editor.minY),
+                          anchor: .topLeading, proposal: measured.editorProposal)
+        subviews[2].place(at: CGPoint(x: origin.x + geometry.trailing.minX, y: origin.y + geometry.trailing.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(geometry.trailing.size))
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.placed(geometry, in: bounds, editorProposal: measured.editorProposal)
+        #endif
+    }
+
+    private func measurement(width proposedWidth: CGFloat?, subviews: Subviews, cache: inout Cache) -> Measurement? {
+        guard subviews.count == 3 else { return nil }
+        let width = ChatComposerRowGeometry.finiteWidth(proposedWidth)
+        if let measured = cache.value(for: width) {
+            #if DEBUG
+            ChatComposerLayoutProbe.shared.cacheHit()
+            #endif
+            return measured
+        }
+        let leading = subviews[0].sizeThatFits(.unspecified)
+        let trailing = subviews[2].sizeThatFits(.unspecified)
+        // Unspecified/infinite parent-width probes legitimately ask for the native
+        // ideal width. Final placement always uses its finite allocated width.
+        let editorProposal = ProposedViewSize(width: ChatComposerRowGeometry.editorWidth(in: width, leading: leading, trailing: trailing), height: nil)
+        let editor = subviews[1].sizeThatFits(editorProposal)
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.measured(editorProposal, size: editor)
+        #endif
+        let measured = Measurement(geometry: ChatComposerRowGeometry(proposedWidth: width, leading: leading, editor: editor, trailing: trailing),
+                                   editorProposal: editorProposal)
+        cache.store(measured, for: width)
+        return measured
+    }
+}
+
 private struct ChatComposerView: View {
     let store: OrbisStore
     let screens: ChatScreenPublications
@@ -723,7 +795,7 @@ private struct ChatComposerView: View {
             }
             AttachmentStrip(store: store, target: target, transfers: target.owner.transfers, tasks: facts.attached, preparing: facts.preparing)
             if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
-            HStack(alignment: .bottom, spacing: 10) {
+            ChatComposerRowLayout {
                 OrbisIconButton(symbol: "paperclip", label: L10n.tr("发送文件到电脑"), tint: accent) {
                     guard target.matches(store) else { return }
                     fileSelection = ChatFileSelection(target: target, runtime: runtime, capacity: max(0, 10 - attachments.count))

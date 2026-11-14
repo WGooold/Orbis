@@ -2767,6 +2767,89 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    private struct ComposerLayoutReport: Decodable {
+        struct Sample: Decodable {
+            let rowSize: CGSize
+            let leading: CGRect
+            let editor: CGRect
+            let trailing: CGRect
+            let editorProposalWidth: CGFloat?
+        }
+        let requests: Int
+        let parentHeightProposals: [String]
+        let measurements: Int
+        let placements: Int
+        let invalidHeightProposals: Int
+        let invalidSizes: Int
+        let samples: [Sample]
+    }
+
+    // IOS-CHAT-03: record the actual launch-through-input proposals while a long
+    // Chinese draft is installed. Export after typing without publishing during layout.
+    // Callback counts describe the LayoutSubview boundary, not physical keystrokes.
+    func testComposerRowMeasuresLongChineseDraftAtRemainingWidthAndNaturalHeight() throws {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-standard-preferences",
+                                             "--preview-long-composer-draft", "--probe-composer-layout"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let seededDraft = String(repeating: "跨平台会话输入保持稳定，", count: 24)
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        let seeded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.value as? String == seededDraft
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 8), .completed)
+        composer.tap()
+        Thread.sleep(forTimeInterval: 1)
+        let longHeight = composer.frame.height
+        composer.typeKey(XCUIKeyboardKey(rawValue: "a"), modifierFlags: .command)
+        composer.typeText("短")
+        let shrunk = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.value as? String == "短" && composer.frame.height < longHeight - 20
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [shrunk], timeout: 5), .completed)
+        let shortHeight = composer.frame.height
+        // Native replacement/typing must invalidate cached intrinsic metrics; the
+        // editor remains mounted while shrinking from, then growing back to six lines.
+        composer.typeText(seededDraft)
+        let grown = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.value as? String == "短" + seededDraft && composer.frame.height > shortHeight + 20
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [grown], timeout: 5), .completed)
+        composer.typeText(" layout")
+        Thread.sleep(forTimeInterval: 0.3)
+        app.buttons["preview-composer-layout-capture"].tap()
+        let json = app.staticTexts["composer-layout-report"].label
+        let report = try JSONDecoder().decode(ComposerLayoutReport.self, from: Data(json.utf8))
+        let proposals = XCTAttachment(string: json)
+        proposals.name = "composer-layout-proposals"; proposals.lifetime = .keepAlways; add(proposals)
+        XCTAssertGreaterThan(report.requests, 0)
+        XCTAssertFalse(report.parentHeightProposals.isEmpty)
+        XCTAssertGreaterThan(report.measurements, 0)
+        XCTAssertGreaterThan(report.placements, 0)
+        XCTAssertEqual(report.invalidHeightProposals, 0)
+        XCTAssertEqual(report.invalidSizes, 0)
+        XCTAssertFalse(report.samples.isEmpty)
+        XCTAssertTrue(report.samples.contains { $0.editor.height > 56 }, "The seeded draft must exercise multiline growth")
+        for sample in report.samples {
+            XCTAssertEqual(sample.leading.width, 48, accuracy: 0.5)
+            XCTAssertEqual(sample.leading.height, 48, accuracy: 0.5)
+            XCTAssertEqual(sample.trailing.width, 48, accuracy: 0.5)
+            XCTAssertEqual(sample.trailing.height, 48, accuracy: 0.5)
+            let remaining = max(0, sample.rowSize.width - sample.leading.width - sample.trailing.width - 20)
+            XCTAssertEqual(try XCTUnwrap(sample.editorProposalWidth), remaining, accuracy: 0.5)
+            XCTAssertEqual(sample.editor.width, remaining, accuracy: 0.5)
+            XCTAssertEqual(sample.editor.minX - sample.leading.maxX, 10, accuracy: 0.5)
+            XCTAssertEqual(sample.trailing.minX - sample.editor.maxX, 10, accuracy: 0.5)
+            XCTAssertEqual(sample.leading.maxY, sample.rowSize.height, accuracy: 0.5)
+            XCTAssertEqual(sample.editor.maxY, sample.rowSize.height, accuracy: 0.5)
+            XCTAssertEqual(sample.trailing.maxY, sample.rowSize.height, accuracy: 0.5)
+        }
+        XCTAssertEqual(app.buttons["发送文件到电脑"].firstMatch.frame.width, 48, accuracy: 0.5)
+        XCTAssertEqual(app.buttons["发送消息"].firstMatch.frame.width, 48, accuracy: 0.5)
+        // No extra tap: Capture must retain the real editor and its focus.
+        composer.typeText("!")
+        XCTAssertEqual(composer.value as? String, "短" + seededDraft + " layout!")
+    }
+
     // IOS-CHAT-02: actual source patches update the transcript subtree while the stable
     // navigation, header, editor and independent panels retain their body evaluations.
     func testSourcePatchesOnlyRebuildTranscriptRegion() {

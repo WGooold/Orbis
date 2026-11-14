@@ -304,6 +304,14 @@ func makePreviewStore(screen: String) -> OrbisStore {
             if let runtime = store.selectedRuntime { store.saveDraft("/", for: runtime) }
         }
     }
+    if ProcessInfo.processInfo.arguments.contains("--preview-long-composer-draft") {
+        // IOS-CHAT-03: exercise the real six-line editor with a long Chinese draft
+        // without making keyboard injection part of the layout measurement interval.
+        Task { @MainActor in
+            for _ in 0..<100 where store.selectedRuntime?.sessionId == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+            if let runtime = store.selectedRuntime { store.saveDraft(String(repeating: "跨平台会话输入保持稳定，", count: 24), for: runtime) }
+        }
+    }
     transport.launchGate = { [weak store] in
         store?.pendingSends.items.contains { if case .waiting = $0.state { return true }; return false } == true
     }
@@ -1196,6 +1204,99 @@ struct PreviewChatSourceControl: View {
             requests += 1
         } label: { Text("Source update").font(.system(size: 10)).frame(minWidth: 44, minHeight: 44) }
             .accessibilityIdentifier("preview-chat-source-update").accessibilityValue(String(requests))
+    }
+}
+
+/// IOS-CHAT-03: records actual calls to the styled TextField LayoutSubview. These
+/// are proposal-boundary calls, not counts of TextKit work or physical keystrokes.
+/// No observable state, text, or per-frame publication enters the measured tree.
+final class ChatComposerLayoutProbe {
+    static let shared = ChatComposerLayoutProbe()
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-composer-layout")
+
+    private struct Sample: Encodable {
+        let rowSize: CGSize
+        let leading: CGRect
+        let editor: CGRect
+        let trailing: CGRect
+        let editorProposalWidth: CGFloat?
+    }
+    private struct Report: Encodable {
+        var requests = 0
+        var constrainedHeightRequests = 0
+        var parentHeightProposals: [String] = []
+        var cacheHits = 0
+        var invalidations = 0
+        var measurements = 0
+        var idealMeasurements = 0
+        var placements = 0
+        var invalidHeightProposals = 0
+        var invalidSizes = 0
+        var samples: [Sample] = []
+    }
+    private var metrics = Report()
+    private var sampleIndex = 0
+
+    func reset() { metrics = Report(); sampleIndex = 0 }
+    func requested(_ proposal: ProposedViewSize) {
+        guard Self.enabled else { return }
+        metrics.requests += 1
+        if proposal.height != nil { metrics.constrainedHeightRequests += 1 }
+        let height = proposal.height.map { String(describing: $0) } ?? "nil"
+        if metrics.parentHeightProposals.count < 16, !metrics.parentHeightProposals.contains(height) {
+            metrics.parentHeightProposals.append(height)
+        }
+    }
+    func invalidated() {
+        guard Self.enabled else { return }
+        metrics.invalidations += 1
+    }
+    func cacheHit() {
+        guard Self.enabled else { return }
+        metrics.cacheHits += 1
+    }
+    func measured(_ proposal: ProposedViewSize, size: CGSize) {
+        guard Self.enabled else { return }
+        metrics.measurements += 1
+        if proposal.width == nil { metrics.idealMeasurements += 1 }
+        if proposal.height != nil { metrics.invalidHeightProposals += 1 }
+        if !size.width.isFinite || !size.height.isFinite || size.width < 0 || size.height < 0 { metrics.invalidSizes += 1 }
+    }
+    func placed(_ geometry: ChatComposerRowGeometry, in bounds: CGRect, editorProposal: ProposedViewSize) {
+        guard Self.enabled else { return }
+        metrics.placements += 1
+        if editorProposal.height != nil { metrics.invalidHeightProposals += 1 }
+        guard bounds.width.isFinite, bounds.height.isFinite else { metrics.invalidSizes += 1; return }
+        let dy = bounds.height - geometry.size.height
+        let sample = Sample(rowSize: bounds.size, leading: geometry.leading.offsetBy(dx: 0, dy: dy),
+                            editor: geometry.editor.offsetBy(dx: 0, dy: dy), trailing: geometry.trailing.offsetBy(dx: 0, dy: dy),
+                            editorProposalWidth: editorProposal.width)
+        // Fixed storage bounds profiling overhead even during a long input session.
+        if metrics.samples.count < 64 { metrics.samples.append(sample) }
+        else { metrics.samples[sampleIndex % 64] = sample }
+        sampleIndex += 1
+    }
+    var report: String {
+        guard let data = try? JSONEncoder().encode(metrics) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+/// Export only on an explicit action after the interval. Capturing mutates this
+/// control's own state; measuring never schedules a SwiftUI update.
+struct PreviewComposerLayoutControl: View {
+    @State private var report = "idle"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Button("Reset layout") { ChatComposerLayoutProbe.shared.reset(); report = "recording" }
+                    .accessibilityIdentifier("preview-composer-layout-reset")
+                Button("Capture layout") { report = ChatComposerLayoutProbe.shared.report }
+                    .accessibilityIdentifier("preview-composer-layout-capture")
+            }.font(.system(size: 10)).frame(minHeight: 44)
+            Text(report).font(.system(size: 1)).frame(height: 1)
+                .accessibilityIdentifier("composer-layout-report").allowsHitTesting(false)
+        }
     }
 }
 

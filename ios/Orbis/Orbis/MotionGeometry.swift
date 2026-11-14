@@ -103,6 +103,60 @@ enum MotionGeometry {
     }
 }
 
+/// IOS-CHAT-03: the editor owns its natural height at one remaining width. The
+/// side actions keep their measured touch targets and all three children share a bottom edge.
+struct ChatComposerRowGeometry: Equatable {
+    static let spacing: CGFloat = 10
+    let size: CGSize
+    let leading: CGRect
+    let editor: CGRect
+    let trailing: CGRect
+
+    static func finiteWidth(_ width: CGFloat?) -> CGFloat? {
+        guard let width, width.isFinite else { return nil }
+        return max(0, width)
+    }
+
+    static func editorWidth(in rowWidth: CGFloat?, leading: CGSize, trailing: CGSize) -> CGFloat? {
+        guard let rowWidth = finiteWidth(rowWidth) else { return nil }
+        return max(0, rowWidth - finiteSize(leading).width - finiteSize(trailing).width - 2 * spacing)
+    }
+
+    init(proposedWidth: CGFloat?, leading: CGSize, editor: CGSize, trailing: CGSize) {
+        let leading = Self.finiteSize(leading), editor = Self.finiteSize(editor), trailing = Self.finiteSize(trailing)
+        let editorWidth = Self.editorWidth(in: proposedWidth, leading: leading, trailing: trailing) ?? editor.width
+        let height = max(leading.height, editor.height, trailing.height)
+        let occupiedWidth = leading.width + 2 * Self.spacing + trailing.width
+        size = CGSize(width: max(Self.finiteWidth(proposedWidth) ?? occupiedWidth + editorWidth, occupiedWidth), height: height)
+        self.leading = CGRect(x: 0, y: height - leading.height, width: leading.width, height: leading.height)
+        self.editor = CGRect(x: leading.width + Self.spacing, y: height - editor.height, width: editorWidth, height: editor.height)
+        self.trailing = CGRect(x: self.editor.maxX + Self.spacing, y: height - trailing.height, width: trailing.width, height: trailing.height)
+    }
+
+    private static func finiteSize(_ size: CGSize) -> CGSize {
+        CGSize(width: size.width.isFinite ? max(0, size.width) : 0,
+               height: size.height.isFinite ? max(0, size.height) : 0)
+    }
+}
+
+/// Layout validity owns these entries. A child/environment update invalidates both;
+/// a changed parent height alone does not change the editor's width/natural-height proposal.
+struct ChatComposerRowCache<Value> {
+    private var ideal: Value?
+    private var constrained: (width: CGFloat, value: Value)?
+
+    func value(for width: CGFloat?) -> Value? {
+        guard let width else { return ideal }
+        return constrained?.width == width ? constrained?.value : nil
+    }
+
+    mutating func store(_ value: Value, for width: CGFloat?) {
+        if let width { constrained = (width, value) } else { ideal = value }
+    }
+
+    mutating func invalidate() { self = Self() }
+}
+
 /// Only append-only live content may animate its natural height. Disclosures, reflow,
 /// rewrites and history are separate operations and must not inherit a streaming animation.
 struct ReplyCardPart: Equatable {

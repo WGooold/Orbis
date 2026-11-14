@@ -124,7 +124,7 @@
 | --- | --- | --- |
 | IOS-CHAT-01 | 输入子树拥有草稿与局部面板；消息正文与工具的动作依赖独立于全局观察 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-02 | 导航与会话各区域的展示发布边界、来源重绑 | 已实施，定向自动验证通过；待用户验证 |
-| IOS-CHAT-03 | 原生输入框确定宽度测量及有界缓存 | 待实施 |
+| IOS-CHAT-03 | 原生输入框确定宽度测量及有界缓存 | 已实施，定向自动验证通过；待用户验证 |
 | IOS-CHAT-04 | 视口策略、显式命令和用户移动归属 | 待实施 |
 | IOS-CHAT-05 | 页面工作生命周期与组合回归 | 待实施 |
 
@@ -137,3 +137,7 @@ IOS-CHAT-01 自动验证：Swift 定向 6/6、最终设备定向 5/5，通过输
 IOS-CHAT-02 将导航、页面壳、顶栏、正文、输入、通知与交互工作区拆成独立发布边界。四个业务来源在事件完成后合并采集，先安装导航与区域快照，再通知视图；同页遵守转场 hold，新的电脑／会话目标以完整上下文交接。页面动作使用固定 `ChatActionContext`，附件选择保留打开时的目标；菜单清理核对原连接内的 runtime／session。转录继续复用既有 worker 与分支代次，不增加另一套转录拥有权。canonical map 比较留在后台投影 worker，未变映射复用 rewind 准备结果。实现见 [ChatScreenPublications.swift](../../ios/Orbis/Orbis/ChatScreenPublications.swift)、[ContentView.swift](../../ios/Orbis/Orbis/ContentView.swift)、[ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)。
 
 IOS-CHAT-02 自动验证：Swift 定向 16/16、设备定向 8/8；覆盖四源接入、最终快照、同页 hold 与切页交接、失效动作、同 runtime 换 session、后台映射比较及真实区域重建计数，并回归草稿、失败附件、乐观发送、工具读取、模型面板与交互草稿。测试用途见 [StoreTests.swift](../../ios/Orbis/Tests/StoreTests.swift)、[HomeHistoryPublicationTests.swift](../../ios/Orbis/Tests/HomeHistoryPublicationTests.swift) 与 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)；构建和设备证据见 [.artifacts/ios-chat-control-20261114/ticket02-check](../../.artifacts/ios-chat-control-20261114/ticket02-check/)。部署和用户验收待完成。
+
+IOS-CHAT-03 仅将输入行交给 `ChatComposerRowLayout`，按两侧实际按钮尺寸与 10pt 间距分配编辑器剩余宽度，测量和放置复用 `height:nil` 的同一提案；原生 TextField、焦点、按键与既有修饰链保持。缓存只保留 ideal 与最近有限宽度，`updateCache` 清除两者，遵守原生内部编辑及环境变化的布局有效性。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)、[MotionGeometry.swift](../../ios/Orbis/Orbis/MotionGeometry.swift)。
+
+IOS-CHAT-03 自动验证：Swift 定向 11/11、设备定向 5/5；新增 [ComposerRowGeometryTests.swift](../../ios/Orbis/Tests/ComposerRowGeometryTests.swift) 与实际原生输入行测量用例，覆盖长中文草稿收缩／增长、焦点保持、48pt 按钮槽与 10pt 间距，并回归 Slash／审批／流式内容下的键盘。测量提案附件记录父级 inf／299pt／151.5pt 高度提案，编辑器测量与放置均无指定高度；记录边界是 styled TextField 的 LayoutSubview，不代表 TextKit 内部或物理按键调用数。构建、设备、提案及截图证据见 [.artifacts/ios-chat-control-20261114/ticket03-check](../../.artifacts/ios-chat-control-20261114/ticket03-check/)。真机组字、观感与用户验收待完成。
