@@ -327,9 +327,10 @@ final class ChatScreenModel {
     private(set) var workspace: ChatWorkspaceState
     private(set) var navigation: NavigationScreenSnapshot
     private(set) var canReadTranscript: Bool
+    @ObservationIgnored private var actionTarget: ChatActionContext
     var actions: ChatSessionActions {
         guard let store else { preconditionFailure("A mounted chat model requires its store") }
-        return ChatSessionActions(store: store, target: transcript.target, preservingRuntime: snapshot.runtime)
+        return ChatSessionActions(store: store, target: actionTarget, preservingRuntime: snapshot.runtime)
     }
     @ObservationIgnored private(set) var snapshot: ChatScreenSnapshot
     @ObservationIgnored private(set) var captureRevision = 0
@@ -347,6 +348,7 @@ final class ChatScreenModel {
         self.store = store
         let initial = ChatScreenSnapshot(store: store), nav = NavigationScreenSnapshot(store: store)
         snapshot = initial; navigation = nav
+        actionTarget = nav.target
         canReadTranscript = initial.canSend
         let regions = Regions(snapshot: initial, target: nav.target)
         shell = regions.shell
@@ -405,7 +407,7 @@ final class ChatScreenModel {
         reconcilePhase()
     }
     func ownsMount(target: ChatActionContext, token: UUID) -> Bool {
-        mountedToken == token && transcript.target == target && actions.isCurrent
+        mountedToken == token && actionTarget == target && actions.isCurrent
     }
     func visibilityChanged(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
         guard ownsMount(target: target, token: token) else { return }
@@ -456,6 +458,7 @@ final class ChatScreenModel {
         rebindPending = false
         let next = ChatScreenSnapshot(store: store), nav = NavigationScreenSnapshot(store: store)
         let regions = Regions(snapshot: next, target: nav.target)
+        actionTarget = nav.target
         snapshot = next
         if canReadTranscript != next.canSend { canReadTranscript = next.canSend }
         // Explicit equality keeps this contract independent of the macro/toolchain.
