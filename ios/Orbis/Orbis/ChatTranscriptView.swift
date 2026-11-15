@@ -152,16 +152,17 @@ struct ChatTranscriptView: View, Equatable {
     @State private var nativeItems = ChatTranscriptItemCache<ChatNativeRowInputs, ChatNativeTranscriptView.Item>()
     private var viewport: ChatViewportController { model.viewport }
     private var facts: ChatTranscriptState { model.transcript }
-    private var kind: String? { facts.kind }
-    private var accent: Color { OrbisPalette(scheme).agent(kind) }
-    private var latestQuestion: ChatQuestion? { facts.transcript.latestQuestion(excluding: Set(facts.pending.items.map(\.messageId))) }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.mount == rhs.mount
     }
     var body: some View {
+        // The region owns this observation. Capture state and its cache revision
+        // together before deferred geometry/environment builders run.
+        let state = facts
+        let revision = model.transcriptInputRevision
         let _ = ChatSchedulingTrace.regionBody(.transcript)
         let _ = ChatDebugProbes.rendered(.transcript)
-        conversation.overlay(alignment: .top) {
+        conversation(state: state, revision: revision).overlay(alignment: .top) {
             ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
                 setComposerFocused: setComposerFocused, onBack: onBack).equatable()
         }
@@ -176,27 +177,28 @@ struct ChatTranscriptView: View, Equatable {
         }
     }
 
-    private var conversation: some View {
+    private func conversation(state: ChatTranscriptState, revision: UInt64) -> some View {
         GeometryReader { geometry in
             Group {
                 if #available(iOS 18.0, *) {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--preview-swiftui-transcript") {
-                        swiftUITranscript(height: geometry.size.height)
-                    } else { nativeTranscript(height: geometry.size.height) }
+                        swiftUITranscript(height: geometry.size.height, state: state)
+                    } else { nativeTranscript(height: geometry.size.height, state: state, revision: revision) }
                     #else
-                    nativeTranscript(height: geometry.size.height)
+                    nativeTranscript(height: geometry.size.height, state: state, revision: revision)
                     #endif
                 } else {
-                    swiftUITranscript(height: geometry.size.height)
+                    swiftUITranscript(height: geometry.size.height, state: state)
                 }
             }
             .orbisAnchor(sendFlight.viewport)
             .overlay(alignment: .bottomTrailing) {
-                ChatJumpToLatestView(viewport: viewport, hasRows: !facts.transcript.rows.isEmpty, accent: accent, jump: jumpToLatest)
+                ChatJumpToLatestView(viewport: viewport, hasRows: !state.transcript.rows.isEmpty,
+                    accent: OrbisPalette(scheme).agent(state.kind), jump: jumpToLatest)
             }
-            .overlay(alignment: .bottom) { ChatActionFeedbackView(feedback: facts.actionFeedback) }
-            .onChange(of: facts.historyRevision) { _, _ in
+            .overlay(alignment: .bottom) { ChatActionFeedbackView(feedback: state.actionFeedback) }
+            .onChange(of: state.historyRevision) { _, _ in
                 sendFlight.clear()
                 nativeInteractions.reset()
             }
@@ -204,20 +206,20 @@ struct ChatTranscriptView: View, Equatable {
     }
 
     /// Release compatibility path on iOS 17; DEBUG comparison path on newer OSes.
-    private func swiftUITranscript(height: CGFloat) -> some View {
-        let transcript = facts.transcript
-        let questionID = latestQuestion?.messageId
-        let readContext = actions.reading(facts.canSend)
-        let streaming = activeStreaming(facts)
+    private func swiftUITranscript(height: CGFloat, state: ChatTranscriptState) -> some View {
+        let transcript = state.transcript
+        let questionID = transcript.latestQuestion(excluding: Set(state.pending.items.map(\.messageId)))?.messageId
+        let readContext = actions.reading(state.canSend)
+        let streaming = activeStreaming(state)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                transcriptHeader.id("chat-header")
+                transcriptHeader(state: state).id("chat-header")
                 if transcript.rows.isEmpty {
-                    OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: facts.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
+                    OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: state.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
                         .frame(minHeight: max(180, height - 100))
                 }
                 ForEach(transcript.rows) { row in
-                    messageRow(row, inputs: messageInputs(row, state: facts, context: readContext, streaming: streaming)).equatable().id(row.id)
+                    messageRow(row, state: state, inputs: messageInputs(row, state: state, context: readContext, streaming: streaming)).equatable().id(row.id)
                         .modifier(ChatRowViewportObserver(viewportHeight: height,
                             firstRow: row.id == transcript.firstMessageId,
                             questionID: row.id == questionID ? questionID : nil, report: rowViewportChanged))
@@ -268,9 +270,9 @@ struct ChatTranscriptView: View, Equatable {
             context: context, changes: ObjectIdentifier(target.owner.turnFileChanges), canSend: row.isUser && state.canSend)
     }
 
-    private func messageRow(_ row: ChatRow, inputs: ChatNativeMessageInputs) -> ChatMessageRow {
+    private func messageRow(_ row: ChatRow, state: ChatTranscriptState, inputs: ChatNativeMessageInputs) -> ChatMessageRow {
         ChatMessageRow(row: row, kind: inputs.kind, toolResults: inputs.toolResults,
-            toolText: facts.transcript.toolTextByRow[row.id] ?? [:], timings: inputs.timings,
+            toolText: state.transcript.toolTextByRow[row.id] ?? [:], timings: inputs.timings,
             changes: target.owner.turnFileChanges, readContext: inputs.context,
             changeAnchors: inputs.changeAnchors, streamingMessageIds: inputs.streaming, replyArrivals: viewport.arrivals,
             rewindOption: inputs.rewind, rewindEnabled: inputs.rewindEnabled,
@@ -293,12 +295,11 @@ struct ChatTranscriptView: View, Equatable {
         }
     }
 
-    private func nativeTranscript(height: CGFloat) -> some View {
+    private func nativeTranscript(height: CGFloat, state: ChatTranscriptState, revision: UInt64) -> some View {
         ChatNativeInventoryReader(inventory: target.owner.toolInventories, runtimeID: actions.runtimeId) { hasLiveTools in
         ChatNativeTranscriptEnvironmentReader { environment in
-            let state = facts
             let transcript = state.transcript
-            let snapshotKey = ChatNativeSnapshotInputs(revision: model.transcriptInputRevision,
+            let snapshotKey = ChatNativeSnapshotInputs(revision: revision,
                 environment: environment.reconfigurationKey, hasLiveTools: hasLiveTools,
                 emptyHeight: transcript.rows.isEmpty ? height : nil)
             ChatNativeTranscriptView(snapshot: {
@@ -309,12 +310,12 @@ struct ChatTranscriptView: View, Equatable {
                     let context = actions.reading(state.canSend)
                     let header = nativeItem(id: "chat-header", inputs: .header(.init(context: context,
                         syncing: state.syncing, cached: state.cached, loading: state.historyLoading,
-                        error: state.historyError, hasOlder: state.hasOlder)), environment: environment) { transcriptHeader }
+                        error: state.historyError, hasOlder: state.hasOlder)), environment: environment) { transcriptHeader(state: state) }
                     let streaming = activeStreaming(state)
                     let rows = transcript.rows.map { row in
                         let inputs = messageInputs(row, state: state, context: context, streaming: streaming)
                         return nativeItem(id: row.id, inputs: .message(inputs), environment: environment, kind: .message) {
-                            messageRow(row, inputs: inputs).equatable()
+                            messageRow(row, state: state, inputs: inputs).equatable()
                         }
                     }
                     let empty: [ChatNativeTranscriptView.Item] = transcript.rows.isEmpty ? [
@@ -362,24 +363,25 @@ struct ChatTranscriptView: View, Equatable {
                 ChatDebugProbes.beginScroll(flight: sendFlight)
             }
         }
-        .onChange(of: model.transcriptInputRevision, initial: true) { _, _ in
-            nativeInteractions.reconcile(rowIDs: Set(facts.transcript.rows.map(\.id)))
+        .onChange(of: revision, initial: true) { _, _ in
+            nativeInteractions.reconcile(rowIDs: Set(state.transcript.rows.map(\.id)))
         }
     }
 
     /// One row above the transcript. Its height never changes: an error replaces the
     /// paging action in place instead of adding a line.
-    private var transcriptHeader: some View {
+    private func transcriptHeader(state: ChatTranscriptState) -> some View {
         let p = OrbisPalette(scheme)
-        let error = facts.historyError
-        let loading = facts.historyLoading
-        let blocked = facts.syncing || (!facts.canSend && !facts.cached) || loading
+        let accent = p.agent(state.kind)
+        let error = state.historyError
+        let loading = state.historyLoading
+        let blocked = state.syncing || (!state.canSend && !state.cached) || loading
         return HStack(spacing: 10) {
             if let error {
                 Text(error).font(.orbisCaption()).foregroundStyle(p.error).lineLimit(1)
                 Spacer(minLength: 0)
                 OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
-            } else if facts.hasOlder {
+            } else if state.hasOlder {
                 OrbisTextButton(title: L10n.tr("更早的消息"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
                 Spacer(minLength: 0)
             } else {
