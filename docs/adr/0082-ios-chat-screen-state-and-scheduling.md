@@ -489,7 +489,7 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 - IOS-CHAT-11-R2：行缓存的生成与保留移到 make/updateUIView 的快照闭包，原生视口通知只消费已接收快照。每批只构造一次读取动作面和流式集合，空流式集合跳过逐行求交。实际转录更新仍扫描全部行并比较语义输入；新增 Release 可用的 NativeTranscriptInputs signpost 记录行数与耗时，不据此预判性能影响。
 - IOS-CHAT-10-R3：OrbisVisualActive 只订阅一个可比较的环境投影；有页面活动引用时不读取回退的场景/可见性值，实际动画叶子继续按需观察页面活动。托管 cell 的系统前后台失效范围仍需真机核验。
 - IOS-CHAT-09-R1：原生列表探针接线和页面动效探针经 ChatDebugProbes 入口集中到 PreviewSupport，Release 使用空实现；无障碍矩形的像素取整仅在 Debug 编译。HistoryBranchView 在每个动作内复用同一会话动作面。
-- R3 当时将 SwiftUI 对照转录及 iOS 17/18 旧滚动适配器限制在 Debug 编译；R4 恢复 iOS 17 的 Release SwiftUI 兼容路径，iOS 18 及以上继续默认使用原生列表。删除条件为 IOS-CHAT-13 真机交互、阅读、前后台及 iOS 17 验收完成，并保留必要的原断言对照证据；届时删除 --preview-swiftui-transcript、旧转录和专用滚动适配器。OrbisCollapse、orbisAnchor、TrackedSendTarget 的非原生分支仍服务聊天页以外的共享控件，按实际调用范围保留。
+- R3 当时将 SwiftUI 对照转录及 iOS 17/18 旧滚动适配器限制在 Debug 编译；R4 恢复 iOS 17 的 Release SwiftUI 兼容路径，iOS 18 及以上继续默认使用原生列表。删除条件为 IOS-CHAT-13 真机交互、阅读、前后台及 iOS 17 验收完成，并保留必要的原断言对照证据；届时删除 --preview-swiftui-transcript、旧转录和专用滚动适配器。OrbisCollapse、orbisAnchor 的非原生分支仍服务聊天页以外的共享控件；TrackedSendTarget 的非原生分支服务 iOS 17 兼容转录及 DEBUG 对照转录，按实际调用范围保留。
 
 本轮验证位于 `.artifacts/ios-chat-review-followup-20261115/`：
 
@@ -499,19 +499,28 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 - `release/run.log` 的无签名设备 Release 构建通过。该产物用于编译验证，不是可安装交付包。构建与模拟器的退出、残留服务核验和租约释放分别记录在各 cleanup / recovery 文件。
 - 共享池的两台 iPhone 处于既有崩溃隔离状态，入口拒绝启动；未改变隔离保护。本轮使用池内 iPad Air 11-inch (M4)、iOS 27.0、Debug。扩展覆盖用例的首次整窗右滑落在常驻目录，手势改按实际下载页的水平范围执行，原业务断言保留。
 - iPad 扩展的覆盖恢复、历史前插和 PageMotion 用例未通过；`ui-r2/`、`ui-r3/` 的原始失败保留。用先前候选源码快照和同一测试文件、设备及断言对照，`control-ui/tests.xcresult` 三项均在相同断言复现：覆盖恢复的 source/Git 恢复等待超时，历史响应维持 responses=0，PageMotion 等待 count=4 超时。对照源码来自先前的 `source.zip`，不是将 1bee5be8 冒充包含工作区实现的候选；归属及指纹见 `control-source/control-manifest.json`。这三项未计为通过，也不据此宣称 iPad 全套验收完成。
-- QA 草稿 `case_99ff49dc405d6d6b004a` 已登记，结果在 `qa-registration.json`。当前无冻结提交、签名安装包或独立真机配对环境；真机长会话流式、前后台与 iOS 17 验收仍为待用户验证。IOS-CHAT-12/14/15 的开启条件不变，本轮未部署。
+- QA 草稿 `case_99ff49dc405d6d6b004a` 已登记，结果在 `qa-registration.json`。R3 当时尚无冻结提交、签名安装包或独立真机配对环境；真机长会话流式、前后台与 iOS 17 验收仍为待用户验证。IOS-CHAT-12/14/15 的开启条件不变，本轮未部署。
 
 ### 2026-11-15 架构复核修复（R4）
 
 - 检查点提交 `f1977599f3dae045b2a96f020fc13e621bf6c2b0` 保存 1bee5be8 之上的完整审查树。R3 清单的 190 个文件与该提交逐项 SHA-256 一致，摘要 `9f69b076ef3763c3c99abf61232ab28a2207502a3716d1334968f9d4b2180439` 的对应证明位于 `.artifacts/ios-chat-architecture-review-20261115/checkpoint.json`。后续修复在独立分支 `fix/ios-chat-review-20261115` 进行。
 - IOS-CHAT-13-R4：iOS 17 在 Debug/Release 均使用保留的 SwiftUI 转录与 LegacyScrollInteraction；iOS 18 及以上默认使用原生列表。iOS 17 原生后端仍待验收，不能将高版本模拟器结果当成该系统运行证据。
 - Coordinator 删除 suppressFollowing、sawReadingInput，直接读取唯一的 ChatViewportPolicy.following；原生首次测量就绪改为 OrbisCore 的纯值 ChatNativeViewportPlacement，与页面收到消息后的分页就绪分别命名。手势同步交接与初始布局的回归位于 ChatScreenModelTests、ChatViewportTests。
-- 阅读锚点优先选择起点仍在视口内的行，单个超长回复保留负起点回退。快照插入通过 UICollectionView 布局的 targetContentOffset 在替换可见范围之前提供锚点目标，保留实际 hosting cell；布局事务结束前继续补偿自适应尺寸变化。快照应用与非动画偏移不继承 UIKit 隐式动画；页面指标仍通过布局外的调度发布。新增上方展开与历史前插的 CADisplayLink 断言，逐帧检查同一 cell 的模型位置及 presentation layer，阈值均为 1pt。探针用 cell 当前承载的行身份，避免快照转换期间按新 indexPath 误标旧 cell。
-- SwiftUI 与原生宿主保留必要的坐标、菜单及测量适配；展开动效共用 OrbisCollapseMotion.spring。ChatMessageRow 明确新增环境依赖须同步传入独立 cell 宿主。ChatTranscriptMount 收拢挂载期不变的引用与闭包，DEBUG 校验后续构造与首次挂载的依赖一致；额外 body 重算的框架根因仍未证实。
+- 阅读锚点优先选择起点仍在视口内的行，单个超长回复保留负起点回退。快照插入通过 UICollectionView 布局的 targetContentOffset 在替换可见范围之前提供锚点目标；布局事务结束前继续补偿自适应尺寸变化。快照应用与非动画偏移不继承 UIKit 隐式动画；页面指标仍通过布局外的调度发布。新增上方展开与历史前插的 CADisplayLink 断言，检查同一阅读行 ID 在各采样点的 cell 模型及 presentation 外框，阈值均为 1pt。探针用 cell 当前承载的行身份，避免快照转换期间按新 indexPath 误标旧 cell；未测量 cell 对象身份、hosted 正文内部位置或所有实际显示帧。
+- SwiftUI 与原生宿主保留必要的坐标、菜单及测量适配；展开动效共用 OrbisCollapseMotion.spring。ChatMessageRow 明确新增环境依赖须同步传入独立 cell 宿主。ChatTranscriptMount 收拢挂载期不变的引用与闭包，DEBUG 校验可比较的引用、动作目标及 token 与首次挂载一致；焦点及返回闭包仍遵守挂载期不变约定，不声称可比较闭包。额外 body 重算的框架根因仍未证实。
 - IOS-CHAT-11-R3：整批快照按页面转录发布 revision、宿主环境、工具占位及空页高度缓存；非空转录的键不包含视口高度。多行输入回归同时断言 nativeInputs 扫描计数不变，NativeTranscriptInputs signpost 保留用于真机长会话测量。rewindEnabled、canSend 仅进入用户行的动作比较；真实转录发布仍扫描语义输入。
-- 权限与模型面板读取原目标的 owner/runtime，模型展示投影由 HostConnection 提供并供 Hub 复用；移除该面板动作的重复准入判断。页面模型复用已发布 target，视口回调只做一次 mount/当前归属检查。08、09 的完成判据与当前保留的 runtime 回退、局部副作用门控、DEBUG 比较入口及 iOS 17 Release 路径对齐。
+- R4 首次完整回归在 `47d05cc2` 上为 39/41；来源补丁及输入后来源补丁两项在等待 transcript body 计数增长时失败，原断言和首次结果保留在 `final-candidate/`。该结果不能证明原生列表漏更新。`78e0146` 将状态和 revision 同步捕获于区域 body，再显式传给几何、环境及快照构造；header 与 toolText 使用同次捕获，防止延迟读取混用发布。探针位置与业务断言未改。
+- `observation-fix/` 的原来源补丁断言随后暴露页面壳多重算：转录、变更行及重配置均增加 3 次，page 也增加 3 次。延迟页面构造通过 actions getter 读取 transcript.target，订阅了整个转录区域；`8da81875` 将动作目标保存为 ObservationIgnored 的同批捕获值，ownsMount 复用该值。新增核心测试要求转录状态确实发布时，动作构造与归属读取不收到区域失效；不以改计数点或放宽原页面隔离断言消除失败。
+- 权限与模型面板读取原目标的 owner/runtime，模型展示投影由 HostConnection 提供并供 Hub 复用；移除该面板动作的重复准入判断。页面模型缓存同批捕获的 target，视口回调只做一次 mount/当前归属检查。08、09 的完成判据与当前保留的 runtime 回退、局部副作用门控、DEBUG 比较入口及 iOS 17 Release 路径对齐。
 
-本轮自动验证、首次失败与复验记录位于 `.artifacts/ios-chat-architecture-review-20261115/`。真机长会话、前后台与 iOS 17 运行验收仍待完成，未部署。
+本轮证据位于 `.artifacts/ios-chat-architecture-review-20261115/`，源码冻结于 `8da818758e7de7363e203ca8bd7bddb5742808ae`：
+
+- `final-confirmed/` 的最终 Debug 构建、573 项核心测试（62 个 suite）及 41/41 会话页 UI 回归通过；选集在 `full-selection.json`，包含先前完整 32 项与本轮扩展。设备为共享池健康的 iPhone 17、iOS 27.0；未改变原两台 iPhone 的隔离。当前 Swift 源码指纹与实际测试的 `c03ef2f9a7fdc50219086032aab994361df299f25f15173b9202c067aaa333f7` 一致，`candidate-source.json` 的 188 项范围清单也与冻结提交一致。六张最终截图检查覆盖阅读锚点、文件展开回收、公式实际渲染和模型面板，见 `final-attachments/`。汇总及构建、设备、控制工作树清理记录指针在 `verification.json`；相应归属进程已退出，租约释放，模拟器关机已核验。
+- `ownership-fix/` 的 16 项页面核心测试与 3 项定向 UI 通过；原来源补丁、输入后来源补丁和多行输入的严格隔离断言均保留。首次完整失败在 `final-candidate/`，后续页面重算失败在 `observation-fix/`，不合并覆盖其结果。
+- 负对照提交 `9825c959f7aaacaf703ec89d84e0cd2781bb6f2a` 仅撤掉原生 layout 的阅读目标和可见行起点优先规则，其他源码与固定候选一致。相同测试文件 SHA-256 为 `d6ed83839cc561e46102934dc2bdcc1e4ca7a90d93f44681dce719e8f908dd05`；同一健康 iPhone 17、iOS 27.0、Debug 运行的两个用例均在原 1pt 断言失败。上方展开的最大采样偏差为 168.333333pt，历史前插为 72pt，后者有一个 presentation 几何记录缺失。见 `negative-control-verification/`、`negative-control-summary.json`；生成工作树在进程退出、租约释放后移除，提交分支及日志保留。
+- 固定候选的上方展开、收起、历史前插三个约 1.05 秒窗口共 189 个记录点，指定行 ID 在所有点均有模型和 presentation 外框。前两者最大 minY 偏差小于 1e-12pt，历史前插为 0pt；最大相邻采样间隔分别为 33.359、33.939、38.321ms。见 `final-anchor-summary.json`。这是采样位置证据，不是实际显示帧覆盖率、正文内部像素或 cell 对象身份的证明。
+- `release/` 的无签名设备 Release 构建退出码为 0，LC_BUILD_VERSION 的最低系统为 iOS 17.0，SDK 为 27.2；输出只用于编译验证。见 `release-verification.json`，不作为可安装交付包或 iOS 17 运行证据。
+- 原 QA Case `case_99ff49dc405d6d6b004a` 已新增 Round 3 `round_447b7322fe568b8f3893`，绑定 `8da81875` 并保留早轮，见 `qa-round-final.json`。历史 checklist 的 iOS 17 原生后端门槛仍保留；本轮 candidate/reason 明确该系统使用 SwiftUI 兼容路径，未据此删除旧路径。签名包、独立手机配对环境、真机长会话、前后台与 iOS 17 运行验收仍待完成，未部署。
 
 ## 8. 评估后不采用与范围外
 
