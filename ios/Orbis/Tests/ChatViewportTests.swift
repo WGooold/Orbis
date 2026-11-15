@@ -4,6 +4,33 @@ import Testing
 @testable import OrbisCore
 
 struct ChatViewportTests {
+    // IOS-CHAT-13-R4: an empty transcript can finish native placement without
+    // pretending its business paging policy has already observed a message.
+    @Test func nativePlacementRequiresRealVisibleMeasurementAndResetsPerMount() {
+        var placement = ChatNativeViewportPlacement()
+        placement.measured(visibleContent: false, bottomDistance: 0)
+        #expect(!placement.isReady)
+        for distance: CGFloat in [.infinity, .nan, 1.01, -1.01] {
+            placement.measured(visibleContent: true, bottomDistance: distance)
+            #expect(!placement.isReady)
+        }
+        placement.measured(visibleContent: true, bottomDistance: 1)
+        #expect(placement.isReady)
+        placement.measured(visibleContent: false, bottomDistance: 500)
+        #expect(placement.isReady, "A reader's subsequent movement cannot restart initial bottom placement")
+        placement = ChatNativeViewportPlacement()
+        #expect(!placement.isReady)
+    }
+
+    // A partially clipped preceding tool must not outrank the next visible reading
+    // row when it expands. A long reply with no later visible row keeps its anchor.
+    @Test func readingAnchorPrefersAVisibleBeginningAndFallsBackToATallReply() {
+        let sorted = [CGFloat(-120), 160, 300].sorted(by: ChatViewportAnchorPriority.precedes)
+        #expect(sorted == [160, 300, -120])
+        #expect([CGFloat(-1600)].sorted(by: ChatViewportAnchorPriority.precedes) == [-1600])
+        #expect([CGFloat(0), 120].sorted(by: ChatViewportAnchorPriority.precedes) == [0, 120])
+    }
+
     private func facts(_ y: CGFloat, height: CGFloat = 100, first: Bool = false, question: String? = nil) -> ChatViewportFacts {
         ChatViewportFacts(frame: CGRect(x: 0, y: y, width: 300, height: height),
                           viewportHeight: 600, firstRow: first, questionID: question)

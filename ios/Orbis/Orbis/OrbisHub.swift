@@ -317,11 +317,7 @@ final class OrbisStore: ObservableObject {
     func configStatus(_ runtimeId: String, setting: String) -> (label: String, mark: String)? { activeConnection.configStatus(runtimeId, setting: setting) }
     func sessionConfigFailure(_ runtimeId: String) -> SessionConfigFailure? { activeConnection.sessionConfigFailure(runtimeId) }
     func sessionModelPresentation(_ runtime: RuntimeSummary) -> SessionModelPresentation {
-        let snapshot = agentState.snapshots[runtime.runtimeId]
-        func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
-        return .make(runtime: runtime, connected: connection == .secured, modelReady: ready("model"), executionReady: ready("execution"),
-                     progress: OperationKinds.configSettings.compactMap { configStatus(runtime.runtimeId, setting: $0) },
-                     failed: sessionConfigFailure(runtime.runtimeId) != nil)
+        activeConnection.sessionModelPresentation(runtime)
     }
     var queuedMessages: [String: [QueuedMessage]] { activeConnection.queuedMessages }
     func unconfirmedQueueCancellations(_ runtimeId: String) -> Set<String> { activeConnection.unconfirmedQueueCancellations(runtimeId) }

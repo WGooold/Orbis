@@ -228,6 +228,11 @@ enum OrbisRadius {
     static let sheet: CGFloat = 32
 }
 
+/// The implicit SwiftUI and measured native-host adapters use one motion spec.
+enum OrbisCollapseMotion {
+    static let spring = Spring.smooth(duration: 0.26)
+}
+
 extension Animation {
     /// Drag release: stiffness 1200, damping 80. Overdamped, so it settles without overshoot.
     static let orbisDrag = Animation.interpolatingSpring(mass: 1, stiffness: 1200, damping: 80)
@@ -237,7 +242,7 @@ extension Animation {
     }
     /// Small confirmations (checks, toggles): stiffness 380, damping 18, a slight bounce.
     static let orbisPop = Animation.interpolatingSpring(mass: 1, stiffness: 380, damping: 18)
-    static let orbisCollapse = Animation.smooth(duration: 0.26)
+    static let orbisCollapse = Animation.spring(OrbisCollapseMotion.spring)
     static let orbisFade = Animation.easeOut(duration: 0.16)
 }
 

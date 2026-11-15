@@ -2,7 +2,6 @@ import SwiftUI
 import Combine
 import UIKit
 
-#if DEBUG
 /// Bottom edge of the transcript in the viewport, or nil while the lazy stack has released it.
 private struct ChatBottomPreference: PreferenceKey {
     static var defaultValue: CGFloat? = nil
@@ -42,8 +41,6 @@ private struct ChatRowViewportObserver: ViewModifier {
     }
 }
 
-#endif
-
 private struct ChatReadingInteractionKey: EnvironmentKey {
     static let defaultValue: () -> Void = {}
 }
@@ -77,6 +74,13 @@ private struct ChatNativeMessageInputs: Equatable {
     let context: ChatReadContext
     let changes: ObjectIdentifier
     let canSend: Bool
+}
+
+private struct ChatNativeSnapshotInputs: Equatable {
+    let revision: UInt64
+    let environment: ChatNativeTranscriptEnvironment.ReconfigurationKey
+    let hasLiveTools: Bool
+    let emptyHeight: CGFloat?
 }
 
 private struct ChatNativeHeaderInputs: Equatable {
@@ -128,23 +132,23 @@ private struct ChatNativeInventoryReader<Content: View>: View {
 }
 
 struct ChatTranscriptView: View, Equatable {
-    let model: ChatScreenModel
-    let actions: ChatSessionActions
-    let mountToken: UUID
-    private var ownsViewport: Bool { actions.isCurrent && model.ownsMount(target: actions.target, token: mountToken) }
+    let mount: ChatTranscriptMount
+    private var model: ChatScreenModel { mount.model }
+    private var actions: ChatSessionActions { mount.actions }
+    private var mountToken: UUID { mount.mountToken }
+    private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
     private var target: ChatActionContext { actions.target }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     // Focus is an action here, not transcript state. A FocusState.Binding would
     // invalidate the ForEach owner when a covered page changes its focus scope.
-    let setComposerFocused: (Bool) -> Void
-    let sendFlight: MessageSendFlight
-    let acceptedSends: PassthroughSubject<Set<String>, Never>
-    let onBack: () -> Void
-    #if DEBUG
+    private var setComposerFocused: (Bool) -> Void { mount.setComposerFocused }
+    private var sendFlight: MessageSendFlight { mount.sendFlight }
+    private var acceptedSends: PassthroughSubject<Set<String>, Never> { mount.acceptedSends }
+    private var onBack: () -> Void { mount.onBack }
     @State private var metrics = ChatViewportMetrics()
-    #endif
     @State private var nativeInteractions = ChatTranscriptInteractionState()
+    @State private var nativeSnapshots = ChatTranscriptSnapshotCache<ChatNativeSnapshotInputs, ChatNativeTranscriptView.Snapshot>()
     @State private var nativeItems = ChatTranscriptItemCache<ChatNativeRowInputs, ChatNativeTranscriptView.Item>()
     private var viewport: ChatViewportController { model.viewport }
     private var facts: ChatTranscriptState { model.transcript }
@@ -152,7 +156,7 @@ struct ChatTranscriptView: View, Equatable {
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     private var latestQuestion: ChatQuestion? { facts.transcript.latestQuestion(excluding: Set(facts.pending.items.map(\.messageId))) }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken && lhs.sendFlight === rhs.sendFlight && lhs.acceptedSends === rhs.acceptedSends
+        lhs.mount == rhs.mount
     }
     var body: some View {
         let _ = ChatSchedulingTrace.regionBody(.transcript)
@@ -165,9 +169,9 @@ struct ChatTranscriptView: View, Equatable {
         .onDisappear {
             // Cached callbacks may retain row state. Retire them after the shell
             // unmounts; a covered retained page still owns its mount and cache.
-            let cache = nativeItems, model = model, target = target, token = mountToken
+            let cache = nativeItems, snapshots = nativeSnapshots, model = model, target = target, token = mountToken
             DispatchQueue.main.async {
-                if !model.ownsMount(target: target, token: token) { cache.removeAll() }
+                if !model.ownsMount(target: target, token: token) { cache.removeAll(); snapshots.removeAll() }
             }
         }
     }
@@ -175,13 +179,17 @@ struct ChatTranscriptView: View, Equatable {
     private var conversation: some View {
         GeometryReader { geometry in
             Group {
-                #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--preview-swiftui-transcript") {
+                if #available(iOS 18.0, *) {
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--preview-swiftui-transcript") {
+                        swiftUITranscript(height: geometry.size.height)
+                    } else { nativeTranscript(height: geometry.size.height) }
+                    #else
+                    nativeTranscript(height: geometry.size.height)
+                    #endif
+                } else {
                     swiftUITranscript(height: geometry.size.height)
-                } else { nativeTranscript(height: geometry.size.height) }
-                #else
-                nativeTranscript(height: geometry.size.height)
-                #endif
+                }
             }
             .orbisAnchor(sendFlight.viewport)
             .overlay(alignment: .bottomTrailing) {
@@ -195,8 +203,7 @@ struct ChatTranscriptView: View, Equatable {
         }
     }
 
-    #if DEBUG
-    /// Temporary comparison path; retire after IOS-CHAT-13 device acceptance.
+    /// Release compatibility path on iOS 17; DEBUG comparison path on newer OSes.
     private func swiftUITranscript(height: CGFloat) -> some View {
         let transcript = facts.transcript
         let questionID = latestQuestion?.messageId
@@ -242,7 +249,6 @@ struct ChatTranscriptView: View, Equatable {
                 if self.viewport.viewportChanged(metrics.reports.snapshot(questionID: self.viewport.latestQuestion?.messageId)) { loadOlder() }
             }
     }
-    #endif
 
     private func activeStreaming(_ state: ChatTranscriptState) -> Set<String> {
         state.connection == .secured && !state.syncing && !state.cached ? state.streaming : []
@@ -256,10 +262,10 @@ struct ChatTranscriptView: View, Equatable {
             changeAnchors: transcript.changeAnchorsByRow[row.id] ?? [],
             streaming: streaming.isEmpty ? [] : streaming.intersection(row.messages.map(\.messageId)),
             rewind: row.isUser ? state.rewind[row.id] : nil,
-            rewindEnabled: state.canSend && state.status == "idle" && state.pendingActions.isEmpty,
+            rewindEnabled: row.isUser && state.canSend && state.status == "idle" && state.pendingActions.isEmpty,
             pending: row.isUser ? state.pending.item(row.messages.first?.messageId)?.state : nil,
             uploads: row.isUser ? pendingUploads(row.messages.first?.messageId, state: state) : [],
-            context: context, changes: ObjectIdentifier(target.owner.turnFileChanges), canSend: state.canSend)
+            context: context, changes: ObjectIdentifier(target.owner.turnFileChanges), canSend: row.isUser && state.canSend)
     }
 
     private func messageRow(_ row: ChatRow, inputs: ChatNativeMessageInputs) -> ChatMessageRow {
@@ -292,35 +298,40 @@ struct ChatTranscriptView: View, Equatable {
         ChatNativeTranscriptEnvironmentReader { environment in
             let state = facts
             let transcript = state.transcript
-            let messageIDs = Set(transcript.rows.map(\.id))
+            let snapshotKey = ChatNativeSnapshotInputs(revision: model.transcriptInputRevision,
+                environment: environment.reconfigurationKey, hasLiveTools: hasLiveTools,
+                emptyHeight: transcript.rows.isEmpty ? height : nil)
             ChatNativeTranscriptView(snapshot: {
-                let trace = ChatSchedulingTrace.nativeInputsBegan()
-                defer { ChatSchedulingTrace.nativeInputsEnded(trace, rows: transcript.rows.count) }
-                let context = actions.reading(state.canSend)
-                let header = nativeItem(id: "chat-header", inputs: .header(.init(context: context,
-                    syncing: state.syncing, cached: state.cached, loading: state.historyLoading,
-                    error: state.historyError, hasOlder: state.hasOlder)), environment: environment) { transcriptHeader }
-                let streaming = activeStreaming(state)
-                let rows = transcript.rows.map { row in
-                    let inputs = messageInputs(row, state: state, context: context, streaming: streaming)
-                    return nativeItem(id: row.id, inputs: .message(inputs), environment: environment, kind: .message) {
-                        messageRow(row, inputs: inputs).equatable()
+                nativeSnapshots.snapshot(key: snapshotKey) {
+                    ChatDebugProbes.nativeInputsCompared(rows: transcript.rows.count)
+                    let trace = ChatSchedulingTrace.nativeInputsBegan()
+                    defer { ChatSchedulingTrace.nativeInputsEnded(trace, rows: transcript.rows.count) }
+                    let context = actions.reading(state.canSend)
+                    let header = nativeItem(id: "chat-header", inputs: .header(.init(context: context,
+                        syncing: state.syncing, cached: state.cached, loading: state.historyLoading,
+                        error: state.historyError, hasOlder: state.hasOlder)), environment: environment) { transcriptHeader }
+                    let streaming = activeStreaming(state)
+                    let rows = transcript.rows.map { row in
+                        let inputs = messageInputs(row, state: state, context: context, streaming: streaming)
+                        return nativeItem(id: row.id, inputs: .message(inputs), environment: environment, kind: .message) {
+                            messageRow(row, inputs: inputs).equatable()
+                        }
                     }
+                    let empty: [ChatNativeTranscriptView.Item] = transcript.rows.isEmpty ? [
+                        nativeItem(id: "chat-empty", inputs: .empty(syncing: state.syncing, height: height), environment: environment) {
+                            OrbisEmptyState(symbol: "bubble.left.and.bubble.right",
+                                title: state.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
+                                .frame(minHeight: max(180, height - 100))
+                        }
+                    ] : []
+                    let live = hasLiveTools ? [nativeItem(id: "chat-live-tools", inputs: .tools(context), environment: environment) {
+                        LiveToolsView(inventory: target.owner.toolInventories, runtimeId: actions.runtimeId, context: context)
+                    }] : []
+                    let tail = nativeItem(id: ChatFollow.bottomID, inputs: .tail, environment: environment) { Color.clear.frame(height: 4) }
+                    let items = [header] + empty + rows + live + [tail]
+                    let _ = nativeItems.retain(ids: items.map(\.id))
+                    return .init(items: items, revision: nativeItems.revision)
                 }
-                let empty: [ChatNativeTranscriptView.Item] = transcript.rows.isEmpty ? [
-                    nativeItem(id: "chat-empty", inputs: .empty(syncing: state.syncing, height: height), environment: environment) {
-                        OrbisEmptyState(symbol: "bubble.left.and.bubble.right",
-                            title: state.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
-                            .frame(minHeight: max(180, height - 100))
-                    }
-                ] : []
-                let live = hasLiveTools ? [nativeItem(id: "chat-live-tools", inputs: .tools(context), environment: environment) {
-                    LiveToolsView(inventory: target.owner.toolInventories, runtimeId: actions.runtimeId, context: context)
-                }] : []
-                let tail = nativeItem(id: ChatFollow.bottomID, inputs: .tail, environment: environment) { Color.clear.frame(height: 4) }
-                let items = [header] + empty + rows + live + [tail]
-                let _ = nativeItems.retain(ids: items.map(\.id))
-                return .init(items: items, revision: nativeItems.revision)
             },
                 viewport: viewport, tailID: ChatFollow.bottomID, mountToken: mountToken,
                 requestIsCurrent: { ownsViewport && viewport.owns($0) }, onDistance: bottomDistanceChanged,
@@ -331,7 +342,7 @@ struct ChatTranscriptView: View, Equatable {
                     guard ownsViewport else { return }
                     var facts = ChatViewportFacts()
                     let question = viewport.latestQuestion?.messageId
-                    for (id, frame) in frames where messageIDs.contains(id) || id == "chat-live-tools" {
+                    for (id, frame) in frames {
                         facts.merge(ChatViewportFacts(frame: frame, viewportHeight: height,
                             firstRow: id == transcript.firstMessageId, questionID: id == question ? question : nil))
                     }
@@ -343,6 +354,7 @@ struct ChatTranscriptView: View, Equatable {
         }
         }
         .background { ChatTranscriptInteractionHost(state: nativeInteractions) }
+        .modifier(ChatAboveViewportDisclosureProbe(interactions: nativeInteractions, viewport: viewport))
         .environment(\.chatTranscriptInteractionState, nativeInteractions)
         .environment(\.chatReadingInteraction) {
             if ownsViewport {
@@ -350,8 +362,8 @@ struct ChatTranscriptView: View, Equatable {
                 ChatDebugProbes.beginScroll(flight: sendFlight)
             }
         }
-        .onChange(of: facts.transcript.rows.map(\.id), initial: true) { _, ids in
-            nativeInteractions.reconcile(rowIDs: Set(ids))
+        .onChange(of: model.transcriptInputRevision, initial: true) { _, _ in
+            nativeInteractions.reconcile(rowIDs: Set(facts.transcript.rows.map(\.id)))
         }
     }
 
@@ -388,14 +400,11 @@ struct ChatTranscriptView: View, Equatable {
         viewport.interactionChanged(active)
     }
 
-    #if DEBUG
     private func rowViewportChanged(_ token: UUID, _ facts: ChatViewportFacts?) {
         metrics.reports.update(token, facts: facts)
         guard ownsViewport else { return }
         if self.viewport.viewportChanged(metrics.reports.snapshot(questionID: self.viewport.latestQuestion?.messageId)) { loadOlder() }
     }
-
-    #endif
 
     private func jumpToLatest() {
         guard ownsViewport else { return }
@@ -444,7 +453,6 @@ struct ChatTranscriptView: View, Equatable {
 
 }
 
-#if DEBUG
 private final class ChatNativeReadingMetrics {
     var offset: CGFloat = 0
     var distance: CGFloat = .infinity
@@ -643,8 +651,6 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
         }
     }
 }
-
-#endif
 
 private struct ChatActionFeedbackView: View {
     let feedback: String?

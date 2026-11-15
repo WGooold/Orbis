@@ -12,21 +12,42 @@ private struct ChatGitPollKey: Equatable {
     let active: Bool
 }
 
-/// The page shell reads visibility, navigation activity and focus. Keep the
-/// complete transcript value stable for one native-scroll mount, including its
-/// initial state references. Its body still observes the live model region.
+/// Mount-lifetime dependencies only. Live inputs belong in ChatScreenModel or the
+/// environment. Callback captures belong to this mount's focus/navigation storage.
+struct ChatTranscriptMount: Equatable {
+    let model: ChatScreenModel
+    let actions: ChatSessionActions
+    let mountToken: UUID
+    let setComposerFocused: (Bool) -> Void
+    let sendFlight: MessageSendFlight
+    let acceptedSends: PassthroughSubject<Set<String>, Never>
+    let onBack: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken &&
+            lhs.sendFlight === rhs.sendFlight && lhs.acceptedSends === rhs.acceptedSends
+    }
+}
+
+/// The complete view remains stable for a native-scroll mount. Check every new
+/// construction against the retained mount so volatile inputs cannot fail silently.
 private struct ChatTranscriptRegion: View {
+    private let proposedMount: ChatTranscriptMount
     @State private var content: EquatableView<ChatTranscriptView>
 
     init(model: ChatScreenModel, actions: ChatSessionActions, mountToken: UUID,
          setComposerFocused: @escaping (Bool) -> Void, sendFlight: MessageSendFlight,
          acceptedSends: PassthroughSubject<Set<String>, Never>, onBack: @escaping () -> Void) {
-        _content = State(initialValue: ChatTranscriptView(model: model, actions: actions,
-            mountToken: mountToken, setComposerFocused: setComposerFocused, sendFlight: sendFlight,
-            acceptedSends: acceptedSends, onBack: onBack).equatable())
+        let mount = ChatTranscriptMount(model: model, actions: actions, mountToken: mountToken,
+            setComposerFocused: setComposerFocused, sendFlight: sendFlight,
+            acceptedSends: acceptedSends, onBack: onBack)
+        proposedMount = mount
+        _content = State(initialValue: ChatTranscriptView(mount: mount).equatable())
     }
 
     var body: some View {
+        let _ = assert(content.content.mount == proposedMount,
+            "Transcript mount dependencies changed without a new page identity")
         content
     }
 }

@@ -54,6 +54,7 @@ struct ChatScreenModelTests {
         await transport.ready(session: "session"); await settle(store)
         let model = store.chatScreens, count = ChatObservationCount(), readCount = ChatObservationCount()
         let revision = model.composer.draftRevision
+        let transcriptRevision = model.transcriptInputRevision
         withObservationTracking { _ = model.composer } onChange: { count.changed() }
         withObservationTracking { _ = model.canReadTranscript } onChange: { readCount.changed() }
         for text in ["t", "ty", "typ", "typed"] {
@@ -62,6 +63,7 @@ struct ChatScreenModelTests {
             await settle(store)
             #expect(model.actions.draft == text)
             #expect(model.composer.draftRevision == revision)
+            #expect(model.transcriptInputRevision == transcriptRevision)
             #expect(count.value == 0)
             #expect(readCount.value == 0)
         }
@@ -136,6 +138,43 @@ struct ChatScreenModelTests {
         #expect(cache.revision != updated); #expect(builds == 3)
         cache.retain(ids: ["b"])
         #expect(item("a", 1) != a); #expect(builds == 4)
+    }
+
+    // IOS-CHAT-11-R3: keyboard/composer sizes do not enter a populated transcript's
+    // snapshot key. Publications, environment, inventory and empty height do.
+    @Test func nativeSnapshotCacheSkipsRowScansUntilSemanticInputsChange() {
+        let cache = ChatTranscriptSnapshotCache<[Int], UUID>()
+        var scans = 0
+        func snapshot(_ key: [Int]) -> UUID {
+            cache.snapshot(key: key) { scans += 1; return UUID() }
+        }
+        let first = snapshot([1, 1, 0])
+        for _ in 0..<100 { #expect(snapshot([1, 1, 0]) == first) }
+        #expect(scans == 1)
+        for key in [[2, 1, 0], [2, 2, 0], [2, 2, 1], [2, 2, 1, 400], [2, 2, 1, 500]] {
+            #expect(snapshot(key) != first)
+            let before = scans
+            _ = snapshot(key)
+            #expect(scans == before)
+        }
+        #expect(scans == 6)
+        cache.removeAll()
+        _ = snapshot([1, 1, 0])
+        #expect(scans == 7)
+    }
+
+    // Native callbacks read the controller synchronously; no per-Coordinator latch
+    // may delay a gesture, explicit jump, initial placement or context reset.
+    @Test func nativeStateReflectsIntentBeforeAnyQueuedObserverRuns() {
+        let viewport = ChatViewportController()
+        viewport.update { $0.distanceChanged(0, hasMessages: true, firstRowNearTop: false) }
+        #expect(viewport.policy.hasPositioned)
+        viewport.interactionChanged(true)
+        #expect(!viewport.nativeState.following)
+        viewport.update { $0.jumpToLatest() }
+        #expect(viewport.nativeState.following)
+        viewport.resetForMount()
+        #expect(!viewport.policy.hasPositioned && viewport.nativeState.request == nil)
     }
 
     // IOS-CHAT-11-R1: native intent delivery is independent of SwiftUI

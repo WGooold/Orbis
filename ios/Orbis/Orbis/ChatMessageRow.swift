@@ -78,6 +78,8 @@ struct ChatMessageRow: View, Equatable {
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.chatTranscriptInteractionState) private var interactions
     @State private var localFileChanges = TurnChangeSummaryState()
+    // This row also renders in an independent UIHostingConfiguration. New
+    // environment dependencies must be forwarded by ChatNativeTranscriptEnvironment.
     let row: ChatRow
     let kind: String?
     var toolResults: [String: ChatMessage] = [:]

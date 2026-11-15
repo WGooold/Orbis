@@ -112,7 +112,7 @@ iOS 17 另有 `ScrollViewReader`、`scrollPosition(id:)` 与 `LegacyScrollIntera
 
 模型是区域值的唯一写入者，沿用现有的采集与提交管线：四个业务来源、事件完成后合并采集、转场暂缓、来源重绑。第一步保持单实例加重绑的生命周期，保住 IOS-CHAT-02 的语义。
 
-页面动作收进与会话目标绑定的动作面，归属校验只在动作面内实现。
+页面动作收进与会话目标绑定的动作面，当前选择准入与原归属清理各实现一次。调用点可用动作面提供的判定保护本地焦点、触感、任务与视口副作用。
 
 ### 3.2 提交时机
 
@@ -232,7 +232,7 @@ iOS 17 另有 `ScrollViewReader`、`scrollPosition(id:)` 与 `LegacyScrollIntera
 
 回归门槛：IOS-CHAT-02 的失效动作与同 runtime 换 session 用例；草稿往返、失败附件恢复、乐观发送、工具读取、模型面板、交互草稿的既有用例。
 
-完成判据：区域视图的参数只剩模型与本区域的局部状态；归属校验只存在于动作面。
+完成判据：区域值承载可比较的页面事实；所有业务动作经会话动作面准入。区域视图保留必要的局部状态、闭包和同目标 runtime 回退；调用点用 `isCurrent` 保护本地副作用，不重复实现归属匹配。配置面板读取保留目标的 owner/runtime，不读取新选择的会话事实。
 
 ### IOS-CHAT-09 文件拆分与调试探针归位
 
@@ -245,7 +245,7 @@ iOS 17 另有 `ScrollViewReader`、`scrollPosition(id:)` 与 `LegacyScrollIntera
 
 回归门槛：全量编译；依赖探针的既有 UI 用例结果与基点一致。
 
-完成判据：会话页的生产视图文件中不再出现成段的 `#if DEBUG` 界面代码。
+完成判据：测量探针、夹具和调试界面集中在 `PreviewSupport`，Release 为空实现；原生后端的 DEBUG 比较入口保留至真机验收。iOS 17 的 SwiftUI 转录与滚动适配属于 Release 兼容路径，待该系统原生后端验收后再移除。
 
 ### IOS-CHAT-10 页面阶段与可见性门控
 
@@ -381,7 +381,7 @@ iOS 17 另有 `ScrollViewReader`、`scrollPosition(id:)` 与 `LegacyScrollIntera
 | IOS-CHAT-10 | 页面模型持有阶段；移动中暂缓，被覆盖/后台继续提交；稳定引用只由需要视觉时钟的叶子读取；转录完整 View 值在 mount 内保持稳定；同一入场 token 只排一次任务 | 阶段、隐藏基线、动效与覆盖页租约用例通过；静态覆盖严格断言连续三次通过；重复入场的失败对照与三次修复复验见下；未确认性能不劣 | 未部署 | 真机待用户验证 |
 | IOS-CHAT-11 | 独立视口控制器；提交先登记票据，失去跟随/就绪立即作废；mount token 隔离旧回调；新挂载重置并重送最近几何事实；已挂载行按 token 保留离散视口事实 | 策略、票据时序、目标身份与生命周期核心用例通过；拖动不重建、提问定位、工具展开、发送飞行与视口收缩 UI 用例通过；真机流式拖动未测 | 未部署 | 真机待用户验证 |
 | IOS-CHAT-12 | 未开启；实际绘制埋点已就位，尚未确认 I3 | 未作时钟门控优化 | 未部署 | 待测量后确定 |
-| IOS-CHAT-13 | 原生 UICollectionView + UIHostingConfiguration 默认承载既有行；Coordinator 独占偏移，stable row anchor 保持阅读；显式跨宿主环境/窗口坐标/发送视觉通道；页面持有展开与面板状态；原 SwiftUI 路径保留为 DEBUG 对照 | 迁移 p5 完整 UI 32/32、原 E3 正常重复 10/10、严格展开 5/5；最终 p6 请求抢占修复 3/3、受影响阅读/滚动门槛 10/10；原断言与首失败保留，证据见下 | 未部署 | 四类阅读场景真机待用户验证 |
+| IOS-CHAT-13 | iOS 18+ 默认以原生 UICollectionView + UIHostingConfiguration 承载既有行，iOS 17 保留 Release SwiftUI 兼容路径；Coordinator 独占偏移，stable row anchor 保持阅读；显式跨宿主环境/窗口坐标/发送视觉通道；页面持有展开与面板状态；原 SwiftUI 路径同时承担 iOS 17 兼容与高版本 DEBUG 对照 | 迁移 p5 完整 UI 32/32、原 E3 正常重复 10/10、严格展开 5/5；最终 p6 请求抢占修复 3/3、受影响阅读/滚动门槛 10/10；原断言与首失败保留，证据见下 | 未部署 | 四类阅读场景真机待用户验证 |
 | IOS-CHAT-14 | 未开启；真机提交速率/主线程依据不足 | 上游逐事件让出与 worker 保持原样 | 未部署 | 待测量后确定 |
 | IOS-CHAT-15 | 未开启；待 IOS-CHAT-03 真机复测与授权 | 输入区仍使用既有布局 | 未部署 | 待用户验证 |
 
@@ -455,9 +455,9 @@ E3 基线八次 idle 的策略均已 positioned、browsed、towardEarlier，nati
 
 原生原型 `ChatNativeTranscriptView` 使用 UICollectionView diffable 稳定行 ID 与 UIHostingConfiguration，原 ChatMessageRow 和 80 段真实 Text 保持原样。Coordinator 是该分支唯一的应用侧偏移执行者；阅读锚点采用真实可见行 ID 与相对视口位置；SwiftUI 的旧位置绑定与逐行视口观察不进入该分支。独立宿主通过 `ChatNativeTranscriptEnvironmentReader` 显式传递页面上下文。首版以 DEBUG 开关接入，原 E3 只把手势容器选择改为实际 collection view，正文查询、可见性、视口边界与来源更新后的 1pt 断言均保留。`repair/e3-p1/tests.xcresult` 正常重复 5/5，独立复验 `repair/e3-p1-repeat/tests.xcresult` 为 10/10；候选与源码为 `repair/candidate-p1.json`、`repair/source-p1.zip`。这证明首版原型通过该项自动门槛，尚不代表完整交互迁移或真机验收完成。
 
-交互迁移继续保留实际 hosted row：原生 cell 持有坐标登记通道，向窗口转换后再供菜单与飞行动画使用；发送视觉内容另行跨宿主登记；工具、完整内容与文字选择面板以及展开/工具分页状态由页面级 `ChatTranscriptInteractionState` 持有，普通 cell 回收不结束面板。原 token/handle 归属清理继续沿用。原生列表在 Debug 和 Release 中默认启用，原 SwiftUI 转录仅以 DEBUG 开关保留为对照。
+交互迁移继续保留实际 hosted row：原生 cell 持有坐标登记通道，向窗口转换后再供菜单与飞行动画使用；发送视觉内容另行跨宿主登记；工具、完整内容与文字选择面板以及展开/工具分页状态由页面级 `ChatTranscriptInteractionState` 持有，普通 cell 回收不结束面板。原 token/handle 归属清理继续沿用。迁移当时原生列表在 Debug 和 Release 中默认启用，原 SwiftUI 转录仅以 DEBUG 开关保留为对照；R4 补回 iOS 17 的 Release 兼容路径。
 
-原生迁移 p3 的完整记录保留在 `repair/gates-p3/tests.xcresult`：8 项通过、2 项失败。E2 的视口相等断言暴露了 `604.0000000000003` 与 `604.0` 的浮点差；原生 collection 的公开无障碍矩形现按屏幕像素取整，原断言未改。新增展开用例首轮把实际工具行 `tool-card:preview-tool` 错写为 `m2`；原始样本同时暴露了真实尺寸缺陷：cell 从 120pt 直接变成 290pt，正文头部从 442pt 移至 527pt 后返回。更正行 ID 没有被计为修复尺寸缺陷，首次证据保留于 `repair/gates-p3/hosted-disclosure-first-failure.json`。
+原生迁移 p3 的完整记录保留在 `repair/gates-p3/tests.xcresult`：8 项通过、2 项失败。E2 的视口相等断言暴露了 `604.0000000000003` 与 `604.0` 的浮点差；原生 collection 的公开无障碍矩形现按屏幕像素取整（最终仅 DEBUG 编译），原断言未改，但断言读取的 `accessibilityFrame` 值已经改变；该结果不能证明 Release 中未取整的 AX 矩形完全相等。新增展开用例首轮把实际工具行 `tool-card:preview-tool` 错写为 `m2`；原始样本同时暴露了真实尺寸缺陷：cell 从 120pt 直接变成 290pt，正文头部从 442pt 移至 527pt 后返回。更正行 ID 没有被计为修复尺寸缺陷，首次证据保留于 `repair/gates-p3/hosted-disclosure-first-failure.json`。
 
 原生展开沿用 `.orbisCollapse` 的 `Spring.smooth(duration: 0.26)`，以真实测量高度推进 cell 布局，静止时恢复自然高度；保留子内容状态、减少动态效果与页面覆盖时的收敛语义。p4 的 12 次运行中 10 次通过、2 次失败；E2、E3 和工具组各 3/3，严格展开用例 1/3，关闭中间帧仍有正文 208.6667pt、cell 233pt 的差异。p5 将尺寸观察置于内容自然高度之后、填满宿主之前，尺寸变化立即使 intrinsic size 失效，移除额外异步跳转，并避免几何回调内递归布局。`repair/motion-p5/tests.xcresult` 使用相同测试源码和原 1pt 阈值，连续 5/5 通过；覆盖首次开、关、再开、嵌套展开以及真实 cell 回收后状态保留。20 组逐帧样本的 cell/正文最大高度差约 0.3334pt，摘要见 `repair/motion-p5/hosted-disclosure-sample-summary.json`。
 
@@ -489,7 +489,7 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 - IOS-CHAT-11-R2：行缓存的生成与保留移到 make/updateUIView 的快照闭包，原生视口通知只消费已接收快照。每批只构造一次读取动作面和流式集合，空流式集合跳过逐行求交。实际转录更新仍扫描全部行并比较语义输入；新增 Release 可用的 NativeTranscriptInputs signpost 记录行数与耗时，不据此预判性能影响。
 - IOS-CHAT-10-R3：OrbisVisualActive 只订阅一个可比较的环境投影；有页面活动引用时不读取回退的场景/可见性值，实际动画叶子继续按需观察页面活动。托管 cell 的系统前后台失效范围仍需真机核验。
 - IOS-CHAT-09-R1：原生列表探针接线和页面动效探针经 ChatDebugProbes 入口集中到 PreviewSupport，Release 使用空实现；无障碍矩形的像素取整仅在 Debug 编译。HistoryBranchView 在每个动作内复用同一会话动作面。
-- SwiftUI 对照转录及 iOS 17/18 旧滚动适配器仅在 Debug 编译。删除条件为 IOS-CHAT-13 真机交互、阅读、前后台及 iOS 17 验收完成，并保留必要的原断言对照证据；届时删除 --preview-swiftui-transcript、旧转录和专用滚动适配器。OrbisCollapse、orbisAnchor、TrackedSendTarget 的非原生分支仍服务聊天页以外的共享控件，按实际调用范围保留。
+- R3 当时将 SwiftUI 对照转录及 iOS 17/18 旧滚动适配器限制在 Debug 编译；R4 恢复 iOS 17 的 Release SwiftUI 兼容路径，iOS 18 及以上继续默认使用原生列表。删除条件为 IOS-CHAT-13 真机交互、阅读、前后台及 iOS 17 验收完成，并保留必要的原断言对照证据；届时删除 --preview-swiftui-transcript、旧转录和专用滚动适配器。OrbisCollapse、orbisAnchor、TrackedSendTarget 的非原生分支仍服务聊天页以外的共享控件，按实际调用范围保留。
 
 本轮验证位于 `.artifacts/ios-chat-review-followup-20261115/`：
 
@@ -500,6 +500,18 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 - 共享池的两台 iPhone 处于既有崩溃隔离状态，入口拒绝启动；未改变隔离保护。本轮使用池内 iPad Air 11-inch (M4)、iOS 27.0、Debug。扩展覆盖用例的首次整窗右滑落在常驻目录，手势改按实际下载页的水平范围执行，原业务断言保留。
 - iPad 扩展的覆盖恢复、历史前插和 PageMotion 用例未通过；`ui-r2/`、`ui-r3/` 的原始失败保留。用先前候选源码快照和同一测试文件、设备及断言对照，`control-ui/tests.xcresult` 三项均在相同断言复现：覆盖恢复的 source/Git 恢复等待超时，历史响应维持 responses=0，PageMotion 等待 count=4 超时。对照源码来自先前的 `source.zip`，不是将 1bee5be8 冒充包含工作区实现的候选；归属及指纹见 `control-source/control-manifest.json`。这三项未计为通过，也不据此宣称 iPad 全套验收完成。
 - QA 草稿 `case_99ff49dc405d6d6b004a` 已登记，结果在 `qa-registration.json`。当前无冻结提交、签名安装包或独立真机配对环境；真机长会话流式、前后台与 iOS 17 验收仍为待用户验证。IOS-CHAT-12/14/15 的开启条件不变，本轮未部署。
+
+### 2026-11-15 架构复核修复（R4）
+
+- 检查点提交 `f1977599f3dae045b2a96f020fc13e621bf6c2b0` 保存 1bee5be8 之上的完整审查树。R3 清单的 190 个文件与该提交逐项 SHA-256 一致，摘要 `9f69b076ef3763c3c99abf61232ab28a2207502a3716d1334968f9d4b2180439` 的对应证明位于 `.artifacts/ios-chat-architecture-review-20261115/checkpoint.json`。后续修复在独立分支 `fix/ios-chat-review-20261115` 进行。
+- IOS-CHAT-13-R4：iOS 17 在 Debug/Release 均使用保留的 SwiftUI 转录与 LegacyScrollInteraction；iOS 18 及以上默认使用原生列表。iOS 17 原生后端仍待验收，不能将高版本模拟器结果当成该系统运行证据。
+- Coordinator 删除 suppressFollowing、sawReadingInput，直接读取唯一的 ChatViewportPolicy.following；原生首次测量就绪改为 OrbisCore 的纯值 ChatNativeViewportPlacement，与页面收到消息后的分页就绪分别命名。手势同步交接与初始布局的回归位于 ChatScreenModelTests、ChatViewportTests。
+- 阅读锚点优先选择起点仍在视口内的行，单个超长回复保留负起点回退。快照插入通过 UICollectionView 布局的 targetContentOffset 在替换可见范围之前提供锚点目标，保留实际 hosting cell；布局事务结束前继续补偿自适应尺寸变化。快照应用与非动画偏移不继承 UIKit 隐式动画；页面指标仍通过布局外的调度发布。新增上方展开与历史前插的 CADisplayLink 断言，逐帧检查同一 cell 的模型位置及 presentation layer，阈值均为 1pt。探针用 cell 当前承载的行身份，避免快照转换期间按新 indexPath 误标旧 cell。
+- SwiftUI 与原生宿主保留必要的坐标、菜单及测量适配；展开动效共用 OrbisCollapseMotion.spring。ChatMessageRow 明确新增环境依赖须同步传入独立 cell 宿主。ChatTranscriptMount 收拢挂载期不变的引用与闭包，DEBUG 校验后续构造与首次挂载的依赖一致；额外 body 重算的框架根因仍未证实。
+- IOS-CHAT-11-R3：整批快照按页面转录发布 revision、宿主环境、工具占位及空页高度缓存；非空转录的键不包含视口高度。多行输入回归同时断言 nativeInputs 扫描计数不变，NativeTranscriptInputs signpost 保留用于真机长会话测量。rewindEnabled、canSend 仅进入用户行的动作比较；真实转录发布仍扫描语义输入。
+- 权限与模型面板读取原目标的 owner/runtime，模型展示投影由 HostConnection 提供并供 Hub 复用；移除该面板动作的重复准入判断。页面模型复用已发布 target，视口回调只做一次 mount/当前归属检查。08、09 的完成判据与当前保留的 runtime 回退、局部副作用门控、DEBUG 比较入口及 iOS 17 Release 路径对齐。
+
+本轮自动验证、首次失败与复验记录位于 `.artifacts/ios-chat-architecture-review-20261115/`。真机长会话、前后台与 iOS 17 运行验收仍待完成，未部署。
 
 ## 8. 评估后不采用与范围外
 

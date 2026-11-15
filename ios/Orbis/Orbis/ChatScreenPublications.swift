@@ -321,6 +321,7 @@ final class ChatScreenModel {
     private(set) var shell: ChatShellState
     private(set) var header: ChatHeaderState
     private(set) var transcript: ChatTranscriptState
+    @ObservationIgnored private(set) var transcriptInputRevision: UInt64 = 0
     private(set) var composer: ChatComposerState
     private(set) var notices: ChatNoticesState
     private(set) var workspace: ChatWorkspaceState
@@ -328,8 +329,7 @@ final class ChatScreenModel {
     private(set) var canReadTranscript: Bool
     var actions: ChatSessionActions {
         guard let store else { preconditionFailure("A mounted chat model requires its store") }
-        return ChatSessionActions(store: store, target: ChatActionContext(owner: snapshot.owner, identity: snapshot.identity,
-            runtimeId: snapshot.runtime?.runtimeId, sessionId: snapshot.runtime?.sessionId), preservingRuntime: snapshot.runtime)
+        return ChatSessionActions(store: store, target: transcript.target, preservingRuntime: snapshot.runtime)
     }
     @ObservationIgnored private(set) var snapshot: ChatScreenSnapshot
     @ObservationIgnored private(set) var captureRevision = 0
@@ -405,7 +405,7 @@ final class ChatScreenModel {
         reconcilePhase()
     }
     func ownsMount(target: ChatActionContext, token: UUID) -> Bool {
-        mountedToken == token && actions.target == target && actions.isCurrent
+        mountedToken == token && transcript.target == target && actions.isCurrent
     }
     func visibilityChanged(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
         guard ownsMount(target: target, token: token) else { return }
@@ -465,6 +465,7 @@ final class ChatScreenModel {
         if force || transcript != regions.transcript {
             invalidated |= ChatSchedulingTrace.RegionMask.transcript
             viewport.commit(regions.transcript)
+            transcriptInputRevision &+= 1
             transcript = regions.transcript
         }
         if force || composer != regions.composer { invalidated |= ChatSchedulingTrace.RegionMask.composer; composer = regions.composer }

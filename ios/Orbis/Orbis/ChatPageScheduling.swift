@@ -2,6 +2,22 @@ import Foundation
 import Observation
 import CoreGraphics
 
+/// A viewport-only resize must not scan all row inputs. The caller supplies the
+/// model publication revision, host environment and any size-dependent empty row.
+@MainActor
+final class ChatTranscriptSnapshotCache<Key: Equatable, Snapshot> {
+    private var entry: (key: Key, snapshot: Snapshot)?
+
+    func snapshot(key: Key, make: () -> Snapshot) -> Snapshot {
+        if let entry, entry.key == key { return entry.snapshot }
+        let snapshot = make()
+        entry = (key, snapshot)
+        return snapshot
+    }
+
+    func removeAll() { entry = nil }
+}
+
 /// Retain native row content until its semantic inputs change. The builder runs only
 /// on a miss; order and membership have their own revision for the native adapter.
 @MainActor

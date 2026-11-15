@@ -265,6 +265,11 @@ final class PreviewChatScrollProbe: NSObject, ObservableObject {
         return frames
     }
 
+    func beginBound() {
+        guard let flight else { return }
+        begin(flight: flight)
+    }
+
     func begin(flight: MessageSendFlight) {
         guard ProcessInfo.processInfo.arguments.contains("--preview-scroll-frames") else { return }
         self.flight = flight
@@ -548,6 +553,7 @@ private final class PreviewHistoryPrependProbe: ObservableObject {
     func deliver() {
         guard let deliver = pending else { return }
         pending = nil
+        PreviewChatScrollProbe.shared.beginBound()
         deliver()
         publish()
     }
@@ -1406,8 +1412,13 @@ private final class PreviewTransport: OrbisTransport {
                 locator["toolCallId"] = callID; value["tool"] = locator
                 return ["type": "tool_call", "toolCallId": callID, "toolName": name, "summary": value]
             }
-            return history + [message("m1", role: "user", text: "检查项目中的源文件。"), ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001,
+            let transcript = history + [message("m1", role: "user", text: "检查项目中的源文件。"), ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001,
                 "content": calls + [["type": "text", "text": "源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]]]]
+            if ProcessInfo.processInfo.arguments.contains("--preview-above-viewport-disclosure") {
+                return transcript + [message("native-reader-user", role: "user", text: "上方展开阅读锚点"),
+                    message("native-reader-reply", role: "assistant", text: (1...24).map { "保留阅读正文 \($0)" }.joined(separator: "\n\n"))]
+            }
+            return transcript
         }
         return [message("m1", role: "user", text: "把 iOS 的 UI 和交互体验对齐到 Android，一个页面一个页面做。"),
          ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001, "content": [
@@ -1528,7 +1539,7 @@ struct PageMotionReport: View {
 final class ChatUpdateProbe {
     enum Region: String, CaseIterable {
         case navigation, page, header, transcript, composer, notices, workspace, row, markdown
-        case nativeRow, nativeAuxiliary, nativeReconfigure, nativeSnapshot, nativeMeasure
+        case nativeRow, nativeAuxiliary, nativeReconfigure, nativeSnapshot, nativeMeasure, nativeInputs
     }
     static let shared = ChatUpdateProbe()
     static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-chat-updates")
@@ -1844,7 +1855,7 @@ import SwiftUI
 /// Release has empty implementations for all DEBUG probes and UI.
 enum ChatDebugProbes {
     @MainActor static func bindNativeTranscript(_ collection: UICollectionView,
-        animationIsRunning: @escaping () -> Bool, rowID: @escaping (IndexPath) -> String?) {
+        animationIsRunning: @escaping () -> Bool) {
         #if DEBUG
         guard PreviewChatScrollProbe.enabled else { return }
         PreviewChatScrollProbe.shared.scroll = collection
@@ -1855,15 +1866,15 @@ enum ChatDebugProbes {
             guard let collection, collection.window != nil else { return [:] }
             var frames: [String: [Double]] = [:]
             for path in collection.indexPathsForVisibleItems {
-                guard let id = rowID(path), let cell = collection.cellForItem(at: path) as? NativeTranscriptCell,
-                      cell.frame.intersects(collection.bounds) else { continue }
+                guard let cell = collection.cellForItem(at: path) as? NativeTranscriptCell,
+                      let id = cell.representedID, cell.frame.intersects(collection.bounds) else { continue }
                 let frame = collection.convert(cell.frame, to: nil)
                 frames[id] = [Double(frame.minY), Double(frame.width), Double(frame.height)]
                 if let reader = cell.geometry.currentLargestReaderFrame {
                     frames["#reader:" + id] = [Double(reader.minY), Double(reader.width), Double(reader.height)]
                 }
-                if let presented = cell.layer.presentation() {
-                    let rect = collection.convert(presented.frame, to: nil)
+                if let presented = cell.layer.presentation(), let windowLayer = collection.window?.layer.presentation() {
+                    let rect = presented.convert(presented.bounds, to: windowLayer)
                     frames["#presentation:" + id] = [Double(rect.minY), Double(rect.width), Double(rect.height)]
                 }
             }
@@ -1926,6 +1937,11 @@ enum ChatDebugProbes {
     @MainActor static func nativeSnapshotApplied() {
         #if DEBUG
         ChatUpdateProbe.shared.rendered(.nativeSnapshot)
+        #endif
+    }
+    @MainActor static func nativeInputsCompared(rows: Int) {
+        #if DEBUG
+        ChatUpdateProbe.shared.rendered(.nativeInputs, count: rows)
         #endif
     }
     @MainActor static func nativeMeasured() {
@@ -2115,6 +2131,29 @@ struct ChatToolReplacementProbe: ViewModifier {
                     .accessibilityValue(String(describing: token))
             }
         }
+        #else
+        content
+        #endif
+    }
+}
+
+/// IOS-CHAT-13-R4: change a real disclosure whose header is above the viewport.
+/// The test control changes only the same page-owned state as the normal button.
+struct ChatAboveViewportDisclosureProbe: ViewModifier {
+    let interactions: ChatTranscriptInteractionState
+    let viewport: ChatViewportController
+    func body(content: Content) -> some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-above-viewport-disclosure") {
+            content.overlay(alignment: .topTrailing) {
+                Button("Toggle preceding disclosure") {
+                    viewport.disclosureBegan()
+                    PreviewChatScrollProbe.shared.beginBound()
+                    interactions.row("tool-card:preview-tool").disclosure("tool-group").expanded.toggle()
+                }.font(.system(size: 10)).frame(minHeight: 44)
+                    .accessibilityIdentifier("preview-above-disclosure")
+            }
+        } else { content }
         #else
         content
         #endif

@@ -206,10 +206,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private var nativeLayoutDepth = 0
         private var compensatingLayout = false
         private var stopped = false
-        private var hasPositioned = false
+        private var placement = ChatNativeViewportPlacement()
         private var userInteracting = false
-        private var suppressFollowing = false
-        private var sawReadingInput = false
         private var pendingInteractionEnd = false
         private var previousPanY: CGFloat = 0
         private var pendingDirection: Bool?
@@ -247,7 +245,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             observeViewport(input.viewport)
             ChatDebugProbes.bindNativeTranscript(view, animationIsRunning: { [weak self] in
                 self?.animatingOffset == true && self?.stopped == false
-            }, rowID: { [weak self] in self?.dataSource?.itemIdentifier(for: $0) })
+            })
             dataSource = UICollectionViewDiffableDataSource<Int, String>(collectionView: view) {
                 [weak self] collection, indexPath, id in
                 guard let self, let item = self.rendered[id],
@@ -284,7 +282,26 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             section.interGroupSpacing = input.spacing
             section.contentInsets = NSDirectionalEdgeInsets(top: input.topInset,
                 leading: input.horizontalInset, bottom: 0, trailing: input.horizontalInset)
-            return UICollectionViewCompositionalLayout(section: section)
+            let layout = NativeTranscriptLayout(section: section)
+            layout.readingTarget = { [weak self] proposed, layout in
+                self?.readingTarget(proposed, layout: layout) ?? proposed
+            }
+            return layout
+        }
+
+        /// UIKit asks before it replaces the visible range during a snapshot. Giving
+        /// the retained row its target here preserves the actual hosting cell; fixing
+        /// the offset after layout would first recycle it for a newly prepended row.
+        private func readingTarget(_ proposed: CGPoint, layout: UICollectionViewLayout) -> CGPoint {
+            guard initialPlacementReady, alignment == nil, !animatingOffset,
+                  !following || nativeMotionActive, let collection, let dataSource else { return proposed }
+            for anchor in anchors where anchor.interaction == interactionGeneration {
+                guard anchor.top < collection.bounds.height, anchor.top + anchor.height > 0,
+                      let path = dataSource.indexPath(for: anchor.id),
+                      let attributes = layout.layoutAttributesForItem(at: path) else { continue }
+                return CGPoint(x: proposed.x, y: max(minimumOffset, attributes.frame.minY - anchor.top))
+            }
+            return proposed
         }
 
         func update(_ value: ChatNativeTranscriptView, snapshot: Snapshot? = nil) {
@@ -296,7 +313,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             let layoutChanged = input.horizontalInset != value.horizontalInset ||
                 input.topInset != value.topInset || input.spacing != value.spacing ||
                 input.estimatedRowHeight != value.estimatedRowHeight
-            if !ownerChanged, hasPositioned, !effectiveFollowing || nativeMotionActive {
+            if !ownerChanged, initialPlacementReady, !following || nativeMotionActive {
                 captureAnchorsIfNeeded()
             }
             input = value
@@ -313,12 +330,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 ownership = nextOwnership
                 ownershipGeneration &+= 1
                 interactionGeneration &+= 1
-                hasPositioned = false
+                placement = ChatNativeViewportPlacement()
                 anchors = []
                 alignment = nil
                 handledRequest = nil
-                suppressFollowing = false
-                sawReadingInput = false
                 pendingInteractionEnd = false
                 userInteracting = false
                 animatingOffset = false
@@ -326,16 +341,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 lastViewport = nil
                 lastViewportHeight = nil
             }
-            if suppressFollowing {
-                if !value.viewport.nativeState.following { sawReadingInput = true }
-                if value.viewport.nativeState.following, sawReadingInput, !userInteracting {
-                    suppressFollowing = false
-                    anchors = []
-                }
-            } else if value.viewport.nativeState.following {
-                anchors = []
-            }
-            if !ownerChanged, hasPositioned, !effectiveFollowing || nativeMotionActive {
+            if following { anchors = [] }
+            if !ownerChanged, initialPlacementReady, !following || nativeMotionActive {
                 captureAnchorsIfNeeded()
             }
 
@@ -370,7 +377,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
         }
 
-        private var effectiveFollowing: Bool { input.viewport.nativeState.following && !suppressFollowing }
+        private var following: Bool { input.viewport.nativeState.following }
+        private var initialPlacementReady: Bool { placement.isReady }
 
         private var nativeMotionActive: Bool {
             userInteracting || collection?.isTracking == true || collection?.isDragging == true ||
@@ -397,17 +405,23 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             ChatDebugProbes.nativeSnapshotApplied()
             applyingSnapshot = true
             snapshotMutationDepth += 1
-            dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
-                guard let self, !self.stopped else { return }
-                self.applyingSnapshot = false
-                self.applied = next
-                self.appliedGeneration = generation
-                self.appliedOwnershipGeneration = owner
-                if owner == self.ownershipGeneration, generation == self.sourceGeneration {
-                    self.rendered = Dictionary(uniqueKeysWithValues: self.desired.map { ($0.id, $0) })
-                    self.scheduleResolution()
+            UIView.performWithoutAnimation {
+                dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+                    guard let self, !self.stopped else { return }
+                    self.applyingSnapshot = false
+                    self.applied = next
+                    self.appliedGeneration = generation
+                    self.appliedOwnershipGeneration = owner
+                    if owner == self.ownershipGeneration, generation == self.sourceGeneration {
+                        self.rendered = Dictionary(uniqueKeysWithValues: self.desired.map { ($0.id, $0) })
+                        self.scheduleResolution()
+                    }
+                    self.applyDesiredSnapshot()
                 }
-                self.applyDesiredSnapshot()
+                // Complete the snapshot's native layout before this transaction can
+                // be displayed. The normal layout hook restores the retained anchor.
+                collection?.setNeedsLayout()
+                collection?.layoutIfNeeded()
             }
             snapshotMutationDepth -= 1
         }
@@ -433,8 +447,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
             nativeLayoutDepth += 1
             guard nativeLayoutDepth == 1, !resolving, !compensatingLayout,
-                  hasPositioned, alignment == nil, !animatingOffset,
-                  !effectiveFollowing || nativeMotionActive else { return }
+                  initialPlacementReady, alignment == nil, !animatingOffset,
+                  !following || nativeMotionActive else { return }
             // Capture cell frames before UICollectionView places them at newly measured
             // origins. A fresh baseline is taken for each layout, rather than retaining
             // the screen Y from the beginning of the user's gesture.
@@ -442,8 +456,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         private func captureReadingAnchorBeforeSizing() {
-            guard !stopped, hasPositioned, alignment == nil, !animatingOffset,
-                  !effectiveFollowing || nativeMotionActive else { return }
+            guard !stopped, initialPlacementReady, alignment == nil, !animatingOffset,
+                  !following || nativeMotionActive else { return }
             captureAnchorsIfNeeded()
         }
 
@@ -455,6 +469,14 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     // reconciliation, rather than a new pan/deceleration sample.
                     anchors[index].offsetY = collection.contentOffset.y
                 }
+            }
+            // Finish native-only reading compensation in this layout transaction.
+            // Metrics still publish asynchronously, outside SwiftUI/UIKit layout.
+            if nativeLayoutDepth == 0, !resolving, !compensatingLayout,
+               initialPlacementReady, alignment == nil, !animatingOffset, !following || nativeMotionActive {
+                resolving = true
+                _ = restoreAnchor()
+                resolving = false
             }
             refreshCellGeometry()
             scheduleResolution()
@@ -484,7 +506,6 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     handledRequest = request
                     alignment = Alignment(request: request)
                     anchors = []
-                    if case .latest = request.target { suppressFollowing = false }
                 }
                 if let active = alignment,
                    !input.requestIsCurrent(active.request) ||
@@ -498,7 +519,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 if !animatingOffset {
                     if alignment != nil {
                         wroteOffset = resolveAlignment()
-                    } else if !hasPositioned || effectiveFollowing {
+                    } else if !initialPlacementReady || following {
                         wroteOffset = writeOffset(bottomOffset, animated: false)
                     } else {
                         wroteOffset = restoreAnchor()
@@ -508,21 +529,17 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 wroteOffset = restoreAnchor()
             }
             collection.layoutIfNeeded()
-            if hasMeasuredVisibleContent {
-                if !hasPositioned {
-                    // Initial positioning is only committed after native self-sizing has
-                    // produced a real visible row, rather than an estimated content size.
-                    hasPositioned = abs(collection.contentOffset.y - bottomOffset) <= 1
-                }
-                if hasPositioned { emitMetrics() }
-            }
+            let measuredVisibleContent = hasMeasuredVisibleContent
+            placement.measured(visibleContent: measuredVisibleContent,
+                bottomDistance: bottomOffset - collection.contentOffset.y)
+            if placement.isReady && measuredVisibleContent { emitMetrics() }
             if pendingInteractionEnd {
                 pendingInteractionEnd = false
                 input.onInteraction(false)
             }
             resolving = false
             let needsBottomCorrection = !nativeMotionActive && !animatingOffset && alignment == nil &&
-                (!hasPositioned || effectiveFollowing) &&
+                (!initialPlacementReady || following) &&
                 abs(collection.contentOffset.y - bottomOffset) > 0.5
             if wroteOffset || needsBottomCorrection { scheduleResolution() }
         }
@@ -545,7 +562,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                       let attributes = collection.layoutAttributesForItem(at: path) else { return false }
                 target = attributes.frame.minY - collection.adjustedContentInset.top
             }
-            let animate = !input.reduceMotion && hasPositioned && !active.attemptedAnimation
+            let animate = !input.reduceMotion && initialPlacementReady && !active.attemptedAnimation
             active.attemptedAnimation = true
             alignment = active
             let wrote = writeOffset(target, animated: animate)
@@ -558,7 +575,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 #endif
             } else if isMeasured(targetID), abs(collection.contentOffset.y - clamped(target)) <= 1 {
                 alignment = nil
-                if !effectiveFollowing { captureAnchorsIfNeeded() }
+                if !following { captureAnchorsIfNeeded() }
             }
             return wrote
         }
@@ -573,7 +590,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
 
         private func clamped(_ y: CGFloat) -> CGFloat { min(bottomOffset, max(minimumOffset, y)) }
 
-        /// Every application-owned offset change passes this method. Native gesture and
+        /// Every explicit application offset write passes this method. Native gesture and
         /// self-sizing adjustments remain UIKit's responsibility.
         @discardableResult
         private func writeOffset(_ y: CGFloat, animated: Bool, force: Bool = false,
@@ -594,7 +611,14 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 collection.layoutIfNeeded()
                 compensatingLayout = false
             } else {
-                collection.setContentOffset(CGPoint(x: collection.contentOffset.x, y: offset), animated: animated)
+                if animated {
+                    collection.setContentOffset(CGPoint(x: collection.contentOffset.x, y: offset), animated: true)
+                } else {
+                    UIView.performWithoutAnimation {
+                        collection.setContentOffset(CGPoint(x: collection.contentOffset.x, y: offset), animated: false)
+                        collection.layoutIfNeeded()
+                    }
+                }
             }
             return true
         }
@@ -631,7 +655,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     interaction: interactionGeneration,
                     panY: collection.panGestureRecognizer.translation(in: collection).y,
                     offsetY: collection.contentOffset.y)
-            }
+            }.sorted { ChatViewportAnchorPriority.precedes($0.top, $1.top) }
         }
 
         private func restoreAnchor() -> Bool {
@@ -654,7 +678,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                                         preservingInteraction: nativeMotionActive)
                 // Following geometry changes will take their own current baseline.
                 // Keeping this top indefinitely would freeze a moving reader in place.
-                anchors = []
+                if !applyingSnapshot { anchors = [] }
                 return wrote
             }
             anchors = []
@@ -686,19 +710,16 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            input.onInteraction(true)
             userInteracting = true
             pendingInteractionEnd = false
             interactionGeneration &+= 1
-            suppressFollowing = true
-            sawReadingInput = !input.viewport.nativeState.following
             anchors = []
             alignment = nil
             handledRequest = input.viewport.nativeState.request
             animatingOffset = false
             previousPanY = scrollView.panGestureRecognizer.translation(in: scrollView).y
             captureAnchorsIfNeeded()
-            // Ownership changes synchronously at the start of the native gesture.
-            input.onInteraction(true)
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -774,6 +795,16 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
 }
 
 @MainActor
+private final class NativeTranscriptLayout: UICollectionViewCompositionalLayout {
+    var readingTarget: ((CGPoint, UICollectionViewLayout) -> CGPoint)?
+
+    override func targetContentOffset(forProposedContentOffset proposedContentOffset: CGPoint) -> CGPoint {
+        let proposed = super.targetContentOffset(forProposedContentOffset: proposedContentOffset)
+        return readingTarget?(proposed, self) ?? proposed
+    }
+}
+
+@MainActor
 private final class NativeTranscriptCollection: UICollectionView {
     var willLayout: (() -> Void)?
     var didLayout: (() -> Void)?
@@ -806,7 +837,7 @@ final class NativeTranscriptCell: UICollectionViewCell {
     let geometry = ChatNativeCellGeometry()
     var willMeasure: (() -> Void)?
     var didMeasure: (() -> Void)?
-    private var representedID: String?
+    private(set) var representedID: String?
     private var representedOwner: UInt64?
     private var representedRevision: AnyHashable?
     private var measuredRevision: AnyHashable?
@@ -1010,8 +1041,7 @@ struct ChatNativeCollapse<Content: View>: View {
 }
 
 private struct ChatNativeCollapseMotion {
-    // Animation.orbisCollapse uses the same public smooth spring and duration.
-    static let spring = Spring.smooth(duration: 0.26)
+    static var spring: Spring { OrbisCollapseMotion.spring }
     let started: TimeInterval
     let startHeight: CGFloat
     let targetHeight: CGFloat

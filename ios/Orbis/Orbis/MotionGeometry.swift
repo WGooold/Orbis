@@ -187,6 +187,27 @@ struct ChatViewportPolicy: Equatable {
     }
 }
 
+/// Native layout readiness is independent of message/paging readiness: an empty
+/// transcript can settle, and a mounted collection must measure its own first rows.
+/// This value owns no following intent; the adapter reads ChatViewportPolicy for that.
+struct ChatNativeViewportPlacement: Equatable {
+    private(set) var isReady = false
+
+    mutating func measured(visibleContent: Bool, bottomDistance: CGFloat) {
+        if !isReady, visibleContent, bottomDistance.isFinite, abs(bottomDistance) <= 1 { isReady = true }
+    }
+}
+
+/// Prefer a row whose beginning is still readable. A preceding, clipped row can
+/// grow above it; anchoring that row's offscreen top would move the reader instead.
+/// A single tall reply still falls back to its existing clipped-row anchor.
+enum ChatViewportAnchorPriority {
+    static func precedes(_ lhsTop: CGFloat, _ rhsTop: CGFloat) -> Bool {
+        if (lhsTop >= 0) != (rhsTop >= 0) { return lhsTop >= 0 }
+        return lhsTop < rhsTop
+    }
+}
+
 /// ADR-0058. Pure geometry shared by selection, send feedback and edge navigation.
 enum MotionGeometry {
     static let replyGrowthDuration = 0.18

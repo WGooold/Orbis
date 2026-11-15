@@ -108,3 +108,15 @@ struct ChatSessionActions: Equatable {
 
 // Existing detail presenters use the read portion of the same capability.
 typealias ChatReadContext = ChatSessionActions
+
+// Configuration panels query the retained session owner, including after selection
+// changes. The Hub delegates here so both entry points keep the same projection.
+extension HostConnection {
+    func sessionModelPresentation(_ runtime: RuntimeSummary) -> SessionModelPresentation {
+        let snapshot = agentState.snapshots[runtime.runtimeId]
+        func ready(_ name: String) -> Bool { snapshot?.missing[name] == nil && (snapshot?.domains[name]?.availability ?? "ready") == "ready" }
+        return .make(runtime: runtime, connected: connection == .secured, modelReady: ready("model"), executionReady: ready("execution"),
+                     progress: OperationKinds.configSettings.compactMap { configStatus(runtime.runtimeId, setting: $0) },
+                     failed: sessionConfigFailure(runtime.runtimeId) != nil)
+    }
+}

@@ -14,16 +14,16 @@ struct PermissionsView: View {
         let p = OrbisPalette(scheme)
         VStack(spacing: 16) {
             OrbisPageHeader(title: L10n.tr("当前会话权限"), closes: true, back: { dismiss() }) {
-                if let permissions = store.selectedRuntime?.permissionManagement {
+                if let permissions = actions.runtime?.permissionManagement {
                     OrbisInfoButton(title: L10n.tr("当前会话权限"), message: L10n.hostText(permissions.details), identifier: "permission-info")
                 }
             }
-            if let permissions = store.selectedRuntime?.permissionManagement {
+            if let permissions = actions.runtime?.permissionManagement {
                 Text(L10n.hostSummary(permissions.summary)).font(.orbisLabel()).foregroundStyle(p.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
                 OrbisPermissionChoices(settings: permissions.settings, values: proposedValues(permissions),
                     currentValues: Dictionary(uniqueKeysWithValues: permissions.settings.compactMap { item in item.currentValue.map { (item.id, $0) } }),
-                    enabled: store.canSend && store.pendingActionIds.isEmpty,
+                    enabled: actions.isCurrent && target.owner.canSend && target.owner.pendingActionIds.isEmpty,
                     onCategory: { proposedSetting = nil; proposedValue = nil }) { id, value in
                         proposedSetting = id; proposedValue = value
                     }
@@ -31,7 +31,7 @@ struct PermissionsView: View {
                 Text(L10n.tr("电脑端管理")).font(.orbisLabel()); Spacer()
             }
             OrbisActionButton(title: L10n.tr("应用到当前会话")) {
-                guard actions.isCurrent, let setting = proposedSetting, let value = proposedValue else { return }
+                guard let setting = proposedSetting, let value = proposedValue else { return }
                 if actions.updatePermission(settingId: setting, value: value) { dismiss() }
             }.disabled(!canApply)
                 .padding(.horizontal, 16).padding(.bottom, 16).accessibilityIdentifier("permissions-apply")
@@ -40,8 +40,8 @@ struct PermissionsView: View {
     }
     private var canApply: Bool {
         guard let id = proposedSetting, let value = proposedValue,
-              let setting = store.selectedRuntime?.permissionManagement?.settings.first(where: { $0.id == id }) else { return false }
-        return value != setting.currentValue && store.canUpdatePermission(settingId: id, value: value)
+              let setting = actions.runtime?.permissionManagement?.settings.first(where: { $0.id == id }) else { return false }
+        return actions.isCurrent && value != setting.currentValue && target.owner.canUpdatePermission(settingId: id, value: value)
     }
     private func proposedValues(_ permissions: PermissionManagement) -> [String: String] {
         var values = Dictionary(uniqueKeysWithValues: permissions.settings.compactMap { item in item.currentValue.map { (item.id, $0) } })
@@ -68,15 +68,13 @@ struct SessionModelConfigurationView: View {
               current.sessionId == fallbackRuntime.sessionId else { return fallbackRuntime }
         return current
     }
-    private var commands: [SlashCommand] { store.commands[runtime.runtimeId] ?? [] }
+    private var commands: [SlashCommand] { target.owner.commands[runtime.runtimeId] ?? [] }
     private var command: SlashCommand? { commands.first { $0.name == setting } }
     private func select(_ name: String, _ value: String) {
-        guard actions.isCurrent, store.selectedRuntime?.runtimeId == runtime.runtimeId,
-              store.selectedRuntime?.sessionId == runtime.sessionId else { return }
         if actions.executeSlash(name, args: value) { dismiss() }
     }
     var body: some View {
-        let presentation = store.sessionModelPresentation(runtime)
+        let presentation = target.owner.sessionModelPresentation(runtime)
         VStack(spacing: 0) {
             OrbisPageHeader(title: L10n.tr("模型与深度"), closes: true, back: { dismiss() }) {
                 OrbisIconButton(symbol: "info.circle", label: L10n.tr("会话信息")) { diagnosticsOpen = true }
@@ -97,18 +95,18 @@ struct SessionModelConfigurationView: View {
                             .font(.orbisBody(.semibold)).accessibilityIdentifier("session-selected-model")
                         Text(runtime.thinkingLevel ?? L10n.tr("默认深度")).font(.orbisLabel())
                     }
-                    if let failure = store.sessionConfigFailure(runtime.runtimeId) {
+                    if let failure = target.owner.sessionConfigFailure(runtime.runtimeId) {
                         Text(failure.message).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).error)
                         OrbisActionButton(title: L10n.tr("重试")) { select(failure.setting, failure.value) }.disabled(!store.canSend)
                     }
                     ForEach(OperationKinds.configSettings, id: \.self) { name in
-                        if let progress = store.configStatus(runtime.runtimeId, setting: name) {
+                        if let progress = target.owner.configStatus(runtime.runtimeId, setting: name) {
                             Text(L10n.tr("{0}，{1}", progress.label, L10n.matches(progress.mark, source: "切换中") ? L10n.tr("保存中") : progress.mark))
                                 .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
                         }
                     }
                     if presentation.indicator == L10n.tr("未确认") {
-                        OrbisActionButton(title: L10n.tr("核对配置")) { if actions.isCurrent { actions.refreshAgent() } }.disabled(!store.canSend)
+                        OrbisActionButton(title: L10n.tr("核对配置")) { actions.refreshAgent() }.disabled(!store.canSend)
                     }
                     if let command {
                         OrbisActionButton(title: L10n.tr("返回")) { setting = nil }
@@ -129,10 +127,10 @@ struct SessionModelConfigurationView: View {
             }.accessibilityIdentifier("session-model-configuration")
         }
         .onChange(of: setting) { old, next in
-            if actions.ownsRuntime, let old, target.runtimeId != nil { actions.cancelMenuOptions(old) }
-            if actions.isCurrent, let next, target.runtimeId != nil { actions.loadMenuOptions(next) }
+            if let old { actions.cancelMenuOptions(old) }
+            if let next { actions.loadMenuOptions(next) }
         }
-        .onDisappear { if actions.ownsRuntime, let setting, target.runtimeId != nil { actions.cancelMenuOptions(setting) } }
+        .onDisappear { if let setting { actions.cancelMenuOptions(setting) } }
         .orbisBottomSheet(isPresented: $diagnosticsOpen) { RuntimeInfoView(target: target, fallbackRuntime: runtime).orbisSheet([.large]) }
     }
     private func configButton(_ title: String, name: String?) -> some View {
@@ -160,15 +158,15 @@ private struct RuntimeInfoView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: L10n.tr("会话信息"), closes: true, back: { dismiss() }) {
-                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对会话状态")) { if actions.isCurrent { actions.refreshAgent() } }.disabled(!store.canSend)
+                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("核对会话状态")) { actions.refreshAgent() }.disabled(!store.canSend)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     StatusSection(title: L10n.tr("模型与上下文")) {
-                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "模型" : "后续模型"), value: store.configStatus(runtime.runtimeId, setting: "model").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "模型" : "后续模型"), value: target.owner.configStatus(runtime.runtimeId, setting: "model").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
                                    ?? (ready("model") ? runtime.model?.name ?? runtime.model?.id ?? L10n.tr("未报告") : L10n.tr("状态待核对")))
                         StatusFact(label: L10n.tr("供应商"), value: ready("model") ? runtime.model?.provider ?? L10n.tr("未报告") : L10n.tr("状态待核对"))
-                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "思考级别" : "后续思考深度"), value: store.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
+                        StatusFact(label: L10n.tr(runtime.status == "idle" ? "思考级别" : "后续思考深度"), value: target.owner.configStatus(runtime.runtimeId, setting: "thinking").map { $0.label + L10n.tr("（") + $0.mark + L10n.tr("）") }
                                    ?? (ready("model") ? runtime.thinkingLevel ?? L10n.tr("来源未报告") : L10n.tr("状态待核对")))
                         StatusFact(label: L10n.tr("上下文"), value: ready("context") ? contextText : L10n.tr("状态待核对"))
                     }
@@ -185,10 +183,10 @@ private struct RuntimeInfoView: View {
                             }
                         }
                     }
-                    ForEach((store.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
+                    ForEach((target.owner.commands[runtime.runtimeId] ?? []).filter { ["model", "thinking"].contains($0.name) && $0.argument?.options?.isEmpty == false }) { command in
                         StatusSection(title: command.source == "builtin" ? L10n.hostText(command.description ?? command.name) : command.description ?? command.name) {
                             ForEach(command.argument?.options ?? []) { option in
-                                OrbisActionButton(title: option.label) { if actions.isCurrent { _ = actions.executeSlash(command.name, args: option.value) } }.disabled(!store.canSend)
+                                OrbisActionButton(title: option.label) { _ = actions.executeSlash(command.name, args: option.value) }.disabled(!store.canSend)
                             }
                         }
                     }

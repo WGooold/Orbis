@@ -2874,12 +2874,12 @@ final class OrbisUITests: XCTestCase {
         }
         let before = counts()
         XCTAssertGreaterThan(before["page", default: 0], 0)
-        composer.typeText("local editor update")
+        composer.typeText("local editor update\nsecond line\nthird line")
         Thread.sleep(forTimeInterval: 0.3)
         let after = counts()
         XCTAssertTrue((composer.value as? String)?.contains("local editor update") == true)
         XCTAssertGreaterThan(after["composer", default: 0], before["composer", default: 0])
-        for region in ["navigation", "page", "header", "transcript", "notices", "workspace", "row", "markdown"] {
+        for region in ["navigation", "page", "header", "transcript", "notices", "workspace", "row", "markdown", "nativeInputs"] {
             XCTAssertEqual(after[region], before[region], "Typing rebuilt \(region): \(before) -> \(after)")
         }
     }
@@ -3115,6 +3115,43 @@ final class OrbisUITests: XCTestCase {
         app.buttons["跳到最新消息"].tap()
         XCTAssertTrue(expandedCall.waitForExistence(timeout: 5), "Cell recycling must retain the nested disclosure state")
         capture("chat-native-tool-disclosure-recycled", app: app)
+    }
+
+    // IOS-CHAT-13-R4: sampling after idle misses a one-frame anchor jump. Keep a
+    // downstream row fixed on every display tick while the preceding row resizes.
+    func testDisclosureAboveViewportPreservesEveryReadingFrame() throws {
+        let app = launch("tool", arguments: ["--preview-tool-group", "--preview-above-viewport-disclosure", "--preview-scroll-frames"])
+        defer { app.terminate() }
+        let transcript = chatTranscript(app)
+        let group = app.buttons["展开3 次工具调用，已完成"]
+        XCTAssertTrue(app.buttons["preview-above-disclosure"].waitForExistence(timeout: 8))
+        for _ in 0..<6 where !group.isHittable { transcript.swipeDown() }
+        XCTAssertTrue(group.isHittable)
+        let viewport = transcript.frame
+        let displacement = max(0, group.frame.maxY - viewport.minY + 5)
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)).press(forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: viewport.minX + viewport.width * 0.8,
+                dy: viewport.minY + viewport.height * 0.7 - displacement)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        let anchor = app.staticTexts["上方展开阅读锚点"]
+        XCTAssertTrue(anchor.isHittable)
+        XCTAssertLessThan(group.frame.midY, viewport.minY, "The disclosure header must start above the viewport")
+        let before = anchor.frame
+        for _ in 0..<2 {
+            app.buttons["preview-above-disclosure"].tap()
+            let samples = try chatScrollFrames(app)
+            for id in ["native-reader-user", "#presentation:native-reader-user"] {
+                let cells = samples.compactMap { $0.cells?[id] }
+                XCTAssertGreaterThan(cells.count, 3)
+                XCTAssertEqual(cells.count, samples.count, "The same reading row must be present on every frame")
+                let first = try XCTUnwrap(cells.first)
+                for frame in cells { XCTAssertEqual(frame[0], first[0], accuracy: 1, id) }
+            }
+            let heights = samples.compactMap { $0.cells?["tool-card:preview-tool"]?[2] }
+            XCTAssertGreaterThan(try XCTUnwrap(heights.max()) - XCTUnwrap(heights.min()), 50,
+                "The preceding hosted cell must actually change height during measurement")
+            XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+        }
+        capture("above-viewport-disclosure-reading-anchor", app: app)
     }
 
     // IOS-CHAT-13-R3: a real file-summary cell must retain its disclosure after
@@ -3378,7 +3415,7 @@ final class OrbisUITests: XCTestCase {
     // IOS-CHAT-13: a real remote history page must prepend through SQLite and
     // receive an applied acknowledgement without moving the same native text.
     func testHistoryPrependPreservesTheVisibleReadingAnchor() throws {
-        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-reduce-motion"])
+        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-reduce-motion", "--preview-scroll-frames"])
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
         let transcript = chatTranscript(app)
@@ -3435,6 +3472,21 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(after.frame.width, before.width, accuracy: 1)
         XCTAssertEqual(after.frame.height, before.height, accuracy: 1)
         XCTAssertEqual(transcript.frame, viewport)
+        let frames = try chatScrollFrames(app)
+        let firstSample = try XCTUnwrap(frames.first)
+        let anchorID = try XCTUnwrap(firstSample.cells?.filter { id, frame in
+            id.hasPrefix("history-message-") && frame[0] > viewport.minY + 10 &&
+                frame[0] + frame[2] < viewport.maxY - 10
+        }.min { $0.value[0] < $1.value[0] }?.key)
+        for id in [anchorID, "#presentation:" + anchorID] {
+            let cellFrames = frames.compactMap { $0.cells?[id] }
+            XCTAssertGreaterThan(cellFrames.count, 3)
+            XCTAssertEqual(cellFrames.count, frames.count, "The original row must remain visible in every sampled frame")
+            let firstFrame = try XCTUnwrap(cellFrames.first)
+            for frame in cellFrames {
+                XCTAssertEqual(frame[0], firstFrame[0], accuracy: 1, "History prepend moved the reading anchor for one frame: " + id)
+            }
+        }
         let completed = protocolFields()
         XCTAssertEqual(completed["requests"], "1")
         XCTAssertEqual(completed["responses"], "1")
