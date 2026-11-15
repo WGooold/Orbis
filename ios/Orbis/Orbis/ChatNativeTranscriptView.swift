@@ -282,11 +282,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             section.interGroupSpacing = input.spacing
             section.contentInsets = NSDirectionalEdgeInsets(top: input.topInset,
                 leading: input.horizontalInset, bottom: 0, trailing: input.horizontalInset)
-            let layout = NativeTranscriptLayout(section: section)
-            layout.readingTarget = { [weak self] proposed, layout in
-                self?.readingTarget(proposed, layout: layout) ?? proposed
-            }
-            return layout
+            return UICollectionViewCompositionalLayout(section: section)
         }
 
         /// UIKit asks before it replaces the visible range during a snapshot. Giving
@@ -655,7 +651,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     interaction: interactionGeneration,
                     panY: collection.panGestureRecognizer.translation(in: collection).y,
                     offsetY: collection.contentOffset.y)
-            }.sorted { ChatViewportAnchorPriority.precedes($0.top, $1.top) }
+            }
         }
 
         private func restoreAnchor() -> Bool {
