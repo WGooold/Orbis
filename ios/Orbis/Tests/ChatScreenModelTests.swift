@@ -25,10 +25,10 @@ private final class ChatModelTestStorage: SecureStorage {
     }
     func disconnect() {}
     func send(_ object: [String: Any]) -> Bool { true }
-    func ready(session: String) async {
+    func ready(session: String, status: String = "idle") async {
         receive?(["type": "device.ready", "protocolVersion": orbisProtocolVersion,
             "runtimes": [["runtimeId": "same-runtime", "name": "Agent", "cwd": "/repo",
-                          "status": "idle", "sessionId": session]]], "ctl")
+                          "status": status, "sessionId": session]]], "ctl")
         await drain?()
     }
 }
@@ -46,6 +46,28 @@ private final class ChatObservationCount: @unchecked Sendable {
 
 @Suite("Chat page state and scheduling (ADR-0082)") @MainActor
 struct ChatScreenModelTests {
+    // IOS-CHAT-08-R4: ownership callbacks must not subscribe their caller to
+    // transcript content/status publications through the cached action target.
+    @Test func actionOwnershipDoesNotObserveTranscriptPublications() async {
+        let (store, transport, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        await transport.ready(session: "session"); await settle(store)
+        let model = store.chatScreens, token = UUID(), target = model.actions.target
+        model.mount(target: target, token: token, visible: true, foreground: true)
+        defer { model.unmount(target: target, token: token) }
+        let ownership = ChatObservationCount(), transcript = ChatObservationCount()
+        withObservationTracking {
+            _ = model.actions
+            _ = model.ownsMount(target: target, token: token)
+        } onChange: { ownership.changed() }
+        withObservationTracking { _ = model.transcript } onChange: { transcript.changed() }
+        await transport.ready(session: "session", status: "running"); await settle(store)
+        #expect(transcript.value == 1)
+        #expect(ownership.value == 0)
+        #expect(model.ownsMount(target: target, token: token))
+        #expect(model.actions.target == target)
+    }
+
     // IOS-CHAT-07-R1 / PERF-12: an unpublished keystroke must not leak into
     // composer equality when any other source (including streaming) commits.
     @Test func typedDraftDoesNotInvalidateComposerOnUnrelatedCommits() async throws {
