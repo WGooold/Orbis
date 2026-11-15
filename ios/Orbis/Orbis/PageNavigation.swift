@@ -32,6 +32,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
     /// Shared with the moving layer and its source only; the rest of the tree never reads it.
     let motion = OrbisPageMotion()
     private var arrival: (() -> Void)?
+    private var appearedToken: Int?
 
     var pages: [Page] { entries.map(\.page) }
 
@@ -42,7 +43,10 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
     /// The unchanged prefix keeps its mounted layers. Only a single page added on top of the
     /// current path animates; any other change applies at once.
     func replace(with pages: [Page], entrance: OrbisPageEntrance = .slide, onArrival: (() -> Void)? = nil) {
-        settleNow()
+        ChatDebugProbes.pageMotionEvent("replace", token: motion.token, phase: String(describing: motion.phase),
+            offset: motion.offset, id: motion.movingID,
+            details: "requested=\(pages.count) existing=\(entries.count) samePath=\(pages == self.pages)")
+        settleNow(cause: "replace")
         var kept = 0
         while kept < min(entries.count, pages.count) && entries[kept].page == pages[kept] { kept += 1 }
         let next = Array(entries.prefix(kept)) + pages[kept...].map { OrbisPageEntry(page: $0) }
@@ -70,7 +74,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         guard let top = entries.last else { return }
         switch motion.phase {
         case .returning: return
-        case .entering, .expanding: settleNow()
+        case .entering, .expanding: settleNow(cause: "requestBack")
         default: break
         }
         // A dragged or settling page already draws as the moving layer and slides from where it is.
@@ -89,7 +93,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
 
     /// Removes the top page at once, without a transition.
     func back() {
-        settleNow()
+        settleNow(cause: "back")
         guard !entries.isEmpty else { return }
         orbisWithoutAnimation { entries.removeLast() }
     }
@@ -100,8 +104,14 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
     /// built, laid out and drawn at the starting position. Building the page is the heaviest step of
     /// a push; an animation started before it would lose its opening frames to that work (PERF-10).
     fileprivate func appeared(_ id: UUID) {
+        ChatDebugProbes.pageMotionEvent("appeared", token: motion.token, phase: String(describing: motion.phase),
+                                     offset: motion.offset, id: id)
         guard motion.movingID == id, motion.phase == .entering || motion.phase == .expanding else { return }
         let token = motion.token
+        // IOS-CHAT-10-R1: a mounted layer can report appearance again before
+        // its entrance completes. Starting that same target twice ends it at once.
+        guard appearedToken != token else { return }
+        appearedToken = token
         Task { @MainActor [weak self] in
             await MotionLayoutFrames.wait(frames: 1)
             guard let self, self.motion.token == token else { return }
@@ -111,11 +121,11 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
 
     /// Starts a prepared entrance once its layer is mounted at the starting position.
     private func arrive(_ id: UUID) {
+        ChatDebugProbes.pageMotionEvent("arrive", token: motion.token, phase: String(describing: motion.phase),
+                                     offset: motion.offset, id: id)
         guard motion.movingID == id else { return }
         let token = motion.token
-        #if DEBUG
-        PageMotionProbe.shared.animationStarted()
-        #endif
+        ChatDebugProbes.pageAnimationStarted()
         switch motion.phase {
         case .entering:
             withAnimation(InteractionMotion.pageEnter, completionCriteria: .logicallyComplete) {
@@ -166,9 +176,7 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         let token = motion.token
         motion.phase = back ? .returning : .settling
         motion.noteFlight()
-        #if DEBUG
-        if back { PageReturnProbe.shared.begin() }
-        #endif
+        if back { ChatDebugProbes.pageReturnBegan() }
         let width = motion.width
         let target = back ? width : 0
         // Never leave a page on screen waiting for an invisible spring tail once it is gone.
@@ -186,17 +194,19 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
     }
 
     private func complete(_ id: UUID, back: Bool, token: Int) {
+        ChatDebugProbes.pageMotionEvent("complete", token: motion.token, phase: String(describing: motion.phase),
+                                     offset: motion.offset, id: id, details: "callbackToken=\(token) back=\(back)")
         guard motion.token == token else { return }
         orbisWithoutAnimation {
             if back { entries.removeAll { $0.id == id } }
             motion.reset()
         }
-        #if DEBUG
-        if back { PageReturnProbe.shared.committed() }
-        #endif
+        if back { ChatDebugProbes.pageReturnCommitted() }
     }
 
     private func finishArrival(_ token: Int) {
+        ChatDebugProbes.pageMotionEvent("finishArrival", token: motion.token, phase: String(describing: motion.phase),
+                                     offset: motion.offset, id: motion.movingID, details: "callbackToken=\(token)")
         guard motion.token == token else { return }
         orbisWithoutAnimation { motion.reset() }
         let done = arrival
@@ -205,8 +215,10 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
     }
 
     /// Ends whatever is in flight where it was heading, so a new path starts from rest.
-    private func settleNow() {
+    private func settleNow(cause: String) {
         guard let id = motion.movingID else { return }
+        ChatDebugProbes.pageMotionEvent("settleNow", token: motion.token, phase: String(describing: motion.phase),
+                                     offset: motion.offset, id: id, details: "cause=\(cause)")
         let returning = motion.phase == .returning
         orbisWithoutAnimation {
             if returning { entries.removeAll { $0.id == id } }
@@ -249,10 +261,12 @@ final class OrbisPageMotion {
         self.offset = offset
         self.origin = origin
         expansion = origin == nil ? 1 : 0
+        ChatDebugProbes.pageMotionEvent("prepare", token: token, phase: String(describing: self.phase), offset: self.offset, id: id)
         noteFlight()
     }
 
     fileprivate func reset() {
+        ChatDebugProbes.pageMotionEvent("reset", token: token, phase: String(describing: phase), offset: offset, id: movingID)
         token += 1
         movingID = nil
         phase = .idle
@@ -267,9 +281,7 @@ final class OrbisPageMotion {
         let started = reported == .idle, ended = phase == .idle
         reported = phase
         onFlight?(ended ? nil : phase)
-        #if DEBUG
-        if started || ended { PageMotionProbe.shared.flight(!ended) }
-        #endif
+        if started || ended { ChatDebugProbes.pageMotionFlight(!ended) }
     }
 
     fileprivate func layout(frame: CGRect, insets: EdgeInsets) {
@@ -385,7 +397,13 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
                 releaseTaps()
                 stack.cancelDrag(id)
             }
-            .onAppear { if let id { stack.appeared(id) } }
+            .onAppear {
+                if let id {
+                    stack.appeared(id)
+                    // IOS-CHAT-10-R1: reproduce duplicate layer callbacks for one entrance token.
+                    if ChatDebugProbes.repeatPageAppearance { stack.appeared(id) }
+                }
+            }
     }
 
     private var drag: some Gesture {

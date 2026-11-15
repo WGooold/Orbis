@@ -5,25 +5,50 @@ import UIKit
 /// Connection readiness is deliberately not part of ownership: cached files stay browsable.
 @MainActor private func ownsTurnChanges(_ changes: TurnFileChanges, context: ChatReadContext?) -> Bool {
     guard let context else { return false }
-    return context.target.matches(context.store) && context.connection.turnFileChanges === changes
+    return context.isCurrent && context.connection.turnFileChanges === changes
+}
+
+@MainActor @Observable
+final class TurnChangeSummaryState {
+    var summaries: [TurnChangeSummary] = []
+}
+
+/// Attach asynchronous work to the material row, not an initially empty ForEach.
+/// Its state belongs to that row's page reference and survives native reuse.
+struct TurnChangeSummaryLoader: ViewModifier {
+    let changes: TurnFileChanges?
+    let anchors: Set<String>
+    let state: TurnChangeSummaryState
+    func body(content: Content) -> some View {
+        if let changes, !anchors.isEmpty {
+            content.modifier(ObservedTurnChangeSummaryLoader(changes: changes, anchors: anchors, state: state))
+        } else { content }
+    }
+}
+
+private struct ObservedTurnChangeSummaryLoader: ViewModifier {
+    @ObservedObject var changes: TurnFileChanges
+    let anchors: Set<String>
+    let state: TurnChangeSummaryState
+    func body(content: Content) -> some View {
+        let query = TurnChangeSummaryQuery(owner: changes.summaryProjectionOwner, revision: changes.summaryRevision, anchors: anchors)
+        let summaries = changes.summaries
+        let agent = changes.summaryProjectionAgent
+        content.task(id: query) {
+            let result = await TurnChangeBackgroundWorker.shared.matching(query, summaries: summaries, agent: agent)
+            guard !Task.isCancelled else { return }
+            if state.summaries != result { state.summaries = result }
+        }
+    }
 }
 
 struct TurnChangeCards: View {
     @ObservedObject var changes: TurnFileChanges
     let context: ChatReadContext?
-    let anchors: Set<String>
-    @State private var matching: [TurnChangeSummary] = []
+    let state: TurnChangeSummaryState
     var body: some View {
-        let query = TurnChangeSummaryQuery(owner: changes.summaryProjectionOwner, revision: changes.summaryRevision, anchors: anchors)
-        let summaries = changes.summaries
-        let agent = changes.summaryProjectionAgent
-        ForEach(matching) { summary in
+        ForEach(state.summaries) { summary in
             TurnChangeCard(changes: changes, context: context, summary: summary)
-        }
-        .task(id: query) {
-            let result = await TurnChangeBackgroundWorker.shared.matching(query, summaries: summaries, agent: agent)
-            guard !Task.isCancelled else { return }
-            matching = result
         }
     }
 }
@@ -37,8 +62,17 @@ private struct TurnChangeCard: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var expanded = false
+    @Environment(\.chatTranscriptRowInteraction) private var rowInteraction
+    @Environment(\.chatReadingInteraction) private var beginReading
+    @State private var localExpanded = false
+    private var expansion: Binding<Bool> {
+        if let state = rowInteraction?.disclosure("turn-changes:" + summary.id) {
+            return Binding(get: { state.expanded }, set: { state.expanded = $0 })
+        }
+        return $localExpanded
+    }
     var body: some View {
+        let expanded = expansion.wrappedValue
         let p = OrbisPalette(scheme)
         let manifest = changes.manifest(summary)
         let ready = summary.state == "ready"
@@ -55,8 +89,9 @@ private struct TurnChangeCard: View {
                 if ready && count > 4 {
                     ChangeHairline()
                     OrbisMotionButton {
-                        withAnimation(reduceMotion ? nil : .orbisCollapse) { expanded.toggle() }
-                        if expanded && !manifest.started { loadFiles() }
+                        beginReading()
+                        withAnimation(reduceMotion ? nil : .orbisCollapse) { expansion.wrappedValue.toggle() }
+                        if expansion.wrappedValue && !manifest.started { loadFiles() }
                     } label: {
                         HStack(spacing: 6) {
                             Text(expanded ? L10n.tr("收起") : L10n.tr("还有 {0} 个文件", count - 4))
@@ -64,7 +99,7 @@ private struct TurnChangeCard: View {
                             if manifest.loading { ProgressView().controlSize(.mini) }
                             OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).rotationEffect(.degrees(expanded ? 180 : 0))
                         }.font(.orbisCaption()).foregroundStyle(p.secondary).frame(minHeight: 36).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).accessibilityIdentifier("turn-changes-expand-" + summary.reviewTurnId)
                 }
                 if expanded && !manifest.complete && !manifest.loading && (manifest.started || manifest.error != nil) {
                     ChangeHairline()

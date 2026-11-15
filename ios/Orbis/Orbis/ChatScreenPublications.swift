@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Observation
 
 /// IOS-CHAT-02: immutable display inputs, captured after all mutations in one source event.
 /// The existing HostConnection and serial transcript worker remain the only business owners.
@@ -99,49 +100,163 @@ struct ChatScreenSnapshot {
             progress: modelSaveState == 0 ? [] : [(label: "", mark: L10n.tr(modelSaveState == 2 ? "未确认" : "保存中"))],
             failed: modelSaveFailed) }
     }
-    var shellKey: [String?] { [identity, kind, cached ? "cached" : "live"] }
-    var headerKey: [String?] {
-        [displayName, kind, connection.rawValue, syncing.description, runtime?.presentationStatus,
-         runtime?.presentationTitle, modelPresentation?.model, modelPresentation?.thinking, modelPresentation?.indicator]
+}
+
+extension ChatTranscript: Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.contentRevision == rhs.contentRevision }
+}
+struct ChatComposerRuntimeFacts: Equatable {
+    let runtimeId: String
+    let sessionId: String?
+    let status: String
+    let cwd: String
+    let contextUsage: RuntimeContextUsage?
+    let permissionManagement: PermissionManagement?
+    let backgroundTasks: BackgroundTaskInventory?
+    init(_ r: RuntimeSummary) {
+        runtimeId = r.runtimeId; sessionId = r.sessionId; status = r.status; cwd = r.cwd
+        contextUsage = r.contextUsage; permissionManagement = r.permissionManagement; backgroundTasks = r.backgroundTasks
     }
-    var composerRuntime: ChatComposerRuntimeFacts {
-        ChatComposerRuntimeFacts(status: runtime?.status, cwd: runtime?.cwd, kind: kind,
-            context: runtime?.contextUsage, permissions: runtime?.permissionManagement, tasks: runtime?.backgroundTasks)
+}
+struct ChatWorkingBranch: Equatable {
+    let sessionId: String?
+    let cwd: String
+    let branch: String?
+    let commit: String?
+    let loaded: Bool
+    init(_ b: WorkingBranch) {
+        sessionId = b.sessionId; cwd = b.cwd; branch = b.branch; commit = b.commit; loaded = b.loaded
     }
-    var workingBranchKey: [String?] {
-        [workingBranch?.sessionId, workingBranch?.cwd,
-         workingBranch?.branch, workingBranch?.commit, workingBranch?.loaded.description]
+}
+struct ChatShellState: Equatable {
+    let target: ChatActionContext
+    let kind: String?
+    let cached: Bool
+    var identity: String { target.identity }
+}
+/// Header rendering excludes editor context, permissions, session tree and directory
+/// metadata. Equality is synthesized over the facts consumed by the existing presenters.
+struct ChatHeaderRuntimeFacts: Equatable {
+    let runtimeId: String
+    let status: String
+    let agentKind: String?
+    let model: RuntimeModelInfo?
+    let thinkingLevel: String?
+    let currentTurnConfiguration: RuntimeTurnConfiguration?
+    let currentTurnConfigurationSupported: Bool?
+    let executionTurnId: String?
+    let compactionPhase: String?
+    let backgroundTasks: BackgroundTaskInventory?
+
+    init(_ runtime: RuntimeSummary) {
+        runtimeId = runtime.runtimeId; status = runtime.status; agentKind = runtime.agentKind
+        model = runtime.model; thinkingLevel = runtime.thinkingLevel
+        currentTurnConfiguration = runtime.currentTurnConfiguration
+        currentTurnConfigurationSupported = runtime.currentTurnConfigurationSupported
+        executionTurnId = runtime.executionTurnId; compactionPhase = runtime.compactionPhase
+        backgroundTasks = runtime.backgroundTasks
     }
-    func sameTranscript(as old: Self) -> Bool {
-        identity == old.identity && transcript.contentRevision == old.transcript.contentRevision &&
-        streaming == old.streaming && hasMessages == old.hasMessages && canSend == old.canSend &&
-        syncing == old.syncing && cached == old.cached && connection == old.connection &&
-        runtime?.status == old.runtime?.status && pending == old.pending && pendingActions == old.pendingActions &&
-        uploads == old.uploads && historyRevision == old.historyRevision && historyPageRevision == old.historyPageRevision &&
-        historyLoading == old.historyLoading && historyError == old.historyError && hasOlder == old.hasOlder &&
-        actionFeedback == old.actionFeedback && rewind == old.rewind
-    }
-    func sameComposer(as old: Self) -> Bool {
-        identity == old.identity && composerRuntime == old.composerRuntime && canSend == old.canSend &&
-        draftRevision == old.draftRevision && commands == old.commands && pendingActions == old.pendingActions &&
-        attached == old.attached && preparing == old.preparing && workingBranchKey == old.workingBranchKey &&
-        contextReady == old.contextReady && cached == old.cached && connection == old.connection &&
-        cachedSession == old.cachedSession && activatingSessionId == old.activatingSessionId
-    }
-    func sameWorkspace(as old: Self) -> Bool {
-        identity == old.identity && requests == old.requests && responding == old.responding &&
-        interactionText == old.interactionText && interactionPending == old.interactionPending &&
-        queue == old.queue && queueCancellations == old.queueCancellations && canSend == old.canSend
+
+    /// Reuse the shared localized status/model derivation, without retaining the
+    /// complete mutable runtime as a region's observation/equality dependency.
+    var runtime: RuntimeSummary {
+        RuntimeSummary(runtimeId: runtimeId, name: "", cwd: "", status: status,
+            agentKind: agentKind, model: model, thinkingLevel: thinkingLevel,
+            currentTurnConfiguration: currentTurnConfiguration,
+            currentTurnConfigurationSupported: currentTurnConfigurationSupported,
+            executionTurnId: executionTurnId, compactionPhase: compactionPhase,
+            backgroundTasks: backgroundTasks)
     }
 }
 
-struct ChatComposerRuntimeFacts: Equatable {
-    let status: String?
-    let cwd: String?
+struct ChatHeaderState: Equatable {
+    let target: ChatActionContext
     let kind: String?
-    let context: RuntimeContextUsage?
-    let permissions: PermissionManagement?
-    let tasks: BackgroundTaskInventory?
+    let displayName: String
+    let connection: ConnectionState
+    let syncing: Bool
+    let modelReady: Bool
+    let executionReady: Bool
+    let modelSaveState: Int
+    let modelSaveFailed: Bool
+    let runtimeFacts: ChatHeaderRuntimeFacts?
+    var runtime: RuntimeSummary? { runtimeFacts?.runtime }
+    var identity: String { target.identity }
+    var modelPresentation: SessionModelPresentation? {
+        runtime.map { .make(runtime: $0, connected: connection == .secured, modelReady: modelReady,
+            executionReady: executionReady,
+            progress: modelSaveState == 0 ? [] : [(label: "", mark: L10n.tr(modelSaveState == 2 ? "未确认" : "保存中"))],
+            failed: modelSaveFailed) }
+    }
+}
+struct ChatTranscriptState: Equatable {
+    let target: ChatActionContext
+    let kind: String?
+    let transcript: ChatTranscript
+    let hasMessages: Bool
+    let canSend: Bool
+    let syncing: Bool
+    let cached: Bool
+    let connection: ConnectionState
+    let streaming: Set<String>
+    let pending: PendingSendOutbox
+    let pendingActions: Set<String>
+    let uploads: [FileTransfer]
+    let historyRevision: Int
+    let historyPageRevision: Int
+    let historyLoading: Bool
+    let historyError: String?
+    let hasOlder: Bool
+    let actionFeedback: String?
+    let rewind: [String: RuntimeOption]
+    let status: String?
+    var identity: String { target.identity }
+}
+struct ChatComposerState: Equatable {
+    let target: ChatActionContext
+    let kind: String?
+    let canSend: Bool
+    let cached: Bool
+    let connection: ConnectionState
+    let draftRevision: Int
+    let commands: [SlashCommand]
+    let pendingActions: Set<String>
+    let attached: [FileTransfer]
+    let preparing: Bool
+    let contextReady: Bool
+    let cachedSession: SessionSummary?
+    let activatingSessionId: String?
+    let runtime: ChatComposerRuntimeFacts?
+    let workingBranch: ChatWorkingBranch?
+    var identity: String { target.identity }
+}
+struct ChatNoticesState: Equatable {
+    let target: ChatActionContext
+    let notice: RuntimeNoticeProjection?
+    let connection: ConnectionState
+    let launch: HostConnection.LaunchState?
+    let isLaunchPage: Bool
+    let supported: Bool
+    var identity: String { target.identity }
+}
+struct ChatWorkspaceState: Equatable {
+    let target: ChatActionContext
+    let host: HostPairing?
+    let requests: [InteractionRequest]
+    let responding: Set<String>
+    let interactionText: String?
+    let interactionPending: Bool
+    let queue: [QueuedMessage]
+    let queueCancellations: Set<String>
+    let canSend: Bool
+    var identity: String { target.identity }
+}
+
+/// A replacement connection starts a new page lifetime even when its Host and
+/// runtime/session keys are unchanged. Normal publications keep this identity.
+struct ChatPageIdentity: Hashable {
+    let owner: ObjectIdentifier
+    let sessionIdentity: String
 }
 
 /// The immutable target captured when a page is constructed. Reusing the publication
@@ -152,6 +267,7 @@ struct ChatActionContext: Equatable {
     let runtimeId: String?
     let sessionId: String?
 
+    var pageIdentity: ChatPageIdentity { .init(owner: ObjectIdentifier(owner), sessionIdentity: identity) }
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.owner === rhs.owner && lhs.identity == rhs.identity }
     @MainActor static func capture(_ store: OrbisStore) -> Self {
         let runtime = store.selectedRuntime
@@ -159,24 +275,21 @@ struct ChatActionContext: Equatable {
             identity: runtime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "",
             runtimeId: runtime?.runtimeId, sessionId: runtime?.sessionId)
     }
-    @MainActor func matches(_ store: OrbisStore) -> Bool {
-        guard store.activeConnection === owner else { return false }
-        return identity == (store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "")
-    }
-    /// Cleanup may run after switching Hosts. It still belongs to the original source,
-    /// but a reused runtime ID must not cancel a read already owned by a replacement session.
-    @MainActor var ownsRuntime: Bool {
-        guard let runtimeId else { return false }
-        if let current = owner.selectedRuntime, current.runtimeId == runtimeId { return current.sessionId == sessionId }
-        return owner.runtimes.contains { $0.runtimeId == runtimeId && $0.sessionId == sessionId }
+}
+
+struct ChatRuntimeTarget: Equatable {
+    let runtimeId: String
+    let sessionId: String?
+    init(_ runtime: RuntimeSummary) {
+        runtimeId = runtime.runtimeId; sessionId = runtime.sessionId
     }
 }
 
+/// Navigation renders selection identity and Hub metadata, never runtime contents.
 struct NavigationScreenSnapshot: Equatable {
-    let source: HostConnection
-    let runtime: RuntimeSummary?
+    let target: ChatActionContext
+    let runtime: ChatRuntimeTarget?
     let selectedHost: HostPairing?
-    let owner: ObjectIdentifier
     let pairings: [HostPairing]
     let selectedHostId: String?
     let runtimeIdentity: String?
@@ -184,52 +297,67 @@ struct NavigationScreenSnapshot: Equatable {
     let activationRevision: Int
     let pairing: Bool
     let error: String?
-    var actionContext: ChatActionContext {
-        ChatActionContext(owner: source, identity: runtimeIdentity ?? "", runtimeId: runtime?.runtimeId, sessionId: runtime?.sessionId)
-    }
+    var source: HostConnection { target.owner }
+    var actionContext: ChatActionContext { target }
     @MainActor init(store: OrbisStore) {
-        source = store.activeConnection; runtime = source.selectedRuntime; selectedHost = store.selectedHost
-        owner = ObjectIdentifier(store.activeConnection); pairings = store.pairings
+        target = .capture(store)
+        runtime = store.selectedRuntime.map(ChatRuntimeTarget.init)
+        selectedHost = store.selectedHost; pairings = store.pairings
         selectedHostId = store.selectedHostId; selectedRuntimeId = store.selectedRuntimeId
         runtimeIdentity = store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) }
         activationRevision = store.activationRevision; pairing = store.isPairing; error = store.errorMessage
     }
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.owner == rhs.owner && lhs.pairings == rhs.pairings && lhs.selectedHostId == rhs.selectedHostId &&
-        lhs.runtimeIdentity == rhs.runtimeIdentity && lhs.selectedRuntimeId == rhs.selectedRuntimeId &&
-        lhs.activationRevision == rhs.activationRevision && lhs.pairing == rhs.pairing && lhs.error == rhs.error
-    }
 }
 
-/// Publishers have no business state. Four independent sources are coalesced after willSet,
-/// then every snapshot is installed before the first scoped invalidation is delivered.
-@MainActor
-final class ChatScreenPublications {
-    let navigation = ScreenPublication()
-    let shell = ScreenPublication()
-    let header = ScreenPublication()
-    let transcript = ScreenPublication()
-    let composer = ScreenPublication()
-    let notices = ScreenPublication()
-    let workspace = ScreenPublication()
-    private(set) var snapshot: ChatScreenSnapshot
-    private(set) var navigationSnapshot: NavigationScreenSnapshot
-    private(set) var captureRevision = 0
-    private weak var store: OrbisStore?
-    private var sourceOwner: ObjectIdentifier
-    private var pageIdentity: String
-    private var observations: [AnyCancellable] = []
-    private var task: Task<Void, Never>?
-    private var token = UUID()
-    private var held = false
-    private var dirty = false
-    private var rebindPending = false
+/// IOS-CHAT-07: reading an immutable region value establishes its observation.
+@MainActor @Observable
+final class ChatScreenModel {
+    @ObservationIgnored let visualActivity = ChatVisualActivity()
+    @ObservationIgnored let viewport = ChatViewportController()
+    @ObservationIgnored private var mountedToken: UUID?
+    @ObservationIgnored private var moving = false
+    @ObservationIgnored private var visible = true
+    @ObservationIgnored private var foreground = true
+    private(set) var shell: ChatShellState
+    private(set) var header: ChatHeaderState
+    private(set) var transcript: ChatTranscriptState
+    private(set) var composer: ChatComposerState
+    private(set) var notices: ChatNoticesState
+    private(set) var workspace: ChatWorkspaceState
+    private(set) var navigation: NavigationScreenSnapshot
+    private(set) var canReadTranscript: Bool
+    var actions: ChatSessionActions {
+        guard let store else { preconditionFailure("A mounted chat model requires its store") }
+        return ChatSessionActions(store: store, target: ChatActionContext(owner: snapshot.owner, identity: snapshot.identity,
+            runtimeId: snapshot.runtime?.runtimeId, sessionId: snapshot.runtime?.sessionId), preservingRuntime: snapshot.runtime)
+    }
+    @ObservationIgnored private(set) var snapshot: ChatScreenSnapshot
+    @ObservationIgnored private(set) var captureRevision = 0
+    @ObservationIgnored private weak var store: OrbisStore?
+    @ObservationIgnored private var sourceOwner: ObjectIdentifier
+    @ObservationIgnored private var pageIdentity: String
+    @ObservationIgnored private var observations: [AnyCancellable] = []
+    @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var token = UUID()
+    @ObservationIgnored private var held = false
+    @ObservationIgnored private var dirty = false
+    @ObservationIgnored private var rebindPending = false
 
     init(store: OrbisStore) {
-        self.store = store; snapshot = ChatScreenSnapshot(store: store)
-        navigationSnapshot = NavigationScreenSnapshot(store: store)
+        self.store = store
+        let initial = ChatScreenSnapshot(store: store), nav = NavigationScreenSnapshot(store: store)
+        snapshot = initial; navigation = nav
+        canReadTranscript = initial.canSend
+        let regions = Regions(snapshot: initial, target: nav.target)
+        shell = regions.shell
+        header = regions.header
+        transcript = regions.transcript
+        composer = regions.composer
+        notices = regions.notices
+        workspace = regions.workspace
         sourceOwner = ObjectIdentifier(store.activeConnection)
         pageIdentity = snapshot.identity
+        viewport.commit(transcript)
         observe(store.activeConnection)
     }
     private func observe(_ source: HostConnection) {
@@ -255,6 +383,48 @@ final class ChatScreenPublications {
         }
         schedule()
     }
+    /// A covered retained page keeps its viewport. A newly mounted native scroll
+    /// view starts a fresh context even when it selects the same runtime/session.
+    func mount(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
+        guard actions.target == target else { return }
+        if mountedToken != token {
+            mountedToken = token
+            viewport.resetForMount()
+            viewport.commit(transcript)
+        }
+        visibilityChanged(target: target, visible: visible, foreground: foreground)
+    }
+    func unmount(target: ChatActionContext, token: UUID) {
+        guard actions.target == target, mountedToken == token else { return }
+        mountedToken = nil
+        visible = false
+        reconcilePhase()
+    }
+    func motionChanged(_ active: Bool) {
+        moving = active
+        reconcilePhase()
+    }
+    func ownsMount(target: ChatActionContext, token: UUID) -> Bool {
+        mountedToken == token && actions.target == target && actions.isCurrent
+    }
+    func visibilityChanged(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
+        guard ownsMount(target: target, token: token) else { return }
+        visibilityChanged(target: target, visible: visible, foreground: foreground)
+    }
+    func visibilityChanged(target: ChatActionContext, visible: Bool, foreground: Bool) {
+        guard actions.target == target else { return }
+        self.visible = visible; self.foreground = foreground
+        reconcilePhase()
+    }
+    private func reconcilePhase() {
+        let phase: ChatPagePhase = !foreground ? .background : (!visible ? .covered : (moving ? .moving : .active))
+        visualActivity.set(phase)
+        viewport.setVisualActive(phase.visualActive)
+        // Navigation publications still need the hold after popping chat. A retained
+        // covered chat keeps committing, while an unmounted page has no visible work.
+        // OrbisHub owns the one bounded timer for both publication pipelines.
+        hold(moving && (mountedToken == nil || (foreground && visible)))
+    }
     func hold(_ hold: Bool) {
         held = hold
         if !hold && dirty { schedule() }
@@ -278,26 +448,44 @@ final class ChatScreenPublications {
     }
     private func commit(force: Bool) {
         guard let store else { return }
+        let interval = ChatSchedulingTrace.screenCommitBegan()
+        var invalidated = 0
+        defer { ChatSchedulingTrace.screenCommitEnded(interval, invalidatedRegions: invalidated) }
         captureRevision &+= 1
         dirty = false
         rebindPending = false
         let next = ChatScreenSnapshot(store: store), nav = NavigationScreenSnapshot(store: store)
-        let old = snapshot
-        let shellChanged = force || next.shellKey != old.shellKey
-        let headerChanged = force || next.headerKey != old.headerKey
-        let transcriptChanged = force || !next.sameTranscript(as: old)
-        let composerChanged = force || !next.sameComposer(as: old)
-        let noticeChanged = force || next.identity != old.identity || next.notice != old.notice || next.connection != old.connection || next.launch != old.launch
-        let workspaceChanged = force || !next.sameWorkspace(as: old)
-        let navChanged = force || nav != navigationSnapshot
-        snapshot = next; navigationSnapshot = nav
-        if navChanged { navigation.invalidate() }
-        if shellChanged { shell.invalidate() }
-        if headerChanged { header.invalidate() }
-        if transcriptChanged { transcript.invalidate() }
-        if composerChanged { composer.invalidate() }
-        if noticeChanged { notices.invalidate() }
-        if workspaceChanged { workspace.invalidate() }
+        let regions = Regions(snapshot: next, target: nav.target)
+        snapshot = next
+        if canReadTranscript != next.canSend { canReadTranscript = next.canSend }
+        // Explicit equality keeps this contract independent of the macro/toolchain.
+        if force || navigation != nav { invalidated |= ChatSchedulingTrace.RegionMask.navigation; navigation = nav }
+        if force || shell != regions.shell { invalidated |= ChatSchedulingTrace.RegionMask.shell; shell = regions.shell }
+        if force || header != regions.header { invalidated |= ChatSchedulingTrace.RegionMask.header; header = regions.header }
+        if force || transcript != regions.transcript {
+            invalidated |= ChatSchedulingTrace.RegionMask.transcript
+            viewport.commit(regions.transcript)
+            transcript = regions.transcript
+        }
+        if force || composer != regions.composer { invalidated |= ChatSchedulingTrace.RegionMask.composer; composer = regions.composer }
+        if force || notices != regions.notices { invalidated |= ChatSchedulingTrace.RegionMask.notices; notices = regions.notices }
+        if force || workspace != regions.workspace { invalidated |= ChatSchedulingTrace.RegionMask.workspace; workspace = regions.workspace }
+    }
+    private struct Regions {
+        let shell: ChatShellState
+        let header: ChatHeaderState
+        let transcript: ChatTranscriptState
+        let composer: ChatComposerState
+        let notices: ChatNoticesState
+        let workspace: ChatWorkspaceState
+        init(snapshot s: ChatScreenSnapshot, target: ChatActionContext) {
+            shell = .init(target: target, kind: s.kind, cached: s.cached)
+            header = .init(target: target, kind: s.kind, displayName: s.displayName, connection: s.connection, syncing: s.syncing, modelReady: s.modelReady, executionReady: s.executionReady, modelSaveState: s.modelSaveState, modelSaveFailed: s.modelSaveFailed, runtimeFacts: s.runtime.map(ChatHeaderRuntimeFacts.init))
+            transcript = .init(target: target, kind: s.kind, transcript: s.transcript, hasMessages: s.hasMessages, canSend: s.canSend, syncing: s.syncing, cached: s.cached, connection: s.connection, streaming: s.streaming, pending: s.pending, pendingActions: s.pendingActions, uploads: s.uploads, historyRevision: s.historyRevision, historyPageRevision: s.historyPageRevision, historyLoading: s.historyLoading, historyError: s.historyError, hasOlder: s.hasOlder, actionFeedback: s.actionFeedback, rewind: s.rewind, status: s.runtime?.status)
+            composer = .init(target: target, kind: s.kind, canSend: s.canSend, cached: s.cached, connection: s.connection, draftRevision: s.draftRevision, commands: s.commands, pendingActions: s.pendingActions, attached: s.attached, preparing: s.preparing, contextReady: s.contextReady, cachedSession: s.cachedSession, activatingSessionId: s.activatingSessionId, runtime: s.runtime.map(ChatComposerRuntimeFacts.init), workingBranch: s.workingBranch.map(ChatWorkingBranch.init))
+            notices = .init(target: target, notice: s.notice, connection: s.connection, launch: s.launch, isLaunchPage: s.isLaunchPage, supported: ["codex", "codexDesktop"].contains(s.runtime?.agentKind ?? ""))
+            workspace = .init(target: target, host: s.host, requests: s.requests, responding: s.responding, interactionText: s.interactionText, interactionPending: s.interactionPending, queue: s.queue, queueCancellations: s.queueCancellations, canSend: s.canSend)
+        }
     }
     func waitForPending() async { while let pending = task { await pending.value } }
 }

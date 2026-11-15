@@ -61,8 +61,7 @@ final class OrbisStore: ObservableObject {
     private var pairingTransport: OrbisTransport?
     let homeUpdates = ScreenPublication()
     let directoryUpdates = ScreenPublication()
-    lazy var chatScreens = ChatScreenPublications(store: self)
-    var navigationUpdates: ScreenPublication { chatScreens.navigation }
+    lazy var chatScreens = ChatScreenModel(store: self)
     private var changedHosts: Set<String> = []
     private var menuFacts: [HostMenuFact] = []
     private var menuRevision = 0
@@ -156,7 +155,7 @@ final class OrbisStore: ObservableObject {
     func holdScreenPublications(_ hold: Bool, limit: Duration = .seconds(1)) {
         guard hold || publicationsHeld else { return }
         publicationsHeld = hold
-        chatScreens.hold(hold)
+        chatScreens.motionChanged(hold)
         publicationHoldLimit?.cancel(); publicationHoldLimit = nil
         if hold {
             publicationHoldLimit = Task { [weak self] in

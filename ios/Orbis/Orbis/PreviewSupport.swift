@@ -208,21 +208,69 @@ enum PreviewViewportUpdates {
 @MainActor
 final class PreviewChatScrollProbe: NSObject, ObservableObject {
     static let shared = PreviewChatScrollProbe()
-    static let enabled = ProcessInfo.processInfo.arguments.contains("--preview-scroll-frames")
+    static let enabled = ProcessInfo.processInfo.arguments.contains("--preview-scroll-frames") || PreviewChatAnchorCandidate.enabled
     @Published private(set) var report = "idle"
     weak var scroll: UIScrollView?
+    var nativeCells: (() -> [String: [Double]])?
+    var nativeQuestionAnimationStarted: ((ChatViewportPolicy.Request) -> Void)?
+    var nativeAnimationIsRunning: (() -> Bool)?
     private weak var flight: MessageSendFlight?
     private var link: CADisplayLink?
     private var samples: [[String: Any]] = []
     private var started: CFTimeInterval = 0
     private var generation = 0
+    private var requestPreemption: [String: Any]?
+
+    func bind(flight: MessageSendFlight) {
+        guard Self.enabled else { return }
+        self.flight = flight
+    }
+
+    // IOS-CHAT-13: XCUI waits for native animations before its next tap. Schedule
+    // the second real policy action while the first native animator is running.
+    func armQuestionPreemption(_ controller: ChatViewportController) {
+        guard ProcessInfo.processInfo.arguments.contains("--preview-question-preemption") else { return }
+        nativeQuestionAnimationStarted = { [weak self, weak controller] request in
+            guard let self, let controller, controller.owns(request), let flight = self.flight else { return }
+            self.nativeQuestionAnimationStarted = nil
+            self.begin(flight: flight)
+            let current = self.generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self, weak controller] in
+                guard let self, let controller, self.generation == current,
+                      controller.owns(request), let scroll = self.scroll else { return }
+                let oldAnimating = self.nativeAnimationIsRunning?() ?? false
+                let issuedAt = CACurrentMediaTime() - self.started
+                let issuedOffset = scroll.layer.presentation()?.bounds.origin.y ?? scroll.contentOffset.y
+                controller.update { $0.jumpToLatest() }
+                self.requestPreemption = ["issuedAt": issuedAt, "issuedOffset": Double(issuedOffset),
+                    "oldAnimating": oldAnimating, "questionSequence": request.sequence,
+                    "latestSequence": controller.request?.sequence ?? -1,
+                    "contextGeneration": request.contextGeneration,
+                    "latestContextGeneration": controller.request?.contextGeneration ?? -1]
+                self.sample()
+            }
+        }
+    }
+
+    var diagnosticRows: [String: [Double]] {
+        guard let scroll else { return [:] }
+        let viewport = scroll.convert(scroll.bounds, to: nil)
+        var frames: [String: [Double]] = [:]
+        for (id, anchor) in flight?.targets ?? [:] where frames.count < 24 {
+            let frame = anchor.frame
+            if frame.intersects(viewport) {
+                frames[id] = [Double(frame.minY), Double(frame.height)]
+            }
+        }
+        return frames
+    }
 
     func begin(flight: MessageSendFlight) {
-        guard Self.enabled else { return }
+        guard ProcessInfo.processInfo.arguments.contains("--preview-scroll-frames") else { return }
         self.flight = flight
         link?.invalidate(); generation += 1
         let current = generation
-        report = "recording"; samples = []; started = CACurrentMediaTime(); sample()
+        report = "recording"; samples = []; requestPreemption = nil; started = CACurrentMediaTime(); sample()
         let link = CADisplayLink(target: self, selector: #selector(sample))
         link.add(to: .main, forMode: .common); self.link = link
         if ProcessInfo.processInfo.arguments.contains("--preview-jump-updates") {
@@ -256,8 +304,131 @@ final class PreviewChatScrollProbe: NSObject, ObservableObject {
                 frames[id] = [Double(frame.minY), Double(frame.width), Double(frame.height)]
             }
         }
-        samples.append(["time": CACurrentMediaTime() - started, "offset": Double(offset), "bottom": Double(bottom),
-                        "width": Double(scroll.bounds.width), "height": Double(scroll.bounds.height), "rows": frames])
+        var frame: [String: Any] = ["time": CACurrentMediaTime() - started, "offset": Double(offset), "bottom": Double(bottom),
+                        "width": Double(scroll.bounds.width), "height": Double(scroll.bounds.height), "rows": frames,
+                        "cells": nativeCells?() ?? [:]]
+        if let requestPreemption { frame["requestPreemption"] = requestPreemption }
+        samples.append(frame)
+    }
+}
+
+/// IOS-CHAT-06: exactly one candidate per run, with a baseline if arguments are
+/// ambiguous. These switches and fixtures do not exist in Release builds.
+enum PreviewChatAnchorCandidate: String {
+    case baseline, readingTop = "reading-top", unboundReading = "unbound-reading", belowOnly = "below-only"
+
+    private static let arguments = ProcessInfo.processInfo.arguments
+    static let enabled = arguments.contains("--preview-anchor-diagnostics") ||
+        arguments.contains { $0.hasPrefix("--preview-anchor-candidate=") }
+    static let selected: Self = {
+        let values = arguments.filter { $0.hasPrefix("--preview-anchor-candidate=") }
+        guard values.count == 1, let value = values[0].split(separator: "=", maxSplits: 1).last,
+              let candidate = Self(rawValue: String(value)) else { return .baseline }
+        return candidate
+    }()
+}
+
+/// Captures only the opted-in native scroll view. It never changes its offset,
+/// bindings or content, and publishes a report only after the sample window.
+@MainActor
+final class PreviewChatAnchorDiagnostics: ObservableObject {
+    static let shared = PreviewChatAnchorDiagnostics()
+    @Published private(set) var report = "idle"
+    private var following: Bool?
+    private var positionState = "unreported"
+    private var samples: [[String: Any]] = []
+    private var sourceSequence = 0
+    private var started: TimeInterval?
+    private var task: Task<Void, Never>?
+    private weak var viewport: ChatViewportController?
+
+    func viewportStopped(_ controller: ChatViewportController) {
+        guard PreviewChatAnchorCandidate.enabled else { return }
+        viewport = controller
+        record("interaction.idle")
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let self, !Task.isCancelled else { return }
+            self.record("interaction.after.50ms")
+            self.publish()
+        }
+    }
+
+    func positionChanged(following: Bool, state: @autoclosure () -> String) {
+        guard PreviewChatAnchorCandidate.enabled else { return }
+        let state = state()
+        guard self.following != following || positionState != state else { return }
+        self.following = following; positionState = state
+        record("position")
+    }
+
+    func sourceWillUpdate() {
+        guard PreviewChatAnchorCandidate.enabled else { return }
+        task?.cancel(); task = nil
+        sourceSequence += 1
+        record("source.before")
+    }
+
+    func sourceDidUpdate() {
+        guard PreviewChatAnchorCandidate.enabled else { return }
+        record("source.enqueued")
+        let generation = sourceSequence
+        task = Task { [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled, self.sourceSequence == generation else { return }
+            self.record("source.afterYield")
+            for (delay, label) in [(16, "16ms"), (34, "50ms"), (150, "200ms"), (300, "500ms")] {
+                do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
+                guard !Task.isCancelled, self.sourceSequence == generation else { return }
+                self.record("source.after.\(label)")
+            }
+            self.publish()
+            self.task = nil
+        }
+    }
+
+    private func publish() {
+        if let data = try? JSONSerialization.data(withJSONObject: samples, options: [.sortedKeys]),
+           let report = String(data: data, encoding: .utf8) { self.report = report }
+    }
+
+    private func record(_ reason: String) {
+        guard let scroll = PreviewChatScrollProbe.shared.scroll else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if started == nil { started = now }
+        samples.append(["reason": reason, "sequence": sourceSequence, "time": now - (started ?? now),
+                        "candidate": PreviewChatAnchorCandidate.selected.rawValue,
+                        "offset": Double(scroll.contentOffset.y), "contentHeight": Double(scroll.contentSize.height),
+                        "viewportHeight": Double(scroll.bounds.height),
+                        "clipsToBounds": scroll.clipsToBounds,
+                        "insetTop": Double(scroll.adjustedContentInset.top),
+                        "insetBottom": Double(scroll.adjustedContentInset.bottom),
+                        "following": following.map { $0 as Any } ?? NSNull(),
+                        "position": positionState,
+                        "policy": viewport.map { controller in
+                            ["mode": String(describing: controller.policy.mode),
+                             "hasPositioned": controller.policy.hasPositioned,
+                             "hasBrowsed": controller.policy.hasBrowsed,
+                             "towardEarlier": controller.policy.lastScrollTowardEarlier,
+                             "questionOutside": controller.policy.questionOutsideViewport,
+                             "questionID": controller.latestQuestion?.messageId ?? "",
+                             "hasVisibleRows": controller.viewport.hasVisibleRows,
+                             "showReminder": controller.showQuestionReminder] as [String: Any]
+                        } ?? [:],
+                        "tracking": scroll.isTracking, "dragging": scroll.isDragging,
+                        "decelerating": scroll.isDecelerating,
+                        "rows": PreviewChatScrollProbe.shared.diagnosticRows])
+        if samples.count > 256 { samples.removeFirst(samples.count - 256) }
+    }
+}
+
+struct PreviewChatAnchorDiagnosticReport: View {
+    @ObservedObject private var diagnostics = PreviewChatAnchorDiagnostics.shared
+    var body: some View {
+        Text(diagnostics.report).font(.system(size: 1)).foregroundStyle(.clear)
+            .accessibilityIdentifier("preview-anchor-diagnostics")
+            .accessibilityLabel("anchor-diagnostics").accessibilityValue(diagnostics.report)
+            .allowsHitTesting(false)
     }
 }
 
@@ -282,6 +453,7 @@ struct PreviewHomeRefreshReport: View {
 func makePreviewStore(screen: String) -> OrbisStore {
     PreviewHomeRefreshProbe.shared.reads = 0
     ChatLifecycleProbe.shared.reset()
+    PreviewHistoryPrependProbe.shared.reset()
     let transport = PreviewTransport(screen: screen)
     PreviewViewportUpdates.schedule = screen == "viewport" && (ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag") || ChatLifecycleProbe.enabled)
         ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
@@ -328,7 +500,91 @@ func makePreviewStore(screen: String) -> OrbisStore {
             store.executeSlash("model", args: "model-a")
         }
     }
+    if PreviewHistoryPrependProbe.enabled { PreviewHistoryPrependProbe.shared.bind(store.chatScreens) }
     return store
+}
+
+/// IOS-CHAT-13: hold a real history response until the test records a native text
+/// anchor, then observe the Store's acknowledgement of that exact sync operation.
+@MainActor
+private final class PreviewHistoryPrependProbe: ObservableObject {
+    static let shared = PreviewHistoryPrependProbe()
+    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--preview-history-prepend") }
+    @Published private(set) var report = ""
+    private(set) weak var screenModel: ChatScreenModel?
+    private var pending: (() -> Void)?
+    private var requests = 0
+    private var responses = 0
+    private var syncId = "none"
+    private var beforeEntryId = "none"
+    private var targetLeafId = "none"
+    private var ackSyncId = "none"
+    private var ack = "none"
+    private var responseRange = "none"
+    private var responseMode = "none"
+    private var responseSelection = "none"
+    private var responseCount = 0
+    private var error = "none"
+    var canDeliver: Bool { pending != nil }
+
+    func bind(_ model: ChatScreenModel) { screenModel = model }
+    func reset() {
+        screenModel = nil
+        pending = nil; requests = 0; responses = 0; syncId = "none"
+        beforeEntryId = "none"; targetLeafId = "none"; ackSyncId = "none"; ack = "none"
+        responseRange = "none"; responseMode = "none"; responseSelection = "none"; responseCount = 0; error = "none"
+        publish()
+    }
+    func queued(_ command: [String: Any], deliver: @escaping () -> Void) {
+        requests += 1
+        guard requests == 1, let id = command["syncId"] as? String, !id.isEmpty,
+              command["range"] as? String == "history", command["sessionId"] as? String == "session-1",
+              let before = command["beforeEntryId"] as? String, before == "history-entry-21",
+              let target = command["targetLeafId"] as? String, target == "history-entry-32" else {
+            error = "unexpected-history-request"; publish(); return
+        }
+        syncId = id; beforeEntryId = before; targetLeafId = target; pending = deliver; publish()
+    }
+    func deliver() {
+        guard let deliver = pending else { return }
+        pending = nil
+        deliver()
+        publish()
+    }
+    func responded(_ snapshot: [String: Any]) {
+        responses += 1
+        responseRange = snapshot["range"] as? String ?? "none"
+        responseMode = snapshot["mode"] as? String ?? "none"
+        responseSelection = snapshot["selection"] == nil ? "absent" : "present"
+        responseCount = (snapshot["entries"] as? [[String: Any]])?.count ?? 0
+        if snapshot["syncId"] as? String != syncId { error = "response-sync-mismatch" }
+        publish()
+    }
+    func acknowledged(_ command: [String: Any]) {
+        guard command["syncId"] as? String == syncId else { return }
+        ackSyncId = command["syncId"] as? String ?? "none"
+        ack = command["result"] as? String ?? "missing"
+        publish()
+    }
+    private func publish() {
+        report = "requests=\(requests);responses=\(responses);before=\(beforeEntryId);target=\(targetLeafId);sync=\(syncId);ackSync=\(ackSyncId);ack=\(ack);range=\(responseRange);mode=\(responseMode);selection=\(responseSelection);entries=\(responseCount);error=\(error)"
+    }
+}
+
+private struct PreviewHistoryPrependControl: View {
+    @ObservedObject private var probe = PreviewHistoryPrependProbe.shared
+    var body: some View {
+        // Read the same observed regional value as ChatTranscriptView. A Store
+        // acknowledgement can precede its async projection and screen publication.
+        let rows = probe.screenModel?.transcript.transcript.rows ?? []
+        let messageIds = rows.flatMap { $0.messages.map(\.messageId) }
+        let published = ";publishedRows=\(rows.count);publishedMessages=\(messageIds.count);publishedHistory20=\(messageIds.contains("history-message-20"))"
+        Button("Deliver older page") { probe.deliver() }
+            .font(.system(size: 10)).frame(minHeight: 44)
+            .accessibilityIdentifier("preview-history-deliver")
+            .accessibilityValue(probe.report + published)
+            .disabled(!probe.canDeliver)
+    }
 }
 
 @MainActor
@@ -409,6 +665,7 @@ private final class PreviewTransport: OrbisTransport {
     private var listMutation = ""
     private var claudeIdentityStage = 0
     private var claudeIdentity: Bool { ProcessInfo.processInfo.arguments.contains("--preview-claude-identity") }
+    private var historyPrepend: Bool { screen == "tool" && PreviewHistoryPrependProbe.enabled }
 
     func changeList(_ operation: String) {
         listMutation = operation
@@ -503,6 +760,46 @@ private final class PreviewTransport: OrbisTransport {
         sequence += 1
         receive?(["type": "runtime.event", "runtimeId": runtimeId, "sequence": sequence, "event": event], "msg")
     }
+    private func replyHistoryPrepend(_ command: [String: Any], runtime: String) {
+        let older = command["range"] as? String == "history"
+        let indices = older ? 1...20 : 21...32
+        let messages: [[String: Any]] = indices.map { index in
+            var item = message("history-message-\(index)", role: index.isMultiple(of: 2) ? "assistant" : "user", text: "历史分页阅读锚点 \(index)")
+            // Separate native text elements make the anchor independent of a tall
+            // message's complete accessibility label and keep several rows visible.
+            item["content"] = [["type": "text", "text": "历史分页阅读锚点 \(index)"],
+                ["type": "text", "text": "历史正文 \(index)：保留当前阅读内容。\n继续核对同一段消息的布局和位置。\n历史分页只在上方补齐更早的记录。"]]
+            return item
+        }
+        let entries: [[String: Any]] = zip(indices, messages).map { index, item in
+            ["entryId": "history-entry-\(index)", "parentId": index == 1 ? NSNull() : "history-entry-\(index - 1)" as Any,
+             "type": "message", "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": item]]
+        }
+        let display: [[String: Any]] = zip(indices, messages).map { index, item in
+            ["displayId": "history-entry-\(index)", "entryId": "history-entry-\(index)", "kind": "message", "message": item]
+        }
+        var snapshot: [String: Any] = ["type": "session.snapshot", "sessionId": command["sessionId"]!, "syncId": command["syncId"]!,
+            "range": older ? "history" : "preview", "mode": older ? "prepend" : "replace", "entries": entries,
+            "source": ["epoch": "preview-history-prepend-source", "seq": 1, "ready": true],
+            "hasOlder": !older, "complete": true, "rangeStatus": older ? "complete" : "older_available",
+            "display": ["projectionVersion": 3, "entries": display]]
+        if older {
+            snapshot["beforeEntryId"] = command["beforeEntryId"]
+            snapshot["targetLeafId"] = command["targetLeafId"]
+            let response = snapshot
+            PreviewHistoryPrependProbe.shared.queued(command) { [weak self] in
+                PreviewHistoryPrependProbe.shared.responded(response)
+                self?.event(response, runtimeId: runtime)
+            }
+        } else {
+            snapshot["selection"] = "snapshot"
+            snapshot["cursor"] = ["leafId": "history-entry-32"]
+            snapshot["checkpoint"] = ["checkpointId": "preview-history-prepend-checkpoint", "head": ["leafId": "history-entry-32"],
+                "headCompleteness": "complete", "inventoryComplete": true]
+            snapshot["live"] = ["complete": true, "messages": [], "tools": []]
+            event(snapshot, runtimeId: runtime)
+        }
+    }
     /// Replay the Host's complete inventories at controlled UI-test boundaries.
     private func replyClaudeIdentity(_ command: [String: Any], runtime: String) {
         let stage = min(claudeIdentityStage, 2)
@@ -529,12 +826,17 @@ private final class PreviewTransport: OrbisTransport {
     }
 
     private func appendViewportContent() {
+        PreviewChatAnchorDiagnostics.shared.sourceWillUpdate()
+        defer { PreviewChatAnchorDiagnostics.shared.sourceDidUpdate() }
         ChatLifecycleProbe.shared.sourceUpdated()
         viewportTail += 1
         let base = sourceSequence
         sourceSequence += 1
-        // Replace the growing long reply and append real user/tool rows with stable identities.
-        let changed = Array(messages.enumerated().dropFirst())
+        // The below-only candidate publishes only the new tail entries. The
+        // baseline keeps replacing the growing reply and prior fixture rows.
+        let changed = PreviewChatAnchorCandidate.selected == .belowOnly
+            ? Array(messages.enumerated().suffix(2))
+            : Array(messages.enumerated().dropFirst())
         let entries: [[String: Any]] = changed.map { index, message in
             ["entryId": "node-\(index + 1)", "parentId": "node-\(index)", "type": "message",
              "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": message]]
@@ -823,6 +1125,10 @@ private final class PreviewTransport: OrbisTransport {
         } else if let command = object["command"] as? [String: Any], let type = command["type"] as? String {
             let runtime = object["runtimeId"] as? String ?? "preview-codex"
             if type == "session.sync" {
+                if historyPrepend {
+                    replyHistoryPrepend(command, runtime: runtime)
+                    return
+                }
                 if claudeIdentity {
                     replyClaudeIdentity(command, runtime: runtime)
                     return
@@ -836,6 +1142,8 @@ private final class PreviewTransport: OrbisTransport {
                        "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true], "checkpoint": ["checkpointId": "preview-checkpoint", "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "inventoryComplete": true],
                        "live": ["complete": true, "messages": keyboardLive, "tools": []], "hasOlder": false, "complete": true, "rangeStatus": "complete", "display": ["projectionVersion": 3, "entries": display]], runtimeId: runtime)
                 if screen == "queue" { event(["type": "message.queued", "queueId": "preview-queue", "text": "接着检查 iOS 的历史同步和文件传输。", "delivery": "followUp", "state": "accepted"], runtimeId: runtime) }
+            } else if type == "session.snapshot.ack", historyPrepend {
+                PreviewHistoryPrependProbe.shared.acknowledged(command)
             } else if type == "session.changes.list" {
                 let rows = screen == "changes" ? [changeSummary] : []
                 event(["type": "session.changes.summaries", "requestId": command["requestId"]!, "runtimeId": runtime,
@@ -992,25 +1300,42 @@ private final class PreviewTransport: OrbisTransport {
         ["messageId": id, "role": role, "timestamp": 1793232000000, "content": [["type": "text", "text": text]]]
     }
     private var changeFiles: [[String: Any]] {
-        [
+        let files: [[String: Any]] = [
             ["fileId": "change-1", "path": "src/VeryLongUnicode模块👩🏽‍💻FileNameWithManySectionsAndPreservedCompoundExtension.d.ts", "changeKind": "modified", "fileKind": "text", "additions": 2, "deletions": 1, "beforeBytes": 20, "afterBytes": 36, "contentVersion": "version-1", "detail": "available"],
             ["fileId": "change-2", "path": "README.md", "changeKind": "added", "fileKind": "text", "additions": 1, "deletions": 0, "beforeBytes": NSNull(), "afterBytes": 16, "contentVersion": "version-2", "detail": "available"],
             ["fileId": "change-3", "path": "assets/logo.png", "changeKind": "deleted", "fileKind": "binary", "additions": NSNull(), "deletions": NSNull(), "beforeBytes": 4096, "afterBytes": NSNull(), "contentVersion": "version-3", "detail": "binary"]
         ]
+        guard ProcessInfo.processInfo.arguments.contains("--preview-many-files") else { return files }
+        return files + (4...6).map { index in
+            ["fileId": "change-\(index)", "path": "src/file-\(index).swift", "changeKind": "modified",
+             "fileKind": "text", "additions": 1, "deletions": 0, "contentVersion": "version-\(index)", "detail": "available"]
+        }
     }
     private var changeSummary: [String: Any] {
         let native = ProcessInfo.processInfo.arguments.contains("--preview-native-file-changes")
         return ["projectionVersion": 1, "agent": ["hostId": "preview-host", "agentKind": "codex", "sessionId": "session-1"],
          "reviewTurnId": "preview-review", "sourceTurnIds": ["preview-native-turn"], "changeSetId": "preview-change-set", "manifestVersion": 1, "revision": 1,
-         "anchorEntryId": "node-2", "startedAt": 1793232000000, "finishedAt": 1793232001000, "state": "ready", "outcome": "completed",
-         "coverage": "partial", "scope": native ? "native-file-tools" : "git-visible-files", "attribution": native ? "native-tool" : "workspace-window", "reasons": native ? ["native-file-tools-only"] : ["external-writes-possible"], "fileCount": 3,
-         "addedFiles": 1, "modifiedFiles": 1, "deletedFiles": 1, "additions": NSNull(), "deletions": NSNull(), "preview": changeFiles]
+         "anchorEntryId": ProcessInfo.processInfo.arguments.contains("--preview-long-transcript") ? "node-82" : "node-2", "startedAt": 1793232000000, "finishedAt": 1793232001000, "state": "ready", "outcome": "completed",
+         "coverage": "partial", "scope": native ? "native-file-tools" : "git-visible-files", "attribution": native ? "native-tool" : "workspace-window", "reasons": native ? ["native-file-tools-only"] : ["external-writes-possible"], "fileCount": changeFiles.count,
+         "addedFiles": 1, "modifiedFiles": 1, "deletedFiles": 1, "additions": NSNull(), "deletions": NSNull(), "preview": Array(changeFiles.prefix(4))]
+    }
+    private var recycleHistory: [[String: Any]] {
+        (1...40).flatMap { index in
+            [message("recycle-user-\(index)", role: "user", text: "检查第 \(index) 个源文件。"),
+             message("recycle-reply-\(index)", role: "assistant", text: String(repeating: "已检查源文件并保留历史。", count: 12))]
+        }
     }
     private var messages: [[String: Any]] {
         if screen == "changes" {
             // Five steps make two virtual rows; the summary is anchored on the first step (node-2)
             // and must still follow the turn's last row.
-            return [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "先检查改动范围。"),
+            let history = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript") ? recycleHistory : []
+            if !history.isEmpty {
+                // Isolate cell reuse from the existing multi-row summary-anchor fixture.
+                return history + [message("m1", role: "user", text: "查看这轮的文件变化"),
+                                  message("m2", role: "assistant", text: "已完成本轮文件修改。")]
+            }
+            return history + [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "先检查改动范围。"),
                     message("m3", role: "assistant", text: "正在更新组件。"), message("m4", role: "assistant", text: "正在运行测试。"),
                     message("m5", role: "assistant", text: "测试通过。"), message("m6", role: "assistant", text: "已完成本轮文件修改。")]
         }
@@ -1034,19 +1359,33 @@ private final class PreviewTransport: OrbisTransport {
                  "content": [["type": "text", "text": "已完成工具参数验证。"]]]]
         }
         if screen == "viewport" {
+            if ProcessInfo.processInfo.arguments.contains("--preview-viewport-rich-content") {
+                let code = "native_horizontal_code_start_" + String(repeating: "abcdefghij_", count: 16)
+                let rich = "原生行横向阅读锚点\n\n```text\n" + code + "\n```\n\n"
+                    + "| 横向表格起点 | 第二列 | 第三列 | 横向表格终点 |\n| --- | --- | --- | --- |\n| 内容一 | 内容二 | 内容三 | 内容四 |"
+                return [message("native-rich-user", role: "user", text: "检查代码与表格横向阅读"),
+                    message("native-rich-assistant", role: "assistant", text: rich)]
+            }
             let paragraphs = (1...80).map { "阅读锚点 \($0)" }
             let question = ProcessInfo.processInfo.arguments.contains("--preview-question-reminder")
                 ? "帮我比较这两种实现的阅读体验，保留滚动位置、消息身份和现有动效。\n也请考虑长问题、附件、连续追问和 👩🏽‍💻 的显示。"
                 : "检查长回复滚动"
-            let tail = (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
-            let appended: [[String: Any]] = viewportRows ? (0..<viewportTail).flatMap { index in
-                [message("viewport-user-\(index)", role: "user", text: "新增消息 \(index)"),
+            let belowOnly = PreviewChatAnchorCandidate.selected == .belowOnly
+            let tail = belowOnly ? [] : (0..<viewportTail).map { "新增尾部 \($0 + 1)" }
+            let appended: [[String: Any]] = (viewportRows || belowOnly) ? (0..<viewportTail).flatMap { index in
+                // E2 retains its original latest question. A system row splits
+                // cards without appending to the long reply or adding a question.
+                [message("viewport-user-\(index)", role: viewportRows ? "user" : "system", text: "新增消息 \(index)"),
                  ["messageId": "viewport-tool-\(index)", "role": "assistant", "timestamp": 1793232000001,
                   "content": [["type": "tool_call", "toolCallId": "viewport-call-\(index)", "toolName": "ViewportTool",
                                "arguments": ["command": "echo viewport"]]]]]
             } : []
             return [message("viewport-user", role: "user", text: question),
                     message("viewport-assistant", role: "assistant", text: (paragraphs + tail).joined(separator: "\n\n"))] + appended
+        }
+        if screen == "tool", ProcessInfo.processInfo.arguments.contains("--preview-math-row") {
+            return recycleHistory + [message("math-question", role: "user", text: "检查公式回收后的高度"),
+                message("math-recycled", role: "assistant", text: #"公式复用锚点 \(\frac{1}{2}+\sum_{i=1}^{n}i\)"#)]
         }
         if screen == "tool" {
             let longTranscript = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript")
@@ -1128,6 +1467,7 @@ struct PageReturnReport: View {
 final class PageMotionProbe: NSObject, ObservableObject {
     static let shared = PageMotionProbe()
     static let enabled = ProcessInfo.processInfo.arguments.contains("--measure-page-motion")
+    static let repeatAppearance = ProcessInfo.processInfo.arguments.contains("--preview-repeat-page-appearance")
     @Published private(set) var report = "idle"
     private var link: CADisplayLink?
     private var began: TimeInterval = 0
@@ -1137,6 +1477,11 @@ final class PageMotionProbe: NSObject, ObservableObject {
     private var long = 0
     private var maxGap: CFTimeInterval = 0
     private var count = 0
+    // IOS-CHAT-10-R1: correlate callbacks without altering the measured frame interval.
+    func event(_ name: String, token: Int, phase: String, offset: CGFloat, id: UUID?, details: String = "") {
+        guard Self.enabled else { return }
+        NSLog("OrbisPageMotionEvent %@", "event=\(name) token=\(token) phase=\(phase) offset=\(offset) id=\(id?.uuidString ?? "nil") \(details)")
+    }
     func flight(_ flying: Bool) {
         guard Self.enabled else { return }
         if flying {
@@ -1181,16 +1526,19 @@ struct PageMotionReport: View {
 /// IOS-CHAT-01: opt-in body-evaluation counts without publishing into the measured view tree.
 @MainActor
 final class ChatUpdateProbe {
-    enum Region: String { case navigation, page, header, transcript, composer, notices, workspace, row, markdown }
+    enum Region: String, CaseIterable {
+        case navigation, page, header, transcript, composer, notices, workspace, row, markdown
+        case nativeRow, nativeAuxiliary, nativeReconfigure, nativeSnapshot, nativeMeasure
+    }
     static let shared = ChatUpdateProbe()
     static let enabled = ProcessInfo.processInfo.arguments.contains("--probe-chat-updates")
     private var counts: [Region: Int] = [:]
-    func rendered(_ region: Region) {
+    func rendered(_ region: Region, count: Int = 1) {
         guard Self.enabled else { return }
-        counts[region, default: 0] += 1
+        counts[region, default: 0] += count
     }
     var report: String {
-        [Region.navigation, .page, .header, .transcript, .composer, .notices, .workspace, .row, .markdown].map { "\($0.rawValue)=\(counts[$0, default: 0])" }.joined(separator: ";")
+        Region.allCases.map { "\($0.rawValue)=\(counts[$0, default: 0])" }.joined(separator: ";")
     }
 }
 
@@ -1489,6 +1837,324 @@ struct AccessibilityReachReport: View {
 }
 #endif
 
+import Foundation
+import SwiftUI
+
+/// IOS-CHAT-09: production views keep stable, small diagnostic call sites.
+/// Release has empty implementations for all DEBUG probes and UI.
+enum ChatDebugProbes {
+    @MainActor static func bindNativeTranscript(_ collection: UICollectionView,
+        animationIsRunning: @escaping () -> Bool, rowID: @escaping (IndexPath) -> String?) {
+        #if DEBUG
+        guard PreviewChatScrollProbe.enabled else { return }
+        PreviewChatScrollProbe.shared.scroll = collection
+        PreviewChatScrollProbe.shared.nativeAnimationIsRunning = { [weak collection] in
+            collection?.window != nil && animationIsRunning()
+        }
+        PreviewChatScrollProbe.shared.nativeCells = { [weak collection] in
+            guard let collection, collection.window != nil else { return [:] }
+            var frames: [String: [Double]] = [:]
+            for path in collection.indexPathsForVisibleItems {
+                guard let id = rowID(path), let cell = collection.cellForItem(at: path) as? NativeTranscriptCell,
+                      cell.frame.intersects(collection.bounds) else { continue }
+                let frame = collection.convert(cell.frame, to: nil)
+                frames[id] = [Double(frame.minY), Double(frame.width), Double(frame.height)]
+                if let reader = cell.geometry.currentLargestReaderFrame {
+                    frames["#reader:" + id] = [Double(reader.minY), Double(reader.width), Double(reader.height)]
+                }
+                if let presented = cell.layer.presentation() {
+                    let rect = collection.convert(presented.frame, to: nil)
+                    frames["#presentation:" + id] = [Double(rect.minY), Double(rect.width), Double(rect.height)]
+                }
+            }
+            return frames
+        }
+        #endif
+    }
+    @MainActor static func unbindNativeTranscript(_ collection: UICollectionView?) {
+        #if DEBUG
+        guard let collection, PreviewChatScrollProbe.shared.scroll === collection else { return }
+        PreviewChatScrollProbe.shared.scroll = nil
+        PreviewChatScrollProbe.shared.nativeCells = nil
+        PreviewChatScrollProbe.shared.nativeAnimationIsRunning = nil
+        #endif
+    }
+    @MainActor static func pageMotionEvent(_ name: String, token: Int, phase: @autoclosure () -> String,
+        offset: CGFloat, id: UUID?, details: @autoclosure () -> String = "") {
+        #if DEBUG
+        guard PageMotionProbe.enabled else { return }
+        PageMotionProbe.shared.event(name, token: token, phase: phase(), offset: offset, id: id, details: details())
+        #endif
+    }
+    @MainActor static func pageAnimationStarted() {
+        #if DEBUG
+        PageMotionProbe.shared.animationStarted()
+        #endif
+    }
+    @MainActor static func pageMotionFlight(_ active: Bool) {
+        #if DEBUG
+        PageMotionProbe.shared.flight(active)
+        #endif
+    }
+    @MainActor static func pageReturnBegan() {
+        #if DEBUG
+        PageReturnProbe.shared.begin()
+        #endif
+    }
+    @MainActor static func pageReturnCommitted() {
+        #if DEBUG
+        PageReturnProbe.shared.committed()
+        #endif
+    }
+    @MainActor static var repeatPageAppearance: Bool {
+        #if DEBUG
+        PageMotionProbe.repeatAppearance
+        #else
+        false
+        #endif
+    }
+    @MainActor static func nativeContentBuilt(message: Bool) {
+        #if DEBUG
+        ChatUpdateProbe.shared.rendered(message ? .nativeRow : .nativeAuxiliary)
+        #endif
+    }
+    @MainActor static func nativeReconfigured(count: Int) {
+        #if DEBUG
+        ChatUpdateProbe.shared.rendered(.nativeReconfigure, count: count)
+        #endif
+    }
+    @MainActor static func nativeSnapshotApplied() {
+        #if DEBUG
+        ChatUpdateProbe.shared.rendered(.nativeSnapshot)
+        #endif
+    }
+    @MainActor static func nativeMeasured() {
+        #if DEBUG
+        ChatUpdateProbe.shared.rendered(.nativeMeasure)
+        #endif
+    }
+    @MainActor static func armQuestionPreemption(_ controller: ChatViewportController) {
+        #if DEBUG
+        PreviewChatScrollProbe.shared.armQuestionPreemption(controller)
+        #endif
+    }
+    @MainActor static func viewportStopped(_ controller: ChatViewportController) {
+        #if DEBUG
+        PreviewChatAnchorDiagnostics.shared.viewportStopped(controller)
+        #endif
+    }
+    @MainActor static func rendered(_ region: ChatSchedulingTrace.Region) {
+        #if DEBUG
+        let mapped: ChatUpdateProbe.Region
+        switch region {
+        case .navigation: mapped = .navigation
+        case .page: mapped = .page
+        case .header: mapped = .header
+        case .transcript: mapped = .transcript
+        case .composer: mapped = .composer
+        case .notices: mapped = .notices
+        case .workspace: mapped = .workspace
+        case .row: mapped = .row
+        case .markdown: mapped = .markdown
+        }
+        ChatUpdateProbe.shared.rendered(mapped)
+        #endif
+    }
+
+    static var gitPollInterval: Duration {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-fast-git-poll") { return .milliseconds(350) }
+        #endif
+        return .seconds(15)
+    }
+    static func gitPolling() {
+        #if DEBUG
+        ChatLifecycleProbe.shared.gitActive = true
+        #endif
+    }
+    static func interestAcquired() {
+        #if DEBUG
+        ChatLifecycleProbe.shared.acquired()
+        #endif
+    }
+    static func interestReleased() {
+        #if DEBUG
+        ChatLifecycleProbe.shared.released()
+        #endif
+    }
+    @MainActor static func beginScroll(flight: MessageSendFlight) {
+        #if DEBUG
+        PreviewChatScrollProbe.shared.begin(flight: flight)
+        #endif
+    }
+    @MainActor static func advanceViewport() {
+        #if DEBUG
+        PreviewViewportUpdates.advance?()
+        PreviewViewportUpdates.schedule?()
+        #endif
+    }
+    static func composerInvalidated() {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.invalidated()
+        #endif
+    }
+    static func composerRequested(_ proposal: ProposedViewSize) {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.requested(proposal)
+        #endif
+    }
+    static func composerPlaced(_ geometry: ChatComposerRowGeometry, in bounds: CGRect, editorProposal: ProposedViewSize) {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.placed(geometry, in: bounds, editorProposal: editorProposal)
+        #endif
+    }
+    static func composerCacheHit() {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.cacheHit()
+        #endif
+    }
+    static func composerMeasured(_ proposal: ProposedViewSize, size: CGSize) {
+        #if DEBUG
+        ChatComposerLayoutProbe.shared.measured(proposal, size: size)
+        #endif
+    }
+    static var unbindReadingPosition: Bool {
+        #if DEBUG
+        PreviewChatAnchorCandidate.selected == .unboundReading
+        #else
+        false
+        #endif
+    }
+    static var readingSizeChangeAnchor: UnitPoint? {
+        #if DEBUG
+        PreviewChatAnchorCandidate.selected == .readingTop ? .top : nil
+        #else
+        nil
+        #endif
+    }
+}
+
+struct ChatRevealPreviewTime: DynamicProperty {
+    #if DEBUG
+    @Environment(\.previewRevealTime) private var time
+    var value: TimeInterval? { time }
+    #else
+    var value: TimeInterval? { nil }
+    #endif
+}
+
+struct ChatKeyboardResizeProbe: ViewModifier {
+    let focused: Bool
+    func body(content: Content) -> some View {
+        #if DEBUG
+        content.padding(.bottom, ProcessInfo.processInfo.arguments.contains("--preview-keyboard-resize") && focused ? 300 : 0)
+        #else
+        content
+        #endif
+    }
+}
+
+struct ChatPageDiagnostics: ViewModifier {
+    let composerFocused: Bool
+    let gitActive: Bool
+    let visualActive: Bool
+    let sendFlight: MessageSendFlight
+    func body(content: Content) -> some View {
+        #if DEBUG
+        content
+            .onChange(of: gitActive, initial: true) { _, active in ChatLifecycleProbe.shared.gitActive = active }
+            .onChange(of: visualActive, initial: true) { _, active in ChatLifecycleProbe.shared.visualActive = active }
+            .onAppear { PreviewChatScrollProbe.shared.bind(flight: sendFlight) }
+            .overlay(alignment: .top) {
+                if ProcessInfo.processInfo.arguments.contains("--preview-screen=changes") { TurnChangesRequestProbeView() }
+            }
+            .background { if ChatEntryProbe.enabled { ChatEntryDrawProbe().allowsHitTesting(false) } }
+            .overlay(alignment: .topLeading) { if ChatUpdateProbe.enabled { ChatUpdateReport() } }
+            .overlay(alignment: .bottomLeading) { if ChatLifecycleProbe.enabled { ChatLifecycleReport() } }
+            .overlay(alignment: .topTrailing) {
+                if ProcessInfo.processInfo.arguments.contains("--preview-source-controls") { PreviewChatSourceControl().padding(.top, 60) }
+            }
+            .overlay(alignment: .topLeading) {
+                if ChatComposerLayoutProbe.enabled { PreviewComposerLayoutControl().padding(.top, 60) }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if PreviewChatAnchorCandidate.enabled { PreviewChatAnchorDiagnosticReport() }
+            }
+            .overlay(alignment: .topTrailing) {
+                if PreviewHistoryPrependProbe.enabled { PreviewHistoryPrependControl().padding(.top, 60) }
+            }
+        #else
+        content
+        #endif
+    }
+}
+
+struct ChatTitleDiagnostics: ViewModifier {
+    let value: String
+    #if DEBUG
+    @ObservedObject private var scrollProbe = PreviewChatScrollProbe.shared
+    #endif
+    func body(content: Content) -> some View {
+        #if DEBUG
+        content.accessibilityValue(PreviewChatScrollProbe.enabled ? scrollProbe.report : value)
+        #else
+        content.accessibilityValue(value)
+        #endif
+    }
+}
+
+struct ChatToolReplacementProbe: ViewModifier {
+    let token: ToolContentReader.PresentationToken
+    let onReplace: () -> Void
+    func body(content: Content) -> some View {
+        #if DEBUG
+        content.overlay(alignment: .topTrailing) {
+            if ProcessInfo.processInfo.arguments.contains("--preview-replace-detail") {
+                Button("Replace detail", action: onReplace).font(.system(size: 10)).frame(minHeight: 44)
+                    .accessibilityIdentifier("preview-detail-replace")
+                    .accessibilityValue(String(describing: token))
+            }
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+@available(iOS 18.0, *)
+struct ChatNativeAnchorProbe: ViewModifier {
+    let position: ScrollPosition
+    let following: Bool
+    func body(content: Content) -> some View {
+        #if DEBUG
+        let sample = ChatNativeAnchorSample(position: position, following: following)
+        content.onChange(of: sample, initial: true) { _, sample in
+            PreviewChatAnchorDiagnostics.shared.positionChanged(following: sample.following, state: sample.description)
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+#if DEBUG
+@available(iOS 18.0, *)
+private struct ChatNativeAnchorSample: Equatable {
+    let following: Bool
+    let userPositioned: Bool
+    let point: CGPoint?
+    let edge: Edge?
+    let id: String?
+    init(position: ScrollPosition, following: Bool) {
+        self.following = following; userPositioned = position.isPositionedByUser
+        point = position.point; edge = position.edge; id = position.viewID(type: String.self)
+    }
+    var description: String {
+        "user=\(userPositioned);point=\(String(describing: point));edge=\(String(describing: edge));id=\(id ?? "nil")"
+    }
+}
+#endif
+
 #if DEBUG
 @MainActor
 final class TurnChangesPreviewProbe: ObservableObject {
@@ -1497,10 +2163,20 @@ final class TurnChangesPreviewProbe: ObservableObject {
     func record(_ file: String) { counts[file, default: 0] += 1 }
 }
 struct TurnChangesRequestProbeView: View {
+    @EnvironmentObject private var store: OrbisStore
+    var body: some View {
+        TurnChangesRequestReport(changes: store.activeConnection.turnFileChanges,
+                                 transcript: store.chatScreens.transcript.transcript)
+    }
+}
+private struct TurnChangesRequestReport: View {
     @ObservedObject private var probe = TurnChangesPreviewProbe.shared
+    @ObservedObject var changes: TurnFileChanges
+    let transcript: ChatTranscript
     var body: some View {
         Text("reads=" + (1...3).map { String(probe.counts["change-\($0)"] ?? 0) }.joined(separator: ","))
             .font(.orbisCaption(mono: true)).accessibilityIdentifier("change-detail-requests").allowsHitTesting(false)
+            .accessibilityValue("summaries=\(changes.summaries.count);agent=\(String(describing: changes.summaryProjectionAgent));anchors=\(String(describing: transcript.changeAnchorsByRow[transcript.rows.last?.id ?? ""]))")
     }
 }
 #endif

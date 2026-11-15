@@ -77,7 +77,7 @@ struct OrbisPressedGlyph: ViewModifier {
     @Environment(\.orbisGlyphPressed) private var pressed
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let activation: Int
     @State private var progress: Double = 0
     @State private var feedback = GlyphFeedbackState()
@@ -137,7 +137,7 @@ struct OrbisPressedGlyph: ViewModifier {
 /// Geometry-stable discrete labels; streaming text and editable text keep their own rendering.
 struct OrbisMotionText: View {
     @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @State private var appeared = false
     let value: String
     init(_ value: String) { self.value = value }
@@ -215,7 +215,7 @@ private final class ReplyCardActivity {
 /// so its rounded bottom edge and shadow grow with the card without scaling the text.
 struct OrbisReplyCard: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.orbisVisualActive) private var visualActive
+    @Environment(\.chatVisualActivity) private var pageActivity
     @StateObject private var appearance: ReplyCardAppearance
     @State private var growth = ReplyCardGrowth()
     @State private var height = ReplyCardHeight()
@@ -224,6 +224,11 @@ struct OrbisReplyCard: ViewModifier {
     @State private var activity = ReplyCardActivity()
     let parts: [ReplyCardPart]
     let live: Bool
+
+    private var visualActive: Bool {
+        guard live || animating || (appearance.entering && opacity.target == nil) || activity.needsCatchUp else { return true }
+        return pageActivity?.active ?? true
+    }
 
     init(id: String, parts: [ReplyCardPart], live: Bool, arrivals: ReplyCardArrivals?) {
         self.parts = parts; self.live = live
@@ -278,6 +283,7 @@ struct OrbisReplyCard: ViewModifier {
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
+                    ChatSchedulingTrace.replyHeightRetargeted(Double(measurement.size.height), animated: animate)
                     height.retarget(measurement.size.height, at: now, animated: animate,
                         duration: first ? MotionGeometry.replyArrivalDuration : MotionGeometry.replyGrowthDuration,
                         initial: appearance.entering ? 0 : nil)
@@ -352,7 +358,7 @@ struct OrbisTouchOrigin: UIViewRepresentable {
 }
 
 struct OrbisSelectionFill: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let selected: Bool
@@ -377,7 +383,7 @@ struct OrbisSelectionFill: View {
 
 /// Copy controls share a fixed slot and the same transition into success and back to copy.
 struct OrbisCopyGlyph: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.orbisGlyphActivation) private var inheritedActivation
     let copied: Bool
@@ -404,7 +410,7 @@ struct OrbisCopyGlyph: View {
 
 /// Stable glyph slot. State morphs keep their meaning; every action shares quiet pressure.
 struct OrbisMotionGlyph: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let symbol: String
     let size: CGFloat
@@ -481,8 +487,11 @@ private struct MenuCloseLines: Shape {
 
 /// A message owns one menu or one text-selection sheet; the page header never changes.
 struct OrbisMessageActions: ViewModifier {
+    @OrbisVisualActive private var visualActive
     @EnvironmentObject private var overlay: OrbisOverlay
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.chatNativeCellGeometry) private var nativeGeometry
+    @Environment(\.chatTranscriptInteractionState) private var interactions
+    @Environment(\.chatTranscriptRowInteraction) private var rowInteraction
     let enabled: Bool
     let id: String
     let text: String
@@ -494,7 +503,10 @@ struct OrbisMessageActions: ViewModifier {
 
     func body(content: Content) -> some View {
         if enabled {
-            content.orbisAnchor(anchor)
+            content.orbisAnchor(anchor) { frame in
+                if let frame { overlay.moveMenu(owner: owner, to: frame) }
+                else { overlay.dismissMenu(owner: owner) }
+            }
                 .background(OrbisMenuScrollObserver { overlay.dismissMenu(owner: owner) })
                 .accessibilityIdentifier("user-message-" + id)
                 .onLongPressGesture { show() }
@@ -505,11 +517,7 @@ struct OrbisMessageActions: ViewModifier {
                 .onChange(of: id) { old, _ in
                     overlay.dismissMenu(owner: "message-" + old); selectingText = false
                 }
-                .onChange(of: scenePhase) { _, phase in if phase != .active { dismiss() } }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { new in
-                    anchor.frame = new
-                    overlay.moveMenu(owner: owner, to: new)
-                }
+                .onChange(of: visualActive) { _, active in if !active { dismiss() } }
                 .orbisBottomSheet(isPresented: $selectingText) {
                     OrbisMessageTextSelection(text: text).orbisSheet()
                 }
@@ -526,7 +534,7 @@ struct OrbisMessageActions: ViewModifier {
             items.append(OrbisMenuItem(title: L10n.tr("复制消息"), symbol: "doc.on.doc", keepsOpen: true,
                                       identifier: "copy-message-" + id) { UIPasteboard.general.string = text })
             items.append(OrbisMenuItem(title: L10n.tr("选择文字"), symbol: "text.cursor",
-                                      identifier: "select-message-text-" + id) { selectingText = true })
+                                      identifier: "select-message-text-" + id, action: selectText))
         }
         if rewindEnabled, let rewind {
             if !items.isEmpty { items.append(.divider) }
@@ -536,6 +544,25 @@ struct OrbisMessageActions: ViewModifier {
         guard !items.isEmpty else { return }
         OrbisHaptics.selectionChanged()
         overlay.showMenu(items, from: anchor.frame, preferAbove: true, owner: owner)
+    }
+    private func selectText() {
+        if nativeGeometry != nil, let interactions, let rowInteraction {
+            interactions.presentSelection(text: text, source: .init(rowID: rowInteraction.rowID,
+                                                                   contentID: "selection:" + id))
+        } else { selectingText = true }
+    }
+}
+
+/// The page owns the sheet while its source cell scrolls out of the collection.
+struct ChatMessageSelectionSheet: View {
+    let text: String
+    let onDismiss: () -> Void
+    @State private var open = true
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .orbisBottomSheet(isPresented: $open, onDismiss: onDismiss, retireIndependently: true) {
+                OrbisMessageTextSelection(text: text).orbisSheet()
+            }
     }
 }
 
@@ -618,7 +645,7 @@ private struct OrbisMenuScrollObserver: UIViewRepresentable {
 
 /// Both action groups keep one layout slot. Only the active group can receive input or focus.
 struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.orbisReduceMotion) private var reduceMotion
     let selecting: Bool
     @ViewBuilder let normal: (CGFloat) -> Normal
@@ -641,6 +668,40 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     }
 }
 
+/// A reused cell can outlive its old row's asynchronous geometry callbacks. Every
+/// write and removal must still own this page, row, cell and UIView reader.
+fileprivate struct NativeSendTargetOwner: Equatable {
+    let page: UUID
+    let row: String
+    let cell: ObjectIdentifier
+    let reader: UUID
+}
+
+/// Only the Canvas symbol observes bubble updates. Publishing through the page
+/// would make every target render, register its visual, and publish again.
+@MainActor fileprivate final class NativeSendVisualSource: ObservableObject {
+    private(set) var content: AnyView
+    private var scheduled = false
+
+    init(_ content: AnyView) { self.content = content }
+
+    func update(_ content: AnyView, notifying: Bool) {
+        self.content = content
+        guard notifying, !scheduled else { return }
+        scheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.scheduled = false
+            self.objectWillChange.send()
+        }
+    }
+}
+
+private struct NativeSendVisualContent: View {
+    @ObservedObject var source: NativeSendVisualSource
+    var body: some View { source.content }
+}
+
 @MainActor final class MessageSendFlight: ObservableObject {
     struct Item: Identifiable {
         let id: String
@@ -656,6 +717,15 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     let root = OrbisAnchor()
     let viewport = OrbisAnchor()
     var targets: [String: OrbisAnchor] = [:]
+    fileprivate let pageID = UUID()
+    private struct NativeTarget {
+        let owner: NativeSendTargetOwner
+        let anchor: OrbisAnchor
+        let visual: NativeSendVisualSource
+        var visible = false
+    }
+    private var nativeTargets: [String: NativeTarget] = [:]
+    private var nativeVisualChangeScheduled = false
     private var tasks: [String: Task<Void, Never>] = [:]
     private var work = OrbisVisualWorkGate()
     #if DEBUG
@@ -724,6 +794,54 @@ struct OrbisSelectionToolbar<Normal: View, Selected: View>: View {
     // Rows unregister on disappearance. A covered/backgrounded page may resume with
     // the same rows, so cancelling motion must preserve their live landing anchors.
     func clear() { cancelFlights() }
+
+    fileprivate func registerNative(_ owner: NativeSendTargetOwner, anchor: OrbisAnchor,
+                                    visual: NativeSendVisualSource) {
+        guard owner.page == pageID else { return }
+        let previous = nativeTargets[owner.row]
+        nativeTargets[owner.row] = NativeTarget(owner: owner, anchor: anchor, visual: visual)
+        if let previous, targets[owner.row] === previous.anchor { targets[owner.row] = nil }
+        if previous?.visible == true { nativeVisualChanged(for: owner.row) }
+    }
+
+    fileprivate func ownsNative(_ owner: NativeSendTargetOwner) -> Bool {
+        owner.page == pageID && nativeTargets[owner.row]?.owner == owner
+    }
+
+    fileprivate func updateNative(_ owner: NativeSendTargetOwner, frame: CGRect?) {
+        guard ownsNative(owner), var registration = nativeTargets[owner.row] else { return }
+        let visible = frame.map { !$0.isEmpty } ?? false
+        registration.anchor.frame = visible ? (frame ?? .zero) : .zero
+        if visible { targets[owner.row] = registration.anchor }
+        else if targets[owner.row] === registration.anchor { targets[owner.row] = nil }
+        let changed = registration.visible != visible
+        registration.visible = visible
+        // Keep the latest ownership lease while off-window. A late callback from
+        // an older cell may neither remove this source nor re-acquire the row.
+        nativeTargets[owner.row] = registration
+        if changed { nativeVisualChanged(for: owner.row) }
+    }
+
+    fileprivate func unregisterNative(_ owner: NativeSendTargetOwner) {
+        guard ownsNative(owner), let registration = nativeTargets.removeValue(forKey: owner.row) else { return }
+        if targets[owner.row] === registration.anchor { targets[owner.row] = nil }
+        if registration.visible { nativeVisualChanged(for: owner.row) }
+    }
+
+    fileprivate func nativeVisual(for id: String) -> AnyView? {
+        guard let registration = nativeTargets[id], registration.visible else { return nil }
+        return AnyView(NativeSendVisualContent(source: registration.visual))
+    }
+
+    private func nativeVisualChanged(for id: String) {
+        guard items.contains(where: { $0.id == id }), !nativeVisualChangeScheduled else { return }
+        nativeVisualChangeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.nativeVisualChangeScheduled = false
+            self.objectWillChange.send()
+        }
+    }
 }
 
 /// Layout rendezvous uses display frames, not an assumed 60 Hz wall-clock delay.
@@ -770,7 +888,7 @@ extension View {
 
 private struct MessageSendFlightHost: ViewModifier {
     @ObservedObject var flight: MessageSendFlight
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
@@ -790,7 +908,7 @@ private struct MessageSendFlightHost: ViewModifier {
                     ForEach(flight.items) { item in
                         SendFlightVisual(progress: item.progress, source: item.source, target: item.target,
                                          root: flight.root.frame.origin, text: item.text,
-                                         visual: item.landsOnRow || item.awaitingTarget ? visuals[item.id] : nil,
+                                         visual: item.landsOnRow || item.awaitingTarget ? (flight.nativeVisual(for: item.id) ?? visuals[item.id]) : nil,
                                          landsOnRow: item.landsOnRow || item.awaitingTarget)
                             .transition(.identity)
                     }
@@ -861,15 +979,62 @@ private struct MessageSendFlightTarget<Content: View>: View {
         else { content }
     }
 }
+
+@MainActor private final class NativeSendTargetBinding {
+    private var owner: NativeSendTargetOwner?
+    private weak var flight: MessageSendFlight?
+    private var visual: NativeSendVisualSource?
+
+    func bind(reader: UUID, flight: MessageSendFlight, id: String, cell: ChatNativeCellGeometry,
+              anchor: OrbisAnchor, content: AnyView) {
+        let next = NativeSendTargetOwner(page: flight.pageID, row: id,
+                                         cell: ObjectIdentifier(cell), reader: reader)
+        if owner != next {
+            retire()
+            owner = next; self.flight = flight
+            let source = NativeSendVisualSource(content)
+            visual = source
+            flight.registerNative(next, anchor: anchor, visual: source)
+        } else if flight.ownsNative(next) {
+            // A superseded cell may still render before UIKit finishes reuse. It
+            // must not claim the new cell's registration on that later update.
+            visual?.update(content, notifying: flight.items.contains { $0.id == id })
+        }
+    }
+
+    func report(_ frame: CGRect?, reader: UUID, flight: MessageSendFlight, id: String,
+                cell: ChatNativeCellGeometry) {
+        let expected = NativeSendTargetOwner(page: flight.pageID, row: id,
+                                             cell: ObjectIdentifier(cell), reader: reader)
+        guard owner == expected else { return }
+        flight.updateNative(expected, frame: frame)
+    }
+
+    func remove(reader: UUID, flight: MessageSendFlight, id: String, cell: ChatNativeCellGeometry) {
+        let expected = NativeSendTargetOwner(page: flight.pageID, row: id,
+                                             cell: ObjectIdentifier(cell), reader: reader)
+        guard owner == expected else { return }
+        retire()
+    }
+
+    private func retire() {
+        if let owner { flight?.unregisterNative(owner) }
+        owner = nil; flight = nil; visual = nil
+    }
+}
+
 private struct TrackedSendTarget<Content: View>: View {
     @ObservedObject var flight: MessageSendFlight
+    @Environment(\.chatNativeCellGeometry) private var nativeGeometry
+    @Environment(\.downloadFlight) private var downloadFlight
     let id: String
     let content: Content
     @State private var anchor = OrbisAnchor()
+    @State private var nativeBinding = NativeSendTargetBinding()
     var body: some View {
         let item = flight.items.first { $0.id == id }
         let projected = item.map { $0.landsOnRow || $0.awaitingTarget } ?? false
-        content
+        let bubble = content
             // Keep the selectable native text at full opacity throughout. Restoring
             // its opacity during an IME layout can animate the underlying text view
             // even when SwiftUI's handoff transaction has no animation.
@@ -878,11 +1043,28 @@ private struct TrackedSendTarget<Content: View>: View {
                     .padding(-OrbisRadius.card)
                     .transaction { $0.animation = nil; $0.disablesAnimations = true }
             }
-            .preference(key: MessageSendVisualKey.self, value: projected ? [id: AnyView(content)] : [:])
-            .orbisAnchor(anchor)
-            .onAppear { flight.targets[id] = anchor }
-            .onChange(of: id) { old, new in flight.targets[old] = nil; flight.targets[new] = anchor }
-            .onDisappear { flight.targets[id] = nil }
+        if let nativeGeometry {
+            bubble.background(OrbisNativeWindowGeometryReader(geometry: nativeGeometry,
+                semanticID: flight.pageID.uuidString + ":" + id,
+                onFrame: { reader, frame in
+                    nativeBinding.report(frame, reader: reader, flight: flight, id: id, cell: nativeGeometry)
+                }, onTouch: { downloadFlight?.lastTap = $0 }, onUpdate: { reader in
+                    nativeBinding.bind(reader: reader, flight: flight, id: id, cell: nativeGeometry,
+                                       anchor: anchor, content: AnyView(content))
+                }, onRemove: { reader in
+                    nativeBinding.remove(reader: reader, flight: flight, id: id, cell: nativeGeometry)
+                }))
+        } else {
+            bubble
+                .preference(key: MessageSendVisualKey.self, value: projected ? [id: AnyView(content)] : [:])
+                .orbisAnchor(anchor)
+                .onAppear { flight.targets[id] = anchor }
+                .onChange(of: id) { old, new in
+                    if flight.targets[old] === anchor { flight.targets[old] = nil }
+                    flight.targets[new] = anchor
+                }
+                .onDisappear { if flight.targets[id] === anchor { flight.targets[id] = nil } }
+        }
     }
 }
 
@@ -939,7 +1121,7 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
 /// A dial crossing gives one small state-duration pulse, cancelled on reuse.
 struct OrbisDialPulse: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let trigger: Int
     let peak: CGFloat
     @State private var scale: CGFloat = 1

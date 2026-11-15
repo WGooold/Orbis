@@ -4,7 +4,10 @@ import Testing
 
 // SC84: current execution is never inferred from the next selection. Check the
 // actual wire shape, old Hosts, missing facts and opaque native command values.
+// Localized assertions share AppLocalization with MainActor language-switch
+// tests. Synchronous execution on that actor keeps temporary languages isolated.
 @Suite("Session model configuration parity")
+@MainActor
 struct SessionModelPresentationTests {
     private func runtime(_ kind: String = "codex") -> RuntimeSummary {
         RuntimeSummary(runtimeId: "r", name: "Agent", cwd: "/repo", status: "running", agentKind: kind,

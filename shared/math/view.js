@@ -9,7 +9,8 @@
   function measure() {
     if (!fontsReady) return;
     var height = Math.ceil(document.getElementById('content').getBoundingClientRect().height);
-    post(height > 32768 ? {type: 'failure'} : {type: 'size', revision: revision, height: height});
+    post(height > 32768 ? {type: 'failure'} : {type: 'size', revision: revision,
+      width: document.getElementById('content').getBoundingClientRect().width, height: height});
   }
   function prepareReveal(content) {
     var leaves = [], length = 0;

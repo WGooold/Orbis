@@ -54,6 +54,39 @@ struct ChatViewportTests {
         #expect(viewport.questionOutsideViewport("q"))
     }
 
+    // IOS-CHAT-13: lazy layout can report an offscreen tail independently of the
+    // still-visible long reply. Only that row's disappearance retires its facts.
+    @Test func rowReportsRetainVisibleGeometryAcrossIndependentLazyUpdates() {
+        var reports = ChatViewportReports()
+        let reply = UUID(), question = UUID(), tail = UUID(), replacement = UUID()
+        reports.update(reply, facts: facts(-1600, height: 2460))
+        reports.update(question, facts: facts(700, question: "question"))
+        reports.update(tail, facts: ChatViewportFacts())
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
+        #expect(reports.snapshot(questionID: "question").questionOutsideViewport("question"))
+        reports.update(tail, facts: nil)
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
+        reports.update(replacement, facts: facts(-1500, height: 2460))
+        reports.update(reply, facts: nil)
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows, "Retiring an older lazy host cannot retire its replacement")
+        reports.update(replacement, facts: nil)
+        #expect(!reports.snapshot(questionID: "question").hasVisibleRows)
+    }
+
+    // A source publication can create the next question before the old lazy host
+    // updates its metadata. Aggregation must select the current identity explicitly.
+    @Test func currentQuestionGeometryDoesNotDependOnReportEnumerationOrder() {
+        var reports = ChatViewportReports()
+        let old = UUID(), current = UUID(), duplicate = UUID()
+        reports.update(old, facts: facts(700, question: "old"))
+        reports.update(current, facts: facts(300, question: "new"))
+        reports.update(duplicate, facts: facts(700, question: "new"))
+        #expect(!reports.snapshot(questionID: "new").questionOutsideViewport("new"))
+        reports.update(current, facts: nil)
+        #expect(reports.snapshot(questionID: "new").question?.outside == true)
+        #expect(reports.snapshot(questionID: nil).question == nil)
+    }
+
     // IOS-CHAT-04: geometry may cross thresholds, but never takes reading intent away
     // from a disclosure or a programmatic question jump. Only a real gesture may end it.
     @Test func onlyRealInteractionIdleCanRestoreFollowingAtTheOriginalTwentyPointBoundary() {

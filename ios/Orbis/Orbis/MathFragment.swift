@@ -14,28 +14,39 @@ struct MathFragment: View {
     var now: TimeInterval = .greatestFiniteMagnitude
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.displayScale) private var displayScale
     @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
     @State private var content: MathWebContent?
     @State private var revision = ""
-    @State private var height: CGFloat = 1
-    @State private var rendered = false
+    @State private var measured: MathFragmentMeasurement?
+    @State private var renderedRevision: String?
+    @State private var failed = false
 
     var body: some View {
-        let settings = MathWebSettings(html: html, size: size * scale, bold: bold,
+        let settings = MathRenderSettings(html: html, size: size * scale, bold: bold,
             color: color.mathCSS, linkColor: OrbisPalette(scheme).accent.mathCSS, alignment: alignment)
-        ZStack(alignment: .topLeading) {
-            if !rendered { Text(source).reveal(clock, base: base, now: now).textSelection(.enabled) }
-            MathWebSurface(content: content, clock: clock, base: base, now: now, length: String(source.characters).utf16.count, onSize: { id, value in
-                guard id == revision, value.isFinite, (1...32768).contains(value) else { return }
-                height = value; rendered = true
-            }, onFailure: { rendered = false }, onLink: { target in
+        let rendered = content?.settings == settings && renderedRevision == content?.id && !failed
+        MathFragmentLayout(settings: settings, displayScale: displayScale, measured: measured, failed: failed) {
+            Text(source).reveal(clock, base: base, now: now).textSelection(.enabled)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+                .clipped().opacity(rendered ? 0 : 1).accessibilityHidden(rendered)
+            MathWebSurface(content: content?.settings == settings ? content : nil,
+                clock: clock, base: base, now: now, length: String(source.characters).utf16.count, onSize: { id, width, value in
+                guard id == revision, content?.settings == settings,
+                      width.isFinite, width > 0, value.isFinite, (1...32768).contains(value) else { return }
+                let key = MathFragmentMeasurementKey(settings: settings, width: width, displayScale: displayScale)
+                MathFragmentMeasurements.shared.insert(value, for: key)
+                measured = .init(key: key, height: value)
+                renderedRevision = id
+            }, onFailure: { failed = true }, onLink: { target in
                 guard let url = URL(string: target), !["javascript", "data", "vbscript", "orbis-math"].contains(url.scheme?.lowercased() ?? "") else { return }
                 openURL(url)
-            }).frame(height: rendered ? height : 1).opacity(rendered ? 1 : 0).accessibilityHidden(!rendered)
+            }).opacity(rendered ? 1 : 0).accessibilityHidden(!rendered)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .task(id: settings) {
                 let id = UUID().uuidString
                 revision = id
+                failed = false
                 let next = await Task.detached(priority: .userInitiated) { settings.prepare(id: id) }.value
                 guard !Task.isCancelled, revision == id else { return }
                 content = next
@@ -51,22 +62,52 @@ private extension Color {
     }
 }
 
-private struct MathWebSettings: Equatable, Sendable {
-    let html: String
-    let size: CGFloat
-    let bold: Bool
-    let color: String
-    let linkColor: String
-    let alignment: String
+private struct MathFragmentMeasurement {
+    let key: MathFragmentMeasurementKey
+    let height: CGFloat
+}
+
+/// Resolve width during sizing, before the first recycled frame. A geometry
+/// callback would restore the height one layout late and move the reading anchor.
+private struct MathFragmentLayout: Layout {
+    let settings: MathRenderSettings
+    let displayScale: CGFloat
+    let measured: MathFragmentMeasurement?
+    let failed: Bool
+
+    private func height(width: CGFloat) -> CGFloat? {
+        guard !failed else { return nil }
+        let key = MathFragmentMeasurementKey(settings: settings, width: width, displayScale: displayScale)
+        if measured?.key == key { return measured?.height }
+        return MathFragmentMeasurements.shared.height(for: key)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil }
+            ?? subviews[0].sizeThatFits(.unspecified).width
+        return CGSize(width: width, height: height(width: width) ??
+            subviews[0].sizeThatFits(.init(width: width, height: nil)).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        // The fallback keeps its natural measurement on a miss. A cache hit reserves
+        // the final height while WebKit starts, without flashing raw formula text.
+        subviews[0].place(at: bounds.origin, proposal: .init(width: bounds.width,
+            height: height(width: bounds.width) == nil ? bounds.height : 0))
+        subviews[1].place(at: bounds.origin, proposal: .init(width: bounds.width, height: bounds.height))
+    }
+}
+
+private extension MathRenderSettings {
     func prepare(id: String) -> MathWebContent? {
         let value: [String: Any] = ["revision": id, "html": html, "fontSize": size, "lineHeight": 1.5,
             "bold": bold, "color": color, "linkColor": linkColor, "align": alignment, "selectable": true]
         guard let data = try? JSONSerialization.data(withJSONObject: value),
               let json = String(data: data, encoding: .utf8) else { return nil }
-        return MathWebContent(id: id, script: "OrbisMathView.update(" + json + ")")
+        return MathWebContent(id: id, settings: self, script: "OrbisMathView.update(" + json + ")")
     }
 }
-private struct MathWebContent: Sendable { let id: String; let script: String }
+private struct MathWebContent: Sendable { let id: String; let settings: MathRenderSettings; let script: String }
 
 private struct MathWebSurface: UIViewRepresentable {
     let content: MathWebContent?
@@ -74,7 +115,7 @@ private struct MathWebSurface: UIViewRepresentable {
     let base: Int
     let now: TimeInterval
     let length: Int
-    let onSize: (String, CGFloat) -> Void
+    let onSize: (String, CGFloat, CGFloat) -> Void
     let onFailure: () -> Void
     let onLink: (String) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -145,7 +186,8 @@ private struct MathWebSurface: UIViewRepresentable {
             switch value["type"] as? String {
             case "ready": ready = true; send()
             case "size":
-                if let id = value["revision"] as? String, let height = value["height"] as? Double { parent.onSize(id, height) }
+                if let id = value["revision"] as? String, let height = value["height"] as? Double,
+                   let width = value["width"] as? Double { parent.onSize(id, width, height) }
             case "link":
                 if let link = value["value"] as? String, link.count <= 4096 { parent.onLink(link) }
             case "failure": fail()
