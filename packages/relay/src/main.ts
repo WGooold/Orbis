@@ -20,6 +20,18 @@ const apns = apnsKeyPath ? {
   privateKey: await readFile(apnsKeyPath, "utf8"),
   environment: (orbisEnvironment(process.env, "APNS_ENVIRONMENT") ?? "production") as "sandbox" | "production",
 } : undefined;
+const apnsAdditional = [];
+for (const environment of ["sandbox", "production"] as const) {
+  const prefix = `APNS_${environment.toUpperCase()}_`;
+  const keyPath = orbisEnvironment(process.env, prefix + "PRIVATE_KEY_FILE");
+  if (!keyPath) continue;
+  apnsAdditional.push({
+    keyId: orbisEnvironment(process.env, prefix + "KEY_ID") ?? "",
+    teamId: orbisEnvironment(process.env, prefix + "TEAM_ID") ?? apns?.teamId ?? "",
+    bundleId: orbisEnvironment(process.env, prefix + "BUNDLE_ID") ?? apns?.bundleId ?? "",
+    privateKey: await readFile(keyPath, "utf8"), environment,
+  });
+}
 const registration = await RegistrationAuthority.create({
   stateFile: process.env.ORBIS_REGISTRATION_STATE_FILE ?? `${stateFile}.registration.json`,
   ...(sendMail === undefined ? {} : { sendMail }),
@@ -37,6 +49,7 @@ return createRelayServer({
   runtimeCredentials: runtimeCredential ? [runtimeCredential] : [],
   ...(adminToken === undefined ? {} : { adminToken }),
   ...(apns === undefined ? {} : { apns }),
+  ...(apnsAdditional.length === 0 ? {} : { apnsAdditional }),
   registration,
   trustProxy: process.env.ORBIS_TRUST_PROXY === "1",
   adminStateFile: process.env.ORBIS_ADMIN_STATE_FILE ?? `${stateFile}.admin.json`,

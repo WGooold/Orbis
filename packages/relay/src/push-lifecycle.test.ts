@@ -79,6 +79,37 @@ describe("push registration lifecycle", () => {
     expect(await tokens()).toEqual([expect.objectContaining({ token: oldToken })]);
   });
 
+  // APNS-L16: development and TestFlight tokens must use distinct Apple endpoints;
+  // token-only old clients and capability responses keep their released shapes.
+  it("negotiates and routes both APNs environments without mixing equal token values", async () => {
+    const sandbox = { ...apns, environment: "sandbox" as const, keyId: "SANDBOXKEY" };
+    await start({ apnsAdditional: [sandbox] });
+    await connectHost();
+    for (const [query, environment] of [["", "production"], ["?environment=sandbox", "sandbox"], ["?environment=production", "production"]]) {
+      const config = await request("/v1/push/config" + query, "phone-secret", undefined, "GET");
+      expect(await config.json()).toEqual({ version: 1, environment });
+    }
+    expect((await request("/v1/push/config?environment=invalid", "phone-secret", undefined, "GET")).status).toBe(409);
+    expect((await register(oldToken, "phone-secret", { environment: "sandbox" })).status).toBe(204);
+    expect((await register(oldToken, "tablet-secret")).status).toBe(204);
+    expect(await tokens()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ deviceId: "phone", environment: "sandbox" }),
+      expect.objectContaining({ deviceId: "tablet", environment: "production" }),
+    ]));
+    const destinations: string[] = [];
+    vi.spyOn(APNsSender.prototype, "send").mockImplementation(async function(this: APNsSender) {
+      destinations.push(this.environment); return "sent";
+    });
+    expect((await wake(["phone", "tablet"])).status).toBe(200);
+    expect(destinations.sort()).toEqual(["production", "sandbox"]);
+    await relay.close();
+    await start({ apnsAdditional: [sandbox] });
+    expect(await tokens()).toHaveLength(2);
+    await connectHost(); destinations.length = 0;
+    expect((await wake(["phone", "tablet"])).status).toBe(200);
+    expect(destinations.sort()).toEqual(["production", "sandbox"]);
+  });
+
   it("advertises the environment only to currently paired devices", async () => {
     await start();
     expect((await request("/v1/push/config", "wrong", undefined, "GET")).status).toBe(401);

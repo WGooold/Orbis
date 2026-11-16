@@ -44,6 +44,8 @@ export interface RelayServerOptions {
   heartbeatIntervalMs?: number;
   stateFile?: string;
   apns?: APNsConfig;
+  /** APNS-L16: enable additional destinations while preserving the legacy default. */
+  apnsAdditional?: APNsConfig[];
   registration?: RegistrationAuthority;
   adminStateFile?: string;
   /** X11: defaults to a separate file beside stateFile; counts only the device edge. */
@@ -280,7 +282,13 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     pushPersistence = pending.catch(() => {});
     return pending;
   };
-  const apns = options.apns ? new APNsSender(options.apns) : undefined;
+  const apns = new Map<APNsConfig["environment"], APNsSender>();
+  if (options.apns) {
+    for (const config of [options.apns, ...(options.apnsAdditional ?? [])]) {
+      if (apns.has(config.environment)) throw new Error("Duplicate APNs environment");
+      apns.set(config.environment, new APNsSender(config));
+    }
+  }
   // APNS-L02: serialize mutation + persistence + rollback, not network delivery.
   // A failed older write must never roll a more recent registration back.
   let pushMutation = Promise.resolve();
@@ -386,7 +394,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
 
   const server: HttpServer = createServer((request, response) => {
     void (async () => {
-      const path = new URL(request.url ?? "/", "http://relay.invalid").pathname;
+      const requestURL = new URL(request.url ?? "/", "http://relay.invalid");
+      const path = requestURL.pathname;
       if (await serveWeb(request, response, path)) return;
       const pushBearer = (): string | undefined => {
         const value = request.headers.authorization;
@@ -397,7 +406,9 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const device = bearer ? devicesByCredential.get(hashCredential(bearer).toString("hex")) : undefined;
         if (!device?.hostId || admin.isDisabled(device.hostId)) throw new HttpError(401, "unauthorized");
         if (!options.apns) throw new HttpError(503, "push_unavailable");
-        jsonResponse(response, 200, { version: 1, environment: options.apns.environment }); return;
+        const environment = requestURL.searchParams.get("environment") ?? options.apns.environment;
+        if (!apns.has(environment as APNsConfig["environment"])) throw new HttpError(409, "push_environment_mismatch");
+        jsonResponse(response, 200, { version: 1, environment }); return;
       }
       if (request.method === "POST" && path === "/v1/push/register") {
         const bearer = pushBearer();
@@ -406,8 +417,9 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const body = await readJson(request) as { token?: unknown; environment?: unknown };
         if (!body || (body.token !== null && (typeof body.token !== "string" || !/^[a-fA-F0-9]{64,200}$/u.test(body.token)))) throw new HttpError(400, "invalid_token");
         if (body.environment !== undefined && body.environment !== "sandbox" && body.environment !== "production") throw new HttpError(400, "invalid_environment");
-        if (body.token !== null && !apns) throw new HttpError(503, "push_unavailable");
-        if (body.token !== null && body.environment !== undefined && body.environment !== options.apns?.environment) throw new HttpError(409, "push_environment_mismatch");
+        if (body.token !== null && !options.apns) throw new HttpError(503, "push_unavailable");
+        const environment = body.environment as APNsConfig["environment"] | undefined ?? options.apns?.environment;
+        if (body.token !== null && (environment === undefined || !apns.has(environment))) throw new HttpError(409, "push_environment_mismatch");
         await mutatePush(async () => {
           // Authentication may have been revoked while the request body arrived.
           const device = devicesByCredential.get(hash);
@@ -415,7 +427,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           const previous = pushTokens.get(device.deviceId);
           if (body.token === null) pushTokens.delete(device.deviceId);
           else pushTokens.set(device.deviceId, { deviceId: device.deviceId, hostId: device.hostId,
-            token: (body.token as string).toLowerCase(), environment: options.apns!.environment });
+            token: (body.token as string).toLowerCase(), environment: environment! });
           try { await persistPushTokens(); }
           catch (error) {
             if (previous) pushTokens.set(device.deviceId, previous); else pushTokens.delete(device.deviceId);
@@ -426,7 +438,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         jsonResponse(response, 204); return;
       }
       if (request.method === "POST" && path === "/v1/push/wake") {
-        if (!apns) throw new HttpError(503, "push_unavailable");
+        if (apns.size === 0) throw new HttpError(503, "push_unavailable");
         const body = await readJson(request) as { hostId?: unknown; deviceIds?: unknown; category?: unknown; eventId?: unknown };
         if (!body || typeof body.hostId !== "string" || body.hostId.length === 0 || body.hostId.length > 128 || !Array.isArray(body.deviceIds) || body.deviceIds.length > 128 ||
           !body.deviceIds.every(id => typeof id === "string" && id.length > 0 && id.length <= 128) ||
@@ -444,13 +456,16 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const deliveries = new Map<string, Promise<"sent" | "invalid-token">>();
         await Promise.all([...new Set(body.deviceIds as string[])].map(async deviceId => {
           const target = pushTokens.get(deviceId);
-          if (!target || target.hostId !== body.hostId || !isPushDevice(deviceId, target.hostId) ||
-            target.environment !== undefined && target.environment !== options.apns?.environment) return;
+          if (!target || target.hostId !== body.hostId || !isPushDevice(deviceId, target.hostId)) return;
+          const environment = target.environment ?? options.apns?.environment;
+          const sender = environment === undefined ? undefined : apns.get(environment);
+          if (!sender) return;
           try {
             // Reinstall/re-pair may leave two device IDs for one app installation.
             // Deliver once without deleting either authenticated pairing.
-            let delivery = deliveries.get(target.token);
-            if (!delivery) { delivery = apns.send(target.token, hint); deliveries.set(target.token, delivery); }
+            const destination = `${environment}:${target.token}`;
+            let delivery = deliveries.get(destination);
+            if (!delivery) { delivery = sender.send(target.token, hint); deliveries.set(destination, delivery); }
             const result = await delivery;
             if (result === "invalid-token") {
               await mutatePush(async () => {
@@ -1068,7 +1083,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     async close(): Promise<void> {
       clearInterval(heartbeatTimer);
       clearInterval(bandwidthTimer);
-      apns?.close();
+      for (const sender of apns.values()) sender.close();
       for (const runtime of runtimes.values()) { stopMux(runtime.socket); runtime.socket.close(1001, "relay shutdown"); }
       for (const device of devices) { stopMux(device.socket); device.socket.close(1001, "relay shutdown"); }
       await Promise.all([
