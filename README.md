@@ -79,3 +79,5 @@ Agent 在你自己的电脑上运行。手机与电脑之间的会话和文件�
 ## 开源与许可
 
 Orbis 的原创代码采用 [MIT 许可证](LICENSE)。第三方组件与图标遵循各自的许可，详见[第三方声明](THIRD-PARTY-NOTICES.md)。欢迎通过 [Issues](https://github.com/WGooold/Orbis/issues) 和 [Pull Requests](https://github.com/WGooold/Orbis/pulls) 参与改进。
+
+<!-- Temporary documentation-only CI trigger probe. -->
