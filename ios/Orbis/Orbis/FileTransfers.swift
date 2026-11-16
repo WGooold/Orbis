@@ -138,9 +138,15 @@ struct FileTransfer: Codable, Identifiable, Equatable {
 
 @MainActor
 final class FileTransfers: ObservableObject {
+    /// SC93/SC94: the transfer reader owns these exact authenticated reply types, including late replies.
+    nonisolated static let ownedReplyTypes: Set<String> = ["_artifact.chunk", "artifact.started", "artifact.failed", "artifact.read.failed",
+        "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed"]
     @Published private(set) var tasks: [FileTransfer] = [] {
         didSet {
             // ADR-0049 §6.2：上传结束（完成、失败或取消）时通知连接层，等待它的消息据此写入或转失败。
+            for task in tasks where task.status == "failed" {
+                if let old = oldValue.first(where: { $0.id == task.id }), old.status != "failed" { didFailTask?(task) }
+            }
             guard let didSettleUpload else { return }
             for task in tasks where task.direction == "upload" && ["completed", "failed", "cancelled"].contains(task.status) {
                 guard let old = oldValue.first(where: { $0.id == task.id }), old.status != task.status else { continue }
@@ -149,6 +155,7 @@ final class FileTransfers: ObservableObject {
         }
     }
     /// 上传结束：(任务, 完成时的 Host 路径, 失败原因)。
+    var didFailTask: ((FileTransfer) -> Void)?
     var didSettleUpload: ((String, String?, String?) -> Void)?
     @Published private(set) var preparing = false
     @Published var error: String?

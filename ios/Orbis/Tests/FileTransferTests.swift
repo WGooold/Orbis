@@ -340,4 +340,29 @@ struct FileTransferTests {
         #expect(untouched.tasks.map(\.id) == ["task-1"])
     }
 
+    // SC92/SC94: loading an old failed record is not a newly completed failure and must not replay F3.
+    @Test func restoredFailedTasksDoNotReplayCompletionFeedback() async throws {
+        let path = root(); defer { try? FileManager.default.removeItem(at: path) }
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        let pairing = host()
+        var old = FileTransfer(id: "old", hostKey: FileTransfers.pairingKey(pairing), hostId: pairing.hostId,
+            runtimeId: pairing.hostId, sessionId: nil, direction: "download", name: "old.txt", sourcePath: "/old.txt")
+        old.status = "failed"; old.error = "previous failure"
+        try JSONEncoder().encode([old]).write(to: path.appendingPathComponent("transfers.json"))
+        let transfers = FileTransfers(root: path)
+        var failures: [String] = []
+        transfers.didFailTask = { failures.append($0.id) }
+        transfers.send = { _ in true }; transfers.setConnection(pairing, connected: true)
+        await transfers.waitForPendingIO()
+        #expect(transfers.tasks.first?.status == "failed")
+        #expect(failures.isEmpty)
+        #expect(transfers.download(path: "/new.txt"))
+        await transfers.waitForPendingIO()
+        let task = try #require(transfers.tasks.first { $0.id != "old" })
+        let failure: [String: Any] = ["type": "command.result", "commandId": task.commandId!, "ok": false, "error": "file_not_found"]
+        transfers.consume(failure); transfers.consume(failure)
+        await transfers.waitForPendingIO()
+        #expect(failures == [task.id])
+    }
+
 }

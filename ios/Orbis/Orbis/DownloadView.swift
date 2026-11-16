@@ -27,6 +27,7 @@ struct DownloadsView: View {
                 OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("按路径下载")) { transfers.download(path: path.trimmingCharacters(in: .whitespacesAndNewlines)); path = "" }
                     .disabled(store.connection != .secured || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(.horizontal, 24).padding(.top, 8)
+            if let error = transfers.error { Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.top, 8) }
             OrbisActionButton(title: L10n.tr("浏览电脑文件"), symbol: "folder") { browserOpen = true }
                 .disabled(store.connection != .secured).padding(.horizontal, 24).padding(.vertical, 12)
             if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: L10n.tr("暂无下载")) }

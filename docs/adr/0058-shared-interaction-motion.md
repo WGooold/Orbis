@@ -6,6 +6,8 @@
 
 当前动效按 [ADR-0070](0070-unified-design-and-interaction.md) 对齐交互稿，涵盖连续深度、根标签 fade-through、草稿形变和绕行状态。SC01–SC60、MOT-01–MOT-28 保留历史身份；既有修订新增 SC54–SC60、M25–M29，本轮新增场景 SC61–SC71 复用 M03、M06、M09、M25 与 M29。时长、曲线、减少动画与取消路径由共用实现及测试决定。
 
+2026-11-16，V06 / V16 / SC34 的反馈分级候选修订见 [ADR-0083 §6](0083-feedback-levels-and-stale-replies.md#6-分批迁移)。新增 SC92–SC95：F3 从底部进入并按共用 `hold-toast` 管理，F4 位于顶部安全区；去重、关闭、条件解除、后台与电脑切换由反馈拥有者管理，减少动画时直接切换。当前基线与候选验收分开记录于 [ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)。
+
 2026-11-09 S43 / M29 / SC64 修复：Android 底部面板按实际窗口测量并统一处理安全区，窗口完成布局后播放入场；选择、关闭按钮、遮罩、返回和把手拖动复用完整退场。短屏下载选择与问卷采用整段滚动，保留末项与操作按钮的可达性。实现见 [OrbisSheet.kt](../../android/app/src/main/java/com/orbising/orbis/OrbisSheet.kt)、[RemoteFileBrowser.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteFileBrowser.kt) 与 [QuestionnaireDialog.kt](../../android/app/src/main/java/com/orbising/orbis/QuestionnaireDialog.kt)；八类入口、真实窗口边界及动画中间帧回归见 [BottomSheetInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/BottomSheetInstrumentedTest.kt)。修复前失败、修复后自动验证与安装包信息见 [.artifacts/bottom-sheet-20261109](../../.artifacts/bottom-sheet-20261109/)；待用户安装验收。
 
 首页下拉刷新（M15 / UI-05）沿用平台手势与共用回位，网络核对和页面反馈各自管理，已有快照与视口持续保留。实现及回归见 [HomePullRefresh.swift](../../ios/Orbis/Orbis/HomePullRefresh.swift)、[HomePullRefreshTests.swift](../../ios/Orbis/Tests/HomePullRefreshTests.swift)、[MainActivity.kt](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt)。
@@ -101,6 +103,11 @@
 | SC87 | Claude 回复结束后保留原生已确认的深度；模型、别名或设置变化使旧观察失效，手机后续选择不覆盖本轮事实 |
 | SC89 | iOS 单工具与嵌套工具组展开、收起时由内容自然高度带动回复表面，保留连续动效、阅读位置与内部状态 |
 | SC90 | iOS 跳到最新消息以稳定尾部行定位，懒加载高度修正不使可见卡片反向抽动；保留滚动动效、减少动画、后续跟随与手动阅读 |
+| SC91 | 迟到、重复的连接层回包与非致命协议错误静默；在途请求保留唯一归属，致命连接错误仍呈现 |
+| SC92 | F3 底部短反馈与 F4 顶部横幅分层，按身份去重、优先级、操作、关闭和作用域管理生命周期 |
+| SC93 | 自动重连与电脑离线使用既有连接状态；确认需要用户解决的连接问题才进入 F4，条件解除后恢复 |
+| SC94 | 发送、配置、同步、目录、工具、文件与附件失败回到对象原位；离开对象后的有效提醒按 F3 呈现 |
+| SC95 | 命令选项读取器先认领在途协议错误，再使用连接请求前缀；失败留在菜单，过期回包保持静默 |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

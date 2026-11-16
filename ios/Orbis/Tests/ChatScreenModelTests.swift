@@ -388,7 +388,7 @@ struct ChatScreenModelTests {
         let runtime = try #require(store.selectedRuntime)
         let navigationChanges = ChatObservationCount()
         withObservationTracking { _ = model.navigation } onChange: { navigationChanges.changed() }
-        store.errorMessage = "during covered motion"
+        store.presentFeedback(.banner, "during covered motion", condition: .other, action: .reconnect)
         store.saveDraft("during covered motion", for: runtime)
         await settle(store)
         #expect(model.snapshot.draft == "during covered motion")

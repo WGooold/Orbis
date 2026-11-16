@@ -278,7 +278,7 @@ struct StoreTests {
         #expect(store.pendingSends.isEmpty)
         transport.acceptsSends = true
         #expect(!store.sendMessage("/unsupported"))
-        #expect(store.errorMessage != nil)
+        #expect(store.activeConnection.objectError("a") != nil)
         #expect(store.sendMessage("valid message"))
 
         let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
@@ -289,7 +289,7 @@ struct StoreTests {
         #expect(store.pendingSends.item(clientId)?.state == .sending)
         await transport.event(["type": "command.result", "commandId": sent["commandId"]!, "ok": true, "status": "success"], sequence: 1)
         #expect(store.pendingSends.item(clientId)?.state == .accepted)
-        #expect(store.errorMessage != nil, "the earlier slash error is not replaced by a message receipt")
+        #expect(store.activeConnection.objectError("a") == nil, "a successful new send resolves the composer validation error")
 
         // Pi assigns a different streaming ID and declares the phone send with clientMessageId.
         await transport.event(["type": "message.started", "message": [
@@ -356,7 +356,7 @@ struct StoreTests {
         await transport.ready([runtime("a")])
         await transport.emit(["type": "protocol.error", "commandId": "command-1", "code": "busy", "message": "Agent busy"])
         #expect(store.connection == .secured)
-        #expect(store.errorMessage == "Agent busy")
+        #expect(store.errorMessage == nil) // SC94: an unknown command has no visible owner.
     }
 
     @Test func activatingAnOnlineSessionDoesNotLaunchADuplicateRuntime() async throws {
@@ -560,7 +560,8 @@ struct StoreTests {
         #expect(store.configStatus("a", setting: "model")?.mark == "切换中")
         await transport.event(["type": "command.result", "commandId": sent["commandId"]!, "ok": false, "error": "模型不可用"], sequence: 2, channel: "ctl")
         #expect(store.configStatus("a", setting: "model") == nil)
-        #expect(store.errorMessage == "模型切换未完成：模型不可用")
+        #expect(store.sessionConfigFailure("a")?.message == "模型不可用")
+        #expect(store.errorMessage == nil)
     }
 
     @Test func composerSlashRetainsArgumentsForFailureAndUnknownAndOnlyClearsTheSubmittedDraftOnSuccess() async throws {
@@ -929,12 +930,12 @@ struct StoreTests {
             "source": ["epoch": "source", "seq": 3, "ready": true], "head": ["leafId": "e1"],
             "live": ["complete": true, "messages": [], "toolInventory": reference]], sequence: 2)
         await transport.event(checkpoint(request, ids: [1], seq: 2), sequence: 3)
-        let reason = try #require(store.errorMessage)
+        let reason = try #require(store.historyErrors["a"])
         #expect(reason.contains("落后"))
         #expect(store.activeConnection.sessionReads.latest(historyKey: "a", kind: .source)?.phase == .failed)
         await transport.emit(["type": "protocol.error", "commandId": commandId,
             "code": "session_sync_device_rejected", "message": "session_sync_device_rejected"])
-        #expect(store.errorMessage == reason)
+        #expect(store.historyErrors["a"] == reason)
         store.activeConnection.shutdown()
     }
 
@@ -945,17 +946,19 @@ struct StoreTests {
         var invalid = checkpoint(sync, ids: [1])
         invalid["checkpoint"] = ["checkpointId": "invalid", "headCompleteness": "unknown"]
         await transport.event(invalid)
-        let reason = try #require(store.errorMessage)
+        let reason = try #require(store.historyErrors["a"])
         #expect(reason.contains("检查点"))
         await transport.emit(["type": "protocol.error", "commandId": commandId,
             "code": "session_sync_device_rejected", "message": "session_sync_device_rejected"])
-        #expect(store.errorMessage == reason)
+        #expect(store.historyErrors["a"] == reason)
         await transport.emit(["type": "protocol.error", "commandId": "unrelated",
             "code": "session_sync_device_rejected", "message": "unrelated failure"])
-        #expect(store.errorMessage == "unrelated failure")
+        #expect(store.historyErrors["a"] == reason)
+        #expect(store.errorMessage == nil)
         await transport.emit(["type": "protocol.error", "commandId": commandId,
             "code": "session_sync_backend_failed", "message": "backend failure"])
-        #expect(store.errorMessage == "backend failure")
+        #expect(store.historyErrors["a"] == reason)
+        #expect(store.errorMessage == nil)
     }
 
     @Test func cyclicAndNonAdvancingHistoryNeverMutateTheConversation() async throws {
@@ -1383,6 +1386,25 @@ struct StoreTests {
         await transport.emit(["type": "session.history.interest.result", "requestId": request["requestId"]!, "accepted": false])
         store.setHistoryWindowVisible(true)
         #expect(transport.sent.filter { $0["type"] as? String == "session.history.interest" }.count == 2)
+    }
+
+    /// SC91: every authenticated device.ready re-probes, so the previous probe's reply arrives late. Neither
+    /// a new Host's capability reply nor v0.1.19's correlated invalid_request may surface as an error.
+    @Test func lateCapabilityRepliesAfterReprobeStaySilent() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let first = try #require(transport.sent.last { $0["type"] as? String == "session.history.capabilities.request" })
+        await transport.ready([runtime("a")])
+        let id = try #require(first["requestId"] as? String)
+        #expect(id.hasPrefix("conn:"))
+        await transport.emit(["type": "session.history.capabilities", "requestId": id, "format": "v1", "maxPageBytes": 65536])
+        await transport.emit(["type": "protocol.error", "requestId": id, "code": "invalid_request", "message": "请求格式无效或当前版本不支持"])
+        #expect(store.errorMessage == nil)
+        await transport.emit(["type": "protocol.error", "requestId": "other", "code": "invalid_request", "message": "请求格式无效或当前版本不支持"])
+        #expect(store.errorMessage == nil)
+        // A fatal code means the whole link is unusable, even when the Host echoes a connection-owned id.
+        store.dismissFeedbackBanner()
+        await transport.emit(["type": "protocol.error", "requestId": id, "code": "protocol_version_mismatch", "message": "仅支持已实现的协议 18 / 19"])
+        #expect(store.errorMessage != nil)
     }
 
     @Test func legacyHostDoesNotStartAutomaticHistoryAndCapabilityProbeFailureIsSilent() async throws {
@@ -2047,8 +2069,9 @@ extension StoreTests {
         let next = ChatRegionCounter.observe(screens)
         store.pair(from: "invalid pairing code")
         await screens.waitForPending()
-        #expect(screens.navigation.error != nil)
-        #expect(next.map(\.revision) == [1, 0, 0, 0, 0, 0, 0])
+        #expect(store.pairingError != nil)
+        #expect(screens.navigation.error == nil)
+        #expect(next.map(\.revision) == [0, 0, 0, 0, 0, 0, 0])
     }
 
     @Test func chatRewindPreparationReusesLargeOptionsUntilCapabilitiesChange() async throws {
@@ -2070,6 +2093,68 @@ extension StoreTests {
         #expect(store.userMessageRewindOptions(for: selected).isEmpty)
         #expect(ChatSessionActions(store: store, target: target).isCurrent, "capability/branch facts do not recreate the editor target")
     }
+    // SC94: explicit actions keep their failure on the original object; no shared banner is produced.
+    @Test func rejectedStopAndOfflineCloseStayOnTheirRuntimeCards() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
+        transport.acceptsSends = false
+        #expect(!store.stopRuntime())
+        #expect(store.activeConnection.objectError("a") == L10n.tr("操作未送达，请连接后重试。"))
+        #expect(store.errorMessage == nil)
+        transport.state?(.offline, nil)
+        #expect(store.activeConnection.closeRuntimes(["b"]).isEmpty)
+        #expect(store.activeConnection.objectError("b") == L10n.tr("关闭会话未发送：请先连接电脑。"))
+    }
+
+    // SC93: typed Relay rejection reasons choose a solving action instead of displaying remote codes.
+    @Test func relayRejectionsUseTheirConditionAndDismissedConditionsStayHidden() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.emit(["type": "protocol.error", "code": "host_disabled", "message": "host_disabled"], channel: nil)
+        #expect(store.feedback.banner?.text == L10n.tr("连接无法继续，请重新连接"))
+        #expect(store.feedback.banner?.action == .reconnect)
+        await transport.emit(["type": "protocol.error", "code": "unauthorized", "message": "unauthorized"], channel: nil)
+        #expect(store.feedback.banner?.action == .pair)
+        store.dismissFeedbackBanner()
+        await transport.emit(["type": "protocol.error", "code": "unauthorized", "message": "unauthorized"], channel: nil)
+        #expect(store.feedback.banner?.action == .reconnect)
+    }
+
+    // SC95: the reader consumes its nonfatal error before the stale conn: policy, then the menu owns recovery.
+    @Test func menuProtocolFailureStaysInlineAndLateDuplicateIsSilent() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [
+            ["name": "tree", "source": "builtin", "argument": ["kind": "tree", "required": true, "optionCatalog": ["id": "options", "count": 2]]]
+        ]]], channel: "ctl")
+        store.loadMenuOptions(runtimeId: "a", name: "tree")
+        let request = try #require(transport.sent.last { $0["type"] as? String == "agent.menu.options.read" })
+        #expect((request["requestId"] as? String)?.hasPrefix("conn:") == true)
+        let error: [String: Any] = ["type": "protocol.error", "requestId": request["requestId"]!, "code": "invalid_request"]
+        await transport.emit(error)
+        #expect(store.activeConnection.menuErrors["a\u{0}tree"] != nil)
+        #expect(store.errorMessage == nil)
+        await transport.emit(error)
+        #expect(store.errorMessage == nil)
+        store.loadMenuOptions(runtimeId: "a", name: "tree")
+        #expect(store.activeConnection.menuErrors["a\u{0}tree"] == nil)
+    }
+
+
+    // SC93/SC94: a legal binary adapter frame has a file-reader owner; a truly unknown top-level type is still F4.
+    @Test func binaryAdapterFramesAreClaimedBeforeUnknownTopLevelValidation() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        let frame = try ArtifactChunk(runtimeId: "host-1", transferId: "not-active", offset: 0, bytes: Data([1])).encoded()
+        await transport.emit(["type": "_artifact.chunk", "data": frame], channel: "bulk")
+        #expect(store.feedback.banner == nil)
+        for type in ["artifact.started", "artifact.failed", "artifact.read.failed", "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed"] {
+            await transport.emit(["type": type], channel: "ctl")
+            #expect(store.feedback.banner == nil, "the file reader owns \(type)")
+        }
+        for type in ["file.upload.future", "unexpected.top.level"] {
+            transport.state?(.secured, nil)
+            await transport.emit(["type": type], channel: "ctl")
+            #expect(store.feedback.banner?.action == .update)
+        }
+    }
+
 }
 
 
@@ -2087,4 +2172,5 @@ private final class ChatRegionCounter: @unchecked Sendable {
             return counter
         }
     }
+
 }

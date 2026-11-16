@@ -70,6 +70,6 @@ internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): Remote
         })
     }
     if (phase in setOf("unknown", "failed", "absent")) return copy(launching = current.copy(unconfirmed = true,
-        failure = message["error"]?.jsonPrimitive?.contentOrNull), error = null)
+        failure = message["error"]?.jsonPrimitive?.contentOrNull))
     return this
 }

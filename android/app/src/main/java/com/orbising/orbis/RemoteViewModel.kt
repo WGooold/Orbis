@@ -72,6 +72,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val hostStates = MutableStateFlow<Map<String, RemoteState>>(emptyMap())
     private val pairingErrors = MutableStateFlow<String?>(null)
     private val pairingProgress = MutableStateFlow(false)
+    private var feedbackForeground = false
     // StateFlow conflation compares immutable snapshots. Streamed history can make those
     // comparisons expensive, so both aggregation and publication belong to Default.
     private val publicationScope = CoroutineScope(viewModelScope.coroutineContext + Dispatchers.Default)
@@ -178,7 +179,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         active()?.closeChangeViewer()
         val resolved = synchronized(lock) { hostId?.takeIf { connections.containsKey(it) } }
             ?: pairingOrder.value.firstOrNull()?.hostId
+        if (activeHostId.value != resolved) {
+            active()?.clearFeedbackScope()
+            active()?.setFeedbackVisible(false)
+        }
         activeHostId.value = resolved
+        active()?.setFeedbackVisible(feedbackForeground)
         pairings.setActiveHostId(resolved)
     }
 
@@ -518,6 +524,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun cancelInteraction(request: PendingInteraction) = active()?.cancelInteraction(request)
 
     fun clearError() = active()?.clearError()
+    fun setTransferFeedbackScope(downloads: Boolean, uploadIds: Set<String> = emptySet()) = active()?.setTransferFeedbackScope(downloads, uploadIds)
+    fun setFeedbackVisible(visible: Boolean) { feedbackForeground = visible; active()?.setFeedbackVisible(visible) }
+    fun dismissToast(key: String) = active()?.dismissToast(key)
+    fun showShortFeedback(message: String, key: String, action: FeedbackAction? = null) = active()?.showShortFeedback(message, key, action)
+    fun retryFeedbackConnection() = active()?.retryFeedbackConnection()
 
     fun syncNotifications(runtimeId: String) {
         // Every online Host pushes its own notifications; a single runtimeId belongs to one of them.

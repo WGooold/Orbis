@@ -208,7 +208,7 @@ internal fun reduceTurnChanges(state: RemoteState, envelope: JsonObject): Remote
     val type = event["type"]?.jsonPrimitive?.contentOrNull ?: return null
     if (!type.startsWith("session.changes.") && !type.startsWith("session.change.detail.")) return null
     if (envelope.hasUnsupportedProtocolVersion())
-        return state.copy(error = PROTOCOL_VERSION_MISMATCH_ERROR, errorNeedsAction = true)
+        return state.connectionFailure(FeedbackLevel.F4, PROTOCOL_VERSION_MISMATCH_ERROR, FeedbackCondition.VERSION)
     val runtimeInfo = state.runtimes[runtime] ?: return state
     val agent = ToolAgent(state.hostId ?: return state, runtimeInfo.agentKind ?: return state, runtimeInfo.sessionId ?: return state)
     val old = state.turnChanges[runtime] ?: TurnChangesState()

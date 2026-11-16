@@ -58,7 +58,7 @@ struct PairingEntryView: View {
                                     .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isPairing)
                             }.padding(.top, 16).padding(.horizontal, 4).padding(.bottom, 4)
                         }
-                        if let validationError { OrbisNotice(text: validationError, error: true).padding(.top, 16) }
+                        if let error = validationError ?? store.pairingError { OrbisNotice(text: error, error: true).padding(.top, 16) }
                     }.frame(maxWidth: 430).padding(24).frame(maxWidth: .infinity, minHeight: geometry.size.height)
                 }.scrollDismissesKeyboard(.interactively)
             }

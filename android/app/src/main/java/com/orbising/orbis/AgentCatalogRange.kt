@@ -127,7 +127,7 @@ internal class CatalogViewReads(
     @Synchronized fun connect() {
         supported = false; read = null
         if (result?.error != null) result = null
-        val id = java.util.UUID.randomUUID().toString(); capability = id to now()
+        val id = connectionRequestId(); capability = id to now()
         send(kotlinx.serialization.json.buildJsonObject {
             put("type", JsonPrimitive("session.catalog.capabilities.request")); put("protocolVersion", JsonPrimitive(PROTOCOL_VERSION)); put("requestId", JsonPrimitive(id))
         })
@@ -156,7 +156,7 @@ internal class CatalogViewReads(
     @Synchronized fun needMore() {
         val target = query ?: return
         if (!visible || !supported || read != null || result?.error != null || result != null && result?.nextCursor == null) return
-        val pending = Read(java.util.UUID.randomUUID().toString(), target, result?.nextCursor, now())
+        val pending = Read(connectionRequestId(), target, result?.nextCursor, now())
         read = pending
         result?.let { result = it.copy(loading = true); publish(result!!, emptyList()) }
         if (!send(body(pending))) fail("send_failed")

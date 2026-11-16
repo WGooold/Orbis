@@ -247,7 +247,7 @@ final class CatalogViewReads {
     func connect() {
         disconnect()
         if result?.error != nil { result = nil }
-        let id = UUID().uuidString; capability = (id, now())
+        let id = connectionRequestId(); capability = (id, now())
         _ = send(["type": "session.catalog.capabilities.request", "protocolVersion": orbisProtocolVersion, "requestId": id])
         timer = Task { [weak self] in
             while !Task.isCancelled {
@@ -280,7 +280,7 @@ final class CatalogViewReads {
     func needMore() {
         guard visible, supported, let query, read == nil, result?.error == nil,
               result == nil || result?.range.nextCursor != nil else { return }
-        let pending = Read(id: UUID().uuidString, query: query, cursor: result?.range.nextCursor, started: now())
+        let pending = Read(id: connectionRequestId(), query: query, cursor: result?.range.nextCursor, started: now())
         read = pending
         if var result { result.loading = true; self.result = result; publish(result, []) }
         if !send(body(pending)) { fail("send_failed") }

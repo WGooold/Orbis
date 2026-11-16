@@ -69,6 +69,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -246,6 +247,7 @@ class MainActivity : ComponentActivity() {
                 val hosts = homeUi.hosts
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
                 val pairingInProgress by model.pairingInProgress.collectAsStateWithLifecycle()
+                val feedbackGeometry = remember { FeedbackGeometry() }
                 var pendingToolExport by remember { mutableStateOf<ToolDetailView?>(null) }
                 val toolExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
                     val detail = pendingToolExport
@@ -254,6 +256,7 @@ class MainActivity : ComponentActivity() {
                 }
                 CompositionLocalProvider(
                     androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr,
+                    LocalFeedbackGeometry provides feedbackGeometry,
                     LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
@@ -317,6 +320,15 @@ internal fun RemoteApp(
     val actionHaptic = rememberActionHaptic()
     val permanentDirectory = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
     val modelLifecycle = LocalLifecycleOwner.current
+    DisposableEffect(model, modelLifecycle) {
+        model.setFeedbackVisible(modelLifecycle.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) model.setFeedbackVisible(true)
+            if (event == Lifecycle.Event.ON_STOP) model.setFeedbackVisible(false)
+        }
+        modelLifecycle.lifecycle.addObserver(observer)
+        onDispose { modelLifecycle.lifecycle.removeObserver(observer); model.setFeedbackVisible(false) }
+    }
     LaunchedEffect(model, modelLifecycle) {
         modelLifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             model.reconcileModels()
@@ -339,6 +351,13 @@ internal fun RemoteApp(
     var draftOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var firstDraftSend by remember { mutableStateOf<FirstDraftSend?>(null) }
     val sessionDrafts = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
+    fun closeSessionDraft() {
+        val draft = sessionDrafts.draft(state.hostId)
+        newSessionOpen = false
+        model.dismissBrowse()
+        if (draft.text.value.isNotBlank() || draft.cwd.value.isNotBlank())
+            model.showShortFeedback(L10n.tr("草稿已保留"), "draft:${java.util.UUID.randomUUID()}", FeedbackAction.UNDO)
+    }
     val compactDrawerState = rememberDrawerState(DrawerValue.Closed)
     var runtimeSelecting by remember { mutableStateOf(false) }
     val rootScope = rememberCoroutineScope()
@@ -367,11 +386,11 @@ internal fun RemoteApp(
                 permanentDirectory = permanentDirectory,
                 draftOpen = newSessionOpen && state.hostId == newSessionHostId,
                 onToggleDraft = {
-                    if (newSessionOpen) { newSessionOpen = false; model.dismissBrowse() }
+                    if (newSessionOpen) closeSessionDraft()
                     else { newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true }
                 },
                 draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
-                    model::browseSessions, model::browseInto, model::browseUp, onCancel = { newSessionOpen = false; model.dismissBrowse() }, drafts = sessionDrafts,
+                    model::browseSessions, model::browseInto, model::browseUp, onCancel = ::closeSessionDraft, drafts = sessionDrafts,
                     onLoadConfiguration = model::loadSessionConfiguration, onSaveConfiguration = model::saveSessionConfiguration) { kind, cwd, text, origin, fieldOrigin ->
                     val submission = model.sendFirstSessionMessage(kind, cwd, text, newSessionHostId)
                     if (submission != null) {
@@ -480,7 +499,7 @@ internal fun RemoteApp(
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
             val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind)) L10n.tr("，此会话无头（电脑上无窗口）") else ""
-            Toast.makeText(context, L10n.tr("已在电脑上拉起 {0} 进程{1}，等待会话上线…", kind, suffix), Toast.LENGTH_LONG).show()
+            model.showShortFeedback(L10n.tr("会话已启动"), "activation:${activation.sessionId}")
             model.clearActivationNotice()
         }
     }
@@ -498,7 +517,7 @@ internal fun RemoteApp(
     )
     when {
         !appearsPaired -> PairingScreen(
-            error = pairingError ?: state.error,
+            error = pairingError ?: state.pairingFailure,
             pairingInProgress = pairingInProgress,
             pair = { relayUrl, code, qrRaw ->
                 model.pair(relayUrl, code, qrRaw) { addingHost = false }
@@ -555,7 +574,7 @@ internal fun RemoteApp(
             ) {
                 when (page) {
                     HomeOverlay.Pairing -> PairingScreen(
-                        error = pairingError ?: state.error, pairingInProgress = pairingInProgress,
+                        error = pairingError ?: state.pairingFailure, pairingInProgress = pairingInProgress,
                         pair = { relayUrl, code, qrRaw -> model.pair(relayUrl, code, qrRaw) { addingHost = false } },
                         clearError = { model.clearPairingError(); model.clearError() },
                         onCancel = { addingHost = false; model.clearPairingError() },
@@ -583,18 +602,27 @@ internal fun RemoteApp(
         }
     }
     BackHandler(enabled = LocalPageActive.current && newSessionOpen && page == null) {
-        newSessionOpen = false; model.dismissBrowse()
+        closeSessionDraft()
     }
-    // 共享错误通道按"要不要用户在电脑端动手"分两层显示，**任何一条都不再弹模态确认框**。
-    //
-    // 之前这里是 AlertDialog：一句重连抖动写进来的噪音就要求点「确定」，而 `error` 有十几个
-    // 写入方，重复文案会把界面钉成点不完的弹窗。模态框只留给真正的选择（配对、删除、权限）。
-    state.error?.takeIf { appearsPaired }?.let { error ->
-        ErrorBanner(
-            message = error,
-            needsAction = state.errorNeedsAction,
-            onDismiss = model::clearError,
-        )
+    if (appearsPaired) {
+        FeedbackOverlay(state.feedback.banner, bottom = false, onDismiss = model::clearError) { action ->
+            when (action) {
+                FeedbackAction.REPAIR -> addingHost = true
+                FeedbackAction.RECHECK -> model.retryFeedbackConnection()
+                FeedbackAction.SETTINGS -> if (state.feedback.banner?.condition == FeedbackCondition.VERSION)
+                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://orbising.com/#download")))
+                    else { model.selectRuntime(null); model.selectOfflineSession(null); allDownloadsOpen = false; homeTab = HomeTab.Settings }
+                FeedbackAction.UNDO -> Unit
+            }
+        }
+        FeedbackOverlay(state.feedback.toast, bottom = true, anchor = if (page == HomeOverlay.Chat) LocalFeedbackGeometry.current.composerTop else if (page == null) LocalFeedbackGeometry.current.tabsTop else null, onDismiss = { state.feedback.toast?.id?.let(model::dismissToast) }) { action ->
+            when (action) {
+                FeedbackAction.UNDO -> { homeTab = HomeTab.Chat; newSessionHostId = state.hostId; newSessionOpen = true }
+                FeedbackAction.REPAIR -> addingHost = true
+                FeedbackAction.RECHECK -> model.retryFeedbackConnection()
+                FeedbackAction.SETTINGS -> homeTab = HomeTab.Settings
+            }
+        }
     }
 }
 
@@ -606,6 +634,11 @@ internal data class FirstDraftSend(val hostId: String?, val send: PendingSend, v
 /** The computer's downloads page; the home, chat and history entries all open this same page. */
 @Composable
 private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBack: () -> Unit) {
+    val active = LocalPageActive.current
+    DisposableEffect(state.hostId, active) {
+        model.setTransferFeedbackScope(downloads = active)
+        onDispose { model.setTransferFeedbackScope(downloads = false) }
+    }
     AllDownloadsScreen(
         state = state,
         onBack = onBack,
@@ -1000,6 +1033,7 @@ internal fun RuntimeListScreen(
                         )
                     }
                 }
+                state.sessionListError?.let { InlineFeedbackError(it) }
                 // V21：会话增删与重排不能把视口挤走。在发布新列表的同一次组合里决定位置，
                 // 让 LazyColumn 这一帧就按它测量，而不是先跟着首卡跳走再拉回来。
                 val homeKeys = remember(visibleRuntimes) { visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" } }
@@ -1264,7 +1298,8 @@ internal fun RuntimeListScreen(
                                                             Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium,
                                                                 fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                                         }
-                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
+                                                    } else if (row.card.error != null) StatusWithInfo(L10n.tr("操作未完成"), row.card.error, error = true)
+                                                    else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
                                                 }
                                             }
                                             OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting && canClose)
@@ -1760,6 +1795,11 @@ internal fun ChatScreen(
     // 关联记在 ViewModel（按会话）：退出会话窗口再回来，chip 原样恢复——上传不因退出窗口取消。
     val sessionKey = "$runtimeId/$sessionId"
     var attachedTaskIds by remember(runtimeId, sessionId) { mutableStateOf(model.attachedTaskIds(sessionKey)) }
+    val transferPageActive = LocalPageActive.current && !historyOpen && !downloadManagerOpen
+    DisposableEffect(state.hostId, runtimeId, transferPageActive, attachedTaskIds) {
+        if (transferPageActive) model.setTransferFeedbackScope(downloads = false, uploadIds = attachedTaskIds)
+        onDispose { if (transferPageActive) model.setTransferFeedbackScope(downloads = false) }
+    }
     fun updateAttachedTaskIds(newIds: Set<String>) {
         attachedTaskIds = newIds
         model.setAttachedTaskIds(sessionKey, newIds)
@@ -1945,7 +1985,7 @@ internal fun ChatScreen(
             runtimeId = runtimeId,
             sessionId = sessionId,
             pendingNodeId = historyAction?.nodeId,
-            actionError = historyActionError,
+            actionError = historyActionError ?: state.menuOptionErrors[runtimeId + ":tree"],
             onBack = {
                 historyOpen = false
                 historyActionError = null
@@ -2152,7 +2192,8 @@ internal fun ChatScreen(
             // 输入区坐在底板上：不加 tonal/shadow elevation（tonal 会叠 surfaceTint 偏色，
             // 阴影会把「同一块地面」切断）。键盘出现时输入区随键盘上移，顶栏保持原位。
             Surface(Modifier.imePadding()) {
-                Column {
+                val feedbackGeometry = LocalFeedbackGeometry.current
+                Column(Modifier.onGloballyPositioned { feedbackGeometry.composerTop = it.boundsInWindow().top }) {
                     runtime?.backgroundTasks?.takeIf { it.visible }?.let { tasks ->
                         androidx.compose.runtime.key(runtimeId, sessionId) { BackgroundTasksPanel(tasks) }
                     }
@@ -2214,6 +2255,8 @@ internal fun ChatScreen(
                             model.saveDraft(runtimeId, invocation)
                         },
                     )
+                    conversation.operationError?.takeIf(String::isNotBlank)?.let { InlineFeedbackError(it) }
+                    optionCommand?.let { state.menuOptionErrors[runtimeId + ":" + it] }?.let { InlineFeedbackError(it) }
                     ComposerContextNotice(composerStatus(runtime))
                     // 目录、分支和权限组成同一组会话信息；附件属于待发送消息，紧贴输入框。
                     // 输入斜杠命令时让位给命令列表，命令紧贴输入框（与 iOS 一致）。
@@ -4190,51 +4233,46 @@ private fun queuedMessageStateText(state: String): String = when (state) {
 }
 
 
-/**
- * 错误横幅：错误分两层，互不打扰。
- *
- * - **Notice**（默认）：偶发/可自愈的错误，6 秒后自动消失；再点一下也能立刻关掉。
- * - **Action**：需要用户去电脑端处理（版本不兼容、事件无法解析），一直留着，直到用户点关闭。
- *
- * 覆盖在内容之上但不拦截点击：只有横幅本身可点，下面的界面照常操作。
- */
+/** SC92: overlays retain the page geometry and never consume touches outside the Notice surface. */
 @Composable
-private fun ErrorBanner(message: String, needsAction: Boolean, onDismiss: () -> Unit) {
-    // 同一条文案重复到达不会反复闪：key 是文案本身，计时不会被重置。
-    LaunchedEffect(message, needsAction) {
-        if (!needsAction) {
-            delay(6_000)
+internal fun FeedbackOverlay(notice: AppFeedback?, bottom: Boolean, anchor: Float? = null, onDismiss: () -> Unit, onAction: (FeedbackAction) -> Unit) {
+    var rootBottom by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val bottomPadding = if (bottom && anchor != null && rootBottom > 0f) with(density) { (rootBottom - anchor).coerceAtLeast(0f).toDp() } else 0.dp
+    LaunchedEffect(notice?.id) {
+        if (notice?.level == FeedbackLevel.F3 && notice.action == null) {
+            delay(InteractionMotion.ToastHold)
             onDismiss()
         }
     }
-    Box(Modifier.fillMaxSize().wrapContentHeight(Alignment.Top).statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
-        NeumorphSurface(
-            onClick = onDismiss,
-            shape = RemoteUi.ControlShape,
-            shadowScale = 0.5f,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    OrbisSymbols.Error,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(
-                    message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = if (needsAction) 6 else 3,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                if (needsAction) {
-                    Text(L10n.tr("关闭"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+    Box(Modifier.fillMaxSize().onGloballyPositioned { rootBottom = it.boundsInWindow().bottom }.then(if (bottom) Modifier.padding(bottom = bottomPadding).then(if (anchor == null) Modifier.imePadding().navigationBarsPadding() else Modifier) else Modifier.statusBarsPadding()),
+        contentAlignment = if (bottom) Alignment.BottomCenter else Alignment.TopCenter) {
+        androidx.compose.animation.AnimatedContent(targetState = notice, transitionSpec = {
+            (fadeIn(tween(InteractionMotion.duration(InteractionMotion.Panel))) +
+                androidx.compose.animation.slideInVertically(tween(InteractionMotion.duration(InteractionMotion.Panel))) {
+                    if (android.animation.ValueAnimator.areAnimatorsEnabled()) (if (bottom) 12 else -12) else 0
+                }).togetherWith(fadeOut(tween(InteractionMotion.duration(InteractionMotion.Exit))))
+                .using(null)
+        }, label = if (bottom) "short-feedback" else "connection-banner") { shown ->
+            shown?.let {
+                NeumorphSurface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                    .testTag(if (bottom) "feedback-f3" else "feedback-f4")
+                    .semantics(mergeDescendants = true) { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+                    shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (bottom) OrbisSymbols.Info else OrbisSymbols.Error, null, modifier = Modifier.size(20.dp),
+                            tint = if (bottom) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                        Text(shown.message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        shown.action?.let { action ->
+                            NeumorphTextButton(when (action) {
+                                FeedbackAction.REPAIR -> L10n.tr("重新配对")
+                                FeedbackAction.SETTINGS -> L10n.tr("检查更新")
+                                FeedbackAction.RECHECK -> L10n.tr("重新连接")
+                                FeedbackAction.UNDO -> L10n.tr("撤销")
+                            }, { onAction(action); if (bottom) onDismiss() })
+                        }
+                        NeumorphIconButton(onClick = onDismiss, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp)
+                    }
                 }
             }
         }
@@ -4630,3 +4668,17 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
         }
     }
 }
+
+@Composable
+internal fun InlineFeedbackError(message: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(OrbisSymbols.Error, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+        Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+internal class FeedbackGeometry {
+    var composerTop by mutableStateOf<Float?>(null)
+    var tabsTop by mutableStateOf<Float?>(null)
+}
+internal val LocalFeedbackGeometry = staticCompositionLocalOf { FeedbackGeometry() }

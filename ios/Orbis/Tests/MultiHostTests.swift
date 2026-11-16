@@ -5,9 +5,10 @@ import Testing
 
 private final class MultiHostSecureStore: SecureStorage {
     var hosts: [HostPairing]
+    var rejectsSave = false
     init(_ hosts: [HostPairing]) { self.hosts = hosts }
     func deviceIdentity() throws -> DeviceIdentity { .generate() }
-    func savePairings(_ pairings: [HostPairing]) throws { hosts = pairings }
+    func savePairings(_ pairings: [HostPairing]) throws { if rejectsSave { throw NSError(domain: "SecureStorage", code: 1, userInfo: [NSLocalizedDescriptionKey: "storage unavailable"]) }; hosts = pairings }
     func pairings() -> [HostPairing] { hosts }
 }
 
@@ -382,4 +383,37 @@ struct MultiHostTests {
         #expect(restored.hosts.first { $0.hostId == "host-2" }?.pairing.lan == secondEndpoints)
         for host in restored.hosts { host.connection.shutdown() }
     }
+    // SC92/SC93: an inactive Host keeps confirmed connection conditions without accumulating transient feedback.
+    @Test func backgroundHostConditionsSurviveSelectionUntilTheyActuallyResolve() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let store = fixture.store
+        let other = try #require(store.connection(for: "host-2"))
+        let transport = try #require(fixture.transports["host-2"])
+        await transport.emit(["type": "protocol.error", "code": "unauthorized", "message": "denied"])
+        other.presentFeedback(.toast, "background", key: "background-result")
+        #expect(store.feedback.banner == nil)
+        store.selectHost("host-2")
+        #expect(store.feedback.banner?.action == .pair)
+        #expect(store.feedback.toast == nil)
+        store.dismissFeedbackBanner()
+        store.selectHost("host-1"); store.selectHost("host-2")
+        #expect(store.feedback.banner == nil)
+        transport.state?(.secured, nil)
+        await transport.emit(["type": "protocol.error", "code": "unauthorized", "message": "denied"])
+        #expect(store.feedback.banner?.action == .pair)
+    }
+
+    // SC94: a failed unpair retains its object and its local record after the confirmation's drawer closes.
+    @Test func failedUnpairRetainsTheComputerAndItsInlineManagementError() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        fixture.secure.rejectsSave = true
+        fixture.store.unpair(hostId: "host-1")
+        #expect(fixture.store.pairings.count == 2)
+        #expect(fixture.store.pairingError == "storage unavailable")
+        #expect(fixture.store.feedback.toast?.text == "storage unavailable")
+        #expect(fixture.store.errorMessage == nil)
+    }
+
 }

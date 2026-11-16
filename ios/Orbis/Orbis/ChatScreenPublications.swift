@@ -28,6 +28,8 @@ struct ChatScreenSnapshot {
     let workingBranch: WorkingBranch?
     let draftRevision: Int
     let draft: String
+    let inputError: String?
+    let menuErrors: [String: String]
     let cachedSession: SessionSummary?
     let activatingSessionId: String?
     let historyRevision: Int
@@ -70,6 +72,8 @@ struct ChatScreenSnapshot {
         preparing = source.transfers.preparing
         commands = source.commands[id] ?? []; workingBranch = source.workingBranches[id]
         draftRevision = source.draftRevision; draft = runtime.map(source.draft) ?? ""
+        inputError = source.objectError(id) ?? source.transfers.error
+        menuErrors = Dictionary(uniqueKeysWithValues: source.menuErrors.compactMap { key, value in let prefix = id + "\u{0}"; return key.hasPrefix(prefix) ? (String(key.dropFirst(prefix.count)), value) : nil })
         cachedSession = source.isViewingCachedSession ? source.sessions.first { $0.sessionId == session } : nil
         activatingSessionId = source.activatingSessionId
         historyRevision = source.historyRevision; historyPageRevision = source.historyPageRevision
@@ -221,6 +225,8 @@ struct ChatComposerState: Equatable {
     let activatingSessionId: String?
     let runtime: ChatComposerRuntimeFacts?
     let workingBranch: ChatWorkingBranch?
+    let inputError: String?
+    let menuErrors: [String: String]
     var identity: String { target.identity }
 }
 struct ChatNoticesState: Equatable {
@@ -297,6 +303,7 @@ struct NavigationScreenSnapshot: Equatable {
     let activationRevision: Int
     let pairing: Bool
     let error: String?
+    let feedback: FeedbackState
     var source: HostConnection { target.owner }
     var actionContext: ChatActionContext { target }
     @MainActor init(store: OrbisStore) {
@@ -305,7 +312,7 @@ struct NavigationScreenSnapshot: Equatable {
         selectedHost = store.selectedHost; pairings = store.pairings
         selectedHostId = store.selectedHostId; selectedRuntimeId = store.selectedRuntimeId
         runtimeIdentity = store.selectedRuntime == nil ? nil : target.identity
-        activationRevision = store.activationRevision; pairing = store.isPairing; error = store.errorMessage
+        activationRevision = store.activationRevision; pairing = store.isPairing; error = store.errorMessage; feedback = store.feedback
     }
 }
 
@@ -503,7 +510,7 @@ final class ChatScreenModel {
             shell = .init(target: target, kind: s.kind, cached: s.cached)
             header = .init(target: target, kind: s.kind, displayName: s.displayName, connection: s.connection, syncing: s.syncing, modelReady: s.modelReady, executionReady: s.executionReady, modelSaveState: s.modelSaveState, modelSaveFailed: s.modelSaveFailed, runtimeFacts: s.runtime.map(ChatHeaderRuntimeFacts.init))
             transcript = .init(target: target, kind: s.kind, transcript: s.transcript, hasMessages: s.hasMessages, canSend: s.canSend, syncing: s.syncing, cached: s.cached, connection: s.connection, streaming: s.streaming, pending: s.pending, pendingActions: s.pendingActions, uploads: s.uploads, historyRevision: s.historyRevision, historyPageRevision: s.historyPageRevision, historyLoading: s.historyLoading, historyError: s.historyError, hasOlder: s.hasOlder, actionFeedback: s.actionFeedback, rewind: s.rewind, status: s.runtime?.status)
-            composer = .init(target: target, kind: s.kind, canSend: s.canSend, cached: s.cached, connection: s.connection, draftRevision: s.draftRevision, commands: s.commands, pendingActions: s.pendingActions, attached: s.attached, preparing: s.preparing, contextReady: s.contextReady, cachedSession: s.cachedSession, activatingSessionId: s.activatingSessionId, runtime: s.runtime.map(ChatComposerRuntimeFacts.init), workingBranch: s.workingBranch.map(ChatWorkingBranch.init))
+            composer = .init(target: target, kind: s.kind, canSend: s.canSend, cached: s.cached, connection: s.connection, draftRevision: s.draftRevision, commands: s.commands, pendingActions: s.pendingActions, attached: s.attached, preparing: s.preparing, contextReady: s.contextReady, cachedSession: s.cachedSession, activatingSessionId: s.activatingSessionId, runtime: s.runtime.map(ChatComposerRuntimeFacts.init), workingBranch: s.workingBranch.map(ChatWorkingBranch.init), inputError: s.inputError, menuErrors: s.menuErrors)
             notices = .init(target: target, notice: s.notice, connection: s.connection, launch: s.launch, isLaunchPage: s.isLaunchPage, supported: ["codex", "codexDesktop"].contains(s.runtime?.agentKind ?? ""))
             workspace = .init(target: target, host: s.host, requests: s.requests, responding: s.responding, interactionText: s.interactionText, interactionPending: s.interactionPending, queue: s.queue, queueCancellations: s.queueCancellations, canSend: s.canSend)
         }

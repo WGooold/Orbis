@@ -8,6 +8,7 @@ data class HomeRuntimeCard(
     val runtime: RuntimeSummary,
     val title: String,
     val hasPendingInteraction: Boolean,
+    val error: String? = null,
 )
 
 internal val HOME_MODEL_DOMAINS = setOf("identity", "execution", "interactions")
@@ -79,7 +80,7 @@ internal fun RemoteState.commitHomePresentation(titles: SessionTitleCache? = nul
 }
 
 private fun RemoteState.prepareHomeCards(titles: SessionTitleCache?, language: AppLanguage) = runtimes.values.map {
-        HomeRuntimeCard(it, titles?.resolve(this, it.sessionId, it, language) ?: runtimeDisplayName(it), hasPendingInteraction(it.runtimeId))
+        HomeRuntimeCard(it, titles?.resolve(this, it.sessionId, it, language) ?: runtimeDisplayName(it), hasPendingInteraction(it.runtimeId), sessionOperationErrors[it.runtimeId])
     }
 
 private fun RemoteState.orderHomeCards(cards: List<HomeRuntimeCard>): List<HomeRuntimeCard> {

@@ -21,6 +21,7 @@ private struct NavigationRoot: View, Equatable {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @StateObject private var navigation = OrbisPageStack<AppPage>()
     @State private var homeSelecting = false
@@ -104,18 +105,26 @@ private struct NavigationRoot: View, Equatable {
     private var rootWithNotices: some View {
         rootSurface
         .overlay(alignment: .top) {
-            if let error = facts.error {
-                HStack(alignment: .top, spacing: 10) {
-                    OrbisNotice(text: error, error: true)
-                    OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭错误提示")) { store.errorMessage = nil }
-                }.padding(16).background(OrbisPalette(scheme).base)
-                    .accessibilityElement(children: .contain)
+            if let notice = facts.feedback.banner {
+                feedbackNotice(notice, error: true).padding(16)
+                    .transition(reduceMotion ? .identity : InteractionMotion.banner)
+                    .task(id: notice.id) { announceFeedback(notice.text) }
             }
         }
-        .overlay(alignment: .bottom) { TransferErrorBanner(transfers: facts.source.transfers) }
-        .overlay(alignment: .bottom) {
-            if draftNotice { OrbisNotice(text: L10n.tr("草稿已保留")).padding(.horizontal, 20).padding(.bottom, 88).transition(InteractionMotion.notice) }
+        .overlayPreferenceValue(FeedbackComposerAnchorKey.self) { anchor in
+            GeometryReader { geometry in
+                if let notice = facts.feedback.toast {
+                    feedbackNotice(notice, error: false)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, navigation.pages.last == .chat ? anchor.map { max(12, geometry.size.height - geometry[$0].minY + 12) } ?? 88 : 88)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(reduceMotion ? .identity : InteractionMotion.notice)
+                        .task(id: notice.id) { announceFeedback(notice.text) }
+                }
+            }
         }
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: facts.feedback.banner?.id)
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: facts.feedback.toast?.id)
         #if DEBUG
         .overlay(alignment: .topTrailing) {
             if ProcessInfo.processInfo.arguments.contains("--preview-viewport-controls") {
@@ -140,10 +149,43 @@ private struct NavigationRoot: View, Equatable {
         #endif
     }
 
+    private func feedbackNotice(_ notice: FeedbackNotice, error: Bool) -> some View {
+        OrbisNotice(text: notice.text, error: error, trailing: AnyView(HStack(alignment: .top, spacing: 8) {
+            if let action = notice.action {
+                OrbisActionButton(title: feedbackActionTitle(action)) {
+                    if !error { store.dismissFeedbackToast() }
+                    switch action {
+                    case .pair: navigation.push(.pairing)
+                    case .reconnect: store.reconnectSelectedHost()
+                    case .settings: rootTab = .settings; navigation.replace(with: [])
+                    case .update: if let url = URL(string: "https://orbising.com/#download") { openURL(url) }
+                    case .restoreDraft: withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+                    }
+                }
+            }
+            OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭提示")) {
+                if error { store.dismissFeedbackBanner() } else { store.dismissFeedbackToast() }
+            }
+        })).accessibilityElement(children: .contain)
+    }
+    private func feedbackActionTitle(_ action: FeedbackAction) -> String {
+        switch action {
+        case .pair: L10n.tr("重新配对")
+        case .reconnect: L10n.tr("重新连接")
+        case .settings: L10n.tr("设置")
+        case .update: L10n.tr("更新")
+        case .restoreDraft: L10n.tr("继续编辑")
+        }
+    }
+    private func announceFeedback(_ text: String) {
+        UIAccessibility.post(notification: .announcement, argument: text)
+    }
+
     private var rootWithNavigationUpdates: some View {
         rootWithNotices
         .onChange(of: rootTab) { _, next in switchRoot(next) }
         .onChange(of: facts.selectedHostId) { _, _ in
+            store.setFeedbackPage(downloads: navigation.pages.last == .downloads, chat: navigation.pages.last == .chat)
             store.hostState.setCatalogQuery(directoryState.networkQuery)
             store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
             overlay.dismissMenu()
@@ -153,6 +195,7 @@ private struct NavigationRoot: View, Equatable {
         }
         .onChange(of: facts.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
+            store.setFeedbackPage(downloads: pages.last == .downloads, chat: pages.last == .chat)
             store.setHistoryWindowVisible(scenePhase == .active && pages.last == .chat)
             overlay.dismissMenu()
             // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
@@ -186,6 +229,8 @@ private struct NavigationRoot: View, Equatable {
             navigation.replace(with: [.chat])
         }
         .task(id: scenePhase) {
+            store.setFeedbackForeground(scenePhase == .active)
+            store.setFeedbackPage(downloads: navigation.pages.last == .downloads, chat: navigation.pages.last == .chat)
             store.hostState.setCatalogQuery(directoryState.networkQuery)
             store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
             store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
@@ -306,9 +351,8 @@ private struct NavigationRoot: View, Equatable {
             if newSessionOpen { draftCloseRequest += 1 }
             else { draftNotice = false; withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true } }
         }, onDraftCancelled: { retained in
-            withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = false; draftNotice = retained }
-            draftNoticeToken += 1; let token = draftNoticeToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if token == draftNoticeToken { withAnimation(reduceMotion ? nil : InteractionMotion.exit) { draftNotice = false } } }
+            withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = false }
+            if retained { store.presentFeedback(.toast, L10n.tr("草稿已保留"), action: .restoreDraft) }
         }, onDraftSubmitted: { launch, origin in
             // The card stays in the live home until the growing page has covered it, so the
             // list outside the rectangle does not move while the page expands (S35 / M27).
@@ -572,17 +616,6 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     }
 }
 
-private struct TransferErrorBanner: View {
-    @ObservedObject var transfers: FileTransfers
-    var body: some View {
-        if let error = transfers.error {
-            HStack {
-                OrbisNotice(text: error, error: true)
-                OrbisIconButton(symbol: "xmark", label: L10n.tr("关闭文件提示")) { transfers.error = nil }
-            }.padding(16)
-        }
-    }
-}
 
 struct HomeView: View, Equatable {
     let store: OrbisStore
@@ -1043,7 +1076,9 @@ private struct HomeCardContent: View, Equatable {
                 HStack(spacing: 10) {
                     Text(agentTitle(kind)).font(.orbisCaption(.medium)).foregroundStyle(OrbisPalette(scheme).agent(kind))
                     // A pending interaction takes the status slot instead of adding a line to the card.
-                    if pending {
+                    if let error = card.error {
+                        Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                    } else if pending {
                         Label(L10n.tr("待确认"), systemImage: "exclamationmark.circle").font(.orbisCaption(.semibold))
                             .foregroundStyle(OrbisPalette(scheme).error)
                     } else { RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle) }
@@ -1163,4 +1198,10 @@ func connectionTitle(_ state: ConnectionState) -> String {
     case .secured: return L10n.tr("端到端加密已连接")
     case .error: return L10n.tr("连接错误")
     }
+}
+
+/// The mounted input owns this anchor, including attachment rows, keyboard and multiline text.
+struct FeedbackComposerAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = nextValue() ?? value }
 }

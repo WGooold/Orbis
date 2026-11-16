@@ -14,7 +14,12 @@ class RuntimePermissionsTest {
         assertNotNull(failed.conversations.getValue("codex:a").interactions.getValue("q").responseError)
         val ordinaryFailure = reducer.reduce(failed, event(2, """{"type":"command.result","commandId":"other","ok":false,
             "status":"failure","error":"failed"}"""))
-        assertNotNull(ordinaryFailure.error)
+        assertNull(ordinaryFailure.error) // SC94: a result with no pending owner is diagnostic-only.
+        assertNull(ordinaryFailure.conversations["codex:a"]?.operationError)
+        val owned = reducer.reduce(failed.copy(pendingCommands = mapOf("other" to "codex:a")), event(2, """{"type":"command.result","commandId":"other","ok":false,
+            "status":"failure","error":"failed"}"""))
+        assertNull(owned.error)
+        assertNotNull(owned.conversations["codex:a"]?.operationError)
     }
     @Test fun `unrelated interactions cannot clear local request rendering failures`() {
         val state = initial.copy(conversations = mapOf("codex:a" to RuntimeConversation(interactionNotices = mapOf("broken" to "Cannot render"))))

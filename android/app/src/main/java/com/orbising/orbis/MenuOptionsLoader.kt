@@ -11,6 +11,8 @@ internal class MenuOptionsLoader {
     data class Result(val runtimeId: String, val name: String, val catalogId: String,
         val options: List<RuntimeSlashCommandOption>? = null, val next: JsonObject? = null, val error: String? = null)
     private var read: Read? = null
+    @Synchronized fun owns(message: JsonObject): Boolean = read != null && read?.requestId == message["requestId"]?.jsonPrimitive?.contentOrNull &&
+        (message["type"]?.jsonPrimitive?.contentOrNull != "protocol.error" || message["code"]?.jsonPrimitive?.contentOrNull !in CONNECTION_ACTION_PROTOCOL_CODES)
     @Synchronized fun cancel() { read = null }
     @Synchronized fun expire(requestId: String): Boolean {
         if (read?.requestId != requestId) return false
@@ -21,7 +23,7 @@ internal class MenuOptionsLoader {
         if (command.argument.options.size == catalog.count) return null
         if (catalog.count !in 0..100_000 || catalog.id.isBlank()) return null
         if (read?.let { it.runtimeId == runtimeId && it.name == command.name && it.catalog == catalog } == true) return null
-        val next = Read(runtimeId, command.name, catalog, UUID.randomUUID().toString())
+        val next = Read(runtimeId, command.name, catalog, connectionRequestId())
         read = next
         return request(next, null)
     }
@@ -33,9 +35,15 @@ internal class MenuOptionsLoader {
     @Synchronized fun consume(message: JsonObject, json: Json): Result? {
         val current = read ?: return null
         fun string(key: String) = (message[key] as? JsonPrimitive)?.contentOrNull
-        if (string("requestId") != current.requestId || string("runtimeId") != current.runtimeId ||
-            string("commandName") != current.name || string("catalogId") != current.catalog.id) return null
+        if (string("requestId") != current.requestId) return null
         val base = Result(current.runtimeId, current.name, current.catalog.id)
+        if (string("type") == "protocol.error") {
+            if (string("code") in CONNECTION_ACTION_PROTOCOL_CODES) return null
+            read = null
+            return base.copy(error = string("code") ?: "read_failed")
+        }
+        if (string("type") != "agent.menu.options.page" || string("runtimeId") != current.runtimeId ||
+            string("commandName") != current.name || string("catalogId") != current.catalog.id) return null
         return try {
             string("error")?.let { error(it) }
             require(message["totalCount"]?.jsonPrimitive?.intOrNull == current.catalog.count)
@@ -48,7 +56,7 @@ internal class MenuOptionsLoader {
             val cursor = string("nextCursor")
             if (cursor != null) {
                 require(page.isNotEmpty() && cursor !in current.cursors && items.size < current.catalog.count)
-                val next = current.copy(items = items, cursors = current.cursors + cursor, bytes = total, requestId = UUID.randomUUID().toString())
+                val next = current.copy(items = items, cursors = current.cursors + cursor, bytes = total, requestId = connectionRequestId())
                 read = next; base.copy(next = request(next, cursor))
             } else {
                 require(items.size == current.catalog.count)

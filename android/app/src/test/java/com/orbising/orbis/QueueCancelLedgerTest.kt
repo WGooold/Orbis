@@ -82,21 +82,21 @@ class QueueCancelLedgerTest {
         val state = queue(result(cancelling, id, ok = false, status = "already_delivered", error = "消息已送达或不存在"),
             mapOf("q2" to "accepted"))
         assertEquals(listOf("q2"), panel(state))
-        assertEquals("撤回未完成：消息已交给 Agent", state.error)
+        assertEquals("撤回未完成：消息已交给 Agent", state.conversations["a"]?.operationError)
     }
 
     @Test fun aDeliveredQueueItemSettlesAsAlreadyDelivered() {
         val state = queue(cancel(setup(), "q1").first, mapOf("q1" to "delivered", "q2" to "accepted"))
         assertTrue(state.ledger.operations.isEmpty())
         assertEquals(listOf("q2"), panel(state))
-        assertEquals("撤回未完成：消息已交给 Agent", state.error)
+        assertEquals("撤回未完成：消息已交给 Agent", state.conversations["a"]?.operationError)
     }
 
     @Test fun notCancelableReturnsTheItemWithItsReason() {
         val (cancelling, id) = cancel(setup(), "q1")
         val state = result(cancelling, id, ok = false, status = "not_cancelable", error = "DSH 不支持撤回排队消息；请使用停止")
         assertEquals(listOf("q1", "q2"), panel(state))
-        assertEquals("撤回未完成：DSH 不支持撤回排队消息；请使用停止", state.error)
+        assertEquals("撤回未完成：DSH 不支持撤回排队消息；请使用停止", state.conversations["a"]?.operationError)
     }
 
     @Test fun disconnectBringsTheItemBackMarkedUnconfirmed() {

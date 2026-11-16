@@ -122,6 +122,7 @@ private final class OutboundEncodingQueue {
 protocol OrbisTransport: AnyObject {
     /// Valid only during receive; the authenticated wire bytes avoid re-encoding large events.
     var receivedPayload: Data? { get }
+    var feedbackCondition: FeedbackCondition? { get }
     /// The established Relay adapter, independent of the requested ws/quic/auto mode.
     var relayTransportKind: RelayTransportKind? { get }
     /// This Host's saved phone-to-Relay policy, independent of the active adapter.
@@ -136,6 +137,7 @@ protocol OrbisTransport: AnyObject {
 
 extension OrbisTransport {
     var receivedPayload: Data? { nil }
+    var feedbackCondition: FeedbackCondition? { nil }
     var relayTransportKind: RelayTransportKind? { nil }
     var relayTransportMode: RelayTransportMode { .auto }
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
@@ -240,6 +242,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     private var handshake: DeviceHandshake?
     private var channel: E2EChannel?
     private var decoder = InboundFrameDecoder()
+    private(set) var feedbackCondition: FeedbackCondition?
     private(set) var receivedPayload: Data?
     private var receiveHandler: (([String: Any], String?) -> Void)?
     private var stateHandler: ((ConnectionState, String?) -> Void)?
@@ -464,7 +467,8 @@ final class RelayTransport: NSObject, OrbisTransport {
             return
         }
         guard let credential, let url = RelayURL.endpoint(credential.relayUrl, path: "v1/device", webSocket: true) else {
-            stateHandler?(.error, L10n.tr("中继地址无效，请重新配对。"))
+            feedbackCondition = .pairing
+            stateHandler?(.error, L10n.tr("配对信息不完整，请重新配对。"))
             return
         }
         if !hasDirectPath { stateHandler?(.connecting, nil) }
@@ -709,6 +713,7 @@ final class RelayTransport: NSObject, OrbisTransport {
         bootstrapReady = true; socket?.setBusinessReady(true)
         relaySwitchPhase = "active"; relaySwitchError = nil
         timeoutTask?.cancel(); timeoutTask = nil
+        feedbackCondition = nil
         stateHandler?(.secured, nil)
         _ = sendRelay(["type": "host.lan.request", "protocolVersion": orbisProtocolVersion])
     }
@@ -788,6 +793,10 @@ final class RelayTransport: NSObject, OrbisTransport {
         timeoutTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, let socket = self.socket else { return }
+            if self.pairing != nil, self.handshake != nil, !self.hasDirectPath {
+                self.feedbackCondition = .computerClosed
+                self.stateHandler?(.error, L10n.tr("电脑端 Orbis 未打开，打开后会自动连接"))
+            }
             self.socketClosed(socket, error: PairingError.relay(message))
         }
     }

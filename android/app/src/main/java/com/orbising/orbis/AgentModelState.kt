@@ -172,9 +172,7 @@ internal fun RemoteState.withAgentStateSnapshot(
     val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json,
         staticIdentity = message.string("stateFormat") in setOf("compact-v1", "compact-v2"), parseInteraction = parseInteraction)
         else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
-    if (projected.error != null && L10n.hasPrefix(projected.error, "Host 模型领域格式无效：") && projected.error != base.error) {
-        return cleared.rejectedSnapshot(key, scope, requestId, projected.error)
-    }
+    projected.agentProjectionFailure?.let { failure -> return cleared.rejectedSnapshot(key, scope, requestId, failure) }
     val settled = if (read?.subscribe == true) projected.copy(agentStateReads = projected.agentStateReads +
         (requestId to read.copy(pendingDomains = read.pendingDomains - confirmed.keys - missing.keys))) else projected
     return settled.storeSnapshot(key, AgentStateSnapshotView(

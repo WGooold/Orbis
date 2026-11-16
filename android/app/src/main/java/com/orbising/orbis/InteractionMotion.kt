@@ -53,6 +53,7 @@ import kotlin.math.max
 
 /** ADR-0058. Durations and geometry are semantic shared contracts, never per-screen constants. */
 internal object InteractionMotion {
+    const val ToastHold = 4_000L
     const val CopyFeedback = 2_500L
     const val CopyTransition = 220
     const val ReplyGrowth = 180

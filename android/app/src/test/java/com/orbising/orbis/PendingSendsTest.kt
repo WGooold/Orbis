@@ -259,7 +259,8 @@ class PendingSendsTest {
 
         val rejected = reducer.reduce(base, result(false))
         assertTrue(rejected.closingRuntimeIds.isEmpty())
-        assertEquals("关闭会话未完成：进程仍在运行", rejected.error)
+        assertEquals("关闭会话未完成：进程仍在运行", rejected.sessionOperationErrors["runtime-a"])
+        assertNull(rejected.error)
         // ADR-0051 V11 r27：断线时关闭结果未知，卡片保持隐藏，等重连后核对（原规则是断线即恢复）。
         assertEquals(setOf("runtime-a"), base.markReconnecting().closingRuntimeIds)
     }

@@ -112,7 +112,7 @@ struct QueueCancelLedgerTests {
         await transport.result(try #require(transport.cancelIds.last), ok: false, status: "already_delivered", error: "消息已送达或不存在")
         await transport.queue(["q2": "accepted"])
         #expect(panel(host) == ["q2"])
-        #expect(host.errorMessage == "撤回未完成：消息已交给 Agent")
+        #expect((host.queueErrors["a\u{0}q1"] ?? host.objectError("a")) == "撤回未完成：消息已交给 Agent")
     }
 
     @Test func aDeliveredQueueItemSettlesAsAlreadyDelivered() async throws {
@@ -121,7 +121,7 @@ struct QueueCancelLedgerTests {
         await transport.queue(["q1": "delivered", "q2": "accepted"])
         #expect(host.ledger.operations.isEmpty)
         #expect(panel(host) == ["q2"])
-        #expect(host.errorMessage == "撤回未完成：消息已交给 Agent")
+        #expect((host.queueErrors["a\u{0}q1"] ?? host.objectError("a")) == "撤回未完成：消息已交给 Agent")
     }
 
     @Test func notCancelableReturnsTheItemWithItsReason() async throws {
@@ -129,7 +129,7 @@ struct QueueCancelLedgerTests {
         _ = host.cancelQueuedMessage("q1")
         await transport.result(try #require(transport.cancelIds.last), ok: false, status: "not_cancelable", error: "DSH 不支持撤回排队消息；请使用停止")
         #expect(panel(host) == ["q1", "q2"])
-        #expect(host.errorMessage == "撤回未完成：DSH 不支持撤回排队消息；请使用停止")
+        #expect((host.queueErrors["a\u{0}q1"] ?? host.objectError("a")) == "撤回未完成：DSH 不支持撤回排队消息；请使用停止")
     }
 
     @Test func disconnectBringsTheItemBackMarkedUnconfirmed() async throws {

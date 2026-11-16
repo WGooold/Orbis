@@ -114,6 +114,7 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
             if (presentation.indicator == L10n.tr("未确认")) {
                 NeumorphTextButton(L10n.tr("核对配置"), enabled = state.e2eReady, dismissOnClick = false, onClick = onVerify)
             }
+            setting?.let { state.menuOptionErrors[runtimeId + ":" + it] }?.let { InlineFeedbackError(it) }
             if (command == null) {
                 for (name in listOf("model", "thinking")) {
                     val nativeName = if (name == "model") name else commands.depthCommand()

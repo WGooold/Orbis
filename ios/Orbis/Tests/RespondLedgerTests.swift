@@ -121,8 +121,8 @@ struct RespondLedgerTests {
         _ = host.respond(try request(host, "approval"), response: ["kind": "confirm", "value": false])
         await transport.event(["type": "command.result", "commandId": try #require(transport.respondIds.last), "ok": false, "error": "校验失败"])
         #expect(visible(host) == ["approval", "pick"])
-        #expect(host.interactionStatus("a") == nil)
-        #expect(host.errorMessage == "回答未提交：校验失败")
+        #expect(host.interactionStatus("a")?.text == "回答未提交：校验失败")
+        #expect(host.errorMessage == nil)
     }
 
     @Test func aRequestHandledElsewhereShowsTheFactNotOurAnswer() async throws {

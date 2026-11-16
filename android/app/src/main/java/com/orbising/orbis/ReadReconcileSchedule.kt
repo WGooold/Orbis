@@ -26,7 +26,7 @@ internal class HistoryWindowInterest {
 
     @Synchronized fun publish(target: String, now: Long, send: (String) -> Boolean) {
         if (this.target == target && (pendingRequestId == null || sentAt?.let { now - it >= 20_000 } != true)) return
-        val id = java.util.UUID.randomUUID().toString()
+        val id = connectionRequestId()
         if (!send(id)) return
         this.target = target; pendingRequestId = id; sentAt = now; confirmed = null
     }

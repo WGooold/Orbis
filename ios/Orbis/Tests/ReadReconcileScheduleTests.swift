@@ -59,4 +59,11 @@ import Testing
         #expect(interest.pendingRequestId == nil)
     }
 
+
+    // SC91: a replaced interest's late result or protocol error must stay recognisable as connection owned.
+    @Test func historyInterestRequestsCarryTheConnectionOwnedPrefix() {
+        var interest = HistoryWindowInterest(), sent: [String] = []
+        interest.publish("a") { sent.append($0); return true }
+        #expect(sent.count == 1 && sent[0].hasPrefix("conn:"))
+    }
 }

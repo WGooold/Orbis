@@ -492,7 +492,9 @@ struct SessionDrawerView: View, Equatable {
                 Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisLabel())
                     .foregroundStyle(OrbisPalette(scheme).text)
                     .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                if let unavailable {
+                if let error = store.sessionOperationErrors[session.sessionId] {
+                    Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error).lineLimit(2)
+                } else if let unavailable {
                     Text(unavailable).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                         .lineLimit(1).frame(width: 56).accessibilityLabel(unavailable)
                 } else if let runtime, !["idle", "unknown"].contains(runtime.presentationStatus) {
@@ -521,6 +523,9 @@ struct SessionDrawerView: View, Equatable {
     private var hostSelector: some View {
         VStack(spacing: 8) {
             OrbisPalette(scheme).outline.opacity(0.6).frame(height: 1).padding(.horizontal, 12).padding(.top, 10)
+            if let error = store.pairingError {
+                Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12)
+            }
             // The only place to add or unpair a computer (ADR-0046 §5).
             OrbisMotionButton {
                 overlay.showMenu(hostSwitchMenuItems(store, onAddHost: onAddHost, onUnpair: onUnpair), from: hostMenuAnchor.frame)

@@ -38,4 +38,19 @@ struct MenuOptionsTests {
         let fourthRead = loader.start(runtimeId: "r", command: command()); let fourth = try #require(fourthRead)
         let changed = loader.consume(page(fourth, [], error: "catalog_changed")); #expect(changed?.error == "catalog_changed")
     }
+    // SC95: protocol errors belong to the active menu reader before stale conn replies are dropped.
+    @Test func protocolErrorsAreClaimedAndRequestIdsUseConnectionPrefix() throws {
+        var loader = MenuOptionsLoader()
+        let started = loader.start(runtimeId: "r", command: command())
+        let request = try #require(started)
+        #expect((request["requestId"] as? String)?.hasPrefix("conn:") == true)
+        let error: [String: Any] = ["type": "protocol.error", "requestId": request["requestId"]!, "code": "invalid_request"]
+        let result = loader.consume(error)
+        #expect(result?.runtimeId == "r")
+        #expect(result?.name == "tree")
+        #expect(result?.error != nil)
+        let duplicate = loader.consume(error)
+        #expect(duplicate == nil)
+    }
+
 }

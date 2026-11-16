@@ -80,7 +80,7 @@ struct LaunchLedgerTests {
         fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
         let id = try #require(fixture.host.sessionConfigurationRequest)
         await fixture.transport.emit(["type": "protocol.error", "commandId": "unrelated-command", "code": "busy", "message": "Agent busy"])
-        #expect(fixture.host.errorMessage == "Agent busy")
+        #expect(fixture.host.errorMessage == nil) // SC94: unowned replies remain diagnostic-only.
         #expect(fixture.host.sessionConfigurationRequest == id)
         #expect(fixture.host.sessionConfigurationError == nil)
         await fixture.transport.emit(["type": "protocol.error", "requestId": id, "code": "session_configuration_failed", "message": "catalog unavailable"])
@@ -334,7 +334,7 @@ struct LaunchLedgerTests {
         _ = host.sendMessage("你好")
         let id = try #require(fixture.transport.activations.last?["requestId"] as? String)
         await fixture.transport.emit(["type": "protocol.error", "code": "agent_unsupported", "message": "对应的 agent 后端未就绪", "requestId": id])
-        #expect(host.launching?.failure == "对应的 agent 后端未就绪")
+        #expect(host.launching?.failure == "所选助手尚未就绪，请在电脑端检查")
         #expect(host.selectedRuntime?.status == "error")
         #expect(!host.canSend)
         #expect(host.pendingSends.items.first?.state == .failed("会话启动未完成，消息未发送"))

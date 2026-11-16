@@ -115,7 +115,7 @@ struct ConfigLedgerTests {
         #expect(host.pendingSends.items.first?.state == .waiting("等待模型切换"))
         try await fixture.transport.result(ok: false, error: "未知模型")
         #expect(status(host) == nil)
-        #expect(host.errorMessage == "模型切换未完成：未知模型")
+        #expect(host.sessionConfigFailure("a")?.message == "未知模型")
         #expect(host.pendingSends.items.first?.state == .failed("模型切换未完成，消息未发送"))
         #expect(fixture.transport.userMessages.isEmpty)
         #expect(host.sessionConfigFailure("a")?.value == "model-b")
@@ -167,7 +167,7 @@ struct ConfigLedgerTests {
         await fixture.transport.ready()
         try await fixture.transport.answerRead()
         #expect(status(host) == nil)
-        #expect(host.errorMessage == "模型切换未完成：未生效")
+        #expect(host.sessionConfigFailure("a")?.message == "未生效")
     }
 
     @Test func reconnectWithTheChoiceInEffectLands() async throws {

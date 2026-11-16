@@ -141,7 +141,7 @@ class RespondLedgerTest {
         val state = result(responding, id, ok = false, error = "校验失败")
         assertEquals(listOf("approval", "pick"), visible(state))
         assertNull(status(state))
-        assertEquals("回答未提交：校验失败", state.error)
+        assertEquals("回答未提交：校验失败", state.conversations["a"]?.interactions?.get("approval")?.responseError)
     }
 
     @Test fun aRequestHandledElsewhereShowsTheFactNotOurAnswer() {

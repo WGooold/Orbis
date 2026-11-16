@@ -2,6 +2,17 @@ import Foundation
 
 let orbisProtocolVersion = 19
 
+/// SC91：连接层按 requestId 自管的请求（目录与历史窗口能力探测、目录查询、历史兴趣订阅）带这个前缀，Android 相同。
+/// 在途请求的回包与协议错误由所属读取器先消费；之后到达的只剩重发、替换或重复之后的旧回包。
+let connectionOwnedRequestPrefix = "conn:"
+func connectionRequestId() -> String { connectionOwnedRequestPrefix + UUID().uuidString }
+/// 整条连接不可用的协议错误码；Host 会回传触发请求的 requestId，这类错误不按迟到回包丢弃。
+let connectionFatalProtocolCodes: Set<String> = ["unauthorized", "invalid_message", "protocol_version_mismatch", "runtime_mismatch"]
+func isStaleConnectionError(_ message: [String: Any]) -> Bool {
+    (message["requestId"] as? String)?.hasPrefix(connectionOwnedRequestPrefix) == true &&
+        !connectionFatalProtocolCodes.contains(message["code"] as? String ?? "")
+}
+
 struct SessionConfigurationValues: Codable, Hashable {
     var model: String? = nil
     var thinking: String? = nil
@@ -654,5 +665,100 @@ struct InteractionRequest: Codable, Hashable, Identifiable {
         let allowOther: Bool?
         let allowNotes: Bool?
         let secret: Bool?
+    }
+}
+
+/// SC92: only explicitly classified F3/F4 feedback enters the shared presentation queue.
+enum FeedbackLevel { case toast, banner }
+enum FeedbackCondition: Int, CaseIterable, Comparable {
+    case pairing, version, computerClosed, other
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+enum FeedbackAction: Equatable { case pair, reconnect, settings, update, restoreDraft }
+struct FeedbackNotice: Equatable, Identifiable {
+    let id: UUID
+    let key: String
+    let text: String
+    let action: FeedbackAction?
+    init(key: String, text: String, action: FeedbackAction? = nil) { id = UUID(); self.key = key; self.text = text; self.action = action }
+}
+struct FeedbackState: Equatable {
+    struct Condition: Equatable { let priority: FeedbackCondition; let notice: FeedbackNotice }
+    private(set) var conditions: [String: Condition] = [:]
+    private(set) var dismissed: Set<String> = []
+    private var shownToastKeys: [String] = []
+    private(set) var toast: FeedbackNotice?
+    private(set) var foreground = true
+    private var visibleCondition: String? {
+        conditions.keys.filter { !dismissed.contains($0) }.sorted {
+            let lhs = conditions[$0]!.priority, rhs = conditions[$1]!.priority
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }.first
+    }
+    var banner: FeedbackNotice? { visibleCondition.flatMap { conditions[$0]?.notice } }
+    mutating func present(_ level: FeedbackLevel, text: String, condition: FeedbackCondition? = nil, key: String? = nil, action: FeedbackAction? = nil) {
+        switch level {
+        case .toast:
+            if let key {
+                guard !shownToastKeys.contains(key) else { return }
+                shownToastKeys.append(key)
+                if shownToastKeys.count > 128 { shownToastKeys.removeFirst(shownToastKeys.count - 128) }
+            }
+            guard foreground else { return }
+            let identity = key ?? text
+            guard toast?.key != identity else { return }
+            toast = FeedbackNotice(key: identity, text: text, action: action)
+        case .banner:
+            precondition(condition != nil && action != nil, "F4 requires a stable condition and a resolving action")
+            guard let condition else { return }
+            let key = key ?? String(condition.rawValue)
+            guard conditions[key] == nil else { return }
+            conditions[key] = Condition(priority: condition, notice: FeedbackNotice(key: key, text: text, action: action))
+        }
+    }
+    mutating func resolve(_ condition: FeedbackCondition) {
+        let keys = conditions.filter { $0.value.priority == condition }.map(\.key)
+        for key in keys { resolve(key: key) }
+    }
+    mutating func resolve(key: String) { conditions[key] = nil; dismissed.remove(key) }
+    mutating func dismissBanner() { if let key = visibleCondition { dismissed.insert(key) } }
+    mutating func dismissToast(_ id: UUID? = nil) { if id == nil || toast?.id == id { toast = nil } }
+    mutating func setForeground(_ value: Bool) { foreground = value; if !value { toast = nil } }
+    mutating func clearTransientPresentation() { toast = nil }
+    mutating func clear() { conditions = [:]; dismissed = []; shownToastKeys = []; clearTransientPresentation() }
+}
+
+/// Design token hold-toast, shared by all F3 lifecycles.
+enum FeedbackTiming { static let holdToast: Double = 4 }
+
+/// Only presentation text is normalized; wire codes and original details stay in diagnostics.
+enum FeedbackText {
+    static func protocolCondition(_ code: String?) -> FeedbackCondition? {
+        switch code {
+        case "unauthorized", "device_mismatch", "runtime_mismatch": .pairing
+        case "protocol_version_mismatch", "invalid_message": .version
+        case "host_disabled": .other
+        default: nil
+        }
+    }
+    static func reason(_ value: String) -> String {
+        switch value {
+        case "agent_unsupported", "对应的 agent 后端未就绪": return L10n.tr("所选助手尚未就绪，请在电脑端检查")
+        case "invalid_request": return L10n.tr("操作未完成，请重试")
+        default: break
+        }
+        if value.range(of: "^[a-z][a-z0-9_:-]*_[a-z0-9_:-]+$", options: .regularExpression) != nil {
+            return L10n.tr("操作未完成，请重试")
+        }
+        var display = value.replacingOccurrences(of: "[（(]\\s*[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\\s*[）)]", with: "", options: .regularExpression)
+        // Strip protocol tokens while preserving normal filenames and user paths containing underscores.
+        if display.range(of: "(?<![A-Za-z0-9/._-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9/._-])", options: .regularExpression) != nil {
+            return L10n.tr("操作未完成，请重试")
+        }
+        for (term, replacement) in [("host", "Orbis"), ("runtime", L10n.tr("会话")), ("relay", L10n.tr("连接"))] {
+            display = display.replacingOccurrences(of: "(?i)(?<![A-Za-z])" + term + "(?![A-Za-z])", with: replacement, options: .regularExpression)
+        }
+        display = display.trimmingCharacters(in: .whitespacesAndNewlines)
+        return display.isEmpty ? L10n.tr("操作未完成，请重试") : display
     }
 }

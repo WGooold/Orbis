@@ -1827,12 +1827,14 @@ struct OrbisNotice: View {
     @Environment(\.orbisAppearance) private var visualStyle
     let text: String
     var error = false
+    var trailing: AnyView? = nil
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: error ? "exclamationmark.circle" : "info.circle")
                 .foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
                 .orbisIconBaseline(OrbisTextSize.body)
             OrbisMotionText(text).foregroundStyle(OrbisPalette(scheme).text).frame(maxWidth: .infinity, alignment: .leading)
+            if let trailing { trailing }
         }.font(.orbisBody()).frame(minHeight: 16)
             .neuSurface(radius: OrbisRadius.control, intensity: 1, padding: 16)
     }

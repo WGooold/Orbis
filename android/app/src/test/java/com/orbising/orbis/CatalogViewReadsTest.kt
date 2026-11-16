@@ -41,6 +41,16 @@ class CatalogViewReadsTest {
         loader.consume(page(first, listOf("late"))); assertEquals(listOf("one"), applied.last().sessions.map { it.sessionId })
     }
 
+    // SC91: probes and queries are owned by the connection layer; the reducer drops their late
+    // protocol errors only by this shared request-id prefix (iOS uses the same wire prefix).
+    @Test fun `capability probes and page queries carry the connection owned request prefix`() {
+        val sent = mutableListOf<JsonObject>()
+        val loader = CatalogViewReads({ sent += it; true }, { _, _ -> })
+        enable(loader, sent); loader.setView(CatalogQuery())
+        assertEquals(listOf("session.catalog.capabilities.request", "session.catalog.query"), sent.map { it["type"]!!.jsonPrimitive.content })
+        assertTrue(sent.all { it["requestId"]!!.jsonPrimitive.content.startsWith("conn:") })
+    }
+
     // SC-06: retransmission reuses every fixed parameter and the original 45s deadline.
     @Test fun `one retry and timeout never create fresh page demand`() {
         val clock = Clock(); val sent = mutableListOf<JsonObject>(); var result: CatalogQueryResult? = null

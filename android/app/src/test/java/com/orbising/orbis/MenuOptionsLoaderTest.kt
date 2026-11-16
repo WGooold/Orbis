@@ -41,4 +41,15 @@ class MenuOptionsLoaderTest {
         val second = loader.start("runtime", command())!!
         assertEquals("catalog_changed", loader.consume(page(second, emptyList(), error = "catalog_changed"), json)!!.error)
     }
+    // SC95: protocol.error only includes requestId; the menu still owns it, and fatal connection errors must escape.
+    @Test fun `menu owns its protocol rejection before connection stale filtering`() {
+        val loader = MenuOptionsLoader(); val request = loader.start("runtime", command())!!
+        assertTrue(request["requestId"]!!.jsonPrimitive.content.startsWith("conn:"))
+        val rejected = buildJsonObject { put("type", "protocol.error"); put("requestId", request["requestId"]!!); put("code", "invalid_request") }
+        assertNotNull(loader.consume(rejected, json)?.error)
+        assertNull(loader.consume(rejected, json))
+        val next = loader.start("runtime", command())!!
+        val fatal = buildJsonObject { put("type", "protocol.error"); put("requestId", next["requestId"]!!); put("code", "unauthorized") }
+        assertNull(loader.consume(fatal, json))
+    }
 }

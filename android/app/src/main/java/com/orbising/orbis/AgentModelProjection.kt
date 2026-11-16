@@ -138,12 +138,12 @@ internal fun RemoteState.applyAgentDomainProjection(
             }
         }
     } catch (failure: Exception) {
-        return copy(error = L10n.tr("Host 模型领域格式无效：{0}", failure.message ?: L10n.tr("未知字段")))
+        return copy(agentProjectionFailure = L10n.tr("会话内容读取失败，请重新加载"))
     }
     val identity = if (domains["identity"]?.availability == "ready") runtime.catalogEntry() else null
     val catalog = if (identity == null) sessions else sessions +
         (identity.sessionId to mergeSessionCatalogEntry(sessions[identity.sessionId], identity))
-    val projected = copy(runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
+    val projected = copy(agentProjectionFailure = null, runtimes = runtimes + (id to runtime), sessions = catalog, conversations = conversations + (id to conversation),
         capabilities = commands?.let { capabilities + (id to it) } ?: capabilities, pendingCommands = pending)
     val queued = queueStamp?.let { projected.ledgerQueue(id, delivered, it, System.currentTimeMillis()) } ?: projected
     // ADR-0049 §7.5：交互清单是回答的权威状态；model 领域是模型 / 思考级别切换的权威状态。

@@ -357,26 +357,26 @@ enum OperationKinds {
                L10n.matches(rejection.reason, source: "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。") { return quitStillRunning.reason }
             if rejection.code == quitUnconfirmed.code,
                L10n.matches(rejection.reason, source: "关闭会话未确认：会话仍在运行。") { return quitUnconfirmed.reason }
-            return L10n.tr("关闭会话未完成：") + rejection.reason
+            return L10n.tr("关闭会话未完成：") + FeedbackText.reason(rejection.reason)
         case .dismiss: return nil // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
         case .archive(_, _, let archived):
-            return (archived ? L10n.tr("归档未完成：") : L10n.tr("恢复未完成：")) + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
+            return (archived ? L10n.tr("归档未完成：") : L10n.tr("恢复未完成：")) + (rejection.reason.isEmpty ? L10n.tr("请重试") : FeedbackText.reason(rejection.reason))
         case .queueCancel:
             // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
             switch rejection.code {
             case "not_cancelled", "not_applied": return nil
             case "already_delivered": return L10n.tr("撤回未完成：") + queueAlreadyDelivered.reason
-            default: return L10n.tr("撤回未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
+            default: return L10n.tr("撤回未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : FeedbackText.reason(rejection.reason))
             }
         case .send: return nil // 失败显示在气泡原位（outbox 的失败行）。
         case .launch: return nil // 失败在聊天页原位显示原因及“重试”“返回”。
         case .config(_, let setting, _, _):
-            return configTitle(setting) + L10n.tr("切换未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
+            return configTitle(setting) + L10n.tr("切换未完成：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : FeedbackText.reason(rejection.reason))
         case .respond:
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             switch rejection.code {
             case "unresolved", "not_applied": return nil
-            default: return L10n.tr("回答未提交：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason)
+            default: return L10n.tr("回答未提交：") + (rejection.reason.isEmpty ? L10n.tr("请重试") : FeedbackText.reason(rejection.reason))
             }
         }
     }

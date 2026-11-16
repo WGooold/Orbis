@@ -83,7 +83,7 @@ class ConfigLedgerTest {
         assertEquals(PendingSendState.Waiting("等待模型切换"), state.pendingSends.values.single().state)
         state = result(state, id, ok = false, error = "未知模型")
         assertNull(status(state))
-        assertEquals("模型切换未完成：未知模型", state.error)
+        assertEquals("模型切换未完成：未知模型", state.configFailures["a"]?.message)
         assertEquals(PendingSendState.Failed("模型切换未完成，消息未发送"), state.pendingSends.values.single().state)
         assertTrue(state.readySends().isEmpty())
     }
@@ -126,7 +126,7 @@ class ConfigLedgerTest {
         state = reduce(state.beginLedgerRead(readId), """{"type":"agent.state.snapshot","requestId":"$readId","scope":"device","modelEpoch":"epoch",
             "domains":[],"missing":[{"domain":"operations","reason":"no_state"}],"truncated":false}""")
         assertNull(status(state))
-        assertEquals("模型切换未完成：未生效", state.error)
+        assertEquals("模型切换未完成：未生效", state.configFailures["a"]?.message)
     }
 
     @Test fun reconnectWithTheChoiceInEffectLands() {

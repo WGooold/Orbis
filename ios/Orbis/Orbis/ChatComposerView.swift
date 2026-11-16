@@ -186,6 +186,10 @@ struct ChatComposerView: View, Equatable {
                     }
                 }.padding(.horizontal, 20).padding(.top, 6)
             }
+            if let error = facts.inputError { Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(p.error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).accessibilityIdentifier("composer-error") }
+            if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
+                HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
+            }
             AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing)
             if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {

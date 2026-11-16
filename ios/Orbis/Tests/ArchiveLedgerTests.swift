@@ -115,7 +115,7 @@ struct ArchiveLedgerTests {
         await transport.emit(["type": "protocol.error", "code": "agent_unsupported", "message": "对应的 agent 后端未就绪", "requestId": id])
         #expect(!archived(host, "s1"))
         #expect(host.ledger.operations.isEmpty)
-        #expect(host.errorMessage == "归档未完成：对应的 agent 后端未就绪")
+        #expect(host.sessionOperationErrors["s1"] == "归档未完成：所选助手尚未就绪，请在电脑端检查")
         #expect(host.connection == .secured)
     }
 
@@ -126,7 +126,7 @@ struct ArchiveLedgerTests {
         let id = try #require(transport.archiveIds.last)
         await transport.emit(["type": "protocol.error", "code": "failed", "message": "磁盘只读", "requestId": id])
         #expect(archived(host, "s1"))
-        #expect(host.errorMessage == "恢复未完成：磁盘只读")
+        #expect(host.sessionOperationErrors["s1"] == "恢复未完成：磁盘只读")
     }
 
     @Test func disconnectKeepsTheTargetListAndTheDeviceReceiptDecides() async throws {
@@ -145,7 +145,7 @@ struct ArchiveLedgerTests {
         #expect(host.errorMessage == nil)
     }
 
-    @Test func batchRejectionsAfterReconnectNameTheCount() async throws {
+    @Test func batchRejectionsAfterReconnectRemainOnEachSession() async throws {
         let (host, transport, fixture) = try await setup(); defer { withExtendedLifetime(fixture) {} }
         host.archive(try session(host, "s1"), archived: true)
         host.archive(try session(host, "s2"), archived: true)
@@ -153,7 +153,9 @@ struct ArchiveLedgerTests {
         await reconnect(host, transport)
         try await transport.answerRead([ids[0]: "failure", ids[1]: "failure"])
         #expect(!archived(host, "s1") && !archived(host, "s2"))
-        #expect(host.errorMessage == "2 个会话归档未完成：agent_unsupported")
+        #expect(host.sessionOperationErrors["s1"] == "归档未完成：所选助手尚未就绪，请在电脑端检查")
+        #expect(host.sessionOperationErrors["s2"] == host.sessionOperationErrors["s1"])
+        #expect(host.errorMessage == nil)
     }
 
     @Test func noReceiptAndTheOldCatalogAfterReconnectRestoreAsUnconfirmed() async throws {
@@ -163,7 +165,7 @@ struct ArchiveLedgerTests {
         try await transport.catalog(["s1": false, "s2": false])
         try await transport.answerRead([:])
         #expect(!archived(host, "s1"))
-        #expect(host.errorMessage == "归档未完成：电脑上的会话目录仍是原状态")
+        #expect(host.sessionOperationErrors["s1"] == "归档未完成：电脑上的会话目录仍是原状态")
     }
 
     @Test func aSecondArchiveOfTheSameSessionIsBlockedUntilSettled() async throws {

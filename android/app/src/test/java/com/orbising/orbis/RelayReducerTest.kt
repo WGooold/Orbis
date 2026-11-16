@@ -1333,23 +1333,24 @@ class RelayReducerTest {
         """.trimIndent())
 
         assertTrue(failed.conversations["runtime-a"]?.isChatSyncing == false)
-        assertEquals("目标运行实例已离线", failed.conversations["runtime-a"]?.chatSyncError)
-        assertEquals("目标运行实例已离线", failed.error)
+        assertEquals("会话已离线", failed.conversations["runtime-a"]?.chatSyncError)
+        assertNull(failed.error)
         assertTrue("sync-1" !in failed.sessionSyncCommands)
     }
 
     @Test
     fun `old host runtime errors for download cancellation stay silent without hiding other failures`() {
-        val state = RemoteState(connection = RelayConnection.ONLINE, e2eReady = true, error = "已有提示")
+        val state = RemoteState(connection = RelayConnection.ONLINE, e2eReady = true, feedback = FeedbackState().present(AppFeedback("previous", "已有提示", FeedbackLevel.F4, FeedbackCondition.OTHER, FeedbackAction.SETTINGS)))
         val staleCancellation = reducer.reduce(state, """
           {"type":"protocol.error","code":"runtime_offline","message":"runtime host-1 当前没有在本机运行","commandId":"artifact-cancel:delete-1"}
         """.trimIndent())
         assertEquals(state, staleCancellation)
 
-        val runtimeFailure = reducer.reduce(state, """
+        val runtimeFailure = reducer.reduce(state.copy(pendingCommands = mapOf("chat-1" to "agent-1")), """
           {"type":"protocol.error","code":"runtime_offline","message":"runtime agent-1 当前没有在本机运行","commandId":"chat-1"}
         """.trimIndent())
-        assertEquals("runtime agent-1 当前没有在本机运行", runtimeFailure.error)
+        assertEquals(state.error, runtimeFailure.error)
+        assertEquals("会话已离线", runtimeFailure.conversations["agent-1"]?.operationError)
         val cancellationFailure = reducer.reduce(state, """
           {"type":"protocol.error","code":"unauthorized","message":"Invalid device credential","commandId":"artifact-cancel:delete-2"}
         """.trimIndent())
@@ -1385,7 +1386,7 @@ class RelayReducerTest {
         )
 
         val failed = reducer.reduce(state, """
-          {"type":"protocol.error","code":"invalid_message","message":"bad range","commandId":"history-command"}
+          {"type":"protocol.error","code":"session_sync_model_rejected","message":"bad range","commandId":"history-command"}
         """.trimIndent())
 
         assertEquals(false, failed.sessionHistory["runtime-a"]?.loading)
@@ -1707,7 +1708,7 @@ class RelayReducerTest {
         val state = RemoteState(
             connection = RelayConnection.ONLINE,
             pendingCommands = mapOf("command-1" to "runtime-a"),
-            error = "旧错误",
+            feedback = FeedbackState(foreground = true).present(AppFeedback("old", "旧错误", FeedbackLevel.F3)),
         )
 
         val reconnecting = state.markReconnecting()
@@ -1924,21 +1925,27 @@ class RelayReducerTest {
 
     @Test
     fun `file download failures expose actionable computer side diagnostics`() {
-        val missing = reducer.reduce(RemoteState(), """
+        fun waiting(command: String) = RemoteState(
+            downloads = mapOf(command to ArtifactDownload(command, "runtime-a", displayName = "file.txt", commandId = command)),
+            pendingDownloads = mapOf(command to PendingDownload(command, "runtime-a", 0)),
+            pendingCommands = mapOf(command to "runtime-a"))
+        val missing = reducer.reduce(waiting("download-missing"), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"command.result","commandId":"download-missing","ok":false,
             "error":"ENOENT: no such file or directory"
           }}
         """.trimIndent())
-        assertEquals("电脑端文件不存在或已被删除", missing.error)
+        assertEquals("电脑端文件不存在或已被删除", missing.downloads["download-missing"]?.error)
+        assertNull(missing.error)
 
-        val denied = reducer.reduce(RemoteState(), """
+        val denied = reducer.reduce(waiting("download-denied"), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"command.result","commandId":"download-denied","ok":false,
             "error":"EACCES: permission denied"
           }}
         """.trimIndent())
-        assertEquals("Orbis Host 无权读取电脑端文件", denied.error)
+        assertEquals("Orbis 无权读取电脑端文件", denied.downloads["download-denied"]?.error)
+        assertNull(denied.error)
     }
 
     @Test
@@ -2808,11 +2815,12 @@ class RelayReducerTest {
           {"type":"runtime.event","protocolVersion":99,"runtimeId":"runtime-a","sequence":1,
            "event":{"type":"message.delta","messageId":"x","contentType":"text","delta":"y"}}
         """.trimIndent())
-        assertEquals("Orbis 协议版本不兼容，请将手机 App 和电脑 Host 更新到最新版本", incompatible.error)
+        assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, incompatible.error)
         val unknownEvent = reducer.reduce(RemoteState(), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{"type":"future.event"}}
         """.trimIndent())
-        assertEquals("手机无法安全处理此运行时事件，请在电脑端处理", unknownEvent.error)
+        assertNull(unknownEvent.error)
+        assertEquals("会话内容未确认，请重新加载", unknownEvent.conversations["runtime-a"]?.operationError)
 
         val malformed = reducer.reduce(RemoteState(), """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
@@ -2824,7 +2832,7 @@ class RelayReducerTest {
         val unauthorized = reducer.reduce(RemoteState(), """
           {"type":"protocol.error","code":"unauthorized","message":"Invalid device credential"}
         """.trimIndent())
-        assertEquals("Relay 拒绝了设备凭据，请重新扫码配对", unauthorized.error)
+        assertEquals("这台手机的配对已失效", unauthorized.error)
 
         val versionMismatch = reducer.reduce(RemoteState(), """
           {"type":"protocol.error","code":"protocol_version_mismatch","message":"Protocol version mismatch"}
@@ -2840,7 +2848,7 @@ class RelayReducerTest {
         // 文案里的版本号必须来自常量。它曾经写死 `protocol v3`，协议升到 4 之后就成了
         // 指错方向的线索：用户照它去查版本，而两端版本其实都是对的。
         assertEquals(
-            "Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v$PROTOCOL_VERSION）",
+            "无法读取电脑端消息，请更新手机和电脑端 Orbis",
             invalidMessage.error,
         )
     }
@@ -2853,6 +2861,49 @@ class RelayReducerTest {
         """.trimIndent())
 
         assertEquals(null, state.error)
+    }
+
+    /**
+     * SC91：连接层按 requestId 自管的回包，只有在请求被重发、替换或已消费后才会落到 reducer。
+     * 每个已认证 device.ready 都重发能力探测，前一轮回包迟到或重复是常态，不能报成协议不兼容；
+     * 真正未知的顶层类型仍要报错。
+     */
+    @Test
+    fun `late or duplicate connection owned replies are dropped without a relay error`() {
+        val replies = listOf(
+            """{"type":"session.catalog.capabilities","protocolVersion":$PROTOCOL_VERSION,"requestId":"conn:old","format":"v1"}""",
+            """{"type":"session.history.capabilities","protocolVersion":$PROTOCOL_VERSION,"requestId":"conn:old","format":"v1","maxPageBytes":65536}""",
+            """{"type":"session.history.interest.result","protocolVersion":$PROTOCOL_VERSION,"requestId":"conn:old","accepted":true}""",
+            """{"type":"session.catalog.page","protocolVersion":$PROTOCOL_VERSION,"requestId":"conn:old","format":"v1","query":{},"page":{}}""",
+            """{"type":"agent.menu.options.page","protocolVersion":$PROTOCOL_VERSION,"requestId":"old","runtimeId":"runtime-a",
+               "commandName":"model","catalogId":"catalog","options":[],"nextCursor":null,"totalCount":0}""",
+        )
+        for (reply in replies) {
+            val state = reducer.reduce(RemoteState(), reply, channel = "ctl")
+            assertNull(reply, state.error)
+            assertFalse(reply, state.errorNeedsAction)
+        }
+        val unknown = reducer.reduce(RemoteState(), """{"type":"future.reply","protocolVersion":$PROTOCOL_VERSION}""", channel = "ctl")
+        assertEquals("无法读取电脑端消息，请更新手机和电脑端 Orbis", unknown.error)
+        assertTrue(unknown.errorNeedsAction)
+    }
+
+    /** SC91：v0.1.19 Host 以带 requestId 的 invalid_request 回应它不认识的探测；迟到的这条同样无主。 */
+    @Test
+    fun `late protocol errors for connection owned requests are dropped`() {
+        val late = reducer.reduce(RemoteState(), """
+          {"type":"protocol.error","code":"invalid_request","requestId":"conn:old","message":"请求格式无效或当前版本不支持"}
+        """.trimIndent(), channel = "ctl")
+        assertNull(late.error)
+        val other = reducer.reduce(RemoteState(), """
+          {"type":"protocol.error","code":"invalid_request","requestId":"other","message":"请求格式无效或当前版本不支持"}
+        """.trimIndent(), channel = "ctl")
+        assertNull(other.error) // SC94: this ID also has no surviving owner.
+        // 致命错误（Host 对版本不兼容同样回传 requestId）说明整条连接不可用，不能被当成迟到回包吞掉。
+        val fatal = reducer.reduce(RemoteState(), """
+          {"type":"protocol.error","code":"protocol_version_mismatch","requestId":"conn:old","message":"仅支持已实现的协议 18 / 19"}
+        """.trimIndent(), channel = "ctl")
+        assertEquals(PROTOCOL_VERSION_MISMATCH_ERROR, fatal.error)
     }
 
     @Test
@@ -3266,7 +3317,8 @@ class RelayReducerTest {
         )
         assertTrue(state.sessionActivateRequests.isEmpty())
         // 电脑端给的中文说明比通用映射更具体，直接用它（中继自己的英文短句才回落到映射）。
-        assertEquals("目录不存在", state.error)
+        assertEquals("目录不存在", state.sessionListError)
+        assertNull(state.error)
         // 其它两个请求不受影响。
         assertEquals(setOf("l-1"), state.sessionListRequests)
         assertTrue(state.sessionBrowse!!.isLoading)

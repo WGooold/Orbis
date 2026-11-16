@@ -1,5 +1,7 @@
 {
   "exact": {
+    "权限设置尚未确认，请稍后重试": "Permissions are unconfirmed. Try again shortly.",
+    "权限设置正在保存，请稍后重试": "Permission settings are being saved. Try again shortly.",
     "工作区写入": "Workspace write",
     "允许在工作区中编辑文件，需要时请求确认。": "Allows file edits in the workspace and asks for approval when needed.",
     "只读": "Read-only",

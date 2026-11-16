@@ -512,6 +512,7 @@ internal fun SessionDrawer(
                                     row = row,
                                     runtimeStatus = row.runtimeId?.let(state.runtimes::get)?.presentationStatus,
                                     runtimeStatusTitle = row.runtimeId?.let(state.runtimes::get)?.presentationTitle,
+                                    operationError = state.sessionOperationErrors[row.sessionId] ?: row.runtimeId?.let(state.sessionOperationErrors::get),
                                     otherProvider = sessionOtherProvider(row, state.currentProviders[row.agentKind]),
                                     onOpenSession = {
                                         if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
@@ -761,7 +762,7 @@ private fun DrawerBranch(first: Boolean, last: Boolean, content: @Composable () 
 @Composable
 private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runtimeStatusTitle: String? = null,
     otherProvider: String?, onOpenSession: () -> Unit, onOpenHistory: () -> Unit, selecting: Boolean,
-    selected: Boolean, archiveUnavailableReason: String?, onToggleSelection: () -> Unit, onBeginSelection: () -> Unit) {
+    selected: Boolean, archiveUnavailableReason: String?, operationError: String? = null, onToggleSelection: () -> Unit, onBeginSelection: () -> Unit) {
     NeumorphSurface(Modifier.fillMaxWidth().testTag("drawer-session-${row.sessionId}")
         .semantics(mergeDescendants = true) { this.selected = selected; if (otherProvider != null) contentDescription = L10n.tr("{0}，{1}", row.title, otherProvider) },
         selectionSelected = selected, selectionMode = selecting, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
@@ -777,6 +778,7 @@ private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runt
             if (selecting && archiveUnavailableReason != null) Text(archiveUnavailableReason,
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
                 modifier = Modifier.width(56.dp), overflow = TextOverflow.Ellipsis)
+            else if (operationError != null) StatusWithInfo(L10n.tr("操作未完成"), operationError, error = true)
             else if (runtimeStatus != null && runtimeStatus !in setOf("idle", "unknown")) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
             else if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)

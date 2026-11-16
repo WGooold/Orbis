@@ -116,7 +116,7 @@ struct QuitLedgerTests {
         #expect(!host.canCloseRuntime("a"))
         #expect(host.closeRuntimes(["a", "b"]) == ["b"])
         #expect(host.closingRuntimeIds == ["b"])
-        #expect(host.errorMessage == reason.message)
+        #expect(host.objectError("a") == reason.message)
         let quits = transport.sent.filter { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }
         #expect(quits.compactMap { $0["runtimeId"] as? String } == ["b"])
         #expect(host.runtimes.contains { $0.runtimeId == "a" })
@@ -132,7 +132,7 @@ struct QuitLedgerTests {
         #expect(ids.count == 2)
         await transport.event("a", ["type": "command.result", "commandId": ids[0], "ok": false, "error": "会话正忙"])
         #expect(host.closingRuntimeIds == ["b"])
-        #expect(host.errorMessage == "关闭会话未完成：会话正忙")
+        #expect(host.objectError("a") == "关闭会话未完成：会话正忙")
     }
 
     @Test func protocolErrorForTheCommandIsARejection() async throws {
@@ -141,7 +141,7 @@ struct QuitLedgerTests {
         let id = try #require(transport.quitIds.last)
         await transport.emit(["type": "protocol.error", "code": "runtime_offline", "message": "runtime a 当前没有在本机运行", "commandId": id])
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == "关闭会话未完成：runtime a 当前没有在本机运行")
+        #expect(host.objectError("a") == "关闭会话未完成：会话 a 当前没有在本机运行")
     }
 
     @Test func acceptedButStillOnlineAfterFifteenSecondsRestores() async throws {
@@ -153,7 +153,7 @@ struct QuitLedgerTests {
         #expect(host.closingRuntimeIds == ["a"])
         host.advanceLedgerClock(to: Date().addingTimeInterval(16))
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == OperationKinds.quitStillRunning.reason)
+        #expect(host.objectError("a") == OperationKinds.quitStillRunning.reason)
     }
 
     @Test func disconnectKeepsTheCardHiddenWithoutAnError() async throws {
@@ -174,7 +174,7 @@ struct QuitLedgerTests {
         #expect(host.closingRuntimeIds == ["a"])
         try await transport.answerVerify([:])
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == OperationKinds.quitUnconfirmed.reason)
+        #expect(host.objectError("a") == OperationKinds.quitUnconfirmed.reason)
     }
 
     @Test func reconnectWithTheRuntimeGoneLandsSilently() async throws {
@@ -197,7 +197,7 @@ struct QuitLedgerTests {
         #expect(host.closingRuntimeIds == ["a"])
         host.advanceLedgerClock(to: Date().addingTimeInterval(16))
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == OperationKinds.quitStillRunning.reason)
+        #expect(host.objectError("a") == OperationKinds.quitStillRunning.reason)
     }
 
     @Test func lateReceiptOnTheNewConnectionStillSettles() async throws {
@@ -208,7 +208,7 @@ struct QuitLedgerTests {
         await reconnect(host, transport, online: ["a", "b"])
         await transport.event("a", ["type": "command.result", "commandId": id, "ok": false, "error": "不支持"])
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == "关闭会话未完成：不支持")
+        #expect(host.objectError("a") == "关闭会话未完成：不支持")
     }
 
     @Test func missingReceiptWithinTheBudgetVerifiesOnTheSameConnection() async throws {
@@ -220,7 +220,7 @@ struct QuitLedgerTests {
         #expect(transport.verifyReads.count == reads + 1)
         try await transport.answerVerify([:])
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == OperationKinds.quitUnconfirmed.reason)
+        #expect(host.objectError("a") == OperationKinds.quitUnconfirmed.reason)
     }
 
     @Test func failedVerifyReadStillVerifiesAgainstTheOnlineList() async throws {
@@ -228,9 +228,10 @@ struct QuitLedgerTests {
         _ = host.closeRuntimes(["a"])
         host.advanceLedgerClock(to: Date().addingTimeInterval(61))
         let request = try #require(transport.verifyReads.last)
-        await transport.emit(["type": "protocol.error", "code": "invalid_message", "message": "bad", "requestId": request["requestId"]!])
+        await transport.emit(["type": "protocol.error", "code": "invalid_request", "message": "bad", "requestId": request["requestId"]!])
         #expect(host.closingRuntimeIds.isEmpty)
-        #expect(host.errorMessage == OperationKinds.quitUnconfirmed.reason)
+        #expect(host.objectError("a") == OperationKinds.quitUnconfirmed.reason)
+        #expect(host.feedback.banner == nil)
         #expect(host.connection == .secured)
     }
 
@@ -248,4 +249,16 @@ struct QuitLedgerTests {
         #expect(host.ledger.operations.isEmpty)
         #expect(host.errorMessage == nil)
     }
+    // SC93: an unusable connection is classified before a reader can turn its fatal error into an object failure.
+    @Test func fatalVerifyReadRaisesOnlyTheConnectionCondition() async throws {
+        let (host, transport, fixture) = await setup(); defer { withExtendedLifetime(fixture) {} }
+        _ = host.closeRuntimes(["a"])
+        host.advanceLedgerClock(to: Date().addingTimeInterval(61))
+        let request = try #require(transport.verifyReads.last)
+        await transport.emit(["type": "protocol.error", "code": "invalid_message", "message": "bad", "requestId": request["requestId"]!])
+        #expect(host.closingRuntimeIds == ["a"])
+        #expect(host.objectError("a") == nil)
+        #expect(host.feedback.banner != nil)
+    }
+
 }

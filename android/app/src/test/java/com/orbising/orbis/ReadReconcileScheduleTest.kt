@@ -23,6 +23,12 @@ class ReadReconcileScheduleTest {
         assertFalse(schedule.claim(140_000))
         assertTrue(schedule.claim(150_000))
     }
+    /** SC91: a replaced interest's late result or protocol error must be recognisable as connection owned. */
+    @Test fun `history interest requests carry the connection owned request prefix`() {
+        val sent = mutableListOf<String>()
+        HistoryWindowInterest().publish("a", 0) { sent.add(it); true }
+        assertTrue(sent.single().startsWith("conn:"))
+    }
     /** FT-G12-RESUME-01: restore only the acknowledged current interest. Lost
      * ACKs retry with a fresh identity; close/reset and rejected writes cannot
      * leave an old accepted window active or permanently suppress retry. */

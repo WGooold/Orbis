@@ -25,7 +25,7 @@ struct HistoryWindowInterest {
 
     mutating func publish(_ target: String, now: Date = Date(), send: (String) -> Bool) {
         guard self.target != target || (pendingRequestId != nil && sentAt.map { now.timeIntervalSince($0) >= 20 } == true) else { return }
-        let id = UUID().uuidString
+        let id = connectionRequestId()
         guard send(id) else { return }
         self.target = target; pendingRequestId = id; sentAt = now; confirmedTarget = nil
     }

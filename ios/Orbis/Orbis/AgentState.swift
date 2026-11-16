@@ -116,7 +116,7 @@ struct MenuOptionsLoader {
         let runtimeId: String
         let name: String
         let catalog: MenuOptionCatalog
-        var requestId = UUID().uuidString
+        var requestId = connectionRequestId()
         var items: [RuntimeOption] = []
         var cursors: Set<String> = []
         var bytes = 0
@@ -130,6 +130,10 @@ struct MenuOptionsLoader {
         var error: String?
     }
     private var read: Read?
+    mutating func fail(_ requestId: String) -> Result? {
+        guard let current = read, current.requestId == requestId else { return nil }
+        read = nil; return Result(runtimeId: current.runtimeId, name: current.name, catalogId: current.catalog.id, error: "unconfirmed")
+    }
     mutating func expire(_ requestId: String) -> Bool {
         guard read?.requestId == requestId else { return false }; read = nil; return true
     }
@@ -148,7 +152,13 @@ struct MenuOptionsLoader {
          "runtimeId": read.runtimeId, "commandName": read.name, "catalogId": read.catalog.id, "cursor": cursor as Any? ?? NSNull()]
     }
     mutating func consume(_ message: [String: Any]) -> Result? {
-        guard var current = read, message["requestId"] as? String == current.requestId,
+        guard var current = read, message["requestId"] as? String == current.requestId else { return nil }
+        if message["type"] as? String == "protocol.error" {
+            guard !connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") else { return nil }
+            read = nil
+            return Result(runtimeId: current.runtimeId, name: current.name, catalogId: current.catalog.id, error: message["code"] as? String ?? "failure")
+        }
+        guard message["type"] as? String == "agent.menu.options.page",
               message["runtimeId"] as? String == current.runtimeId, message["commandName"] as? String == current.name,
               message["catalogId"] as? String == current.catalog.id else { return nil }
         var result = Result(runtimeId: current.runtimeId, name: current.name, catalogId: current.catalog.id)
@@ -163,7 +173,7 @@ struct MenuOptionsLoader {
             guard !items.isEmpty, !current.cursors.contains(cursor), current.items.count < current.catalog.count else {
                 read = nil; result.error = "invalid_cursor"; return result
             }
-            current.cursors.insert(cursor); current.requestId = UUID().uuidString
+            current.cursors.insert(cursor); current.requestId = connectionRequestId()
             read = current; result.next = request(current, cursor: cursor)
         } else {
             read = nil

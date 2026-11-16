@@ -80,7 +80,7 @@ class ArchiveLedgerTest {
         val state = reducer.reduce(archiving, """{"type":"protocol.error","code":"agent_unsupported","message":"对应的 agent 后端未就绪","requestId":"$id"}""", channel = "ctl")
         assertTrue(!archived(state, "s1"))
         assertTrue(state.ledger.operations.isEmpty())
-        assertEquals("归档未完成：对应的 agent 后端未就绪", state.error)
+        assertEquals("归档未完成：对应的 agent 后端未就绪", state.sessionOperationErrors["s1"])
     }
 
     @Test fun restoringFromTheArchiveUsesItsOwnWording() {
@@ -89,7 +89,7 @@ class ArchiveLedgerTest {
         assertTrue(!archived(restoring, "s1"))
         val state = reducer.reduce(restoring, """{"type":"protocol.error","code":"failed","message":"磁盘只读","requestId":"$id"}""", channel = "ctl")
         assertTrue(archived(state, "s1"))
-        assertEquals("恢复未完成：磁盘只读", state.error)
+        assertEquals("恢复未完成：磁盘只读", state.sessionOperationErrors["s1"])
     }
 
     @Test fun disconnectKeepsTheTargetListAndTheDeviceReceiptDecides() {
@@ -112,7 +112,9 @@ class ArchiveLedgerTest {
         val (reading, read) = read(reconnect(second))
         val state = answer(reading, read, mapOf(a to "failure", b to "failure"))
         assertTrue(!archived(state, "s1") && !archived(state, "s2"))
-        assertEquals("2 个会话归档未完成：agent_unsupported", state.error)
+        assertEquals("归档未完成：请重试", state.sessionOperationErrors["s1"])
+        assertEquals(state.sessionOperationErrors["s1"], state.sessionOperationErrors["s2"])
+        assertNull(state.error)
     }
 
     @Test fun noReceiptAndTheOldCatalogAfterReconnectRestoreAsUnconfirmed() {
@@ -121,7 +123,7 @@ class ArchiveLedgerTest {
         val (reading, read) = read(state)
         state = answer(reading, read, emptyMap())
         assertTrue(!archived(state, "s1"))
-        assertEquals("归档未完成：电脑上的会话目录仍是原状态", state.error)
+        assertEquals("归档未完成：电脑上的会话目录仍是原状态", state.sessionOperationErrors["s1"])
     }
 
     @Test fun aSecondArchiveOfTheSameSessionIsBlockedUntilSettled() {

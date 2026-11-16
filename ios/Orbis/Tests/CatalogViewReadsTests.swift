@@ -47,6 +47,14 @@ struct CatalogViewReadsTests {
         h.reads.disconnect()
     }
 
+    // SC91: probe and page requests are connection owned; the store drops their late protocol errors by this prefix.
+    @Test func probesAndPageQueriesCarryTheConnectionOwnedPrefix() {
+        let h = Harness(); h.enable(); h.reads.setView(CatalogQuery())
+        #expect(h.sent.map { $0["type"] as? String } == ["session.catalog.capabilities.request", "session.catalog.query"])
+        #expect(h.sent.allSatisfy { ($0["requestId"] as? String)?.hasPrefix("conn:") == true })
+        h.reads.disconnect()
+    }
+
     // SC-06: one same-identity retry after 20s + 5s, then the original deadline terminates it.
     @Test func retriesKeepIdentityAndCannotExtendTheDeadline() {
         let h = Harness(); h.enable(); h.reads.setView(CatalogQuery()); let request = h.last

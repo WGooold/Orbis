@@ -84,7 +84,7 @@ class QuitLedgerTest {
         var (state, _) = close(first, "b")
         state = result(state, a, ok = false, error = "会话正忙")
         assertEquals(setOf("b"), state.closingRuntimeIds)
-        assertEquals("关闭会话未完成：会话正忙", state.error)
+        assertEquals("关闭会话未完成：会话正忙", state.sessionOperationErrors["a"])
     }
 
     @Test fun protocolErrorForTheCommandIsARejection() {
@@ -92,7 +92,7 @@ class QuitLedgerTest {
         state = reducer.reduce(state,
             """{"type":"protocol.error","code":"runtime_offline","message":"runtime a 当前没有在本机运行","commandId":"$id"}""", channel = "ctl")
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals("关闭会话未完成：runtime a 当前没有在本机运行", state.error)
+        assertEquals("关闭会话未完成：会话已离线", state.sessionOperationErrors["a"])
     }
 
     @Test fun acceptedButStillOnlineAfterFifteenSecondsRestores() {
@@ -102,7 +102,7 @@ class QuitLedgerTest {
         assertEquals(setOf("a"), state.closingRuntimeIds)
         state = state.ledgerTick(System.currentTimeMillis() + 16_000)
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals(OperationKinds.quitStillRunning.reason, state.error)
+        assertEquals(OperationKinds.quitStillRunning.reason, state.sessionOperationErrors["a"])
     }
 
     @Test fun disconnectKeepsTheCardHiddenWithoutAnError() {
@@ -123,7 +123,7 @@ class QuitLedgerTest {
         val (reading, read) = verify(state)
         state = answer(reading, read, emptyMap())
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals(OperationKinds.quitUnconfirmed.reason, state.error)
+        assertEquals(OperationKinds.quitUnconfirmed.reason, state.sessionOperationErrors["a"])
     }
 
     @Test fun reconnectWithTheRuntimeGoneLandsSilently() {
@@ -141,7 +141,7 @@ class QuitLedgerTest {
         assertEquals(setOf("a"), state.closingRuntimeIds)
         state = state.ledgerTick(System.currentTimeMillis() + 16_000)
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals(OperationKinds.quitStillRunning.reason, state.error)
+        assertEquals(OperationKinds.quitStillRunning.reason, state.sessionOperationErrors["a"])
     }
 
     @Test fun lateReceiptOnTheNewConnectionStillSettles() {
@@ -149,7 +149,7 @@ class QuitLedgerTest {
         var state = reconnect(disconnect(closed), "a", "b")
         state = result(state, id, ok = false, error = "不支持")
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals("关闭会话未完成：不支持", state.error)
+        assertEquals("关闭会话未完成：不支持", state.sessionOperationErrors["a"])
     }
 
     @Test fun missingReceiptWithinTheBudgetVerifiesOnTheSameConnection() {
@@ -158,14 +158,14 @@ class QuitLedgerTest {
         val (reading, read) = verify(state)
         state = answer(reading, read, emptyMap())
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals(OperationKinds.quitUnconfirmed.reason, state.error)
+        assertEquals(OperationKinds.quitUnconfirmed.reason, state.sessionOperationErrors["a"])
     }
 
     @Test fun failedVerifyReadStillVerifiesAgainstTheOnlineList() {
         val (reading, read) = verify(close(setup(), "a").first.ledgerTick(System.currentTimeMillis() + 61_000))
-        val state = reducer.reduce(reading, """{"type":"protocol.error","code":"invalid_message","message":"bad","requestId":"$read"}""", channel = "ctl")
+        val state = reducer.reduce(reading, """{"type":"protocol.error","code":"invalid_request","message":"bad","requestId":"$read"}""", channel = "ctl")
         assertTrue(state.closingRuntimeIds.isEmpty())
-        assertEquals(OperationKinds.quitUnconfirmed.reason, state.error)
+        assertEquals(OperationKinds.quitUnconfirmed.reason, state.sessionOperationErrors["a"])
         assertTrue(state.e2eReady)
     }
 

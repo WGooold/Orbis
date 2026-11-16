@@ -287,4 +287,17 @@ struct HomeRuntimeLoadingTests {
         #expect(host.homeSyncStatus == .idle)
         #expect(host.homeCards.count == 2)
     }
+    // SC94: a failed home Close updates the existing card's status slot, even without an active chat.
+    @Test func offlineCloseKeepsTheFailureOnTheVerifiedHomeCard() async throws {
+        let (store, transport) = setup()
+        await transport.ready([runtime()])
+        try await loadFacts(transport)
+        let host = store.activeConnection
+        #expect(host.homeCards.first?.error == nil)
+        transport.state?(.offline, nil)
+        #expect(host.closeRuntimes(["a"]).isEmpty)
+        #expect(host.homeCards.first?.error == L10n.tr("关闭会话未发送：请先连接电脑。"))
+        #expect(host.errorMessage == nil)
+    }
+
 }

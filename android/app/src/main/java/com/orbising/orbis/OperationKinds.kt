@@ -344,28 +344,29 @@ object OperationKinds {
     /** 被拒绝的操作给用户的提示。 */
     fun message(op: LedgerOperation<LedgerPayload>): String? {
         val rejection = (op.phase as? LedgerPhase.Rejected)?.rejection ?: return null
+        val reason = if (rejection.code == "runtime_offline") L10n.tr("会话已离线") else feedbackFailureText(rejection.reason, L10n.tr("请重试"))
         return when (op.payload) {
             is LedgerPayload.Quit -> when {
                 rejection.code == quitStillRunning.code && L10n.matches(rejection.reason, "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。") -> quitStillRunning.reason
                 rejection.code == quitUnconfirmed.code && L10n.matches(rejection.reason, "关闭会话未确认：会话仍在运行。") -> quitUnconfirmed.reason
-                else -> L10n.tr("关闭会话未完成：{0}", rejection.reason)
+                else -> L10n.tr("关闭会话未完成：{0}", reason)
             }
             is LedgerPayload.Dismiss -> null // 通知重新显示即说明关闭未生效，不另弹错误（ADR-0049 §6.6）。
             is LedgerPayload.Archive -> (if ((op.payload as LedgerPayload.Archive).archived) L10n.tr("归档未完成：") else L10n.tr("恢复未完成：")) +
-                rejection.reason.ifBlank { L10n.tr("请重试") }
+                reason
             // 队列里仍有它就静默放回；已投递时就近说明，消息随权威记录出现在聊天中。
             is LedgerPayload.QueueCancel -> when (rejection.code) {
                 "not_cancelled", "not_applied" -> null
                 "already_delivered" -> L10n.tr("撤回未完成：{0}", queueAlreadyDelivered.reason)
-                else -> L10n.tr("撤回未完成：{0}", rejection.reason.ifBlank { L10n.tr("请重试") })
+                else -> L10n.tr("撤回未完成：{0}", reason)
             }
             is LedgerPayload.Send -> null // 失败显示在气泡原位（outbox 的失败行）。
             is LedgerPayload.Launch -> null // 失败在聊天页原位显示原因及“重试”“返回”。
-            is LedgerPayload.Config -> L10n.tr("{0}切换未完成：{1}", configTitle((op.payload as LedgerPayload.Config).setting), rejection.reason.ifBlank { L10n.tr("请重试") })
+            is LedgerPayload.Config -> L10n.tr("{0}切换未完成：{1}", configTitle((op.payload as LedgerPayload.Config).setting), reason)
             // 核对后请求仍在：静默恢复面板；明确失败时面板回到原位并说明原因，答案保留。
             is LedgerPayload.Respond -> when (rejection.code) {
                 "unresolved", "not_applied" -> null
-                else -> L10n.tr("回答未提交：{0}", rejection.reason.ifBlank { L10n.tr("请重试") })
+                else -> L10n.tr("回答未提交：{0}", reason)
             }
         }
     }
@@ -391,7 +392,8 @@ internal fun RemoteState.visibleNotificationProjection(runtimeId: String): Notic
 /** 账本事件的呈现：列表类被拒绝时提示原因后删除，界面随叠加回到权威状态；结果不明的要求一次核对读取。 */
 internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): RemoteState {
     var nextLedger = step.ledger
-    var nextError = error
+    var objectErrors = sessionOperationErrors
+    var nextConversations = conversations
     var verify = ledgerVerifyWanted
     var outcomes = interactionOutcomes
     var sends = pendingSends
@@ -432,7 +434,24 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
                 activateRequests = activateRequests - payload.requestId
             }
             // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
-            OperationKinds.message(event.operation)?.let { nextError = if (archiveRejections > 1) L10n.tr("{0} 个会话{1}", archiveRejections, it) else it }
+            OperationKinds.message(event.operation)?.let { message ->
+                val payload = event.operation.payload
+                when (payload) {
+                    is LedgerPayload.Quit -> objectErrors = objectErrors + (payload.runtimeId to message)
+                    is LedgerPayload.Archive -> objectErrors = objectErrors + (payload.sessionId to message)
+                    is LedgerPayload.QueueCancel -> {
+                        val old = nextConversations[payload.runtimeId] ?: RuntimeConversation()
+                        nextConversations = nextConversations + (payload.runtimeId to old.copy(operationError = message))
+                    }
+                    is LedgerPayload.Respond -> {
+                        val old = nextConversations[payload.runtimeId] ?: RuntimeConversation()
+                        val request = old.interactions[payload.requestId]
+                        if (request != null) nextConversations = nextConversations + (payload.runtimeId to old.copy(
+                            interactions = old.interactions + (payload.requestId to request.copy(responseError = message, responseCommandId = null))))
+                    }
+                    else -> Unit // Configuration, launch and sends already have their own inline state.
+                }
+            }
             if (OperationKinds.removesOnRejection(event.operation)) nextLedger = nextLedger.remove(event.operation.opId)
         }
         is LedgerEvent.Verify -> verify = true
@@ -455,7 +474,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         }
         else -> Unit
     }
-    return copy(ledger = nextLedger, error = nextError, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
+    return copy(ledger = nextLedger, sessionOperationErrors = objectErrors, conversations = nextConversations, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
         configFailures = configurationFailures,
         launching = launch, selectedRuntimeId = selected, launchDraftMove = draftMove, sessionActivateRequests = activateRequests)
 }
@@ -608,7 +627,7 @@ internal fun RemoteState.createQuit(opId: String, runtimeId: String, now: Long):
     val (next, creation) = ledger.create(opId, OperationKinds.QUIT, OperationKinds.quitTarget(runtimeId),
         policy = OperationKinds.quitPolicy, basis = ledgerBasis(OperationKinds.RUNTIMES_DOMAIN),
         payload = LedgerPayload.Quit(runtimeId), written = false, now = now)
-    return copy(ledger = next) to creation
+    return copy(ledger = next, sessionOperationErrors = sessionOperationErrors - runtimeId) to creation
 }
 
 /** 调用方已把操作写入通道。 */
@@ -642,7 +661,7 @@ internal fun RemoteState.createArchive(requestId: String, sessionId: String, age
     val (next, creation) = ledger.create(requestId, OperationKinds.ARCHIVE, OperationKinds.archiveTarget(agentKind, sessionId),
         policy = OperationKinds.archivePolicy, basis = ledgerBasis(OperationKinds.CATALOG_DOMAIN),
         payload = LedgerPayload.Archive(sessionId, agentKind, archived), written = false, now = now)
-    return copy(ledger = next) to creation
+    return copy(ledger = next, sessionOperationErrors = sessionOperationErrors - sessionId) to creation
 }
 
 /** `queueCancel` 先记入账本（尚未写入），opId 即命令的 commandId。同一队列项的撤回尚未结算时不重复创建（L9）。 */

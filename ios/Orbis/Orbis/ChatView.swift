@@ -93,6 +93,7 @@ struct ChatView: View {
             ChatComposerView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
                              composerFocused: $composerFocused, sendFlight: sendFlight, onHistory: onHistory,
                              onAcceptedSend: { acceptedSends.send($0) }).equatable()
+                .anchorPreference(key: FeedbackComposerAnchorKey.self, value: .bounds) { $0 }
         }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
             .modifier(ChatKeyboardResizeProbe(focused: composerFocused))
             .background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)

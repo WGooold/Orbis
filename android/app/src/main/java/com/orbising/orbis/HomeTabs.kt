@@ -24,6 +24,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -39,8 +41,9 @@ internal enum class HomeTab(val key: String) { Chat("chat"), Providers("provider
 internal fun HomeTabBar(selected: HomeTab, onSelect: (HomeTab) -> Unit, modifier: Modifier = Modifier) {
     OrbisMaterialTheme {
         val haptic = rememberActionHaptic()
+        val feedbackGeometry = LocalFeedbackGeometry.current
         Row(
-            modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+            modifier.fillMaxWidth().onGloballyPositioned { feedbackGeometry.tabsTop = it.boundsInWindow().top }.background(MaterialTheme.colorScheme.background)
                 .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp)
                 .selectableGroup().testTag("home-tabs"),
             horizontalArrangement = Arrangement.spacedBy(12.dp),

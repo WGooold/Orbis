@@ -178,6 +178,10 @@ enum InteractionMotion {
         .timingCurve(0.215, 0.61, 0.355, 1, duration: ProviderDialGeometry.settleDuration(distance: distance))
     }
 
+    static let holdToast = FeedbackTiming.holdToast
+    static var banner: AnyTransition {
+        .asymmetric(insertion: .offset(y: -12).combined(with: .opacity).animation(panel), removal: .opacity.animation(exit))
+    }
     static var notice: AnyTransition {
         .asymmetric(insertion: .offset(y: 12).combined(with: .opacity).animation(panel),
                     removal: .opacity.animation(exit))

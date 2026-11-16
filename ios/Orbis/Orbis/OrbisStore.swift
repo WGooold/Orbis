@@ -9,6 +9,7 @@ struct HomeRuntimeCard: Equatable, Identifiable {
     let title: String
     let agentKind: String
     let hasPendingInteraction: Bool
+    var error: String? = nil
     var id: String { runtime.runtimeId }
 }
 
@@ -61,7 +62,60 @@ final class HostConnection: ObservableObject {
     @Published private(set) var selectedRuntimeId: String? { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var connection: ConnectionState = .offline { didSet { markHomeMetadataChanged(); directoryViewRevision &+= 1 } }
     @Published private(set) var activePath: String? { didSet { homeViewRevision &+= 1 } }
-    @Published var errorMessage: String?
+    @Published private(set) var feedback = FeedbackState()
+    /// Read-only compatibility projection; every writer declares F3/F4 at the call site.
+    var errorMessage: String? { feedback.banner?.text }
+    var feedbackDownloadsVisible = false
+    var feedbackChatVisible = false
+    private var failedTransferRounds: [String: Int] = [:]
+    private var toastTimeout: Task<Void, Never>?
+    struct ObjectFeedback: Equatable { let sessionId: String?; let message: String }
+    @Published private(set) var objectErrors: [String: ObjectFeedback] = [:] { didSet { homeViewRevision &+= 1 } }
+    @Published private(set) var sessionOperationErrors: [String: String] = [:] { didSet { directoryViewRevision &+= 1 } }
+    @Published private(set) var queueErrors: [String: String] = [:]
+    @Published private(set) var interactionErrors: [String: String] = [:]
+    @Published private(set) var menuErrors: [String: String] = [:]
+    func objectError(_ runtimeId: String) -> String? {
+        guard let error = objectErrors[runtimeId], let runtime = runtimeIndex[runtimeId], error.sessionId == runtime.sessionId else { return nil }
+        return error.message
+    }
+    private func inlineFeedback(_ message: String, runtimeId: String? = nil) {
+        if let id = runtimeId ?? selectedRuntimeId, let runtime = runtimeIndex[id] {
+            objectErrors[id] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
+        } else if let launch = launching, runtimeId == nil || runtimeId == launch.placeholder {
+            launching?.failure = FeedbackText.reason(message)
+        } else if runtimeId == nil { sessionConfigurationError = FeedbackText.reason(message) }
+        else { recordConnectionEvent("feedback.dropped: owner_removed") }
+    }
+    func presentFeedback(_ level: FeedbackLevel, _ message: String, condition: FeedbackCondition? = nil, key: String? = nil, action: FeedbackAction? = nil) {
+        let previous = feedback.toast?.id
+        feedback.present(level, text: message, condition: condition, key: key, action: action)
+        guard level == .toast, feedback.toast?.id != previous else { return }
+        toastTimeout?.cancel(); toastTimeout = nil
+        guard let toast = feedback.toast, toast.action == nil else { return }
+        toastTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(FeedbackTiming.holdToast)) } catch { return }
+            self?.feedback.dismissToast(toast.id)
+        }
+    }
+    func dismissFeedbackBanner() { feedback.dismissBanner() }
+    func dismissFeedbackToast() { toastTimeout?.cancel(); toastTimeout = nil; feedback.dismissToast() }
+    func setFeedbackForeground(_ active: Bool) { feedback.setForeground(active); if !active { toastTimeout?.cancel(); toastTimeout = nil } }
+    func clearFeedbackScope(preservingConnectionConditions: Bool = false) {
+        toastTimeout?.cancel(); toastTimeout = nil
+        if preservingConnectionConditions { feedback.clearTransientPresentation() } else { feedback.clear() }
+        objectErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
+        sessionConfigurationError = nil; configFailures = [:]; transfers.error = nil
+        browse = nil; toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
+    }
+    private func connectionFeedback(_ condition: FeedbackCondition) {
+        switch condition {
+        case .pairing: presentFeedback(.banner, L10n.tr("这台手机的配对已失效"), condition: .pairing, action: .pair)
+        case .version: presentFeedback(.banner, L10n.tr("版本不兼容，请更新手机和电脑端 Orbis"), condition: .version, action: .update)
+        case .computerClosed: presentFeedback(.banner, L10n.tr("电脑端 Orbis 未打开，打开后会自动连接"), condition: .computerClosed, action: .reconnect)
+        case .other: presentFeedback(.banner, L10n.tr("连接无法继续，请重新连接"), condition: .other, action: .reconnect)
+        }
+    }
     @Published private(set) var isPairing = false
     @Published private(set) var isSyncing = false
     @Published private(set) var activatingSessionId: String? { didSet { directoryViewRevision &+= 1 } }
@@ -88,7 +142,7 @@ final class HostConnection: ObservableObject {
         let id = value["launchId"] as? String
         runAsyncTransaction { [weak self] in
             if await !task.value, self?.launchJournal === journal, journal.launchId == id {
-                self?.errorMessage = L10n.tr("无法保存启动恢复记录，请重试")
+                self?.sessionConfigurationError = L10n.tr("无法保存启动恢复记录，请重试")
                 if self?.launching?.requestId == id {
                     self?.launching?.unconfirmed = true
                     self?.launching?.failure = L10n.tr("无法保存启动恢复记录，请重试")
@@ -175,7 +229,7 @@ final class HostConnection: ObservableObject {
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
         guard connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
               config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil else { return false }
-        guard !hasLaunchJournal else { recoverConfiguredLaunch(); errorMessage = L10n.tr("请先核对上一次启动及首句结果"); return false }
+        guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionConfigurationError = L10n.tr("请先核对上一次启动及首句结果"); return false }
         let id = UUID().uuidString, placeholder = "launch:" + id
         let creation = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
@@ -344,7 +398,7 @@ final class HostConnection: ObservableObject {
     var homeCards: [HomeRuntimeCard] {
         guard case .ready(let cards) = homePresentation else { return [] }
         let closing = closingRuntimeIds
-        return cards.filter { !closing.contains($0.id) }
+        return cards.filter { !closing.contains($0.id) }.map { card in var copy = card; copy.error = runtimeIndex[card.id]?.sessionId == card.runtime.sessionId ? objectError(card.id) : nil; return copy }
     }
     var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
     private var homeActionsRevision = -1
@@ -543,7 +597,7 @@ final class HostConnection: ObservableObject {
     private var browseTimeout: Task<Void, Never>?
     private var activationTimeout: Task<Void, Never>?
     private var activationRequestId: String?
-    private var runtimeActions: [String: (runtimeId: String, name: String)] = [:]
+    private var runtimeActions: [String: (runtimeId: String, name: String, sessionId: String?)] = [:]
     private var composerActionDrafts: [String: (key: String, text: String)] = [:]
     private var actionTimeouts: [String: Task<Void, Never>] = [:]
     private var feedbackTimeout: Task<Void, Never>?
@@ -604,7 +658,7 @@ final class HostConnection: ObservableObject {
 
     func loadMenuOptions(runtimeId: String, name: String) {
         guard let command = commands[runtimeId]?.first(where: { $0.name == name }) else { return }
-        if let request = menuOptions.start(runtimeId: runtimeId, command: command) { sendMenuOptionRequest(request) }
+        if let request = menuOptions.start(runtimeId: runtimeId, command: command) { menuErrors[runtimeId + "\u{0}" + name] = nil; sendMenuOptionRequest(request) }
     }
 
     func cancelMenuOptions(runtimeId: String, name: String) { menuOptions.cancel(runtimeId: runtimeId, name: name) }
@@ -613,11 +667,11 @@ final class HostConnection: ObservableObject {
         guard let id = request["requestId"] as? String else { return }
         menuOptionsTimeout?.cancel()
         guard transport.send(request) else {
-            if menuOptions.expire(id) { errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }; return
+            if let failed = menuOptions.fail(id) { menuErrors[failed.runtimeId + "\u{0}" + failed.name] = L10n.tr("命令选项读取失败，请重新打开菜单") }; return
         }
         menuOptionsTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 12_000_000_000) } catch { return }
-            if self?.menuOptions.expire(id) == true { self?.errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }
+            if let self, let failed = self.menuOptions.fail(id) { self.menuErrors[failed.runtimeId + "\u{0}" + failed.name] = L10n.tr("命令选项读取失败，请重新打开菜单") }
         }
     }
     var didUpdatePairing: ((HostPairing) -> Void)?
@@ -646,7 +700,7 @@ final class HostConnection: ObservableObject {
         pairings = isolated ? initialPairing.map { [$0] } ?? [] : secure.pairings()
         selectedHostId = pairings.first?.hostId
         do { identity = try secure.deviceIdentity() }
-        catch { errorMessage = error.localizedDescription }
+        catch { recordConnectionEvent(String(describing: error)); connectionFeedback(.pairing) }
         transfers.send = { [weak self] in self?.transport.send($0) ?? false }
         hostState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.send = { [weak self] in self?.transport.send($0) ?? false }
@@ -695,6 +749,15 @@ final class HostConnection: ObservableObject {
         }
         hostState.didChangeProviders = { [weak self] in self?.refreshSessions() }
         transfers.sendBinary = { [weak self] in self?.transport.sendBinary($0) ?? false }
+        transfers.didFailTask = { [weak self] task in
+            guard let self else { return }
+            let visible = task.direction == "download" ? self.feedbackDownloadsVisible :
+                self.feedbackChatVisible && task.runtimeId == self.selectedRuntimeId && task.sessionId == self.selectedRuntime?.sessionId
+            guard !visible else { return }
+            let round = self.failedTransferRounds[task.id, default: 0] + 1
+            self.failedTransferRounds[task.id] = round
+            self.presentFeedback(.toast, L10n.tr(task.direction == "download" ? "下载未完成，请在下载中重试" : "上传未完成，附件已保留"), key: "transfer:" + task.id + ":" + String(round))
+        }
         transfers.didSettleUpload = { [weak self] id, path, error in self?.uploadSettled(id, path: path, error: error) }
         turnFileChanges.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
         toolContent.send = { [weak self] runtime, command in self?.sendCommand(runtimeId: runtime, command: command) ?? false }
@@ -735,7 +798,7 @@ final class HostConnection: ObservableObject {
                 if let read = self.syncReads.removeValue(forKey: id) { self.sessionReads.finish(read, phase: .failed, error: message) }
                 self.acknowledge(runtimeId: runtime, syncId: id, result: "rejected")
             }
-            if !ids.isEmpty { self.errorMessage = message; self.updateSyncing(); self.dispatchSyncDemands() }
+            if !ids.isEmpty { self.recordConnectionEvent("history.failed: " + message); self.historyErrors[runtime] = FeedbackText.reason(message); self.updateSyncing(); self.dispatchSyncDemands() }
         }
         // Bind the source before a cached/offline page can acquire its lease.
         // A later first connection then preserves that mounted page's ownership.
@@ -790,6 +853,7 @@ final class HostConnection: ObservableObject {
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
     /// A keystroke the composer already shows.
     func editDraft(_ text: String, for runtime: RuntimeSummary) {
+        if objectError(runtime.runtimeId) != nil { objectErrors[runtime.runtimeId] = nil }
         let key = localSessionKey(host: selectedHost, runtime: runtime)
         updateDrafts(reload: false) { $0[key] = text.isEmpty ? nil : text }
     }
@@ -847,6 +911,7 @@ final class HostConnection: ObservableObject {
     }
 
     func shutdown() {
+        clearFeedbackScope()
         connectionGeneration = UUID()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
@@ -945,7 +1010,10 @@ final class HostConnection: ObservableObject {
                 self.clearSyncs()
             }
             // Transient reconnect errors stay in the connection indicator.
-            if state == .error, let error { self.errorMessage = error }
+            if let error { self.recordConnectionEvent(error) }
+            if state == .secured { for condition in FeedbackCondition.allCases { self.feedback.resolve(condition) } }
+            else if state == .error, let issue = self.transport.feedbackCondition { self.connectionFeedback(issue) }
+            else if state == .offline, error == nil { self.feedback.resolve(.computerClosed) }
         })
     }
 
@@ -1065,6 +1133,7 @@ final class HostConnection: ObservableObject {
         guard connection == .secured, request.expiresAt > Int64(Date().timeIntervalSince1970 * 1000), request.acceptsResponse(response),
               interactions[request.runtimeId]?.contains(where: { $0 == request && $0.submitted != true }) == true else { return false }
         let id = UUID().uuidString
+        interactionErrors[request.runtimeId] = nil
         let creation = ledger.create(opId: id, kind: OperationKinds.respond,
                                      target: OperationKinds.respondTarget(runtimeId: request.runtimeId, requestId: request.requestId),
                                      policy: OperationKinds.respondPolicy, basis: ledgerBasis(OperationKinds.interactionsDomain(request.runtimeId)),
@@ -1075,7 +1144,7 @@ final class HostConnection: ObservableObject {
         guard sendCommand(runtimeId: request.runtimeId, commandId: id, command: ["type": "interaction.respond", "requestId": request.requestId,
                         "extensionId": request.extensionId, "response": response]) else {
             ledger.remove(id); handleLedger([])
-            errorMessage = L10n.tr("交互响应未送达，请连接后重试。"); return false
+            inlineFeedback(L10n.tr("交互响应未送达，请连接后重试。"), runtimeId: request.runtimeId); return false
         }
         handleLedger(ledger.written(id, now: Date()))
         return true
@@ -1085,7 +1154,7 @@ final class HostConnection: ObservableObject {
     func respondingRequestIds(_ runtimeId: String) -> Set<String> { OperationKinds.respondingRequestIds(ledger, runtimeId: runtimeId) }
     /// 原位短状态：账本中未结算的回答，或刚结算的结果。
     func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? {
-        OperationKinds.respondStatus(ledger, runtimeId: runtimeId) ?? interactionOutcomes[runtimeId].map { ($0.text, false) }
+        OperationKinds.respondStatus(ledger, runtimeId: runtimeId) ?? interactionErrors[runtimeId].map { ($0, false) } ?? interactionOutcomes[runtimeId].map { ($0.text, false) }
     }
 
     /// 回答已结算：在原位短暂显示结果，约 2.5 秒后消失（V16）。成功回执显示摘要；只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
@@ -1352,9 +1421,9 @@ final class HostConnection: ObservableObject {
         } else {
             sessionReads.finish(id, phase: .failed, error: message)
         }
-        if kind == .history { historyLoading.remove(runtime.runtimeId); historyErrors[runtime.runtimeId] = message }
+        if kind == .history { historyLoading.remove(runtime.runtimeId); historyErrors[runtime.runtimeId] = FeedbackText.reason(message) }
         else if kind == .prefetch { return }
-        else if kind != .catchup { errorMessage = message }
+        else if kind != .catchup { historyErrors[runtime.runtimeId] = FeedbackText.reason(message) }
     }
 
     private func completeRemoteRead(_ syncId: String, runtime: RuntimeSummary, page: SessionHistoryPage, sourceConfirmed: Bool = false) {
@@ -1405,7 +1474,7 @@ final class HostConnection: ObservableObject {
             if kind == .firstPage { sessionReads.finish(operation, phase: .succeeded) }
             if selectedOfflineSession == nil, connection == .secured,
                !pendingSyncs.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.range == "preview" && !$0.exhausted }) { syncSession(runtime, force: true) }
-            else if selectedOfflineSession != nil { errorMessage = L10n.tr("这份会话还没有完整的本地历史缓存。") }
+            else if selectedOfflineSession != nil { historyErrors[runtime.runtimeId] = L10n.tr("这份会话还没有完整的本地历史缓存。") }
         case .requestCatchup(let gap): requestCatchup(runtime, operation: operation, gap: gap)
         case .none:
             if let read = sessionReads.operations[operation], read.kind == .prefetch,
@@ -1472,7 +1541,7 @@ final class HostConnection: ObservableObject {
                         description: branch.timestamp, tree: .init(parentId: nil, entryType: "message", role: branch.message?.role,
                             label: nil, defaultHidden: false, isCurrent: false, isOnActivePath: false)))
                 }
-            } catch { if generation == self.connectionGeneration { self.errorMessage = error.localizedDescription } }
+            } catch { if generation == self.connectionGeneration { self.historyErrors[runtime.runtimeId] = L10n.tr("历史读取失败，请重试。") } }
         }
         return true
     }
@@ -1714,7 +1783,7 @@ final class HostConnection: ObservableObject {
     }
 
     func activate(_ session: SessionSummary) {
-        if let mismatch = providerMismatch(session) { errorMessage = mismatch; return }
+        if let mismatch = providerMismatch(session) { sessionOperationErrors[session.sessionId] = mismatch; return }
         if let runtime = runtimes.first(where: { $0.sessionId == session.sessionId }) {
             selectRuntime(runtime.runtimeId)
             return
@@ -1734,7 +1803,7 @@ final class HostConnection: ObservableObject {
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
         if !sessionConfigurationSupported && hasLaunchJournal {
-            errorMessage = L10n.tr("请先核对上一次启动及首句结果"); return false
+            sessionConfigurationError = L10n.tr("请先核对上一次启动及首句结果"); return false
         }
         if sessionConfigurationSupported {
             let text = firstMessage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1750,7 +1819,7 @@ final class HostConnection: ObservableObject {
         // A first sentence needs one launch operation and one waiting send. Reject
         // capacity exhaustion before writing session.activate to the computer.
         guard ledger.operations.filter({ !$0.phase.isSettled }).count + 2 <= ledger.capacity else {
-            errorMessage = L10n.tr("待发送的消息过多，请稍后重试。"); return false
+            inlineFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false
         }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new", displayTitle: String(text.prefix(22)))
         guard let launch = launching, selectedRuntimeId == launch.placeholder else { return false }
@@ -1774,7 +1843,7 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
                               "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
             ledger.remove(requestId); handleLedger([])
-            errorMessage = L10n.tr("端到端加密连接尚未就绪，请连接成功后重试。"); return
+            sessionConfigurationError = L10n.tr("未连接到电脑，连接恢复后可重试。"); return
         }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
@@ -1796,7 +1865,7 @@ final class HostConnection: ObservableObject {
     func retryLaunch() {
         guard let launch = launching, launch.failure != nil || launch.unconfirmed else { return }
         if readLaunchJournal()?["rejected"] as? Bool == true {
-            errorMessage = L10n.tr("启动配置已失效，请返回新建卡片刷新"); return
+            launching?.failure = L10n.tr("启动配置已失效，请返回新建卡片刷新"); return
         }
         if launch.requestId == configuredLaunchId { recoverConfiguredLaunch(); return }
         var target: [String: Any] = launch.target
@@ -1849,8 +1918,9 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.archive", "protocolVersion": orbisProtocolVersion, "requestId": requestId,
                               "sessionId": session.sessionId, "agentKind": kind, "archived": archived]) else {
             ledger.remove(requestId); handleLedger([])
-            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return
+            sessionOperationErrors[session.sessionId] = L10n.tr("操作未送达，请连接后重试。"); return
         }
+        sessionOperationErrors[session.sessionId] = nil
         handleLedger(ledger.written(requestId, now: Date()))
     }
 
@@ -1918,8 +1988,9 @@ final class HostConnection: ObservableObject {
         let text = args.isEmpty ? "/" + name : "/\(name) \(args)"
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId,
                           command: ["type": "slash.execute", "name": name, "args": args, "messageId": id]) else {
-            errorMessage = L10n.tr("命令未送达，请连接后重试。"); return false
+            inlineFeedback(L10n.tr("命令未送达，请连接后重试。")); return false
         }
+        objectErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: text, attachments: [],
@@ -1963,7 +2034,7 @@ final class HostConnection: ObservableObject {
             ledger.remove(id); handleLedger([])
             configFailures[runtime.runtimeId] = SessionConfigFailure(setting: setting, value: value,
                 message: L10n.tr("操作未送达，请连接后重试。"), sessionId: runtime.sessionId)
-            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return false
+            return false
         }
         handleLedger(ledger.written(id, now: Date()))
         return true
@@ -1976,7 +2047,7 @@ final class HostConnection: ObservableObject {
         guard let current = runtimes.first(where: { $0.runtimeId == runtimeId }), session == (current.sessionId ?? "") else { return }
         if case .rejected(let rejection) = op.phase {
             configFailures[runtimeId] = SessionConfigFailure(setting: setting, value: value,
-                message: rejection.reason.isEmpty ? L10n.tr("请重试") : rejection.reason,
+                message: rejection.reason.isEmpty ? L10n.tr("请重试") : FeedbackText.reason(rejection.reason),
                 sessionId: runtimes.first { $0.runtimeId == runtimeId }?.sessionId)
         } else { configFailures.removeValue(forKey: runtimeId) }
         let target = OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)
@@ -1998,13 +2069,13 @@ final class HostConnection: ObservableObject {
 
     func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
         guard connection == .secured else {
-            errorMessage = L10n.tr("关闭会话未发送：请先连接电脑。"); return []
+            for id in runtimeIds { inlineFeedback(L10n.tr("关闭会话未发送：请先连接电脑。"), runtimeId: id) }; return []
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
             if let reason = runtime.remoteCloseBlockReason(commands[runtime.runtimeId] ?? []) {
                 agentState.subscribe(runtime: runtime, force: true)
-                errorMessage = reason.message
+                inlineFeedback(reason.message, runtimeId: runtime.runtimeId)
                 continue
             }
             if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
@@ -2022,11 +2093,11 @@ final class HostConnection: ObservableObject {
         case .created: break
         case .conflict: return true // 同一会话的关闭尚未结算，卡片已隐藏（L9）。
         case .duplicate, .full:
-            errorMessage = L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"); return false
+            inlineFeedback(L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"), runtimeId: runtimeId); return false
         }
         guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: ["type": "slash.execute", "name": "quit", "args": ""]) else {
             ledger.remove(commandId)
-            errorMessage = L10n.tr("关闭会话未发送：请连接电脑后重试。"); return false
+            inlineFeedback(L10n.tr("关闭会话未发送：请连接电脑后重试。"), runtimeId: runtimeId); return false
         }
         handleLedger(ledger.written(commandId, now: Date()))
         return true
@@ -2146,7 +2217,6 @@ final class HostConnection: ObservableObject {
     private func handleLedger(_ events: [AppLedger.Event]) {
         var verify = false
         var readySends = false
-        let archiveRejections = events.filter { if case .rejected(let op) = $0, case .archive = op.payload { return true }; return false }.count
         for event in events {
             switch event {
             case .rejected(let op):
@@ -2170,12 +2240,15 @@ final class HostConnection: ObservableObject {
                 configSettled(op)
                 if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId, case .rejected(let rejection) = op.phase {
                     // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
-                    launching?.failure = rejection.reason.isEmpty ? L10n.tr("启动失败") : rejection.reason
+                    launching?.failure = rejection.reason.isEmpty ? L10n.tr("启动失败") : FeedbackText.reason(rejection.reason)
                     activationRequestId = nil; pendingActivation = nil; activatingSessionId = nil
                     if launching?.following == false { launching = nil }
                 }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
-                if let text = OperationKinds.message(for: op) { errorMessage = archiveRejections > 1 ? L10n.tr("{0} 个会话", archiveRejections) + text : text }
+                if let text = OperationKinds.message(for: op) { if case .archive(let sessionId, _, _) = op.payload { sessionOperationErrors[sessionId] = text }
+                    else if case .quit(let runtimeId) = op.payload { inlineFeedback(text, runtimeId: runtimeId) }
+                    else if case .queueCancel(let runtimeId, let queueId) = op.payload { queueErrors[runtimeId + "\u{0}" + queueId] = text; if queuedMessages[runtimeId]?.contains(where: { $0.queueId == queueId }) != true { inlineFeedback(text, runtimeId: runtimeId) } }
+                    else if case .respond(let runtimeId, _, _) = op.payload { interactionErrors[runtimeId] = text } }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
             case .verify: verify = true
             case .landed(let op): showInteractionOutcome(op); configSettled(op)
@@ -2258,10 +2331,11 @@ final class HostConnection: ObservableObject {
 
     private func performActionId(runtimeId: String, name: String, command: [String: Any]) -> String? {
         let id = UUID().uuidString
+        objectErrors[runtimeId] = nil
         guard sendCommand(runtimeId: runtimeId, commandId: id, command: command) else {
-            errorMessage = L10n.tr("操作未送达，请连接后重试。"); return nil
+            inlineFeedback(L10n.tr("操作未送达，请连接后重试。"), runtimeId: runtimeId); return nil
         }
-        runtimeActions[id] = (runtimeId, name); pendingActionIds.insert(id); setActionFeedback(nil); updateSyncing()
+        runtimeActions[id] = (runtimeId, name, runtimeIndex[runtimeId]?.sessionId); pendingActionIds.insert(id); setActionFeedback(nil); updateSyncing()
         actionTimeouts[id] = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             guard let self, self.runtimeActions[id] != nil else { return }
@@ -2271,14 +2345,9 @@ final class HostConnection: ObservableObject {
     }
 
     /// 操作完成提示只是短暂确认，不能长期停在聊天页上；新操作开始或断开时立即清掉。
-    private func setActionFeedback(_ text: String?) {
-        feedbackTimeout?.cancel(); feedbackTimeout = nil
-        actionFeedback = text
-        guard text != nil else { return }
-        feedbackTimeout = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 2_500_000_000) } catch { return }
-            self?.actionFeedback = nil; self?.feedbackTimeout = nil
-        }
+    private func setActionFeedback(_ text: String?, key: String? = nil) {
+        feedbackTimeout?.cancel(); feedbackTimeout = nil; actionFeedback = nil
+        if let text { presentFeedback(.toast, text, key: key) }
     }
 
     private func finishAction(_ id: String, succeeded: Bool, message: String? = nil, result: [String: Any]? = nil) {
@@ -2288,8 +2357,11 @@ final class HostConnection: ObservableObject {
         }
         defer { if action.name == "tree" { branchEditorNode = nil; branchEditorText = nil } }
         pendingActionIds.remove(id); actionTimeouts.removeValue(forKey: id)?.cancel(); updateSyncing()
+        guard let current = runtimeIndex[action.runtimeId], current.sessionId == action.sessionId else {
+            recordConnectionEvent("action.result_dropped: owner_replaced"); return
+        }
         if succeeded {
-            setActionFeedback(L10n.tr("{0} 已完成", action.name))
+            setActionFeedback(L10n.tr("{0} 已完成", action.name), key: "action:" + id)
             if action.name == "tree", let runtime = runtimes.first(where: { $0.runtimeId == action.runtimeId }) {
                 let editorText = branchEditorNode == nil ? nil : (result?["editorText"] as? String ?? branchEditorText ?? (branchEditorNode == entryPreview?.entryId ? entryPreview?.message?.text : nil))
                 if let sessionId = result?["sessionId"] as? String, sessionId != runtime.sessionId {
@@ -2303,7 +2375,11 @@ final class HostConnection: ObservableObject {
                 }
                 historyRevision += 1; branchEditorNode = nil
             }
-        } else { errorMessage = message ?? L10n.tr("{0} 未完成，请重试。", action.name) }
+        } else {
+            let text = FeedbackText.reason(message ?? L10n.tr("{0} 未完成，请重试。", action.name))
+            inlineFeedback(text, runtimeId: action.runtimeId)
+            if selectedRuntimeId != action.runtimeId { presentFeedback(.toast, text, key: "action:" + id) }
+        }
     }
 
     /// Validate before either a normal send or first-sentence activation, so a
@@ -2312,9 +2388,9 @@ final class HostConnection: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = trimmed.isEmpty && attachmentCount > 0 ? L10n.tr("已发送 {0} 个附件", attachmentCount) : trimmed
         guard !body.isEmpty else { return nil }
-        guard body.utf16.count <= 100_000 else { errorMessage = L10n.tr("消息不能超过 100,000 个字符。"); return nil }
+        guard body.utf16.count <= 100_000 else { inlineFeedback(L10n.tr("消息不能超过 100,000 个字符。")); return nil }
         guard !trimmed.hasPrefix("/") else {
-            errorMessage = L10n.tr("请从命令菜单选择斜杠命令。"); return nil
+            inlineFeedback(L10n.tr("请从命令菜单选择斜杠命令。")); return nil
         }
         return body
     }
@@ -2345,8 +2421,9 @@ final class HostConnection: ObservableObject {
         if !attachments.isEmpty { command["attachments"] = attachments }
         if let delivery { command["delivery"] = delivery }
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId, command: command) else {
-            errorMessage = L10n.tr("消息未送达，请连接后重试。"); return false
+            inlineFeedback(L10n.tr("消息未送达，请连接后重试。"), runtimeId: runtime.runtimeId); return false
         }
+        objectErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: attachments,
@@ -2368,7 +2445,8 @@ final class HostConnection: ObservableObject {
                                      conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
                                      prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
-        guard creation == .created else { errorMessage = L10n.tr("待发送的消息过多，请稍后重试。"); return false }
+        guard creation == .created else { inlineFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false }
+        objectErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
@@ -2512,7 +2590,7 @@ final class HostConnection: ObservableObject {
         }
         let local = pendingSends.queueRows(sessionId: sessionId).filter { send in !host.contains { $0.queueId == send.messageId } }
             .map { QueuedMessage(queueId: $0.messageId, text: $0.text, delivery: $0.delivery ?? "followUp", state: "submitting", error: nil) }
-        return host + local
+        return (host + local).map { row in QueuedMessage(queueId: row.queueId, text: row.text, delivery: row.delivery, state: row.state, error: queueErrors[runtimeId + "\u{0}" + row.queueId] ?? row.error) }
     }
 
     private func reconcilePendingSends() {
@@ -2587,7 +2665,7 @@ final class HostConnection: ObservableObject {
     func stopRuntime() -> Bool {
         guard let runtime = selectedRuntime else { return false }
         guard sendCommand(runtimeId: runtime.runtimeId, command: ["type": "stop"]) else {
-            errorMessage = L10n.tr("端到端加密连接尚未就绪。"); return false
+            inlineFeedback(L10n.tr("操作未送达，请连接后重试。"), runtimeId: runtime.runtimeId); return false
         }
         return true
     }
@@ -2694,15 +2772,24 @@ final class HostConnection: ObservableObject {
     private func receive(_ message: [String: Any], channel: String?, payload: Data? = nil, ownership: UUID? = nil) async {
         guard let type = message["type"] as? String else { return }
         guard channel != nil else {
-            if type == "protocol.error" { errorMessage = message["message"] as? String ?? L10n.tr("中继认证失败，请重新连接。"); connection = .error }
+            if type == "protocol.error" { recordConnectionEvent(String(describing: message)); if let condition = FeedbackText.protocolCondition(message["code"] as? String) { connectionFeedback(condition) }; connection = .error }
             return
         }
         defer { commitHomePresentation() }
         if let version = message["protocolVersion"] as? Int, version != orbisProtocolVersion {
-            errorMessage = L10n.tr("Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。")
+            connectionFeedback(.version)
             return
         }
+        if type == "protocol.error", connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
+            recordConnectionEvent("protocol.error.fatal: " + String(describing: message))
+            connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
+            return
+        }
+        if type == "protocol.error" {
+            recordConnectionEvent("protocol.error: " + (message["code"] as? String ?? "") + " " + (message["message"] as? String ?? ""))
+        }
         transfers.consume(message)
+        if FileTransfers.ownedReplyTypes.contains(type) { return }
         recordConnectionEvent("\(channel ?? "—") · \(type)")
         if let requestId = message["requestId"] as? String,
            historyInterest.consume(requestId, accepted: type == "session.history.interest.result" && message["accepted"] as? Bool == true) {
@@ -2740,7 +2827,7 @@ final class HostConnection: ObservableObject {
         if type == "agent.menu.options.page" {
             if let result = menuOptions.consume(message) {
                 if let next = result.next { sendMenuOptionRequest(next) }
-                if result.error != nil { errorMessage = L10n.tr("命令选项读取失败，请重新打开菜单") }
+                if result.error != nil { menuErrors[result.runtimeId + "\u{0}" + result.name] = L10n.tr("命令选项读取失败，请重新打开菜单") }
                 if let options = result.options {
                     commands[result.runtimeId] = commands[result.runtimeId]?.map { command in
                         var value = command
@@ -2785,13 +2872,13 @@ final class HostConnection: ObservableObject {
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
             historyInterest = HistoryWindowInterest()
-            let capabilityRequest = UUID().uuidString
+            let capabilityRequest = connectionRequestId()
             historyWindowRequestId = capabilityRequest
             _ = transport.send(["type": "session.history.capabilities.request", "protocolVersion": orbisProtocolVersion,
                 "requestId": capabilityRequest])
             let next: [RuntimeSummary] = values.compactMap(jsonDecode)
             guard next.count == values.count, Set(next.map(\.runtimeId)).count == next.count else {
-                errorMessage = L10n.tr("会话目录格式无法识别，请重新连接。"); return
+                recordConnectionEvent("catalog.decode_failed"); hostState.refresh(["catalog"]); return
             }
             hostState.setConnection(selectedHost, connected: true)
             if catalogWasConnected { hostState.negotiateCatalogReadFormat() }
@@ -2963,11 +3050,21 @@ final class HostConnection: ObservableObject {
             }
             refreshSessions()
         case "protocol.error":
+            if connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
+                connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version); return
+            }
+            if let result = menuOptions.consume(message) {
+                menuOptionsTimeout?.cancel()
+                menuErrors[result.runtimeId + "\u{0}" + result.name] = L10n.tr("命令选项读取失败，请重新打开菜单")
+                return
+            }
             if let requestId = message["requestId"] as? String, requestId == sessionConfigurationRequest {
-                sessionConfigurationRequest = nil; sessionConfigurationError = message["message"] as? String ?? L10n.tr("配置未确认"); return
+                sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(message["message"] as? String ?? L10n.tr("配置未确认")); return
             }
             let commandId = message["commandId"] as? String
             if commandId?.hasPrefix("session-sync-ack:") == true { return }
+            // SC91：例如旧 Host 对已被替换的能力探测迟到回应 invalid_request（设计规范 F0 静默）。
+            if isStaleConnectionError(message) { return }
             if message["code"] as? String == "session_sync_device_rejected", let commandId,
                handledSyncRejections.contains(commandId) { return }
             if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
@@ -2978,19 +3075,23 @@ final class HostConnection: ObservableObject {
                 let pending = pendingSyncs[syncId]
                 finishSync(syncId, readPhase: .failed)
                 if let pending, pending.range == "history" {
-                    if pending.historyPrefetch == nil { historyErrors[pending.runtimeId] = message["message"] as? String ?? L10n.tr("历史读取失败，请重试。") }
+                    if pending.historyPrefetch == nil { historyErrors[pending.runtimeId] = FeedbackText.reason(message["message"] as? String ?? L10n.tr("历史读取失败，请重试。")) }
                     return
                 }
             }
             if let commandId { finishAction(commandId, succeeded: false, message: message["message"] as? String) }
             if let requestId = message["requestId"] as? String, requestId == activationRequestId { clearActivation() }
             if let requestId = message["requestId"] as? String, requestId == browse?.requestId {
-                browseTimeout?.cancel(); browse?.loading = false; browse?.error = message["message"] as? String
+                browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(message["message"] as? String ?? L10n.tr("目录不可读"))
                 return
             }
-            if commandId == nil && message["requestId"] == nil { connection = .error }
-            errorMessage = message["message"] as? String ?? L10n.tr("电脑端无法完成操作。")
-        default: break
+            if connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
+                connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
+            } else { recordConnectionEvent("protocol.error.unowned: " + String(describing: message)) }
+        default:
+            if !["session.catalog.capabilities", "session.history.capabilities", "session.history.interest.result", "session.catalog.page", "agent.menu.options.page"].contains(type) {
+                recordConnectionEvent("unknown_message: " + type); connectionFeedback(.version)
+            }
         }
     }
 
@@ -3113,14 +3214,15 @@ final class HostConnection: ObservableObject {
             return
         }
         if type == "runtime.error" || (type == "command.result" && event["ok"] as? Bool == false) {
+            recordConnectionEvent(type + ": " + (event["error"] as? String ?? event["message"] as? String ?? ""))
             if let commandId = event["commandId"] as? String, let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId && $0.value.runtimeId == runtimeId })?.key {
                 let pending = pendingSyncs[syncId]; finishSync(syncId, readPhase: .failed)
                 if pending?.range == "history" {
-                    if pending?.historyPrefetch == nil { historyErrors[runtimeId] = event["error"] as? String ?? event["message"] as? String ?? L10n.tr("历史读取失败，请重试。") }
+                    if pending?.historyPrefetch == nil { historyErrors[runtimeId] = FeedbackText.reason(event["error"] as? String ?? event["message"] as? String ?? L10n.tr("历史读取失败，请重试。")) }
                     return
                 }
             }
-            errorMessage = event["message"] as? String ?? event["error"] as? String ?? L10n.tr("电脑端无法完成操作。")
+            recordConnectionEvent("runtime.error.unowned: " + String(describing: event))
             return
         }
         if type == "session.sync.pending", let syncId = event["syncId"] as? String, var task = pendingSyncs[syncId], task.runtimeId == runtimeId {
@@ -3275,7 +3377,7 @@ final class HostConnection: ObservableObject {
                   reference.agent.agentKind == runtime.agentKind || runtime.agentKind == nil,
                   reference.projectionVersion == 1, (0...4096).contains(reference.totalCount), (0...8_388_608).contains(reference.summaryBytes) else {
                 finishSync(syncId); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
-                errorMessage = L10n.tr("会话工具清单的归属或版本无效，请刷新重试。"); return
+                historyErrors[runtimeId] = L10n.tr("会话工具清单的归属或版本无效，请刷新重试。"); return
             }
             dependency = reference
         }
@@ -3441,8 +3543,8 @@ final class HostConnection: ObservableObject {
         let range = pending.range
         finishSync(syncId, readPhase: .failed); acknowledge(runtimeId: runtimeId, syncId: syncId, result: "rejected")
         if range == "history" {
-            if pending.historyPrefetch == nil { historyErrors[runtimeId] = message }
-        } else { errorMessage = message }
+            if pending.historyPrefetch == nil { historyErrors[runtimeId] = FeedbackText.reason(message) }
+        } else { historyErrors[runtimeId] = FeedbackText.reason(message) }
     }
 
     private func commitHistory(_ event: [String: Any], runtime: RuntimeSummary, activate: Bool, rawEnvelope: Data?) async -> SessionHistoryCommit? {
@@ -3808,7 +3910,7 @@ final class HostConnection: ObservableObject {
                 if task.historyPrefetch == nil { historyLoading.remove(task.runtimeId) }
                 if task.range == "history" {
                     if task.historyPrefetch == nil { historyErrors[task.runtimeId] = L10n.tr("历史读取暂未完成，请重试。") }
-                } else { errorMessage = L10n.tr("会话同步暂未完成，请重试。") }
+                } else if task.historyPrefetch == nil { historyErrors[task.runtimeId] = L10n.tr("会话同步暂未完成，请重试。") }
                 armSyncTimeout(id, seconds: 150); continue
             }
             let delay: Double = task.attempts < 3 ? 30 : 60

@@ -46,7 +46,7 @@ final class OrbisStore: ObservableObject {
     @Published private(set) var pairings: [HostPairing] = [] { didSet { hubFactsChanged() } }
     @Published private(set) var selectedHostId: String? { didSet { hubFactsChanged() } }
     @Published private(set) var isPairing = false { didSet { hubFactsChanged() } }
-    @Published private var pairingError: String? { didSet { hubFactsChanged() } }
+    @Published private(set) var pairingError: String? { didSet { hubFactsChanged() } }
     private let secure: SecureStorage
     private let preferences: UserDefaults?
     private let deviceName: String
@@ -103,6 +103,7 @@ final class OrbisStore: ObservableObject {
         for pairing in pairings { install(pairing, connect: autoConnect) }
         let saved = preferences?.string(forKey: "orbis.selectedHostId")
         selectedHostId = saved.flatMap { connections[$0] == nil ? nil : $0 } ?? pairings.first?.hostId
+        setFeedbackForeground(true)
         screenPublicationsReady = true
         refreshScreenPublications()
     }
@@ -190,16 +191,21 @@ final class OrbisStore: ObservableObject {
               pairings[index].pskRoot == updated.pskRoot, pairings[index].hostPub == updated.hostPub else { return }
         var next = pairings; next[index] = updated
         do { try secure.savePairings(next); pairings = next }
-        catch { pairingError = error.localizedDescription }
+        catch { pairingError = FeedbackText.reason(error.localizedDescription) }
         refreshScreenPublications()
     }
 
     func selectHost(_ hostId: String) {
         guard connections[hostId] != nil else { return }
         if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
-        if selectedHostId != hostId { activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer() }
+        if selectedHostId != hostId {
+            activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer()
+            activeConnection.clearFeedbackScope(preservingConnectionConditions: true); activeConnection.setFeedbackForeground(false)
+            connections[hostId]?.clearFeedbackScope(preservingConnectionConditions: true)
+        }
         selectedHostId = hostId; pairingError = nil
         activeConnection.setHistoryWindowVisible(historyWindowVisible)
+        setFeedbackForeground(feedbackForeground)
         preferences?.set(hostId, forKey: "orbis.selectedHostId")
         refreshScreenPublications()
     }
@@ -217,7 +223,12 @@ final class OrbisStore: ObservableObject {
     func unpair(hostId: String) {
         guard let connection = connections[hostId] else { return }
         let next = pairings.filter { $0.hostId != hostId }
-        do { try secure.savePairings(next) } catch { pairingError = error.localizedDescription; return }
+        do { try secure.savePairings(next) } catch {
+            pairingError = FeedbackText.reason(error.localizedDescription)
+            // The confirmation closes its drawer; the paired computer keeps the F1 record.
+            activeConnection.presentFeedback(.toast, pairingError ?? L10n.tr("操作未完成，请重试"), key: "unpair:" + hostId + ":" + UUID().uuidString)
+            return
+        }
         observations.removeValue(forKey: hostId)?.cancel(); started.remove(hostId)
         connection.purgeLocalData(); connections[hostId] = nil; pairings = next
         let cleanupId = UUID()
@@ -250,11 +261,11 @@ final class OrbisStore: ObservableObject {
                     do {
                         try self.secure.savePairings(next); self.pairings = next
                         self.install(pairing, connect: true); self.selectHost(pairing.hostId)
-                    } catch { self.pairingError = error.localizedDescription }
-                case .failure(let error): self.pairingError = error.localizedDescription
+                    } catch { self.pairingError = FeedbackText.reason(error.localizedDescription) }
+                case .failure(let error): self.pairingError = FeedbackText.reason(error.localizedDescription)
                 }
             }
-        } catch { pairingError = error.localizedDescription }
+        } catch { pairingError = FeedbackText.reason(error.localizedDescription) }
     }
 
     // Read-only selected-Host projection keeps single-Host screens and command semantics intact.
@@ -284,9 +295,24 @@ final class OrbisStore: ObservableObject {
     var relayTransportKind: RelayTransportKind? { activeConnection.relayTransportKind }
     var relayTransportMode: RelayTransportMode { activeConnection.relayTransportMode }
     func setRelayTransportMode(_ mode: RelayTransportMode) { activeConnection.setRelayTransportMode(mode) }
-    var errorMessage: String? {
-        get { pairingError ?? activeConnection.errorMessage }
-        set { pairingError = nil; activeConnection.errorMessage = newValue }
+    var errorMessage: String? { activeConnection.errorMessage }
+    var feedback: FeedbackState { activeConnection.feedback }
+    func presentFeedback(_ level: FeedbackLevel, _ message: String, condition: FeedbackCondition? = nil, key: String? = nil, action: FeedbackAction? = nil) {
+        activeConnection.presentFeedback(level, message, condition: condition, key: key, action: action)
+    }
+    func setFeedbackPage(downloads: Bool, chat: Bool) {
+        for (id, connection) in connections {
+            connection.feedbackDownloadsVisible = id == selectedHostId && downloads
+            connection.feedbackChatVisible = id == selectedHostId && chat
+        }
+    }
+    func dismissFeedbackBanner() { activeConnection.dismissFeedbackBanner() }
+    func dismissFeedbackToast() { activeConnection.dismissFeedbackToast() }
+    private var feedbackForeground = true
+    func setFeedbackForeground(_ active: Bool) {
+        feedbackForeground = active
+        for (id, connection) in connections { connection.setFeedbackForeground(active && id == selectedHostId) }
+        emptyConnection.setFeedbackForeground(active && selectedHostId == nil)
     }
     var isSyncing: Bool { activeConnection.isSyncing }
     var activatingSessionId: String? { activeConnection.activatingSessionId }
@@ -324,6 +350,7 @@ final class OrbisStore: ObservableObject {
     var pendingSends: PendingSendOutbox { activeConnection.pendingSends }
     var hasOlderHistory: [String: Bool] { activeConnection.hasOlderHistory }
     var historyLoading: Set<String> { activeConnection.historyLoading }
+    var sessionOperationErrors: [String: String] { activeConnection.sessionOperationErrors }
     var historyErrors: [String: String] { activeConnection.historyErrors }
     var historyPageRevision: Int { activeConnection.historyPageRevision }
     var currentProviders: [String: String] { activeConnection.currentProviders }
