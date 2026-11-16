@@ -17,7 +17,19 @@ jobs:
         with:
           node-version: '22.23.2'
           package-manager-cache: false
+      - name: Identify Swift toolchain
+        id: swift
+        run: echo "version=$(swift --version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Restore exact Swift test bundle
+        id: tests-cache
+        uses: actions/cache@v4
+        with:
+          path: ios/Orbis/.build
+          # No fallback key: only identical source/resources and compiler may
+          # bypass compilation. Tests still execute on every selected commit.
+          key: swift-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('ios/Orbis/Package.swift', 'ios/Orbis/Orbis/**', 'ios/Orbis/Tests/**', 'shared/**', 'scripts/check-ios.sh') }}
       - name: Compile Swift test bundle
+        if: steps.tests-cache.outputs.cache-hit != 'true'
         run: bash scripts/check-ios.sh prepare-tests
       - name: Run Swift tests
         run: bash scripts/check-ios.sh tests
