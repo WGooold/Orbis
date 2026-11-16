@@ -37,6 +37,7 @@ jobs:
           name: ci-compiled-js
           path: ${{ runner.temp }}/ci-compiled-js.tar.gz
           retention-days: 1
+          overwrite: true
 
   windows:
     name: Windows tests (${{ matrix.shard }}/4)
@@ -77,7 +78,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: core-tests-windows-${{ matrix.shard }}
+          name: core-tests-windows-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: .artifacts/ci/windows-${{ matrix.shard }}.xml
           retention-days: 14
 
@@ -106,7 +107,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: core-tests-linux
+          name: core-tests-linux-attempt-${{ github.run_attempt }}
           path: .artifacts/ci/linux.xml
           retention-days: 14
 
@@ -158,6 +159,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: core-tests-macos
+          name: core-tests-macos-attempt-${{ github.run_attempt }}
           path: .artifacts/ci/macos.xml
           retention-days: 14
