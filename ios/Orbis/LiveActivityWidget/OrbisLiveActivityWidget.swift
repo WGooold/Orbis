@@ -134,6 +134,7 @@ private struct OrbisActivityDetails: View {
                 .font(.subheadline)
                 .foregroundStyle(Color(white: 0.65))
                 .lineLimit(2)
+            if !presentation.isEnded {
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
                     if presentation.isAttention {
@@ -159,6 +160,7 @@ private struct OrbisActivityDetails: View {
             }
             .font(.caption)
             .padding(.top, 8)
+            }
             if let others = presentation.otherRunningText {
                 Divider().overlay(Color(white: 0.15)).padding(.top, 4)
                 Label(others, systemImage: "square.stack")

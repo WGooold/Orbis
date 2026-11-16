@@ -68,6 +68,7 @@ final class LiveActivityPresentationTests: XCTestCase {
             let p = presentation(state("ended", running: 0, outcome: outcome), stale: true)
             XCTAssertTrue(p.isEnded)
             XCTAssertEqual(p.statusText, expected)
+            XCTAssertEqual(p.detail, "约 2 分钟")
             XCTAssertNil(p.otherRunningText)
         }
         XCTAssertEqual(presentation(state("ended", running: 0)).statusText, "已结束")

@@ -180,7 +180,12 @@ export const AgentExecutionStateSchema = z.strictObject({
   retry: AgentActivitySchema,
   compaction: AgentActivitySchema,
   tasks: AgentTaskInventorySchema.optional(),
-  turn: z.strictObject({ turnId: identity, startedAt: z.number().int().nonnegative(), durationMs: z.number().int().nonnegative().optional() }).nullable().optional(),
+  turn: z.strictObject({
+    turnId: identity,
+    startedAt: z.number().int().nonnegative(),
+    durationMs: z.number().int().nonnegative().optional(),
+    outcome: z.enum(["completed", "failed", "cancelled", "unknown"]).optional(),
+  }).nullable().optional(),
 });
 export type AgentExecutionState = z.infer<typeof AgentExecutionStateSchema>;
 

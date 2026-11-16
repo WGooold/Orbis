@@ -133,10 +133,16 @@ export class AgentStateFacts {
     const session = this.#sessionFor(runtimeId);
     if (!session || session.sessionId !== event.sessionId) return;
     const next = this.#clone(session); next.revision += 1;
-    if (ready && event.live) next.turn = structuredClone(event.live.turn);
+    // A handshake patch is not a history baseline, but a complete live checkpoint
+    // is still an authoritative runtime fact. Preserve it so sessions that never
+    // request a snapshot can show elapsed time and terminal outcome.
+    const liveReady = event.source?.ready === true && event.live?.complete === true;
+    if (liveReady) next.turn = structuredClone(event.live!.turn);
     // A conversation checkpoint can be incomplete while runtime.status is already authoritative.
     // Keep execution independent: only runtime reconnect/offline handling can mark it unverified.
-    const changes = ready ? this.#mutations(next, new Set(["execution"])) : [];
+    const changes = liveReady
+      ? this.#mutations(next, new Set(["execution"]))
+      : ready ? this.#mutations(next, new Set(["execution"])) : [];
     return { changes, onCommitted: () => { this.#sessions.set(next.key, next); } };
   }
 

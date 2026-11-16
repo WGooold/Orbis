@@ -24,6 +24,12 @@ final class LiveActivityCoordinator: ObservableObject {
     private var lifecycleSave: Task<Void, Never>?
     private var savedLifecycle: LiveActivityLifecycle?
     private var routes: [String: [String: (runtime: String, session: String)]] = [:]
+    // A route map is usable only after it was built from the same connection
+    // revision that is currently visible. Keeping the revision with the map
+    // prevents a click during a streaming update from being treated as a
+    // confirmed "focus not found" result.
+    private var routeRevisions: [String: UInt64] = [:]
+    private var routeComplete: [String: Bool] = [:]
     private var queuedOpen: LiveActivityOpenTarget?
     private var dirty = false
     private var reconcile: Task<Void, Never>?
@@ -34,7 +40,6 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func bind(_ store: OrbisStore, foreground: Bool) {
         self.store = store
-        self.foreground = foreground
         registration.updatePairings(store.pairings)
         let ids = Set(store.pairings.map(\.hostId))
         for id in Array(observations.keys) where !ids.contains(id) {
@@ -49,9 +54,15 @@ final class LiveActivityCoordinator: ObservableObject {
         }
         // Recover system-owned activities, obtaining the current token from
         // ActivityKit instead of replaying a token stored by an earlier process.
+        // A suspended process may miss both the state update and the dismissal
+        // callback, so reconcile the local registry against ActivityKit first.
         let systemActivities = Activity<OrbisLiveActivityAttributes>.activities
-        for activity in systemActivities where activity.activityState == .ended {
-            lifecycle.complete(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
+        let systemByID = Dictionary(uniqueKeysWithValues: systemActivities.map { ($0.id, $0) })
+        for activity in Array(activities.values) where systemByID[activity.id] == nil {
+            retire(activity, state: .dismissed)
+        }
+        for activity in systemActivities where activity.activityState == .ended || activity.activityState == .dismissed {
+            retire(activity, state: activity.activityState)
         }
         lifecycle.restore(systemActiveIds: Set(systemActivities.filter { $0.activityState == .active || $0.activityState == .stale }.map(\.id)))
         persistLifecycle()
@@ -62,8 +73,17 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     func setForeground(_ value: Bool) {
+        let changed = foreground != value
         foreground = value
         renewal?.cancel(); renewal = nil
+        if !value {
+            reconcile?.cancel(); reconcile = nil
+            return
+        }
+        guard changed else {
+            if value { schedule() }
+            return
+        }
         if value {
             registration.refresh(); schedule()
             renewal = Task { [weak self] in
@@ -87,14 +107,29 @@ final class LiveActivityCoordinator: ObservableObject {
               FileTransfers.pairingKey(pairing) == target.pairingKey else { queuedOpen = nil; return }
         store.connect(hostId: target.hostId)
         guard let connection = store.connection(for: target.hostId) else { return }
-        if let focus = target.focusKey, let route = routes[target.hostId]?[focus],
-           let runtime = connection.runtimes.first(where: { $0.runtimeId == route.runtime && $0.sessionId == route.session }) {
-            store.selectRuntime(hostId: target.hostId, runtimeId: runtime.runtimeId)
-            queuedOpen = nil
-            navigation.send(Navigation(hostId: target.hostId, runtimeId: runtime.runtimeId))
+        if let focus = target.focusKey {
+            guard routeComplete[target.hostId] == true,
+                  routeRevisions[target.hostId] == revisions[target.hostId, default: 0] else {
+                // The map is still being coalesced or was invalidated by a
+                // newer stream update. Keep the target until a matching map is
+                // published instead of falling back to the home page.
+                return
+            }
+            if let route = routes[target.hostId]?[focus],
+               let runtime = connection.runtimes.first(where: { $0.runtimeId == route.runtime && $0.sessionId == route.session }) {
+                store.selectRuntime(hostId: target.hostId, runtimeId: runtime.runtimeId)
+                queuedOpen = nil
+                navigation.send(Navigation(hostId: target.hostId, runtimeId: runtime.runtimeId))
+            } else if !connection.homeRuntimesUpdating {
+                // A current, complete route map proves that the requested
+                // focus no longer exists. Return to the host root once and
+                // consume the stale deep link.
+                queuedOpen = nil
+                navigation.send(Navigation(hostId: target.hostId, runtimeId: nil))
+            }
         } else {
+            queuedOpen = nil
             navigation.send(Navigation(hostId: target.hostId, runtimeId: nil))
-            if !connection.homeRuntimesUpdating { queuedOpen = nil }
         }
     }
 
@@ -162,11 +197,11 @@ final class LiveActivityCoordinator: ObservableObject {
                 .map { fact, key in LiveActivityLifecycle.Run(focusKey: key, turnId: fact.turnId) }
             let runKeys = lifecycle.runKeys(pairingKey: pairingKey, runs: runs, complete: complete)
             let mayStart = lifecycle.mayStart(pairingKey: pairingKey, currentRuns: runKeys, complete: complete)
-            if complete {
-                routes[hostId] = Dictionary(projection.1.compactMap { fact, key in
-                    fact.runtimeId.map { (key, (runtime: $0, session: fact.sessionId)) }
-                }, uniquingKeysWith: { _, latest in latest })
-            }
+            routes[hostId] = Dictionary(projection.1.compactMap { fact, key in
+                fact.runtimeId.map { (key, (runtime: $0, session: fact.sessionId)) }
+            }, uniquingKeysWith: { _, latest in latest })
+            routeRevisions[hostId] = revision
+            routeComplete[hostId] = complete
             guard let state = projection.0, state.isValid else { persistLifecycle(); continue }
             if let activity = activities[host.hostId] {
                 if complete { lifecycle.noteCreated(pairingKey: pairingKey, activityId: activity.id, runKeys: runKeys) }
@@ -217,13 +252,7 @@ final class LiveActivityCoordinator: ObservableObject {
             for await state in activity.activityStateUpdates {
                 guard let self, !Task.isCancelled else { return }
                 if state == .dismissed || state == .ended {
-                    if state == .dismissed {
-                        self.lifecycle.dismiss(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
-                    } else {
-                        self.lifecycle.complete(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
-                    }
-                    self.persistLifecycle()
-                    self.release(activity)
+                    self.retire(activity, state: state)
                     return
                 }
             }
@@ -242,6 +271,20 @@ final class LiveActivityCoordinator: ObservableObject {
         lifecycle.complete(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
         persistLifecycle()
         await activity.end(state.map(content), dismissalPolicy: immediate ? .immediate : .after(Date().addingTimeInterval(120)))
+        release(activity)
+    }
+
+    /// Reconcile an ActivityKit terminal state that may have arrived while the
+    /// app was suspended. An APNs end update is often observed later as
+    /// `.dismissed`; its content phase still proves normal completion and must
+    /// not be recorded as a user dismissal that suppresses the next turn.
+    private func retire(_ activity: Activity<OrbisLiveActivityAttributes>, state: ActivityState?) {
+        if activity.content.state.phase == "ended" || state == .ended {
+            lifecycle.complete(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
+        } else {
+            lifecycle.dismiss(pairingKey: activity.attributes.pairingKey, activityId: activity.id)
+        }
+        persistLifecycle()
         release(activity)
     }
 

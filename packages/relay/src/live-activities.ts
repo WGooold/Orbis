@@ -129,15 +129,39 @@ export class RelayLiveActivities {
         this.#targets.delete(deviceId);
       } else {
         if (!previous && this.#targets.size >= 16_384) throw new HttpError(503, "live_activity_capacity");
-        this.#targets.set(deviceId, { deviceId, hostId, activityId: value.activityId as string,
-          token: (value.token as string).toLowerCase(), environment: value.environment as Environment,
-          expiresAt: previous && previous.activityId === value.activityId ? previous.expiresAt : Date.now() + activityLifetime });
+        const nextToken = (value.token as string).toLowerCase();
+        const nextEnvironment = value.environment as Environment;
+        // Preserve registration identity when the device refreshes the same
+        // activity token. In-flight publish jobs validate that identity; making
+        // an equivalent object here would make a concurrent register replay
+        // cancel the publish and resolve it as an unsent no-op.
+        const key = `${nextEnvironment}:${nextToken}`;
+        const sameRegistration = previous && previous.activityId === value.activityId && previous.token === nextToken && previous.environment === nextEnvironment;
+        // While APNs is in flight, keep a fresh registration identity so an
+        // invalid-token response can retire only the old send. During the
+        // same-second coalescing wait, retain identity so the queued publish
+        // still validates and returns its actual APNs result.
+        const preserveIdentity = sameRegistration && !(this.#workers.has(key) && !this.#waits.has(key) && !this.#pending.has(key));
+        if (preserveIdentity) {
+          this.#targets.set(deviceId, previous);
+        } else {
+          this.#targets.set(deviceId, { deviceId, hostId, activityId: value.activityId as string,
+            token: nextToken, environment: nextEnvironment,
+            expiresAt: previous && previous.activityId === value.activityId ? previous.expiresAt : Date.now() + activityLifetime });
+        }
       }
       try { await this.#persist(); }
       catch (error) { if (previous) this.#targets.set(deviceId, previous); else this.#targets.delete(deviceId); throw error; }
       const target = this.#targets.get(deviceId), cached = this.#latest.get(hostId);
       if (target && cached && this.#current(cached) && cached.update.event !== "end" && cached.update.contentState.updatedAt >= Date.now() - 10 * 60_000) {
-        void this.#enqueue(target, cached);
+        // A worker that is coalescing a same-second update already owns the
+        // latest cached payload. Re-enqueueing the registration replay would
+        // replace that publish job and make its Promise resolve without the
+        // eventual APNs result. Let the in-flight worker deliver it instead;
+        // replay remains queued for active sends so a refreshed token can still
+        // retry after an invalid-token response.
+        const key = `${target.environment}:${target.token}`;
+        if (!this.#waits.has(key) && !this.#pending.has(key)) void this.#enqueue(target, cached);
       }
     });
   }
@@ -245,6 +269,10 @@ export class RelayLiveActivities {
         });
         if (result === "invalid-token" || cached.update.event === "end") {
           await this.#mutate(async () => {
+            // A registration refresh may replace the target object while this
+            // APNs request is in flight. Retire only registrations that still
+            // refer to the object used by this request; a refreshed same-token
+            // registration must survive so its replay can retry the delivery.
             const removed = destinations.filter(t => this.#targets.get(t.deviceId) === t);
             for (const item of removed) this.#targets.delete(item.deviceId);
             try { await this.#persist(); } catch (error) { for (const item of removed) this.#targets.set(item.deviceId, item); throw error; }

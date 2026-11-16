@@ -54,6 +54,7 @@ import type {
   RuntimeStatus,
   SessionLiveMessage,
   SessionLiveState,
+  SessionLiveTurn,
   SessionLiveTool,
   SessionCheckpoint,
   SessionSourceEpoch,
@@ -253,6 +254,8 @@ type ThreadState = {
   turnInProgress: boolean;
   turnId: string | undefined;
   turnStartedAt: number | undefined;
+  /** 最近一次已结束回合；保留在 live checkpoint 中供终态展示。 */
+  lastTurn: SessionLiveTurn | undefined;
   streamingMessageId: string | undefined;
   /** turn 进行中排队的后续消息（followUp 追加、steer 插队）。 */
   queue: QueuedTurn[];
@@ -702,6 +705,7 @@ export class CodexRuntime implements AgentBackend {
       turnInProgress: false,
       turnId: undefined,
       turnStartedAt: undefined,
+      lastTurn: undefined,
       streamingMessageId: undefined,
       queue: [],
       queueResults: new Map(),
@@ -1794,6 +1798,7 @@ export class CodexRuntime implements AgentBackend {
       turnInProgress: thread.turnInProgress,
       turnId: thread.turnId,
       turnStartedAt: thread.turnStartedAt,
+      lastTurn: thread.lastTurn,
       streamingMessageId: thread.streamingMessageId,
       persistedMessageMappings: thread.persistedMessageMappings,
     };
@@ -1813,6 +1818,7 @@ export class CodexRuntime implements AgentBackend {
     thread.turnInProgress = false;
     thread.turnId = undefined;
     thread.turnStartedAt = undefined;
+    thread.lastTurn = epochStarted ? undefined : prior.lastTurn;
     thread.streamingMessageId = undefined;
     thread.persistedMessageMappings = [];
     thread.liveMessages = new Map();
@@ -1918,6 +1924,7 @@ export class CodexRuntime implements AgentBackend {
       thread.turnInProgress = prior.turnInProgress;
       thread.turnId = prior.turnId;
       thread.turnStartedAt = prior.turnStartedAt;
+      thread.lastTurn = prior.lastTurn;
       thread.streamingMessageId = prior.streamingMessageId;
       thread.persistedMessageMappings = prior.persistedMessageMappings;
       return false;
@@ -2771,6 +2778,7 @@ export class CodexRuntime implements AgentBackend {
     thread.turnInProgress = false;
     thread.turnId = undefined;
     thread.turnStartedAt = undefined;
+    thread.lastTurn = undefined;
     thread.streamingMessageId = undefined;
     thread.persistedMessageMappings = [];
     this.#touchSource(thread);
@@ -3865,6 +3873,7 @@ export class CodexRuntime implements AgentBackend {
           thread.turnStartedAt = started.startedAt === undefined
             ? Date.now()
             : started.startedAt * 1_000;
+          thread.lastTurn = undefined;
           this.#emit(thread.id, {
             type: "turn.started",
             turnId: started.id.slice(0, 256),
@@ -3906,11 +3915,13 @@ export class CodexRuntime implements AgentBackend {
             ? Math.max(0, Math.round(completed.durationMs))
             : Math.max(0, Date.now() - thread.turnStartedAt);
           const reviewAnchor = this.#reviewAnchor(thread, completedTurnId);
+          const outcome: SessionLiveTurn["outcome"] = completedTurn.status === "failed" ? "failed"
+            : completedTurn.status === "interrupted" ? "cancelled"
+              : completedTurn.status === "completed" ? "completed" : "unknown";
+          thread.lastTurn = { turnId: thread.turnId, startedAt: thread.turnStartedAt, durationMs, outcome };
           this.#emit(thread.id, {
             type: "turn.finished",
-            ...(completedTurn.status === "failed" ? { outcome: "failed" as const }
-              : completedTurn.status === "interrupted" ? { outcome: "cancelled" as const }
-              : completedTurn.status === "completed" ? { outcome: "completed" as const } : {}),
+            outcome,
             turnId: thread.turnId,
             startedAt: thread.turnStartedAt,
             durationMs,
@@ -4413,7 +4424,7 @@ export class CodexRuntime implements AgentBackend {
 
   #liveCheckpoint(thread: ThreadState, replay = false): SessionLiveState {
     const turn = thread.turnId === undefined || thread.turnStartedAt === undefined
-      ? null
+      ? thread.lastTurn ?? null
       : { turnId: thread.turnId, startedAt: thread.turnStartedAt };
     let inventory = this.#toolInventories.get(thread.id);
     if (!inventory) { inventory = new ToolInventorySource(event => this.#emit(thread.id, event)); this.#toolInventories.set(thread.id, inventory); }

@@ -138,7 +138,7 @@ struct OrbisLiveActivityPresentation {
     var detail: String {
         if isStale { return chinese ? "打开 Orbis 更新状态" : "Open Orbis to refresh" }
         if isAttention { return "\(agentName) · " + (chinese ? "需要你处理" : "Needs your attention") }
-        if isEnded { return elapsedText ?? statusText }
+        if isEnded { return elapsedText ?? agentName }
         return "\(agentName) · " + (chinese ? "正在执行任务" : "Working on your task")
     }
 

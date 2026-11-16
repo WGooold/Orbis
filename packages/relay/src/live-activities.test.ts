@@ -103,6 +103,20 @@ describe("live activity registry", () => {
     expect(f.send.mock.calls[1]![2].timestamp).toBeGreaterThan(f.send.mock.calls[0]![2].timestamp);
   });
 
+  it("keeps a publish result when registration replay arrives during same-second coalescing", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-17T00:00:00.000Z"));
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    await f.registry.publish(update(), f.connection);
+    const pushing = f.registry.publish(update(2, { runningCount: 2 }), f.connection);
+    await settle();
+    await f.registry.register("phone", "host", registration(), () => true);
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(pushing).resolves.toEqual({ sent: ["phone"], failed: [] });
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.calls[1]![2].contentState.runningCount).toBe(2);
+  });
+
   it("coalesces same-second changes, uses low priority for repeats, and ends once", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-17T00:00:00.000Z"));
     const f = await create();

@@ -76,8 +76,11 @@ struct OrbisApp: App {
             .task { prepareReplyNotifications() }
             .onChange(of: store.pairings) { _, _ in prepareReplyNotifications() }
             .onChange(of: scenePhase) { _, phase in
-                liveActivities.setForeground(phase == .active)
-                if phase == .active { AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications() }
+                if phase == .active {
+                    AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications()
+                } else {
+                    liveActivities.setForeground(false)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
                 AppLocalization.shared.refreshSystemLanguage()

@@ -92,7 +92,8 @@ describe("Host conversation projection", () => {
     // Codex and DSH publish patches before any snapshot: content keeps flowing, the model stays unreconciled.
     expect(model.accept(scope, patch)).toBe(true);
     expect(model.hasBaseline(scope)).toBe(false);
-    expect(registry.read(scope, "live")?.availability).toBe("unknown");
+    expect(registry.read(scope, "live")?.availability).toBe("ready");
+    expect(registry.read<{ turn: unknown }>(scope, "live")?.value?.turn).toEqual(patch.live.turn);
     expect(registry.read(scope, "history")).toMatchObject({ availability: "unknown" });
     expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "unreconciled", range: "preview" })).toBeUndefined();
     // The next patch continues the handshake; a gap still requires the source to re-baseline.
@@ -224,7 +225,7 @@ describe("Host conversation projection", () => {
       checkpoint: { checkpointId: "new:1", head: { leafId: null }, headCompleteness: "unknown" as const, inventoryComplete: false },
       live: { complete: false, turn: null, messages: [], tools: [] } };
     expect(model.accept(scope, incomplete, ready => facts.prepareConversation("r", incomplete, ready))).toBe(true);
-    expect(registry.read<AgentExecutionState>(scope, "execution")).toEqual(state);
+    expect(registry.read<AgentExecutionState>(scope, "execution")?.value).toEqual(state?.value);
     expect(registry.read(scope, "history")?.availability).toBe("unknown");
   });
 

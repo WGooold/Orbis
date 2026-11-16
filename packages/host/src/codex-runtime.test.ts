@@ -887,7 +887,7 @@ describe("Codex recoverable source checkpoints", () => {
     h.notify("item/started", { threadId: "th-1", turnId: "t", item: tool("b") });
     h.notify("item/completed", { threadId: "th-1", turnId: "t", item: tool("b", "completed") });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "t" } });
-    expect(syncHistory(h)).toMatchObject({ entries: [], live: { turn: null,
+    expect(syncHistory(h)).toMatchObject({ entries: [], live: { turn: { turnId: "t", outcome: "unknown" },
       tools: [], toolInventory: { totalCount: 1 } } });
   });
 

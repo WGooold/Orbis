@@ -182,10 +182,20 @@ export class AgentConversationState {
       if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) return reject("current_byte_limit");
     }
     const provenance = { producer: "adapter" as const, sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: source.epoch, sourceRevision: source.seq };
-    const changes: RegistryMutation[] = ready ? [
-      { kind: "value", scope, domain: "history", fact: { source: provenance, availability: "ready", completeness: "complete", value: { source, head, headCompleteness: "complete", displayVersion: next.display?.projectionVersion ?? null } } },
-      { kind: "value", scope, domain: "live", fact: { source: provenance, availability: "ready", completeness: "complete", value: event.live } },
-    ] : ["history", "live", "artifacts"].map(domain => ({ kind: "value", scope, domain: domain as "history" | "live" | "artifacts", fact: { source: provenance, availability: "unknown", completeness: "unknown", value: null } }));
+    // Conversation history requires a verified baseline, while a complete live
+    // checkpoint is independently safe to persist during the initial handshake.
+    // This lets Host/iOS show the current turn and its terminal outcome even when
+    // the device has never requested session.snapshot.
+    const liveReady = source.ready === true && event.live?.complete === true && bytesOfEvent(event) <= this.#limits.maxPageBytes;
+    const changes: RegistryMutation[] = [
+      ready
+        ? { kind: "value", scope, domain: "history", fact: { source: provenance, availability: "ready", completeness: "complete", value: { source, head, headCompleteness: "complete", displayVersion: next.display?.projectionVersion ?? null } } }
+        : { kind: "value", scope, domain: "history", fact: { source: provenance, availability: "unknown", completeness: "unknown", value: null } },
+      liveReady
+        ? { kind: "value", scope, domain: "live", fact: { source: provenance, availability: "ready", completeness: "complete", value: event.live } }
+        : { kind: "value", scope, domain: "live", fact: { source: provenance, availability: "unknown", completeness: "unknown", value: null } },
+      ...(ready ? [] : [{ kind: "value" as const, scope, domain: "artifacts" as const, fact: { source: provenance, availability: "unknown" as const, completeness: "unknown" as const, value: null } }]),
+    ];
     if (ready) {
       // References survive live -> canonical migration, and come from both places: an artifact that
       // reached the canonical display is still a real file after its live row is gone (and after a
