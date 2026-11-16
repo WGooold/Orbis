@@ -11,7 +11,6 @@ import { hostRecoveryProof, type AgentStateRangeRequest } from "@orbis/protocol"
 import { HostService } from "./host-service.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
-import { resolveCodexTerminalServer } from "./codex-terminal-server.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
@@ -750,7 +749,7 @@ export class DesktopRuntime {
       }
       if (!this.#qa) this.#dshDesktopLifecycle?.watch();
       this.status();
-      // 中继已经连上、手机已经可用；Codex 后端（可能要先下载配套包）与 DeepSeek Web 后端在后台接。
+      // 中继已经连上、手机已经可用；Codex 与 DeepSeek Web 后端在后台接。
       if (settings.codexEnabled) void this.#prepareCodex(settings);
       if (settings.dshEnabled) void this.#prepareDsh(settings, service);
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
@@ -776,19 +775,13 @@ export class DesktopRuntime {
   }
 
   /**
-   * 后台准备终端 Codex 后端：先验证 / 必要时下载与所选 CLI 版本匹配的官方服务端包，
-   * 再拉起 app-server 并挂到已经在跑的服务上。
-   *
-   * 这一段永远不挡中继连接：首次安装或 CLI 升级后它可能要下上百 MB，
-   * 但它只影响 Codex 会话何时出现，不影响手机连得上、连得快。
+   * 后台启动所选 CLI 的 app-server，握手后挂到已经在跑的服务上。
+   * 路由配置与原生启动仍可能耗时，因此不阻挡中继连接。
    */
   async #prepareCodex(settings: DesktopSettings): Promise<void> {
     const controller = new AbortController();
     this.#codexPrepare = controller;
-    const report = (download?: { receivedBytes: number; totalBytes: number }): void => {
-      this.#emit({ event: "preparation", kind: "codex", state: "preparing", ...(download === undefined ? {} : { download }) });
-    };
-    report();
+    this.#emit({ event: "preparation", kind: "codex", state: "preparing" });
     try {
       // The app-server reads Codex configuration that local routing may still be rewriting.
       await this.#routing;
@@ -796,10 +789,6 @@ export class DesktopRuntime {
       const server = await CodexAppServer.create({
         log: line => this.log(line),
         onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host"),
-        resolveTerminalServer: (cli, options = {}) => resolveCodexTerminalServer(cli, {
-          ...options, signal: controller.signal,
-          onProgress: (receivedBytes, totalBytes) => report({ receivedBytes, totalBytes }),
-        }),
       });
       // 这次接入可能已经因为暂停或改设置而作废：不留没人要的后台进程。
       if (this.#desired !== settings || controller.signal.aborted) { await server.stop().catch(() => undefined); return; }

@@ -3,6 +3,9 @@
  * 逐条验证：握手、请求关联、通知、服务端请求回帧、连接断开时的 reject。
  */
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { CodexAppServer, type CodexTransport } from "./codex-daemon.js";
 
@@ -259,18 +262,26 @@ describe("CodexAppServer", () => {
   });
 });
 
-describe("CodexAppServer owned 模式启动失败", () => {
-  // SC75: missing source-aware support must not silently launch the VSCode entry.
-  it("refuses to spawn when the matching terminal server cannot be verified", async () => {
-    const { fileURLToPath } = await import("node:url");
-    vi.stubEnv("ORBIS_CODEX_ENTRY", fileURLToPath(import.meta.url));
-    const spawnImpl = vi.fn();
+describe("CodexAppServer owned 模式启动", () => {
+  // CODEX-SHARED-HISTORY-01: installed native and npm entries must launch directly,
+  // even without a downloadable release or version probe for a second runtime.
+  it.each(["codex.js", "codex.exe"])("starts the selected %s app-server without downloading another runtime", async name => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-codex-local-server-"));
+    const entry = join(root, name);
+    await writeFile(entry, "");
+    vi.stubEnv("ORBIS_CODEX_ENTRY", entry);
+    const fetch = vi.fn(async () => { throw new Error("network unavailable"); });
+    vi.stubGlobal("fetch", fetch);
+    const spawnImpl = vi.fn(() => { throw new Error("selected CLI reached"); });
     try {
-      await expect(CodexAppServer.create({ spawnImpl,
-        resolveTerminalServer: async () => { throw new Error("source-aware server unavailable"); },
-      })).rejects.toThrow("source-aware server unavailable");
-      expect(spawnImpl).not.toHaveBeenCalled();
-    } finally { vi.unstubAllEnvs(); }
+      await expect(CodexAppServer.create({ spawnImpl })).rejects.toThrow("selected CLI reached");
+      expect(spawnImpl).toHaveBeenCalledExactlyOnceWith(
+        name === "codex.js" ? process.execPath : entry,
+        [...(name === "codex.js" ? [entry] : []), "app-server", "-c", "thread_unload_delay_secs=0", "--listen", expect.stringMatching(/^ws:\/\/127\.0\.0\.1:\d+$/u)],
+        expect.objectContaining({ stdio: ["pipe", "pipe", "pipe"], windowsHide: true }),
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await rm(root, { recursive: true, force: true }); }
   });
 
   it("codex 不存在（ENOENT）时 create 正常 reject，而不是打崩进程", async () => {
@@ -282,7 +293,6 @@ describe("CodexAppServer owned 模式启动失败", () => {
     try {
       await expect(CodexAppServer.create({
         requestTimeoutMs: 20_000,
-        resolveTerminalServer: async () => ({ command: "codex-app-server", prefixArgs: [] }),
         spawnImpl: (_command, args) => spawn("orbis-missing-codex-binary", [...args], { stdio: ["pipe", "pipe", "pipe"] }),
       })).rejects.toThrow(/ENOENT/);
     } finally {

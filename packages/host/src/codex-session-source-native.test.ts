@@ -1,4 +1,4 @@
-// SC75: Assert native persisted source and writer lifetime, not Orbis labels or
+// CODEX-SHARED-HISTORY-01 / SC75: Assert native source and writer lifetime, not Orbis labels or
 // initialize names. Opt-in uses the selected official CLI, isolated home and a
 // local Responses fixture; no real credentials, user sessions or model calls.
 import { spawn } from "node:child_process";
@@ -88,7 +88,7 @@ async function fixture() {
 }
 
 describe.skipIf(process.env.ORBIS_CODEX_NATIVE_TEST !== "1")("Codex native terminal source and writer lifetime", () => {
-  it("persists App-created, forked and remote-TUI threads as cli in SQLite and rollouts", async () => {
+  it("preserves the selected CLI app-server source across App, fork and remote-TUI threads and shared history", async () => {
     vi.stubEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop");
     const h = await fixture();
     const runtime = new CodexRuntime({ server: h.server, rolloutRoot: join(h.home, "sessions"),
@@ -112,14 +112,60 @@ describe.skipIf(process.env.ORBIS_CODEX_NATIVE_TEST !== "1")("Codex native termi
     await vi.waitFor(() => expect(tuiCompleted.has(terminal.thread.id)).toBe(true), { timeout: 10_000 });
     for (const id of [appThreadId, fork.thread.id, terminal.thread.id]) {
       const result = await h.server.request("thread/read", { threadId: id }) as { thread: NativeThread };
-      await vi.waitFor(async () => expect(await h.source(id)).toBe("cli"));
-      expect(result.thread.source).toBe("cli");
+      await vi.waitFor(async () => expect(await h.source(id)).toBe("vscode"));
+      expect(result.thread.source).toBe("vscode");
       const header = JSON.parse((await readFile(result.thread.path!, "utf8")).split("\n")[0]!) as { payload: { source: string; originator: string } };
-      expect(header.payload).toMatchObject({ source: "cli", originator: "orbis-host" });
+      expect(header.payload).toMatchObject({ source: "vscode", originator: "orbis-host" });
     }
-    const desktop = await h.server.request("thread/list", { sourceKinds: ["vscode"], modelProviders: [] }) as { data: NativeThread[] };
-    expect(desktop.data).toEqual([]);
+    // Another independent app-server sees the same persisted terminal history.
+    // An empty source filter is what the inspected Desktop catalog sends; the
+    // official TUI also includes both cli and vscode. Neither proves ownership.
+    const peer = await h.open();
+    for (const sourceKinds of [[], ["cli", "vscode"], ["vscode"]]) {
+      const history = await peer.request("thread/list", { sourceKinds, modelProviders: [] }) as { data: NativeThread[] };
+      expect(history.data.map(thread => thread.id)).toEqual(expect.arrayContaining([appThreadId, fork.thread.id, terminal.thread.id]));
+    }
+    expect(await peer.request("thread/loaded/list", {})).toMatchObject({ data: [] });
     expect(h.calls()).toBe(3);
+  }, 60_000);
+
+  // CODEX-SHARED-HISTORY-02: changing the native startup entry must not merge
+  // the App's terminal/Desktop identities, even when both persist vscode.
+  it("keeps terminal and Desktop App catalogs distinct with real installed CLI backends", async () => {
+    const h = await fixture(); h.observe();
+    const peer = await h.open();
+    const desktopServer = await CodexAppServer.createExternal({ endpoint: peer.endpoint! });
+    cleanup.push(() => desktopServer.stop());
+    const terminal = new CodexRuntime({ server: h.server, rolloutRoot: join(h.home, "sessions"),
+      openHeadWindow: () => {}, onEvent: () => {} });
+    const desktop = new CodexRuntime({ server: desktopServer, rolloutRoot: join(h.home, "sessions"), onEvent: () => {} });
+    cleanup.push(() => terminal.stop(), () => desktop.stop());
+    desktop.onDesktopThread = id => terminal.seedDesktopThreads([id]);
+    terminal.markStarted(); desktop.markStarted();
+    // Preserve the runtime's observer while waiting for synthetic responses.
+    h.observe();
+    const terminalId = (await terminal.activate({ type: "new", cwd: h.cwd })).sessionId!;
+    await h.turn(h.server, terminalId); await h.complete(terminalId);
+    const desktopId = (await desktop.activate({ type: "new", cwd: h.cwd })).sessionId!;
+    expect(desktopId).toMatch(/^codex-desktop:/u);
+    const nativeDesktopId = desktopId.slice("codex-desktop:".length);
+    let completed = false;
+    const previous = desktopServer.onNotification;
+    desktopServer.onNotification = (method, params) => {
+      previous?.(method, params);
+      if (method === "turn/completed") completed = true;
+    };
+    await h.turn(desktopServer, nativeDesktopId);
+    await vi.waitFor(() => expect(completed).toBe(true));
+    expect(await h.source(terminalId)).toBe("vscode");
+    expect(await h.source(nativeDesktopId)).toBe("vscode");
+    expect((await terminal.catalog()).map(entry => [entry.sessionId, entry.agentKind])).toEqual([[terminalId, "codex"]]);
+    expect((await desktop.catalog()).map(entry => [entry.sessionId, entry.agentKind])).toEqual([[desktopId, "codexDesktop"]]);
+    expect(terminal.directoryEntries().map(entry => entry.runtimeId)).toEqual([`codex:${terminalId}`]);
+    expect(desktop.directoryEntries().map(entry => entry.runtimeId)).toEqual([desktopId]);
+    await expect(terminal.activate({ type: "resume", sessionId: nativeDesktopId })).rejects.toThrow("不属于 Codex");
+    await expect(terminal.setArchived(nativeDesktopId, true)).rejects.toThrow("属于 Codex 桌面版");
+    expect(h.calls()).toBe(2);
   }, 60_000);
 
   it("releases an idle writer after its last subscriber leaves, while retaining another window and running turns", async () => {

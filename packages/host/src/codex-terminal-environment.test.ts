@@ -22,10 +22,10 @@ describe("independent Codex terminal source environment", () => {
       vi.stubEnv("ORBIS_CODEX_ENTRY", entry);
       vi.stubEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "Codex Desktop");
       let childEnv: NodeJS.ProcessEnv | undefined;
-      await expect(CodexAppServer.create({ resolveTerminalServer: async () => ({ command: "codex-app-server", prefixArgs: [] }),
+      await expect(CodexAppServer.create({
         spawnImpl: (command, args, options) => {
-          expect(command).toBe("codex-app-server");
-          expect(args.slice(0, 4)).toEqual(["--session-source", "cli", "-c", "thread_unload_delay_secs=0"]);
+          expect(command).toBe(process.execPath);
+          expect(args.slice(0, 4)).toEqual([entry, "app-server", "-c", "thread_unload_delay_secs=0"]);
           childEnv = options!.env;
           throw new Error("stop before starting fixture");
         } })).rejects.toThrow("stop before starting fixture");

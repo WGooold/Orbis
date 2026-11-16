@@ -4,6 +4,8 @@
 
 Status: accepted（第 2 节全部场景已实现并自动验证；第 8 节记录对首轮提交的审查与修正；Windows 构建、安装与用户验收待完成）
 
+2026-11-16 修订：[ADR-0021 的共享历史决定](0021-codex-terminal-host-attachment.md#revision-2026-11-16-shared-native-history-and-installed-cli-startup-codex-shared-history-01)撤销下文的独立服务包下载、校验、缓存与字节进度要求，改为启动已选 CLI 的 `app-server`。后台接入顺序、准备状态、路由等待与暂停后作废清理继续生效；下文有关下载器及其测试的记录保留为历史实现与验证。
+
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)（DSH 共享 Web 服务）、[ADR-0021](0021-codex-terminal-host-attachment.md)（SC75 终端服务端包来源与准备）、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0033](0033-claude-code-tui-mods-integration.md)（Claude Code 插件登记）、[ADR-0058](0058-shared-interaction-motion.md)、[ADR-0070](0070-unified-design-and-interaction.md)（HOST-GUIDE-01 / HOST-ACTIVITY-01）、[ADR-0075](0075-host-confirmed-exit-and-update.md)（HOST-LIVE-01 暂停恢复）、[ADR-0079](0079-codex-vscode-integration.md)。
 
 ## 1. 问题

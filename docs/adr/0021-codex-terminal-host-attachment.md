@@ -4,6 +4,10 @@ Date: 2026-09-26
 
 Status: accepted.
 
+Revised 2026-11-16: the shared-history decision below supersedes SC75's
+source-isolation rationale and mandatory standalone server package. Exact
+terminal ownership and idle writer release remain in effect.
+
 ## Context
 
 A user who types `codex` in a Windows terminal should use the same Codex app-server that Orbis Host exposes to the phone. Replacing the npm-generated `codex.cmd` is fragile because package updates overwrite it and the selected Codex installation can change. A new app-server thread cannot be attached with `codex resume <id> --remote` before its first turn because Codex does not write the rollout until that turn.
@@ -86,6 +90,10 @@ acceptance remain pending（待用户验证）.
 
 ### Revision 2026-11-10: Native terminal source and writer release (SC75)
 
+Historical implementation and validation: the 2026-11-16 revision below
+withdraws its standalone-package requirement and source-isolation interpretation.
+The native persistence observations and writer-release evidence remain valid.
+
 The terminal backend uses an independent native process, but its former
 `codex app-server` entry did not have native TUI source semantics. In official
 `rust-v0.167.0` (`086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`),
@@ -164,6 +172,9 @@ Windows terminal activation no longer invokes `wt.exe`; the rollout-waiting Powe
 
 ### Revision 2026-11-13: Terminal backend preparation off the connection path
 
+Historical package preparation: the 2026-11-16 revision removes the download
+and retains deferred backend attachment, routing order and stale-start cleanup.
+
 SC75 placed the version-matched official server package ahead of the Relay
 connection: `DesktopRuntime.#connect` awaited `CodexAppServer.create`, which on a
 first run or after any Codex CLI upgrade downloads the release asset (133 MB gz,
@@ -188,3 +199,61 @@ joined a preparation another caller cancelled (a pause followed by a resume)
 restarts it instead of reporting that abort as its own failure, the release-API
 request and the unpack/publish steps honour the same cancellation, and the
 app-server starts only after local routing has applied the Codex configuration.
+
+### Revision 2026-11-16: Shared native history and installed CLI startup (CODEX-SHARED-HISTORY-01)
+
+Official CLI and Desktop do not isolate history by product. In the inspected
+official CLI `rust-v0.169.0`, commit
+`d32063f96c2dff1dc96af839b3952abb6acfeda4`, the resume picker includes both
+`cli` and `vscode` sources; its default working-directory filter can make the
+visible list differ. In the inspected macOS Desktop `26.1106.51428`, recent and
+catalog queries explicitly send `sourceKinds: []`. Both use the native history
+under the same `CODEX_HOME` (normally `~/.codex`) unless the user configures
+otherwise. These are verified version-specific observations, not a promise
+about every future client.
+
+A read-only query to the running Desktop app-server included the affected
+terminal thread even with its persisted `source=cli` and
+`originator=orbis-host`. It was not loaded by Desktop; attempts to resume while
+the terminal held its writer were refused with `already has an active writer`.
+History visibility therefore does not prove process ownership or a routing
+failure. The SC75 source change was verified, but the premise that forcing
+`cli` would keep terminal history out of Desktop was incorrect.
+
+Decision:
+
+| Scenario ID | Behavior |
+| --- | --- |
+| CODEX-SHARED-HISTORY-01 | Start the Host-owned backend with the already selected CLI and its existing interpreter / prefix arguments: `codex app-server -c thread_unload_delay_secs=0 --listen ws://127.0.0.1:<port>`. The TUI uses the same selected CLI. Remove the separate `codex-app-server-package` resolver, GitHub release lookup, download, validation and cache-publication prerequisite. |
+| CODEX-SHARED-HISTORY-02 | Preserve all App CLI/Desktop separation: `codex` / `codexDesktop` agent kinds, namespaced IDs, Desktop association ledger, catalog exclusion, command / archive routing, independent connections and SC74's per-window request correlation. Preserve source / originator metadata and existing classification guards for future native distinctions. The selected CLI keeps its native source semantics (`vscode` for the checked `app-server` entry); that value or official history visibility alone does not establish Desktop ownership in the checked versions. Do not relabel native history or split `CODEX_HOME`. |
+| CODEX-SHARED-HISTORY-03 | Retain originator environment cleanup and `thread_unload_delay_secs=0`: release only after the final subscriber leaves and work is idle; keep another subscriber or running turn. Start after routing is applied and the Relay is connected. Report startup failure and stop any backend returned after pause or settings invalidation. |
+
+This revision removes only the separate server acquisition prerequisite; it
+does not merge the App's CLI and Desktop entries or relax their ownership checks.
+The 2026-11-13 deferred-start decision and ADR-0081 still govern connection
+ordering and feedback, but their mandatory package preparation and byte-progress
+requirements are superseded. Existing cached standalone packages are no longer
+selected; this change does not delete a cache or stop a running server.
+
+Finding evidence: [official CLI source and startup paths](../../.artifacts/codex-cli-startup-20261116/findings.json),
+[Desktop catalog binding chain](../../.artifacts/codex-cli-desktop-catalog-20261116/rea/findings.json),
+[read-only runtime verification](../../.artifacts/codex-cli-desktop-catalog-20261116/verification.json).
+The earlier SC75 evidence is retained as historical evidence.
+
+Implementation: `codex-daemon.ts` and `desktop-runtime.ts`. Regressions:
+`codex-daemon.test.ts` (native / npm entry, exact arguments, no download prerequisite),
+`codex-terminal-environment.test.ts`, `desktop-runtime.test.ts`,
+`codex-terminal-connection.test.ts` and opt-in
+`codex-session-source-native.test.ts` (persisted source, shared catalog and
+independent loaded sets, writer exclusion and release). Execution results and
+limits are recorded in [validation evidence](../../.artifacts/codex-local-app-server-20261116/verification.json).
+The macOS regression run passed 728 tests (13 opt-in / platform cases skipped).
+The native-enabled run passed 9 tests across two files, including 4 cases using
+the installed CLI 0.169.0 with isolated homes. App CLI/Desktop catalog identity,
+wrong-backend guards, encrypted device routing, terminal selection and writer
+lifetime passed. Full TypeScript checks, scoped ESLint and `git diff --check`
+also passed. Mobile, protocol, catalog ownership and runtime routing production
+code remain unchanged; Windows native and device GUI acceptance were not run.
+Source validation is separate from deployment: no installed Host or real
+terminal / Desktop session is replaced or restarted by this task. Installation
+and user acceptance remain pending（待用户验证）.

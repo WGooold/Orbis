@@ -32,14 +32,31 @@ The isolated native reproduction is recorded with R56.
 
 2026-11-10 SC75: clearing the Desktop originator did not correct SQLite
 `threads.source`. The ordinary `codex app-server` entry fixed new thread sources
-to `vscode`, even on the independent terminal backend. Terminal startup now uses
+to `vscode`, even on the independent terminal backend. That revision used
 the version-matched official standalone server with `--session-source cli`, and
-releases an idle writer after its last subscriber leaves. The history of the
+introduced idle writer release after its last subscriber leaves. The history of the
 incomplete repair, native persistence path, package validation and regression
 evidence are recorded in [ADR-0021, SC75](0021-codex-terminal-host-attachment.md#revision-2026-11-10-native-terminal-source-and-writer-release-sc75).
 Existing history metadata remains unchanged. Desktop attachment does not adopt
 terminal lifecycle settings; a currently active terminal writer still excludes
 a second independent writer. Deployment and Desktop acceptance remain pending.
+
+2026-11-16 shared-history correction (CODEX-SHARED-HISTORY-01–03): the
+standalone-package requirement above is withdrawn. Official CLI 0.169.0 includes
+both `cli` and `vscode` in its resume picker; inspected macOS Desktop
+26.1106.51428 sends an empty source filter for recent / catalog history. A
+terminal thread with `source=cli` is visible to Desktop without being loaded
+there, and an active writer still blocks a second independent writer. Shared
+native history is therefore expected; it does not merge the two Orbis runtime
+connections. Host now launches the selected installed CLI's `app-server`
+subcommand, with no separate GitHub server package prerequisite. The App retains
+its distinct CLI/Desktop agent kinds, namespaced IDs, persisted Desktop ledger,
+catalog filtering and command / archive routing. Source metadata and existing
+classification guards remain available for future native distinctions; source
+alone does not establish Desktop identity in the checked versions. Exact terminal connection tracking,
+originator cleanup, idle writer release and the transparent Desktop wrapper
+remain in effect. The current decision, evidence and validation boundary are in
+[ADR-0021's shared-history revision](0021-codex-terminal-host-attachment.md#revision-2026-11-16-shared-native-history-and-installed-cli-startup-codex-shared-history-01).
 
 Desktop integration requires a compatible installed Codex CLI and a running, reachable desktop daemon. If the desktop connection fails, desktop sessions are unavailable while terminal sessions continue independently. If the connection drops after startup, Host reports attached desktop Sessions offline and re-attaches on its next poll once the desktop side answers again; no Host restart is needed. Host owns no desktop process and cannot repair or restart it. The polling interval adds small metadata traffic even while no desktop thread is active. The same watch publishes one attach state — `unsupported`, `notInstalled`, `closed`, `attached` or `error` — with a user-facing reason on `device.ready`, so the Windows Host diagnostics page and the phone connection status page can say why desktop sessions are or are not available instead of only showing them missing. A failed attach is a reported state, not a silent one.
 

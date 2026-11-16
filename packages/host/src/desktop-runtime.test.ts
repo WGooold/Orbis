@@ -428,9 +428,8 @@ describe("desktop Host lifecycle", () => {
     } finally { await runtime.close(); await relay?.close(); await rm(root, { recursive: true, force: true }); }
   });
 
-  // SC75 follow-up: preparing the terminal Codex backend may download the matching official
-  // server package (>100 MB). It must never hold the Relay connection: before this change a
-  // phone could only see "正在准备" while the Host was actually still downloading.
+  // CODEX-SHARED-HISTORY-01: the installed CLI replaces package preparation, but
+  // native startup must still leave the Relay reachable and report failures.
   it("connects the Relay before the terminal Codex backend is ready", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-codex-prepare-"));
     const credential = "orbis_host_" + "A".repeat(43);
@@ -440,7 +439,7 @@ describe("desktop Host lifecycle", () => {
       { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const create = vi.spyOn(CodexAppServer, "create").mockImplementation(async () => {
       await new Promise(resolve => setTimeout(resolve, 300));
-      throw new Error("Codex 0.169.0 官方终端发布包不可用（HTTP 404）");
+      throw new Error("所选 Codex CLI app-server 启动失败");
     });
     try {
       await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: true, dshEnabled: false,
@@ -449,7 +448,7 @@ describe("desktop Host lifecycle", () => {
       expect(events).toContainEqual({ event: "state", state: "connected" });
       expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "preparing" }));
       await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "error",
-        message: expect.stringContaining("官方终端发布包不可用") })), { timeout: 5_000 });
+        message: expect.stringContaining("app-server 启动失败") })), { timeout: 5_000 });
       const connectedAt = events.findIndex(event => event.event === "state" && event.state === "connected");
       const failedAt = events.findIndex(event => event.event === "preparation" && event.kind === "codex" && event.state === "error");
       expect(connectedAt).toBeGreaterThanOrEqual(0);
@@ -458,6 +457,35 @@ describe("desktop Host lifecycle", () => {
       expect(events.filter(event => event.event === "state").at(-1)).toMatchObject({ state: "connected" });
     } finally {
       create.mockRestore();
+      await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // CODEX-SHARED-HISTORY-03: dropping download cancellation must not let a
+  // native backend that finishes after pause attach to an abandoned service.
+  it("stops a terminal backend that finishes starting after pause", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-codex-stale-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const stop = vi.fn(async () => {});
+    let release!: (server: CodexAppServer) => void;
+    const create = vi.spyOn(CodexAppServer, "create").mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const attach = vi.spyOn(HostService.prototype, "attachCodexRuntime");
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: true, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+      await runtime.stop();
+      release({ stop } as unknown as CodexAppServer);
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+      expect(attach).not.toHaveBeenCalled();
+      expect(events).not.toContainEqual({ event: "preparation", kind: "codex", state: "ready" });
+      expect(events.filter(event => event.event === "state").at(-1)).toMatchObject({ state: "stopped" });
+    } finally {
+      release?.({ stop } as unknown as CodexAppServer);
       await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true });
     }
   });
