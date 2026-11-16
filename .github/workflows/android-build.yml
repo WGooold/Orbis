@@ -30,6 +30,13 @@ jobs:
       - name: Install pinned native toolchain
         run: sdkmanager 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Restore pinned mobile tool binaries
+        uses: actions/cache@v4
+        with:
+          path: android/app/build/generated/relayquic/tools
+          key: gomobile-${{ runner.os }}-${{ runner.arch }}-go1.27.3-${{ hashFiles('scripts/build-relay-quic.py') }}
+      - name: Verify mobile tool cache invalidation
+        run: python3 -m unittest discover -s scripts -p 'test_mobile_toolchain.py'
       - name: Unit tests
         working-directory: android
         run: sh ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 :app:testDebugUnitTest

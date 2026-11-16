@@ -10,7 +10,7 @@ const options = { windowsHide: true, timeout: 5_000, maxBuffer: 4 * 1024 * 1024 
 export async function processTable(): Promise<ProcessIdentity[]> {
   if (process.platform === "win32") {
     const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      "@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CreationDate } | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; started=$_.CreationDate.ToUniversalTime().Ticks.ToString(); executable=$_.ExecutablePath } }) | ConvertTo-Json -Compress"], options);
+      "@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,ExecutablePath | Where-Object { $_.ExecutablePath -and $_.CreationDate } | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; started=$_.CreationDate.ToUniversalTime().Ticks.ToString(); executable=$_.ExecutablePath } }) | ConvertTo-Json -Compress"], options);
     const value: unknown = JSON.parse(stdout || "[]");
     const rows = Array.isArray(value) ? value : [value];
     return rows.filter((row): row is ProcessIdentity => row && Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.parent)

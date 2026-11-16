@@ -69,8 +69,6 @@ jobs:
           echo "ORBIS_MACOS_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "ORBIS_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           rm -f "$RUNNER_TEMP/orbis-signing.p12"
-      - name: Verify signing and notarization regressions
-        run: python3 -m unittest discover -s scripts -p 'test_macos_sign.py'
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27.3'

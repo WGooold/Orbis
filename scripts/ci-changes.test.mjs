@@ -21,4 +21,8 @@ describe("CI change selection", () => {
     expect(classifyChanges([".github/workflows/core-checks.yml"]))
       .toEqual({ core: true, ios: true, relay: true });
   });
+  it("does not hide code removal when a file is renamed into documentation", () => {
+    expect(classifyChanges([{ filename: "docs/removed.md", previous_filename: "packages/relay/src/index.ts" }]))
+      .toEqual({ core: true, ios: false, relay: true });
+  });
 });

@@ -8,6 +8,11 @@ on:
       - 'docs/**'
       - '**/*.md'
   workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Compare baseline and optimized Docker builds without deployment
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,18 +40,20 @@ jobs:
           script: |
             const { classifyChanges } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-changes.mjs`);
             let selected = { core: true, ios: true, relay: true };
-            if (context.eventName === 'pull_request') {
+            if (context.eventName === 'workflow_dispatch' && context.payload.inputs?.benchmark === 'true') {
+              selected = { core: false, ios: false, relay: false };
+            } else if (context.eventName === 'pull_request') {
               const files = await github.paginate(github.rest.pulls.listFiles, {
                 ...context.repo, pull_number: context.payload.pull_request.number, per_page: 100,
               });
               // The API caps PR files at 3,000; uncertainty must run the checks.
-              if (files.length < 3000) selected = classifyChanges(files.map(file => file.filename));
+              if (files.length < 3000) selected = classifyChanges(files);
             } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
               const { data } = await github.rest.repos.compareCommitsWithBasehead({
                 ...context.repo, basehead: `${context.payload.before}...${context.sha}`,
               });
               // Compare caps the changed-file list at 300, independently of pagination.
-              if (data.files && data.files.length < 300) selected = classifyChanges(data.files.map(file => file.filename));
+              if (data.files && data.files.length < 300) selected = classifyChanges(data.files);
             }
             for (const [name, value] of Object.entries(selected)) core.setOutput(name, String(value));
             core.info(JSON.stringify(selected));
@@ -88,3 +95,79 @@ jobs:
     with:
       skip_checks: true
     secrets: inherit
+
+  docker-benchmark:
+    if: github.event_name == 'workflow_dispatch' && inputs.benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: baseline
+            ref: c57e018b23f2a50423996012492a907cda6ef198
+          - label: optimized
+            ref: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Measure cold, warm and source-only Docker builds
+        env:
+          BENCHMARK_LABEL: ${{ matrix.label }}
+        run: |
+          python3 <<'PY'
+          import json, os, re, subprocess, time
+          from pathlib import Path
+          output = Path('.artifacts/docker-benchmark')
+          output.mkdir(parents=True, exist_ok=True)
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          command = ['docker', 'build', '--progress=plain', '--build-arg', f'ORBIS_RELEASE_COMMIT={sha}', '-t', 'orbis-ci-benchmark', '.']
+          results = []
+          for phase in ('cold', 'warm', 'source-change'):
+              if phase == 'source-change':
+                  with Path('packages/relay/src/web/styles.css').open('a') as stream:
+                      stream.write('\n/* CI cache probe */\n')
+              log = output / f'{phase}.log'
+              started = time.monotonic()
+              with log.open('w') as stream:
+                  result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT)
+              text = log.read_text()
+              install = re.search(r'^(#\d+) .*RUN npm ci', text, re.M)
+              cached = bool(install and re.search(r'^' + re.escape(install[1]) + r' CACHED$', text, re.M))
+              results.append({'phase': phase, 'seconds': round(time.monotonic() - started, 3), 'exit_code': result.returncode, 'dependency_layer_cached': cached})
+              (output / 'results.json').write_text(json.dumps({'label': os.environ['BENCHMARK_LABEL'], 'sha': sha, 'results': results}, indent=2) + '\n')
+              print(json.dumps(results[-1]), flush=True)
+              if result.returncode:
+                  print(text)
+                  raise SystemExit(result.returncode)
+              if phase != 'cold' and (phase == 'warm' or os.environ['BENCHMARK_LABEL'] == 'optimized'):
+                  assert cached, f'{phase}: dependency installation was not cached'
+          PY
+      - name: Verify image runtime and web assets
+        run: |
+          docker run --rm orbis-ci-benchmark node --input-type=module -e '
+            import { spawn } from "node:child_process";
+            import { access } from "node:fs/promises";
+            await access("packages/relay/dist/web/styles.css");
+            const server = spawn(process.execPath, ["packages/relay/dist/main.js"], { stdio: "inherit" });
+            try {
+              let ready = false;
+              for (let attempt = 0; attempt < 100; attempt++) {
+                try {
+                  const response = await fetch("http://127.0.0.1:8787/healthz");
+                  const health = await response.json();
+                  if (response.ok && health.status === "ok" && health.commit === process.env.ORBIS_RELEASE_COMMIT) { ready = true; break; }
+                } catch {}
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+              if (!ready) throw new Error("Container did not serve the expected health response");
+            } finally { server.kill("SIGTERM"); }
+          '
+      - name: Preserve Docker benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-benchmark-${{ matrix.label }}
+          path: .artifacts/docker-benchmark/
+          retention-days: 14

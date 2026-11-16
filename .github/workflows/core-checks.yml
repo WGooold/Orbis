@@ -25,6 +25,10 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - name: Verify build and signing helpers
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_mobile_toolchain.py'
+          python3 -m unittest discover -s scripts -p 'test_macos_sign.py'
       # Tests load compiled extension fixtures; share these bytes across runners.
       - name: Archive compiled workspace
         run: tar -czf "$RUNNER_TEMP/ci-compiled-js.tar.gz" packages/*/dist
