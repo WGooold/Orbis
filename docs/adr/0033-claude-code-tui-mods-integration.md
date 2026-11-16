@@ -69,7 +69,7 @@ Claude Code 已公开 Mods：通过插件加载 JavaScript/TypeScript 函数，�
 
 审批和问题通过官方 Hook 的结构化请求与响应作用于当前原生调用，回答由原生生命周期裁决。手机缺席或结果未知时保留原生处理和核对路径。
 
-PermissionRequest 按 hook 进程关联请求；PreToolUse 处理 AskUserQuestion。当前 notes 类问题交由原生界面回答，远程 Hook 的真实 TUI 兼容性仍待验收。配置超时依次为 Host 570 秒、插件脚本 590 秒、Hook 600 秒。
+PermissionRequest 按 hook 进程关联请求；PreToolUse 处理 AskUserQuestion。当前 notes 类问题交由原生界面回答，远程 Hook 的真实 TUI 兼容性仍待验收。配置超时依次为 Host 570 秒、插件脚本 590 秒、Hook 600 秒。新版插件与 Host 之间的 AskUserQuestion 改为两端竞答，见 §21。
 
 ### 5. 通道、安全与恢复边界
 
@@ -193,6 +193,32 @@ CLAUDE-MODS-MIN-02：版本检查兼容标准错误输出与封装器提示行�
 CLAUDE-MODS-MIN-03：版本状态检测在后台完成，同一时间的刷新合并，Host 初始化和其他 Agent 检测继续执行；关闭时等待所属检查结束。启动和安装入口仍执行自身的有界版本检查。慢检查阻塞初始化的首次失败及修正证据同样保留在 `regression-review/`。
 
 实现与测试：`claude-version.ts`／`.test.ts`、`claude-launcher.test.ts`、`claude-integration-install.test.ts`、`claude-mods-bridge.test.ts`、`desktop-runtime.test.ts`、`HostActivationTest.cpp`。官方最低版本复核及自动验证证据：`.artifacts/claude-min-version-20261112/`。未部署，待用户验证；最低版本真实 TUI 与 Windows 原生验证仍按既有边界记录。
+
+### 21. AskUserQuestion 两端竞答（2026-11-16，源码验证 / 未部署）
+
+问题：PreToolUse Hook 在等待手机期间挡住原生问题界面，手机在线时电脑只能经 `/orbis-local` 收回后作答。
+
+CLAUDE-QUESTION-RACE-01：插件在 Mods `tool.call` 中先发 `question.requested`，Host 确认已登记后再执行原生调用；原生问题框与手机卡片同时存在，先答者生效。手机答案经现有轮询的 `questionAnswers` 返回，插件在原生调用未结束时返回 `{ result: { questions, answers } }` 关闭问题框；手机取消返回 `deny`。电脑先答时插件照常上报 `tool.finished`，Host 按同一 tool call 把手机卡片关为电脑端完成。插件 Host 连接下线时撤回竞答卡片；超时仍为 570 秒，过期后问题框保留在电脑上。子 Agent 的问题按其 `agentId` 竞答，由该 Agent 的 `task.tool.finished` 关闭卡片；这一路径只有单元测试，真实 TUI 未验证。
+
+CLAUDE-QUESTION-RACE-02：同一调用的经典 PreToolUse Hook 带 `tool_use_id`，Host 识别已登记的竞答调用后立即不作决定。经典 Hook 继续随插件分发，用于旧 Host。
+
+CLAUDE-QUESTION-RACE-03：v2.1.325 在显示问题框时还会为 AskUserQuestion 触发 PermissionRequest。该请求就是问题框本身，手机的允许／拒绝无法提供答案，Host 对它一律不作决定；旧流程在 `/orbis-local`、超时或无设备回退后出现的多余确认卡一并消除。
+
+兼容：判断依据是对端的实际解析行为，`bridgeVersion` 保持 `4`。已发布 Host 收到未知 `question.requested` 时返回 `invalid`（HTTP 400），连接不受影响，新插件据此只执行原生调用，经典 Hook 维持原阻塞路径；旧插件从不发送该事件，新 Host 对其 PreToolUse 按原逻辑处理。插件版本 `0.1.11`。
+
+实现与测试：`register.ts`、`questions.test.ts`、`fixtures.ts`；`claude-hook-bridge.ts`／`.test.ts`、`claude-mods-bridge.ts`／`.test.ts`、`host-service.ts`。测试注释按上述编号标注。
+
+自动验证：插件 `claude plugin test` 34 项、Host 相关 6 个测试文件 172 项通过。真实 TUI v2.1.325 隔离探针 `~/.orbis/tools/ui-regression/claude-question-race-probe.py`（合成模型、隔离 HOME、源码编译的 Host 桥与 loopback）：
+
+- 手机先答：问题框先于手机答复显示，手机只有一张卡，两个经典 Hook 均 0 ms 放行，模型与原生记录得到手机答案，没有拒绝结果进入模型。
+- 两题且第二题多选：两题答案（多选为 `S, M`）都通过核心的输出校验，进入模型与原生记录。
+- 电脑先答：卡片关为电脑端完成。
+- 反证：已发布插件 0.1.10 下 PreToolUse 阻塞 4 秒、问题框未出现。
+- 新插件对已发布 Host 维持原路径。
+
+证据：`.artifacts/claude-question-race/`。其中 `20261116-r3` 为最终结果；`r1` 保留首次失败（多余确认卡）；`baseline-plugin-0.1.10` 与 `compat-released-host` 是预期为阻塞路径的对照，文件中的 `ok: false` 只表示未出现竞答。最低版本 2.1.287 上的此机制未验证。
+
+部署与验收：未打包、未部署；需随新版 Host 与内置插件交付，在手机 App 上的人工验收待用户完成。
 
 ## Alternatives not selected
 

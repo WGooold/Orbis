@@ -4,7 +4,11 @@ type Api = Parameters<Hook<"session.start">>[0];
 type Connection = { runtimeId: string; generation: string; sessionId: string; descriptor: Descriptor };
 type Descriptor = { url: string; token: string };
 type HelloReply = { ok: true; runtimeId: string; generation: string; resumed?: boolean } | { ok: false; error: string };
-type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[]; pendingInteractions?: number } | { ok: false; error: string };
+type PollReply = { ok: true; commands: { commandId: string; command: RemoteCommand }[]; pendingInteractions?: number;
+  questionAnswers?: QuestionAnswer[] } | { ok: false; error: string };
+type QuestionAnswer = { toolCallId: string; answers: Record<string, string> } | { toolCallId: string; deny: string };
+type ToolCall = Parameters<Hook<"tool.call">>[1];
+type ToolNext = Parameters<Hook<"tool.call">>[2];
 type BridgeEvent = Record<string, unknown>;
 type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "slash"; name: string; args: string } | { type: "stop" };
 type CachedCommand = { state: "running"; commandType: "user_message" | "slash" } |
@@ -19,6 +23,8 @@ const STATE_EVERY = 20;
 const REJECTED_RETRY_MS = 60_000;
 const RESERVED_TOOL_FIELDS = new Set(["tool", "tool_use_id", "agentId", "requestMeta", "consent"]);
 const commands = new Map<string, CachedCommand>();
+/** Native AskUserQuestion calls also shown on the phone, by tool call, until either side answers. */
+const questionWaiters = new Map<string, (answer: QuestionAnswer) => void>();
 let connection: Connection | undefined;
 let connecting: Promise<Connection | undefined> | undefined;
 let activeTurnId: string | undefined;
@@ -209,7 +215,7 @@ export const register: Register = on => {
     // Children have their own task identity. Their tool output is not a main-loop reply.
     if (event.agentId !== undefined) {
       const target = connection;
-      const result = await next(event);
+      const result = await runTool($, event, next);
       if (target) await postEvent($, target, { type: "task.tool.finished", agentId: event.agentId,
         toolName: event.tool, toolCallId: event.tool_use_id,
         arguments: boundedValue(Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key))), 24_000) });
@@ -220,7 +226,7 @@ export const register: Register = on => {
     // The tool's own input, as a Hook's `tool_input` carries it: the engine's reserved fields left out.
     const argumentsValue = Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key)));
     await emit($, { type: "tool.started", toolCallId, toolName, arguments: boundedValue(argumentsValue, 24_000) });
-    const result = await next(event);
+    const result = await runTool($, event, next);
     const resultRecord = result as { deny?: unknown; result?: unknown; text?: unknown; isError?: unknown };
     await emit($, { type: "tool.finished", toolCallId, toolName,
       result: boundedValue(resultRecord.result ?? resultRecord.text ?? resultRecord.deny ?? null, 24_000),
@@ -228,6 +234,32 @@ export const register: Register = on => {
     return result;
   }).catch(($, event, next) => next(event));
 };
+
+/**
+ * AskUserQuestion stays answerable on both sides. The Host shows the question on the phone first,
+ * then the native dialog opens; the first answer wins, and returning while the dialog is open
+ * closes it. Without that acknowledgement (no Host, or an older one) only the native call runs.
+ */
+async function runTool($: Api, event: ToolCall, next: ToolNext): ReturnType<ToolNext> {
+  if (event.tool !== "AskUserQuestion" || !interactiveSession || event.tool_use_id === undefined) return await next(event);
+  const toolCallId = event.tool_use_id;
+  const target = connection ?? await connect($);
+  const shown = target !== undefined && await postEvent($, target, { type: "question.requested", toolCallId,
+    ...(event.agentId === undefined ? {} : { agentId: event.agentId }), questions: event.questions });
+  if (!shown) return await next(event);
+  let answered!: (answer: QuestionAnswer) => void;
+  const remote = new Promise<QuestionAnswer>(resolve => { answered = resolve; });
+  questionWaiters.set(toolCallId, answered);
+  const native = next(event);
+  try {
+    const first = await Promise.race([native.then(result => ({ result })), remote.then(answer => ({ answer }))]);
+    if ("result" in first) return first.result;
+    // The closed dialog settles the native call as declined; the phone answer replaces it.
+    native.catch(() => undefined);
+    return "deny" in first.answer ? { deny: first.answer.deny }
+      : { result: { questions: event.questions, answers: first.answer.answers } };
+  } finally { questionWaiters.delete(toolCallId); }
+}
 
 async function poll($: Api): Promise<void> {
   if (polling) return;
@@ -255,6 +287,8 @@ async function poll($: Api): Promise<void> {
     // Never awaited here: a submit or command can wait for the turn, and polling must go on
     // or the Host lease lapses. The command cache keeps a repeated poll from running it twice.
     for (const item of body.commands) void runCommand($, current, item.commandId, item.command);
+    // The Host repeats an answer until the call finishes; a call already answered has no waiter.
+    for (const answer of body.questionAnswers ?? []) questionWaiters.get(answer.toolCallId)?.(answer);
     if (++polls % STATE_EVERY === 0) void reportState($, false);
   } catch {
     // Keep a generation across a transient request failure. The next poll still

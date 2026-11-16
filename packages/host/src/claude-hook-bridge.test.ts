@@ -208,4 +208,83 @@ describe("ClaudeHookBridge", () => {
     await expect(pending).resolves.toEqual({});
     expect(events).toContainEqual(expect.objectContaining({ type: "interaction.resolved", source: "local" }));
   });
+  // CLAUDE-QUESTION-RACE-02: a raced question is on the phone while the TUI dialog stays open. The same
+  // call's classic Hook must not block it, and the phone answer is kept for polls until the call finishes.
+  it("shows a raced question on the phone without blocking its classic Hook", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const raced = { sessionId: "session-1", cwd: "C:\\work", toolCallId: "toolu_q1", questions };
+    expect(bridge.raceQuestion(raced)).toBe(true);
+    expect(bridge.raceQuestion(raced)).toBe(true);
+    const request = interaction(events).request;
+    if (request.kind !== "questionnaire") throw new Error("expected questionnaire");
+    expect(events.filter(event => event.type === "interaction.requested")).toHaveLength(1);
+    expect(bridge.blockingRequestCount("claude:session-1")).toBe(0);
+    expect(bridge.pendingRequests("claude:session-1")).toHaveLength(1);
+    await expect(bridge.accept({ ...ask(), tool_use_id: "toolu_q1" })).resolves.toEqual({});
+
+    const [first, second] = request.questions;
+    if (first === undefined || second === undefined) throw new Error("expected two questions");
+    expect(bridge.respond(request.requestId, bridge.generation, { kind: "questionnaire",
+      answers: [{ id: first.id, values: ["prod"] }, { id: second.id, values: [], other: "none" }] })).toBe("accepted");
+    // The answer is recorded once the settled Hook output resolves, before any later poll request.
+    await new Promise(resolve => setImmediate(resolve));
+    expect(bridge.questionAnswers("claude:session-1")).toEqual([{ toolCallId: "toolu_q1", answers: { "环境？": "prod", "备注？": "none" } }]);
+    bridge.resolveLocally("claude:session-1", "AskUserQuestion", { questions }, undefined, "toolu_q1");
+    expect(bridge.questionAnswers("claude:session-1")).toEqual([]);
+  });
+
+  // CLAUDE-QUESTION-RACE-01: a subagent question needs the Mods session as its parent and closes
+  // only with that agent's finished call, not with a main-loop call of the same tool.
+  it("races a subagent question under its parent Mods session", () => {
+    const events: RuntimeEvent[] = [];
+    const online = new Set<string>();
+    const bridge = new ClaudeHookBridge({ hasSession: runtimeId => online.has(runtimeId), onEvent: (_runtimeId, event) => events.push(event) });
+    const child = { sessionId: "session-1", cwd: "C:\\work", toolCallId: "toolu_child", agentId: "agent-1", questions };
+    expect(bridge.raceQuestion(child)).toBe(true);
+    expect(events).toEqual([]);
+    online.add("claude:session-1");
+    expect(bridge.raceQuestion({ ...child, toolCallId: "toolu_child_2" })).toBe(true);
+    const requestId = interaction(events).request.requestId;
+    bridge.resolveLocally("claude:session-1", "AskUserQuestion", { questions }, undefined, "toolu_child_2");
+    expect(bridge.pendingRequests("claude:session-1")).toHaveLength(1);
+    bridge.resolveLocally("claude:session-1", "AskUserQuestion", { questions }, "agent-1", "toolu_child_2");
+    expect(events).toContainEqual({ type: "interaction.resolved", requestId, source: "local" });
+    expect(bridge.pendingRequests("claude:session-1")).toEqual([]);
+  });
+
+  // CLAUDE-QUESTION-RACE-03: Claude Code 2.1.325 raises PermissionRequest for the open question dialog.
+  // It must not become a second, answerless confirm card on the phone.
+  it("leaves the AskUserQuestion permission prompt to the native dialog", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    await expect(bridge.accept({ ...permission(), tool_name: "AskUserQuestion", tool_input: { questions } })).resolves.toEqual({});
+    expect(events).toEqual([]);
+  });
+
+  // CLAUDE-QUESTION-RACE-01: the TUI answered first, so only that exact call's phone card closes as local;
+  // a phone cancellation becomes a refusal and a lost plugin connection withdraws the card.
+  it("closes a raced question answered in the TUI, and maps cancel and disconnect", async () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
+    const base = { sessionId: "session-1", cwd: "C:\\work", questions };
+    expect(bridge.raceQuestion({ ...base, toolCallId: "toolu_a" })).toBe(true);
+    expect(bridge.raceQuestion({ ...base, toolCallId: "toolu_b" })).toBe(true);
+    expect(bridge.raceQuestion({ ...base, toolCallId: "toolu_c" })).toBe(true);
+    const [a, b] = events.filter(event => event.type === "interaction.requested").map(event => event.type === "interaction.requested" ? event.request.requestId : "");
+    bridge.resolveLocally("claude:session-1", "AskUserQuestion", { questions }, undefined, "toolu_a");
+    expect(events).toContainEqual({ type: "interaction.resolved", requestId: a, source: "local" });
+    expect(bridge.pendingRequests("claude:session-1")).toHaveLength(2);
+
+    expect(bridge.respond(b!, bridge.generation, { kind: "cancel" })).toBe("accepted");
+    // The answer is recorded once the settled Hook output resolves, before any later poll request.
+    await new Promise(resolve => setImmediate(resolve));
+    expect(bridge.questionAnswers("claude:session-1")).toEqual([{ toolCallId: "toolu_b", deny: "Claude Code 问题已取消" }]);
+
+    bridge.cancelRaced("claude:session-1");
+    expect(events).toContainEqual(expect.objectContaining({ type: "interaction.cancelled", reason: "disconnected" }));
+    expect(bridge.pendingRequests("claude:session-1")).toEqual([]);
+    expect(bridge.questionAnswers("claude:session-1")).toEqual([]);
+    expect(bridge.raceQuestion({ ...base, toolCallId: "toolu_bad", questions: [{ question: "?", options: [], allowNotes: true }] })).toBe(false);
+  });
 });

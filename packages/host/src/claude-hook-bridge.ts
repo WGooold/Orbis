@@ -26,6 +26,12 @@ export type ClaudeHookOutput = {
 
 type HookKind = "PermissionRequest" | "AskUserQuestion";
 
+/** A phone answer the Mods plugin returns as the native AskUserQuestion result. */
+export type ClaudeQuestionAnswer = { toolCallId: string; answers: Record<string, string> } | { toolCallId: string; deny: string };
+
+/** An AskUserQuestion call the Mods plugin shows on the phone while its native dialog stays open. */
+export type ClaudeRacedQuestion = { sessionId: string; cwd: string; toolCallId: string; agentId?: string; questions: unknown };
+
 type Pending = {
   request: InteractionRequest;
   hook: HookKind;
@@ -40,11 +46,14 @@ type Pending = {
   rawToolInput: Record<string, unknown>;
   rawQuestions?: readonly unknown[];
   abortCleanup: () => void;
+  /** Registered by the Mods plugin, which keeps the native dialog open; it never blocks Claude Code. */
+  raced?: true;
 };
 
 type ClaudeSession = { runtimeId: string; sessionId: string; cwd: string };
 
 const FINISHED_LIMIT = 256;
+const RACED_LIMIT = 256;
 
 export type ClaudeHookBridgeOptions = {
   timeoutMs?: number;
@@ -77,6 +86,8 @@ export class ClaudeHookBridge {
   readonly #pending = new Map<string, Pending>();
   readonly #finished = new Map<string, { generation: string; fingerprint?: string; output: ClaudeHookOutput }>();
   readonly #sessions = new Map<string, ClaudeSession>();
+  /** Raced questions by tool call: kept until the plugin reports the call finished, so a lost poll reply is resent. */
+  readonly #raced = new Map<string, { runtimeId: string; agentId?: string; answer?: ClaudeQuestionAnswer }>();
 
   constructor(options: ClaudeHookBridgeOptions = {}) {
     this.#options = options;
@@ -98,10 +109,65 @@ export class ClaudeHookBridge {
     }));
   }
 
+  /** Questions Claude Code is blocked on, which the TUI status line offers to take back. Raced ones are visible there. */
+  blockingRequestCount(runtimeId: string): number {
+    return [...this.#pending.values()].filter(item => `claude:${item.sessionId}` === runtimeId && item.raced !== true).length;
+  }
+
   async accept(input: unknown, signal?: AbortSignal): Promise<ClaudeHookOutput> {
+    // The plugin already put this exact call on the phone and keeps the native dialog open.
+    if (isRecord(input) && (input.hook_event_name ?? input.event_name) === "PreToolUse" && typeof input.tool_use_id === "string" &&
+        this.#raced.get(input.tool_use_id)?.runtimeId === `claude:${String(input.session_id)}`) return passthrough();
+    return await this.#accept(input, signal);
+  }
+
+  /**
+   * Shows a native AskUserQuestion on the phone without blocking Claude Code: the plugin keeps
+   * the TUI dialog open and returns the first answer from either side. It registers before the
+   * native call starts, so that call's classic PreToolUse Hook passes straight through.
+   */
+  raceQuestion(question: ClaudeRacedQuestion): boolean {
+    const runtimeId = `claude:${question.sessionId}`;
+    const existing = this.#raced.get(question.toolCallId);
+    if (existing !== undefined) return existing.runtimeId === runtimeId;
+    const input = { hook_event_name: "PreToolUse", session_id: question.sessionId, cwd: question.cwd, tool_name: "AskUserQuestion",
+      tool_input: { questions: question.questions }, tool_use_id: question.toolCallId,
+      ...(question.agentId === undefined ? {} : { agent_id: question.agentId }) };
+    if (parseHookInput(input) === undefined) return false;
+    const entry: { runtimeId: string; agentId?: string; answer?: ClaudeQuestionAnswer } = { runtimeId,
+      ...(question.agentId === undefined ? {} : { agentId: question.agentId }) };
+    this.#raced.set(question.toolCallId, entry);
+    while (this.#raced.size > RACED_LIMIT) this.#raced.delete(this.#raced.keys().next().value!);
+    void this.#accept(input, undefined, true).then(output => {
+      const decided = output.hookSpecificOutput;
+      if (decided?.hookEventName !== "PreToolUse" || this.#raced.get(question.toolCallId) !== entry) return;
+      entry.answer = decided.permissionDecision === "allow" && decided.updatedInput !== undefined
+        ? { toolCallId: question.toolCallId, answers: decided.updatedInput.answers }
+        : { toolCallId: question.toolCallId, deny: decided.permissionDecisionReason ?? "Claude Code 问题已取消" };
+    }, () => undefined);
+    return true;
+  }
+
+  /** Phone answers the plugin has not yet applied; repeated in every poll until the call finishes. */
+  questionAnswers(runtimeId: string): ClaudeQuestionAnswer[] {
+    return [...this.#raced.values()].flatMap(entry => entry.runtimeId === runtimeId && entry.answer !== undefined ? [entry.answer] : []);
+  }
+
+  /** The plugin's Host connection ended: nothing can return a phone answer to its dialogs. */
+  cancelRaced(runtimeId: string): void {
+    for (const pending of [...this.#pending.values()]) {
+      if (pending.raced === true && `claude:${pending.sessionId}` === runtimeId) pending.settle(passthrough(), undefined, "disconnected");
+    }
+    for (const [toolCallId, entry] of [...this.#raced]) if (entry.runtimeId === runtimeId) this.#raced.delete(toolCallId);
+  }
+
+  async #accept(input: unknown, signal?: AbortSignal, raced = false): Promise<ClaudeHookOutput> {
     const parsed = parseHookInput(input);
     if (parsed === undefined) throw new ClaudeHookInputError("invalid Claude Hook input");
     if (this.#options.hasRemoteDevice?.() === false) return passthrough();
+    // The question dialog is AskUserQuestion's own permission prompt. A phone allow/deny has no answers
+    // to give it; the question itself reaches the phone through PreToolUse or the Mods race.
+    if (parsed.hook === "PermissionRequest" && parsed.toolName === "AskUserQuestion") return passthrough();
     const runtimeId = `claude:${parsed.sessionId}`;
     const childTranscript = isRecord(input) && typeof input.transcript_path === "string" && /[\\/]subagents[\\/]/u.test(input.transcript_path);
     if (childTranscript && parsed.agentId === undefined) return passthrough();
@@ -148,7 +214,7 @@ export class ClaudeHookBridge {
         generation: this.#generation, settle: (output, responseFingerprint, reason) => {
           finish(output, responseFingerprint, reason);
         }, timer, fingerprint, rawToolInput: parsed.toolInput,
-        ...(parsed.rawQuestions === undefined ? {} : { rawQuestions: parsed.rawQuestions }), abortCleanup });
+        ...(parsed.rawQuestions === undefined ? {} : { rawQuestions: parsed.rawQuestions }), abortCleanup, ...(raced ? { raced: true as const } : {}) });
       this.#options.onEvent?.(runtimeId, { type: "interaction.requested", request: requestWithExpiry });
       this.#options.onEvent?.(runtimeId, { type: "runtime.status", status: "waiting_local_interaction" });
     });
@@ -193,12 +259,18 @@ export class ClaudeHookBridge {
    * as answered on the computer. Without a tool name every pending Hook of that exact loop closes.
    */
   resolveLocally(runtimeId: string, toolName?: string, input?: unknown, agentId?: string, toolCallId?: string): void {
+    // A finished call, or the end of its loop, ends a raced question: no answer is resent after it.
+    for (const [id, entry] of [...this.#raced]) {
+      if (entry.runtimeId === runtimeId && entry.agentId === agentId && (toolName === undefined || id === toolCallId)) this.#raced.delete(id);
+    }
     for (const pending of [...this.#pending.values()]) {
       if (`claude:${pending.sessionId}` !== runtimeId) continue;
       if (pending.agentId !== agentId) continue;
       const exactTool = pending.toolCallId !== undefined && toolCallId !== undefined;
       if (exactTool && pending.toolCallId !== toolCallId) continue;
-      if (toolName !== undefined && (pending.hook !== "PermissionRequest" || pending.toolName !== toolName)) continue;
+      if (toolName !== undefined && pending.toolName !== toolName) continue;
+      // A blocking question Hook holds its tool, so only a raced question's own call can finish first.
+      if (toolName !== undefined && pending.hook !== "PermissionRequest" && !(pending.raced === true && exactTool)) continue;
       if (toolName !== undefined && !exactTool && !sameInput(pending.rawToolInput, input)) continue;
       this.#options.onEvent?.(runtimeId, { type: "interaction.resolved", requestId: pending.request.requestId, source: "local" });
       pending.settle(passthrough());
@@ -217,6 +289,7 @@ export class ClaudeHookBridge {
     for (const pending of [...this.#pending.values()]) {
       if (`claude:${pending.sessionId}` === runtimeId) pending.settle(passthrough(), undefined, reason);
     }
+    for (const [toolCallId, entry] of [...this.#raced]) if (entry.runtimeId === runtimeId) this.#raced.delete(toolCallId);
     this.#release(runtimeId, reason);
   }
 

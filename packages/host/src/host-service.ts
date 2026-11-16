@@ -807,8 +807,12 @@ export class HostService {
       onFileChangeAnchor: (runtimeId, turnId, entryId) => this.#fileChanges.observeAnchor(runtimeId, turnId, entryId),
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       // A Hook can keep the runtime online for an interaction while the Mods poller reconnects.
-      // Only remove the public runtime after both sources have gone offline.
-      onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
+      // Only remove the public runtime after both sources have gone offline. A raced question
+      // needs this plugin connection to return its phone answer, so it ends here.
+      onRuntimeOffline: (runtimeId, reason) => {
+        this.#claudeBridge.cancelRaced(runtimeId);
+        this.#unregisterClaudeRuntime(runtimeId, reason);
+      },
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
       onRejected: (reason, hello) => this.#recordClaudeRejection(reason, hello),
       // Native outcomes close the phone's copy of a Hook the TUI already answered.
@@ -816,7 +820,9 @@ export class HostService {
       onTaskTurnFinished: (runtimeId, agentId) => this.#claudeBridge.resolveLocally(runtimeId, undefined, undefined, agentId),
       onTurnFinished: runtimeId => this.#claudeBridge.resolveLocally(runtimeId),
       onLocalInteractions: runtimeId => this.#claudeBridge.deferToLocal(runtimeId),
-      pendingInteractions: runtimeId => this.#claudeBridge.pendingRequests(runtimeId).length,
+      pendingInteractions: runtimeId => this.#claudeBridge.blockingRequestCount(runtimeId),
+      onQuestionRequested: (_runtimeId, question) => this.#claudeBridge.raceQuestion(question),
+      questionAnswers: runtimeId => this.#claudeBridge.questionAnswers(runtimeId),
     });
     const claudeOptions = options.claude;
     const claudeConfig = claudeConfigDir(claudeOptions?.configDir ?? process.env.CLAUDE_CONFIG_DIR);

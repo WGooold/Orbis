@@ -34,6 +34,11 @@ export function setup(on: On, options: { home?: string } = {}) {
     submits: 0,
     toolResult: "still working",
     toolCalls: [] as unknown[],
+    /** How long the native tool stays open, as an AskUserQuestion dialog does until someone answers. */
+    toolDelay: 0,
+    questionAnswers: [] as unknown[],
+    /** An older Host refuses the unknown question event as invalid. */
+    questionRefused: false,
     denyPrompt: true,
     completionDelay: 0,
     aborts: [] as string[],
@@ -68,7 +73,11 @@ export function setup(on: On, options: { home?: string } = {}) {
   on("turn.start", (_$, event) => ({ turnId: event.turnId }));
   on("turn.complete", (_$, event) => ({ text: event.answer }));
   on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });
-  on("tool.call", (_$, event) => { world.toolCalls.push(event); return { result: world.toolResult }; });
+  on("tool.call", async (_$, event) => {
+    world.toolCalls.push(event);
+    if (world.toolDelay > 0) await clock.sleep(world.toolDelay);
+    return { result: world.toolResult };
+  });
   on("prompt.submit", async () => {
     world.submits++;
     await clock.sleep(3000);
@@ -92,7 +101,10 @@ export function setup(on: On, options: { home?: string } = {}) {
       : reply(200, { ok: true, runtimeId: `claude:${body.sessionId}`, generation: world.generation, ...(world.resumed ? { resumed: true } : {}) });
     if (event.url.endsWith("/poll")) return world.pollError
       ? reply(world.pollError === "unauthorized" ? 401 : 409, { ok: false, error: world.pollError })
-      : reply(200, { ok: true, commands: world.commands });
+      : reply(200, { ok: true, commands: world.commands, ...(world.questionAnswers.length > 0 ? { questionAnswers: world.questionAnswers } : {}) });
+    if ((body.event as { type?: string } | undefined)?.type === "question.requested" && world.questionRefused) {
+      return reply(400, { result: "invalid" });
+    }
     if ((body.event as { type?: string } | undefined)?.type === "turn.complete" && world.completionDelay > 0) {
       await clock.sleep(world.completionDelay);
     }

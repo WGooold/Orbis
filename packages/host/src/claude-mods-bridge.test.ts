@@ -524,6 +524,21 @@ describe("ClaudeModsBridge", () => {
     expect(turns).toHaveBeenCalledWith(current.runtimeId);
   });
 
+  // CLAUDE-QUESTION-RACE-01: the plugin opens the native dialog only after this acknowledgement, and
+  // collects the phone answer from polls; an unshowable question is refused so it stays native.
+  it("acknowledges a raced question only when the Hook side shows it, and returns answers in polls", () => {
+    const requested = vi.fn((_runtimeId: string, question: { toolCallId: string }) => question.toolCallId !== "toolu_bad");
+    const answers = [{ toolCallId: "toolu_q", answers: { "Which?": "A" } }];
+    const bridge = bridgeWith({ onQuestionRequested: requested, questionAnswers: () => answers });
+    const current = online(bridge);
+    const questions = [{ question: "Which?", header: "Pick", options: [{ label: "A" }, { label: "B" }] }];
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "question.requested", toolCallId: "toolu_q", questions })).toBe("accepted");
+    expect(requested).toHaveBeenCalledWith(current.runtimeId, { sessionId: "session-1", cwd: "C:\\work", toolCallId: "toolu_q", questions });
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "question.requested", toolCallId: "toolu_bad", questions })).toBe("invalid");
+    expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "question.requested", toolCallId: "toolu_x", questions: "no" })).toBe("invalid");
+    expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({ ok: true, questionAnswers: answers });
+  });
+
   it("reports why a hello was refused", () => {
     const rejected = vi.fn();
     const bridge = bridgeWith({ onRejected: rejected });

@@ -19,6 +19,7 @@ import {
   type ToolContentReadRequest,
 } from "@orbis/protocol";
 import { mergeAgentTaskInventory } from "./agent-tasks.js";
+import type { ClaudeQuestionAnswer, ClaudeRacedQuestion } from "./claude-hook-bridge.js";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { claudeConfigDir, type ClaudeTranscriptFacts } from "./claude-transcript.js";
 import { localHostname } from "./sessions.js";
@@ -84,6 +85,7 @@ export type ClaudeModsNativeEvent =
   | { type: "session.state"; state: ClaudeSessionState }
   | { type: "compaction"; phase: "running" | "idle" | "failed" }
   | { type: "interactions.local" }
+  | { type: "question.requested"; toolCallId: string; agentId?: string; questions: readonly unknown[] }
   | { type: "turn.start"; turnId: string; startedAt?: number; turnIndex?: number }
   | { type: "turn.step.chunks"; turnId: string; stepIndex: number; chunks: readonly { blockIndex: number; contentType: "text" | "thinking"; delta: string }[] }
   | { type: "turn.complete"; turnId: string; durationMs?: number; turnIndex?: number; answer?: string; reason?: string; isAborted?: boolean }
@@ -97,6 +99,8 @@ export type ClaudeModsPoll = {
   commands: readonly { commandId: string; command: ClaudeModsCommand }[];
   /** Hook interactions of this Session waiting for a phone; the TUI shows how to take them back. */
   pendingInteractions?: number;
+  /** Phone answers to raced questions, repeated until the plugin reports each call finished. */
+  questionAnswers?: readonly ClaudeQuestionAnswer[];
 } | {
   ok: false;
   error: string;
@@ -161,6 +165,9 @@ export type ClaudeModsBridgeOptions = {
   /** The person at the computer asked to answer pending interactions there. */
   onLocalInteractions?: (runtimeId: string) => void;
   pendingInteractions?: (runtimeId: string) => number;
+  /** The plugin keeps this native question's dialog open and asks for it on the phone too; false when it cannot be shown there. */
+  onQuestionRequested?: (runtimeId: string, question: ClaudeRacedQuestion) => boolean;
+  questionAnswers?: (runtimeId: string) => readonly ClaudeQuestionAnswer[];
   hostId?: () => string;
   createHistory?: (sessionId: string, configDir: string, publish: (event: Extract<RuntimeEvent, { type: "session.patch" | "session.tools.produced" }>) => void,
     onFacts: (facts: ClaudeTranscriptFacts) => void) => ClaudeSessionHistory;
@@ -361,7 +368,9 @@ export class ClaudeModsBridge {
     // and replays that result if the HTTP response carrying it was lost.
     const commands = [...session.commands.values()];
     const pending = this.#options.pendingInteractions?.(runtimeId) ?? 0;
-    return { ok: true, generation, commands, ...(pending > 0 ? { pendingInteractions: pending } : {}) };
+    const answers = this.#options.questionAnswers?.(runtimeId) ?? [];
+    return { ok: true, generation, commands, ...(pending > 0 ? { pendingInteractions: pending } : {}),
+      ...(answers.length > 0 ? { questionAnswers: answers } : {}) };
   }
 
   /** Answers a device `session.sync` from the transcript and the current live state. */
@@ -472,6 +481,13 @@ export class ClaudeModsBridge {
     if (parsed.type === "interactions.local") {
       this.#options.onLocalInteractions?.(runtimeId);
       return "accepted";
+    }
+    if (parsed.type === "question.requested") {
+      // The plugin starts the native dialog only after this acknowledgement; a refusal leaves the question to Claude Code.
+      const sessionId = session.runtime.sessionId;
+      if (sessionId === undefined) return "invalid";
+      return this.#options.onQuestionRequested?.(runtimeId, { sessionId, cwd: session.runtime.cwd, toolCallId: parsed.toolCallId,
+        ...(parsed.agentId === undefined ? {} : { agentId: parsed.agentId }), questions: parsed.questions }) === true ? "accepted" : "invalid";
     }
     if (parsed.type === "turn.start") {
       if (session.activeTurn?.turnId === parsed.turnId || session.completedTurns.has(parsed.turnId)) return "accepted";
@@ -800,6 +816,10 @@ function parseNativeEvent(value: unknown): ClaudeModsNativeEvent | undefined {
   }
   if (value.type === "compaction" && (value.phase === "running" || value.phase === "idle" || value.phase === "failed")) return { type: value.type, phase: value.phase };
   if (value.type === "interactions.local") return { type: value.type };
+  if (value.type === "question.requested" && text(value.toolCallId, 256) && (value.agentId === undefined || text(value.agentId, 256)) &&
+      Array.isArray(value.questions)) {
+    return { type: value.type, toolCallId: value.toolCallId, ...(typeof value.agentId === "string" ? { agentId: value.agentId } : {}), questions: value.questions };
+  }
   if (value.type === "turn.start" && text(value.turnId, 256)) {
     const startedAt = finiteTime(value.startedAt); const turnIndex = integer(value.turnIndex);
     return { type: value.type, turnId: value.turnId, ...(startedAt === undefined ? {} : { startedAt }), ...(turnIndex === undefined ? {} : { turnIndex }) };
@@ -839,6 +859,7 @@ function normalizeNativeEvent(native: ClaudeModsNativeEvent, session: Session): 
     case "task.tool.finished":
     case "task.turn.finished":
     case "compaction":
+    case "question.requested":
     case "interactions.local": return [];
     case "turn.start": return [{ type: "turn.started", turnId: native.turnId, startedAt: native.startedAt ?? Date.now(), ...(native.turnIndex === undefined ? {} : { turnIndex: native.turnIndex }) }];
     case "turn.step.chunks": {
