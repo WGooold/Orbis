@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/protocol/package.json ./packages/protocol/
@@ -11,10 +11,20 @@ COPY packages/pi-extension/package.json ./packages/pi-extension/
 COPY packages/claude-mod/package.json ./packages/claude-mod/
 ARG NPM_REGISTRY=https://registry.npmjs.org
 RUN npm ci --ignore-scripts --no-audit --no-fund --registry=$NPM_REGISTRY
-COPY tsconfig.json tsconfig.base.json LICENSE THIRD-PARTY-NOTICES.md ./
+
+# Project sources are independent of the website's static assets. Copying this
+# projection by content lets a CSS/image edit reuse the compiled TypeScript too.
+FROM dependencies AS sources
 COPY packages ./packages
-COPY scripts ./scripts
-RUN npm run build
+RUN rm -rf packages/relay/src/web
+
+FROM dependencies AS build
+COPY tsconfig.json tsconfig.base.json LICENSE THIRD-PARTY-NOTICES.md ./
+COPY --from=sources /app/packages ./packages
+RUN npx --no-install tsc -b
+COPY packages/relay/src/web ./packages/relay/src/web
+COPY scripts/build-relay-web.mjs ./scripts/build-relay-web.mjs
+RUN node scripts/build-relay-web.mjs
 
 FROM node:22-bookworm-slim
 LABEL org.opencontainers.image.source="https://github.com/WGooold/Orbis" \
