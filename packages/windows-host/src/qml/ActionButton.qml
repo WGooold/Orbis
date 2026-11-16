@@ -42,10 +42,29 @@ Button {
                     anchors.fill: parent; visible: button.symbol.length > 0 && button.mark.length === 0 && !button.loading
                     name: button.symbol; color: caption.color
                 }
-                BusyIndicator {
+                Canvas {
+                    id: loadingArc
+                    objectName: "actionButtonSpinner"
                     anchors.centerIn: parent; width: 18; height: 18
-                    visible: button.loading; running: visible && Theme.motionEnabled
-                    palette.dark: caption.color
+                    visible: button.loading
+                    property color color: caption.color
+                    // HOST-ACTIVITY-06: retain a full-size, full-contrast arc even
+                    // while disabled; reduced motion stops rotation, not visibility.
+                    onColorChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        ctx.strokeStyle = color
+                        ctx.lineWidth = 2; ctx.lineCap = "round"
+                        ctx.beginPath()
+                        ctx.arc(width / 2, height / 2, width / 2 - 2, -Math.PI / 2, Math.PI)
+                        ctx.stroke()
+                    }
+                    RotationAnimator on rotation {
+                        from: 0; to: 360; duration: Theme.durLoop; loops: Animation.Infinite
+                        running: loadingArc.visible && Theme.motionEnabled
+                    }
+                    Accessible.ignored: true
                 }
             }
             MotionText {

@@ -31,6 +31,7 @@ Status: accepted（第 2 节全部场景已实现并自动验证；第 8 节记�
 | HOST-ACTIVITY-03 | Agent 页原先写死的「正在检测 Agent…」改为读取同一份活动说明；检测进行中 Agent 行显示「检测中」而不是上一轮结论。Host 在 Claude 探测前先发 `claudeStatus{detecting:true}`，找到可执行文件但版本未读回时仍为 `detecting:true`，Claude 行在检测完成前显示「检测中」，不显示「尚未安装」或「需升级」。 |
 | HOST-ACTIVITY-04 | DSH Server 重启分阶段上报 `dshServer{stage}`：等待另一个启动者的锁、停止、启动、连接、应用供应商配置；Host 把在途重启的活动文案替换为当前阶段，重启按钮进入 loading。不做百分比：锁等待与进程启动没有可度量的进度。 |
 | HOST-ACTIVITY-05 | 激活凭据的首次读取从 UI 线程（构造函数）移到凭据工作线程。读取期间不显示激活卡、连接按钮说明「正在读取激活信息」；macOS 上超过 1.5 s 仍未返回（钥匙串锁定或应用重签名后的授权框）改为「正在等待系统授权」，并并入 `connectionBlockReason`。依赖已保存 Relay 与 Host ID 的初始化步骤（Relay 地址迁移、身份校验、恢复激活、自动连接）等读取完成再执行。 |
+| HOST-ACTIVITY-06 | 共用操作按钮的加载环使用完整 18 px 图标槽与文字同色的 2 px 圆弧，禁用期间保持可见；减少动画时保留静态圆弧。实现见 [ActionButton.qml](../../packages/windows-host/src/qml/ActionButton.qml)，软件渲染下的四主题、按钮样式、禁用与减少动画回归见 [ActionButtonTest.cpp](../../packages/windows-host/src/tests/ActionButtonTest.cpp)。本轮构建、前后对照与截图证据保存在 [.artifacts/host-loading-contrast-20261116](../../.artifacts/host-loading-contrast-20261116/)；安装与用户验收待完成。 |
 
 「已在运行」不算阻塞：`m_desiredRunning` 为真时连接按钮仍可用，用于暂停。后台准备（Codex / Claude / DSH）的失败不影响已连上的手机，也不改变 `state`。暂停清除 Codex 与 DSH 的准备状态；Claude 插件登记属于 Host 核心本身，暂停不清除，内核退出时清除。
 
