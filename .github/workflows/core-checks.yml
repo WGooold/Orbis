@@ -55,8 +55,8 @@ jobs:
           name: ci-compiled-js
           path: ${{ runner.temp }}
       - name: Restore compiled workspace
-        shell: bash
-        run: tar -xzf "$RUNNER_TEMP/ci-compiled-js.tar.gz"
+        shell: pwsh
+        run: '& "$env:WINDIR/System32/tar.exe" -xzf (Join-Path $env:RUNNER_TEMP ''ci-compiled-js.tar.gz'')'
       - name: Run Windows test shard
         run: npx vitest run --shard=${{ matrix.shard }}/4 --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/windows-${{ matrix.shard }}.xml
       - name: Preserve Windows test results
