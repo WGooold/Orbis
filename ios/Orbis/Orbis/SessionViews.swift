@@ -937,21 +937,56 @@ private struct OrbisDraftEditor: UIViewRepresentable {
     let placeholder: String
     let ink: UIColor
     let placeholderInk: UIColor
+    let tint: UIColor
+    let font: UIFont
+    let lineFragmentPadding: CGFloat
+    let submitsOnSoftwareReturn: Bool
+    let identifier: String
+    let programmaticRevision: Int
+    let measuredHeight: Int
+    let onEdit: ((String, Bool, Int) -> Void)?
     let onSubmit: () -> Void
     let onCancel: () -> Void
+
+    init(text: Binding<String>, focused: Binding<Bool>, placeholder: String,
+         ink: UIColor = .label, placeholderInk: UIColor = .secondaryLabel,
+         tint: UIColor = .tintColor, font: UIFont = .systemFont(ofSize: 15),
+         lineFragmentPadding: CGFloat = 4, submitsOnSoftwareReturn: Bool = true,
+         identifier: String = "draft-message", programmaticRevision: Int = 0,
+         measuredHeight: Int = 0, onEdit: ((String, Bool, Int) -> Void)? = nil,
+         onSubmit: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        _text = text
+        _focused = focused
+        self.placeholder = placeholder
+        self.ink = ink
+        self.placeholderInk = placeholderInk
+        self.tint = tint
+        self.font = font
+        self.lineFragmentPadding = lineFragmentPadding
+        self.submitsOnSoftwareReturn = submitsOnSoftwareReturn
+        self.identifier = identifier
+        self.programmaticRevision = programmaticRevision
+        self.measuredHeight = measuredHeight
+        self.onEdit = onEdit
+        self.onSubmit = onSubmit
+        self.onCancel = onCancel
+    }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> Editor {
         let view = Editor()
         view.delegate = context.coordinator
-        view.backgroundColor = .clear; view.font = .systemFont(ofSize: 15)
-        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 4
+        view.backgroundColor = .clear; view.font = font
+        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = lineFragmentPadding
         view.returnKeyType = .send
-        view.accessibilityIdentifier = "draft-message"
+        view.tintColor = tint
+        view.accessibilityIdentifier = identifier
+        view.submitsOnSoftwareReturn = submitsOnSoftwareReturn
         return view
     }
     func updateUIView(_ view: Editor, context: Context) {
         context.coordinator.parent = self
         view.submit = onSubmit; view.cancel = onCancel
+        view.submitsOnSoftwareReturn = submitsOnSoftwareReturn
         view.placeholder.text = placeholder; view.placeholder.textColor = placeholderInk
         view.placeholder.isHidden = !text.isEmpty
         view.accessibilityLabel = placeholder
@@ -960,6 +995,10 @@ private struct OrbisDraftEditor: UIViewRepresentable {
             view.selectedRange = NSRange(location: min(selected.location, text.utf16.count), length: 0)
         }
         view.textColor = ink
+        view.tintColor = tint
+        view.font = font
+        view.textContainer.lineFragmentPadding = lineFragmentPadding
+        view.accessibilityIdentifier = identifier
         if focused && !view.isFirstResponder { view.becomeFirstResponder() }
         else if !focused && view.isFirstResponder { view.resignFirstResponder() }
     }
@@ -972,19 +1011,29 @@ private struct OrbisDraftEditor: UIViewRepresentable {
         var parent: OrbisDraftEditor
         init(_ parent: OrbisDraftEditor) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) {
-            parent.text = textView.text; (textView as? Editor)?.placeholder.isHidden = !textView.text.isEmpty
+            let marked = textView.markedTextRange != nil
+            let width = max(1, textView.bounds.width)
+            let height = Int(ceil(textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+            if let onEdit = parent.onEdit { onEdit(textView.text, marked, height) }
+            else { parent.text = textView.text }
+            (textView as? Editor)?.placeholder.isHidden = !textView.text.isEmpty
             textView.invalidateIntrinsicContentSize()
         }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
         func textViewDidEndEditing(_ textView: UITextView) { parent.focused = false }
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-            if text == "\n", textView.markedTextRange == nil, (textView as? Editor)?.insertingLineBreak != true { parent.onSubmit(); return false }
+            if text == "\n", textView.markedTextRange == nil,
+               (textView as? Editor)?.insertingLineBreak != true,
+               (textView as? Editor)?.submitsOnSoftwareReturn == true {
+                parent.onSubmit(); return false
+            }
             return true
         }
     }
     final class Editor: UITextView {
         var submit: () -> Void = {}
         var cancel: () -> Void = {}
+        var submitsOnSoftwareReturn = true
         let placeholder = UILabel()
         var insertingLineBreak = false
         override init(frame: CGRect, textContainer: NSTextContainer?) {

@@ -39,7 +39,9 @@ struct ChatSessionActions: Equatable {
     @MainActor func reading(_ ready: Bool) -> Self { Self(store: store, target: target, canRead: ready, preservingRuntime: fallbackRuntime) }
     @MainActor var pendingSends: PendingSendOutbox { connection.pendingSends }
     @MainActor var draft: String { runtime.map(connection.draft) ?? "" }
-    @MainActor func editDraft(_ text: String) { if isCurrent, let runtime { connection.editDraft(text, for: runtime) } }
+    @MainActor func editDraft(_ text: String, persist: Bool = true) {
+        if isCurrent, let runtime { connection.editDraft(text, for: runtime, persist: persist) }
+    }
     @MainActor func saveDraft(_ text: String) { if isCurrent, let runtime { connection.saveDraft(text, for: runtime) } }
     @MainActor func noteComposerFocus(_ focused: Bool) { if isCurrent { connection.noteComposerFocus(focused) } }
     @MainActor func takeComposerFocus() -> Bool { isCurrent && connection.takeComposerFocus(runtimeId) }

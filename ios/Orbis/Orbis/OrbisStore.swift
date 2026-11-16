@@ -877,12 +877,14 @@ final class HostConnection: ObservableObject {
         return sessionTitle(runtime: nil, session: session)
     }
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
-    /// A keystroke the composer already shows.
-    func editDraft(_ text: String, for runtime: RuntimeSummary) {
+    /// A keystroke the composer already shows. Marked IME text stays in memory until
+    /// the editor reports a committed value, avoiding a UserDefaults write for every
+    /// composition update.
+    func editDraft(_ text: String, for runtime: RuntimeSummary, persist: Bool = true) {
         if composerErrors[runtime.runtimeId] != nil { composerErrors[runtime.runtimeId] = nil }
         if objectError(runtime.runtimeId) != nil { objectErrors[runtime.runtimeId] = nil }
         let key = localSessionKey(host: selectedHost, runtime: runtime)
-        updateDrafts(reload: false) { $0[key] = text.isEmpty ? nil : text }
+        updateDrafts(reload: false, persist: persist) { $0[key] = text.isEmpty ? nil : text }
     }
     /// A draft the visible composer has not seen yet.
     func saveDraft(_ text: String, for runtime: RuntimeSummary) {
@@ -890,11 +892,13 @@ final class HostConnection: ObservableObject {
         updateDrafts(reload: true) { $0[key] = text.isEmpty ? nil : text }
     }
     /// Every Host connection shares one preferences entry, so a write merges into what is stored now.
-    private func updateDrafts(reload: Bool, _ change: (inout [String: String]) -> Void) {
-        var next = preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts
+    private func updateDrafts(reload: Bool, persist: Bool = true, _ change: (inout [String: String]) -> Void) {
+        var next = persist
+            ? (preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts)
+            : drafts
         change(&next)
         drafts = next
-        preferences?.set(next, forKey: "orbis.sessionDrafts")
+        if persist { preferences?.set(next, forKey: "orbis.sessionDrafts") }
         if reload { draftRevision &+= 1 }
     }
 

@@ -1962,6 +1962,13 @@ extension StoreTests {
                          store.activeConnection.objectWillChange.sink { _ in connection.value += 1 }]
         defer { observers.forEach { $0.cancel() } }
         let revision = store.draftRevision
+        let sessionKey = localSessionKey(host: store.selectedHost, runtime: selected)
+        for marked in ["n", "ni", "ni h", "ni ha", "ni hao"] {
+            store.editDraft(marked, for: selected, persist: false)
+            #expect(store.draft(for: selected) == marked)
+        }
+        let uncommitted = preferences.dictionary(forKey: "orbis.sessionDrafts") as? [String: String]
+        #expect(uncommitted?[sessionKey] == nil)
         for text in ["h", "he", "hel", "hello", "", "你", "你好"] {
             store.editDraft(text, for: selected)
             #expect(store.draft(for: selected) == text)
@@ -1970,9 +1977,9 @@ extension StoreTests {
         #expect(connection.value == 0)
         #expect(hub.value == 0)
         #expect(store.draftRevision == revision)
-        // Persisted immediately in the existing format, like Android's per-key apply().
+        // Persisted immediately on committed edits in the existing format, like Android's per-key apply().
         let stored = preferences.dictionary(forKey: "orbis.sessionDrafts") as? [String: String]
-        #expect(stored?[localSessionKey(host: store.selectedHost, runtime: selected)] == "你好")
+        #expect(stored?[sessionKey] == "你好")
     }
 
     @Test func storeOriginatedDraftWritesAdvanceTheComposerRevision() async throws {

@@ -71,7 +71,7 @@ struct ChatView: View {
     @State private var acceptedSends = PassthroughSubject<Set<String>, Never>()
     @State private var interest: ChatInterestOwnership?
     @State private var mountToken = UUID()
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocus = ChatComposerFocus()
     private var accent: Color { OrbisPalette(scheme).agent(model.shell.kind) }
 
     init?(model: ChatScreenModel, onBack: @escaping () -> Void, onHistory: @escaping () -> Void, onDownloads: @escaping () -> Void) {
@@ -88,17 +88,17 @@ struct ChatView: View {
         let _ = ChatDebugProbes.rendered(.page)
         VStack(spacing: 0) {
             ChatHeaderView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
-                           composerFocused: $composerFocused, downloadFlight: downloadFlight,
+                           composerFocus: composerFocus, downloadFlight: downloadFlight,
                            onBack: onBack, onHistory: onHistory, onDownloads: onDownloads).equatable()
             ChatTranscriptRegion(model: model, actions: actions, mountToken: mountToken,
-                                 setComposerFocused: { composerFocused = $0 }, sendFlight: sendFlight,
+                                 setComposerFocused: { composerFocus.focused = $0 }, sendFlight: sendFlight,
                                  acceptedSends: acceptedSends, onBack: onBack).id(mountToken)
             ChatComposerView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
-                             composerFocused: $composerFocused, sendFlight: sendFlight, onHistory: onHistory,
+                             composerFocus: composerFocus, sendFlight: sendFlight, onHistory: onHistory,
                              onAcceptedSend: { acceptedSends.send($0) }).equatable()
                 .anchorPreference(key: FeedbackComposerAnchorKey.self, value: .bounds) { $0 }
         }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .modifier(ChatKeyboardResizeProbe(focused: composerFocused))
+            .modifier(ChatComposerFocusRegion(focus: composerFocus, actions: actions))
             .background(OrbisPalette(scheme).base.ignoresSafeArea()).tint(accent).environment(\.orbisAccent, accent)
             .downloadFlightHost(downloadFlight).messageSendFlightHost(sendFlight)
             .environment(\.chatVisualActivity, model.visualActivity)
@@ -108,12 +108,10 @@ struct ChatView: View {
             .onChange(of: scenePhase) { _, phase in
                 model.visibilityChanged(target: target, token: mountToken, visible: visualActive, foreground: phase == .active)
             }
-            .onChange(of: composerFocused) { _, focused in if actions.isCurrent { actions.noteComposerFocus(focused) } }
-            .onAppear { if actions.isCurrent, actions.takeComposerFocus() { DispatchQueue.main.async { if actions.isCurrent { composerFocused = true } } } }
             .modifier(ChatTurnReviewRegion(model: model, actions: actions))
             .onChange(of: target, initial: true) { _, _ in reconcileInterest() }
             .onChange(of: pageActivity.hasArrived, initial: true) { _, _ in reconcileInterest() }
-            .modifier(ChatPageDiagnostics(composerFocused: composerFocused,
+            .modifier(ChatPageDiagnostics(composerFocused: false,
                 gitActive: pageActivity.pollsGit(sceneActive: scenePhase == .active),
                 visualActive: visualActive, sendFlight: sendFlight))
             .onAppear { model.mount(target: target, token: mountToken, visible: visualActive, foreground: scenePhase == .active) }
@@ -147,6 +145,17 @@ struct ChatView: View {
         held.actions.releaseInterest(held.lease)
         interest = nil
         ChatDebugProbes.interestReleased()
+    }
+}
+
+private struct ChatComposerFocusRegion: ViewModifier {
+    let focus: ChatComposerFocus
+    let actions: ChatSessionActions
+    func body(content: Content) -> some View {
+        content
+            .modifier(ChatKeyboardResizeProbe(focused: focus.focused))
+            .onChange(of: focus.focused) { _, focused in if actions.isCurrent { actions.noteComposerFocus(focused) } }
+            .onAppear { if actions.isCurrent, actions.takeComposerFocus() { DispatchQueue.main.async { if actions.isCurrent { focus.focused = true } } } }
     }
 }
 

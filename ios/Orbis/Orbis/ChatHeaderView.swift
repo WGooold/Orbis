@@ -78,7 +78,7 @@ struct ChatHeaderView: View, Equatable {
     private var target: ChatActionContext { actions.target }
 
     @Environment(\.colorScheme) private var scheme
-    @FocusState.Binding var composerFocused: Bool
+    let composerFocus: ChatComposerFocus
     let downloadFlight: DownloadFlight
     let onBack: () -> Void
     let onHistory: () -> Void
@@ -88,7 +88,8 @@ struct ChatHeaderView: View, Equatable {
     private var runtime: RuntimeSummary { facts.runtime ?? fallbackRuntime }
     private var kind: String? { facts.kind }
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.downloadFlight === rhs.downloadFlight
+        lhs.model === rhs.model && lhs.actions == rhs.actions &&
+            lhs.composerFocus === rhs.composerFocus && lhs.downloadFlight === rhs.downloadFlight
     }
     var body: some View {
         let _ = ChatSchedulingTrace.regionBody(.header)
@@ -124,7 +125,7 @@ struct ChatHeaderView: View, Equatable {
                             .fixedSize(horizontal: true, vertical: false).accessibilityIdentifier("chat-model-switching")
                     }
                 }
-            }.contentShape(Rectangle()).onTapGesture { if actions.isCurrent { composerFocused = false; runtimeInfoOpen = true } }
+            }.contentShape(Rectangle()).onTapGesture { if actions.isCurrent { composerFocus.focused = false; runtimeInfoOpen = true } }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), facts.displayName, facts.connection == .secured ? runtime.presentationTitle : connectionTitle(facts.connection)))
                 .modifier(ChatTitleDiagnostics(value: [presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))

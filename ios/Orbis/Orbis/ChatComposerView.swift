@@ -1,11 +1,66 @@
 import SwiftUI
+import Observation
+
+@MainActor @Observable
+final class ChatComposerFocus {
+    var focused = false
+}
 
 /// The composer's own copy of a draft, valid while it targets the same session and the store has not
-/// written that draft since.
-private struct ComposerText {
+/// written that draft since. Updating `text` in place during normal prose typing keeps the latest
+/// value available to submission and programmatic updates without invalidating `ChatComposerView.body`
+/// on every character.
+@MainActor
+private final class ComposerDraftStorage {
+    var key = ""
+    var revision = -1
+    var programmaticRevision = 0
+    var measuredHeight = 0
+    var text = ""
+
+    func resolve(identity: String, draftRevision: Int, fallback: @autoclosure () -> String) -> String {
+        if key == identity && revision == draftRevision { return text }
+        let loaded = fallback()
+        key = identity
+        revision = draftRevision
+        text = loaded
+        return loaded
+    }
+
+    func updateFromUser(identity: String, draftRevision: Int, text: String, height: Int) {
+        key = identity
+        revision = draftRevision
+        self.text = text
+        measuredHeight = height
+    }
+
+    func updateProgrammatically(identity: String, draftRevision: Int, text: String) {
+        key = identity
+        revision = draftRevision
+        programmaticRevision &+= 1
+        self.text = text
+    }
+}
+
+private struct ComposerDraftPresentation: Equatable {
     let key: String
     let revision: Int
-    let text: String
+    let programmaticRevision: Int
+    let measuredHeight: Int
+    let hasText: Bool
+    /// Non-nil only when the trimmed draft starts with "/". Normal prose keystrokes
+    /// keep this nil so characters after the first do not re-render the composer subtree.
+    let slashText: String?
+
+    init(key: String, revision: Int, programmaticRevision: Int, measuredHeight: Int, text: String) {
+        self.key = key
+        self.revision = revision
+        self.programmaticRevision = programmaticRevision
+        self.measuredHeight = measuredHeight
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.hasText = !trimmed.isEmpty
+        self.slashText = trimmed.hasPrefix("/") ? text : nil
+    }
 }
 
 /// IOS-CHAT-01: editor state and its local presentation belong to this subtree. A keystroke
@@ -80,7 +135,7 @@ struct ChatComposerView: View, Equatable {
     let fallbackRuntime: RuntimeSummary
     private var target: ChatActionContext { actions.target }
     @Environment(\.colorScheme) private var scheme
-    @FocusState.Binding var composerFocused: Bool
+    let composerFocus: ChatComposerFocus
     let sendFlight: MessageSendFlight
     let onHistory: () -> Void
     let onAcceptedSend: (Set<String>) -> Void
@@ -88,7 +143,8 @@ struct ChatComposerView: View, Equatable {
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
     @State private var filePickerOpen = false
-    @State private var composerText: ComposerText?
+    @State private var draftStorage = ComposerDraftStorage()
+    @State private var draftPresentation: ComposerDraftPresentation?
     @State private var fileSelection: ChatFileSelection?
 
     private var facts: ChatComposerState { model.composer }
@@ -100,18 +156,25 @@ struct ChatComposerView: View, Equatable {
     /// PERF-12 / IOS-CHAT-01: typed text belongs to the editor subtree and persists without
     /// invalidating the transcript owner. A store-originated draft (command result, restored copy,
     /// launch) advances `draftRevision` and replaces it.
-    private var draft: Binding<String> {
-        Binding(get: {
-            if let composerText, composerText.key == facts.identity,
-               composerText.revision == facts.draftRevision { return composerText.text }
-            return actions.draft
-        }, set: { text in
-            guard actions.isCurrent else { return }
-            composerText = ComposerText(key: target.identity, revision: facts.draftRevision, text: text)
-            actions.editDraft(text)
-        })
+    private var currentDraft: String {
+        let _ = draftPresentation
+        return draftStorage.resolve(identity: facts.identity, draftRevision: facts.draftRevision, fallback: actions.draft)
     }
-    private var slash: Bool { draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
+    private var activePresentation: ComposerDraftPresentation {
+        let text = currentDraft
+        if let draftPresentation, draftPresentation.key == facts.identity,
+           draftPresentation.revision == facts.draftRevision {
+            return draftPresentation
+        }
+        return ComposerDraftPresentation(key: facts.identity, revision: facts.draftRevision,
+                                         programmaticRevision: draftStorage.programmaticRevision,
+                                         measuredHeight: draftStorage.measuredHeight, text: text)
+    }
+    private var draft: Binding<String> {
+        Binding(get: { currentDraft }, set: { setProgrammaticDraft($0) })
+    }
+    private var hasText: Bool { !currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var slash: Bool { currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { facts.commands.first { $0.name == selectedCommand } }
     private var attachments: [FileTransfer] {
         facts.attached
@@ -119,16 +182,17 @@ struct ChatComposerView: View, Equatable {
     private var canSubmit: Bool {
         // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
         guard facts.canSend, !facts.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
-              !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else { return false }
+              hasText || !attachments.isEmpty else { return false }
         if slash {
-            guard let command, draft.wrappedValue.hasPrefix("/" + command.name), facts.pendingActions.isEmpty else { return false }
+            guard let command, currentDraft.hasPrefix("/" + command.name), facts.pendingActions.isEmpty else { return false }
             return command.argument?.required != true || !commandArguments(command).isEmpty
         }
         return true
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.sendFlight === rhs.sendFlight
+        lhs.model === rhs.model && lhs.actions == rhs.actions &&
+            lhs.composerFocus === rhs.composerFocus && lhs.sendFlight === rhs.sendFlight
     }
     var body: some View {
         let _ = ChatSchedulingTrace.regionBody(.composer)
@@ -140,6 +204,8 @@ struct ChatComposerView: View, Equatable {
 
     private var editor: some View {
         let p = OrbisPalette(scheme)
+        let presentation = activePresentation
+        let focused = composerFocus.focused
         return VStack(spacing: 0) {
             InteractionWorkspaceView(model: model, actions: actions, runtimeId: runtime.runtimeId).equatable()
             if let tasks = runtime.backgroundTasks, tasks.visible {
@@ -174,7 +240,7 @@ struct ChatComposerView: View, Equatable {
                     }.font(.orbisCaption(mono: true)).foregroundStyle(p.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let permissions = runtime.permissionManagement {
-                        OrbisMotionButton { composerFocused = false; permissionsOpen = true } label: {
+                        OrbisMotionButton { composerFocus.focused = false; permissionsOpen = true } label: {
                             HStack(spacing: 5) {
                                 OrbisActionSymbol(systemName: "shield.lefthalf.filled")
                                 Text(L10n.hostSummary(permissions.summary)).lineLimit(1)
@@ -196,31 +262,32 @@ struct ChatComposerView: View, Equatable {
                 OrbisIconButton(symbol: "paperclip", label: L10n.tr("发送文件到电脑"), tint: accent) {
                     guard actions.isCurrent else { return }
                     fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
-                    composerFocused = false; filePickerOpen = true
+                    composerFocus.focused = false; filePickerOpen = true
                 }.disabled(!facts.canSend || facts.preparing || attachments.count >= 10)
-                TextField(L10n.tr("发给 {0}，/ 命令", agentTitle(kind)), text: draft, axis: .vertical)
-                    .accessibilityIdentifier("chat-composer")
-                    .font(.orbisBody()).lineLimit(1...6).focused($composerFocused)
-                    .onKeyPress(keys: [.return], phases: .down) { key in
-                        if key.modifiers.contains(.shift) { return .ignored }
-                        guard canSubmit else { return .handled }
-                        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
-                        else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
-                        else { submit() }
-                        return .handled
-                    }
-                    .onKeyPress(.escape) { composerFocused = false; return .handled }
-                    .padding(.horizontal, 16).padding(.vertical, 16).frame(minHeight: 56)
-                    .orbisField(focused: composerFocused).orbisAnchor(sendFlight.composer)
-                if runtime.status == "running" && draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty {
+                OrbisDraftEditor(text: draft,
+                                 focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
+                                 placeholder: L10n.tr("发给 {0}，/ 命令", agentTitle(kind)),
+                                 ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
+                                 tint: UIColor(accent),
+                                 font: .monospacedDigitSystemFont(ofSize: OrbisTextSize.body, weight: .regular),
+                                 lineFragmentPadding: 0, submitsOnSoftwareReturn: false,
+                                 identifier: "chat-composer",
+                                 programmaticRevision: facts.draftRevision &+ presentation.programmaticRevision,
+                                 measuredHeight: presentation.measuredHeight,
+                                 onEdit: { text, marked, height in handleUserDraftEdit(text, marked: marked, height: height) },
+                                 onSubmit: handleReturnSubmit,
+                                 onCancel: { composerFocus.focused = false })
+                    .padding(.horizontal, 16).padding(.vertical, 16)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 56)
+                    .orbisField(focused: focused).orbisAnchor(sendFlight.composer)
+                if runtime.status == "running" && !hasText && attachments.isEmpty {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if actions.isCurrent, actions.stopRuntime() { OrbisHaptics.commit() }
                     }.disabled(!facts.canSend)
                 } else {
                     OrbisIconButton(symbol: "arrow.up", label: L10n.tr("发送消息"), tint: accent) {
-                        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
-                        else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
-                        else { submit() }
+                        handleReturnSubmit()
                     }.disabled(!canSubmit)
                 }
             }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
@@ -236,10 +303,6 @@ struct ChatComposerView: View, Equatable {
             .orbisBottomSheet(isPresented: $permissionsOpen) {
                 PermissionsView(target: target, runtime: actions.runtime ?? fallbackRuntime).orbisSheet([.large])
             }
-            .onChange(of: draft.wrappedValue) { _, next in
-                if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) { self.selectedCommand = nil }
-                if next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { deliveryChoices = false }
-            }
             .task(id: command?.argument?.optionCatalog?.id) {
                 guard actions.isCurrent, let command, target.runtimeId != nil else { return }
                 actions.loadMenuOptions(command.name)
@@ -249,6 +312,43 @@ struct ChatComposerView: View, Equatable {
             }
             .onDisappear { if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) } }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
+    }
+
+    private func handleUserDraftEdit(_ text: String, marked: Bool, height: Int) {
+        guard actions.isCurrent else { return }
+        draftStorage.updateFromUser(identity: target.identity, draftRevision: facts.draftRevision, text: text, height: height)
+        actions.editDraft(text, persist: !marked)
+        reconcileDraftSideEffects(text)
+        let next = ComposerDraftPresentation(key: target.identity, revision: facts.draftRevision,
+                                             programmaticRevision: draftStorage.programmaticRevision,
+                                             measuredHeight: height, text: text)
+        if draftPresentation != next { draftPresentation = next }
+    }
+
+    private func setProgrammaticDraft(_ text: String) {
+        guard actions.isCurrent else { return }
+        draftStorage.updateProgrammatically(identity: target.identity, draftRevision: facts.draftRevision, text: text)
+        actions.editDraft(text, persist: true)
+        reconcileDraftSideEffects(text)
+        draftPresentation = ComposerDraftPresentation(key: target.identity, revision: facts.draftRevision,
+                                                      programmaticRevision: draftStorage.programmaticRevision,
+                                                      measuredHeight: draftStorage.measuredHeight, text: text)
+    }
+
+    private func reconcileDraftSideEffects(_ next: String) {
+        if let selectedCommand, !(next == "/" + selectedCommand || next.hasPrefix("/" + selectedCommand + " ")) {
+            self.selectedCommand = nil
+        }
+        if deliveryChoices && next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            deliveryChoices = false
+        }
+    }
+
+    private func handleReturnSubmit() {
+        guard canSubmit else { return }
+        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
+        else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
+        else { submit() }
     }
 
     private var cachedComposer: some View {
@@ -267,22 +367,23 @@ struct ChatComposerView: View, Equatable {
     }
 
     private func commandArguments(_ command: SlashCommand) -> String {
-        String(draft.wrappedValue.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+        String(currentDraft.dropFirst(command.name.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     private func submit(delivery: String? = nil) {
         guard actions.isCurrent, canSubmit else { return }
+        let text = currentDraft
         let existing = Set(actions.pendingSends.items.map(\.messageId))
         let accepted: Bool
         // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
         let messageSlash = slash && command.map(actions.producesMessage) == true
-        if slash, let command { accepted = actions.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : draft.wrappedValue) }
-        else { accepted = actions.sendMessage(draft.wrappedValue.isEmpty ? "请查看附件。" : draft.wrappedValue, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
+        if slash, let command { accepted = actions.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : text) }
+        else { accepted = actions.sendMessage(text.isEmpty ? "请查看附件。" : text, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
             onAcceptedSend(existing)
             OrbisHaptics.commit()
             if !slash || messageSlash {
                 // 交给消息的附件离开输入框，仍在上传的继续上传（不取消）。
-                actions.releaseUploads(Set(attachments.map(\.id))); draft.wrappedValue = ""; selectedCommand = nil
+                actions.releaseUploads(Set(attachments.map(\.id))); setProgrammaticDraft(""); selectedCommand = nil
             }
             deliveryChoices = false
         }
