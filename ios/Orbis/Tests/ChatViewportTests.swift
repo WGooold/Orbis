@@ -4,6 +4,33 @@ import Testing
 @testable import OrbisCore
 
 struct ChatViewportTests {
+    // IOS-CHAT-13-R4: an empty transcript can finish native placement without
+    // pretending its business paging policy has already observed a message.
+    @Test func nativePlacementRequiresRealVisibleMeasurementAndResetsPerMount() {
+        var placement = ChatNativeViewportPlacement()
+        placement.measured(visibleContent: false, bottomDistance: 0)
+        #expect(!placement.isReady)
+        for distance: CGFloat in [.infinity, .nan, 1.01, -1.01] {
+            placement.measured(visibleContent: true, bottomDistance: distance)
+            #expect(!placement.isReady)
+        }
+        placement.measured(visibleContent: true, bottomDistance: 1)
+        #expect(placement.isReady)
+        placement.measured(visibleContent: false, bottomDistance: 500)
+        #expect(placement.isReady, "A reader's subsequent movement cannot restart initial bottom placement")
+        placement = ChatNativeViewportPlacement()
+        #expect(!placement.isReady)
+    }
+
+    // A partially clipped preceding tool must not outrank the next visible reading
+    // row when it expands. A long reply with no later visible row keeps its anchor.
+    @Test func readingAnchorPrefersAVisibleBeginningAndFallsBackToATallReply() {
+        let sorted = [CGFloat(-120), 160, 300].sorted(by: ChatViewportAnchorPriority.precedes)
+        #expect(sorted == [160, 300, -120])
+        #expect([CGFloat(-1600)].sorted(by: ChatViewportAnchorPriority.precedes) == [-1600])
+        #expect([CGFloat(0), 120].sorted(by: ChatViewportAnchorPriority.precedes) == [0, 120])
+    }
+
     private func facts(_ y: CGFloat, height: CGFloat = 100, first: Bool = false, question: String? = nil) -> ChatViewportFacts {
         ChatViewportFacts(frame: CGRect(x: 0, y: y, width: 300, height: height),
                           viewportHeight: 600, firstRow: first, questionID: question)
@@ -52,6 +79,39 @@ struct ChatViewportTests {
         #expect(viewport == merge(Array(reports.reversed())))
         #expect(viewport.firstRowNearTop && viewport.hasVisibleRows)
         #expect(viewport.questionOutsideViewport("q"))
+    }
+
+    // IOS-CHAT-13: lazy layout can report an offscreen tail independently of the
+    // still-visible long reply. Only that row's disappearance retires its facts.
+    @Test func rowReportsRetainVisibleGeometryAcrossIndependentLazyUpdates() {
+        var reports = ChatViewportReports()
+        let reply = UUID(), question = UUID(), tail = UUID(), replacement = UUID()
+        reports.update(reply, facts: facts(-1600, height: 2460))
+        reports.update(question, facts: facts(700, question: "question"))
+        reports.update(tail, facts: ChatViewportFacts())
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
+        #expect(reports.snapshot(questionID: "question").questionOutsideViewport("question"))
+        reports.update(tail, facts: nil)
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
+        reports.update(replacement, facts: facts(-1500, height: 2460))
+        reports.update(reply, facts: nil)
+        #expect(reports.snapshot(questionID: "question").hasVisibleRows, "Retiring an older lazy host cannot retire its replacement")
+        reports.update(replacement, facts: nil)
+        #expect(!reports.snapshot(questionID: "question").hasVisibleRows)
+    }
+
+    // A source publication can create the next question before the old lazy host
+    // updates its metadata. Aggregation must select the current identity explicitly.
+    @Test func currentQuestionGeometryDoesNotDependOnReportEnumerationOrder() {
+        var reports = ChatViewportReports()
+        let old = UUID(), current = UUID(), duplicate = UUID()
+        reports.update(old, facts: facts(700, question: "old"))
+        reports.update(current, facts: facts(300, question: "new"))
+        reports.update(duplicate, facts: facts(700, question: "new"))
+        #expect(!reports.snapshot(questionID: "new").questionOutsideViewport("new"))
+        reports.update(current, facts: nil)
+        #expect(reports.snapshot(questionID: "new").question?.outside == true)
+        #expect(reports.snapshot(questionID: nil).question == nil)
     }
 
     // IOS-CHAT-04: geometry may cross thresholds, but never takes reading intent away

@@ -486,6 +486,8 @@ final class HostConnection: ObservableObject {
                 guard !Task.isCancelled else { break }
                 let pendingIds = self.pendingSends.chatRows(sessionId: self.selectedRuntime?.sessionId).map(\.messageId)
                 if owner == self.transcriptIdentity && (!input.requiresPendingMatch || input.pending.map(\.messageId) == pendingIds) {
+                    let trace = ChatSchedulingTrace.transcriptCommitBegan()
+                    defer { ChatSchedulingTrace.transcriptCommitEnded(trace) }
                     self.committingTranscript = true
                     if self.renderedMessageToken != next.messageToken { self.messages = next.messages }
                     self.renderedMessageToken = next.messageToken
@@ -3632,6 +3634,8 @@ final class HostConnection: ObservableObject {
         var content = previous?.content ?? []
         let index = integer(event["contentIndex"]).map(Int.init) ?? (content.last?.type == kind ? max(0, content.count - 1) : content.count)
         guard (0...1024).contains(index) else { return }
+        let trace = ChatSchedulingTrace.deltaBegan()
+        defer { ChatSchedulingTrace.deltaEnded(trace) }
         while content.count <= index { content.append(ChatContent(type: kind, text: "", toolName: nil, artifact: nil)) }
         let item = content[index]
         content[index] = ChatContent(type: item.type, text: (item.text ?? "") + delta, toolName: item.toolName, artifact: item.artifact, summary: item.summary, toolCallId: item.toolCallId,

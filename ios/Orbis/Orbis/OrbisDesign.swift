@@ -1,6 +1,11 @@
 import SwiftUI
 
+private struct ChatVisualActivityKey: EnvironmentKey { static let defaultValue: ChatVisualActivity? = nil }
 extension EnvironmentValues {
+    var chatVisualActivity: ChatVisualActivity? {
+        get { self[ChatVisualActivityKey.self] }
+        set { self[ChatVisualActivityKey.self] = newValue }
+    }
     /// Preview fixtures exercise the same reduction branches as the system setting.
     var orbisReduceMotion: Bool {
         #if DEBUG
@@ -13,6 +18,19 @@ extension EnvironmentValues {
     /// IOS-CHAT-05: a retained page remains mounted while covered or backgrounded.
     /// Visual work follows both its nearest page visibility and the scene lifecycle.
     var orbisVisualActive: Bool { orbisVisible && scenePhase == .active }
+
+    /// Project one comparable environment dependency. A chat leaf never reads the
+    /// fallback scene/visibility values when its page already supplies an owner.
+    var orbisVisualActivitySource: OrbisVisualActivitySource {
+        if let activity = chatVisualActivity { return .init(page: activity, fallback: false) }
+        return .init(page: nil, fallback: orbisVisualActive)
+    }
+}
+
+struct OrbisVisualActivitySource: Equatable {
+    let page: ChatVisualActivity?
+    let fallback: Bool
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.page === rhs.page && lhs.fallback == rhs.fallback }
 }
 
 /// Keep the TimelineView's type and subtree stable while its clock is suspended.
@@ -210,6 +228,11 @@ enum OrbisRadius {
     static let sheet: CGFloat = 32
 }
 
+/// The implicit SwiftUI and measured native-host adapters use one motion spec.
+enum OrbisCollapseMotion {
+    static let spring = Spring.smooth(duration: 0.26)
+}
+
 extension Animation {
     /// Drag release: stiffness 1200, damping 80. Overdamped, so it settles without overshoot.
     static let orbisDrag = Animation.interpolatingSpring(mass: 1, stiffness: 1200, damping: 80)
@@ -219,7 +242,7 @@ extension Animation {
     }
     /// Small confirmations (checks, toggles): stiffness 380, damping 18, a slight bounce.
     static let orbisPop = Animation.interpolatingSpring(mass: 1, stiffness: 380, damping: 18)
-    static let orbisCollapse = Animation.smooth(duration: 0.26)
+    static let orbisCollapse = Animation.spring(OrbisCollapseMotion.spring)
     static let orbisFade = Animation.easeOut(duration: 0.16)
 }
 
@@ -294,9 +317,17 @@ extension EnvironmentValues {
     }
 }
 
+/// Hosted chat roots use the stable activity reference; other surfaces keep
+/// their ordinary visibility/scene environment. Only the consuming leaf observes it.
+@MainActor @propertyWrapper
+struct OrbisVisualActive: DynamicProperty {
+    @Environment(\.orbisVisualActivitySource) private var source
+    var wrappedValue: Bool { source.page?.active ?? source.fallback }
+}
+
 private struct NeuSurface: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let inset: Bool
     let radius: CGFloat
     let intensity: CGFloat
@@ -370,7 +401,7 @@ extension View {
 }
 
 private struct OrbisField: ViewModifier {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.orbisKeyboardNavigation) private var keyboard
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
@@ -411,7 +442,8 @@ struct OrbisLayerFill: View {
 /// identity and natural layout across subsequent toggles.
 struct OrbisCollapse<Content: View>: View {
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
+    @Environment(\.chatNativeCellGeometry) private var nativeGeometry
     let expanded: Bool
     @ViewBuilder var content: () -> Content
     @State private var hasExpanded: Bool
@@ -428,37 +460,41 @@ struct OrbisCollapse<Content: View>: View {
     }
 
     var body: some View {
-        Group {
-            if expanded || hasExpanded {
-                content()
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-                    // At rest an open container takes the content's live height, so growing content is never clipped.
-                    .frame(height: shown ? (animating ? height : nil) : 0, alignment: .top)
-                    .clipped()
-                    .opacity(shown ? 1 : 0)
-                    .allowsHitTesting(shown)
-                    .accessibilityHidden(!shown)
-            }
-        }
-            .onChange(of: expanded) { _, value in
-                if value { hasExpanded = true }
-                token += 1
-                let current = token
-                if reduceMotion || !visualActive { settle(); return }
-                // Pin the measured height first so the animation interpolates between two numbers.
-                animating = true
-                DispatchQueue.main.async {
-                    guard token == current else { return }
-                    withAnimation(.orbisCollapse) { shown = value } completion: {
-                        if token == current { animating = false }
-                    }
+        if nativeGeometry != nil {
+            ChatNativeCollapse(expanded: expanded, content: content)
+        } else {
+            Group {
+                if expanded || hasExpanded {
+                    content()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                        // At rest an open container takes the content's live height, so growing content is never clipped.
+                        .frame(height: shown ? (animating ? height : nil) : 0, alignment: .top)
+                        .clipped()
+                        .opacity(shown ? 1 : 0)
+                        .allowsHitTesting(shown)
+                        .accessibilityHidden(!shown)
                 }
             }
-            .onChange(of: visualActive) { _, active in
-                if !active { settle() }
-            }
-            .onDisappear { settle() }
+                .onChange(of: expanded) { _, value in
+                    if value { hasExpanded = true }
+                    token += 1
+                    let current = token
+                    if reduceMotion || !visualActive { settle(); return }
+                    // Pin the measured height first so the animation interpolates between two numbers.
+                    animating = true
+                    DispatchQueue.main.async {
+                        guard token == current else { return }
+                        withAnimation(.orbisCollapse) { shown = value } completion: {
+                            if token == current { animating = false }
+                        }
+                    }
+                }
+                .onChange(of: visualActive) { _, active in
+                    if !active { settle() }
+                }
+                .onDisappear { settle() }
+        }
     }
 
     private func settle() {
@@ -550,7 +586,7 @@ enum OrbisHaptics {
 }
 
 struct NeuButtonStyle: ButtonStyle {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.isFocused) private var keyboardFocused
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
@@ -607,7 +643,7 @@ struct OrbisSelectionButtonStyle: ButtonStyle {
 
 /// Keep the slot even outside selection mode, so labels and cards never reflow.
 struct OrbisSelectionIndicator: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
@@ -658,7 +694,7 @@ struct OrbisIconButton: View {
 }
 
 struct NeuIconButtonStyle: ButtonStyle {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.isFocused) private var keyboardFocused
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
@@ -713,7 +749,7 @@ struct OrbisTextButton: View {
 
 /// Raised when off, recessed with the accent check when on (Android `NeumorphCheckbox`).
 struct OrbisCheckbox: View {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduced
@@ -736,7 +772,7 @@ struct OrbisCheckbox: View {
 
 /// Neutral material track and rounded square thumb: accent belongs to the ink.
 struct NeuToggleStyle: ToggleStyle {
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var appearance
     @Environment(\.orbisReduceMotion) private var reduced
@@ -767,7 +803,7 @@ struct OrbisCopyButton: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let label: String
     var size: CGFloat = 28
     let text: () -> String
@@ -1059,12 +1095,160 @@ final class OrbisAnchor {
     var frame: CGRect = .zero
 }
 
+/// Independent hosted roots cannot share SwiftUI's global coordinate space. Register a
+/// real UIView with the cell's layout channel and observe touches in that same window.
+struct OrbisNativeWindowGeometryReader: UIViewRepresentable {
+    let geometry: ChatNativeCellGeometry
+    var semanticID: String? = nil
+    let onFrame: (UUID, CGRect?) -> Void
+    var onTouch: ((CGPoint) -> Void)? = nil
+    var onUpdate: ((UUID) -> Void)? = nil
+    var onRemove: ((UUID) -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) {
+        context.coordinator.bind(view, geometry: geometry, semanticID: semanticID, onFrame: onFrame,
+                                 onTouch: onTouch, onUpdate: onUpdate, onRemove: onRemove)
+    }
+    static func dismantleUIView(_ view: Probe, coordinator: Coordinator) {
+        coordinator.detach()
+        view.detach()
+    }
+
+    @MainActor final class Coordinator {
+        private let id = UUID()
+        private weak var geometry: ChatNativeCellGeometry?
+        private var semanticID: String?
+        private var version = UUID()
+        private var onRemove: ((UUID) -> Void)?
+
+        func bind(_ view: Probe, geometry: ChatNativeCellGeometry, semanticID: String? = nil,
+                  onFrame: @escaping (UUID, CGRect?) -> Void,
+                  onTouch: ((CGPoint) -> Void)?, onUpdate: ((UUID) -> Void)?, onRemove: ((UUID) -> Void)?) {
+            if let previous = self.geometry {
+                if previous !== geometry { detach() }
+                else if self.semanticID != semanticID {
+                    // The view can keep the same rectangle while acquiring a new
+                    // row/page owner. Re-register once to replay that actual frame.
+                    version = UUID()
+                    previous.unregister(id: id)
+                }
+            }
+            self.geometry = geometry
+            self.semanticID = semanticID
+            self.onRemove = onRemove
+            let version = UUID(); self.version = version
+            view.geometry = geometry; view.onTouch = onTouch
+            onUpdate?(id)
+            geometry.register(id: id, view: view) { [weak self] frame in
+                guard let self, self.version == version else { return }
+                onFrame(self.id, frame)
+            }
+        }
+        func detach() {
+            version = UUID()
+            geometry?.unregister(id: id); geometry = nil
+            semanticID = nil
+            let remove = onRemove; onRemove = nil
+            remove?(id)
+        }
+    }
+
+    final class Probe: UIView {
+        weak var geometry: ChatNativeCellGeometry?
+        var onTouch: ((CGPoint) -> Void)? { didSet { updateTouchObservation() } }
+        private weak var observer: TouchObserver?
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false; isAccessibilityElement = false
+            backgroundColor = .clear
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func layoutSubviews() { super.layoutSubviews(); geometry?.refresh() }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            geometry?.refresh()
+            updateTouchObservation()
+        }
+        private func updateTouchObservation() {
+            if onTouch != nil, let window {
+                if observer?.view === window { return }
+                detach()
+                observer = TouchObserver.attach(self, to: window)
+            } else { detach() }
+        }
+        func detach() {
+            observer?.remove(self)
+            observer = nil
+        }
+    }
+    private final class TouchObserver: UIGestureRecognizer {
+        // One passive recognizer per window; recycling a cell only changes weak
+        // registrations. Pure geometry probes need no touch registration at all.
+        private static let observers = NSMapTable<UIWindow, TouchObserver>(keyOptions: .weakMemory, valueOptions: .weakMemory)
+        private let probes = NSHashTable<Probe>.weakObjects()
+        static func attach(_ probe: Probe, to window: UIWindow) -> TouchObserver {
+            let observer: TouchObserver
+            if let existing = observers.object(forKey: window) { observer = existing }
+            else {
+                observer = TouchObserver()
+                observers.setObject(observer, forKey: window)
+                window.addGestureRecognizer(observer)
+            }
+            observer.probes.add(probe)
+            return observer
+        }
+        func remove(_ probe: Probe) {
+            probes.remove(probe)
+            if probes.allObjects.isEmpty {
+                if let window = view as? UIWindow { Self.observers.removeObject(forKey: window) }
+                view?.removeGestureRecognizer(self)
+            }
+        }
+        init() {
+            super.init(target: nil, action: nil)
+            cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
+        }
+        override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+            if let touch = touches.first, let window = view as? UIWindow {
+                let point = touch.location(in: window)
+                for probe in probes.allObjects where probe.window === window && !probe.isHidden &&
+                    probe.bounds.contains(touch.location(in: probe)) {
+                    probe.onTouch?(point)
+                }
+            }
+            state = .failed
+        }
+        override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+        override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    }
+}
+
+private struct OrbisAnchorReporter: ViewModifier {
+    @Environment(\.chatNativeCellGeometry) private var nativeGeometry
+    @Environment(\.downloadFlight) private var downloadFlight
+    let anchor: OrbisAnchor
+    var onChange: ((CGRect?) -> Void)?
+    func body(content: Content) -> some View {
+        if let nativeGeometry {
+            content.background(OrbisNativeWindowGeometryReader(geometry: nativeGeometry, onFrame: { _, frame in report(frame) },
+                onTouch: downloadFlight.map { flight in { flight.lastTap = $0 } }))
+        } else {
+            content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { report($0) }
+        }
+    }
+    private func report(_ frame: CGRect?) {
+        anchor.frame = frame ?? .zero
+        onChange?(frame)
+    }
+}
+
 extension View {
-    /// Reports the initial frame and every change, like the GeometryReader it replaces, without a
-    /// background view per anchored row; every user message carries anchors, so a long chat built
-    /// them all on entry (PERF-10).
-    func orbisAnchor(_ anchor: OrbisAnchor) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { anchor.frame = $0 }
+    /// SwiftUI rows report their global frame without a background view (PERF-10).
+    /// Independently hosted native cells use an explicit window-coordinate reader.
+    func orbisAnchor(_ anchor: OrbisAnchor, onChange: ((CGRect?) -> Void)? = nil) -> some View {
+        modifier(OrbisAnchorReporter(anchor: anchor, onChange: onChange))
     }
 }
 
@@ -1348,7 +1532,7 @@ private struct OrbisMenuPanel: View {
 private struct OrbisMenuRow: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let item: OrbisMenuItem
     let action: () -> Void
     @StateObject private var feedback = OrbisCopyFeedback()
@@ -1772,7 +1956,7 @@ extension EnvironmentValues {
 
 private struct DownloadFlightHost: ViewModifier {
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     let flight: DownloadFlight
     func body(content: Content) -> some View {
         content.environment(\.downloadFlight, flight)
@@ -1806,7 +1990,7 @@ private struct DownloadFlightLayer: View {
     @Environment(\.orbisAppearance) private var visualStyle
     /// Chat pages follow the agent's accent (X02).
     @Environment(\.orbisAccent) private var pageAccent
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     @ObservedObject var flight: DownloadFlight
     var body: some View {
         GeometryReader { proxy in
@@ -1852,7 +2036,7 @@ extension View {
 struct OrbisSkeleton: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.orbisVisualActive) private var visualActive
+    @OrbisVisualActive private var visualActive
     var width: CGFloat? = nil
     let height: CGFloat
     var radius: CGFloat = 8

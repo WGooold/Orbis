@@ -16,8 +16,7 @@ struct ContentView: View {
 
 private struct NavigationRoot: View, Equatable {
     let store: OrbisStore
-    @ObservedObject private var updates: ScreenPublication
-    private var facts: NavigationScreenSnapshot { store.chatScreens.navigationSnapshot }
+    private var facts: NavigationScreenSnapshot { store.chatScreens.navigation }
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -45,7 +44,6 @@ private struct NavigationRoot: View, Equatable {
 
     init(store: OrbisStore) {
         self.store = store
-        _updates = ObservedObject(wrappedValue: store.navigationUpdates)
         #if DEBUG
         let preview = ProcessInfo.processInfo.arguments.first { $0.hasPrefix("--preview-screen=") }?.split(separator: "=").last.map(String.init)
         switch preview {
@@ -268,14 +266,15 @@ private struct NavigationRoot: View, Equatable {
     @ViewBuilder private func pageView(_ page: AppPage) -> some View {
         switch page {
         case .chat:
-            if let runtime = facts.runtime {
-                ChatView(store: store, screens: store.chatScreens, target: facts.actionContext, fallbackRuntime: runtime, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) })
-                    .id(facts.runtimeIdentity)
+            if facts.runtime != nil,
+               let chat = ChatView(model: store.chatScreens, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) }) {
+                chat
+                    .id(facts.target.pageIdentity)
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
         case .status: ConnectionStatusView(onBack: back)
         case .providers: AgentProvidersView(onBack: back)
-        case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
+        case .history: HistoryBranchView(onBack: back)
         case .downloads: DownloadsView(onBack: back)
         }
     }

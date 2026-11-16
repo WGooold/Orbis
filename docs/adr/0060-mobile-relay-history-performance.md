@@ -165,7 +165,7 @@ MARKDOWN-LIVE-01（S11 / M04 / V09）纳入本轮后台呈现决策，修复提�
 
 Swift 491/491；导航界面回归 18/18，探针用例 3/3。`testChatDownloadsReturnToSameChat` 在对照与本分支同样失败于 `XCTAssertFalse(composer.exists)`（iOS 27 快照列出 SwiftUI 已隐藏子树，见 ADR-0054 2026-11-13），为既有失败，断言保留。未覆盖：真机与渲染服务器合成开销、实时会话持续发布；右滑在第三次迭代两轮均出现长间隔，原因未确认。证据见 [.artifacts/ios-page-transition-perf-20261114](../../.artifacts/ios-page-transition-perf-20261114/) 与基线 [.artifacts/ios-page-transition-jank-20261113](../../.artifacts/ios-page-transition-jank-20261113/)。部署未进行；真机体感待用户验证。
 
-### 2026-11-14：iOS 输入框按键不再触发整个界面重算（PERF-12，待用户验证）
+### 2026-11-14：iOS 输入框按键不再触发整个界面重算（PERF-12，真机输入 CPU 仍高，见 PERF-13）
 
 对齐 Android 的两处结构。Android 输入框文本是聊天页的 `remember` 状态，按键只经 `DraftStore` 持久化，不写入 `RemoteState`；外观通过 `LocalOrbisPalette` 在根部提供，只在取值变化时重组。
 
@@ -206,3 +206,76 @@ iPad 常驻侧边栏，根页面保持挂载（M14 / ADR-0054），两条路径�
 - **界面回归（Orbis iOS Standard 2）。** 草稿相关的 `testDraftSurvivesBackNavigationAndSlashRequiresSelection`、上传发送 / 失败恢复、`testDesignAlignmentRootDraftAndExplicitProtocolChoice`、`testMaterialAppearanceSwitchPersistsAcrossLaunches`、`testMaterialAppearanceRefreshesMountedHomeCard`、`testTypingOverLongTranscriptKeepsTheDraft` 通过。`testDraftHardwareReturnAndDesktopOnlySelection`（第 374 行）和 `testSendingWhileTheSessionStartsWaitsAndSubmitsOnceItIsOnline`（两版各 0/3，均止于发送后 1s 等待）在对照版同样失败，为既有失败，断言保留。`testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail`（第 819 行）与 `testTurnFileReviewDarkAppearance`（第 900 行）止于预览变更卡片按钮未出现，撤回本任务源码的对照构建同样失败，为既有失败。
 
 证据见 [.artifacts/ios-composer-draft-20261114](../../.artifacts/ios-composer-draft-20261114/verification.json)。部署未进行；共享测试看板 `orbis-qa` 连接失败，登记待补。iPad 真机输入体感、中文输入法组字、启动中输入后会话上线仍待用户验证。
+
+用户验收：同日真机（iPad Air 11-inch (M2)，Debug 构建含本项）打字时 CPU 仍高，未通过；主要开销在输入框测量，见 PERF-13。
+
+### 2026-11-14：iOS 输入框测量对齐 Android（PERF-13，待实施）
+
+#### 真机实测
+
+条件：iPad Air 11-inch (M2)，iOS 26.6.1；Xcode Debug 构建，含 PERF-12；真实会话中输入中文约 30s，Time Profiler 附加 40s。
+
+- **负载。** 输入期间主线程持续约占满一个核心，其他线程合计 1.3s。
+- **热点。** 全程主线程 25.2s，其中 12.3s（49%）在测量输入框：`TextViewAdaptor._overrideSizeThatFits` → `UITextView _intrinsicSizeWithinSize:` → TextKit 2 文本段枚举 → `CTLineEnumerateCaretOffsets` / `CFStringGetRangeOfCharacterClusterAtIndex`，逐字形簇遍历整段草稿。热点在系统框架内，Debug 构建不改变其成本。
+- **应用代码。** 4–22s 窗口内应用代码（含 `ChatView.body`）为 227ms / 14,946ms。PERF-12 已去掉的全局重算没有再出现。
+- **测量请求的来源。** 采样栈中，输入框测量由内到外经过：
+  - 组合栏 `HStack(alignment: .bottom, spacing: 10)` 的宽度分配（`StackLayout.prioritize`），以及底部对齐查询（`explicitAlignment`，出现在前五条调用链中的三条）；
+  - 输入区 `VStack(spacing: 0)` 与聊天页 `VStack(spacing: 0)` 的高度分配；
+  - 根部 `ZStack`。
+
+代码位置：
+- 组合栏：[ChatView.swift:566](../../ios/Orbis/Orbis/ChatView.swift#L566)
+- 输入框 `TextField(axis: .vertical)`、`lineLimit(1...6)`、`frame(minHeight: 56)`：同文件第 570–583 行
+- 输入区 `composer`：第 514 行
+- 聊天页根 `VStack`：第 156 行
+
+#### 推断（待验证）
+
+SwiftUI 按尺寸提议缓存测量结果，每个不同的提议都要重新测量 UITextView。上述各层栈都会以不同的宽或高提议询问输入框，因此一次按键会被测量多次，单次成本随草稿长度增长。采样无法给出调用次数，验证时需要计数。PERF-12 的模拟器测量只输入 112 个英文字符，没有暴露这一点。
+
+#### Android 对照
+
+结构：[MainActivity.kt:2082](../../android/app/src/main/java/com/orbising/orbis/MainActivity.kt#L2082) 起，`Scaffold(bottomBar = Surface(imePadding) { Column { …; Row { … } } })`。转录在 Scaffold 内容区，与输入区分开测量。
+
+组合栏 `Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = spacedBy(8.dp))` 位于第 2181 行，依次为：
+- 附件按钮
+- `OutlinedTextField(Modifier.weight(1f), minLines = 1, maxLines = 5)`（第 2206–2210 行）
+- 48dp 发送 / 停止按钮
+
+源码注释写明：输入框承担剩余宽度，按钮贴底对齐。
+
+测量方式（Compose 布局约定，非实测）：
+- 每个布局阶段，父布局对每个子项只测量一次。
+- `Row` 先测量无权重的按钮，再把剩余宽度作为精确约束（min = max）测量带 `weight(1f)` 的输入框。
+- 底部对齐直接使用测量结果，不再询问子项。
+- 这条路径上没有固有尺寸查询；`IntrinsicSize` 只出现在 Markdown 表格。
+
+因此 Android 每次布局只测量输入框一次，宽度确定。
+
+#### 对齐要求
+
+1. 输入框在每次布局中只接收一个尺寸提议：宽度为组合栏扣除两侧按钮与间距后的确定值，高度取理想高度（1–6 行，最小 56）。
+2. 两侧按钮的测量、组合栏的宽度分配与底部对齐，都不再向输入框发起额外提议或对齐查询。
+3. 输入区与聊天页外层的高度分配不传到输入框；输入框高度变化仍正常推动布局。
+4. 外观与交互保持 iOS 现状：
+   - 按钮贴底，输入框 1–6 行增长，最小高 56；
+   - 发送飞行锚点（`orbisAnchor`）、焦点、硬件回车 / Shift+回车 / Esc、Slash 选择、`chat-composer` 标识不变。
+5. 其他基于 UITextView 的输入按同一要求核对：
+   - 新建会话卡片 `OrbisDraftEditor`（[SessionViews.swift:958](../../ios/Orbis/Orbis/SessionViews.swift#L958)，每次提议都调用 `UITextView.sizeThatFits`）；
+   - 交互面板与配对页的纵向 `TextField`（InteractionView.swift:168 / 191 / 201，PairingScannerView.swift:53）。
+
+#### 不在本项
+
+两端组合栏的既有差异沿用各自现状，统一与否另行决定：
+- 最大行数：iOS 6 行，Android 5 行；
+- 按钮尺寸：iOS 40pt，Android 48dp；
+- 间距：iOS 10pt，Android 8dp。
+
+#### 验证
+
+- **调用计数。** DEBUG 计数探针记录每次按键传给输入框的不同提议数与测量次数：修改前应大于 1，修改后每次布局为 1。
+- **模拟器。** 预置长中文草稿（数百字）后连续输入，用 Time Profiler 对比 `TextViewAdaptor._overrideSizeThatFits` 的每键占用。
+- **界面回归。** 输入框增长、按钮贴底、发送飞行、Slash、硬件键盘相关用例。
+- **真机。** 在同一台 iPad 上复测中文输入，由用户验收。
+
+证据见 [.artifacts/ios-device-typing-20261114](../../.artifacts/ios-device-typing-20261114/verification.json)。状态：待实施。

@@ -7,12 +7,25 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        8805B409FEE81C340BA71E36 /* ChatConfigurationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B57CBCB214140E9324C6786; };
+        BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABA69147CCA95C8B28B5ECA9; };
+        64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2CC3A7FB21F94C1E8CEFC97; };
+        48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5204809A5B06BD2744B651E; };
+        7A8339F274E140F2938BADA5 /* ChatTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C54B3BAF4E82D69C4D2724; };
+        C98200020000000000000001 /* ChatNativeTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210020000000000000001; };
+        C98200020000000000000002 /* ChatNativeTranscriptEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210020000000000000002; };
+        C98200020000000000000003 /* ChatTranscriptInteractionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210020000000000000003; };
+        16C6C6B5D229C2F3735B5390 /* ChatHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15E675C24D33D2D8E06FA87A; };
+        7CCA949BBC4E01FA3FC9C19D /* ChatSchedulingTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1438A4D90392CCC59988D02; };
+        C98200010000000000000002 /* ChatPageScheduling.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210010000000000000002; };
+        C98200010000000000000001 /* ChatSessionActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210010000000000000001; };
         C90200010000000000000001 /* ChatScreenPublications.swift in Sources */ = {isa = PBXBuildFile; fileRef = C90210010000000000000001; };
 		A07100010000000000000003 = {isa = PBXBuildFile; fileRef = A07110010000000000000003; };
 		A07100010000000000000002 = {isa = PBXBuildFile; fileRef = A07110010000000000000002; };
 		A07100010000000000000001 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07110010000000000000001; };
 		F08000010000000000000003 /* MathResources in Resources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000003; };
 		F08000010000000000000002 /* MathFragment.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000002; };
+		F08200010000000000000001 /* MathFragmentMeasurements.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08210010000000000000001; };
 		F08000010000000000000001 /* MathMarkup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08010010000000000000001; };
 		AA7200010000000000000001 /* HostLocalStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7200010000000000000002 /* HostLocalStorage.swift */; };
 		D06800010000000000000001 /* ProviderDialGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06810010000000000000001; };
@@ -72,12 +85,25 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        1B57CBCB214140E9324C6786 /* ChatConfigurationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatConfigurationViews.swift; sourceTree = "<group>"; };
+        ABA69147CCA95C8B28B5ECA9 /* ChatMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownView.swift; sourceTree = "<group>"; };
+        D2CC3A7FB21F94C1E8CEFC97 /* ChatMessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageRow.swift; sourceTree = "<group>"; };
+        A5204809A5B06BD2744B651E /* ChatComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposerView.swift; sourceTree = "<group>"; };
+        14C54B3BAF4E82D69C4D2724 /* ChatTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptView.swift; sourceTree = "<group>"; };
+        C98210020000000000000001 /* ChatNativeTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatNativeTranscriptView.swift; sourceTree = "<group>"; };
+        C98210020000000000000002 /* ChatNativeTranscriptEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatNativeTranscriptEnvironment.swift; sourceTree = "<group>"; };
+        C98210020000000000000003 /* ChatTranscriptInteractionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptInteractionState.swift; sourceTree = "<group>"; };
+        15E675C24D33D2D8E06FA87A /* ChatHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHeaderView.swift; sourceTree = "<group>"; };
+        F1438A4D90392CCC59988D02 /* ChatSchedulingTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSchedulingTrace.swift; sourceTree = "<group>"; };
+        C98210010000000000000002 /* ChatPageScheduling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPageScheduling.swift; sourceTree = "<group>"; };
+        C98210010000000000000001 /* ChatSessionActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionActions.swift; sourceTree = "<group>"; };
         C90210010000000000000001 /* ChatScreenPublications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatScreenPublications.swift; sourceTree = "<group>"; };
 		A07110010000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/PushLifecycleProbe.swift; sourceTree = SOURCE_ROOT; };
 		A07110010000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/PushRegistrationTests.swift; sourceTree = SOURCE_ROOT; };
 		A07110010000000000000001 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
 		F08010010000000000000003 /* MathResources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = MathResources; sourceTree = "<group>"; };
 		F08010010000000000000002 /* MathFragment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathFragment.swift; sourceTree = "<group>"; };
+		F08210010000000000000001 /* MathFragmentMeasurements.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathFragmentMeasurements.swift; sourceTree = "<group>"; };
 		F08010010000000000000001 /* MathMarkup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathMarkup.swift; sourceTree = "<group>"; };
 		AA7200010000000000000002 /* HostLocalStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostLocalStorage.swift; sourceTree = "<group>"; };
 		D06810010000000000000001 /* ProviderDialGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderDialGeometry.swift; sourceTree = "<group>"; };
@@ -215,9 +241,22 @@
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
+                C98210010000000000000001 /* ChatSessionActions.swift */,
+                C98210010000000000000002 /* ChatPageScheduling.swift */,
+                F1438A4D90392CCC59988D02 /* ChatSchedulingTrace.swift */,
+                15E675C24D33D2D8E06FA87A /* ChatHeaderView.swift */,
+                14C54B3BAF4E82D69C4D2724 /* ChatTranscriptView.swift */,
+                C98210020000000000000001 /* ChatNativeTranscriptView.swift */,
+                C98210020000000000000002 /* ChatNativeTranscriptEnvironment.swift */,
+                C98210020000000000000003 /* ChatTranscriptInteractionState.swift */,
+                A5204809A5B06BD2744B651E /* ChatComposerView.swift */,
+                D2CC3A7FB21F94C1E8CEFC97 /* ChatMessageRow.swift */,
+                ABA69147CCA95C8B28B5ECA9 /* ChatMarkdownView.swift */,
+                1B57CBCB214140E9324C6786 /* ChatConfigurationViews.swift */,
                 C90210010000000000000001 /* ChatScreenPublications.swift */,
 				F08010010000000000000003 /* MathResources */,
 				F08010010000000000000002 /* MathFragment.swift */,
+				F08210010000000000000001 /* MathFragmentMeasurements.swift */,
 				F08010010000000000000001 /* MathMarkup.swift */,
 				C05810010000000000000001 /* MotionGeometry.swift */,
 				C00510010000000000000001 /* CopyFeedback.swift */,
@@ -382,8 +421,21 @@
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
+                C98200010000000000000001 /* ChatSessionActions.swift in Sources */,
+                C98200010000000000000002 /* ChatPageScheduling.swift in Sources */,
+                7CCA949BBC4E01FA3FC9C19D /* ChatSchedulingTrace.swift in Sources */,
+                16C6C6B5D229C2F3735B5390 /* ChatHeaderView.swift in Sources */,
+                7A8339F274E140F2938BADA5 /* ChatTranscriptView.swift in Sources */,
+                C98200020000000000000001 /* ChatNativeTranscriptView.swift in Sources */,
+                C98200020000000000000002 /* ChatNativeTranscriptEnvironment.swift in Sources */,
+                C98200020000000000000003 /* ChatTranscriptInteractionState.swift in Sources */,
+                48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */,
+                64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */,
+                BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */,
+                8805B409FEE81C340BA71E36 /* ChatConfigurationViews.swift in Sources */,
                 C90200010000000000000001 /* ChatScreenPublications.swift in Sources */,
 				F08000010000000000000002 /* MathFragment.swift in Sources */,
+				F08200010000000000000001 /* MathFragmentMeasurements.swift in Sources */,
 				F08000010000000000000001 /* MathMarkup.swift in Sources */,
 				C05800010000000000000001 /* MotionGeometry.swift in Sources */,
 				C00500010000000000000001 /* CopyFeedback.swift in Sources */,

@@ -187,9 +187,7 @@ private struct DownloadBrowserView: View {
 }
 
 struct AttachmentStrip: View {
-    let store: OrbisStore
-    let target: ChatActionContext
-    let transfers: FileTransfers
+    let actions: ChatSessionActions
     let tasks: [FileTransfer]
     let preparing: Bool
     var body: some View {
@@ -208,9 +206,9 @@ struct AttachmentStrip: View {
                                 }.font(.orbisCaption())
                             }.frame(maxWidth: 180, alignment: .leading)
                             if ["paused", "failed"].contains(task.status) {
-                                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重试上传"), size: 28) { if target.matches(store) { transfers.restart(task.id) } }
+                                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("重试上传"), size: 28) { actions.restartUpload(task.id) }
                             }
-                            OrbisIconButton(symbol: "xmark", label: L10n.tr("移除附件 {0}", task.name), size: 28) { if target.matches(store) { transfers.detach([task.id]) } }
+                            OrbisIconButton(symbol: "xmark", label: L10n.tr("移除附件 {0}", task.name), size: 28) { actions.detachUploads([task.id]) }
                         }.padding(.horizontal, 12).padding(.vertical, 6).neuSurface(inset: true, radius: 14, intensity: 0.45)
                     }
                 }.padding(.horizontal, 16).padding(.vertical, 6).padding(.top, 4)

@@ -4,6 +4,30 @@ import Testing
 
 /// MATH-01: real JavaScriptCore + AttributedString parsing, including protected table pipes.
 struct MathMarkupTests {
+    // IOS-CHAT-13-R3: host reuse keeps geometry only for matching layout inputs;
+    // width, Dynamic Type, theme and content changes cannot inherit stale heights.
+    @Test func recycledMathHeightRequiresMatchingRenderInputs() {
+        let cache = MathFragmentMeasurements()
+        func key(html: String = "<span>x</span>", size: CGFloat = 17, bold: Bool = false,
+                 color: String = "#000", link: String = "#00f", alignment: String = "left",
+                 width: CGFloat = 310.6666667, scale: CGFloat = 3) -> MathFragmentMeasurementKey {
+            .init(settings: .init(html: html, size: size, bold: bold, color: color, linkColor: link,
+                                  alignment: alignment), width: width, displayScale: scale)
+        }
+        let original = key()
+        #expect(cache.height(for: original) == nil)
+        cache.insert(86, for: original)
+        #expect(cache.height(for: key(width: 310.65625)) == 86)
+        for changed in [key(html: "y"), key(size: 24), key(bold: true), key(color: "#fff"),
+                        key(link: "#f00"), key(alignment: "right"), key(width: 400), key(scale: 2)] {
+            #expect(cache.height(for: changed) == nil)
+        }
+        for invalid: CGFloat in [0, -1, .infinity, .nan, 32769] { cache.insert(invalid, for: original) }
+        #expect(cache.height(for: original) == 86)
+        #expect(cache.height(for: key(width: 0)) == nil)
+        cache.insert(40, for: key(width: 0))
+        #expect(cache.height(for: key(width: 0)) == nil)
+    }
     @Test func sharedCorpusAndResourceLimit() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("../../../shared/math-tests/fixtures.json").standardizedFileURL

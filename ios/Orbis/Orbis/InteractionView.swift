@@ -1,15 +1,13 @@
 import SwiftUI
 
 struct InteractionWorkspaceView: View, Equatable {
-    let store: OrbisStore
-    let screens: ChatScreenPublications
-    let target: ChatActionContext
-    @ObservedObject var updates: ScreenPublication
+    let model: ChatScreenModel
+    let actions: ChatSessionActions
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let runtimeId: String
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.store === rhs.store && lhs.screens === rhs.screens && lhs.target == rhs.target && lhs.runtimeId == rhs.runtimeId
+        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.runtimeId == rhs.runtimeId
     }
     @State private var selectedId: String?
     @State private var open = false
@@ -19,7 +17,7 @@ struct InteractionWorkspaceView: View, Equatable {
         #if DEBUG
         let _ = ChatUpdateProbe.shared.rendered(.workspace)
         #endif
-        let facts = screens.snapshot
+        let facts = model.workspace
         let requests = facts.requests.filter { !facts.responding.contains($0.requestId) }
         let status = facts.interactionText.map { (text: $0, pending: facts.interactionPending) }
         let inline = requests.count == 1 && requests[0].kind == "confirm"
@@ -78,18 +76,17 @@ struct InteractionWorkspaceView: View, Equatable {
             else if inline { open = false }
             else if next.contains(where: { !old.contains($0) }) { open = true }
         }
-        .onChange(of: screens.snapshot.identity) { _, _ in open = false }
+        .onChange(of: model.workspace.identity) { _, _ in open = false }
     }
 
     private func requestView(_ request: InteractionRequest, inSheet: Bool) -> some View {
-        let key = interactionDraftKey(host: screens.snapshot.host, sessionId: screens.snapshot.runtime?.sessionId, request: request)
-        return InteractionRequestView(store: store, target: target, connected: screens.snapshot.canSend, request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet).id(key)
+        let key = interactionDraftKey(host: model.workspace.host, sessionId: actions.sessionId, request: request)
+        return InteractionRequestView(actions: actions, connected: model.workspace.canSend, request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet).id(key)
     }
 }
 
 private struct InteractionRequestView: View {
-    let store: OrbisStore
-    let target: ChatActionContext
+    let actions: ChatSessionActions
     let connected: Bool
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -149,8 +146,8 @@ private struct InteractionRequestView: View {
                         }.frame(maxHeight: inSheet ? .infinity : 220).scrollBounceBehavior(.basedOnSize)
                         HStack(spacing: 12) {
                             OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? L10n.tr("拒绝") : L10n.tr("取消"))) {
-                                guard target.matches(store) else { return }
-                                let accepted = store.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
+                                guard actions.isCurrent else { return }
+                                let accepted = actions.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
                                 if accepted && request.kind == "confirm" { OrbisHaptics.commit() }
                             }
                             OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交")), symbol: "checkmark") { submit() }.disabled(!valid)
@@ -246,7 +243,7 @@ private struct InteractionRequestView: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func submit() {
-        guard target.matches(store) else { return }
-        if store.respond(request, response: draftValue.response(for: request)) { OrbisHaptics.commit() }
+        guard actions.isCurrent else { return }
+        if actions.respond(request, response: draftValue.response(for: request)) { OrbisHaptics.commit() }
     }
 }

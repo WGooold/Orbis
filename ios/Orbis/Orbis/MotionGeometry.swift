@@ -36,6 +36,27 @@ struct ChatViewportFacts: Equatable {
     }
 }
 
+/// A lazy row owns its report until it disappears. Unrelated geometry callbacks
+/// must not replace the aggregate with a transient empty preference reduction.
+struct ChatViewportReports {
+    private var reports: [UUID: ChatViewportFacts] = [:]
+
+    mutating func update(_ token: UUID, facts next: ChatViewportFacts?) {
+        reports[token] = next
+    }
+
+    func snapshot(questionID: String?) -> ChatViewportFacts {
+        reports.values.reduce(into: ChatViewportFacts()) { aggregate, next in
+            aggregate.hasVisibleRows = aggregate.hasVisibleRows || next.hasVisibleRows
+            aggregate.firstRowNearTop = aggregate.firstRowNearTop || next.firstRowNearTop
+            guard let question = next.question, question.id == questionID else { return }
+            // Old/new lazy hosts can overlap during an identity handoff. An
+            // on-screen report for the current question wins until its host exits.
+            aggregate.question = .init(id: question.id, outside: (aggregate.question?.outside ?? true) && question.outside)
+        }
+    }
+}
+
 /// IOS-CHAT-04: discrete reading policy. Native scroll adapters retain pixel geometry and
 /// anchors; this value changes only when intent, a threshold or a paging edge changes.
 struct ChatViewportPolicy: Equatable {
@@ -163,6 +184,27 @@ struct ChatViewportPolicy: Equatable {
 
     private mutating func updateJump(_ distance: CGFloat) {
         showJump = !following && distance > Self.line * 3
+    }
+}
+
+/// Native layout readiness is independent of message/paging readiness: an empty
+/// transcript can settle, and a mounted collection must measure its own first rows.
+/// This value owns no following intent; the adapter reads ChatViewportPolicy for that.
+struct ChatNativeViewportPlacement: Equatable {
+    private(set) var isReady = false
+
+    mutating func measured(visibleContent: Bool, bottomDistance: CGFloat) {
+        if !isReady, visibleContent, bottomDistance.isFinite, abs(bottomDistance) <= 1 { isReady = true }
+    }
+}
+
+/// Prefer a row whose beginning is still readable. A preceding, clipped row can
+/// grow above it; anchoring that row's offscreen top would move the reader instead.
+/// A single tall reply still falls back to its existing clipped-row anchor.
+enum ChatViewportAnchorPriority {
+    static func precedes(_ lhsTop: CGFloat, _ rhsTop: CGFloat) -> Bool {
+        if (lhsTop >= 0) != (rhsTop >= 0) { return lhsTop >= 0 }
+        return lhsTop < rhsTop
     }
 }
 
@@ -450,6 +492,13 @@ final class ReplyCardArrivals {
         }
         if !nextReady || !following { tickets.removeAll() }
         previous = ids; members = Set(rows.flatMap(\.members)); ready = nextReady
+    }
+
+    /// Losing following/readiness invalidates unclaimed tickets immediately, even
+    /// when no transcript publication accompanies the policy/visibility change.
+    func setReadiness(_ nextReady: Bool, following: Bool) {
+        ready = nextReady
+        if !nextReady || !following { tickets.removeAll() }
     }
 
     func claim(_ id: String, now: TimeInterval) -> Bool {

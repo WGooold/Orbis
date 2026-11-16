@@ -449,6 +449,18 @@ final class OrbisUITests: XCTestCase {
     private func launch(_ screen: String, dark: Bool = false, arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--preview-screen=" + screen] + arguments
+        // IOS-CHAT-06: rerun the original assertions with exactly one diagnostic candidate.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["ORBIS_CHAT_TRANSCRIPT_BACKEND"] == "swiftui" {
+            app.launchArguments.append("--preview-swiftui-transcript")
+        }
+        if environment["ORBIS_CHAT_ANCHOR_DIAGNOSTICS"] == "1" {
+            app.launchArguments.append("--preview-anchor-diagnostics")
+            if let candidate = environment["ORBIS_CHAT_ANCHOR_CANDIDATE"],
+               ["reading-top", "unbound-reading", "below-only"].contains(candidate) {
+                app.launchArguments.append("--preview-anchor-candidate=" + candidate)
+            }
+        }
         if !arguments.contains(where: { $0.hasPrefix("--preview-language=") }) {
             app.launchArguments.append("--preview-language=zh-Hans")
         }
@@ -817,7 +829,13 @@ final class OrbisUITests: XCTestCase {
         let app = launch("changes", arguments: ["--preview-native-file-changes"])
         let open = app.buttons["turn-changes-open-preview-review"]
         XCTAssertTrue(open.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].exists)
+        // The scope caveat is a low-interference info disclosure (583dcdbb), not inline copy.
+        XCTAssertTrue(app.staticTexts["记录不完整"].exists)
+        XCTAssertFalse(app.staticTexts["仅记录 Codex 文件工具变更"].exists)
+        app.buttons["查看记录不完整说明"].tap()
+        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].waitForExistence(timeout: 3))
+        app.buttons["知道了"].tap()
+        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].waitForNonExistence(timeout: 3))
         XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
         capture("native-turn-change-summary", app: app)
         open.tap()
@@ -831,13 +849,17 @@ final class OrbisUITests: XCTestCase {
         let open = app.buttons["turn-changes-open-preview-review"]
         XCTAssertTrue(open.waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
-        // One compact block after the turn's last row, although the Host anchored it on the first of
-        // five steps: the header opens the viewer, then one single-line row per file.
+        // One compact block after the card holding the anchored message (91953f11, both apps).
+        // A current Host anchors the turn's last agent message; this fixture keeps an older
+        // Host's mid-turn anchor on the first of five steps, so the block follows the first card
+        // (steps 1–4) and precedes the final step. The header opens the viewer, then one row per file.
         XCTAssertTrue(open.label.contains("3 个文件已更改"))
         XCTAssertEqual(app.buttons.matching(identifier: "turn-changes-open-preview-review").count, 1)
-        XCTAssertGreaterThanOrEqual(app.staticTexts["已完成本轮文件修改。"].frame.minY, app.staticTexts["测试通过。"].frame.maxY)
-        XCTAssertGreaterThanOrEqual(open.frame.minY, app.staticTexts["已完成本轮文件修改。"].frame.maxY)
+        let anchoredCardEnd = app.staticTexts["测试通过。"].frame, nextCard = app.staticTexts["已完成本轮文件修改。"].frame
+        XCTAssertGreaterThanOrEqual(nextCard.minY, anchoredCardEnd.maxY)
+        XCTAssertGreaterThanOrEqual(open.frame.minY, anchoredCardEnd.maxY)
         let rows = ["change-1", "change-2", "change-3"].map { app.buttons["turn-change-file-" + $0].frame }
+        XCTAssertLessThanOrEqual(rows[2].maxY, nextCard.minY)
         XCTAssertGreaterThanOrEqual(rows[0].minY, open.frame.maxY)
         for (above, below) in zip(rows, rows.dropFirst()) { XCTAssertGreaterThanOrEqual(below.minY, above.maxY - 0.5) }
         for row in rows { XCTAssertLessThanOrEqual(row.height, 44) }
@@ -942,7 +964,17 @@ final class OrbisUITests: XCTestCase {
     // return (back control or swipe) loses frames to main-thread work. Records always print;
     // frame budgets apply only on an explicit device baseline, like the entry timing above.
     func testPageMotionKeepsFramesDuringChatEntryAndReturn() {
-        let app = launch("entry", arguments: ["--measure-page-motion", "--preview-entry-long-turn"])
+        assertPageMotionKeepsFramesDuringChatEntryAndReturn()
+    }
+
+    // IOS-CHAT-10-R1: two appearance callbacks for one prepared token must retain
+    // the complete entry slide and both existing return paths.
+    func testRepeatedPageAppearanceDoesNotRestartTheEntryAnimation() {
+        assertPageMotionKeepsFramesDuringChatEntryAndReturn(arguments: ["--preview-repeat-page-appearance"])
+    }
+
+    private func assertPageMotionKeepsFramesDuringChatEntryAndReturn(arguments: [String] = []) {
+        let app = launch("entry", arguments: ["--measure-page-motion", "--preview-entry-long-turn"] + arguments)
         let card = app.buttons["home-runtime-preview-codex"]
         XCTAssertTrue(card.waitForExistence(timeout: 15))
         let report = app.staticTexts["page-motion-metrics"]
@@ -1840,22 +1872,24 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch.waitForExistence(timeout: 3))
     }
 
-    func testHistoryDownloadButtonAndFlight() {
-        let app = launch("history", arguments: ["--preview-chat-artifact", "--preview-history-artifact", "--preview-slow-flight", "--preview-flight-probe"])
+    // S45 / SC66: history offers no downloads entry; a file in its preview still queues a task,
+    // which the chat's downloads page lists.
+    func testHistoryFileDownloadQueuesWithoutADownloadsEntry() {
+        let app = launch("history", arguments: ["--preview-chat-artifact", "--preview-history-artifact"])
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["history-downloads"].exists)
         let node = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "梳理页面和交互")).firstMatch
         XCTAssertTrue(node.waitForExistence(timeout: 8)); node.tap()
         let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 5))
-        let origin = file.frame
         file.tap()
-        let target = app.buttons["history-downloads"]
-        let metrics = flightMetrics(target)
-        XCTAssertEqual(metrics["mode"], "flight")
-        XCTAssertEqual(Double(metrics["fromX"] ?? "") ?? -1, Double(origin.midX), accuracy: 4)
-        XCTAssertEqual(Double(metrics["fromY"] ?? "") ?? -1, Double(origin.midY), accuracy: 4)
-        XCTAssertEqual(Double(metrics["toX"] ?? "") ?? -1, Double(target.frame.midX), accuracy: 4)
-        XCTAssertEqual(Double(metrics["toY"] ?? "") ?? -1, Double(target.frame.midY), accuracy: 4)
-        capture("history-download-flight-midway", app: app)
+        capture("history-file-download-without-entry", app: app)
+        app.buttons["返回"].firstMatch.tap()
+        let downloads = app.buttons["chat-downloads"]
+        XCTAssertTrue(downloads.waitForExistence(timeout: 3))
+        downloads.tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 3), "The history file download must be queued")
     }
 
     // ADR-0070 / S37: the header keeps downloads and local draft creation; settings is a root,
@@ -1956,11 +1990,12 @@ final class OrbisUITests: XCTestCase {
         let history = launch("history", arguments: ["--preview-language=en"])
         let title = history.staticTexts["History and branches"]
         XCTAssertTrue(title.waitForExistence(timeout: 8))
-        if history.frame.width <= 430 {
-            XCTAssertGreaterThan(title.frame.height, 30, "The English title must wrap instead of truncating")
-        }
-        XCTAssertTrue(history.buttons["Filter history"].isHittable)
-        XCTAssertTrue(history.buttons["history-downloads"].isHittable)
+        // S45 leaves one header action, so the title fits on a phone; its two-line limit still
+        // prevents truncation on narrower widths. The capture is the truncation review.
+        let filter = history.buttons["Filter history"]
+        XCTAssertTrue(filter.isHittable)
+        XCTAssertLessThanOrEqual(title.frame.maxX, filter.frame.minX, "The title must not run under the action")
+        XCTAssertFalse(history.buttons["history-downloads"].exists)
         capture("language-history-english-full-title", app: history)
     }
 
@@ -2060,26 +2095,23 @@ final class OrbisUITests: XCTestCase {
     func testFullPageReturnBudgetAndNestedSourceReentry() {
         let app = launch("home", arguments: ["--measure-page-return", "--probe-accessibility-reach"])
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
-        for (index, entry) in ["root-tab-settings", "home-downloads"].enumerated() {
-            app.buttons[entry].tap()
-            returnWithoutSettling(app, count: index + 1)
-            XCTAssertTrue(app.buttons[entry].isHittable)
-        }
+        // Settings is a root tab (S37) and leaves through the tab bar, not a page return.
+        app.buttons["home-downloads"].tap()
+        returnWithoutSettling(app, count: 1)
+        XCTAssertTrue(app.buttons["home-downloads"].isHittable)
         let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "home-runtime-")).firstMatch
         card.tap()
-        app.buttons["历史与分支"].tap()
-        let downloads = app.buttons["history-downloads"]
-        XCTAssertTrue(downloads.waitForExistence(timeout: 3))
-        for count in 3...5 {
-            downloads.tap()
+        let history = app.buttons["历史与分支"]
+        XCTAssertTrue(history.waitForExistence(timeout: 3))
+        // The chat is itself a pushed source; each page above it returns there.
+        for count in 2...4 {
+            history.tap()
             returnWithoutSettling(app, count: count)
-            XCTAssertTrue(downloads.isHittable)
-            waitReachable(app, "chat-composer|", false)
+            XCTAssertTrue(history.isHittable)
+            waitReachable(app, "|打开会话目录", false)
         }
-        returnWithoutSettling(app, count: 6)
-        XCTAssertTrue(app.buttons["历史与分支"].isHittable)
         app.buttons["chat-downloads"].tap()
-        returnWithoutSettling(app, count: 7)
+        returnWithoutSettling(app, count: 5)
         XCTAssertTrue(app.buttons["chat-downloads"].isHittable)
         capture("immediate-return-nested-chat", app: app)
     }
@@ -2124,16 +2156,13 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // M14: nested full pages return one level at a time; each source keeps its state.
     func testNestedPagesSwipeBackOneLevelAtATime() {
         let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("nested page draft")
-        app.buttons["历史与分支"].tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        let search = app.textFields["搜索历史与分支"]
-        search.tap(); search.typeText("保留")
-        app.buttons["history-downloads"].tap()
+        app.buttons["chat-downloads"].tap()
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
         func swipeBack() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
@@ -2141,17 +2170,15 @@ final class OrbisUITests: XCTestCase {
                        withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         swipeBack()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        XCTAssertEqual(search.value as? String, "保留")
-        waitReachable(app, "history-downloads|", true)
-        waitReachable(app, "chat-composer|", false)
-        capture("nested-downloads-return-history", app: app)
-        swipeBack()
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue((composer.value as? String)?.contains("nested page draft") == true)
         waitReachable(app, "chat-composer|", true)
         waitReachable(app, "|打开会话目录", false)
-        capture("nested-history-return-chat", app: app)
+        capture("nested-downloads-return-chat", app: app)
+        swipeBack()
+        waitReachable(app, "|打开会话目录", true)
+        waitReachable(app, "chat-composer|", false)
+        capture("nested-chat-return-home", app: app)
     }
 
     // ADR-0054 / M14: settings and the home downloads page slide back to home like the chat.
@@ -2236,18 +2263,20 @@ final class OrbisUITests: XCTestCase {
 
     // ADR-0054: the chat's downloads page returns to that same chat, draft and all.
     func testChatDownloadsReturnToSameChat() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("下载前的草稿")
         app.buttons["chat-downloads"].tap()
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
-        XCTAssertFalse(composer.exists)
+        // XCUI still finds the retained native text view; reachability is the covered contract.
+        waitReachable(app, "chat-composer|", false)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         XCTAssertTrue((composer.value as? String)?.contains("下载前的草稿") == true)
         capture("chat-downloads-returned", app: app)
     }
@@ -2296,8 +2325,14 @@ final class OrbisUITests: XCTestCase {
         waitReachable(app, "chat-composer|", false)
         // The fixture waits two seconds, then applies six real source patches.
         Thread.sleep(forTimeInterval: 3)
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
-        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
+        // Use the pushed page's horizontal bounds: on iPad, 15% of the whole
+        // window is inside the persistent directory sidebar and cannot go back.
+        let pageLeft = app.textFields["download-path"].frame.minX - 24
+        let pageWidth = app.frame.maxX - pageLeft
+        let start = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: pageLeft - app.frame.minX + pageWidth * 0.15, dy: app.frame.height * 0.6))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: pageLeft - app.frame.minX + pageWidth * 0.88, dy: app.frame.height * 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         waitReachable(app, "chat-composer|", true)
@@ -2341,24 +2376,6 @@ final class OrbisUITests: XCTestCase {
         capture("detail-replacement-retained-new-owner", app: app)
     }
 
-    // ADR-0054 / ADR-0058 M16: the history page has the chat's download button and its page returns there.
-    func testHistoryDownloadsReturnToHistory() {
-        let app = launch("history")
-        let button = app.buttons["history-downloads"]
-        XCTAssertTrue(button.waitForExistence(timeout: 8))
-        let search = app.textFields["搜索历史与分支"]
-        XCTAssertTrue(search.exists)
-        button.tap()
-        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
-        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
-                    withVelocity: .slow, thenHoldForDuration: 0.1)
-        XCTAssertTrue(button.waitForExistence(timeout: 3))
-        XCTAssertTrue(search.exists)
-        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
-        capture("history-downloads-returned", app: app)
-    }
-
     // M14: history and branch browsing is a page above the same chat, so a right swipe returns there.
     func testHistorySwipeBackReturnsToChat() {
         let app = launch("chat", arguments: ["--probe-accessibility-reach"])
@@ -2367,15 +2384,15 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(historyButton.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("历史前的草稿")
         historyButton.tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        waitReachable(app, "history-downloads|", true)
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 3))
+        waitReachable(app, "|筛选历史", true)
         waitReachable(app, "chat-composer|", false)
         // The covered chat must not keep the keyboard.
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
-        XCTAssertTrue(app.buttons["history-downloads"].exists)
+        XCTAssertTrue(app.buttons["筛选历史"].exists)
         XCTAssertFalse(app.buttons["退出预览"].exists, "取消右滑不能同时打开手指下的历史卡片")
         capture("history-swipe-cancelled", app: app)
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
@@ -2387,7 +2404,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue((composer.value as? String)?.contains("历史前的草稿") == true)
         capture("history-swipe-back-to-chat", app: app)
         historyButton.tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 3))
     }
 
     func testSlashPickerStaysAboveKeyboard() {
@@ -2846,12 +2863,12 @@ final class OrbisUITests: XCTestCase {
         }
         let before = counts()
         XCTAssertGreaterThan(before["page", default: 0], 0)
-        composer.typeText("local editor update")
+        composer.typeText("local editor update\nsecond line\nthird line")
         Thread.sleep(forTimeInterval: 0.3)
         let after = counts()
         XCTAssertTrue((composer.value as? String)?.contains("local editor update") == true)
         XCTAssertGreaterThan(after["composer", default: 0], before["composer", default: 0])
-        for region in ["navigation", "page", "header", "transcript", "notices", "workspace", "row", "markdown"] {
+        for region in ["navigation", "page", "header", "transcript", "notices", "workspace", "row", "markdown", "nativeInputs"] {
             XCTAssertEqual(after[region], before[region], "Typing rebuilt \(region): \(before) -> \(after)")
         }
     }
@@ -2977,6 +2994,35 @@ final class OrbisUITests: XCTestCase {
         for region in ["navigation", "page", "header", "composer", "notices", "workspace"] {
             XCTAssertEqual(after[region], before[region], "Source patches rebuilt \(region): \(before) -> \(after)")
         }
+        if before["nativeRow", default: 0] > 0 {
+            XCTAssertEqual(after["nativeRow", default: 0] - before["nativeRow", default: 0], 3)
+            XCTAssertEqual(after["nativeReconfigure", default: 0] - before["nativeReconfigure", default: 0], 3)
+            XCTAssertEqual(after["nativeAuxiliary"], before["nativeAuxiliary"], "Content-only patches rebuilt auxiliary rows")
+        }
+    }
+
+    // IOS-CHAT-07-R1: each source commit following a locally persisted keystroke
+    // must preserve composer equality; the next keystroke is still editor-local.
+    func testTypedComposerStaysIsolatedAcrossSourcePatches() {
+        let app = launch("viewport", arguments: ["--probe-chat-updates", "--preview-source-controls", "--preview-reduce-motion"])
+        let report = app.staticTexts["chat-update-report"], trigger = app.buttons["preview-chat-source-update"]
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(report.waitForExistence(timeout: 3))
+        for character in ["t", "y", "p"] {
+            composer.tap(); composer.typeText(character)
+            waitForStableChatRegions(report)
+            let before = chatRegionCounts(report)
+            trigger.tap()
+            let committed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                self.chatRegionCounts(report)["transcript", default: 0] > before["transcript", default: 0]
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [committed], timeout: 5), .completed)
+            waitForStableChatRegions(report)
+            let after = chatRegionCounts(report)
+            XCTAssertEqual(after["composer"], before["composer"], "Source commit republished the typed draft")
+        }
+        XCTAssertEqual(composer.value as? String, "typ")
     }
 
     // SC89 / S31: nested tool-group expansion keeps both reading anchors and retained state.
@@ -3012,6 +3058,173 @@ final class OrbisUITests: XCTestCase {
         app.terminate()
     }
 
+    // IOS-CHAT-13: independent hosts must resize their actual native cells through
+    // the disclosure's intermediate heights and retain state after cell recycling.
+    func testHostedToolDisclosureKeepsTheReplyAndCellInContinuousLayout() throws {
+        let app = launch("tool", arguments: ["--preview-long-transcript", "--preview-tool-group", "--preview-scroll-frames"])
+        defer { app.terminate() }
+        let group = app.buttons["展开3 次工具调用，已完成"]
+        XCTAssertTrue(group.waitForExistence(timeout: 8))
+        let transcript = app.collectionViews["chat-transcript-native"].firstMatch
+        XCTAssertTrue(transcript.exists)
+        for opening in [true, false, true] {
+            let button = app.buttons[opening ? "展开3 次工具调用，已完成" : "收起3 次工具调用，已完成"]
+            let header = button.frame
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: header.midX, dy: header.minY + 20)).tap()
+            let samples = try chatScrollFrames(app)
+            let values = samples.compactMap { sample -> ([Double], [Double])? in
+                guard let row = sample.rows["tool-card:preview-tool"],
+                      let cell = sample.cells?["tool-card:preview-tool"] else { return nil }
+                return (row, cell)
+            }
+            let first = try XCTUnwrap(values.first), last = try XCTUnwrap(values.last)
+            let direction = opening ? 1.0 : -1.0
+            XCTAssertGreaterThan(values.count, 3)
+            XCTAssertGreaterThan((last.0[2] - first.0[2]) * direction, 100)
+            XCTAssertGreaterThan((last.1[2] - first.1[2]) * direction, 100)
+            for (row, cell) in values {
+                XCTAssertEqual(row[0], first.0[0], accuracy: 1)
+                XCTAssertEqual(row[1], first.0[1], accuracy: 1)
+                XCTAssertEqual(cell[0], first.1[0], accuracy: 1)
+                XCTAssertEqual(cell[1], first.1[1], accuracy: 1)
+                XCTAssertEqual(cell[2], row[2], accuracy: 1, "The native cell must follow the hosted reply's measured height")
+            }
+            for (before, after) in zip(values, values.dropFirst()) {
+                XCTAssertGreaterThanOrEqual((after.1[2] - before.1[2]) * direction, -1)
+            }
+            let low = min(first.1[2], last.1[2]), high = max(first.1[2], last.1[2])
+            XCTAssertGreaterThan(values.filter { $0.1[2] > low + 1 && $0.1[2] < high - 1 }.count, 2)
+        }
+        app.buttons["展开read，已完成"].tap()
+        _ = try chatScrollFrames(app)
+        let expandedCall = app.buttons["收起read，已完成"]
+        XCTAssertTrue(expandedCall.exists)
+        for _ in 0..<8 { transcript.swipeDown() }
+        XCTAssertFalse(app.buttons["收起3 次工具调用，已完成"].exists, "The source cell must leave the native reuse window")
+        app.buttons["跳到最新消息"].tap()
+        XCTAssertTrue(expandedCall.waitForExistence(timeout: 5), "Cell recycling must retain the nested disclosure state")
+        capture("chat-native-tool-disclosure-recycled", app: app)
+    }
+
+    // IOS-CHAT-13-R4: sampling after idle misses a one-frame anchor jump. Keep a
+    // downstream row fixed on every display tick while the preceding row resizes.
+    func testDisclosureAboveViewportPreservesEveryReadingFrame() throws {
+        let app = launch("tool", arguments: ["--preview-tool-group", "--preview-above-viewport-disclosure", "--preview-scroll-frames"])
+        defer { app.terminate() }
+        let transcript = chatTranscript(app)
+        let group = app.buttons["展开3 次工具调用，已完成"]
+        XCTAssertTrue(app.buttons["preview-above-disclosure"].waitForExistence(timeout: 8))
+        for _ in 0..<6 where !group.isHittable { transcript.swipeDown() }
+        XCTAssertTrue(group.isHittable)
+        let viewport = transcript.frame
+        let displacement = max(0, group.frame.maxY - viewport.minY + 5)
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)).press(forDuration: 0.05,
+            thenDragTo: app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: viewport.minX + viewport.width * 0.8,
+                dy: viewport.minY + viewport.height * 0.7 - displacement)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        let anchor = app.staticTexts["上方展开阅读锚点"]
+        XCTAssertTrue(anchor.isHittable)
+        XCTAssertLessThan(group.frame.midY, viewport.minY, "The disclosure header must start above the viewport")
+        let before = anchor.frame
+        for _ in 0..<2 {
+            app.buttons["preview-above-disclosure"].tap()
+            let samples = try chatScrollFrames(app)
+            for id in ["native-reader-user", "#presentation:native-reader-user"] {
+                let cells = samples.compactMap { $0.cells?[id] }
+                XCTAssertGreaterThan(cells.count, 3)
+                XCTAssertEqual(cells.count, samples.count, "The same reading row must be present on every frame")
+                let first = try XCTUnwrap(cells.first)
+                for frame in cells { XCTAssertEqual(frame[0], first[0], accuracy: 1, id) }
+            }
+            let heights = samples.compactMap { $0.cells?["tool-card:preview-tool"]?[2] }
+            XCTAssertGreaterThan(try XCTUnwrap(heights.max()) - XCTUnwrap(heights.min()), 50,
+                "The preceding hosted cell must actually change height during measurement")
+            XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+        }
+        capture("above-viewport-disclosure-reading-anchor", app: app)
+    }
+
+    // IOS-CHAT-13-R3: a real file-summary cell must retain its disclosure after
+    // leaving the reuse window, without borrowing another summary's state.
+    func testHostedFileSummaryRetainsExpansionAfterCellReuse() throws {
+        let app = launch("changes", arguments: ["--preview-many-files", "--preview-long-transcript"])
+        defer { app.terminate() }
+        let expand = app.buttons["turn-changes-expand-preview-review"]
+        let found = expand.waitForExistence(timeout: 10)
+        if !found {
+            capture("chat-file-summary-missing", app: app)
+            print("FILE_SUMMARY_INPUTS " + String(describing: app.staticTexts["change-detail-requests"].value))
+            print("FILE_SUMMARY_MISSING " + app.debugDescription)
+        }
+        XCTAssertTrue(found)
+        expand.tap()
+        let sixth = app.buttons["turn-change-file-change-6"]
+        XCTAssertTrue(sixth.waitForExistence(timeout: 5))
+        XCTAssertTrue(expand.label.contains("收起"))
+        let transcript = app.collectionViews["chat-transcript-native"].firstMatch
+        for _ in 0..<8 { transcript.swipeDown() }
+        XCTAssertFalse(expand.exists, "The source must leave the reuse window")
+        app.buttons["跳到最新消息"].tap()
+        XCTAssertTrue(sixth.waitForExistence(timeout: 5))
+        XCTAssertTrue(expand.label.contains("收起"), "Recycling must retain the file-summary expansion")
+        capture("chat-native-file-summary-recycled", app: app)
+    }
+
+    // IOS-CHAT-13-R5: prose after a tool call splits the final reply, and the new card
+    // takes over the turn anchors. The original row must drop its retained summary.
+    func testFileSummaryFollowsAnchorsWhenTheReplySplits() throws {
+        let app = launch("changes", arguments: ["--preview-long-transcript", "--preview-source-controls",
+                                                "--preview-change-anchor-handoff"])
+        defer { app.terminate() }
+        let summaries = app.buttons.matching(identifier: "turn-changes-open-preview-review")
+        XCTAssertTrue(summaries.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(summaries.count, 1)
+        app.buttons["preview-chat-source-update"].tap()
+        let continuation = app.staticTexts["工具调用后的补充说明。"]
+        XCTAssertTrue(continuation.waitForExistence(timeout: 5))
+        // Wait for the new card's asynchronous match before counting the old row's cards.
+        func followed() -> Bool {
+            summaries.allElementsBoundByIndex.contains { $0.frame.minY > continuation.frame.minY }
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !followed() && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertTrue(followed(), "The summary follows the new final card")
+        XCTAssertEqual(summaries.count, 1, "Only the row that owns the anchors shows the summary")
+        capture("chat-file-summary-anchor-handoff", app: app)
+    }
+
+    // IOS-CHAT-13-R3: capture the first native frames on return, before WebKit
+    // finishes loading; a final settled screenshot alone misses the height flash.
+    func testHostedMathRetainsMeasuredHeightAfterCellReuse() throws {
+        let app = launch("tool", arguments: ["--preview-math-row", "--preview-scroll-frames"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 15))
+        func waitForRenderedFormula() {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                let web = app.webViews.firstMatch
+                return web.isHittable && web.frame.height > 20 &&
+                    web.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "公式复用锚点")).firstMatch.exists &&
+                    !web.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "\\frac")).firstMatch.exists
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed,
+                           "A sized web view must contain rendered math, not the raw-source fallback: " + app.webViews.firstMatch.debugDescription)
+        }
+        waitForRenderedFormula()
+        let transcript = app.collectionViews["chat-transcript-native"].firstMatch
+        let original = app.webViews.firstMatch.frame.height
+        XCTAssertGreaterThan(original, 20)
+        for _ in 0..<8 { transcript.swipeDown() }
+        XCTAssertFalse(app.webViews.firstMatch.exists, "The math host must leave the reuse window")
+        app.buttons["跳到最新消息"].tap()
+        let samples = try chatScrollFrames(app)
+        let heights = samples.compactMap { $0.cells?["math-recycled"]?[2] }
+        XCTAssertGreaterThan(heights.count, 3)
+        let first = try XCTUnwrap(heights.first)
+        for height in heights { XCTAssertEqual(height, first, accuracy: 1, "A recycled formula must reserve its measured height immediately") }
+        waitForRenderedFormula()
+        XCTAssertEqual(app.webViews.firstMatch.frame.height, original, accuracy: 1)
+        capture("chat-native-math-recycled", app: app)
+    }
+
     // PERF-11: traverse many lazily mounted history cards in both directions; the
     // same gesture sequence is also the Time Profiler baseline/candidate workload.
     func testLongTranscriptScrollsBothWaysAndReturnsToLatest() {
@@ -3019,7 +3232,7 @@ final class OrbisUITests: XCTestCase {
         let latest = app.staticTexts["源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]
         XCTAssertTrue(latest.waitForExistence(timeout: 8))
         XCTAssertTrue(latest.isHittable)
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         let header = app.buttons["chat-title"].frame
         for direction in [1.0, -1.0, 1.0] {
             print("SCROLL_PROBE direction=\(direction) start=\(Date().timeIntervalSince1970)")
@@ -3058,7 +3271,7 @@ final class OrbisUITests: XCTestCase {
         defer { app.terminate() }
         let latest = app.staticTexts["源文件检查完成。展开工具可查看摘要和按需读取完整输出。"]
         XCTAssertTrue(latest.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         for distance in distances {
             for _ in 0..<distance {
                 let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.25))
@@ -3082,7 +3295,7 @@ final class OrbisUITests: XCTestCase {
         let app = launch("viewport", arguments: ["--preview-scroll-frames", "--preview-jump-updates"])
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         transcript.swipeDown(); transcript.swipeDown()
         app.buttons["跳到最新消息"].tap()
         let samples = try chatScrollFrames(app)
@@ -3097,6 +3310,34 @@ final class OrbisUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
         XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
         XCTAssertTrue(app.buttons["跳到最新消息"].exists)
+    }
+
+    // IOS-CHAT-13: a second explicit action must interrupt the old native scroll
+    // immediately. Endpoints alone pass even if the old question jump runs first.
+    func testJumpToLatestInterruptsTheInFlightQuestionLocation() throws {
+        let app = launch("viewport", arguments: ["--preview-question-reminder", "--preview-scroll-frames", "--preview-question-preemption"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = chatTranscript(app)
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+            thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)),
+            withVelocity: .slow, thenHoldForDuration: 0.3)
+        let reminder = app.buttons["chat-question-reminder"]
+        XCTAssertTrue(reminder.waitForExistence(timeout: 3))
+        reminder.tap()
+        let samples = try chatScrollFrames(app)
+        let command = try XCTUnwrap(samples.compactMap(\.requestPreemption).first)
+        XCTAssertTrue(command.oldAnimating, "The replacement must be issued during the original native animation")
+        XCTAssertGreaterThan(command.latestSequence, command.questionSequence)
+        XCTAssertEqual(command.latestContextGeneration, command.contextGeneration)
+        let after = samples.filter { $0.time >= command.issuedAt + 0.05 }
+        XCTAssertGreaterThan(after.count, 3)
+        XCTAssertTrue(after.allSatisfy { $0.offset >= command.issuedOffset - 2 }, "The old question animator must stop when the new latest action is accepted")
+        let last = try XCTUnwrap(after.last)
+        XCTAssertEqual(last.bottom - last.offset, 0, accuracy: 2)
+        XCTAssertFalse(app.buttons["跳到最新消息"].exists)
+        transcript.swipeDown()
+        XCTAssertTrue(app.buttons["跳到最新消息"].waitForExistence(timeout: 3), "A later real gesture must still cancel following")
     }
 
     private func assertChatScrollMotion(_ samples: [ChatScrollFrame], reduced: Bool = false, stableRowSizes: Bool = true) throws {
@@ -3127,12 +3368,23 @@ final class OrbisUITests: XCTestCase {
     }
 
     private struct ChatScrollFrame: Decodable {
+        struct RequestPreemption: Decodable {
+            let issuedAt: Double
+            let issuedOffset: Double
+            let oldAnimating: Bool
+            let questionSequence: Int
+            let latestSequence: Int
+            let contextGeneration: Int
+            let latestContextGeneration: Int
+        }
         let time: Double
         let offset: Double
         let bottom: Double
         let width: Double
         let height: Double
         let rows: [String: [Double]]
+        let cells: [String: [Double]]?
+        let requestPreemption: RequestPreemption?
     }
 
     private func chatScrollFrames(_ app: XCUIApplication) throws -> [ChatScrollFrame] {
@@ -3147,7 +3399,7 @@ final class OrbisUITests: XCTestCase {
     func testLongFinalReplyKeepsReadingPositionAndOnlyFollowsAfterJump() {
         let app = launch("viewport")
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         transcript.swipeDown()
         transcript.swipeDown()
         let visible = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
@@ -3172,13 +3424,117 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-following", app: app)
     }
 
+    // IOS-CHAT-13: a real remote history page must prepend through SQLite and
+    // receive an applied acknowledgement without moving the same native text.
+    func testHistoryPrependPreservesTheVisibleReadingAnchor() throws {
+        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-reduce-motion", "--preview-scroll-frames"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = chatTranscript(app)
+        let delivery = app.buttons["preview-history-deliver"]
+        XCTAssertTrue(delivery.waitForExistence(timeout: 3))
+        func protocolFields() -> [String: String] {
+            Dictionary(uniqueKeysWithValues: ((delivery.value as? String) ?? "").split(separator: ";").compactMap { field in
+                let pair = field.split(separator: "=", maxSplits: 1)
+                return pair.count == 2 ? (String(pair[0]), String(pair[1])) : nil
+            })
+        }
+        let tail = app.staticTexts["历史分页阅读锚点 32"]
+        let initialTail = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in tail.isHittable }, object: tail)
+        XCTAssertEqual(XCTWaiter.wait(for: [initialTail], timeout: 5), .completed)
+        XCTAssertEqual(protocolFields()["requests"], "0", "Paging starts only after the reader scrolls toward older content")
+        XCTAssertEqual(protocolFields()["publishedMessages"], "12")
+        XCTAssertEqual(protocolFields()["publishedHistory20"], "false")
+        for _ in 0..<12 where !delivery.isEnabled {
+            transcript.swipeDown()
+            settle()
+        }
+        XCTAssertTrue(waitUntilEnabled(delivery, timeout: 3), (delivery.value as? String) ?? "Missing history request")
+        guard delivery.isEnabled else { return }
+        let pending = protocolFields()
+        XCTAssertEqual(pending["requests"], "1")
+        XCTAssertEqual(pending["responses"], "0")
+        XCTAssertEqual(pending["before"], "history-entry-21")
+        XCTAssertEqual(pending["target"], "history-entry-32")
+        XCTAssertEqual(pending["ack"], "none")
+        XCTAssertEqual(pending["error"], "none")
+        let syncId = try XCTUnwrap(pending["sync"])
+        XCTAssertNotEqual(syncId, "none")
+        settle()
+        let viewport = transcript.frame
+        let anchor = try XCTUnwrap(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "历史分页阅读锚点 "))
+            .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > viewport.minY + 10 && $0.frame.maxY < viewport.maxY - 10 })
+        let anchorLabel = anchor.label
+        let before = anchor.frame
+        settle()
+        XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1, "The pending-page measurement must be stationary")
+        delivery.tap()
+        let applied = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in protocolFields()["ack"] == "applied" }, object: delivery)
+        XCTAssertEqual(XCTWaiter.wait(for: [applied], timeout: 5), .completed, (delivery.value as? String) ?? "Missing applied acknowledgement")
+        let published = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let fields = protocolFields()
+            return fields["publishedMessages"] == "32" && fields["publishedHistory20"] == "true"
+        }, object: delivery)
+        XCTAssertEqual(XCTWaiter.wait(for: [published], timeout: 5), .completed,
+            "Measure only after the chat's observed transcript contains the prepended history: \((delivery.value as? String) ?? "missing")")
+        settle()
+        let after = app.staticTexts.matching(NSPredicate(format: "label == %@", anchorLabel)).firstMatch
+        XCTAssertTrue(after.isHittable, "The same reading text must remain in the viewport after prepend")
+        XCTAssertEqual(after.frame.minY, before.minY, accuracy: 1)
+        XCTAssertEqual(after.frame.width, before.width, accuracy: 1)
+        XCTAssertEqual(after.frame.height, before.height, accuracy: 1)
+        XCTAssertEqual(transcript.frame, viewport)
+        let frames = try chatScrollFrames(app)
+        let firstSample = try XCTUnwrap(frames.first)
+        let anchorID = try XCTUnwrap(firstSample.cells?.filter { id, frame in
+            id.hasPrefix("history-message-") && frame[0] > viewport.minY + 10 &&
+                frame[0] + frame[2] < viewport.maxY - 10
+        }.min { $0.value[0] < $1.value[0] }?.key)
+        for id in [anchorID, "#presentation:" + anchorID] {
+            let cellFrames = frames.compactMap { $0.cells?[id] }
+            XCTAssertGreaterThan(cellFrames.count, 3)
+            XCTAssertEqual(cellFrames.count, frames.count, "The original row must remain visible in every sampled frame")
+            let firstFrame = try XCTUnwrap(cellFrames.first)
+            for frame in cellFrames {
+                XCTAssertEqual(frame[0], firstFrame[0], accuracy: 1, "History prepend moved the reading anchor for one frame: " + id)
+            }
+        }
+        let completed = protocolFields()
+        XCTAssertEqual(completed["requests"], "1")
+        XCTAssertEqual(completed["responses"], "1")
+        XCTAssertEqual(completed["sync"], syncId)
+        XCTAssertEqual(completed["ackSync"], syncId)
+        XCTAssertEqual(completed["ack"], "applied")
+        XCTAssertEqual(completed["range"], "history")
+        XCTAssertEqual(completed["mode"], "prepend")
+        XCTAssertEqual(completed["selection"], "absent")
+        XCTAssertEqual(completed["entries"], "20")
+        XCTAssertEqual(completed["publishedMessages"], "32")
+        XCTAssertEqual(completed["publishedHistory20"], "true")
+        XCTAssertEqual(completed["error"], "none")
+        capture("history-prepend-reading-anchor", app: app)
+        let jump = app.buttons["跳到最新消息"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 3))
+        jump.tap()
+        let latest = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in tail.isHittable }, object: tail)
+        XCTAssertEqual(XCTWaiter.wait(for: [latest], timeout: 5), .completed)
+        let older = app.staticTexts["历史分页阅读锚点 20"]
+        for _ in 0..<20 where !older.isHittable {
+            transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.4)).press(forDuration: 0.05,
+                thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.75)), withVelocity: .slow, thenHoldForDuration: 0.2)
+            settle()
+        }
+        XCTAssertTrue(older.isHittable, "The applied response must expose real older messages above the original page")
+        XCTAssertEqual(protocolFields()["requests"], "1", "The completed history range must not request a second page")
+    }
+
     func testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing() {
         for dark in [false, true] {
             let app = launch("viewport", dark: dark, arguments: ["--preview-question-reminder"])
             XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
             let reminder = app.buttons["chat-question-reminder"]
             XCTAssertFalse(reminder.exists, "Following a long reply must not show the question automatically")
-            let transcript = app.scrollViews.firstMatch
+            let transcript = chatTranscript(app)
             let viewport = transcript.frame
             transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
                 thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
@@ -3194,6 +3550,7 @@ final class OrbisUITests: XCTestCase {
             let before = anchor?.frame.minY
             app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
             settle()
+            recordAnchorDiagnostics(app)
             if let anchor, let before { XCTAssertEqual(anchor.frame.minY, before, accuracy: 1) }
             capture("question-reminder-reading-\(dark)", app: app)
             reminder.tap()
@@ -3206,11 +3563,44 @@ final class OrbisUITests: XCTestCase {
             XCTAssertTrue(reminder.waitForNonExistence(timeout: 3), "Scrolling toward newer content clears the earlier-reading intent")
             transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
                 thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.6)), withVelocity: .slow, thenHoldForDuration: 0.2)
+            recordAnchorDiagnostics(app)
             XCTAssertTrue(reminder.waitForExistence(timeout: 3))
             app.buttons["跳到最新消息"].tap()
             XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
             app.terminate()
         }
+    }
+
+    // IOS-CHAT-13: a hosted message must constrain both horizontal readers to the
+    // chat width; their native pans must move content without moving the vertical anchor.
+    func testChatCodeAndTableScrollHorizontallyWithoutMovingTheReadingAnchor() {
+        let app = launch("viewport", arguments: ["--preview-viewport-rich-content", "--preview-reduce-motion"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = chatTranscript(app)
+        let anchor = app.staticTexts["原生行横向阅读锚点"]
+        XCTAssertTrue(anchor.waitForExistence(timeout: 5))
+        XCTAssertTrue(anchor.isHittable)
+        let viewport = transcript.frame
+        let before = anchor.frame
+        for identifier in ["chat-code-horizontal", "chat-table-horizontal"] {
+            let horizontal = app.scrollViews[identifier].firstMatch
+            XCTAssertTrue(horizontal.isHittable)
+            XCTAssertGreaterThanOrEqual(horizontal.frame.minX, viewport.minX)
+            XCTAssertLessThanOrEqual(horizontal.frame.maxX, viewport.maxX)
+            let text = identifier == "chat-code-horizontal"
+                ? app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "native_horizontal_code_start_")).firstMatch
+                : app.staticTexts["横向表格起点"]
+            let x = text.frame.minX
+            horizontal.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).press(forDuration: 0.05,
+                thenDragTo: horizontal.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)),
+                withVelocity: .slow, thenHoldForDuration: 0.2)
+            XCTAssertLessThan(text.frame.minX, x - 80, "The horizontal gesture must move actual content")
+            XCTAssertEqual(anchor.frame.minY, before.minY, accuracy: 1)
+            XCTAssertEqual(transcript.frame, viewport)
+        }
+        XCTAssertTrue(app.staticTexts["横向表格终点"].isHittable)
+        capture("chat-native-horizontal-code-table", app: app)
     }
 
     // IOS-CHAT-04: after explicit question positioning, native idle and a later source
@@ -3220,7 +3610,7 @@ final class OrbisUITests: XCTestCase {
         let app = launch("viewport", arguments: ["--preview-question-reminder"])
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         let reminder = app.buttons["chat-question-reminder"]
         transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
             thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
@@ -3242,25 +3632,156 @@ final class OrbisUITests: XCTestCase {
     func testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader() {
         let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-reduce-motion"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         let reminder = app.buttons["chat-question-reminder"]
         for _ in 0..<8 where !reminder.exists {
             transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
                 thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
         }
+        recordAnchorDiagnostics(app)
         XCTAssertTrue(reminder.waitForExistence(timeout: 3))
         XCTAssertTrue(reminder.label.contains("新增消息 0"))
         let anchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
             .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > transcript.frame.minY + 120 && $0.frame.maxY < transcript.frame.maxY - 20 }
+        if anchor == nil {
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "E3 missing reading anchor accessibility hierarchy"; hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            let anchors = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 ")).allElementsBoundByIndex
+            let details = anchors.enumerated().map { index, candidate in
+                "\(index): label=\(candidate.label); frame=\(candidate.frame); isHittable=\(candidate.isHittable)"
+            }
+            let query = XCTAttachment(string: "count=\(anchors.count); viewport=\(transcript.frame)\n" + details.joined(separator: "\n"))
+            query.name = "E3 missing reading anchor accessibility query"; query.lifetime = .keepAlways
+            add(query)
+            // Diagnose a delayed AX snapshot without repairing the original nil or
+            // changing the assertion. Successful runs never perform these reads.
+            let recoveryStarted = Date()
+            var polls = 0, finalCount = anchors.count
+            var recoveredAfter: TimeInterval?
+            var recoveredElement = "none"
+            let recovery = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                polls += 1
+                let candidates = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 ")).allElementsBoundByIndex
+                finalCount = candidates.count
+                guard let candidate = candidates.first(where: {
+                    $0.isHittable && $0.frame.minY > transcript.frame.minY + 120 && $0.frame.maxY < transcript.frame.maxY - 20
+                }) else { return false }
+                recoveredAfter = Date().timeIntervalSince(recoveryStarted)
+                recoveredElement = "label=\(candidate.label); frame=\(candidate.frame)"
+                return true
+            }, object: nil)
+            let recoveryResult = XCTWaiter.wait(for: [recovery], timeout: 10)
+            let recoveryTime = recoveredAfter.map { String(format: "%.3f", $0) } ?? "none"
+            let recoveryReport = XCTAttachment(string: "originalAnchor=nil; recovered=\(recoveryResult == .completed); recoveredAfter=\(recoveryTime); elapsed=\(Date().timeIntervalSince(recoveryStarted)); polls=\(polls); finalCount=\(finalCount); \(recoveredElement)")
+            recoveryReport.name = "E3 missing reading anchor recovery diagnostic"; recoveryReport.lifetime = .keepAlways
+            add(recoveryReport)
+            let scopedAnchors = transcript.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 ")).allElementsBoundByIndex
+            let scopedFirst = scopedAnchors.first.map { "label=\($0.label); frame=\($0.frame)" } ?? "none"
+            let scopedHierarchy = XCTAttachment(string: transcript.debugDescription)
+            scopedHierarchy.name = "E3 missing reading anchor transcript hierarchy"; scopedHierarchy.lifetime = .keepAlways
+            add(scopedHierarchy)
+            let globalAfter = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 ")).allElementsBoundByIndex.count
+            let scopedReport = XCTAttachment(string: "originalAnchor=nil; scopedCount=\(scopedAnchors.count); scopedFirst=\(scopedFirst); globalAfterCount=\(globalAfter)")
+            scopedReport.name = "E3 missing reading anchor scoped query diagnostic"; scopedReport.lifetime = .keepAlways
+            add(scopedReport)
+        }
         XCTAssertNotNil(anchor)
         let before = anchor?.frame.minY
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
         let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "新增消息 1"), object: reminder)
         XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed)
+        recordAnchorDiagnostics(app)
         if let anchor, let before { XCTAssertEqual(anchor.frame.minY, before, accuracy: 1) }
         capture("question-reminder-new-source-reduced", app: app)
         app.buttons["跳到最新消息"].tap()
         XCTAssertTrue(reminder.waitForNonExistence(timeout: 5))
+    }
+
+    // Select the actual backend container without traversing row accessibility first.
+    // Original Text, hittability, viewport and position assertions remain unchanged.
+    private func chatTranscript(_ app: XCUIApplication) -> XCUIElement {
+        ProcessInfo.processInfo.environment["ORBIS_CHAT_TRANSCRIPT_BACKEND"] != "swiftui"
+            ? app.collectionViews["chat-transcript-native"].firstMatch : app.scrollViews.firstMatch
+    }
+
+    private func recordAnchorDiagnostics(_ app: XCUIApplication) {
+        guard ProcessInfo.processInfo.environment["ORBIS_CHAT_ANCHOR_DIAGNOSTICS"] == "1" else { return }
+        let report = app.staticTexts["preview-anchor-diagnostics"]
+        let attachment = XCTAttachment(string: (report.value as? String) ?? report.label)
+        attachment.name = "Chat anchor native samples"; attachment.lifetime = .keepAlways
+        add(attachment)
+        // Keep the native AX tree and the exact anchor-query results beside geometry:
+        // rendered reading text can otherwise disappear from the accessibility query.
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "Chat anchor accessibility hierarchy"; hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+        let anchors = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 ")).allElementsBoundByIndex
+        let details = anchors.enumerated().map { index, anchor in
+            "\(index): label=\(anchor.label); frame=\(anchor.frame); isHittable=\(anchor.isHittable)"
+        }
+        let query = XCTAttachment(string: "count=\(anchors.count)\n" + details.joined(separator: "\n"))
+        query.name = "Chat anchor accessibility query"; query.lifetime = .keepAlways
+        add(query)
+    }
+
+    private func chatRegionCounts(_ report: XCUIElement) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: report.label.split(separator: ";").compactMap { field -> (String, Int)? in
+            let pair = field.split(separator: "=", maxSplits: 1)
+            guard pair.count == 2, let value = Int(pair[1]) else { return nil }
+            return (String(pair[0]), value)
+        })
+    }
+
+    private func waitForStableChatRegions(_ report: XCUIElement) {
+        var previous = "", since = Date()
+        let stable = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            if report.label != previous { previous = report.label; since = Date() }
+            return Date().timeIntervalSince(since) >= 1
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stable], timeout: 12), .completed)
+    }
+
+    // IOS-CHAT-10: visibility alone must not rebuild completed rows/Markdown.
+    func testStaticChatRowsDoNotRebuildAcrossCoverAndReturn() {
+        let app = launch("viewport", arguments: ["--probe-chat-updates"])
+        let report = app.staticTexts["chat-update-report"]
+        XCTAssertTrue(report.waitForExistence(timeout: 8))
+        waitForStableChatRegions(report)
+        let before = chatRegionCounts(report)
+        app.buttons["chat-downloads"].tap()
+        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 3))
+        waitForStableChatRegions(report)
+        let after = chatRegionCounts(report)
+        for region in ["transcript", "row", "markdown", "nativeRow", "nativeAuxiliary", "nativeReconfigure", "nativeSnapshot"] {
+            XCTAssertEqual(after[region], before[region], "Visibility rebuilt " + region)
+        }
+    }
+
+    // IOS-CHAT-11: a short drag stays within the same long reply. Viewport facts
+    // must not rebuild its ForEach owner, mounted row, or prepared Markdown.
+    func testDraggingDoesNotRebuildTranscriptRegion() {
+        let app = launch("viewport", arguments: ["--probe-chat-updates", "--preview-question-reminder"])
+        let report = app.staticTexts["chat-update-report"]
+        XCTAssertTrue(report.waitForExistence(timeout: 8))
+        waitForStableChatRegions(report)
+        let reminder = app.buttons["chat-question-reminder"]
+        XCTAssertFalse(reminder.exists)
+        let before = chatRegionCounts(report)
+        for region in ["transcript", "row", "markdown"] {
+            XCTAssertGreaterThan(before[region] ?? 0, 0, "Missing render count for " + region)
+        }
+        let transcript = chatTranscript(app)
+        transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+            thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)), withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertTrue(reminder.waitForExistence(timeout: 3))
+        waitForStableChatRegions(report)
+        let after = chatRegionCounts(report)
+        for region in ["transcript", "row", "markdown", "nativeRow", "nativeAuxiliary", "nativeReconfigure", "nativeSnapshot"] {
+            XCTAssertEqual(after[region], before[region], "Dragging rebuilt " + region)
+        }
     }
 
     // Exercise the native keyboard resize while source patches keep replacing a long reply.
@@ -3280,7 +3801,7 @@ final class OrbisUITests: XCTestCase {
         defer { app.terminate() }
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         let height = transcript.frame.height
         let title = app.buttons["chat-title"]
         let header = title.frame
@@ -3308,7 +3829,7 @@ final class OrbisUITests: XCTestCase {
     func testNewMessagesAndToolsPreserveTheMovingReadingAnchor() {
         let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-viewport-drag"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
-        let transcript = app.scrollViews.firstMatch
+        let transcript = chatTranscript(app)
         transcript.swipeDown()
         transcript.swipeDown()
         var readingAnchor: XCUIElement?
