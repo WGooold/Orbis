@@ -7,6 +7,7 @@ import UIKit
 struct OrbisApp: App {
     @UIApplicationDelegateAdaptor(OrbisAppDelegate.self) private var appDelegate
     @StateObject private var store = OrbisStore()
+    @StateObject private var liveActivities = LiveActivityCoordinator.shared
     // Publishes only when a display preference changes (PERF-12); `@AppStorage` here would
     // re-evaluate the window on every defaults write.
     @ObservedObject private var display = OrbisDisplaySettings.shared
@@ -75,6 +76,7 @@ struct OrbisApp: App {
             .task { prepareReplyNotifications() }
             .onChange(of: store.pairings) { _, _ in prepareReplyNotifications() }
             .onChange(of: scenePhase) { _, phase in
+                liveActivities.setForeground(phase == .active)
                 if phase == .active { AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications() }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
@@ -86,6 +88,7 @@ struct OrbisApp: App {
         if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") }) { return }
         #endif
         OrbisAppDelegate.updatePairings(store.pairings)
+        liveActivities.bind(store, foreground: scenePhase == .active)
         if !store.pairings.isEmpty {
             ReplyCompletionNotifications.shared.prepare()
         }

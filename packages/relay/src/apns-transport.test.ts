@@ -34,6 +34,35 @@ function fixture(status = 200, reason?: string) {
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });
 
 describe("APNs transport lifecycle", () => {
+  // LA-R02: assert Apple's ActivityKit headers and envelope independently from
+  // ordinary alert push; generic content must not acquire an alert or sound.
+  it("sends ActivityKit updates with stale dates and ends with a bounded dismissal", async () => {
+    const f = fixture();
+    const contentState = { version: 1 as const, phase: "running" as const, runningCount: 3, pendingCount: 0,
+      focusKey: "a".repeat(64), agentKind: "codex", startedAt: 1_000, updatedAt: 2_000, outcome: null };
+    await f.sender.sendActivity("a".repeat(64), { event: "update", timestamp: 123, priority: 5, contentState });
+    expect(f.sent[0]!.headers).toMatchObject({ "apns-topic": `${config.bundleId}.push-type.liveactivity`,
+      "apns-push-type": "liveactivity", "apns-priority": "5", "apns-expiration": "423" });
+    expect(f.sent[0]!.payload).toEqual({ aps: { timestamp: 123, event: "update", "content-state": contentState, "stale-date": 723 } });
+    await f.sender.sendActivity("a".repeat(64), { event: "end", timestamp: 124, priority: 10,
+      contentState: { ...contentState, phase: "ended", runningCount: 0 } });
+    expect(f.sent[1]!.headers["apns-priority"]).toBe("10");
+    expect(f.sent[1]!.payload.aps).toMatchObject({ timestamp: 124, event: "end", "dismissal-date": 424 });
+    expect(f.sent[1]!.payload.aps).not.toHaveProperty("stale-date");
+    f.sender.close();
+  });
+
+  it("accepts longer ActivityKit tokens while keeping the released alert limit", async () => {
+    const f = fixture();
+    const contentState = { version: 1 as const, phase: "running" as const, runningCount: 1, pendingCount: 0,
+      focusKey: null, agentKind: null, startedAt: null, updatedAt: 2_000, outcome: null };
+    await f.sender.sendActivity("a".repeat(1024), { event: "update", timestamp: 123, priority: 5, contentState });
+    expect(f.sent[0]!.headers[":path"]).toBe(`/3/device/${"a".repeat(1024)}`);
+    await expect(f.sender.sendActivity("a".repeat(1025), { event: "update", timestamp: 123, priority: 5, contentState })).rejects.toThrow("activity token");
+    await expect(f.sender.send("a".repeat(201), hint)).rejects.toThrow("device token");
+    expect(f.sent).toHaveLength(1);
+    f.sender.close();
+  });
   it("signs a valid ES256 provider token and sends only short-lived wake metadata", async () => {
     const f = fixture();
     await f.sender.send("a".repeat(64), hint);

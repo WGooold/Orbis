@@ -11,6 +11,15 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Orbis</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.orbising.orbis.activity</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>orbis</string></array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -22,6 +31,8 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
+	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>

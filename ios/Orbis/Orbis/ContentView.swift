@@ -220,6 +220,14 @@ private struct NavigationRoot: View, Equatable {
 
     private var rootWithSceneUpdates: some View {
         rootWithNavigationUpdates
+        .onOpenURL { url in LiveActivityCoordinator.shared.receive(url) }
+        .onReceive(LiveActivityCoordinator.shared.navigation) { target in
+            guard let target else { return }
+            LiveActivityCoordinator.shared.navigation.send(nil)
+            guard store.pairings.contains(where: { $0.hostId == target.hostId }) else { return }
+            rootTab = .chat; displayedRoot = .chat
+            navigation.replace(with: target.runtimeId == nil ? [] : [.chat])
+        }
         .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { hostId in
             guard let hostId else { return }
             ReplyCompletionNotifications.remoteOpens.consume()

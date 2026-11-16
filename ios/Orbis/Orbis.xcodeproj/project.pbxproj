@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A08700010000000000000009 /* LiveActivityLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000008; };
+        A08700010000000000000001 /* LiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000001; };
+        A08700010000000000000002 /* LiveActivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000002; };
+        A08700010000000000000003 /* LiveActivityRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000003; };
+        A08700010000000000000004 /* LiveActivityProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000004; };
+        A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000005; };
+        A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000001; };
+        A08700010000000000000007 /* Assets.xcassets in Widget Resources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000C; };
+        A08700010000000000000008 /* OrbisLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A08710010000000000000007; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
         C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01410010000000000000001; };
         C01400010000000000000002 /* ChatMountPreparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01410010000000000000002; };
         8805B409FEE81C340BA71E36 /* ChatConfigurationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B57CBCB214140E9324C6786; };
@@ -87,6 +96,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A08710010000000000000008 /* LiveActivityLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityLifecycle.swift; sourceTree = "<group>"; };
+        A08710010000000000000001 /* LiveActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityAttributes.swift; sourceTree = "<group>"; };
+        A08710010000000000000002 /* LiveActivityCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityCoordinator.swift; sourceTree = "<group>"; };
+        A08710010000000000000003 /* LiveActivityRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityRegistration.swift; sourceTree = "<group>"; };
+        A08710010000000000000004 /* LiveActivityProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityProjection.swift; sourceTree = "<group>"; };
+        A08710010000000000000005 /* OrbisLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbisLiveActivityWidget.swift; sourceTree = "<group>"; };
+        A08710010000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+        A08710010000000000000007 /* OrbisLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OrbisLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
         1B57CBCB214140E9324C6786 /* ChatConfigurationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatConfigurationViews.swift; sourceTree = "<group>"; };
         ABA69147CCA95C8B28B5ECA9 /* ChatMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownView.swift; sourceTree = "<group>"; };
         D2CC3A7FB21F94C1E8CEFC97 /* ChatMessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageRow.swift; sourceTree = "<group>"; };
@@ -172,6 +189,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+        A08740010000000000000002 /* Widget Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000003 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -184,6 +202,12 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+        A08720010000000000000001 /* LiveActivityWidget */ = {
+            isa = PBXGroup;
+            children = (A08710010000000000000005 /* OrbisLiveActivityWidget.swift */, A08710010000000000000006 /* Info.plist */);
+            path = LiveActivityWidget;
+            sourceTree = "<group>";
+        };
 		A00120010000000000000001 = {
 			isa = PBXGroup;
 			children = (
@@ -225,6 +249,11 @@
 				A00110010000000000000034 /* SessionHistoryStorage.swift */,
 				A00110010000000000000032 /* OrbisHub.swift */,
 				A00110010000000000000031 /* Notifications.swift */,
+				A08710010000000000000001 /* LiveActivityAttributes.swift */,
+				A08710010000000000000008 /* LiveActivityLifecycle.swift */,
+				A08710010000000000000002 /* LiveActivityCoordinator.swift */,
+				A08710010000000000000003 /* LiveActivityRegistration.swift */,
+				A08710010000000000000004 /* LiveActivityProjection.swift */,
 				A07110010000000000000001 /* PushRegistration.swift */,
 				A00110010000000000000030 /* SessionHistory.swift */,
 				A0011001000000000000002F /* HostCatalog.swift */,
@@ -278,6 +307,7 @@
 			isa = PBXGroup;
 			children = (
 				A0011001000000000000000E /* Orbis.app */,
+                A08710010000000000000007 /* OrbisLiveActivity.appex */,
                 B00110010000000000000002,
                 C06410010000000000000002,
 			);
@@ -288,6 +318,7 @@
 			isa = PBXGroup;
 			children = (
 				A00120010000000000000002 /* Orbis */,
+				A08720010000000000000001 /* LiveActivityWidget */,
 				A00120010000000000000003 /* Products */,
 			);
 			name = Orbis;
@@ -296,6 +327,17 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+        A08730010000000000000001 /* OrbisLiveActivity */ = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = A08750010000000000000001;
+            buildPhases = (A08740010000000000000001, A08740010000000000000002, A08740010000000000000003);
+            buildRules = ();
+            dependencies = ();
+            name = OrbisLiveActivity;
+            productName = OrbisLiveActivity;
+            productReference = A08710010000000000000007;
+            productType = "com.apple.product-type.app-extension";
+        };
 		A00130010000000000000001 /* Orbis */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */;
@@ -303,11 +345,13 @@
 				A00140010000000000000001 /* Sources */,
 				A00140010000000000000003 /* Frameworks */,
 				A00140010000000000000002 /* Resources */,
+				A08740010000000000000004 /* Embed App Extensions */,
 				A07140010000000000000001 /* Generate Push Environment */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A08760010000000000000002 /* OrbisLiveActivity */,
 			);
 			name = Orbis;
 			productName = Orbis;
@@ -339,6 +383,7 @@
 						CreatedOnToolsVersion = 16.0;
 						SystemCapabilities = { com.apple.Push = { enabled = 1; }; };
 					};
+                    A08730010000000000000001 = { CreatedOnToolsVersion = 16.0; };
 				};
 			};
 			buildConfigurationList = A00150010000000000000002 /* Build configuration list for PBXProject "Orbis" */;
@@ -355,6 +400,7 @@
 			projectRoot = "";
 			targets = (
 				A00130010000000000000001 /* Orbis */,
+                A08730010000000000000001 /* OrbisLiveActivity */,
                 B00130010000000000000001,
                 C06430010000000000000001,
 			);
@@ -362,6 +408,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+        A08740010000000000000003 /* Widget Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000007 /* Assets.xcassets in Widget Resources */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000002 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -392,6 +439,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+        A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -424,6 +472,11 @@
 				A00100010000000000000034 /* SessionHistoryStorage.swift in Sources */,
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,
 				A00100010000000000000031 /* Notifications.swift in Sources */,
+				A08700010000000000000001 /* LiveActivityAttributes.swift in Sources */,
+				A08700010000000000000009 /* LiveActivityLifecycle.swift in Sources */,
+				A08700010000000000000002 /* LiveActivityCoordinator.swift in Sources */,
+				A08700010000000000000003 /* LiveActivityRegistration.swift in Sources */,
+				A08700010000000000000004 /* LiveActivityProjection.swift in Sources */,
 				A07100010000000000000001 /* PushRegistration.swift in Sources */,
                 A07100010000000000000003,
 				A00100010000000000000030 /* SessionHistory.swift in Sources */,
@@ -480,11 +533,70 @@
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */
+        A08740010000000000000004 /* Embed App Extensions */ = {
+            isa = PBXCopyFilesBuildPhase;
+            buildActionMask = 2147483647;
+            dstPath = "";
+            dstSubfolderSpec = 13;
+            files = (A08700010000000000000008 /* OrbisLiveActivity.appex in Embed App Extensions */);
+            name = "Embed App Extensions";
+            runOnlyForDeploymentPostprocessing = 0;
+        };
+        A08760010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = A08730010000000000000001; remoteInfo = OrbisLiveActivity; };
+        A08760010000000000000002 = {isa = PBXTargetDependency; target = A08730010000000000000001; targetProxy = A08760010000000000000001; };
         B00160010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = A00130010000000000000001; remoteInfo = Orbis; };
         B00160010000000000000002 = {isa = PBXTargetDependency; target = A00130010000000000000001; targetProxy = B00160010000000000000001; };
 
 
 /* Begin XCBuildConfiguration section */
+        A08770010000000000000001 /* Widget Debug */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CLANG_ENABLE_MODULES = YES;
+                CODE_SIGN_STYLE = Automatic;
+                CURRENT_PROJECT_VERSION = 6;
+                DEVELOPMENT_TEAM = Z5KBY7SP63;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = LiveActivityWidget/Info.plist;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+                MARKETING_VERSION = 0.1.3;
+                ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+                PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER).LiveActivity";
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SKIP_INSTALL = YES;
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Debug;
+        };
+        A08770010000000000000002 /* Widget Release */ = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CLANG_ENABLE_MODULES = YES;
+                CODE_SIGN_STYLE = Automatic;
+                CURRENT_PROJECT_VERSION = 6;
+                DEVELOPMENT_TEAM = Z5KBY7SP63;
+                GENERATE_INFOPLIST_FILE = NO;
+                INFOPLIST_FILE = LiveActivityWidget/Info.plist;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+                MARKETING_VERSION = 0.1.3;
+                ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+                PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER).LiveActivity";
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SDKROOT = iphoneos;
+                SKIP_INSTALL = YES;
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Release;
+        };
 		A00170010000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -501,7 +613,8 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MARKETING_VERSION = 0.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -526,7 +639,8 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
 				MARKETING_VERSION = 0.1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -566,6 +680,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+        A08750010000000000000001 /* Widget Configurations */ = {isa = XCConfigurationList; buildConfigurations = (A08770010000000000000001, A08770010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

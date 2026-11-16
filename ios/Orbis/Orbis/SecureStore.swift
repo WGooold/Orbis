@@ -19,7 +19,7 @@ final class SecureStore: SecureStorage {
     }
     func clearPushTestingNamespace() {
         guard namespace.hasPrefix("orbis.pushqa.") else { return }
-        for name in ["device.identity", defaultsKey, "orbis.pendingPushRemovals"] {
+        for name in ["device.identity", defaultsKey, "orbis.pendingPushRemovals", "orbis.liveActivityRegistrations"] {
             let service = namespace + name
             SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                 kSecAttrAccount as String: service] as CFDictionary)
@@ -51,6 +51,15 @@ final class SecureStore: SecureStorage {
 
     func savePendingPushRemovals(_ targets: [PushRegistrationTarget]) throws {
         try save(JSONEncoder().encode(targets), service: "orbis.pendingPushRemovals")
+    }
+
+    func liveActivityRegistrations() throws -> [LiveActivityRegistrationTarget] {
+        guard let data = try read(service: "orbis.liveActivityRegistrations") else { return [] }
+        return try JSONDecoder().decode([LiveActivityRegistrationTarget].self, from: data)
+    }
+
+    func saveLiveActivityRegistrations(_ targets: [LiveActivityRegistrationTarget]) throws {
+        try save(JSONEncoder().encode(targets), service: "orbis.liveActivityRegistrations")
     }
 
     private func save(_ data: Data, service: String) throws {

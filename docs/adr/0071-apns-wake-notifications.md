@@ -2,6 +2,16 @@
 
 Status: proposed
 
+## iOS 实时活动（2026-11-17，S61／SC109）
+
+- 每个 Host 聚合一个实时活动：单会话显示静态 Agent 图标与上次确认的约分钟耗时，多会话显示数量；待处理请求优先，展开显示焦点会话及其余运行数量。静止状态无旋转、闪烁或秒计时，过期显示待更新，结束后退出灵动岛并在锁屏短留。
+- App 在前台且系统允许时创建，后台由独立 ActivityKit 推送更新。普通变化合并 30 秒，活跃摘要每 4 分钟低优先级续鲜、10 分钟过期；新增待处理与末态优先更新。关闭或未知库存只标过期，只有来源明确 completed 才显示完成。首版未接入 push-to-start。
+- `/v1/live-activities/config`、`register`、`update` 与旧 alert 通道独立。推送只包含通用状态、数量、Agent 类别、不透明焦点键与时间；标题只保留在本机 attributes，焦点不匹配时显示通用标题。手机不因实时活动获得后台保活。
+- 注册按完整配对与活动身份串行对账；Keychain 保留清理归属，不缓存推送 token。旧活动清理、令牌轮换、配对撤销与迟到失效响应不会删除新注册。Host 发布者绑定 Relay 当前认证连接与递增版本，旧 Relay 不支持时静默回退；已发布 Host、Relay、App 的原 HTTP 与 E2E 字段保持兼容。
+- 用户划掉活动后，同轮所有运行代次的抑制记录跨 App 重启保留；聚合焦点变化或补齐开始时间不会重建同轮活动。点击仅导航，重新核对完整配对与当前会话后进入 App，不在锁屏回答审批。
+
+实现入口：iOS `LiveActivityAttributes.swift`、`LiveActivityCoordinator.swift`、`LiveActivityRegistration.swift`、`LiveActivityLifecycle.swift` 与 `LiveActivityWidget/`；Host `live-activity.ts`；Relay `live-activities.ts` 与 `apns.ts`。定向回归见对应 `LiveActivity*Tests.swift`、`live-activity.test.ts`、`live-activities.test.ts`、`live-activity-http.test.ts` 和 `apns-transport.test.ts`；实际执行记录与首次编译失败保留在 `.artifacts/ios-live-activity-20261117/`。本轮仅本机实施与自动验证；未部署，签名安装与真实 APNs／真机体验待用户验证，共享 QA 登记状态以该目录记录为准。
+
 ## 决策
 
 - 为 iOS 增加 APNs alert 提醒，覆盖 Host 观察到的任务正常完成、出现待审批两种低频边缘事件。推送只携带类别和随机/稳定事件标识，不包含聊天正文、审批参数、密钥或回答动作；APNs/Relay 均不是业务状态权威。

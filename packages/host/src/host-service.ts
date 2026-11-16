@@ -23,6 +23,7 @@ import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inv
 import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 import { PushWakeReceipts } from "./push-wake.js";
+import { LiveActivityPublisher } from "./live-activity.js";
 
 import {
   E2eError,
@@ -347,6 +348,7 @@ export class HostService {
    * 仍是原来的消息。协议层接入（issue #10）之前，这里只供 Host 内部与测试读取。
    */
   readonly #agentFacts: AgentStateFacts;
+  readonly #liveActivities: LiveActivityPublisher;
   /** DeviceView：只对发起设备可见的回执，和共享事实分开写。 */
   readonly #deviceViewFacts: DeviceViewFacts;
   /** HostState：Host 级共享领域（目前是聚合目录的逐后端完整性）。 */
@@ -887,6 +889,9 @@ export class HostService {
     // 启动时就把目录投影对齐：重启后读模型应当看得到上一次运行留下的记录数，而不是等下一次写入。
     this.#publishDiagnostics();
     this.#agentStateRegistry = agentStateRegistry;
+    this.#liveActivities = new LiveActivityPublisher({ registry: agentStateRegistry,
+      hostId: this.#identity.hostId, relayUrl: options.relayUrl, credential: options.credential,
+      ...(options.log === undefined ? {} : { log: options.log }) });
     this.#conversationState = new AgentConversationState(agentStateRegistry);
     this.#toolInventory = new AgentToolInventory(agentStateRegistry);
     const changeScope = (runtimeId: string) => { const scope = this.#agentFacts.scopeOf(runtimeId); return scope?.kind === "agent" ? scope.key : undefined; };
@@ -1556,6 +1561,7 @@ export class HostService {
       onAuthenticationError: error => this.#options.onRelayAuthenticationError?.(error),
       ...(this.#options.reconnect === undefined ? {} : { reconnect: this.#options.reconnect }),
       onStateChange: (state) => {
+        this.#liveActivities.setConnected(state === "connected");
         if (state === "connected") {
           // 重连后必须把出口重新挂回去：`detach` 连出口一起摘掉，而出口只在链路**第一次**
           // 建立时挂上（见 #requireLink）。少了这一步，凡是断线前见过面的设备都会永久失去
@@ -1693,6 +1699,7 @@ export class HostService {
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
+    await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
     for (const timer of this.#bootstrapReplayTimers.values()) clearTimeout(timer);

@@ -24,6 +24,7 @@ import { createWebHandler } from "./web.js";
 import { RelayBandwidth } from "./bandwidth.js";
 import { BulkSendBudget, DEFAULT_BULK_BYTES_PER_SECOND } from "./bulk-send-budget.js";
 import { APNsSender, type APNsConfig } from "./apns.js";
+import { RelayLiveActivities, parseLiveActivityUpdate } from "./live-activities.js";
 
 export interface RelayDeviceCredential {
   deviceId: string;
@@ -354,6 +355,20 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     if (!isPushDevice(id, target.hostId)) pushTokens.delete(id);
   }
   if (pushTokens.size !== restoredPushCount) await persistPushTokens();
+  const liveActivities = await RelayLiveActivities.create({
+    ...(options.stateFile ? { stateFile: `${options.stateFile}.live-activities.json` } : {}),
+    isPaired: isPushDevice,
+    currentConnection: hostId => {
+      const current = runtimes.get(hostId);
+      return current?.socket.readyState === WebSocket.OPEN && !admin.isDisabled(hostId) ? current : undefined;
+    },
+    hasEnvironment: environment => apns.has(environment),
+    send: async (environment, token, push) => {
+      const sender = apns.get(environment);
+      if (!sender) throw new Error("Live activity push environment unavailable");
+      return sender.sendActivity(token, push);
+    },
+  });
   const bandwidth = await RelayBandwidth.create({
     ...(options.bandwidthStateFile || options.stateFile ? { stateFile: options.bandwidthStateFile ?? `${options.stateFile}.bandwidth.json` } : {}),
   });
@@ -380,7 +395,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       if (device.deviceId === deviceId) devicesByCredential.delete(hash);
     }
     pushTokens.delete(deviceId);
-    try { await persistPushTokens(); await persistDevices(); }
+    try { await persistPushTokens(); await persistDevices(); await liveActivities.removeDevice(deviceId); }
     catch (error) {
       for (const [hash, device] of removed) devicesByCredential.set(hash, device);
       if (previousPush) pushTokens.set(deviceId, previousPush);
@@ -401,6 +416,43 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const value = request.headers.authorization;
         return value?.startsWith("Bearer ") ? value.slice("Bearer ".length) : undefined;
       };
+      // LA-R03: a separate HTTP capability keeps released strict clients and
+      // old Relays on their unchanged alert-only registration contract.
+      if (request.method === "GET" && path === "/v1/live-activities/config") {
+        const bearer = pushBearer();
+        const device = bearer ? devicesByCredential.get(hashCredential(bearer).toString("hex")) : undefined;
+        if (!device?.hostId || !isPushDevice(device.deviceId, device.hostId)) throw new HttpError(401, "unauthorized");
+        if (!options.apns) throw new HttpError(503, "push_unavailable");
+        const environment = requestURL.searchParams.get("environment") ?? options.apns.environment;
+        if (!apns.has(environment as APNsConfig["environment"])) throw new HttpError(409, "push_environment_mismatch");
+        jsonResponse(response, 200, { version: 1, environment }); return;
+      }
+      if (request.method === "POST" && path === "/v1/live-activities/register") {
+        const bearer = pushBearer();
+        const hash = bearer ? hashCredential(bearer).toString("hex") : undefined;
+        const device = hash ? devicesByCredential.get(hash) : undefined;
+        if (!device?.hostId || !isPushDevice(device.deviceId, device.hostId)) throw new HttpError(401, "unauthorized");
+        const body = await readJson(request);
+        if (body && typeof body === "object" && "token" in body && body.token !== null && apns.size === 0) throw new HttpError(503, "push_unavailable");
+        await liveActivities.register(device.deviceId, device.hostId, body, () => devicesByCredential.get(hash!) === device);
+        jsonResponse(response, 204); return;
+      }
+      if (request.method === "POST" && path === "/v1/live-activities/update") {
+        const bearer = pushBearer();
+        if (!bearer) throw new HttpError(401, "unauthorized");
+        const hash = hashCredential(bearer).toString("hex");
+        // Bind before asynchronous body reception. A request admitted by an old
+        // Host connection cannot claim a replacement socket with the same key.
+        const admitted = new Map([...runtimes].filter(([, host]) => host.credentialHash === hash && host.socket.readyState === WebSocket.OPEN));
+        if (admitted.size === 0) throw new HttpError(401, "unauthorized");
+        const update = parseLiveActivityUpdate(await readJson(request));
+        const host = admitted.get(update.hostId);
+        const registeredHost = options.registration?.hostForCredential(bearer);
+        if (!host || admin.isDisabled(update.hostId) || registeredHost !== undefined && registeredHost !== update.hostId) throw new HttpError(401, "unauthorized");
+        if (runtimes.get(update.hostId) !== host || host.socket.readyState !== WebSocket.OPEN) throw new HttpError(409, "host_connection_changed");
+        const result = await liveActivities.publish(update, host);
+        jsonResponse(response, result.failed.length > 0 ? 502 : 200, result); return;
+      }
       if (request.method === "GET" && path === "/v1/push/config") {
         const bearer = pushBearer();
         const device = bearer ? devicesByCredential.get(hashCredential(bearer).toString("hex")) : undefined;
@@ -584,6 +636,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
           await mutatePush(async () => {
             for (const [deviceId, token] of pushTokens) if (token.hostId === hostId) pushTokens.delete(deviceId);
             await persistPushTokens();
+            await liveActivities.removeHost(hostId);
           });
         }
         jsonResponse(response, 204);
@@ -1083,6 +1136,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     async close(): Promise<void> {
       clearInterval(heartbeatTimer);
       clearInterval(bandwidthTimer);
+      await liveActivities.close();
       for (const sender of apns.values()) sender.close();
       for (const runtime of runtimes.values()) { stopMux(runtime.socket); runtime.socket.close(1001, "relay shutdown"); }
       for (const device of devices) { stopMux(device.socket); device.socket.close(1001, "relay shutdown"); }

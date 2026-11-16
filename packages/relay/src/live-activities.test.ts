@@ -1,0 +1,167 @@
+import { readFile, rename } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { RelayLiveActivities, parseLiveActivityUpdate, type LiveActivityPush, type LiveActivityUpdate } from "./live-activities.js";
+
+vi.mock("node:fs/promises", async original => {
+  const fs = await original<typeof import("node:fs/promises")>();
+  return { ...fs, rename: vi.fn(fs.rename) };
+});
+
+const oldToken = "a".repeat(64), newToken = "b".repeat(64);
+const update = (revision = 1, patch: Partial<LiveActivityUpdate["contentState"]> = {}): LiveActivityUpdate => ({
+  version: 1, hostId: "host", producerId: "producer", revision, event: patch.phase === "ended" ? "end" : "update",
+  contentState: { version: 1, phase: "running", runningCount: 1, pendingCount: 0,
+    focusKey: "c".repeat(64), agentKind: "codex", startedAt: Date.now() - 120_000, updatedAt: Date.now(), outcome: null, ...patch },
+});
+const registration = (token: string | null = oldToken, activityId = "activity-one", environment = "production") => ({ version: 1, activityId, token, environment });
+
+// LA-R01/04: synthetic registry tests target lost token rotations, revocation,
+// unordered source revisions and seconds-based APNs coalescing. No Apple or
+// production network is used; state files live in the shared test fixture area.
+describe("live activity registry", () => {
+  const open: RelayLiveActivities[] = [];
+  const create = async (persist = false) => {
+    const connection = {};
+    const connections = new Map<string, object>([["host", connection]]);
+    const paired = new Set(["phone:host", "tablet:host", "other:other-host"]);
+    const send = vi.fn<(_environment: string, _token: string, _push: LiveActivityPush) => Promise<"sent" | "invalid-token">>().mockResolvedValue("sent");
+    const stateFile = persist ? join(await testDirectory(join(tmpdir(), "orbis-live-activities-")), "state.json") : undefined;
+    const options = { ...(stateFile ? { stateFile } : {}), isPaired: (d: string, h: string) => paired.has(`${d}:${h}`),
+      currentConnection: (h: string) => connections.get(h), hasEnvironment: (e: string) => e === "production", send };
+    const registry = await RelayLiveActivities.create(options); open.push(registry);
+    return { registry, connection, connections, paired, send, options, stateFile };
+  };
+  const settle = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+  afterEach(async () => {
+    await Promise.all(open.splice(0).map(r => r.close())); vi.restoreAllMocks(); vi.useRealTimers();
+  });
+
+  it("rejects extra private text, invalid counts and inconsistent end events", () => {
+    const valid = update();
+    expect(parseLiveActivityUpdate(valid)).toEqual(valid);
+    for (const invalid of [
+      { ...update(), title: "private title" },
+      update(1, { runningCount: 2049 }), update(1, { pendingCount: 131_073 }),
+      update(1, { runningCount: 0 }), update(1, { pendingCount: 1 }),
+      update(1, { outcome: "completed" }), update(1, { phase: "stale", outcome: "completed" }),
+      { ...update(), contentState: { ...update().contentState, tool: "private tool args" } },
+      { ...update(), event: "end" }, update(1, { phase: "attention" }),
+      update(1, { phase: "ended", runningCount: 1 }),
+    ]) expect(() => parseLiveActivityUpdate(invalid)).toThrow();
+    expect(parseLiveActivityUpdate(update(1, { phase: "attention", runningCount: 2048, pendingCount: 131_072 }))).toBeDefined();
+  });
+
+  it("registers only live paired devices and scopes cleanup by activity identity", async () => {
+    const f = await create();
+    await expect(f.registry.register("phone", "host", registration(), () => false)).rejects.toMatchObject({ status: 401 });
+    await expect(f.registry.register("phone", "host", registration(oldToken, "first", "sandbox"), () => true)).rejects.toMatchObject({ status: 409 });
+    await f.registry.register("phone", "host", registration(), () => true);
+    await f.registry.register("phone", "host", registration(newToken, "activity-two"), () => true);
+    await f.registry.register("phone", "host", registration(null), () => true);
+    await f.registry.publish(update(), f.connection);
+    expect(f.send).toHaveBeenCalledExactlyOnceWith("production", newToken, expect.objectContaining({ priority: 5 }));
+  });
+
+  it("preserves fresh token registration when an older in-flight push returns invalid", async () => {
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    let finish!: (value: "invalid-token") => void;
+    f.send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pushing = f.registry.publish(update(), f.connection);
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+    await f.registry.register("phone", "host", registration(newToken), () => true);
+    finish("invalid-token"); await pushing;
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2));
+    expect(f.send.mock.calls[1]![1]).toBe(newToken);
+  });
+
+  it("accepts variable-size activity tokens without changing the legacy alert contract", async () => {
+    const f = await create(true);
+    await f.registry.register("phone", "host", registration("a".repeat(1024)), () => true);
+    await expect(f.registry.register("phone", "host", registration("b".repeat(1025)), () => true)).rejects.toMatchObject({ status: 400 });
+    await f.registry.publish(update(), f.connection);
+    expect(f.send.mock.calls[0]![1]).toHaveLength(1024);
+    expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations[0].token).toHaveLength(1024);
+  });
+
+  it("retries a refreshed same-value token after the prior registration's 410", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-17T00:00:00.000Z"));
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    let finish!: (value: "invalid-token") => void;
+    f.send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pushing = f.registry.publish(update(), f.connection);
+    await settle();
+    await f.registry.register("phone", "host", registration(), () => true);
+    finish("invalid-token"); await pushing;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.calls[1]![1]).toBe(oldToken);
+    expect(f.send.mock.calls[1]![2].timestamp).toBeGreaterThan(f.send.mock.calls[0]![2].timestamp);
+  });
+
+  it("coalesces same-second changes, uses low priority for repeats, and ends once", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-17T00:00:00.000Z"));
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    await f.registry.publish(update(), f.connection);
+    const older = f.registry.publish(update(2, { runningCount: 2 }), f.connection);
+    const newer = f.registry.publish(update(3, { phase: "attention", pendingCount: 1 }), f.connection);
+    await vi.advanceTimersByTimeAsync(1000); await Promise.all([older, newer]);
+    expect(f.send).toHaveBeenCalledTimes(2);
+    expect(f.send.mock.calls[1]![2]).toMatchObject({ timestamp: Math.floor(Date.now() / 1000), priority: 10,
+      contentState: { phase: "attention", pendingCount: 1 } });
+    const heartbeat = f.registry.publish(update(4, { phase: "attention", pendingCount: 1 }), f.connection);
+    await vi.advanceTimersByTimeAsync(1000); await heartbeat;
+    expect(f.send.mock.calls[2]![2].priority).toBe(5);
+    const end = f.registry.publish(update(5, { phase: "ended", runningCount: 0, outcome: "completed" }), f.connection);
+    await vi.advanceTimersByTimeAsync(1000); await end;
+    expect(f.send.mock.calls[3]![2]).toMatchObject({ event: "end", priority: 10 });
+    await f.registry.publish(update(6, { phase: "ended", runningCount: 0, outcome: "completed" }), f.connection);
+    await f.registry.register("phone", "host", registration(newToken, "activity-two"), () => true);
+    await settle();
+    expect(f.send).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not let a late old producer, revision, or connection overwrite the current Host", async () => {
+    const f = await create();
+    await f.registry.publish(update(10), f.connection);
+    await expect(f.registry.publish(update(9), f.connection)).rejects.toMatchObject({ status: 409 });
+    await expect(f.registry.publish({ ...update(11), producerId: "other" }, f.connection)).rejects.toMatchObject({ status: 409 });
+    const replacement = {}; f.connections.set("host", replacement);
+    await expect(f.registry.publish(update(11), f.connection)).rejects.toMatchObject({ status: 409 });
+    await expect(f.registry.publish({ ...update(), producerId: "replacement" }, replacement)).resolves.toEqual({ sent: [], failed: [] });
+  });
+
+  it("serializes equal tokens after re-pairing and never crosses Host boundaries", async () => {
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    await f.registry.register("tablet", "host", registration(), () => true);
+    await expect(f.registry.register("other", "other-host", registration(), () => true)).rejects.toMatchObject({ status: 409 });
+    await f.registry.register("other", "other-host", registration(newToken), () => true);
+    await f.registry.publish(update(), f.connection);
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.send.mock.calls[0]![1]).toBe(oldToken);
+  });
+
+  it("restores registrations, removes revoked devices, and prevents failed disk rollback from deleting a later token", async () => {
+    const f = await create(true);
+    await f.registry.register("phone", "host", registration(), () => true);
+    let fail!: (reason: Error) => void;
+    vi.mocked(rename).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    const older = f.registry.register("phone", "host", registration(newToken), () => true).catch(error => error);
+    await vi.waitFor(() => expect(fail).toBeDefined());
+    const newer = f.registry.register("phone", "host", registration("c".repeat(64)), () => true);
+    fail(new Error("disk failure"));
+    expect(await older).toBeInstanceOf(Error); await newer;
+    await f.registry.close();
+    const restored = await RelayLiveActivities.create(f.options); open.push(restored);
+    await restored.publish(update(), f.connection);
+    expect(f.send.mock.calls.at(-1)![1]).toBe("c".repeat(64));
+    f.paired.delete("phone:host"); await restored.removeDevice("phone");
+    expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations).toEqual([]);
+  });
+});

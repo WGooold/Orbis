@@ -1,5 +1,6 @@
 import { createPrivateKey, createSign, createHash } from "node:crypto";
 import { connect, type ClientHttp2Session } from "node:http2";
+import type { LiveActivityPush } from "./live-activities.js";
 
 export type APNsConfig = {
   keyId: string;
@@ -29,6 +30,33 @@ export class APNsSender {
   async send(deviceToken: string, hint: APNsWakeHint): Promise<"sent" | "invalid-token"> {
     if (!/^[a-fA-F0-9]{64,200}$/u.test(deviceToken)) throw new Error("Invalid APNs device token");
     if (!/^[A-Za-z0-9._:-]{1,128}$/u.test(hint.eventId)) throw new Error("Invalid push event ID");
+    return this.#post(deviceToken, {
+      "apns-topic": this.#config.bundleId,
+      "apns-push-type": "alert", "apns-priority": "10",
+      "apns-expiration": String(Math.floor(Date.now() / 1000) + 300),
+      "apns-collapse-id": createHash("sha256").update(JSON.stringify([hint.hostId, hint.category, hint.eventId])).digest("hex").slice(0, 32),
+    }, {
+      aps: { alert: { title: "Orbis", body: hint.category === "approval-requested" ? "有待处理的审批" : "任务已完成" }, sound: "default" },
+      orbis: { v: 1, category: hint.category, eventId: hint.eventId, hostId: hint.hostId },
+    });
+  }
+
+  /** LA-R02: updates use ActivityKit's dedicated token/topic; no alert body,
+   * session title, tool arguments or credentials are sent through this route. */
+  async sendActivity(activityToken: string, push: LiveActivityPush): Promise<"sent" | "invalid-token"> {
+    if (!/^[a-fA-F0-9]{64,1024}$/u.test(activityToken)) throw new Error("Invalid APNs activity token");
+    return this.#post(activityToken, {
+      "apns-topic": `${this.#config.bundleId}.push-type.liveactivity`,
+      "apns-push-type": "liveactivity", "apns-priority": String(push.priority),
+      "apns-expiration": String(push.timestamp + 300),
+      "apns-collapse-id": createHash("sha256").update(activityToken).digest("hex").slice(0, 32),
+    }, { aps: {
+      timestamp: push.timestamp, event: push.event, "content-state": push.contentState,
+      ...(push.event === "end" ? { "dismissal-date": push.timestamp + 300 } : { "stale-date": push.timestamp + 600 }),
+    } });
+  }
+
+  async #post(deviceToken: string, headers: Record<string, string>, payload: unknown): Promise<"sent" | "invalid-token"> {
     // Fail before opening a socket when local signing material is invalid.
     const authorization = `bearer ${this.#providerToken()}`;
     const session = this.#getSession();
@@ -36,11 +64,7 @@ export class APNsSender {
       const req = session.request({
         ":method": "POST", ":path": `/3/device/${deviceToken}`,
         authorization,
-        "apns-topic": this.#config.bundleId,
-        "apns-push-type": "alert", "apns-priority": "10",
-        // These are short-lived hints, never a durable queue of business state.
-        "apns-expiration": String(Math.floor(Date.now() / 1000) + 300),
-        "apns-collapse-id": createHash("sha256").update(JSON.stringify([hint.hostId, hint.category, hint.eventId])).digest("hex").slice(0, 32),
+        ...headers,
       });
       let status = 0;
       let finished = false;
@@ -60,10 +84,7 @@ export class APNsSender {
       });
       req.on("error", error => { clearTimeout(timeout); reject(error); });
       req.on("close", () => { clearTimeout(timeout); if (!finished) reject(new Error("APNs stream closed before response")); });
-      req.end(JSON.stringify({
-        aps: { alert: { title: "Orbis", body: hint.category === "approval-requested" ? "有待处理的审批" : "任务已完成" }, sound: "default" },
-        orbis: { v: 1, category: hint.category, eventId: hint.eventId, hostId: hint.hostId },
-      }));
+      req.end(JSON.stringify(payload));
     });
     if (response.status === 200) return "sent";
     if (response.status === 410 || response.status === 400 && ["BadDeviceToken", "DeviceTokenNotForTopic"].includes(response.reason ?? "")) return "invalid-token";
