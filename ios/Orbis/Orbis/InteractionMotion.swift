@@ -172,6 +172,10 @@ enum InteractionMotion {
     /// A pushed page and the growing draft card: the interaction draft's --dur-page (320ms) on
     /// --ease-page. A curve, not a spring, so the page comes to rest without overshooting.
     static let pageEnter = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.32)
+    /// S62 / M30: bottom sheets travel the whole way from and to the bottom edge.
+    /// The exit starts at speed so a released drag continues instead of pausing.
+    static let sheetEnter = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.34)
+    static let sheetExit = Animation.timingCurve(0.3, 0.3, 0.6, 1, duration: 0.24)
     static let send = Animation.linear(duration: MotionGeometry.sendDuration)
     static let toolbar = Animation.easeInOut(duration: 0.26)
     static func dialSettle(distance: Double) -> Animation {

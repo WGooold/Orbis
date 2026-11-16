@@ -1,6 +1,7 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - MOT-06 / SC14–16（MOT-06、SC14、C05、C06、R37、M17、V09、V10）
 // - MOT-13 / SC35、MOT-15 / SC37（MOT-13、SC35、MOT-15、SC37、R47、R49、M20、M12、V13）
+// - S62 / M30 / SC110（底部面板停靠高度、键盘、拖动与松手判定）
 import Foundation
 import CoreGraphics
 import Testing
@@ -101,5 +102,58 @@ struct MotionGeometryTests {
         let leftTarget = CGPoint(x: 120, y: 410)
         #expect(MotionGeometry.sendPoint(from: source, to: leftTarget, progress: 0.25) == CGPoint(x: source.x + 24, y: source.y))
         #expect(MotionGeometry.sendPoint(from: source, to: leftTarget, progress: 1) == leftTarget)
+    }
+
+    // S62 / M30 / SC110: the old panel ignored requested stops (a three-row picker filled 88%)
+    // and its stop math is easy to invert. Keyboard must not shrink the medium stop to nothing.
+    @Test func sheetStopsHonorMediumAndKeyboard() {
+        // iPhone 15: 759pt safe height, 34pt home indicator.
+        let phone = OrbisSheetGeometry(available: 759, reference: 793, bottomInset: 34)
+        #expect(phone.height(.large) == 759 - 793 * 0.12)
+        #expect(abs(phone.height(.medium) - (793 * 0.55 - 34)) < 0.01)
+        #expect(phone.height(.medium) < phone.height(.large))
+        // Small screens keep a usable medium stop, never above large.
+        let compact = OrbisSheetGeometry(available: 400, reference: 400)
+        #expect(compact.height(.medium) == min(compact.height(.large), 320))
+        // Keyboard up: the top edge stays put and every stop is the large height above it.
+        let typing = OrbisSheetGeometry(available: 759 - 302, reference: 793, keyboard: true)
+        #expect(typing.height(.medium) == typing.height(.large))
+        #expect(typing.height(.large) == 759 - 302 - 793 * 0.12)
+    }
+
+    @Test func sheetDragGrowsThenRubberBandsAndMovesDown() {
+        let g = OrbisSheetGeometry(available: 759, reference: 793, bottomInset: 34)
+        let medium = g.height(.medium), large = g.height(.large)
+        // Pulling up from medium grows the panel instead of lifting it off the bottom.
+        let grown = g.frame(detents: [.medium, .large], current: .medium, translation: -50)
+        #expect(grown.height == medium + 50 && grown.offset == 0)
+        // Past the tallest stop it lifts by a bounded amount.
+        let over = g.frame(detents: [.medium, .large], current: .medium, translation: -(large - medium) - 400)
+        #expect(over.height == large && over.offset < 0 && over.offset > -OrbisSheetGeometry.rubberLimit)
+        // Pulling down keeps the height and moves the panel.
+        let lowered = g.frame(detents: [.large], current: .large, translation: 80)
+        #expect(lowered.height == large && lowered.offset == 80)
+    }
+
+    @Test func sheetReleaseChoosesStopOrDismisses() {
+        let g = OrbisSheetGeometry(available: 759, reference: 793, bottomInset: 34)
+        let both: [OrbisSheetGeometry.Detent] = [.medium, .large]
+        let gap = g.height(.large) - g.height(.medium)
+        // Slow releases go to the nearest stop.
+        #expect(g.settle(detents: both, current: .medium, translation: -gap * 0.6, velocity: 0) == .detent(.large))
+        #expect(g.settle(detents: both, current: .medium, translation: -gap * 0.3, velocity: 0) == .detent(.medium))
+        #expect(g.settle(detents: both, current: .large, translation: gap * 0.6, velocity: 0) == .detent(.medium))
+        // A short pull from the smallest stop springs back; the dismissal distance closes.
+        #expect(g.settle(detents: [.large], current: .large, translation: 60, velocity: 0) == .detent(.large))
+        #expect(g.settle(detents: [.large], current: .large, translation: 120, velocity: 0) == .dismiss)
+        // Flings move one stop: large -> medium first, then medium -> dismissed.
+        #expect(g.settle(detents: both, current: .large, translation: 20, velocity: 1500) == .detent(.medium))
+        #expect(g.settle(detents: both, current: .medium, translation: 20, velocity: 1500) == .dismiss)
+        #expect(g.settle(detents: both, current: .medium, translation: -10, velocity: -1500) == .detent(.large))
+        // Flicking down after pulling up only returns to the current stop.
+        #expect(g.settle(detents: both, current: .medium, translation: -30, velocity: 1500) == .detent(.medium))
+        // Keyboard-equalized stops keep the current one.
+        let typing = OrbisSheetGeometry(available: 457, reference: 793, keyboard: true)
+        #expect(typing.settle(detents: both, current: .large, translation: 10, velocity: 0) == .detent(.large))
     }
 }

@@ -829,13 +829,28 @@ struct OrbisCopyButton: View {
 
 /// Sheet chrome in the shared material: the base color behind the content and a
 /// recessed grab handle instead of the system indicator. Content starts outside any surface.
+/// The requested stops reach the app-owned panel through a preference (S62).
 private struct OrbisSheetChrome: ViewModifier {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let detents: Set<PresentationDetent>
     func body(content: Content) -> some View {
         content.environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
+            .preference(key: OrbisSheetDetentsKey.self, value: stops)
+    }
+    private var stops: [OrbisSheetGeometry.Detent] {
+        var result: [OrbisSheetGeometry.Detent] = []
+        if detents.contains(.medium) { result.append(.medium) }
+        // Other system detents have no app-owned equivalent; they open at the large stop.
+        if detents.contains(where: { $0 != .medium }) || result.isEmpty { result.append(.large) }
+        return result
+    }
+}
 
+private struct OrbisSheetDetentsKey: PreferenceKey {
+    static let defaultValue: [OrbisSheetGeometry.Detent] = []
+    static func reduce(value: inout [OrbisSheetGeometry.Detent], nextValue: () -> [OrbisSheetGeometry.Detent]) {
+        if value.isEmpty { value = nextValue() }
     }
 }
 
@@ -929,8 +944,9 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
 }
 
 extension View {
-    /// S37 / M29: app-owned sheets use the same 220ms arrival and 180ms exit,
-    /// with a dedicated handle so content scrolling never dismisses the panel.
+    /// S62 / M30 (revises S37 / M29): app-owned sheets slide from the bottom edge, honor the
+    /// requested medium / large stops, and follow the finger anywhere on the panel. Inner
+    /// scroll views keep scrolling and hand off to the panel only from their top edge.
     func orbisBottomSheet<Sheet: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, retireIndependently: Bool = false, @ViewBuilder content: @escaping () -> Sheet) -> some View {
         modifier(OrbisBottomSheetPresenter(presented: isPresented, onDismiss: onDismiss, retireIndependently: retireIndependently, sheet: content))
     }
@@ -945,33 +961,220 @@ private struct OrbisBottomPanel: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
     let request: OrbisOverlay.SheetRequest
-    let availableHeight: CGFloat
+    let geometry: OrbisSheetGeometry
+    /// Only the top sheet follows drags.
+    let interactive: Bool
     let dismiss: () -> Void
     let retire: () -> Void
+    @State private var detents: [OrbisSheetGeometry.Detent]?
+    @State private var selected: OrbisSheetGeometry.Detent?
     @State private var drag: CGFloat = 0
+
+    private var stops: [OrbisSheetGeometry.Detent] { detents ?? [.large] }
+    /// The smallest requested stop until a drag chooses another one.
+    private var current: OrbisSheetGeometry.Detent {
+        if let selected, stops.contains(selected) { return selected }
+        return stops.first ?? .large
+    }
+    private var canExpand: Bool {
+        guard let top = stops.last else { return false }
+        return geometry.height(top) > geometry.height(current) + 1
+    }
+
     var body: some View {
+        let frame = geometry.frame(detents: stops, current: current, translation: drag)
+        let palette = OrbisPalette(scheme)
         VStack(spacing: 0) {
             Capsule().fill(.clear).frame(width: 36, height: 6)
                 .neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
-                .frame(maxWidth: .infinity).frame(height: 28).contentShape(Rectangle())
-                // The handle rides the panel offset; a local-space translation would feed
-                // that offset back into itself and jitter during slow drags.
-                .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .global).onChanged { drag = max(0, $0.translation.height) }.onEnded { value in
-                    if drag > 100 || value.predictedEndTranslation.height > 180 { dismiss() }
-                    else { withAnimation(reduced ? nil : .orbisDrag) { drag = 0 } }
-                })
+                .frame(maxWidth: .infinity).frame(height: 28)
             OrbisSheetContent(content: request.content)
                 .environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
                 .environment(\.orbisDismiss, dismiss)
                 .environment(\.orbisRetire, retire)
-        }.frame(maxWidth: 720).frame(height: availableHeight * 0.88)
-            .background(OrbisPalette(scheme).base)
-            .neuSurface(radius: 32, intensity: 1, concentric: false)
-            .clipShape(UnevenRoundedRectangle(topLeadingRadius: 32, topTrailingRadius: 32))
-            .offset(y: drag).frame(maxWidth: .infinity)
-            .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal)
-            .accessibilityAction(.escape, dismiss)
-            .accessibilityIdentifier("orbis-bottom-sheet")
+                // Short content stays under the handle instead of floating mid-panel.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .onPreferenceChange(OrbisSheetDetentsKey.self) { requested in
+            let next = Array(Set(requested.isEmpty ? [.large] : requested)).sorted()
+            guard next != detents else { return }
+            if detents == nil || reduced { detents = next }
+            else { withAnimation(.orbisDrag) { detents = next } }
+        }
+        .frame(maxWidth: 720).frame(height: frame.height, alignment: .top)
+        .background(palette.base)
+        .neuSurface(radius: 32, intensity: 1, concentric: false)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 32, topTrailingRadius: 32))
+        // The material continues under the home indicator and below a rubber-band lift.
+        .background(alignment: .bottom) { palette.base.frame(height: 160).offset(y: 159) }
+        .background(OrbisSheetDragSurface(enabled: interactive, canExpand: canExpand,
+            onChanged: { drag = $0 }, onEnded: settle))
+        .offset(y: frame.offset).frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape, dismiss)
+        .accessibilityIdentifier("orbis-bottom-sheet")
+    }
+
+    private func settle(translation: CGFloat, velocity: CGFloat) {
+        switch geometry.settle(detents: stops, current: current, translation: translation, velocity: velocity) {
+        case .dismiss:
+            // The removal transition continues from the released position.
+            dismiss()
+        case .detent(let next):
+            withAnimation(reduced ? nil : .orbisDrag) { selected = next; drag = 0 }
+        }
+    }
+}
+
+/// S62: one window-level pan follows the finger anywhere on the top sheet. SwiftUI cannot
+/// coordinate a parent drag with a child ScrollView, so UIKit decides at recognition time:
+/// a vertical scroller under the finger keeps the drag unless it is at its top edge and the
+/// finger pulls down, or a taller stop remains and the finger pushes up. Text selection and
+/// long presses already in progress keep their touches.
+private struct OrbisSheetDragSurface: UIViewRepresentable {
+    var enabled: Bool
+    var canExpand: Bool
+    var onChanged: (CGFloat) -> Void
+    var onEnded: (_ translation: CGFloat, _ velocity: CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> Probe {
+        let probe = Probe()
+        probe.coordinator = context.coordinator
+        context.coordinator.probe = probe
+        return probe
+    }
+    func updateUIView(_ view: Probe, context: Context) {
+        context.coordinator.surface = self
+        context.coordinator.attach(to: view.window)
+    }
+    static func dismantleUIView(_ view: Probe, coordinator: Coordinator) { coordinator.detach() }
+
+    final class Probe: UIView {
+        weak var coordinator: Coordinator?
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false; isAccessibilityElement = false
+            backgroundColor = .clear
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            coordinator?.attach(to: window)
+        }
+    }
+
+    @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var surface: OrbisSheetDragSurface?
+        weak var probe: Probe?
+        private var pan: UIPanGestureRecognizer?
+        private weak var scrollView: UIScrollView?
+        private var origin: CGFloat = 0
+
+        func attach(to window: UIWindow?) {
+            guard pan?.view !== window else { return }
+            detach()
+            guard let window else { return }
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            pan.maximumNumberOfTouches = 1
+            pan.delegate = self
+            window.addGestureRecognizer(pan)
+            self.pan = pan
+        }
+        func detach() {
+            if let pan { pan.view?.removeGestureRecognizer(pan) }
+            pan = nil; scrollView = nil
+        }
+
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard recognizer === pan, let pan, let surface, surface.enabled,
+                  let probe, let window = probe.window, !probe.isHidden else { return false }
+            guard probe.bounds.contains(pan.location(in: probe)) else { return false }
+            let translation = pan.translation(in: window)
+            let velocity = pan.velocity(in: window)
+            let dy = abs(translation.y) > 0.5 ? translation.y : velocity.y
+            let dx = abs(translation.x) > 0.5 ? translation.x : velocity.x
+            guard dy != 0, abs(dy) > abs(dx) else { return false }
+            let hit = window.hitTest(pan.location(in: window), with: nil)
+            if Self.interactionInProgress(from: hit, excluding: pan) { return false }
+            scrollView = Self.verticalScroller(from: hit, inside: probe)
+            guard let scrollView else { return true }
+            if dy > 0 { return Self.atTop(scrollView) }
+            return surface.canExpand
+        }
+
+        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            // Both may start on the same touch; the scroller is cancelled once the panel owns it.
+            guard let owner = other.view as? UIScrollView else { return false }
+            return other === owner.panGestureRecognizer
+        }
+
+        @objc private func handle(_ pan: UIPanGestureRecognizer) {
+            guard let window = pan.view else { return }
+            let y = pan.translation(in: window).y
+            switch pan.state {
+            case .began:
+                // Start from zero so recognition slop does not jump the panel.
+                origin = y
+                if let scrollView {
+                    let pullingDown = y > 0
+                    scrollView.panGestureRecognizer.isEnabled = false
+                    scrollView.panGestureRecognizer.isEnabled = true
+                    if pullingDown {
+                        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x,
+                                                            y: -scrollView.adjustedContentInset.top), animated: false)
+                    }
+                }
+                surface?.onChanged(0)
+            case .changed:
+                surface?.onChanged(y - origin)
+            case .ended:
+                surface?.onEnded(y - origin, pan.velocity(in: window).y)
+                scrollView = nil
+            case .cancelled, .failed:
+                surface?.onEnded(y - origin, 0)
+                scrollView = nil
+            default:
+                break
+            }
+        }
+
+        private static func atTop(_ scrollView: UIScrollView) -> Bool {
+            scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + 0.5
+        }
+
+        /// The nearest scroller under the finger that can actually scroll vertically and lies
+        /// inside the panel; pages behind the overlay never take part.
+        private static func verticalScroller(from view: UIView?, inside probe: UIView) -> UIScrollView? {
+            let panel = probe.convert(probe.bounds, to: nil).insetBy(dx: -1, dy: -1)
+            var current = view
+            while let candidate = current {
+                if let scroll = candidate as? UIScrollView, scroll.isScrollEnabled,
+                   panel.contains(scroll.convert(scroll.bounds, to: nil)) {
+                    let inset = scroll.adjustedContentInset
+                    if scroll.alwaysBounceVertical || scroll.contentSize.height + inset.top + inset.bottom > scroll.bounds.height + 0.5 {
+                        return scroll
+                    }
+                }
+                current = candidate.superview
+            }
+            return nil
+        }
+
+        private static func interactionInProgress(from view: UIView?, excluding pan: UIGestureRecognizer) -> Bool {
+            var current = view
+            while let candidate = current {
+                if let text = candidate as? UITextView, text.selectedRange.length > 0 { return true }
+                for recognizer in candidate.gestureRecognizers ?? [] where recognizer !== pan
+                    && recognizer is UILongPressGestureRecognizer
+                    && (recognizer.state == .began || recognizer.state == .changed) {
+                    return true
+                }
+                current = candidate.superview
+            }
+            return false
+        }
     }
 }
 
@@ -1314,6 +1517,7 @@ private struct OrbisOverlayLayer: View {
     @Environment(\.orbisAppearance) private var visualStyle
     @ObservedObject var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @State private var keyboardVisible = false
 
     var body: some View {
         ZStack {
@@ -1330,13 +1534,14 @@ private struct OrbisOverlayLayer: View {
                             .onTapGesture { if let top = overlay.sheets.last { overlay.dismissSheet(owner: top.id) } }
                             .transition(.opacity)
                         ForEach(overlay.sheets) { sheet in
-                            VStack { Spacer(minLength: 0); OrbisBottomPanel(request: sheet, availableHeight: proxy.size.height,
+                            VStack { Spacer(minLength: 0); OrbisBottomPanel(request: sheet, geometry: sheetGeometry(proxy),
+                                interactive: overlay.sheets.last?.id == sheet.id,
                                 dismiss: { overlay.dismissSheet(owner: sheet.id) }, retire: { overlay.retireSheet(owner: sheet.id) }) }
                                 .frame(width: proxy.size.width, height: proxy.size.height)
                                 .id(sheet.id).accessibilityHidden(overlay.sheets.last?.id != sheet.id)
                                 .transition(reduceMotion ? .identity : .asymmetric(
-                                    insertion: .offset(y: 24).combined(with: .opacity).animation(InteractionMotion.panel),
-                                    removal: .offset(y: 24).combined(with: .opacity).animation(InteractionMotion.dismiss)))
+                                    insertion: .move(edge: .bottom).animation(InteractionMotion.sheetEnter),
+                                    removal: .move(edge: .bottom).animation(InteractionMotion.sheetExit)))
                         }
                     }
                     if let menu = overlay.menu {
@@ -1373,6 +1578,22 @@ private struct OrbisOverlayLayer: View {
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.menu?.id)
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.dialog?.id)
         .allowsHitTesting(overlay.isPresenting)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            // Shortcut bars of hardware keyboards are not a keyboard for sheet sizing.
+            guard let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+                  let screen = (note.object as? UIScreen)?.bounds else { return }
+            keyboardVisible = max(0, screen.maxY - end.minY) > 120
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardVisible = false
+        }
+    }
+
+    /// The proxy respects the keyboard; its height plus bottom inset stays the full viewport.
+    private func sheetGeometry(_ proxy: GeometryProxy) -> OrbisSheetGeometry {
+        let bottom = proxy.safeAreaInsets.bottom
+        return OrbisSheetGeometry(available: proxy.size.height, reference: proxy.size.height + bottom,
+                                  bottomInset: keyboardVisible ? 0 : bottom, keyboard: keyboardVisible)
     }
 
     private func menuTransitionAnchor(_ anchor: CGRect, in bounds: CGRect) -> UnitPoint {

@@ -275,6 +275,74 @@ enum MotionGeometry {
     }
 }
 
+/// S62 / M30: stops of the app-owned bottom sheet. Heights are measured inside the safe
+/// area; `reference` is the keyboard-independent viewport (safe height plus bottom inset),
+/// so the medium stop and the large top edge do not move while the keyboard animates.
+struct OrbisSheetGeometry: Equatable {
+    enum Detent: Int, Comparable, Hashable {
+        case medium, large
+        static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+    enum Settle: Equatable { case detent(Detent), dismiss }
+
+    static let flingVelocity: CGFloat = 900
+    static let dismissDistance: CGFloat = 110
+    static let rubberLimit: CGFloat = 28
+
+    /// Current safe-area height; it shrinks while the keyboard is up.
+    var available: CGFloat
+    var reference: CGFloat
+    /// Home indicator inset while the keyboard is hidden.
+    var bottomInset: CGFloat = 0
+    /// A visible keyboard expands every stop to the large height above it.
+    var keyboard = false
+
+    var largeTopGap: CGFloat { max(12, reference * 0.12) }
+
+    func height(_ detent: Detent) -> CGFloat {
+        let large = max(0, available - largeTopGap)
+        guard detent == .medium, !keyboard else { return large }
+        return min(large, max(min(large, 320), reference * 0.55 - bottomInset))
+    }
+
+    /// Panel height and offset for a vertical drag (down is positive). Pulling up grows the
+    /// panel to the tallest stop; past it the panel lifts with a bounded rubber band.
+    func frame(detents: [Detent], current: Detent, translation: CGFloat) -> (height: CGFloat, offset: CGFloat) {
+        let base = height(current)
+        let top = max(base, detents.map(height).max() ?? base)
+        let visible = base - translation
+        if visible <= base { return (base, base - visible) }
+        if visible <= top { return (visible, 0) }
+        return (top, -Self.rubber(visible - top))
+    }
+
+    static func rubber(_ distance: CGFloat) -> CGFloat {
+        rubberLimit * (1 - 1 / (max(0, distance) / 90 + 1))
+    }
+
+    /// A fling moves one stop; a slow release takes the nearest stop, or dismisses once the
+    /// smallest stop has been pulled down by the dismissal distance.
+    func settle(detents: [Detent], current: Detent, translation: CGFloat, velocity: CGFloat) -> Settle {
+        let stops = Set(detents + [current]).sorted().map { (detent: $0, height: height($0)) }
+        let visible = height(current) - translation
+        if velocity > Self.flingVelocity {
+            if let lower = stops.last(where: { $0.height < visible - 1 }) { return .detent(lower.detent) }
+            return .dismiss
+        }
+        if velocity < -Self.flingVelocity {
+            return .detent(stops.first(where: { $0.height > visible + 1 })?.detent ?? stops[stops.count - 1].detent)
+        }
+        let smallest = stops[0].height
+        if visible < smallest - min(Self.dismissDistance, smallest * 0.3) { return .dismiss }
+        // Equal heights (keyboard up) keep the current stop.
+        let nearest = stops.min { lhs, rhs in
+            let l = abs(lhs.height - visible), r = abs(rhs.height - visible)
+            return l != r ? l < r : lhs.detent == current
+        }
+        return .detent(nearest?.detent ?? current)
+    }
+}
+
 /// IOS-CHAT-05: network polling follows the top page at rest; visual work also
 /// includes the source revealed during a return and uses orbisVisible instead.
 struct OrbisPageActivity: Equatable {
