@@ -1,11 +1,20 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json tsconfig.json tsconfig.base.json ./
-COPY LICENSE THIRD-PARTY-NOTICES.md ./
+COPY package.json package-lock.json ./
+COPY packages/protocol/package.json ./packages/protocol/
+COPY packages/e2e/package.json ./packages/e2e/
+COPY packages/host/package.json ./packages/host/
+COPY packages/relay/package.json ./packages/relay/
+COPY packages/runtime-bridge/package.json ./packages/runtime-bridge/
+COPY packages/remote-interaction-sdk/package.json ./packages/remote-interaction-sdk/
+COPY packages/pi-extension/package.json ./packages/pi-extension/
+COPY packages/claude-mod/package.json ./packages/claude-mod/
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm ci --ignore-scripts --no-audit --no-fund --registry=$NPM_REGISTRY
+COPY tsconfig.json tsconfig.base.json LICENSE THIRD-PARTY-NOTICES.md ./
 COPY packages ./packages
 COPY scripts ./scripts
-ARG NPM_REGISTRY=https://registry.npmjs.org
-RUN npm ci --ignore-scripts --no-audit --no-fund --registry=$NPM_REGISTRY && npm run build
+RUN npm run build
 
 FROM node:22-bookworm-slim
 LABEL org.opencontainers.image.source="https://github.com/WGooold/Orbis" \

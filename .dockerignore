@@ -1,0 +1,12 @@
+.git
+.github
+.artifacts
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+ios
+android
+docs
+native
+AGENTS.md
+CLAUDE.md

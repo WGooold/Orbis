@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -b && node scripts/build-relay-web.mjs",
+    "build": "tsc -b && node scripts/build-relay-web.mjs",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.tests.json --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",

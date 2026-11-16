@@ -2,23 +2,13 @@ name: iOS native build
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'ios/**'
-      - 'scripts/check-ios.sh'
-      - '.github/workflows/ios-build.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'ios/**'
-      - 'scripts/check-ios.sh'
-      - '.github/workflows/ios-build.yml'
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  tests:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -26,5 +16,28 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '22.23.2'
-      - name: Verify core protocol and build iOS Simulator app
-        run: bash scripts/check-ios.sh
+          package-manager-cache: false
+      - name: Compile Swift test bundle
+        run: bash scripts/check-ios.sh prepare-tests
+      - name: Run Swift tests
+        run: bash scripts/check-ios.sh tests
+
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and verify iOS Simulator app
+        run: bash scripts/check-ios.sh app
+
+  build:
+    if: always()
+    needs: [tests, simulator]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify iOS results
+        env:
+          TESTS_RESULT: ${{ needs.tests.result }}
+          SIMULATOR_RESULT: ${{ needs.simulator.result }}
+        run: test "$TESTS_RESULT" = success && test "$SIMULATOR_RESULT" = success

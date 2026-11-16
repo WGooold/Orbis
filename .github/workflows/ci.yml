@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+# A unique main group also avoids replacing a pending main run.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      core: ${{ steps.paths.outputs.core }}
+      ios: ${{ steps.paths.outputs.ios }}
+      relay: ${{ steps.paths.outputs.relay }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/github-script@v8
+        id: paths
+        with:
+          script: |
+            const { classifyChanges } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-changes.mjs`);
+            let selected = { core: true, ios: true, relay: true };
+            if (context.eventName === 'pull_request') {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                ...context.repo, pull_number: context.payload.pull_request.number, per_page: 100,
+              });
+              // The API caps PR files at 3,000; uncertainty must run the checks.
+              if (files.length < 3000) selected = classifyChanges(files.map(file => file.filename));
+            } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
+              const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                ...context.repo, basehead: `${context.payload.before}...${context.sha}`,
+              });
+              // Compare caps the changed-file list at 300, independently of pagination.
+              if (data.files && data.files.length < 300) selected = classifyChanges(data.files.map(file => file.filename));
+            }
+            for (const [name, value] of Object.entries(selected)) core.setOutput(name, String(value));
+            core.info(JSON.stringify(selected));
+
+  checks:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    uses: ./.github/workflows/core-checks.yml
+
+  ios:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
+    uses: ./.github/workflows/ios-build.yml
+
+  gate:
+    name: CI
+    if: always()
+    needs: [changes, checks, ios]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every selected check
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          node <<'JS'
+          const needs = JSON.parse(process.env.NEEDS);
+          if (needs.changes.result !== 'success') throw new Error('Change selection failed');
+          for (const [job, flag] of [['checks', 'core'], ['ios', 'ios']]) {
+            const expected = needs.changes.outputs[flag] === 'true' ? 'success' : 'skipped';
+            if (needs[job].result !== expected) throw new Error(`${job}: ${needs[job].result}, expected ${expected}`);
+          }
+          JS
+
+  deploy:
+    needs: [changes, gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.relay == 'true'
+    uses: ./.github/workflows/relay-deploy.yml
+    with:
+      skip_checks: true
+    secrets: inherit
