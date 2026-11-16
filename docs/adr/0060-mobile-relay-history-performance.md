@@ -278,4 +278,18 @@ SwiftUI 按尺寸提议缓存测量结果，每个不同的提议都要重新测
 - **界面回归。** 输入框增长、按钮贴底、发送飞行、Slash、硬件键盘相关用例。
 - **真机。** 在同一台 iPad 上复测中文输入，由用户验收。
 
-证据见 [.artifacts/ios-device-typing-20261114](../../.artifacts/ios-device-typing-20261114/verification.json)。状态：待实施。
+### 2026-11-16：iPad 聊天开页更新范围与列表准备（PERF-14，首轮真机验收未通过）
+
+有效真机 Debug CPU 采样中，入场偏移设置同步触发 Observation / SwiftUI 更新，采样区段约 28–64ms；列表快照同时触发 UIKit 布局与 hosted SwiftUI 单元格测量。帧工具传输失败，不能据此报告掉帧数或判定 GPU 瓶颈。首次证据见 [findings.json](../../.artifacts/ipad-jank-bounded-20261116/findings.json)。
+
+- 页面连续位移、展开进度及来源遮罩各自在视觉修饰层观察，整页环境、可访问性与手势作用域只观察离散页面状态；原动效与取消、返回语义保留。实现见 `PageNavigation.swift`。
+- 首次挂载同步安装真实列表内容；后续 ID / UUID 版本差异由独立 `ChatNativeSnapshotWorker` 准备。仅当前来源、拥有者与已提交代次一致的计划进入 UI 事务，连续输入合并到最新版本，停止后丢弃结果。`AnyView` 与原生视图不跨 actor。实现见 `ChatPageScheduling.swift`、`ChatNativeTranscriptView.swift`。
+- 原生快照仍在同一事务内完成必要布局与阅读补偿，移除额外无条件 `setNeedsLayout()`；真实自适应测量保留。准备期间保持旧内容提供器，提交前按当前交互捕获阅读位置；未提交的旧列表不能为新拥有者完成定位或发布视口。
+
+回归见 `ChatNativeSnapshotWorkerTests.swift`、`DeviceTests/ChatNativeSnapshotTests.swift`、`DeviceTests/ChatMountPreparationTests.swift` 及既有开页、返回、历史前插和工具展开界面用例。自动验证、资源清理及真机验收边界见 [本轮证据](../../.artifacts/ipad-jank-fix-20261116/verification.json)。
+
+首轮 Release `0.1.3 (6)` 在同一 iPad 复测仍有长聊天开页卡顿。有效 30 秒 Time Profiler 录制保留主线程列表提交与自适应测量开销，最长连续采样段约 237ms；没有 GPU 或呈现帧数据。下一轮定位与证据见 [Release 采样](../../.artifacts/ipad-jank-fix-20261116/release-profile/findings.json)，自动功能结果不计性能验收。
+
+第二轮将新 mount 的视口 context 初始化提前到原生列表首次安装之前，后续 appearance 幂等；布局初次获得有效 bounds 时，以 UIKit 自己的布局内容尺寸选择底部窗口，随后仍由真实单元格尺寸完成定位，不缓存或替代高度。80 行原生夹具的首次拟合由 29 次降至 14 次，不再拟合无关顶部；固定 4 行的 appearance 从第二次快照及全行重配变为单次提交。首次失败、无效的 targetContentOffset 候选及通过证据分别保留于 `.artifacts/ipad-jank-fix-20261116/release-profile/`；真机改善仍需用户验收。
+
+证据见 [.artifacts/ios-device-typing-20261114](../../.artifacts/ios-device-typing-20261114/verification.json)。状态：实现完成，自动验证通过，真机验收未通过，待复测。

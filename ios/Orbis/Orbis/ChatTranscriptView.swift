@@ -290,7 +290,7 @@ struct ChatTranscriptView: View, Equatable {
         @ViewBuilder content: () -> Content) -> ChatNativeTranscriptView.Item {
         nativeItems.item(id: id, inputs: .init(content: inputs, environment: environment.reconfigurationKey)) {
             ChatDebugProbes.nativeContentBuilt(message: kind == .message)
-            return .init(id: id, revision: AnyHashable(UUID()),
+            return .init(id: id, revision: UUID(),
                 content: AnyView(environment.applying(content())), kind: kind)
         }
     }
@@ -334,6 +334,7 @@ struct ChatTranscriptView: View, Equatable {
                     return .init(items: items, revision: nativeItems.revision)
                 }
             },
+                prepareMount: { model.prepareMount(target: target, token: mountToken) },
                 viewport: viewport, tailID: ChatFollow.bottomID, mountToken: mountToken,
                 requestIsCurrent: { ownsViewport && viewport.owns($0) }, onDistance: bottomDistanceChanged,
                 onInteraction: { active in

@@ -395,13 +395,17 @@ final class ChatScreenModel {
     }
     /// A covered retained page keeps its viewport. A newly mounted native scroll
     /// view starts a fresh context even when it selects the same runtime/session.
+    /// Prepare it before the native collection installs rows: resetting from the
+    /// later appearance callback would reconfigure every freshly mounted cell.
+    func prepareMount(target: ChatActionContext, token: UUID) {
+        guard actionTarget == target, mountedToken != token else { return }
+        mountedToken = token
+        viewport.resetForMount()
+        viewport.commit(transcript)
+    }
     func mount(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
         guard actionTarget == target else { return }
-        if mountedToken != token {
-            mountedToken = token
-            viewport.resetForMount()
-            viewport.commit(transcript)
-        }
+        prepareMount(target: target, token: token)
         visibilityChanged(target: target, visible: visible, foreground: foreground)
     }
     /// The unique mount token proves ownership. A selection change can replace the

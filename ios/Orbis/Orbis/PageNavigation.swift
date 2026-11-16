@@ -368,9 +368,6 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
         let motion = stack.motion
         let moving = id != nil && motion.movingID == id
         let source = aboveID != nil && motion.movingID == aboveID
-        // A covered layer rests at the fully covered state, so starting a return from it is
-        // continuous, and handing it the top after a return changes no pixel.
-        let reveal: CGFloat = source ? motion.sourceProgress : (isTop ? 1 : 0)
         let busy = moving && (motion.phase == .returning || motion.phase == .expanding)
         let entering = moving && (motion.phase == .entering || motion.phase == .expanding)
         content
@@ -380,13 +377,11 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
             .environment(\.orbisBackPriorityClaim, backClaim)
             .environment(\.orbisVisible, !unreachable || source)
             .disabled(suppressTaps)
-            .clipShape(PageExpansionShape(origin: moving ? motion.origin : nil,
-                                          progress: moving ? motion.expansion : 1,
-                                          insets: motion.insets))
-            .modifier(PageSlideEffect(offset: moving ? motion.offset : 0))
-            .modifier(PageSourceShade(reveal: reveal,
-                                      shifts: !reduceMotion && !(source && motion.phase == .expanding),
-                                      scrim: OrbisPalette(scheme).scrim))
+            .modifier(PageExpansionClip(motion: motion, moving: moving))
+            .modifier(PageSlideMotion(motion: motion, moving: moving))
+            .modifier(PageSourceMotion(motion: motion, source: source, isTop: isTop,
+                                       shifts: !reduceMotion && !(source && motion.phase == .expanding),
+                                       scrim: OrbisPalette(scheme).scrim))
             .allowsHitTesting(isTop && !busy)
             .orbisAccessibilitySubtree(hidden: unreachable)
             .simultaneousGesture(drag, including: isTop && id != nil ? .all : .subviews)
@@ -440,6 +435,44 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
     private func releaseTaps() {
         // Keep controls disabled through the current touch-up's action dispatch.
         DispatchQueue.main.async { suppressTaps = false }
+    }
+}
+
+/// PERF-14: continuous motion is observed at the visual leaves. Reading offset or expansion
+/// in OrbisPageLayer's body would also invalidate its page environments, accessibility and
+/// gesture tree when an entrance target is assigned or a drag advances.
+private struct PageExpansionClip: ViewModifier {
+    let motion: OrbisPageMotion
+    let moving: Bool
+
+    func body(content: Content) -> some View {
+        content.clipShape(PageExpansionShape(origin: moving ? motion.origin : nil,
+                                             progress: moving ? motion.expansion : 1,
+                                             insets: motion.insets))
+    }
+}
+
+private struct PageSlideMotion: ViewModifier {
+    let motion: OrbisPageMotion
+    let moving: Bool
+
+    func body(content: Content) -> some View {
+        content.modifier(PageSlideEffect(offset: moving ? motion.offset : 0))
+    }
+}
+
+private struct PageSourceMotion: ViewModifier {
+    let motion: OrbisPageMotion
+    let source: Bool
+    let isTop: Bool
+    let shifts: Bool
+    let scrim: Color
+
+    func body(content: Content) -> some View {
+        // A covered layer rests at the fully covered state, so starting a return from it is
+        // continuous, and handing it the top after a return changes no pixel.
+        let reveal: CGFloat = source ? motion.sourceProgress : (isTop ? 1 : 0)
+        content.modifier(PageSourceShade(reveal: reveal, shifts: shifts, scrim: scrim))
     }
 }
 

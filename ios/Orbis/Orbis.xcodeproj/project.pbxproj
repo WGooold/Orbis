@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01410010000000000000001; };
+        C01400010000000000000002 /* ChatMountPreparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01410010000000000000002; };
         8805B409FEE81C340BA71E36 /* ChatConfigurationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B57CBCB214140E9324C6786; };
         BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABA69147CCA95C8B28B5ECA9; };
         64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2CC3A7FB21F94C1E8CEFC97; };
@@ -164,6 +166,8 @@
 		C07110010000000000000001 /* PageNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageNavigation.swift; sourceTree = "<group>"; };
 		C03310010000000000000001 /* HomePullRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomePullRefresh.swift; sourceTree = "<group>"; };
         C06410010000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/RelayQUICDeviceTests.swift; sourceTree = SOURCE_ROOT; };
+        C01410010000000000000001 /* ChatNativeSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/ChatNativeSnapshotTests.swift; sourceTree = SOURCE_ROOT; };
+        C01410010000000000000002 /* ChatMountPreparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/ChatMountPreparationTests.swift; sourceTree = SOURCE_ROOT; };
         C06410010000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = OrbisTransportTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -449,7 +453,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
-        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001, A07100010000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001, A07100010000000000000002, C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */, C01400010000000000000002 /* ChatMountPreparationTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */

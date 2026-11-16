@@ -56,6 +56,46 @@ func chatUniqueItems<Item>(_ items: [Item], id: (Item) -> String) -> [Item] {
     return items.filter { seen.insert(id($0)).inserted }
 }
 
+/// PERF-14: only immutable row identity/version metadata crosses the worker boundary.
+/// Hosted content and native layout remain owned by the main-actor coordinator.
+struct ChatNativeSnapshotRow: Equatable, Sendable {
+    let id: String
+    let revision: UUID
+}
+
+struct ChatNativeSnapshotPlan: Sendable {
+    let ids: [String]
+    let reconfigured: [String]
+}
+
+/// Prepares changes relative to the last applied snapshot. The coordinator supplies
+/// unique IDs and validates the source/owner generations before committing a plan.
+actor ChatNativeSnapshotWorker {
+    private let beforeWork: @Sendable () -> Void
+
+    init(beforeWork: @escaping @Sendable () -> Void = {}) {
+        self.beforeWork = beforeWork
+    }
+
+    func prepare(previous: [ChatNativeSnapshotRow], next: [ChatNativeSnapshotRow],
+                 reconfigureRetained: Bool) -> ChatNativeSnapshotPlan {
+        beforeWork()
+        let revisions = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0.revision) })
+        var ids: [String] = []
+        var reconfigured: [String] = []
+        ids.reserveCapacity(next.count)
+        reconfigured.reserveCapacity(min(previous.count, next.count))
+        for row in next {
+            ids.append(row.id)
+            if let previousRevision = revisions[row.id],
+               reconfigureRetained || previousRevision != row.revision {
+                reconfigured.append(row.id)
+            }
+        }
+        return ChatNativeSnapshotPlan(ids: ids, reconfigured: reconfigured)
+    }
+}
+
 enum ChatPagePhase: Equatable {
     case active, moving, covered, background
     var visualActive: Bool { self == .active || self == .moving }
