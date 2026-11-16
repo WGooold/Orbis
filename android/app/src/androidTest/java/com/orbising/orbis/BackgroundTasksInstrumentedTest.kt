@@ -1,12 +1,23 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - Claude 后台子任务（S26、S17、S20、V05、V12、V16、V18、M03、M06、M10、M20）
+// - Android 子代理展开行与父子树（S59 / SC107）
 package com.orbising.orbis
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -35,7 +46,7 @@ class BackgroundTasksInstrumentedTest {
             }
         }
         val card = compose.onNodeWithTag("home-runtime-parent")
-        compose.onNodeWithText("1 个子任务运行中").assertIsDisplayed()
+        compose.onNodeWithText("1 个子代理运行中").assertIsDisplayed()
         card.performTouchInput { swipeLeft() }
         card.assertIsDisplayed().assertIsNotSelected()
         compose.runOnIdle { assertTrue(closed.isEmpty()) }
@@ -81,5 +92,49 @@ class BackgroundTasksInstrumentedTest {
         compose.onNodeWithText("工作中").assertIsDisplayed()
         compose.onNodeWithTag("background-tasks-toggle").performClick()
         compose.onNodeWithTag("background-task-b").assertDoesNotExist()
+    }
+
+    // S59 / SC107: nesting is shown by indentation, not by a "来自" line; screenshots keep the visual evidence.
+    @Test fun subagentTreeIndentsChildrenUnderTheirParent() {
+        val tasks = BackgroundTaskInventory("ready", listOf(
+            BackgroundTask("lead", "梳理需求", "general-purpose", "running"),
+            BackgroundTask("scan", "扫描调用点", "Explore", "running", "lead"),
+            BackgroundTask("tests", "核对测试", "Explore", "completed", "lead"),
+            BackgroundTask("lint", "格式检查", "agent", "failed")), false)
+        var dark by mutableStateOf(false)
+        var shown by mutableStateOf(tasks)
+        compose.setContent {
+            OrbisTheme(darkTheme = dark, manageWindow = false) {
+                Surface {
+                    Column(Modifier.fillMaxWidth()) {
+                        Spacer(Modifier.height(24.dp))
+                        key(dark) { BackgroundTasksPanel(shown) }
+                        Text("输入区", Modifier.fillMaxWidth().height(56.dp))
+                    }
+                }
+            }
+        }
+        listOf(false, true).forEach { useDark ->
+            compose.runOnIdle { dark = useDark; shown = tasks }
+            val theme = if (useDark) "dark" else "light"
+            capture("background-tasks-collapsed-$theme")
+            compose.onNodeWithTag("background-tasks-toggle").performClick()
+            compose.waitForIdle()
+            compose.onAllNodesWithText("来自：梳理需求").assertCountEquals(0)
+            fun left(text: String) = compose.onNodeWithText(text, useUnmergedTree = true).getBoundsInRoot().left
+            assertTrue(left("扫描调用点") > left("梳理需求"))
+            assertEquals(left("扫描调用点"), left("核对测试"))
+            assertEquals(left("梳理需求"), left("格式检查"))
+            capture("background-tasks-expanded-$theme")
+            // Withdrawn snapshot: last-known rows stay, without liveness (asserted in BackgroundTasksTest).
+            compose.runOnIdle { shown = tasks.copy(availability = "unknown") }
+            compose.onNodeWithText("状态待核对，显示最后已知信息").assertIsDisplayed()
+            capture("background-tasks-unconfirmed-$theme")
+        }
+    }
+
+    private fun capture(name: String) {
+        val output = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "$name.png")
+        output.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 }

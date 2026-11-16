@@ -108,6 +108,7 @@
 | SC93 | 自动重连与电脑离线使用既有连接状态；确认需要用户解决的连接问题才进入 F4，条件解除后恢复 |
 | SC94 | 发送、配置、同步、目录、工具、文件与附件失败回到对象原位；离开对象后的有效提醒按 F3 呈现 |
 | SC95 | 命令选项读取器先认领在途协议错误，再使用连接请求前缀；失败留在菜单，过期回包保持静默 |
+| SC107 | Android 子代理展开行：平置标题行与旋转箭头；凹陷面内的父子树以状态点、缩进与细线表达层级（S59；取代 SC52 的整宽凸起按钮形态） |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 

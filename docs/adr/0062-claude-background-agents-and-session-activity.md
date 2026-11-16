@@ -46,6 +46,20 @@ agent.list 提供完整库存，按会话和代次串行核对，内容变化驱
 
 跨 Agent 的共同模型、精简字段、部分 / 失联库存与双端提示见 [ADR-0068](0068-unified-subagent-inventory-and-app-hints.md)（S33 / SC52）。Claude 的原生采集、进程身份与完整库存规则继续沿用本 ADR；原生联动和用户验收状态分别保留。
 
+## 2026-11-16 后台命令与监听（S60 / SC108）
+
+`agent.list` 只含子代理与 teammate；后台 Bash、Monitor、workflow 不在其中，Claude Code 2.1.325 的 Mods 也没有可随时读取的任务清单（`background_tasks_changed` / `get_task_output` 属 SDK 控制协议，TUI 插件不可用）。协议与 schema 不变：这类任务作为 `execution.tasks` 的普通条目下发，`kind` 为 `shell`、`monitor` 或原生类型名。
+
+- 插件 0.1.12 维护本会话的后台工作账本，与 `agent.list` 合并后仍由唯一的 `tasks.snapshot` 发送；同一 id 以 `agent.list` 为准，原生清单中的 `subagent` 条目不进入账本。
+- 原生事实：Bash 结果记录的 `backgroundTaskId`（含 Ctrl+B 与超时转后台）、Monitor 结果的 `taskId` 加入运行中条目；TaskStop 结果的 `task_id` 标记已停止；`Stop` / `SubagentStop` 输入的 `background_tasks` 为本会话完整在途清单，到达时替换账本，已结束任务由此移除。任务通知行没有结构化状态，不解析其文本。
+- 标题取工具的 `description`，不下发命令行；未传描述时原生清单的 `description` 回退为完整命令（含其中的凭据），此时保留已知标题或留空。子代理发起的任务以其 agentId 作父身份。原生状态不在既有枚举内时记为 `unknown`。
+- Stop 输入缺少 `background_tasks` 的 Claude Code 不上报后台命令，避免无法结束的条目永久阻止关闭。
+- 关闭准入不变：清单中有运行中的后台命令或监听时不允许远程关闭；远程关闭会结束 Claude 进程及其后台命令。
+- 双端呈现区分两类：`kind` 为 `shell` / `monitor` 的是后台命令，其余为子代理。任务区标题按类别计数（仅一类时为“子代理 N 项”或“后台命令 N 项”），两类并存时展开区先列子代理、再列主会话的后台命令，并显示分组名；子代理发起的命令挂在该子代理下。类型标签本地化为“命令 / 监听”，不重复标题。只剩后台命令在运行时，会话状态为静止状态点与“空闲 · N 个后台命令”，跳动的工作中状态只表示主回合或子代理；Android 任务行的状态点同样只对子代理跳动。清单不完整、待核对与关闭限制等跨类别提示使用“后台任务”。
+- 已知边界：任务结束到下一次 Stop 之间仍显示运行中；Claude 会为任务通知开启新回合，通常随之核对。通知回合被中断时，状态保留到下一回合结束。
+
+原生行为以本机 Claude Code 2.1.325 一次性非交互会话核对（隔离目录、合成任务，不连接 Host），记录见 `.artifacts/claude-background-shells-20261116/`。实现见 [register.ts](../../packages/claude-mod/src/register.ts)、[Models.swift](../../ios/Orbis/Orbis/Models.swift)、[ChatComposerView.swift](../../ios/Orbis/Orbis/ChatComposerView.swift)、[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt) 与 [BackgroundTasks.kt](../../android/app/src/main/java/com/orbising/orbis/BackgroundTasks.kt)，回归见 [background-work.test.ts](../../packages/claude-mod/tests/background-work.test.ts)、[BackgroundTasksTests.swift](../../ios/Orbis/Tests/BackgroundTasksTests.swift)、[BackgroundTasksTest.kt](../../android/app/src/test/java/com/orbising/orbis/BackgroundTasksTest.kt)。交互 TUI 联动、设备验证与用户验收分别记录，尚未完成。
+
 ## Consequences
 
 主回合可接收输入与后台仍有工作可以同时准确展示。代价是维护独立任务库存及未知状态，而不再用一个 busy 布尔代表全部执行。后续其他后端具备可靠任务来源时可复用同一投影与展示，仍由各自适配器定义控制能力。

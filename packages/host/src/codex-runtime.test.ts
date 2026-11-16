@@ -588,6 +588,75 @@ describe("Codex recoverable source checkpoints", () => {
     } finally { h.server.onExit?.(0); }
   });
 
+  // FT-G12-LIVE-01: a phone sync re-reads an active turn while finished rows wait behind a
+  // running command. Rows the Host already saw finish keep their observed content, and activity
+  // rows that never become Entries do not hold order; otherwise the rest of the turn piles up in
+  // live and short replies are cut to the live text target.
+  it.each(["listed", "unpersisted"])("keeps queued rows committable across an active native re-read (%s command)", async variant => {
+    const h = makeHarness();
+    try {
+      await activate(h);
+      h.notify("turn/started", { threadId: "th-1", turn: { id: "t", startedAt: 1 } });
+      const command = { id: "cmd", type: "commandExecution", command: "xcodebuild test", cwd: "D:/repo", status: "inProgress" };
+      const short = "审查".repeat(45);
+      const queued = [{ id: "r1", type: "reasoning", summary: ["**检查**"] }, { id: "a1", type: "agentMessage", text: short },
+        { id: "sub", type: "subAgentActivity", kind: "interacted", agentThreadId: "child", agentPath: "/root/review" }];
+      h.notify("item/started", { threadId: "th-1", turnId: "t", item: command });
+      for (const item of queued) h.notify("item/completed", { threadId: "th-1", turnId: "t", item });
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+      const before = h.events.length;
+      // The read lags the observed completion: the reply is shorter and carries no completion time.
+      const read = queued.map(item => item.id === "a1" ? { ...item, text: short.slice(0, 6) } : item);
+      h.resolveNext({ data: [{ id: "t", status: "inProgress", items: variant === "listed" ? [command, ...read] : read }] });
+      await vi.waitFor(() => expect(h.events.slice(before).some(event => event.type === "session.patch" && event.source.ready)).toBe(true));
+      const completed = { ...command, status: "completed", exitCode: 0 };
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: completed });
+      const later = Array.from({ length: 20 }, (_, index) => [
+        { id: `r${index + 2}`, type: "reasoning", summary: ["**检查布局**"] }, { id: `a${index + 2}`, type: "agentMessage", text: short }]).flat();
+      for (const item of later) h.notify("item/completed", { threadId: "th-1", turnId: "t", item });
+      const live = h.events.filter(event => event.type === "session.patch").at(-1)!.live;
+      expect(live.messages).toEqual([]);
+      const ids = ["r1", "a1", ...later.map(item => item.id)];
+      for (const id of ids) expect(await h.runtime.readSessionEntry("codex:th-1", "th-1", id)).toBeDefined();
+      expect((await h.runtime.readSessionEntry("codex:th-1", "th-1", "a1"))?.data.message).toMatchObject({ content: [{ type: "text", text: short }] });
+      if (variant === "unpersisted") return;
+      const entries = async (target: ReturnType<typeof makeHarness>) =>
+        Promise.all(["cmd", "cmd:result", ...ids].map(id => target.runtime.readSessionEntry("codex:th-1", "th-1", id)));
+      const replay = makeHarness({ initialTurns: [{ id: "t", status: "completed", items: [completed, ...queued, ...later] }] });
+      try {
+        await activate(replay);
+        expect(await entries(h)).toEqual(await entries(replay));
+      } finally { replay.server.onExit?.(0); }
+    } finally { h.server.onExit?.(0); }
+  });
+
+  // FT-G12-LIVE-01: first attachment to a turn already running (Host restart, desktop reload).
+  // Recorded native completion times commit finished rows; an unrecorded reply stays live-owned.
+  it("commits recorded native completions when first attaching to a running turn", async () => {
+    const short = "审查".repeat(45);
+    const done = (item: Record<string, unknown>, at: number) => ({ ...item, startedAtMs: at, completedAtMs: at });
+    const items = [done({ id: "u", type: "userMessage", content: [{ type: "text", text: "go" }] }, 1),
+      done({ id: "a1", type: "agentMessage", text: short }, 2), done({ id: "r1", type: "reasoning", summary: ["**检查**"] }, 3),
+      done({ id: "cmd", type: "commandExecution", command: "ls", cwd: "D:/repo", status: "completed", exitCode: 0 }, 4),
+      done({ id: "sub", type: "subAgentActivity", kind: "interacted", agentThreadId: "child", agentPath: "/root/review" }, 5),
+      done({ id: "a2", type: "agentMessage", text: short }, 6), { id: "streaming", type: "agentMessage", text: "部分", startedAtMs: 7, completedAtMs: null }];
+    const h = makeHarness({ initialTurns: [{ id: "t", status: "inProgress", items }] });
+    try {
+      await activate(h);
+      const live = () => h.events.filter(event => event.type === "session.patch").at(-1)!.live;
+      expect(syncHistory(h)!.live!.messages.map(item => [item.message.messageId, item.finished])).toEqual([["streaming", false]]);
+      for (const id of ["a1", "r1", "cmd", "a2"]) expect(await h.runtime.readSessionEntry("codex:th-1", "th-1", id)).toBeDefined();
+      h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: "streaming", type: "agentMessage", text: short } });
+      for (let index = 0; index < 20; index++) {
+        h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: `r${index + 2}`, type: "reasoning", summary: ["**检查布局**"] } });
+        h.notify("item/completed", { threadId: "th-1", turnId: "t", item: { id: `a${index + 3}`, type: "agentMessage", text: short } });
+      }
+      expect(live().messages).toEqual([]);
+      for (const id of ["streaming", "r21", "a22"]) expect(await h.runtime.readSessionEntry("codex:th-1", "th-1", id)).toBeDefined();
+    } finally { h.server.onExit?.(0); }
+  });
+
   it("ADR-0049: a coalesced user item reaches the phone as a canonical Entry that declares its client id", async () => {
     vi.useFakeTimers();
     const h = makeHarness({ sourceCoalesceMs: 100 });

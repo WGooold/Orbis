@@ -1,5 +1,6 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
 // - Claude 后台子任务（S26、S17、S20、V05、V12、V16、V18、M03、M06、M10、M20）
+// - 子代理与后台命令分组、命令不使会话呈现工作中（S60 / SC108）
 import Foundation
 import Testing
 @testable import OrbisCore
@@ -35,11 +36,11 @@ struct BackgroundTasksTests {
     @Test func backgroundWorkNeverChangesMainInputPhaseAndBlocksQuit() {
         var runtime = RuntimeSummary(runtimeId: "r", name: "Claude", cwd: "/repo", status: "idle", backgroundTasks: tasks())
         #expect(runtime.status == "idle")
-        #expect(runtime.presentationTitle == "1 个子任务运行中")
+        #expect(runtime.presentationTitle == "1 个子代理运行中")
         #expect(runtime.presentationStatus == "background")
         #expect(!runtime.allowsRemoteClose([quit]))
         runtime.status = "running"
-        #expect(runtime.presentationTitle == "运行中，1 个子任务")
+        #expect(runtime.presentationTitle == "运行中，1 个子代理")
         runtime.status = "waiting_local_interaction"
         #expect(runtime.presentationTitle == "等待确认")
         runtime.status = "idle"
@@ -50,7 +51,7 @@ struct BackgroundTasksTests {
     }
     @Test func unknownAndIncompleteInventoryNeverProvesIdleOrClosure() throws {
         var inventory = tasks(availability: "unknown")
-        #expect(inventory.activityTitle == "子任务状态待核对")
+        #expect(inventory.activityTitle == "后台任务状态待核对")
         #expect(!inventory.allowsQuit)
         #expect(try JSONDecoder().decode(BackgroundTaskInventory.self, from: JSONEncoder().encode(inventory)) == inventory)
         inventory = tasks("unknown")
@@ -62,8 +63,8 @@ struct BackgroundTasksTests {
         #expect(!inventory.valid)
     }
     @Test func pendingAndWaitingAreNotReportedAsRunning() {
-        #expect(tasks("pending").activityTitle == "1 个子任务启动中")
-        #expect(tasks("waiting").activityTitle == "1 个子任务等待中")
+        #expect(tasks("pending").activityTitle == "1 个子代理启动中")
+        #expect(tasks("waiting").activityTitle == "1 个子代理等待中")
         #expect(tasks("idle").activityTitle == nil)
     }
 
@@ -98,7 +99,7 @@ struct BackgroundTasksTests {
         let stale = tasks("failed", availability: "unknown").reconciled(previous: partial)
         #expect(stale.items == partial.items)
         #expect(!stale.truncated)
-        #expect(stale.activityTitle == "子任务状态待核对")
+        #expect(stale.activityTitle == "后台任务状态待核对")
         #expect(stale.panelTitle == "子代理 3 项，状态待核对")
         #expect(stale.inventoryNotice == "状态待核对，显示最后已知信息")
         #expect(tasks("completed").panelTitle == "子代理 1 项")
@@ -133,5 +134,40 @@ struct BackgroundTasksTests {
         #expect(runtime.presentationTitle == "运行中")
         inventory.truncated = true
         #expect(inventory.visible)
+    }
+
+    // S60 / SC108: commands never borrow the agents' wording or their "working" session look, and
+    // a command an agent started stays under that agent instead of the session's own commands.
+    @Test func commandsAreGroupedApartFromAgentsAndLeaveTheSessionIdle() {
+        let inventory = BackgroundTaskInventory(availability: "ready", items: [
+            BackgroundTask(id: "agent", title: "检查代码", kind: "Explore", status: "running"),
+            BackgroundTask(id: "agent-shell", parentId: "agent", title: "跑单测", kind: "shell", status: "running"),
+            BackgroundTask(id: "dev", title: "启动开发服务器", kind: "shell", status: "running"),
+            BackgroundTask(id: "watch", title: "", kind: "monitor", status: "running"),
+        ], truncated: false)
+        #expect(inventory.panelTitle == "子代理 1 · 后台命令 3")
+        let groups = inventory.groups
+        #expect(groups.agents.map(\.id) == ["agent", "agent-shell"])
+        #expect(groups.agents.map(\.nested) == [false, true])
+        #expect(groups.commands.map(\.id) == ["dev", "watch"])
+        let watch = inventory.items[3], dev = inventory.items[2]
+        #expect(watch.displayTitle == "监听" && !watch.showsKind)
+        #expect(dev.kindTitle == "命令" && dev.showsKind)
+        var runtime = RuntimeSummary(runtimeId: "r", name: "Claude", cwd: "/repo", status: "idle", backgroundTasks: inventory)
+        #expect(runtime.presentationStatus == "background")
+        #expect(runtime.presentationTitle == "1 个子代理运行中 · 3 个后台命令")
+
+        let commands = BackgroundTaskInventory(availability: "ready", items: [inventory.items[2]], truncated: false)
+        runtime.backgroundTasks = commands
+        #expect(commands.panelTitle == "后台命令 1 项")
+        #expect(runtime.presentationStatus == "background_commands")
+        #expect(runtime.presentationTitle == "空闲 · 1 个后台命令")
+        #expect(runtime.remoteCloseBlockReason([quit]) == .activeTasks)
+        runtime.status = "running"
+        #expect(runtime.presentationTitle == "运行中，1 个后台命令")
+        runtime.status = "idle"
+        runtime.backgroundTasks = BackgroundTaskInventory(availability: "unknown", items: commands.items, truncated: true)
+        #expect(runtime.presentationStatus == "background_commands")
+        #expect(runtime.presentationTitle == "空闲 · 1 个后台命令，清单不完整")
     }
 }

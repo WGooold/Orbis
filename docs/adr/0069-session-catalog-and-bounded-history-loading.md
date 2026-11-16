@@ -313,3 +313,10 @@ Status: accepted（FT-G11 / FT-G12 已实施并集成；自动验证见第 8 节
 - `FT-G12-DETAIL-01`：Host 的明确原文读取在缓存仅含线路投影时转到后端原文。Codex / DSH 读取其已加载原始条目；Claude 刷新原生转录后读取来源条目；Pi 按会话文件头定位本地转录，兼容未更新的扩展。响应继续只发给请求设备，核对会话归属，完整 envelope 保持 1 MiB 上限；不存在或读取失败返回明确错误。实现见 `session-entry-read.ts`、`agent-backend.ts`、`sessions.ts` 及各适配器。
 - `FT-G12-INTEREST-01`：能力探测与已接受兴趣分开记录。首次兴趣未接受或目标被拒绝时保留旧广播恢复路径；明确关闭后停止正文推送，重复能力探测保留已有兴趣。实现见 `host-service.ts`。
 - 回归见 [载荷专项](../../packages/protocol/src/history-payload-regression.test.ts)、[原文读取](../../packages/host/src/session-entry-read.test.ts)、各适配器测试及 [隔离端到端](../../packages/host/src/host-service.test.ts)。本轮 629 项协议 / 适配器、13 项隔离端到端、10 项 `v0.1.17 / v0.1.19` 原始协议源码与当前 Host 状态模型兼容对照通过；类型检查和变更文件 lint 通过。失败与最终证据见 [verification.json](../../.artifacts/2026-11-14-history-fix/verification.json)。未部署，未执行完整旧包、Windows 原生或手机 UI 验收。
+
+### 8.8 2026-11-16 运行中回合的原生重读与 live 积压
+
+- `FT-G12-LIVE-01`：Codex 的 reasoning、agentMessage 和活动行（如 `subAgentActivity`、`webSearch`）没有状态字段。手机同步触发重读或 Host 首次接入运行中回合时，这些行既不算运行也不算完成，回合余下的条目全部滞留在 live，超过 8 KiB 正文目标后短回复也被标为截断。原生回合重放现在按以下证据把行视为可提交：原生 `completedAtMs`（与压缩判定同一证据）、重读前 Host 已观察到的完成、以及不会成为 Entry 的行。已观察到的完成按观察内容提交，顺序与父关系仍来自本次快照，提交后的下一次重读恢复原生内容权威；无完成时间的回复仍由 live 流持有。实现见 `codex-runtime.ts` 的原生回合重放。
+- 回归见 [Codex 运行时测试](../../packages/host/src/codex-runtime.test.ts)：`keeps queued rows committable across an active native re-read` 覆盖快照列出 / 未列出运行中命令、快照内容落后于已观察完成，断言 live 清空、短回复保留完整内容，并与同一完整回合的原生重放逐条比对 Entry；`commits recorded native completions when first attaching to a running turn` 覆盖首次接入。移除修复后三例失败。按真实会话条目时间回放并注入一次重读：修复前 live 峰值 150 条、32 条短回复被截断；修复后峰值 7 条、无截断。Codex 系列、载荷与来源专项 645 项通过，类型检查和变更文件 lint 通过。重读快照由 Codex 条目库重建，未截获 app-server 实际响应；`turns/list` 携带 `completedAtMs` 的依据为 2026-11-11 隔离探针样本。证据见本任务 `.artifacts/2026-11-16-live-short-truncation/`。
+- 未处理：live 同时积压大量行时，正文仍会按 8 KiB 目标统一收紧，约 80 行时预览同步返回 `session_entry_too_large`；重读时仍在运行、尚未写入原生历史的条目会被视为已撤回，其后续完成通知在下一次重读前被忽略；被中断回合是否遗留只有开始通知的条目尚无通知证据。
+- 未部署；Host 重建安装后的真实会话验证待用户完成；未执行旧版 App 互通对照（线路格式未变）。

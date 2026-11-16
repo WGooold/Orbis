@@ -151,9 +151,12 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var presentationStatus: String {
         if compactionPhase == "running" && ["idle", "running"].contains(status) { return "compacting" }
         if status == "idle", let tasks = backgroundTasks, tasks.visible {
-            if tasks.truncated && tasks.activeCount > 0 { return "background" }
+            // S60 / SC108: only agents mean Claude is still working; a running command alone leaves it idle.
+            if tasks.truncated && tasks.activeAgentCount > 0 { return "background" }
+            if tasks.truncated && tasks.activeCommandCount > 0 { return "background_commands" }
             if !tasks.confirmed { return "tasks_unknown" }
-            if tasks.activeCount > 0 { return "background" }
+            if tasks.activeAgentCount > 0 { return "background" }
+            if tasks.activeCommandCount > 0 { return "background_commands" }
         }
         return status
     }
@@ -163,7 +166,8 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         }
         if presentationStatus == "compacting" { return L10n.tr("压缩中，{0}", summary) }
         if status == "running" && tasks.truncated { return L10n.tr("运行中，{0}", summary) }
-        if status == "running" { return tasks.confirmed ? L10n.tr("运行中，{0} 个子任务", tasks.activeCount) : L10n.tr("运行中，子任务待核对") }
+        if status == "running" { return tasks.confirmed ? L10n.tr("运行中，{0}", tasks.activeCountTitle) : L10n.tr("运行中，后台任务待核对") }
+        if presentationStatus == "background_commands" { return L10n.tr("空闲 · {0}", summary) }
         return summary
     }
     func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
@@ -185,9 +189,9 @@ enum RuntimeCloseBlockReason: Equatable {
 
     var message: String {
         switch self {
-        case .incompleteTasks: L10n.tr("子代理清单不完整，暂不能关闭会话。")
-        case .unconfirmedTasks: L10n.tr("子代理状态待核对，暂不能关闭会话。")
-        case .activeTasks: L10n.tr("子代理尚未结束，暂不能关闭会话。")
+        case .incompleteTasks: L10n.tr("后台任务清单不完整，暂不能关闭会话。")
+        case .unconfirmedTasks: L10n.tr("后台任务状态待核对，暂不能关闭会话。")
+        case .activeTasks: L10n.tr("后台任务尚未结束，暂不能关闭会话。")
         case .unavailableCommand: L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")
         }
     }
@@ -203,6 +207,24 @@ struct BackgroundTask: Codable, Hashable, Identifiable {
         ["pending": L10n.tr("启动中"), "running": L10n.tr("工作中"), "waiting": L10n.tr("等待"), "idle": L10n.tr("空闲"), "completed": L10n.tr("完成"),
          "failed": L10n.tr("失败"), "killed": L10n.tr("已停止"), "unknown": L10n.tr("未知")][status] ?? L10n.tr("未知")
     }
+    var isActive: Bool { ["pending", "running", "waiting"].contains(status) }
+    /// S60 / SC108: Claude's background shells and Monitors; every other kind is an agent.
+    var isCommand: Bool { kind == "shell" || kind == "monitor" }
+    var kindTitle: String { kind == "shell" ? L10n.tr("命令") : kind == "monitor" ? L10n.tr("监听") : kind }
+    var displayTitle: String { title.isEmpty ? kindTitle : title }
+    /// The kind line never repeats what the title already says.
+    var showsKind: Bool { !title.isEmpty && !kindTitle.isEmpty && kindTitle != title }
+}
+
+/// S60 / SC108: agents first, each followed by the commands it started; then the session's own commands.
+struct BackgroundTaskGroups: Equatable {
+    struct Row: Equatable, Identifiable {
+        let task: BackgroundTask
+        let nested: Bool
+        var id: String { task.id }
+    }
+    var agents: [Row]
+    var commands: [Row]
 }
 
 struct BackgroundTaskInventory: Codable, Hashable {
@@ -218,13 +240,31 @@ struct BackgroundTaskInventory: Codable, Hashable {
         }
     }
     var confirmed: Bool { availability == "ready" && !truncated && !items.contains { $0.status == "unknown" } }
-    var activeCount: Int { items.filter { ["pending", "running", "waiting"].contains($0.status) }.count }
+    var activeCount: Int { items.filter(\.isActive).count }
+    var activeAgentCount: Int { items.filter { $0.isActive && !$0.isCommand }.count }
+    var activeCommandCount: Int { items.filter { $0.isActive && $0.isCommand }.count }
     var allowsQuit: Bool { confirmed && activeCount == 0 }
     var visible: Bool { !items.isEmpty || truncated }
     var panelTitle: String {
-        if truncated { return L10n.tr("子代理 {0} 项，清单不完整", items.count) }
-        if !confirmed { return L10n.tr("子代理 {0} 项，状态待核对", items.count) }
-        return L10n.tr("子代理 {0} 项", items.count)
+        let agents = items.filter { !$0.isCommand }.count, commands = items.count - agents
+        let base = commands == 0 ? L10n.tr("子代理 {0} 项", agents) : agents == 0 ? L10n.tr("后台命令 {0} 项", commands)
+            : "\(L10n.tr("子代理 {0}", agents)) · \(L10n.tr("后台命令 {0}", commands))"
+        if truncated { return L10n.tr("{0}，清单不完整", base) }
+        if !confirmed { return L10n.tr("{0}，状态待核对", base) }
+        return base
+    }
+    /// Active work by category, as the session summary counts it.
+    var activeCountTitle: String {
+        [activeAgentCount > 0 ? L10n.tr("{0} 个子代理", activeAgentCount) : nil,
+         activeCommandCount > 0 ? L10n.tr("{0} 个后台命令", activeCommandCount) : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+    var groups: BackgroundTaskGroups {
+        let agents = items.filter { !$0.isCommand }
+        let agentIDs = Set(agents.map(\.id))
+        let started = Dictionary(grouping: items.filter { $0.isCommand && agentIDs.contains($0.parentId ?? "") }) { $0.parentId ?? "" }
+        return BackgroundTaskGroups(
+            agents: agents.flatMap { [.init(task: $0, nested: false)] + (started[$0.id] ?? []).map { .init(task: $0, nested: true) } },
+            commands: items.filter { $0.isCommand && !agentIDs.contains($0.parentId ?? "") }.map { .init(task: $0, nested: false) })
     }
     var inventoryNotice: String? {
         if truncated { return L10n.tr("清单不完整，显示已知任务") }
@@ -245,19 +285,22 @@ struct BackgroundTaskInventory: Codable, Hashable {
     }
     var activityTitle: String? {
         guard visible else { return nil }
-        if truncated {
-            let known = [("running", L10n.tr("工作中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待"))].compactMap { state, title -> String? in
-                let count = items.filter { $0.status == state }.count
+        let separator = AppLocalization.shared.language == .english ? ", " : "，"
+        func summary(_ states: [(String, String)]) -> String {
+            let agents = states.compactMap { state, title -> String? in
+                let count = items.filter { $0.status == state && !$0.isCommand }.count
                 return count > 0 ? L10n.tr("{0} 个子代理{1}", count, title) : nil
-            }.joined(separator: AppLocalization.shared.language == .english ? ", " : "，")
+            }.joined(separator: separator)
+            return [agents.isEmpty ? nil : agents, activeCommandCount > 0 ? L10n.tr("{0} 个后台命令", activeCommandCount) : nil]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+        if truncated {
+            let known = summary([("running", L10n.tr("工作中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待"))])
             return known.isEmpty ? panelTitle : L10n.tr("{0}，清单不完整", known)
         }
-        guard confirmed else { return L10n.tr("子任务状态待核对") }
-        let labels = [("running", L10n.tr("运行中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待中"))].compactMap { state, title -> String? in
-            let count = items.filter { $0.status == state }.count
-            return count > 0 ? L10n.tr("{0} 个子任务{1}", count, title) : nil
-        }
-        return labels.isEmpty ? nil : labels.joined(separator: AppLocalization.shared.language == .english ? ", " : "，")
+        guard confirmed else { return L10n.tr("后台任务状态待核对") }
+        let labels = summary([("running", L10n.tr("运行中")), ("pending", L10n.tr("启动中")), ("waiting", L10n.tr("等待中"))])
+        return labels.isEmpty ? nil : labels
     }
 }
 

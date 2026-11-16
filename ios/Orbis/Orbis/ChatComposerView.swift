@@ -409,22 +409,39 @@ struct BackgroundTasksView: View {
                         if let notice = tasks.inventoryNotice {
                             Text(notice).font(.orbisCaption())
                         }
-                        ForEach(tasks.items) { task in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(task.title.isEmpty ? task.kind : task.title).font(.orbisLabel()).lineLimit(2)
-                                    Spacer(minLength: 0)
-                                    Text(task.statusTitle).font(.orbisCaption()).fixedSize(horizontal: true, vertical: false)
-                                }
-                                Text(task.kind).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                                if let parentId = task.parentId, let parent = tasks.items.first(where: { $0.id == parentId }) {
-                                    Text(L10n.tr("来自：{0}", parent.title)).font(.orbisCaption()).lineLimit(1)
-                                }
-                            }.accessibilityElement(children: .combine).accessibilityIdentifier("background-task-\(task.id)")
-                        }
+                        // S60 / SC108: section names only when both kinds are present; the title already names a single kind.
+                        let groups = tasks.groups
+                        let labelled = !groups.agents.isEmpty && !groups.commands.isEmpty
+                        if labelled { sectionLabel(L10n.tr("子代理")) }
+                        ForEach(groups.agents) { row(for: $0) }
+                        if labelled { sectionLabel(L10n.tr("后台命令")) }
+                        ForEach(groups.commands) { row(for: $0) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 8)
                 }.frame(maxHeight: 160)
             }
         }.padding(.horizontal, 16).foregroundStyle(OrbisPalette(scheme).secondary)
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title).font(.orbisCaption(.medium)).padding(.top, 2)
+    }
+
+    private func row(for row: BackgroundTaskGroups.Row) -> some View {
+        let task = row.task
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(task.displayTitle).font(.orbisLabel()).lineLimit(2)
+                Spacer(minLength: 0)
+                Text(task.statusTitle).font(.orbisCaption()).fixedSize(horizontal: true, vertical: false)
+            }
+            if task.showsKind {
+                Text(task.kindTitle).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+            }
+            // A command under its agent needs no source line; an agent's parent is still named.
+            if !row.nested, let parentId = task.parentId, let parent = tasks.items.first(where: { $0.id == parentId }) {
+                Text(L10n.tr("来自：{0}", parent.displayTitle)).font(.orbisCaption()).lineLimit(1)
+            }
+        }.padding(.leading, row.nested ? 16 : 0)
+            .accessibilityElement(children: .combine).accessibilityIdentifier("background-task-\(task.id)")
     }
 }

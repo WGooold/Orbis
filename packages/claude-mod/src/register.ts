@@ -42,6 +42,16 @@ let status: string | undefined;
 let interactiveSession = false;
 let readingTasks = false;
 let reportedTasks: { connection: Connection; encoded: string; at: number } | undefined;
+type TaskStatus = "pending" | "running" | "waiting" | "idle" | "completed" | "failed" | "killed" | "unknown";
+type InventoryItem = { id: string; parentId?: string; title: string; kind: string; status: TaskStatus };
+const TASK_STATUSES = new Set<string>(["pending", "running", "waiting", "idle", "completed", "failed", "killed", "unknown"]);
+/**
+ * S60: background shells and Monitors of one native session. `agent.list` does not hold them.
+ * A Bash / Monitor result adds one as it starts and a TaskStop result marks it stopped; the
+ * session's own in-flight list on Stop / SubagentStop replaces the ledger, which is how an
+ * ended task leaves. A Claude Code without that list (`supported: false`) reports none.
+ */
+let backgroundWork: { sessionId: string; items: Map<string, InventoryItem>; supported?: boolean } | undefined;
 let permissionMode: string | undefined;
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 let selectedEffort: Effort | undefined;
@@ -57,6 +67,9 @@ export const register: Register = on => {
     if ("permission_mode" in event && typeof event.permission_mode === "string" && !("agent_id" in event && event.agent_id)) {
       permissionMode = event.permission_mode;
       void reportState($, true);
+    }
+    if ("hook_event_name" in event && (event.hook_event_name === "Stop" || event.hook_event_name === "SubagentStop")) {
+      reconcileBackgroundWork($, event.session_id, event.background_tasks);
     }
     return await next(event);
   });
@@ -216,6 +229,7 @@ export const register: Register = on => {
     if (event.agentId !== undefined) {
       const target = connection;
       const result = await runTool($, event, next);
+      await noteBackgroundWork($, event, result).catch(() => undefined);
       if (target) await postEvent($, target, { type: "task.tool.finished", agentId: event.agentId,
         toolName: event.tool, toolCallId: event.tool_use_id,
         arguments: boundedValue(Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key))), 24_000) });
@@ -227,6 +241,7 @@ export const register: Register = on => {
     const argumentsValue = Object.fromEntries(Object.entries(event).filter(([key]) => !RESERVED_TOOL_FIELDS.has(key)));
     await emit($, { type: "tool.started", toolCallId, toolName, arguments: boundedValue(argumentsValue, 24_000) });
     const result = await runTool($, event, next);
+    await noteBackgroundWork($, event, result).catch(() => undefined);
     const resultRecord = result as { deny?: unknown; result?: unknown; text?: unknown; isError?: unknown };
     await emit($, { type: "tool.finished", toolCallId, toolName,
       result: boundedValue(resultRecord.result ?? resultRecord.text ?? resultRecord.deny ?? null, 24_000),
@@ -308,13 +323,19 @@ async function reportTasks($: Api, target: Connection): Promise<void> {
     let tasks: { availability: "ready" | "unknown"; items: { id: string; parentId?: string; title: string; kind: string; status: string }[]; truncated: boolean };
     try {
       const agents = await $.agent.list();
-      if (agents.length > 256) tasks = { availability: "unknown", items: [], truncated: true };
-      else tasks = { availability: "ready", truncated: false, items: agents.map(agent => ({
+      const agentItems = agents.map(agent => ({
         id: agent.id, ...(agent.parentId ? { parentId: agent.parentId } : {}),
         title: clipText(agent.description || agent.name || agent.type, 256), kind: clipText(agent.type, 128),
         // A pane teammate has no loop here: its roster may survive the process. Do not claim liveness.
         status: agent.teammateId === agent.id && !["completed", "failed", "killed"].includes(agent.status) ? "unknown" : agent.status,
-      })).sort((a, b) => a.id.localeCompare(b.id)) };
+      }));
+      // One sender for the whole inventory: agents stay agent.list's, the ledger adds the rest by its own ids.
+      const agentIds = new Set(agentItems.map(item => item.id));
+      const work = backgroundWork?.sessionId === target.sessionId && backgroundWork.supported !== false
+        ? [...backgroundWork.items.values()].filter(item => !agentIds.has(item.id)) : [];
+      const items = [...agentItems, ...work];
+      if (items.length > 256) tasks = { availability: "unknown", items: [], truncated: true };
+      else tasks = { availability: "ready", truncated: false, items: items.sort((a, b) => a.id.localeCompare(b.id)) };
     } catch { tasks = { availability: "unknown", items: [], truncated: false }; }
     if (connection !== target || await $.session.id() !== target.sessionId) return;
     const at = await $.clock.now();
@@ -324,6 +345,67 @@ async function reportTasks($: Api, target: Connection): Promise<void> {
     if (reportedTasks?.connection === target && reportedTasks.encoded === encoded && at - reportedTasks.at < 3_000) return;
     if (await postEvent($, target, { type: "tasks.snapshot", tasks })) reportedTasks = { connection: target, encoded, at };
   } finally { readingTasks = false; }
+}
+
+async function workLedger($: Api): Promise<NonNullable<typeof backgroundWork>> {
+  const sessionId = await $.session.id();
+  if (backgroundWork?.sessionId !== sessionId) backgroundWork = { sessionId, items: new Map() };
+  return backgroundWork;
+}
+
+/** A started or stopped task, read from the tool's own result record, never its text. */
+async function noteBackgroundWork($: Api, event: ToolCall, result: unknown): Promise<void> {
+  const record = isRecord(result) ? result.result : undefined;
+  if (!isRecord(record)) return;
+  const id = event.tool === "Bash" ? record.backgroundTaskId : event.tool === "Monitor" ? record.taskId : undefined;
+  const stopped = event.tool === "TaskStop" ? record.task_id : undefined;
+  if (!validTaskId(id) && !validTaskId(stopped)) return;
+  const ledger = await workLedger($);
+  if (ledger.supported === false) return;
+  if (validTaskId(id)) {
+    const description = (event as Record<string, unknown>).description;
+    // The description names the task; a raw command line can carry credentials.
+    ledger.items.set(id, { id, ...(event.agentId === undefined ? {} : { parentId: event.agentId }),
+      title: typeof description === "string" ? clipText(description, 120) : "",
+      kind: event.tool === "Bash" ? "shell" : "monitor", status: "running" });
+  } else {
+    const known = ledger.items.get(stopped as string);
+    if (known === undefined) return;
+    ledger.items.set(known.id, { ...known, status: "killed" });
+  }
+  if (connection !== undefined) void reportTasks($, connection).catch(() => undefined);
+}
+
+/** The session's in-flight list replaces the ledger; agents in it remain agent.list's. */
+function reconcileBackgroundWork($: Api, sessionId: unknown, inFlight: unknown): void {
+  if (typeof sessionId !== "string" || sessionId === "") return;
+  if (backgroundWork?.sessionId !== sessionId) backgroundWork = { sessionId, items: new Map() };
+  const ledger = backgroundWork;
+  if (!Array.isArray(inFlight)) {
+    ledger.supported = false;
+    ledger.items.clear();
+  } else {
+    ledger.supported = true;
+    const items = new Map<string, InventoryItem>();
+    for (const task of inFlight) {
+      if (!isRecord(task) || !validTaskId(task.id) || task.type === "subagent") continue;
+      const known = ledger.items.get(task.id);
+      // Without a description of its own, a shell's falls back to its command line, credentials included.
+      const description = typeof task.description === "string" && task.description !== "" &&
+        !(typeof task.command === "string" && task.command.startsWith(task.description)) ? task.description : undefined;
+      items.set(task.id, { id: task.id, ...(known?.parentId === undefined ? {} : { parentId: known.parentId }),
+        title: description === undefined ? known?.title ?? "" : clipText(description, 120),
+        // The list labels a Monitor's command as a shell; the call that started it knows better.
+        kind: known?.kind ?? (typeof task.type === "string" && task.type !== "" ? clipText(task.type, 40) : "task"),
+        status: typeof task.status === "string" && TASK_STATUSES.has(task.status) ? task.status as TaskStatus : "unknown" });
+    }
+    ledger.items = items;
+  }
+  if (connection !== undefined) void reportTasks($, connection).catch(() => undefined);
+}
+
+function validTaskId(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "" && value.length <= 256;
 }
 
 async function connect($: Api): Promise<Connection | undefined> {

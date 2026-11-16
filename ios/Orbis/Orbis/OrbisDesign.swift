@@ -1774,7 +1774,8 @@ struct RuntimeStatusLabel: View {
     private var color: Color {
         let p = OrbisPalette(scheme)
         switch status {
-        case "running", "compacting", "starting", "background": return p.success
+        // S60 / SC108: a running command alone is static, so it never reads as Claude working.
+        case "running", "compacting", "starting", "background", "background_commands": return p.success
         case "waiting", "waiting_interaction", "waiting_local_interaction", "launch_unconfirmed": return p.warning
         case "error": return p.error
         default: return p.faint

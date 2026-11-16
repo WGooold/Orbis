@@ -1842,10 +1842,23 @@ export class CodexRuntime implements AgentBackend {
         if (item !== null && typeof item === "object") {
           let record = item as Record<string, unknown>;
           this.#noteItem(thread, record);
-          const itemFinished = record.status === "completed" || record.status === "failed" || record.status === "declined";
+          // FT-G12-LIVE-01: reasoning, messages and activity rows carry no status. Without a
+          // completion signal an active read leaves them neither running nor complete, and every
+          // later item of the turn stays in live. Native completedAtMs (the evidence compaction
+          // already uses), a completion observed before this read, or a row that never becomes an
+          // Entry each make the row committable. An observed completion is final content and the
+          // read may lag it; order still comes from this read, and the next read after commit
+          // restores native content authority.
+          const completedAtMs = record.completedAtMs;
+          const itemFinished = record.status === "completed" || record.status === "failed" || record.status === "declined"
+            || typeof completedAtMs === "number" && Number.isFinite(completedAtMs) && completedAtMs >= 0;
           const knownCanonical = typeof record.id === "string" && previous.has(record.id);
-          const itemRunning = record.status === "inProgress" || record.status === "in_progress"
-            || (turnRunning && !itemFinished && !knownCanonical && (record.type === "agentMessage" || isToolItem(record)));
+          const observed = typeof record.id === "string" ? prior.completedItems.get(record.id) : undefined;
+          const observedComplete = observed !== undefined;
+          if (observed !== undefined) record = observed.item;
+          const orderOnly = !isToolItem(record) && itemToMessage(record) === undefined;
+          const itemRunning = !observedComplete && !orderOnly && (record.status === "inProgress" || record.status === "in_progress"
+            || (turnRunning && !itemFinished && !knownCanonical && (record.type === "agentMessage" || isToolItem(record))));
           record = this.#projectToolItem(thread, record, itemRunning ? "started" : "finished", owner);
           if (turnRunning && itemRunning) {
             const itemMessage = toolCallMessage(record) ?? itemToMessage(record);
@@ -1868,7 +1881,7 @@ export class CodexRuntime implements AgentBackend {
               });
             }
           }
-          if (!itemRunning && (!turnRunning || itemFinished || knownCanonical || record.type === "userMessage")) {
+          if (!itemRunning && (!turnRunning || itemFinished || knownCanonical || observedComplete || orderOnly || record.type === "userMessage")) {
             this.#completeItem(thread, record, owner);
           }
         }

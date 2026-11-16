@@ -3717,7 +3717,8 @@ private fun RuntimeStatusDot(status: String, syncing: Boolean = false) {
 private fun runtimeStatusColor(status: String): Color = when (status) {
     "unknown", "tasks_unknown", "idle" -> LocalOrbisPalette.current.faint
     // ADR-0049 §6.8：启动中是进行中的状态，与运行中同色；启动未确认待核对，与等待同色，不显示为错误。
-    "running", "compacting", "starting", "background" -> LocalOrbisPalette.current.success
+    // S60 / SC108: a running command alone is the working colour but static, so it never reads as the agent working.
+    "running", "compacting", "starting", "background", "background_commands" -> LocalOrbisPalette.current.success
     "waiting_local_interaction", "launch_unconfirmed" -> LocalOrbisPalette.current.warning
     else -> MaterialTheme.colorScheme.error
 }

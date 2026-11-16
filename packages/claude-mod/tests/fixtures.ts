@@ -32,7 +32,7 @@ export function setup(on: On, options: { home?: string } = {}) {
     pollError: "",
     commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } | { type: "slash"; name: string; args: string } }[],
     submits: 0,
-    toolResult: "still working",
+    toolResult: "still working" as unknown,
     toolCalls: [] as unknown[],
     /** How long the native tool stays open, as an AskUserQuestion dialog does until someone answers. */
     toolDelay: 0,
@@ -71,6 +71,7 @@ export function setup(on: On, options: { home?: string } = {}) {
   ] }));
   on("settings.read", () => ({ value: world.effortSetting === undefined ? {} : { effortLevel: world.effortSetting } }));
   on("turn.start", (_$, event) => ({ turnId: event.turnId }));
+  on("classic.Stop", () => ({}));
   on("turn.complete", (_$, event) => ({ text: event.answer }));
   on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });
   on("tool.call", async (_$, event) => {

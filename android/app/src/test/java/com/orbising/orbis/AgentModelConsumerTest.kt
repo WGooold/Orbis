@@ -32,7 +32,7 @@ class AgentModelConsumerTest {
     @Test fun `task inventory is projected independently and unknown retains last tasks`() {
         var state = receive(initial(), domain("execution", """{"phase":"idle","tasks":{"availability":"ready","items":[{"id":"child","title":"任务","kind":"Explore","status":"running"}],"truncated":false}}"""))
         assertEquals("idle", state.runtimes.getValue("runtime").status)
-        assertEquals("1 个子任务运行中", state.runtimes.getValue("runtime").presentationTitle)
+        assertEquals("1 个子代理运行中", state.runtimes.getValue("runtime").presentationTitle)
         state = receive(state, domain("execution", """{"phase":"idle","tasks":{"availability":"unknown","items":[],"truncated":false}}""", 2))
         assertEquals("child", state.runtimes.getValue("runtime").backgroundTasks!!.items.single().id)
         assertEquals("unknown", state.runtimes.getValue("runtime").backgroundTasks!!.availability)
