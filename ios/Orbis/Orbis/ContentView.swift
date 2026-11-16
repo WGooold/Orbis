@@ -357,7 +357,9 @@ private struct NavigationRoot: View, Equatable {
             // The card stays in the live home until the growing page has covered it, so the
             // list outside the rectangle does not move while the page expands (S35 / M27).
             if store.selectedRuntime != nil {
+                #if DEBUG
                 ChatSchedulingTrace.pageOpenRequested(target: "new-session")
+                #endif
                 navigation.replace(with: [.chat], entrance: .expand(origin)) { newSessionOpen = false }
             } else {
                 newSessionOpen = false
@@ -407,11 +409,15 @@ private struct NavigationRoot: View, Equatable {
         ])
     }
     private func openRuntime(_ runtime: RuntimeSummary) {
+        #if DEBUG
         ChatSchedulingTrace.pageOpenRequested(target: runtime.runtimeId)
+        #endif
         store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
     }
     private func openCachedSession(_ session: SessionSummary) -> Bool {
+        #if DEBUG
         ChatSchedulingTrace.pageOpenRequested(target: session.sessionId)
+        #endif
         return store.openCachedSession(session)
     }
 }

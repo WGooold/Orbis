@@ -25,9 +25,11 @@ enum ChatSchedulingTrace {
     private static var deltas = 0
     private static var transcriptCommits = 0
     private static var screenCommits = 0
+    #if DEBUG
     private static var pageBodyTokens = Set<UUID>()
     private static var pageArrivalToken: Int?
     private static var pageArrivalInterval: OSSignpostIntervalState?
+    #endif
 
     static func deltaBegan() -> OSSignpostIntervalState? {
         guard signposter.isEnabled else { return nil }
@@ -72,8 +74,8 @@ enum ChatSchedulingTrace {
         signposter.endInterval("ChatScreenCommit", interval, "regions=\(invalidatedRegions)")
     }
 
-    /// Entrance timing markers for a chat page. These are opt-in Instruments events; the
-    /// disabled path does not build identifiers or payload strings.
+    #if DEBUG
+    /// Entrance timing markers for a chat page. Release builds do not compile this probe path.
     static func pageOpenRequested(target: String) {
         guard signposter.isEnabled else { return }
         signposter.emitEvent("ChatPageOpenRequested", "target=\(target)")
@@ -119,6 +121,8 @@ enum ChatSchedulingTrace {
         guard let interval else { return }
         signposter.endInterval("NativeSnapshotCommit", interval, "rows=\(rows) reconfigured=\(reconfigured)")
     }
+
+    #endif
 
     static func regionBody(_ region: Region) {
         guard signposter.isEnabled else { return }

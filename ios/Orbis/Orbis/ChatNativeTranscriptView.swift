@@ -431,10 +431,12 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private func commitSnapshot(_ plan: ChatNativeSnapshotPlan, items next: [Item],
                                     rows: [ChatNativeSnapshotRow], generation: UInt64, owner: UInt64) {
             guard !stopped, let dataSource else { return }
+            #if DEBUG
             let trace = ChatSchedulingTrace.nativeSnapshotBegan(rows: rows.count, reconfigured: plan.reconfigured.count)
             defer {
                 ChatSchedulingTrace.nativeSnapshotEnded(trace, rows: rows.count, reconfigured: plan.reconfigured.count)
             }
+            #endif
             // A user may have scrolled while the worker compared revisions. Capture
             // the current reading position immediately before the actual UI mutation.
             if initialPlacementReady, !following || nativeMotionActive {

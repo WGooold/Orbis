@@ -82,7 +82,9 @@ struct ChatView: View {
     }
     var body: some View {
         let _ = ChatSchedulingTrace.regionBody(.page)
+        #if DEBUG
         let _ = ChatSchedulingTrace.pageBodyRendered(target: String(describing: target.pageIdentity), mountToken: mountToken)
+        #endif
         let _ = ChatDebugProbes.rendered(.page)
         VStack(spacing: 0) {
             ChatHeaderView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,

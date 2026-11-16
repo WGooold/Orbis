@@ -125,12 +125,14 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
                                      offset: motion.offset, id: id)
         guard motion.movingID == id else { return }
         let token = motion.token
+        #if DEBUG
         ChatSchedulingTrace.pageArrive(token: token, phase: String(describing: motion.phase))
         Task { @MainActor [weak self] in
             await MotionLayoutFrames.wait(frames: 1)
             guard let self, self.motion.token == token else { return }
             ChatSchedulingTrace.pageFirstIdleFrame(token: token)
         }
+        #endif
         ChatDebugProbes.pageAnimationStarted()
         switch motion.phase {
         case .entering:
