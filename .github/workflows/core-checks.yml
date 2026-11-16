@@ -61,6 +61,16 @@ jobs:
       - name: Restore compiled workspace
         shell: pwsh
         run: '& "$env:WINDIR/System32/tar.exe" -xzf (Join-Path $env:RUNNER_TEMP ''ci-compiled-js.tar.gz'')'
+      - name: Initialize Windows process provider
+        # Hosted images start the CIM provider lazily. Its first activation can
+        # exceed the application's 5s query deadline; tests retain that deadline.
+        shell: powershell
+        timeout-minutes: 2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,ExecutablePath -ErrorAction Stop | Out-Null
+          Write-Output "CIM provider ready in $($timer.ElapsedMilliseconds) ms"
       - name: Run Windows test shard
         run: npx vitest run --shard=${{ matrix.shard }}/4 --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/windows-${{ matrix.shard }}.xml
       - name: Preserve Windows test results

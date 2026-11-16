@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   tests:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
@@ -23,12 +23,21 @@ jobs:
         run: bash scripts/check-ios.sh tests
 
   simulator:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 20
+    env:
+      # Keep the app's ARM64 Simulator target while avoiding the constrained
+      # hosted ARM64 machine pool. Xcode cross-compiles it on the Intel runner.
+      ORBIS_IOS_SIMULATOR_ARCH: arm64
     steps:
       - uses: actions/checkout@v5
       - name: Build and verify iOS Simulator app
         run: bash scripts/check-ios.sh app
+      - name: Verify ARM64 Simulator executable
+        run: |
+          app=ios/Orbis/build/DerivedData/Build/Products/Debug-iphonesimulator/Orbis.app
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          xcrun lipo -verify_arch arm64 "$app/$executable"
 
   build:
     if: always()

@@ -44,11 +44,15 @@ if [[ "$developer_dir" == */CommandLineTools ]]; then
   echo 'Core tests and source/configuration checks passed. The iOS app build requires full Xcode and an iOS Simulator SDK.'
 else
   # Keep local simulator signing enabled so the installed app can access Keychain.
+  build_args=(CODE_SIGN_IDENTITY=-)
+  if [[ -n "${ORBIS_IOS_SIMULATOR_ARCH:-}" ]]; then
+    build_args+=("ARCHS=$ORBIS_IOS_SIMULATOR_ARCH" ONLY_ACTIVE_ARCH=NO)
+  fi
   xcodebuild -project "$repo_root/ios/Orbis/Orbis.xcodeproj" \
     -scheme Orbis -configuration Debug -sdk iphonesimulator \
     -destination 'generic/platform=iOS Simulator' \
     -derivedDataPath "$repo_root/ios/Orbis/build/DerivedData" \
-    CODE_SIGN_IDENTITY=- build
+    "${build_args[@]}" build
   python3 "$repo_root/scripts/check-ios-bundle.py" \
     "$repo_root/ios/Orbis/build/DerivedData/Build/Products/Debug-iphonesimulator/Orbis.app"
 fi
