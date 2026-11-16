@@ -104,7 +104,8 @@ jobs:
     name: macOS Host compatibility tests
     if: inputs.native_compatibility
     needs: build
-    runs-on: macos-15
+    # Native behavior needs macOS; Intel avoids the constrained ARM64 pool.
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5

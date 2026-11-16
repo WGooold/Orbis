@@ -13,6 +13,10 @@ on:
         description: Compare baseline and optimized Docker builds without deployment
         type: boolean
         default: false
+      benchmark_base_ref:
+        description: Historical commit or branch used as the Docker baseline
+        type: string
+        default: main
 
 permissions:
   contents: read
@@ -105,7 +109,7 @@ jobs:
       matrix:
         include:
           - label: baseline
-            ref: c57e018b23f2a50423996012492a907cda6ef198
+            ref: ${{ inputs.benchmark_base_ref || 'main' }}
           - label: optimized
             ref: ${{ github.sha }}
     steps:
