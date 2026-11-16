@@ -18,6 +18,7 @@ struct LaunchLedgerTests {
 
     @MainActor private final class Transport: OrbisTransport {
         var sent: [[String: Any]] = []
+        var accepting = true
         var drain: (() async -> Void)?
         var receive: (([String: Any], String?) -> Void)?
         var state: ((ConnectionState, String?) -> Void)?
@@ -28,7 +29,7 @@ struct LaunchLedgerTests {
             self.receive = receive; self.state = state; state(.connecting, nil)
         }
         func disconnect() {}
-        func send(_ object: [String: Any]) -> Bool { sent.append(object); return true }
+        func send(_ object: [String: Any]) -> Bool { guard accepting else { return false }; sent.append(object); return true }
         func emit(_ object: [String: Any]) async { receive?(object, "ctl"); await drain?() }
         func ready() async { await emit(["type": "device.ready", "modelEpoch": "epoch", "runtimes": []]) }
         var activations: [[String: Any]] { sent.filter { $0["type"] as? String == "session.activate" } }
@@ -208,6 +209,64 @@ struct LaunchLedgerTests {
         fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         #expect(fixture.host.sessionLaunchError == hint)
+    }
+
+    // SC100: resuming another session is not a new-session launch admission;
+    // the previous launch still needs reconciliation (Android clears only "new").
+    @Test func previousLaunchHintSurvivesResumingAnotherSession() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
+            "phase": "failed", "error": "launch unavailable"])
+        fixture.host.stopFollowingLaunch()
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        await fixture.store.waitForPendingEvents()
+        let hint = L10n.tr("请先核对上一次启动及首句结果")
+        #expect(fixture.host.sessionLaunchError == hint)
+        let activations = fixture.transport.activations.count
+        fixture.host.activate(SessionSummary(sessionId: "s2", name: "另一个", cwd: "/repo/app", firstMessage: nil,
+            createdAt: 1, modifiedAt: 1, messageCount: 1, agentKind: "codex", archived: false))
+        #expect(fixture.transport.activations.count == activations + 1)
+        #expect(fixture.host.sessionLaunchError == hint)
+    }
+
+    // SC102: a not-connected launch hint is resolved by its own condition, the
+    // computer becoming ready again; editing alone does not dismiss it.
+    @Test func notConnectedLaunchHintClearsWhenTheComputerIsReadyAgain() async throws {
+        let fixture = await setup(); let host = fixture.host
+        fixture.transport.accepting = false
+        host.createSession(agentKind: "codex", cwd: "/repo/app")
+        let hint = L10n.tr("未连接到电脑，连接恢复后可重试。")
+        #expect(host.sessionLaunchError == hint)
+        host.clearSessionLaunchValidationError()
+        #expect(host.sessionLaunchError == hint)
+        fixture.transport.accepting = true
+        fixture.transport.state?(.offline, nil)
+        await fixture.transport.ready()
+        #expect(host.sessionLaunchError == nil)
+    }
+
+    // SC99: a rejection without a reason keeps each owner's own copy; only the
+    // ledger receipt needs the generic sentence.
+    @Test func rejectionWithoutReasonKeepsEachOwnersCopy() async throws {
+        let fixture = Fixture()
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": []])
+        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+        let configuration = try #require(fixture.host.sessionConfigurationRequest)
+        await fixture.transport.emit(["type": "protocol.error", "requestId": configuration, "code": "session_configuration_failed"])
+        #expect(fixture.host.sessionConfigurationError == L10n.tr("配置未确认"))
+        fixture.host.browseDirectory("/repo")
+        let browse = try #require(fixture.host.browse?.requestId)
+        await fixture.transport.emit(["type": "protocol.error", "requestId": browse, "code": "cwd_missing"])
+        #expect(fixture.host.browse?.error == L10n.tr("目录不可读"))
+        await fixture.transport.online("source")
+        fixture.host.selectRuntime("rt-source")
+        #expect(fixture.host.sendMessage("not accepted"))
+        let send = try #require(fixture.host.pendingSends.items.first)
+        await fixture.transport.emit(["type": "protocol.error", "commandId": send.commandId, "code": "command_rejected"])
+        #expect(fixture.host.pendingSends.item(send.messageId)?.state == .failed(L10n.tr("电脑端没有接受这条消息")))
     }
 
     // PERF-08 / SC73: UI admission and draft state stay responsive while the

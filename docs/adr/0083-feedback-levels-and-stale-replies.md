@@ -172,3 +172,34 @@ iOS 原位与连接集成用例为 `StoreTests.rejectedStopAndOfflineCloseStayOn
 自动验证：Android 修复前 11 项中 5 项失败；扩展回归中旧的“连接拒绝不结束浏览”断言失败，保留首次证据并按 SC99 更新为结束浏览且保留横幅；最终 271 项通过。iOS 新回归在修复前触发 9 条失败断言，195 项领域回归通过，补齐旧读取重复拒绝保护后 49 项定向回归通过，两组有交集。两端文案生成校验通过。原始日志、源码摘要、应用编译及构建租约清理见[本轮证据](../../.artifacts/feedback-review-followup-20261116/verification.json)。
 
 部署：未部署，未生成本轮安装候选，未运行设备交互或真实旧 Host / Relay 联测。共享 QA MCP 初始化被拒绝连接，本轮未登记；沿用同一 Case 的新轮次要求保存在本轮证据中，候选发布后再登记。用户验收：待用户验证。
+
+### 6.6 SC99–SC102：复核修正
+
+2026-11-16，复核 §6.5 实现后修正；§6.5 记录保留。
+
+- SC100：iOS 恢复其他会话不清除上次启动提示，只有新建启动准入才清除，与 Android 一致。
+- SC102：iOS 激活请求未能写出时的“未连接到电脑”提示，在下一次 `device.ready` 或激活成功写出后解除；编辑仍只清除输入校验提示。
+- SC99：iOS 普通与连接级拒绝未附原因时，配置、历史、目录浏览、待发送消息与命令操作各自使用所属文案，只有账本回执使用通用文案。
+- SC101：两端机器码后接句末标点仍按机器码处理；点号后接字母或数字时视为扩展名并保留。
+
+实现与回归：iOS `HostConnection.activateTarget` / `rejectCorrelatedProtocolOperation`、`FeedbackText.reason`；`LaunchLedgerTests`、`FeedbackTests`。Android `feedbackFailureText`；`FeedbackTest`。
+
+自动验证：新增回归在修复前 iOS 4 项全部失败（8 条断言），Android `FeedbackTest` 1 项失败；修复后 iOS 相关 164 项、Android 34 项通过，文案校验通过。原始日志、源码摘要与构建租约清理见[本轮证据](../../.artifacts/feedback-review-fix-20261116/verification.json)。
+
+部署：未部署，未生成安装候选，未运行设备交互。共享 QA MCP 本次连接失败，未登记。用户验收：待用户验证。
+
+### 6.7 SC103–SC106：复核遗留项处理
+
+2026-11-16，处理 §6.6 未修复的复核项；§6.5、§6.6 记录保留，以下各项取代 §6.5 中对应表述。
+
+- SC103：取代 SC101 的“裸蛇形标识按机器码处理”中的大写部分。两端全大写名称（如环境变量）按用户可读细节保留原文；小写蛇形标识（含加引号或位于 JSON 中）仍按机器码处理。
+- SC104：取代 Android 新建草稿统一标题。新建卡片只在上次启动待核对时显示“启动未确认”标题与说明按钮，其余草稿错误（含输入校验与目标电脑检查）直接以错误色显示原因；属 r59 候选内的可见调整，待用户验证。
+- SC105：取代 SC99 中列表与激活请求的“连接横幅与所属请求结果同时保留”。Android 连接级拒绝结束所属列表与激活请求，只由连接横幅说明，不写入会话列表错误；配置、目录浏览、首页读取与供应商请求仍同时保留横幅与原位结果。账本启动的普通拒绝仍只在启动页说明。
+- SC106：Android 启动日志在加载完成及每次变更后通知连接对账，等待该日志的提示不再依赖各处单独刷新。订阅在连接启动读取缓存后开始，随连接关闭取消；连接关闭后不复用，新配对重建连接。
+- Android 配置化启动登记只更新提示字段，不再用读取时的配置副本整体覆盖。
+
+实现与回归：Android `feedbackFailureText`、`SessionConfigurationState.launchErrorTitle` / `SessionDraft`、`RelayReducer.rejectProtocolOperation`、`ConfiguredLaunchJournal.changes` / `HostConnection`、`HostConnection.createConfiguredSession`；`FeedbackTest`、`LaunchFeedbackRegressionTest`、`CommandRejectionFeedbackTest`、`ConfiguredLaunchJournalTest`。iOS `FeedbackText.reason`；`FeedbackTests`。
+
+自动验证：修复前 Android 新断言 3 项失败，iOS 新用例的全大写注记断言失败；账本启动只在启动页说明的用例修复前即通过，作为防回退保留；`ConfiguredLaunchJournal.changes` 为新增接口，无修复前对照，`HostConnection` 订阅与启动登记字段更新无单元测试覆盖。修复后 Android 全部单元测试 900 项通过（8 项跳过），iOS 全部包测试 617 项及 XCTest 14 项通过（1 项跳过），文案校验通过；证据见[本轮证据](../../.artifacts/feedback-review-fix-20261116/verification.json)。
+
+部署：未部署，未生成安装候选，未运行设备交互。共享 QA MCP 本次连接失败，未登记。用户验收：待用户验证。

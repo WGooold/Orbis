@@ -6,6 +6,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -26,12 +30,16 @@ internal class ConfiguredLaunchJournal(
         private set
     val isLoaded: Boolean get() = initialized.isCompleted && !initialized.isCancelled
     val launchId: String? get() = snapshot?.get("launchId")?.jsonPrimitive?.contentOrNull
+    private val changeCount = MutableStateFlow(0L)
+    /** SC106: advances on load completion and each accepted change, so dependent warnings can reconcile. */
+    val changes: StateFlow<Long> = changeCount.asStateFlow()
 
     init {
         scope.launch(dispatcher) {
             try {
                 snapshot = read()
                 initialized.complete(Unit)
+                changeCount.update { it + 1 }
                 for (write in writes) {
                     // A failed write retains the in-memory identity for an explicit retry.
                     write.result.complete(runCatching { persist(write.value) }.getOrDefault(false))
@@ -56,6 +64,7 @@ internal class ConfiguredLaunchJournal(
         val result = CompletableDeferred<Boolean>()
         if (writes.trySend(Write(next, result)).isFailure) return@synchronized null
         snapshot = next
+        changeCount.update { it + 1 }
         result
     }
 }

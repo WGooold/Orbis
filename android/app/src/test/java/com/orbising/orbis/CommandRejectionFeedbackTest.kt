@@ -82,6 +82,17 @@ class CommandRejectionFeedbackTest {
         assertEquals(mapOf("other-launch" to "other-session"), failed.sessionActivateTargets)
     }
 
+    // SC105: a ledger launch reports an ordinary rejection on its launch page, not again as a session-list error.
+    @Test fun `ordinary rejection of a ledger launch is shown once on its launch page`() {
+        val id = "launch-request"
+        val (created, _) = online().createLaunch(id, mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo"), "New session", 1L)
+        val pending = created.ledgerWritten(id, 2L).copy(sessionActivateRequests = setOf(id), sessionActivateTargets = mapOf(id to "session"))
+        val failed = reducer.reduce(pending, """{"type":"protocol.error","requestId":"$id","code":"host_busy","message":"电脑端正忙"}""")
+        assertFalse(failed.launching?.failure.isNullOrBlank())
+        assertTrue(failed.sessionActivateRequests.isEmpty())
+        assertNull(failed.sessionListError)
+    }
+
     @Test fun `version rejection of a verification read cannot fail an unrelated close`() {
         val requestId = OperationKinds.VERIFY_REQUEST_PREFIX + "request"
         val (created, _) = online().createQuit("close-agent", "agent", 1L)
@@ -119,10 +130,13 @@ class CommandRejectionFeedbackTest {
                     "list" -> {
                         assertEquals(code, setOf("other"), failed.sessionListRequests)
                         assertEquals(mapOf("other" to 2L), failed.sessionListRequestEpochs)
+                        // SC105: a connection-level rejection is explained once, by its banner.
+                        assertEquals(code, code == "host_busy", failed.sessionListError != null)
                     }
                     "activate" -> {
                         assertEquals(setOf("other"), failed.sessionActivateRequests)
                         assertEquals(mapOf("other" to "other-session"), failed.sessionActivateTargets)
+                        assertEquals(code, code == "host_busy", failed.sessionListError != null)
                     }
                     "browse" -> {
                         assertEquals(false, failed.sessionBrowse?.isLoading)

@@ -212,7 +212,11 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     if (config?.requestId != null) Text(L10n.tr("正在确认配置…"), style = MaterialTheme.typography.labelMedium)
                     if (config?.error != null) NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
                 } else StatusWithInfo(L10n.tr("电脑端默认"), L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
-                config?.launchError?.let { StatusWithInfo(L10n.tr("启动未确认"), L10n.hostText(it), error = true) }
+                config?.launchError?.let { error ->
+                    val title = config.launchErrorTitle
+                    if (title != null) StatusWithInfo(title, L10n.hostText(error), error = true)
+                    else Text(L10n.hostText(error), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NeumorphTextField(fieldValue, { fieldValue = it; text = it.text }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) { onCancel(); true }

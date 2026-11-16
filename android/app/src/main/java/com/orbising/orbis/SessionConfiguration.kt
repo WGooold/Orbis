@@ -47,6 +47,10 @@ internal fun SessionConfigurationState.admitConfiguredLaunch(
     return ConfiguredLaunchAdmission(next, block)
 }
 
+/** SC104: only a previous launch awaiting reconciliation is headed as unconfirmed; null shows the error text itself. */
+internal val SessionConfigurationState.launchErrorTitle: String?
+    get() = if (launchError != null && waitingForLaunchJournal) L10n.tr("启动未确认") else null
+
 /** SC100: a settled journal releases only the warning that was waiting on that journal. */
 internal fun SessionConfigurationState.reconcileLaunchJournal(loaded: Boolean, present: Boolean): SessionConfigurationState =
     if (waitingForLaunchJournal && loaded && !present) copy(launchError = null, waitingForLaunchJournal = false) else this

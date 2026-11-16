@@ -91,4 +91,25 @@ struct FeedbackTests {
         }
     }
 
+    // SC103: upper-case names such as environment variables are user-facing; lower-case codes stay hidden even when quoted.
+    @Test func environmentNamesRemainVisibleWhileQuotedCodesStayHidden() {
+        for reason in ["ANTHROPIC_API_KEY 未设置", "缺少环境变量（ANTHROPIC_API_KEY）"] {
+            #expect(FeedbackText.reason(reason) == reason)
+        }
+        for raw in ["请求失败 'invalid_request'", "{\"code\":\"session_busy\"}", "pi 后端不支持命令 get_state"] {
+            #expect(FeedbackText.reason(raw) == L10n.tr("操作未完成，请重试"))
+        }
+    }
+
+    // SC101: sentence punctuation after a machine code does not turn it into a
+    // filename; extensions and paths still do.
+    @Test func machineCodesBeforeSentencePunctuationStayDiagnosticOnly() {
+        for raw in ["Request failed: write_failed.", "请求失败 session_busy.", "write_failed. Retry later"] {
+            #expect(FeedbackText.reason(raw) == L10n.tr("操作未完成，请重试"))
+        }
+        for reason in ["无法读取 session_busy.txt", "无法读取 write_failed.txt。"] {
+            #expect(FeedbackText.reason(reason) == reason)
+        }
+    }
+
 }

@@ -146,9 +146,12 @@ final class HostConnection: ObservableObject {
     @Published private(set) var sessionConfigurationRequest: String?
     @Published private(set) var sessionConfigurationError: String?
     @Published private(set) var sessionLaunchError: String? {
-        didSet { sessionLaunchErrorIsValidation = false }
+        didSet { sessionLaunchErrorIsValidation = false; sessionLaunchErrorAwaitsConnection = false }
     }
     private var sessionLaunchErrorIsValidation = false
+    /// SC102: an activation that never reached the computer is resolved by the
+    /// next ready connection or successful activation write.
+    private var sessionLaunchErrorAwaitsConnection = false
     private var configuredLaunchId: String?
     private var configurationTimeout: Task<Void, Never>?
     private let launchJournalRoot: URL
@@ -1867,9 +1870,11 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
                               "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
             ledger.remove(requestId); handleLedger([])
-            sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); return
+            sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); sessionLaunchErrorAwaitsConnection = true; return
         }
-        sessionLaunchError = nil
+        // SC100: only a new-session admission resolves the previous-launch hint;
+        // resuming another session leaves it for reconciliation (as on Android).
+        if target["type"] as? String == "new" || sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”；恢复已有会话时先显示缓存历史（V13）。
@@ -2803,7 +2808,10 @@ final class HostConnection: ObservableObject {
     private func rejectCorrelatedProtocolOperation(_ message: [String: Any]) -> Bool {
         let commandId = message["commandId"] as? String
         let requestId = message["requestId"] as? String
-        let reason = message["message"] as? String ?? L10n.tr("电脑端无法完成操作。")
+        // Without a reason, each owner keeps its own copy; only the ledger
+        // receipt needs the generic sentence.
+        let detail = message["message"] as? String
+        let reason = detail ?? L10n.tr("电脑端无法完成操作。")
         if let requestId, let read = ledgerReads.removeValue(forKey: requestId) {
             consumeLedgerRead(message, type: "protocol.error", read: read)
             return true
@@ -2822,7 +2830,7 @@ final class HostConnection: ObservableObject {
             owned = true
         }
         if let commandId, !ledgerOwnsCommand, pendingSends.owns(commandId: commandId) {
-            pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String, error: reason)
+            pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String, error: detail)
             publishMessages()
             owned = true
         }
@@ -2833,25 +2841,25 @@ final class HostConnection: ObservableObject {
                 finishSync(syncId, readPhase: .failed)
                 historyRead = pending?.range == "history"
                 if let pending, historyRead, pending.historyPrefetch == nil {
-                    historyErrors[pending.runtimeId] = FeedbackText.reason(reason)
+                    historyErrors[pending.runtimeId] = FeedbackText.reason(detail ?? L10n.tr("历史读取失败，请重试。"))
                 }
                 owned = true
             }
             if !historyRead, runtimeActions[commandId] != nil {
-                finishAction(commandId, succeeded: false, message: reason)
+                finishAction(commandId, succeeded: false, message: detail)
                 owned = true
             }
         }
         if let requestId, requestId == sessionConfigurationRequest {
             configurationTimeout?.cancel()
-            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(reason); owned = true
+            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(detail ?? L10n.tr("配置未确认")); owned = true
         }
         if let requestId, requestId == activationRequestId { clearActivation(); owned = true }
         if let requestId, requestId == sessionListRequest {
             sessionListRequest = nil; owned = true
         }
         if let requestId, requestId == browse?.requestId {
-            browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(reason)
+            browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(detail ?? L10n.tr("目录不可读"))
             owned = true
         }
         return owned
@@ -2996,6 +3004,7 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { saveLastSession(selectedRuntime) }
             setHistoryConnection(true)
             connection = .secured
+            if sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)

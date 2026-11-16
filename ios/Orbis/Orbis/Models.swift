@@ -750,9 +750,11 @@ enum FeedbackText {
         if value.range(of: "^[a-z][a-z0-9_:-]*_[a-z0-9_:-]+$", options: .regularExpression) != nil {
             return L10n.tr("操作未完成，请重试")
         }
-        var display = value.replacingOccurrences(of: "[（(]\\s*[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\\s*[）)]", with: "", options: .regularExpression)
+        // SC103: codes are lower-case snake tokens; upper-case names such as environment variables are user-facing.
+        var display = value.replacingOccurrences(of: "[（(]\\s*[a-z][a-z0-9]*(?:_[a-z0-9]+)+\\s*[）)]", with: "", options: .regularExpression)
         // Strip protocol tokens while preserving normal filenames and user paths containing underscores.
-        if display.range(of: "(?<![A-Za-z0-9/._-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9/._-])", options: .regularExpression) != nil {
+        // SC101: a dot is part of a name only before an extension; sentence punctuation still ends the code.
+        if display.range(of: "(?<![A-Za-z0-9/._-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9/_-]|\\.[A-Za-z0-9])", options: .regularExpression) != nil {
             return L10n.tr("操作未完成，请重试")
         }
         for (term, replacement) in [("host", "Orbis"), ("runtime", L10n.tr("会话")), ("relay", L10n.tr("连接"))] {

@@ -90,9 +90,13 @@ private val opaqueFeedbackCodes = CONNECTION_ACTION_PROTOCOL_CODES + setOf(
     "assistant_message_not_available", "file_not_available", "file_not_a_file", "file_size_invalid", "artifact_changed",
     "artifact_chunk_invalid", "artifact_size_mismatch",
 )
-private val opaqueFeedbackCode = "(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + "|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
+private val registeredFeedbackCode = opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) }
+// SC103: unregistered codes are lower-case snake tokens; upper-case names such as environment variables are user-facing.
+private const val unregisteredFeedbackCode = "(?-i:[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
+private val opaqueFeedbackCode = "(?:$registeredFeedbackCode|$unregisteredFeedbackCode)"
+// A dot is part of a name only before an extension; sentence punctuation still ends the code.
 private val opaqueFeedbackToken = Regex(
-    "(?<![A-Za-z0-9/._\\\\-])" + opaqueFeedbackCode + "(?![A-Za-z0-9/._\\\\-])",
+    "(?<![A-Za-z0-9/._\\\\-])" + opaqueFeedbackCode + "(?![A-Za-z0-9/_\\\\-]|\\.[A-Za-z0-9])",
     RegexOption.IGNORE_CASE,
 )
 private val opaqueFeedbackAnnotation = Regex(

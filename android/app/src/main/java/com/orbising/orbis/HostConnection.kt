@@ -234,8 +234,9 @@ internal class HostConnection(
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
         val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
         val target = mapOf("type" to "new", "agentKind" to kind, "cwd" to cwd)
+        // Copy only the admission fields; the remaining configuration may have advanced since it was read.
         updateState { it.copy(sessionActivateRequests = it.sessionActivateRequests + id,
-            sessionConfiguration = admission.configuration).createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis()).first }
+            sessionConfiguration = it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false)).createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis()).first }
         if (firstMessage.isNotBlank()) {
             val launch = mutableState.value.launching ?: return false
             sendWhenReady(launch.placeholder, launch.placeholder, firstMessage, null, emptyList(), emptyList(),
@@ -480,6 +481,7 @@ internal class HostConnection(
     /** Serializes all text events from one WebSocket connection in arrival order. */
     private var relayEventJob: Job? = null
     private var startupJob: Job? = null
+    private var launchJournalJob: Job? = null
     @Volatile private var cacheReady = false
 
     init {
@@ -499,6 +501,9 @@ internal class HostConnection(
                 cached
             }
             if (!shouldConnect) return@launch
+            // SC106: every journal change reconciles warnings that wait on it. Started after
+            // construction (the cache load above resumes on a later dispatch).
+            launchJournalJob = scope.launch(Dispatchers.Default) { configuredLaunchJournal.changes.collect { updateState { it } } }
             updateState { current -> current.copy(sessions = restored.sessions + current.sessions,
                 downloads = restored.downloads + current.downloads, uploads = restored.uploads + current.uploads) }
             cacheReady = true
@@ -1168,6 +1173,7 @@ internal class HostConnection(
         closeChangeViewer()
         shouldConnect = false
         startupJob?.cancel()
+        launchJournalJob?.cancel()
         changeSummaryJob.cancel()
         homePresentationJob.cancel()
         updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->

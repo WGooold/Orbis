@@ -83,6 +83,15 @@ class LaunchFeedbackRegressionTest {
         assertEquals(4L, result.sessionConfiguration.snapshot?.revision)
     }
 
+    // SC104: only a previous launch awaiting reconciliation is headed as unconfirmed; other draft failures show their own text.
+    @Test fun `only a previous launch is headed as unconfirmed`() {
+        val blocked = confirmed().admitConfiguredLaunch("codex", "/repo/app", journalLoaded = true, journalPresent = true).configuration
+        assertEquals(L10n.tr("启动未确认"), blocked.launchErrorTitle)
+        val target = RemoteState(sessionConfiguration = blocked).composerFailure(null, "目标电脑已变更、未连接或正在创建会话")
+        assertNull(target.sessionConfiguration.launchErrorTitle)
+        assertNull(RemoteState().composerFailure(null, userMessageInputError("/help")!!).sessionConfiguration.launchErrorTitle)
+    }
+
     // SC97 / LAUNCH-FEEDBACK-01: a first sentence is owned by the new-session card before any runtime exists.
     @Test fun `first sentence validation stays on its new session draft`() {
         val failure = userMessageInputError("/help")!!

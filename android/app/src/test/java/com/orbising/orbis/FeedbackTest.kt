@@ -72,9 +72,22 @@ class FeedbackTest {
             assertEquals(code, fallback, feedbackFailureText(code, fallback))
             assertEquals(code, "请求失败，请重试", feedbackFailureText("请求失败，请重试（$code）", fallback))
             assertEquals(code, fallback, feedbackFailureText("请求失败 $code", fallback))
+            // Sentence punctuation does not turn a code into a filename.
+            assertEquals(code, fallback, feedbackFailureText("Request failed: $code.", fallback))
+            assertEquals(code, fallback, feedbackFailureText("$code. Retry later", fallback))
         }
-        for (message in listOf("无法读取 session_busy.txt", "无法读取 /repo/write_failed", "无法读取 C:\\repo\\write_failed.txt", "WS connection closed", "QUIC connection interrupted")) {
+        for (message in listOf("无法读取 session_busy.txt", "无法读取 write_failed.txt。", "无法读取 /repo/write_failed", "无法读取 C:\\repo\\write_failed.txt", "WS connection closed", "QUIC connection interrupted")) {
             assertEquals(message, feedbackFailureText(message, fallback))
+        }
+    }
+    // SC103: upper-case names such as environment variables are user-facing; lower-case codes stay hidden even when quoted.
+    @Test fun `environment names remain visible while quoted codes stay hidden`() {
+        val fallback = "请重试"
+        for (message in listOf("ANTHROPIC_API_KEY 未设置", "缺少环境变量（ANTHROPIC_API_KEY）")) {
+            assertEquals(message, feedbackFailureText(message, fallback))
+        }
+        for (message in listOf("请求失败 'invalid_request'", """{"code":"session_busy"}""", "pi 后端不支持命令 get_state")) {
+            assertEquals(message, fallback, feedbackFailureText(message, fallback))
         }
     }
     @Test fun `known error annotations are hidden without removing useful failure details`() {

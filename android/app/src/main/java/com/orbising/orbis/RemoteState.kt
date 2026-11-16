@@ -2388,7 +2388,8 @@ class RelayReducer(
                 sessionActivateRequests = next.sessionActivateRequests - requestId,
                 sessionActivateTargets = next.sessionActivateTargets - requestId,
                 sessionBrowse = if (browse) next.sessionBrowse?.copy(isLoading = false, error = error) else next.sessionBrowse,
-                sessionListError = if (list || activate) error else next.sessionListError,
+                // SC105: a connection-level rejection is explained once, by its banner.
+                sessionListError = if ((list || activate) && code !in CONNECTION_ACTION_PROTOCOL_CODES) error else next.sessionListError,
             )
         }
 
