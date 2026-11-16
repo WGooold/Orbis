@@ -37,7 +37,7 @@ jobs:
         run: |
           app=ios/Orbis/build/DerivedData/Build/Products/Debug-iphonesimulator/Orbis.app
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
-          xcrun lipo -verify_arch arm64 "$app/$executable"
+          xcrun lipo "$app/$executable" -verify_arch arm64
 
   build:
     if: always()
