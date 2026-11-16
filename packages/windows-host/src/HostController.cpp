@@ -118,6 +118,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
+            m_iosAppDownloadQr = obj.value("iosAppDownloadQr").toString();
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();

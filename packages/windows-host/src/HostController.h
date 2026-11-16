@@ -29,6 +29,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString hostId READ hostId NOTIFY changed)
     Q_PROPERTY(QString qr READ qr NOTIFY changed)
     Q_PROPERTY(QString appDownloadQr READ appDownloadQr NOTIFY changed)
+    Q_PROPERTY(QString iosAppDownloadQr READ iosAppDownloadQr NOTIFY changed)
     Q_PROPERTY(QAbstractItemModel *logModel READ logModel CONSTANT)
     Q_PROPERTY(QString version READ version CONSTANT)
     Q_PROPERTY(bool hostUpdateAvailable READ hostUpdateAvailable NOTIFY changed)
@@ -113,6 +114,7 @@ public:
     QString hostId() const { return m_hostId; }
     QString qr() const { return m_qr; }
     QString appDownloadQr() const { return m_appDownloadQr; }
+    QString iosAppDownloadQr() const { return m_iosAppDownloadQr; }
     QAbstractItemModel *logModel() { return &m_logs; }
     QString version() const { return ORBIS_VERSION; }
     bool hostUpdateAvailable() const { return !m_updateVersion.isEmpty() && !m_updateInstallerUrl.isEmpty() && !m_updateChecksumUrl.isEmpty(); }
@@ -337,7 +339,7 @@ private:
     QList<int> m_activityOrder;
     bool m_claudeDetecting = false;
     int m_draftGeneration = 0;
-    QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_challenge, m_challengeEmail;
+    QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
     QVariantMap m_codexDesktop, m_dshDesktop;

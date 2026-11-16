@@ -54,6 +54,7 @@ import type { DesktopQaConfiguration } from "./desktop-qa.js";
 const execute = promisify(execFile);
 
 const APP_DOWNLOAD_URL = "https://orbising.com/downloads/orbis.apk";
+const IOS_APP_DOWNLOAD_URL = "https://testflight.apple.com/join/9zGP1NZX";
 async function loopbackPortAlive(value: unknown): Promise<boolean> {
   if (typeof value !== "string") return false;
   let url: URL;
@@ -217,7 +218,8 @@ export class DesktopRuntime {
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
-      appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
+      appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
+      iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
 
   #managedRoot(): string { return agentInstallRoot(); }

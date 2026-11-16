@@ -956,7 +956,9 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
-                            ActionButton { text: window.androidUpdatesAvailable() ? "更新Android客户端" : "下载Android客户端"; visible: host.appDownloadQr.length > 0; onClicked: appDownloadDialog.open() }
+                            // HOST-IOS-DOWNLOAD-01: both platforms share the download dialog with their own QR target.
+                            ActionButton { objectName: "downloadAndroidClient"; text: window.androidUpdatesAvailable() ? "更新Android客户端" : "下载Android客户端"; visible: host.appDownloadQr.length > 0; onClicked: { appDownloadDialog.platform = "android"; appDownloadDialog.open() } }
+                            ActionButton { objectName: "downloadIosClient"; text: "下载iOS客户端"; visible: host.iosAppDownloadQr.length > 0; onClicked: { appDownloadDialog.platform = "ios"; appDownloadDialog.open() } }
                             ActionButton { text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                         }
                         Card {
@@ -1333,16 +1335,19 @@ ApplicationWindow {
     }
     SoftDialog {
         id: appDownloadDialog
-        title: "Orbis Android"
+        objectName: "appDownloadDialog"
+        property string platform: "android"
+        title: platform === "ios" ? "Orbis iOS · TestFlight" : "Orbis Android"
         anchors.centerIn: parent
         width: 370
         modal: true
         footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
         ColumnLayout {
             width: parent.width; spacing: 12
-            Label { text: "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted; font.pixelSize: Theme.label }
+            Label { text: appDownloadDialog.platform === "ios" ? "扫描下方二维码加入测试" : "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted; font.pixelSize: Theme.label }
             Image {
-                source: host.appDownloadQr
+                objectName: "appDownloadQrImage"
+                source: appDownloadDialog.platform === "ios" ? host.iosAppDownloadQr : host.appDownloadQr
                 sourceSize.width: 320; sourceSize.height: 320
                 Layout.preferredWidth: 320; Layout.preferredHeight: 320
                 Layout.alignment: Qt.AlignHCenter
