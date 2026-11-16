@@ -95,12 +95,32 @@ private slots:
         QTRY_COMPARE(host.state(), QString("connected"));
         QVERIFY(host.desiredRunning());
         QCOMPARE(host.agentInstallStage(), QString(fails ? "error" : "done"));
-        // HOST-CLAUDE-UPDATE-01: native Claude keeps its own launcher/channel;
-        // a successful check must not claim the public latest release.
+        // HOST-CLAUDE-UPDATE-02: the core now verifies that the original launcher
+        // reached official latest before it returns a successful update.
         if (kind == "claude") {
             QVERIFY(!host.m_settings.contains("claudeEntry"));
-            if (!fails) { QVERIFY(host.message().contains("当前版本 9.9.9")); QVERIFY(!host.message().contains("最新版本")); }
+            if (!fails) QVERIFY(host.message().contains("已更新到最新版本 9.9.9"));
         }
+    }
+    // Latest query errors remain independent of a working installation. A core
+    // without the new optional fields must clear them instead of leaving stale UI.
+    void claudeLatestFactsFollowStatus() {
+        auto &host = *m_host;
+        host.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.322"},
+            {"latestVersion", "2.1.325"}, {"updateAvailable", true}});
+        QCOMPARE(host.claudeLatestVersion(), QString("2.1.325"));
+        QVERIFY(host.claudeUpdateAvailable());
+        host.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.322"},
+            {"latestChecking", true}});
+        QVERIFY(host.claudeLatestChecking());
+        host.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.322"},
+            {"latestError", "查询失败"}});
+        QVERIFY(host.claudeInstalled()); QVERIFY(host.claudeCompatible());
+        QVERIFY(!host.claudeLatestChecking()); QVERIFY(!host.claudeUpdateAvailable());
+        QVERIFY(host.claudeLatestVersion().isEmpty());
+        QCOMPARE(host.claudeLatestError(), QString("查询失败"));
+        host.receiveLine({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.325"}});
+        QVERIFY(host.claudeLatestError().isEmpty()); QVERIFY(host.claudeLatestVersion().isEmpty());
     }
     void batchUpdateAndDshRestartResume() {
         auto &host = *m_host;

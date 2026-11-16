@@ -29,7 +29,7 @@ import { updatePiIntegration } from "./pi-integration-install.js";
 import { findClaudeExecutable, updateClaudeIntegration } from "./claude-integration-install.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
 import { CLAUDE_MIN_VERSION, claudeVersionRequirement, readClaudeVersion } from "./claude-version.js";
-import { updateClaudeCode } from "./claude-update.js";
+import { fetchClaudeLatestVersion, updateClaudeCode } from "./claude-update.js";
 import { CODEX_STARTUP_ARGS, PI_STARTUP_ENV, PI_WORKSPACE_APPROVAL_ARGS, codexWorkspaceApprovalArgs } from "./agent-startup.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 import { claudeConfigDir } from "./claude-transcript.js";
@@ -137,6 +137,9 @@ export class DesktopRuntime {
   /** HOST-LANE-01：每次暂停加一。暂停可以越过在途的 start，start 在挂上 #desired 之前据此放弃。 */
   #lifecycleGeneration = 0;
   #claudeDetection: Promise<void> | undefined;
+  #claudeLatestCheck: Promise<void> | undefined;
+  #claudeLatest: { latestVersion?: string; latestError?: string; latestChecking?: boolean } = {};
+  #claudeStatus: DesktopEvent = { event: "claudeStatus", installed: false, compatible: false, minimumVersion: CLAUDE_MIN_VERSION };
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
   #disposing: Promise<void> | undefined;
@@ -297,6 +300,7 @@ export class DesktopRuntime {
     if (!this.#qa) await adoptWindowsEnvironment();
     await this.#environment(settings);
     this.#scheduleClaudeDetection();
+    if (checkLatest) this.#scheduleClaudeLatestCheck();
     const managed = this.#managedRoot();
     return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
       const copies = await findAgentCopies(kind, process.env);
@@ -386,22 +390,39 @@ export class DesktopRuntime {
       .finally(() => { this.#claudeDetection = undefined; });
   }
 
+  #emitClaudeStatus(status = this.#claudeStatus): void {
+    this.#claudeStatus = status;
+    this.#emit({ ...status, ...this.#claudeLatest,
+      updateAvailable: compareAgentVersions(this.#claudeLatest.latestVersion ?? "", String(status.version ?? "")) === 1 });
+  }
+
+  #scheduleClaudeLatestCheck(): void {
+    if (this.#claudeLatestCheck) return;
+    this.#claudeLatest = { ...this.#claudeLatest, latestChecking: true };
+    this.#emitClaudeStatus();
+    this.#claudeLatestCheck = (async () => {
+      const latestVersion = await fetchClaudeLatestVersion();
+      this.#claudeLatest = latestVersion ? { latestVersion } : { latestError: "Claude Code 最新版本查询失败，请检查网络后重试" };
+      this.#emitClaudeStatus();
+    })().finally(() => { this.#claudeLatestCheck = undefined; });
+  }
+
   async #detectClaude(): Promise<void> {
     // 先声明“还在测”，否则 Host 界面会把尚未测完的版本当成“未安装”，
     // 用户看到的是“Claude Code 不能用”，而实际只是检测还没回来。
-    this.#emit({ event: "claudeStatus", detecting: true });
+    this.#emitClaudeStatus({ ...this.#claudeStatus, detecting: true });
     // Claude uses its native installer and settings, outside the managed npm Agents.
     const cli = await findClaudeExecutable(process.env);
     const status = { event: "claudeStatus", installed: cli !== undefined, minimumVersion: CLAUDE_MIN_VERSION };
-    if (!cli) { this.#emit({ ...status, compatible: false }); return; }
+    if (!cli) { this.#emitClaudeStatus({ ...status, compatible: false }); return; }
     // 已找到可执行文件，但版本还没读回来：仍是“检测中”，不能先报一个“不兼容”。
-    this.#emit({ ...status, compatible: false, detecting: true });
+    this.#emitClaudeStatus({ ...status, compatible: false, detecting: true });
     try {
       const version = await readClaudeVersion(cli, process.env);
       const error = claudeVersionRequirement(version);
-      this.#emit({ ...status, version, compatible: error === undefined, ...(error ? { error } : {}) });
+      this.#emitClaudeStatus({ ...status, version, compatible: error === undefined, ...(error ? { error } : {}) });
     } catch (error) {
-      this.#emit({ ...status, compatible: false, error: error instanceof Error ? error.message : String(error) });
+      this.#emitClaudeStatus({ ...status, compatible: false, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -1049,6 +1070,7 @@ export class DesktopRuntime {
         abort.signal.throwIfAborted();
         this.#agentInstallProgress({ kind: "claude", stage: "resolving", version: "" });
         const result = await updateClaudeCode({ signal: abort.signal,
+          onLatest: latestVersion => { this.#claudeLatest = { latestVersion }; this.#emitClaudeStatus(); },
           onStage: stage => this.#agentInstallProgress({ kind: "claude", stage }) });
         this.#installationCommitted = true;
         await this.#detectClaude();
@@ -1117,19 +1139,21 @@ export class DesktopRuntime {
     if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
     if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
     this.#batchCancelled = false;
-    const targets = (["pi", "codex", "dsh"] as const).flatMap(kind => {
+    const targets: string[] = (["pi", "codex", "dsh"] as const).flatMap(kind => {
       const status = this.#detected.get(kind);
-      return status && (action === "update" ? !status.installed || status.updateAvailable || status.installedButBroken : !status.installed) ? [status] : [];
+      return status && (action === "update" ? !status.installed || status.updateAvailable || status.installedButBroken : !status.installed) ? [kind] : [];
     });
+    if (action === "update" && this.#claudeStatus.installed && !this.#claudeStatus.detecting && (!this.#claudeStatus.compatible
+      || compareAgentVersions(this.#claudeLatest.latestVersion ?? "", String(this.#claudeStatus.version ?? "")) === 1)) targets.push("claude");
     const failures: string[] = []; const warnings: string[] = []; let succeeded = 0;
     for (const target of targets) {
       if (this.#batchCancelled) break;
       try {
-        const result = await this.updateAgent(target.kind);
+        const result = await this.updateAgent(target);
         succeeded += 1;
         if (result.restartWarning) warnings.push(result.restartWarning);
       }
-      catch (error) { failures.push(`${target.kind}: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) { failures.push(`${target}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     return { succeeded, failures, warnings, cancelled: this.#batchCancelled };
   }
@@ -1404,7 +1428,7 @@ export class DesktopRuntime {
     this.cancelInstall();
     await this.#installationTask?.catch(() => {});
     if (this.#poll) clearInterval(this.#poll);
-    await Promise.all([this.#usage.close(), this.stop(), this.#claudeDetection, this.#claudeIntegrationTask, this.#routing]);
+    await Promise.all([this.#usage.close(), this.stop(), this.#claudeDetection, this.#claudeLatestCheck, this.#claudeIntegrationTask, this.#routing]);
     await this.#providers.closeRouting();
   }
   cancelInstall(): void {

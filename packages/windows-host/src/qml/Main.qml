@@ -129,10 +129,15 @@ ApplicationWindow {
     function dshDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, running:Theme.warning, incompatible:Theme.danger, error:Theme.danger})[window.dshDesktopState()] || Theme.inkMuted }
     function dshDesktopReason() { return (host.dshDesktop && host.dshDesktop.reason) ? host.dshDesktop.reason : "" }
     function installationStage() {
-        if (host.agentInstallKind === "claude" && host.agentInstallStage === "downloading") return "检查并更新"
+        if (host.agentInstallKind === "claude" && host.agentInstallStage === "downloading") return "正在更新到最新版本"
         return ({queued:"准备安装", resolving:"检查安装位置", downloading:"下载与安装依赖", verifying:"验证 CLI 和版本", activating:"保存新版本", restarting:"正在重启 Agent 后台", restartFailed:"已更新，后台需手动重启", cancelling:"正在取消并清理", cancelled:"已取消", error:"安装失败", done:"安装完成"})[host.agentInstallStage] || ""
     }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
+    function batchAgentTargets() {
+        var targets = host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken)
+        if (host.claudeInstalled && !host.claudeDetecting && (host.claudeUpdateAvailable || !host.claudeCompatible)) targets.push({kind: "claude"})
+        return targets
+    }
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
     property bool providersOpen: false
@@ -328,7 +333,7 @@ ApplicationWindow {
         if (!host.activated && host.bridgeReady) return "未激活"
         return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
-    function agentUpdatesAvailable() { return host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
+    function agentUpdatesAvailable() { return (host.claudeInstalled && host.claudeUpdateAvailable) || host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
     function androidUpdatesAvailable() { return host.devices.some(function(device) { return device.androidUpdateAvailable }) }
     function pageHasUpdate(index) {
         if (index === 1) return window.androidUpdatesAvailable()
@@ -339,6 +344,7 @@ ApplicationWindow {
     function availableUpdatesText() {
         var updates = []
         if (host.hostUpdateAvailable) updates.push("Orbis Host " + host.hostUpdateVersion)
+        if (host.claudeInstalled && host.claudeUpdateAvailable) updates.push("Claude Code " + host.claudeLatestVersion)
         host.agents.filter(function(agent) { return agent.installed && agent.updateAvailable }).forEach(function(agent) {
             updates.push(window.agentName(agent.kind) + " " + (agent.recommendedVersion || agent.latestVersion))
         })
@@ -990,7 +996,7 @@ ApplicationWindow {
                         visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
                         RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy && window.activityKinds.indexOf("agents") < 0; loading: window.activityKinds.indexOf("agents") >= 0; onClicked: host.detectAgents(true) } }
                         RowLayout { Layout.fillWidth: true
-                            ActionButton { text: "全部更新到最新（" + host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken).length + "）"; enabled: host.bridgeReady && !host.busy && host.agents.some(a => !a.installed || a.updateAvailable || a.installedButBroken); onClicked: window.showAgentBatch() }
+                            ActionButton { text: "全部更新到最新（" + window.batchAgentTargets().length + "）"; enabled: host.bridgeReady && !host.busy && window.batchAgentTargets().length > 0; onClicked: window.showAgentBatch() }
                             Item { Layout.fillWidth: true }
                         }
                         RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
@@ -1031,12 +1037,13 @@ ApplicationWindow {
                                     Item { Layout.fillWidth: true }
                                     Hint { text: window.claudeStateText(); color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
                                 }
-                                Hint { visible: !!host.claudeMinimumVersion; text: "当前 " + (host.claudeVersion || "—") + "，最低 " + host.claudeMinimumVersion; Layout.fillWidth: true }
+                                Hint { objectName: "claudeVersions"; text: "当前 " + (host.claudeVersion || "—") + "，最新 " + (host.claudeLatestChecking ? "查询中" : host.claudeLatestVersion || "未知") + (host.claudeUpdateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true; color: host.claudeUpdateAvailable ? Theme.warning : Theme.inkMuted }
                                 Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
+                                Hint { visible: !!host.claudeLatestError; text: host.claudeLatestError; Layout.fillWidth: true; color: Theme.warning }
                                 Hint { text: "供应商切换后，请重新打开 Claude Code 会话。"; Layout.fillWidth: true }
                                 RowLayout {
-                                    // HOST-CLAUDE-UPDATE-01: use the installed CLI's own update channel.
-                                    ActionButton { objectName: "updateClaude"; text: "检查并更新"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled && !host.claudeDetecting; loading: host.agentInstalling && host.agentInstallKind === "claude"; onClicked: window.showAgentInstaller({kind: "claude", installed: true, version: host.claudeVersion}) }
+                                    // HOST-CLAUDE-UPDATE-02: show the official latest and verify the selected launcher after updating.
+                                    ActionButton { objectName: "updateClaude"; text: host.claudeLatestVersion && !host.claudeUpdateAvailable && !!host.claudeVersion ? "已是最新版本" : "更新到最新版本"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled && !host.claudeDetecting && !host.claudeLatestChecking && (!host.claudeLatestVersion || host.claudeUpdateAvailable || !host.claudeVersion); loading: host.agentInstalling && host.agentInstallKind === "claude"; onClicked: window.showAgentInstaller({kind: "claude", installed: true, version: host.claudeVersion, latestVersion: host.claudeLatestVersion}) }
                                     ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }
                                     ActionButton { text: "打开 Claude Code"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled; onClicked: host.openAgentTui("claude") }
                                 }
@@ -1395,10 +1402,10 @@ ApplicationWindow {
         onAccepted: host.restartDshServer()
     }
     SoftDialog {
-        id: installDialog; objectName: "agentInstallDialog"; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + (window.installKind === "claude" ? "" : " 到最新版本"); anchors.centerIn: parent; modal: true; width: 540
-        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: window.installKind === "claude" && !host.desiredRunning ? "检查并更新" : (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
+        id: installDialog; objectName: "agentInstallDialog"; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
+        footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + (window.installKind === "claude" ? "" : "，最新 " + (window.installAgentData.latestVersion || "未知")); Layout.fillWidth: true }
+            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
@@ -1408,7 +1415,7 @@ ApplicationWindow {
         id: batchInstallDialog; title: "全部更新到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: host.desiredRunning ? "全部更新并重新连接" : "全部更新到最新版本"; primary: true; enabled: !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Repeater { model: host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
+            Repeater { model: window.batchAgentTargets(); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
             DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }

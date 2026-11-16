@@ -168,6 +168,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         m_claudeInstalled = false;
         m_claudeCompatible = false;
         m_claudeVersion.clear(); m_claudeMinimumVersion.clear(); m_claudeVersionError.clear();
+        m_claudeLatestVersion.clear(); m_claudeLatestError.clear();
+        m_claudeLatestChecking = false; m_claudeUpdateAvailable = false;
         if (agentInstalling()) m_agentInstallStage = "error";
         if (m_shutdown) return;
         m_state = "error";
@@ -456,6 +458,10 @@ void HostController::receiveLine(const QJsonObject &line) {
             m_claudeVersion = line.value("version").toString();
             m_claudeMinimumVersion = line.value("minimumVersion").toString();
             m_claudeVersionError = line.value("error").toString();
+            m_claudeLatestVersion = line.value("latestVersion").toString();
+            m_claudeLatestError = line.value("latestError").toString();
+            m_claudeLatestChecking = line.value("latestChecking").toBool();
+            m_claudeUpdateAvailable = line.value("updateAvailable").toBool();
         }
         else if (event == "paired") { m_qr.clear(); m_pairExpires = 0; setMessage("手机配对成功，现在可以在手机上使用 Orbis"); emit paired(); emit notification("Orbis", "新手机已配对"); }
     }
@@ -799,7 +805,7 @@ void HostController::updateAgent(const QString &kind) {
         if (kind != "claude") { m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync(); }
         const auto warning = result.value("restartWarning").toString();
         m_agentInstallStage = warning.isEmpty() ? "done" : "restartFailed"; m_agentInstallVersion = result.value("version").toString();
-        setMessage(kind == "claude" ? "Claude Code 已完成更新检查，当前版本 " + result.value("version").toString() + "。请重新打开 Claude Code 会话。" : warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
+        setMessage(kind == "claude" ? "Claude Code 已更新到最新版本 " + result.value("version").toString() + "。请重新打开 Claude Code 会话。" : warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
             (result.value("restarted").toBool() ? "，后台已自动重启。请从 Host 重新打开网页。" : "") : warning); detectAgents();
     });
     if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });

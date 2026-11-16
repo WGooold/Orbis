@@ -72,6 +72,10 @@ class HostController : public QObject {
     Q_PROPERTY(QString claudeVersion READ claudeVersion NOTIFY changed)
     Q_PROPERTY(QString claudeMinimumVersion READ claudeMinimumVersion NOTIFY changed)
     Q_PROPERTY(QString claudeVersionError READ claudeVersionError NOTIFY changed)
+    Q_PROPERTY(QString claudeLatestVersion READ claudeLatestVersion NOTIFY changed)
+    Q_PROPERTY(QString claudeLatestError READ claudeLatestError NOTIFY changed)
+    Q_PROPERTY(bool claudeLatestChecking READ claudeLatestChecking NOTIFY changed)
+    Q_PROPERTY(bool claudeUpdateAvailable READ claudeUpdateAvailable NOTIFY changed)
     Q_PROPERTY(int cooldown READ cooldown NOTIFY changed)
     Q_PROPERTY(int pairSeconds READ pairSeconds NOTIFY changed)
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
@@ -147,6 +151,10 @@ public:
     QString claudeVersion() const { return m_claudeVersion; }
     QString claudeMinimumVersion() const { return m_claudeMinimumVersion; }
     QString claudeVersionError() const { return m_claudeVersionError; }
+    QString claudeLatestVersion() const { return m_claudeLatestVersion; }
+    QString claudeLatestError() const { return m_claudeLatestError; }
+    bool claudeLatestChecking() const { return m_claudeLatestChecking; }
+    bool claudeUpdateAvailable() const { return m_claudeUpdateAvailable; }
     int cooldown() const { return m_cooldown; }
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
@@ -360,6 +368,8 @@ private:
     bool m_claudeInstalled = false;
     bool m_claudeCompatible = false;
     QString m_claudeVersion, m_claudeMinimumVersion, m_claudeVersionError;
+    QString m_claudeLatestVersion, m_claudeLatestError;
+    bool m_claudeLatestChecking = false, m_claudeUpdateAvailable = false;
     bool m_verificationRequired = true, m_registrationAvailable = false;
     bool m_recoverWithEmail = false;
     // HOST-ACT-15/16: Host key recovery state for the current Relay and Host ID.

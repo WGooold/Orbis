@@ -66,10 +66,76 @@ async function fixture() {
   const events: DesktopEvent[] = [];
   const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { codex: join(root, "codex"), pi: join(root, "pi"), dsh: join(root, "dsh") });
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response('{"latest":"2.0.0"}')));
+  vi.spyOn(claudeUpdate, "fetchClaudeLatestVersion").mockResolvedValue("2.1.325");
   return { root, prefix, runtime, events };
 }
 
 describe("desktop Agent installation commands", () => {
+  // HOST-CLAUDE-UPDATE-02: latest discovery is independent of local CLI I/O and
+  // must survive local refreshes; a failed recheck cannot retain a stale latest claim.
+  it("checks Claude latest in the background, shares pending checks, and recomputes after a local refresh", async () => {
+    const { runtime, events } = await fixture();
+    vi.spyOn(claudeDiscovery, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    const local = vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
+    let finish!: (version: string) => void;
+    const latest = vi.mocked(claudeUpdate.fetchClaudeLatestVersion).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    try {
+      await runtime.detect(undefined, true);
+      await runtime.detect(undefined, true);
+      expect(latest).toHaveBeenCalledOnce();
+      expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ version: "2.1.322", compatible: true, latestChecking: true });
+      finish("2.1.325");
+      await vi.waitFor(() => expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ latestVersion: "2.1.325", updateAvailable: true }));
+      local.mockResolvedValue("2.1.325");
+      await runtime.detect();
+      expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ version: "2.1.325", latestVersion: "2.1.325", updateAvailable: false });
+      latest.mockResolvedValue(undefined);
+      await runtime.detect(undefined, true);
+      await vi.waitFor(() => expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ version: "2.1.325", compatible: true, latestError: expect.stringContaining("查询失败"), updateAvailable: false }));
+      expect(events.filter(event => event.event === "claudeStatus").at(-1)).not.toHaveProperty("latestVersion");
+    } finally { finish?.("2.1.325"); await runtime.close(); }
+  });
+
+  it("retains latest when it arrives before the local Claude version", async () => {
+    const { runtime, events } = await fixture();
+    vi.mocked(fetch).mockImplementation(async () => new Response('{"latest":"1.0.0"}'));
+    vi.spyOn(claudeDiscovery, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    const update = vi.spyOn(claudeUpdate, "updateClaudeCode").mockRejectedValue(new Error("unconfirmed installation must not update"));
+    let finish!: (version: string) => void;
+    vi.spyOn(claudeVersion, "readClaudeVersion").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    try {
+      await runtime.detect(undefined, true);
+      expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ detecting: true, latestVersion: "2.1.325" });
+      await expect(runtime.installAll("update")).resolves.toHaveProperty("succeeded", 0);
+      expect(update).not.toHaveBeenCalled();
+      finish("2.1.322");
+      await vi.waitFor(() => expect(events.filter(event => event.event === "claudeStatus").at(-1)).toMatchObject({ version: "2.1.322", latestVersion: "2.1.325", updateAvailable: true }));
+    } finally { finish?.("2.1.322"); await runtime.close(); }
+  });
+
+  it("includes an outdated installed Claude in update-all without installing a missing Claude", async () => {
+    const { runtime } = await fixture();
+    vi.mocked(fetch).mockImplementation(async () => new Response('{"latest":"1.0.0"}'));
+    const find = vi.spyOn(claudeDiscovery, "findClaudeExecutable").mockResolvedValue("/fixture/claude");
+    const local = vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
+    const update = vi.spyOn(claudeUpdate, "updateClaudeCode").mockImplementation(async input => {
+      input.onLatest?.("2.1.325");
+      local.mockResolvedValue("2.1.325");
+      return { entry: "/fixture/claude", version: "2.1.325" };
+    });
+    try {
+      await runtime.detect(undefined, true);
+      await expect(runtime.installAll("update")).resolves.toEqual({ succeeded: 1, failures: [], warnings: [], cancelled: false });
+      expect(update).toHaveBeenCalledOnce();
+      expect(installation.run).not.toHaveBeenCalled();
+      await expect(runtime.installAll("update")).resolves.toHaveProperty("succeeded", 0);
+      find.mockResolvedValue(undefined);
+      await runtime.detect();
+      await expect(runtime.installAll("update")).resolves.toHaveProperty("succeeded", 0);
+      expect(update).toHaveBeenCalledOnce();
+    } finally { await runtime.close(); }
+  });
+
   // HOST-CLAUDE-UPDATE-01: Claude uses the same exclusive/cancellable lifecycle
   // as other updates, but never enters the managed npm installation registry.
   it("updates Claude through its native updater and refreshes compatibility", async () => {
