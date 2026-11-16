@@ -897,8 +897,9 @@ final class HostConnection: ObservableObject {
             ? (preferences?.dictionary(forKey: "orbis.sessionDrafts") as? [String: String] ?? drafts)
             : drafts
         change(&next)
+        let changed = next != drafts
         drafts = next
-        if persist { preferences?.set(next, forKey: "orbis.sessionDrafts") }
+        if persist, changed { preferences?.set(next, forKey: "orbis.sessionDrafts") }
         if reload { draftRevision &+= 1 }
     }
 

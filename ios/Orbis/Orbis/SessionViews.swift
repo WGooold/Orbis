@@ -733,8 +733,14 @@ struct SessionDraftView: View {
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
                     placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
-                    ink: UIColor(p.text), placeholderInk: UIColor(p.secondary), onSubmit: submit, onCancel: cancel)
-                    .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 56)
+                    ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
+                    onEdit: { value, marked, _ in
+                        text = value
+                        owner.clearSessionLaunchValidationError()
+                        owner.editDraft(value, for: draftRuntime, persist: !marked)
+                    }, onSubmit: submit, onCancel: cancel)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .fixedSize(horizontal: false, vertical: true).frame(minHeight: 56)
                     .orbisField(focused: focused)
                 OrbisIconButton(symbol: hasMessage ? "arrow.up" : "play.fill", label: L10n.tr(hasMessage ? "发送" : "启动"), tint: p.agent(agent), action: submit)
                     .disabled(!canStart).accessibilityIdentifier("draft-send").padding(.bottom, 4)
@@ -762,8 +768,7 @@ struct SessionDraftView: View {
                 if !reduced { try? await Task.sleep(for: .milliseconds(120)) }
                 if !cancelling && visible && scenePhase == .active { focused = true }
             }
-            // PERF-12: the card owns its text; persisting a keystroke must not publish the Host.
-            .onChange(of: text) { _, value in owner.clearSessionLaunchValidationError(); owner.editDraft(value, for: draftRuntime) }
+            // PERF-12: the native editor persists committed text without publishing each IME mark.
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
             .onChange(of: closeRequest) { _, _ in cancel() }
@@ -931,7 +936,7 @@ struct RemoteDirectoryView: View {
 
 /// Native marked-text editing keeps IME confirmation distinct from first-sentence
 /// submission. Hardware Shift+Return inserts a line break; Return submits once.
-private struct OrbisDraftEditor: UIViewRepresentable {
+struct OrbisDraftEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     let placeholder: String
@@ -975,6 +980,7 @@ private struct OrbisDraftEditor: UIViewRepresentable {
     func makeUIView(context: Context) -> Editor {
         let view = Editor()
         view.delegate = context.coordinator
+        view.flush = { context.coordinator.flush(view) }
         view.backgroundColor = .clear; view.font = font
         view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = lineFragmentPadding
         view.returnKeyType = .send
@@ -986,14 +992,16 @@ private struct OrbisDraftEditor: UIViewRepresentable {
     func updateUIView(_ view: Editor, context: Context) {
         context.coordinator.parent = self
         view.submit = onSubmit; view.cancel = onCancel
+        view.flush = { context.coordinator.flush(view) }
         view.submitsOnSoftwareReturn = submitsOnSoftwareReturn
         view.placeholder.text = placeholder; view.placeholder.textColor = placeholderInk
         view.placeholder.isHidden = !text.isEmpty
         view.accessibilityLabel = placeholder
-        if view.markedTextRange == nil && view.text != text {
+        if (view.markedTextRange == nil || view.lastProgrammaticRevision != programmaticRevision) && view.text != text {
             let selected = view.selectedRange; view.text = text
             view.selectedRange = NSRange(location: min(selected.location, text.utf16.count), length: 0)
         }
+        view.lastProgrammaticRevision = programmaticRevision
         view.textColor = ink
         view.tintColor = tint
         view.font = font
@@ -1004,23 +1012,31 @@ private struct OrbisDraftEditor: UIViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: Editor, context: Context) -> CGSize? {
         let width = proposal.width ?? 240
-        let height = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        return CGSize(width: width, height: min(6 * (uiView.font?.lineHeight ?? 18), max(uiView.font?.lineHeight ?? 18, height)))
+        let height = uiView.measuredEditorHeight(width: width)
+        return CGSize(width: width, height: height)
     }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: OrbisDraftEditor
         init(_ parent: OrbisDraftEditor) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) {
             let marked = textView.markedTextRange != nil
+            let editor = textView as? Editor
             let width = max(1, textView.bounds.width)
-            let height = Int(ceil(textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+            let height = Int(ceil(editor?.measuredEditorHeight(width: width) ?? textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
             if let onEdit = parent.onEdit { onEdit(textView.text, marked, height) }
             else { parent.text = textView.text }
-            (textView as? Editor)?.placeholder.isHidden = !textView.text.isEmpty
-            textView.invalidateIntrinsicContentSize()
+            editor?.placeholder.isHidden = !textView.text.isEmpty
+            if editor?.lastReportedHeight != height { editor?.lastReportedHeight = height; textView.invalidateIntrinsicContentSize() }
+        }
+        func flush(_ textView: UITextView) {
+            guard let onEdit = parent.onEdit else { parent.text = textView.text; return }
+            let editor = textView as? Editor
+            let width = max(1, textView.bounds.width)
+            let height = Int(ceil(editor?.measuredEditorHeight(width: width) ?? textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+            onEdit(textView.text, false, height)
         }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
-        func textViewDidEndEditing(_ textView: UITextView) { parent.focused = false }
+        func textViewDidEndEditing(_ textView: UITextView) { flush(textView); parent.focused = false }
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             if text == "\n", textView.markedTextRange == nil,
                (textView as? Editor)?.insertingLineBreak != true,
@@ -1033,13 +1049,34 @@ private struct OrbisDraftEditor: UIViewRepresentable {
     final class Editor: UITextView {
         var submit: () -> Void = {}
         var cancel: () -> Void = {}
+        var flush: () -> Void = {}
         var submitsOnSoftwareReturn = true
+        var lastProgrammaticRevision = 0
+        var lastReportedHeight = 0
+        private var measuredWidth: CGFloat = -1
+        private var measuredText = ""
+        private var measuredHeight: CGFloat = 0
         let placeholder = UILabel()
         var insertingLineBreak = false
         override init(frame: CGRect, textContainer: NSTextContainer?) {
             super.init(frame: frame, textContainer: textContainer)
+            if #available(iOS 16.0, *) { usesTextLayoutManager = false }
+            self.textContainer.widthTracksTextView = true
+            self.textContainer.heightTracksTextView = false
+            self.textContainer.size = CGSize(width: 0, height: .greatestFiniteMagnitude)
             placeholder.font = .systemFont(ofSize: 15); placeholder.isUserInteractionEnabled = false; addSubview(placeholder)
         }
+        func measuredEditorHeight(width: CGFloat) -> CGFloat {
+            let width = max(1, width)
+            if abs(measuredWidth - width) < 0.5, measuredText == text { return measuredHeight }
+            textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+            layoutManager.ensureLayout(for: textContainer)
+            let line = font?.lineHeight ?? 18
+            let used = layoutManager.usedRect(for: textContainer).height + textContainerInset.top + textContainerInset.bottom
+            measuredWidth = width; measuredText = text; measuredHeight = min(line * 6, max(line, ceil(used)))
+            return measuredHeight
+        }
+        override var accessibilityValue: String? { get { text ?? "" } set {} }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func layoutSubviews() {
             super.layoutSubviews(); placeholder.frame = CGRect(x: 4, y: 0, width: bounds.width - 8, height: 22)
@@ -1065,7 +1102,7 @@ private struct OrbisDraftEditor: UIViewRepresentable {
             guard markedTextRange == nil else { return }
             insertingLineBreak = true; insertText("\n"); insertingLineBreak = false
         }
-        @objc private func send() { if markedTextRange == nil { submit() } }
-        @objc private func close() { if markedTextRange == nil { cancel() } }
+        @objc private func send() { if markedTextRange == nil { flush(); submit() } }
+        @objc private func close() { if markedTextRange == nil { flush(); cancel() } }
     }
 }

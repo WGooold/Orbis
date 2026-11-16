@@ -395,7 +395,9 @@ extension View {
     }
 
     func orbisInput(focused: Bool) -> some View {
-        padding(.horizontal, 16).padding(.vertical, 14).frame(minHeight: 56)
+        padding(.horizontal, 16).padding(.vertical, 14)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(minHeight: 56)
             .orbisField(focused: focused)
     }
 }
@@ -1100,7 +1102,10 @@ private struct OrbisSheetDragSurface: UIViewRepresentable {
             scrollView = Self.verticalScroller(from: hit, inside: probe)
             guard let scrollView else { return true }
             if dy > 0 { return Self.atTop(scrollView) }
-            return surface.canExpand
+            // An upward drag over a scroller that is not at its top belongs to the
+            // scroller. Only hand it to the sheet when the content is already at
+            // the top and another detent can expand the panel.
+            return surface.canExpand && Self.atTop(scrollView)
         }
 
         func gestureRecognizer(_ recognizer: UIGestureRecognizer,
@@ -1165,7 +1170,6 @@ private struct OrbisSheetDragSurface: UIViewRepresentable {
         private static func interactionInProgress(from view: UIView?, excluding pan: UIGestureRecognizer) -> Bool {
             var current = view
             while let candidate = current {
-                if let text = candidate as? UITextView, text.selectedRange.length > 0 { return true }
                 for recognizer in candidate.gestureRecognizers ?? [] where recognizer !== pan
                     && recognizer is UILongPressGestureRecognizer
                     && (recognizer.state == .began || recognizer.state == .changed) {
@@ -1581,7 +1585,11 @@ private struct OrbisOverlayLayer: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             // Shortcut bars of hardware keyboards are not a keyboard for sheet sizing.
             guard let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-                  let screen = (note.object as? UIScreen)?.bounds else { return }
+                  end.width > 0, end.height > 0 else { return }
+            // UIKit does not reliably set Notification.object for keyboard events.
+            // The frame is in screen coordinates, so use the associated screen when
+            // available and fall back to the current main screen.
+            let screen = (note.object as? UIScreen)?.bounds ?? UIScreen.main.bounds
             keyboardVisible = max(0, screen.maxY - end.minY) > 120
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
