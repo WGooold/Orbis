@@ -374,7 +374,7 @@ iOS 17 另有 `ScrollViewReader`、`scrollPosition(id:)` 与 `LegacyScrollIntera
 
 | ID | 实现 | 自动验证 | 部署 | 用户验收 |
 | --- | --- | --- | --- | --- |
-| IOS-CHAT-06 | `ChatSchedulingTrace` 标记 delta、转录/页面提交、区域 body、卡片重定高与实际 Markdown 绘制；Release 关闭采集时不读时钟、不计数。DEBUG 原生锚点采样与三个互斥候选在 `PreviewSupport` | 原 iPhone 模拟器已逐一运行基线与三个候选，结论见下；真机流式速率、主线程与帧间隔尚无数据，未达到本项完成判据 | 未部署 | 真机待用户验证 |
+| IOS-CHAT-06 | `ChatSchedulingTrace` 标记 delta、转录/页面提交、区域 body、卡片重定高与实际 Markdown 绘制；这些通用调度 signpost 保持 Release 可选采集。页面入口、首遍 body、arrive/首个空闲帧、取消以及 `NativeSnapshotCommit` 属于 DEBUG-only 探针，Release 不编译这条路径；DEBUG 原生锚点采样与三个互斥候选在 `PreviewSupport` | 原 iPhone 模拟器已逐一运行基线与三个候选，结论见下；真机流式速率、主线程、帧间隔与入口到首个空闲帧尚无 Release 数据，未达到本项完成判据 | 未部署 | 真机待用户验证 |
 | IOS-CHAT-07 | `ChatScreenModel` 的七个区域值使用合成等值；保留四源、代次校验、合并采集、同页暂缓与重绑交接；聊天页独立失效通道已删除 | `StoreTests`、发布与模型用例通过；来源更新、输入隔离与转场 UI 用例通过 | 未部署 | 待用户验证 |
 | IOS-CHAT-08 | `ChatSessionActions` 集中当前目标准入和原归属清理；保留目标 runtime 的 fallback；缓存历史预览/重试保留离线路径 | 同 runtime 换 session、过期动作、离线历史与原读取/发送核心用例通过；发送飞行与覆盖页草稿 UI 用例通过 | 未部署 | 待用户验证 |
 | IOS-CHAT-09 | 页面壳、顶栏、转录、输入、行、Markdown、面板分文件；探针实现在 `PreviewSupport`，新文件已登记 Xcode 工程 | Debug 原生测试构建与无签名设备 Release 构建通过；核心包编译通过 | 未部署；无签名产物不是可安装交付 | 待用户验证 |
@@ -481,7 +481,7 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 
 最终局部复验的 PageMotion 依次为 21/0/19.5、14/0/16.7、21/0/16.7、82/1/49.5，两次起滑等待 214.3/156.6ms，见 `final-ui-simulator/command.log`。用例通过，但右滑仍出现长间隔，不能把用例通过写作性能门槛通过。
 
-真机静止跟随、流式拖动、流式转场三种情形的每秒 delta/提交数、主线程占用与帧间隔仍待测量。IOS-CHAT-12、14 的开启条件尚未得到证据支持，IOS-CHAT-15 也未取得复测与授权。
+真机静止跟随、流式拖动、流式转场三种情形的每秒 delta/提交数、主线程占用与帧间隔仍待测量。当前页面入口到首个空闲帧及原生快照提交探针只在 DEBUG 编译；Release 版本的对应真机测量仍待补做。IOS-CHAT-12、14 的开启条件尚未得到证据支持，IOS-CHAT-15 也未取得复测与授权。
 
 ### 2026-11-15 原生回收与调度复核修复
 

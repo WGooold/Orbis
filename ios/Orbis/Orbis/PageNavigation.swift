@@ -227,7 +227,9 @@ final class OrbisPageStack<Page: Hashable>: ObservableObject {
         guard let id = motion.movingID else { return }
         ChatDebugProbes.pageMotionEvent("settleNow", token: motion.token, phase: String(describing: motion.phase),
                                      offset: motion.offset, id: id, details: "cause=\(cause)")
+        #if DEBUG
         ChatSchedulingTrace.pageArrivalCancelled(token: motion.token)
+        #endif
         let returning = motion.phase == .returning
         orbisWithoutAnimation {
             if returning { entries.removeAll { $0.id == id } }

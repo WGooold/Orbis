@@ -1,8 +1,9 @@
 import Foundation
 import os
 
-/// IOS-CHAT-06: opt-in Instruments events, including Release builds. The disabled
-/// path performs only the signpost-enabled check: no clocks, counters or strings.
+/// IOS-CHAT-06: opt-in Instruments events. General scheduling signposts remain available
+/// in Release; chat entrance timing and native snapshot probes compile only in DEBUG.
+/// Disabled paths perform only the signpost-enabled check: no clocks, counters or strings.
 @MainActor
 enum ChatSchedulingTrace {
     enum Region: Int {
