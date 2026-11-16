@@ -4,7 +4,7 @@ struct ChatNoticesRegion: View, Equatable {
     let model: ChatScreenModel
     let actions: ChatSessionActions
     let mountToken: UUID
-    private var ownsViewport: Bool { actions.isCurrent && model.ownsMount(target: actions.target, token: mountToken) }
+    private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
     private var target: ChatActionContext { actions.target }
     let viewport: ChatViewportController
     let setComposerFocused: (Bool) -> Void

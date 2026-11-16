@@ -522,6 +522,46 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 - `release/` 的无签名设备 Release 构建退出码为 0，LC_BUILD_VERSION 的最低系统为 iOS 17.0，SDK 为 27.2；输出只用于编译验证。见 `release-verification.json`，不作为可安装交付包或 iOS 17 运行证据。
 - 原 QA Case `case_99ff49dc405d6d6b004a` 已新增 Round 3 `round_447b7322fe568b8f3893`，绑定 `8da81875` 并保留早轮，见 `qa-round-final.json`。历史 checklist 的 iOS 17 原生后端门槛仍保留；本轮 candidate/reason 明确该系统使用 SwiftUI 兼容路径，未据此删除旧路径。签名包、独立手机配对环境、真机长会话、前后台与 iOS 17 运行验收仍待完成，未部署。
 
+### 2026-11-16 代码审查复核（R5）
+
+审查对 `main...a48c508a` 提出 9 项，逐项核实后处理如下。
+
+- IOS-CHAT-10-R4：卸载只按挂载 token 判定归属。选择变更会先替换动作目标，原先同时比较目标，导致离开的页面无法卸载，视觉活动保持 active。回归为 `replacedSelectionStillUnmountsTheDepartingPage`；恢复旧判定的负对照在同一断言失败。
+- IOS-CHAT-13-R5 文件摘要：工具调用后的正文把最终回复拆出新卡片，锚点随之移到新卡片，原行锚点为空。行级摘要状态跨 cell 复用保留，原行因此残留卡片。TurnChangeSummaryLoader 在该行不再加载时清空摘要。回归为 `testFileSummaryFollowsAnchorsWhenTheReplySplits`，夹具参数 `--preview-change-anchor-handoff`；旧实现的负对照得到 2 张卡片。
+- IOS-CHAT-13-R5 重复行 ID：原生快照对每个 ID 保留首行并继续应用，Debug 仍触发断言。原实现在重复存在期间拒绝全部快照，Release 下转录停止更新，重复消失后才恢复。回归为 `nativeItemsKeepTheFirstRowForADuplicatedID`。
+- 历史与分支页移除下载管理入口，iOS 与 Android 一致（S45 / SC66）。历史预览中的文件下载照常受理，不再有飞入。移除后，窄屏上聊天页之上的历史页、下载页都不再打开下一页，被覆盖的聊天页上方不会发生转场。宽屏（≥600pt）的常驻会话目录仍可在“聊天 → 历史/下载”时推入添加电脑页或替换页面栈，此时聊天页被覆盖。
+- IOS-CHAT-10-R5：页面移动期间，导航区域在聊天页被覆盖时也暂缓，移动结束时补提交；聊天页其他区域照常提交。选择变更（目标或运行时不同）与重绑定立即提交，页面身份不落后于动作目标。回归为 `coveredChatDefersOnlyNavigationUntilMotionEnds`、`coveredMotionStillCommitsANewSelectionToNavigation`；去掉暂缓的负对照在两条断言失败（`nav-hold-negative/`）。宽屏实机待用户验证。
+- 未复现，不改：
+  - 惯性滑动中点停。iOS 27.0 模拟器、iPhone 17、Debug 下，点按时 `isDecelerating` 为 1，UIKit 随后依次调用 willBeginDragging、didEndDragging(decelerate=false) 与 didEndDecelerating，交互标志清除，跳到最新正常生效。临时探针与用例已移除；真机未验证。
+  - 标题按钮强调色。原生缓存键包含宿主环境的 accent，它与标题取自同一次提交的 kind，颜色变化时标题即重建。
+- 性能与清理：
+  - `ownsMount` 改用 `ChatActionContext.isCurrent(in:)`，滚动回调不再构造动作面或查找回退运行时；`ChatNoticesRegion` 去掉重复的 `isCurrent`；挂载与可见性判定直接比较 `actionTarget`。
+  - 原生行继续注册落点并记录下载起点，但只有存在发送动画项时才取气泡内容，动画结束后释放；不再在每次更新时包装并保留整行内容。
+  - 删除未使用的 `ChatScreenSnapshot.modelPresentation`；当前选择的会话键统一由 `ChatActionContext.selectedIdentity` 计算。
+
+本轮证据位于 `.artifacts/ios-chat-review-r5-20261115/`，设备为共享池 iPhone 17、iOS 27.0、Debug：
+
+- 最终版本：`final3-build/` 的 Debug 构建与 `final3-release/` 的无签名设备 Release 编译均通过。`final3-ui/` 的 55 项 UI 全部通过，选集见 `final3-selection.json`，含原 41 项、R5 新增与受影响用例及下述 4 项。`cleanup-core/run.log` 的核心 577 项全部通过。本轮改动单独保存为 `r5-candidate.patch`，SHA-256 见 `r5-candidate.patch.sha256`；其中不含同一工作树里另一任务的额度相关改动，最终运行时这些改动均在。
+- 发送动效的 3 个用例只断言几何。`final3-attachments/` 中长文本发送进行到 0.82 时的截图显示，飞行气泡带有完整正文，按需取内容后落点视觉仍存在。
+- `swiftui-cards-ui/`：`testFileSummaryFollowsAnchorsWhenTheReplySplits` 在 SwiftUI 转录后端（iOS 17 Release 路径）通过。
+- `final-core/run.log`：首轮核心 575 项通过。`core-unmount-negative/` 为卸载判定的负对照，`nav-hold-negative/` 为导航暂缓的负对照。
+- `final2-ui-simulator/`：该轮已被后续改动取代，中途用中断信号停止。入口在停止子进程时报错，保留了设备租约；随后在注册表互斥内核对归属、进程退出与关机状态后释放，见 `lease-recovery.json`。
+- `final-ui/`：基于移除入口前的构建，44 项中 42 项通过；选集见 `final-selection.json`，含原 41 项与新增 3 项。两项失败为既有问题，见下文。`cards-negative/` 为文件摘要的负对照。
+- `fling-probe-5/`：滑动中点停的有效样本，含 `fling-log.txt` 与测试结果。探针补丁为 `fling-probe-source/fling-probe.patch`；前 4 轮因合成手势未产生惯性或点按晚于惯性结束而无效，原样保留。
+- `history-ui/`：入口移除后，进入历史页或经下载返回的 15 项用例中 12 项通过。英文标题在只剩一个页头动作时不再折行，原“必须折行”判据改为“标题不压到动作按钮下”；`recheck-candidate-ui/` 两轮通过，截图确认标题完整。其余两项失败与未改动 HEAD 相同，见下文。
+- 对照：`control-head-ui/`、`control-main-ui/` 为 HEAD（a48c508a）与 main（1bee5be8）的工作树构建；`recheck-head-ui/` 与候选版本在同一租约内各运行两轮。对照工作树在记录后移除。
+- `release/`：候选版本的无签名设备 Release 构建通过，仅作编译验证。
+- 本轮期间，同一工作树另有任务的未提交改动：`docs/adr/0070-unified-design-and-interaction.md`、`StatusViews.swift`、`PreviewSupport.swift` 的额度读取、`OrbisUITests.swift` 的额度用例，以及 Android `ProviderDial*`。本轮各次 iOS 构建可能包含其中 iOS 部分。这些改动位于供应商额度页面，不在聊天与历史路径上，不属于本轮提交范围。
+
+以下 4 项在未改动的 HEAD 上以相同断言失败，其中后两项在 main 上也同样失败；首次失败证据保留在 `final-ui/`、`history-ui/`、`control-*-ui/`、`recheck-head-ui/`、`main-nav-ui/`。根因都是断言落后于已记录的产品决定，本轮按决定更新断言：
+
+- `testNativeTurnFileReviewShowsSourceAndReadsOnlySelectedDetail`：说明文字自 583dcdbb（11-11）起收入 info 按钮。现断言卡片显示“记录不完整”，说明不内联，点开 info 后出现、关闭后消失。
+- `testTurnFileReviewLoadsOnlySelectedFilesAndRetainsCache`：旧期望来自 6b55dc73（10-31）的整轮末尾规则。91953f11（11-06）改为由锚定消息最后一个片段所在卡片承载；Android `TurnChangePresentationWorker` 同样按卡片匹配，Codex Host 的 `#reviewAnchor` 取本轮最后一条助手消息。经决定保留该规则。夹具仍锚定第一步，代表旧版 Host 的中途锚点；现断言摘要位于锚定卡片之后、下一张卡片之前。main 在更早的断言失败，摘要卡未出现，即 R3 修复的初始空 ForEach 问题。
+- `testChatDownloadsReturnToSameChat`：XCUI 仍能查到被覆盖页面里保留的原生文本视图，AccessibilityReachProbe 的说明已记录这一点。现改用可达性探针判断被覆盖与返回后的状态。
+- `testFullPageReturnBudgetAndNestedSourceReentry`：设置已成为根标签（S37），不经页面返回，指标没有 count。c44ccc5d 已同样调整姊妹用例。现从计数序列中去掉设置。
+
+orbis-qa 连接失败（502），本轮未登记共享测试看板。未部署；真机交互、阅读与前后台仍待用户验证。
+
 ## 8. 评估后不采用与范围外
 
 - **引入状态管理依赖。** 系统的 Observation 已覆盖所需能力，不新增第三方架构库。

@@ -984,21 +984,30 @@ private struct MessageSendFlightTarget<Content: View>: View {
     private var owner: NativeSendTargetOwner?
     private weak var flight: MessageSendFlight?
     private var visual: NativeSendVisualSource?
+    private var holdsContent = false
 
+    /// Every row keeps its landing anchor; only a row with a flight item retains its
+    /// bubble content. A new flight item re-renders this observed target, which supplies
+    /// the content before the flight lands, so idle rows keep no visual copy.
     func bind(reader: UUID, flight: MessageSendFlight, id: String, cell: ChatNativeCellGeometry,
-              anchor: OrbisAnchor, content: AnyView) {
+              anchor: OrbisAnchor, content: () -> AnyView) {
         let next = NativeSendTargetOwner(page: flight.pageID, row: id,
                                          cell: ObjectIdentifier(cell), reader: reader)
+        let flying = flight.items.contains { $0.id == id }
         if owner != next {
             retire()
             owner = next; self.flight = flight
-            let source = NativeSendVisualSource(content)
-            visual = source
+            let source = NativeSendVisualSource(flying ? content() : AnyView(EmptyView()))
+            visual = source; holdsContent = flying
             flight.registerNative(next, anchor: anchor, visual: source)
         } else if flight.ownsNative(next) {
             // A superseded cell may still render before UIKit finishes reuse. It
             // must not claim the new cell's registration on that later update.
-            visual?.update(content, notifying: flight.items.contains { $0.id == id })
+            if flying {
+                visual?.update(content(), notifying: true); holdsContent = true
+            } else if holdsContent {
+                visual?.update(AnyView(EmptyView()), notifying: false); holdsContent = false
+            }
         }
     }
 
@@ -1019,7 +1028,7 @@ private struct MessageSendFlightTarget<Content: View>: View {
 
     private func retire() {
         if let owner { flight?.unregisterNative(owner) }
-        owner = nil; flight = nil; visual = nil
+        owner = nil; flight = nil; visual = nil; holdsContent = false
     }
 }
 
@@ -1050,7 +1059,7 @@ private struct TrackedSendTarget<Content: View>: View {
                     nativeBinding.report(frame, reader: reader, flight: flight, id: id, cell: nativeGeometry)
                 }, onTouch: { downloadFlight?.lastTap = $0 }, onUpdate: { reader in
                     nativeBinding.bind(reader: reader, flight: flight, id: id, cell: nativeGeometry,
-                                       anchor: anchor, content: AnyView(content))
+                                       anchor: anchor, content: { AnyView(content) })
                 }, onRemove: { reader in
                     nativeBinding.remove(reader: reader, flight: flight, id: id, cell: nativeGeometry)
                 }))

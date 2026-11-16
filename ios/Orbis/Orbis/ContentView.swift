@@ -274,7 +274,7 @@ private struct NavigationRoot: View, Equatable {
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
         case .status: ConnectionStatusView(onBack: back)
         case .providers: AgentProvidersView(onBack: back)
-        case .history: HistoryBranchView(onBack: back, onDownloads: { push(.downloads) })
+        case .history: HistoryBranchView(onBack: back)
         case .downloads: DownloadsView(onBack: back)
         }
     }

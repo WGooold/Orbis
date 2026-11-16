@@ -829,7 +829,13 @@ final class OrbisUITests: XCTestCase {
         let app = launch("changes", arguments: ["--preview-native-file-changes"])
         let open = app.buttons["turn-changes-open-preview-review"]
         XCTAssertTrue(open.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].exists)
+        // The scope caveat is a low-interference info disclosure (583dcdbb), not inline copy.
+        XCTAssertTrue(app.staticTexts["记录不完整"].exists)
+        XCTAssertFalse(app.staticTexts["仅记录 Codex 文件工具变更"].exists)
+        app.buttons["查看记录不完整说明"].tap()
+        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].waitForExistence(timeout: 3))
+        app.buttons["知道了"].tap()
+        XCTAssertTrue(app.staticTexts["仅记录 Codex 文件工具变更"].waitForNonExistence(timeout: 3))
         XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
         capture("native-turn-change-summary", app: app)
         open.tap()
@@ -843,13 +849,17 @@ final class OrbisUITests: XCTestCase {
         let open = app.buttons["turn-changes-open-preview-review"]
         XCTAssertTrue(open.waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["change-detail-requests"].label, "reads=0,0,0")
-        // One compact block after the turn's last row, although the Host anchored it on the first of
-        // five steps: the header opens the viewer, then one single-line row per file.
+        // One compact block after the card holding the anchored message (91953f11, both apps).
+        // A current Host anchors the turn's last agent message; this fixture keeps an older
+        // Host's mid-turn anchor on the first of five steps, so the block follows the first card
+        // (steps 1–4) and precedes the final step. The header opens the viewer, then one row per file.
         XCTAssertTrue(open.label.contains("3 个文件已更改"))
         XCTAssertEqual(app.buttons.matching(identifier: "turn-changes-open-preview-review").count, 1)
-        XCTAssertGreaterThanOrEqual(app.staticTexts["已完成本轮文件修改。"].frame.minY, app.staticTexts["测试通过。"].frame.maxY)
-        XCTAssertGreaterThanOrEqual(open.frame.minY, app.staticTexts["已完成本轮文件修改。"].frame.maxY)
+        let anchoredCardEnd = app.staticTexts["测试通过。"].frame, nextCard = app.staticTexts["已完成本轮文件修改。"].frame
+        XCTAssertGreaterThanOrEqual(nextCard.minY, anchoredCardEnd.maxY)
+        XCTAssertGreaterThanOrEqual(open.frame.minY, anchoredCardEnd.maxY)
         let rows = ["change-1", "change-2", "change-3"].map { app.buttons["turn-change-file-" + $0].frame }
+        XCTAssertLessThanOrEqual(rows[2].maxY, nextCard.minY)
         XCTAssertGreaterThanOrEqual(rows[0].minY, open.frame.maxY)
         for (above, below) in zip(rows, rows.dropFirst()) { XCTAssertGreaterThanOrEqual(below.minY, above.maxY - 0.5) }
         for row in rows { XCTAssertLessThanOrEqual(row.height, 44) }
@@ -1862,22 +1872,24 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch.waitForExistence(timeout: 3))
     }
 
-    func testHistoryDownloadButtonAndFlight() {
-        let app = launch("history", arguments: ["--preview-chat-artifact", "--preview-history-artifact", "--preview-slow-flight", "--preview-flight-probe"])
+    // S45 / SC66: history offers no downloads entry; a file in its preview still queues a task,
+    // which the chat's downloads page lists.
+    func testHistoryFileDownloadQueuesWithoutADownloadsEntry() {
+        let app = launch("history", arguments: ["--preview-chat-artifact", "--preview-history-artifact"])
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["history-downloads"].exists)
         let node = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "梳理页面和交互")).firstMatch
         XCTAssertTrue(node.waitForExistence(timeout: 8)); node.tap()
         let file = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "report")).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 5))
-        let origin = file.frame
         file.tap()
-        let target = app.buttons["history-downloads"]
-        let metrics = flightMetrics(target)
-        XCTAssertEqual(metrics["mode"], "flight")
-        XCTAssertEqual(Double(metrics["fromX"] ?? "") ?? -1, Double(origin.midX), accuracy: 4)
-        XCTAssertEqual(Double(metrics["fromY"] ?? "") ?? -1, Double(origin.midY), accuracy: 4)
-        XCTAssertEqual(Double(metrics["toX"] ?? "") ?? -1, Double(target.frame.midX), accuracy: 4)
-        XCTAssertEqual(Double(metrics["toY"] ?? "") ?? -1, Double(target.frame.midY), accuracy: 4)
-        capture("history-download-flight-midway", app: app)
+        capture("history-file-download-without-entry", app: app)
+        app.buttons["返回"].firstMatch.tap()
+        let downloads = app.buttons["chat-downloads"]
+        XCTAssertTrue(downloads.waitForExistence(timeout: 3))
+        downloads.tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 3), "The history file download must be queued")
     }
 
     // ADR-0070 / S37: the header keeps downloads and local draft creation; settings is a root,
@@ -1978,11 +1990,12 @@ final class OrbisUITests: XCTestCase {
         let history = launch("history", arguments: ["--preview-language=en"])
         let title = history.staticTexts["History and branches"]
         XCTAssertTrue(title.waitForExistence(timeout: 8))
-        if history.frame.width <= 430 {
-            XCTAssertGreaterThan(title.frame.height, 30, "The English title must wrap instead of truncating")
-        }
-        XCTAssertTrue(history.buttons["Filter history"].isHittable)
-        XCTAssertTrue(history.buttons["history-downloads"].isHittable)
+        // S45 leaves one header action, so the title fits on a phone; its two-line limit still
+        // prevents truncation on narrower widths. The capture is the truncation review.
+        let filter = history.buttons["Filter history"]
+        XCTAssertTrue(filter.isHittable)
+        XCTAssertLessThanOrEqual(title.frame.maxX, filter.frame.minX, "The title must not run under the action")
+        XCTAssertFalse(history.buttons["history-downloads"].exists)
         capture("language-history-english-full-title", app: history)
     }
 
@@ -2082,26 +2095,23 @@ final class OrbisUITests: XCTestCase {
     func testFullPageReturnBudgetAndNestedSourceReentry() {
         let app = launch("home", arguments: ["--measure-page-return", "--probe-accessibility-reach"])
         XCTAssertTrue(app.buttons["root-tab-settings"].waitForExistence(timeout: 8))
-        for (index, entry) in ["root-tab-settings", "home-downloads"].enumerated() {
-            app.buttons[entry].tap()
-            returnWithoutSettling(app, count: index + 1)
-            XCTAssertTrue(app.buttons[entry].isHittable)
-        }
+        // Settings is a root tab (S37) and leaves through the tab bar, not a page return.
+        app.buttons["home-downloads"].tap()
+        returnWithoutSettling(app, count: 1)
+        XCTAssertTrue(app.buttons["home-downloads"].isHittable)
         let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "home-runtime-")).firstMatch
         card.tap()
-        app.buttons["历史与分支"].tap()
-        let downloads = app.buttons["history-downloads"]
-        XCTAssertTrue(downloads.waitForExistence(timeout: 3))
-        for count in 3...5 {
-            downloads.tap()
+        let history = app.buttons["历史与分支"]
+        XCTAssertTrue(history.waitForExistence(timeout: 3))
+        // The chat is itself a pushed source; each page above it returns there.
+        for count in 2...4 {
+            history.tap()
             returnWithoutSettling(app, count: count)
-            XCTAssertTrue(downloads.isHittable)
-            waitReachable(app, "chat-composer|", false)
+            XCTAssertTrue(history.isHittable)
+            waitReachable(app, "|打开会话目录", false)
         }
-        returnWithoutSettling(app, count: 6)
-        XCTAssertTrue(app.buttons["历史与分支"].isHittable)
         app.buttons["chat-downloads"].tap()
-        returnWithoutSettling(app, count: 7)
+        returnWithoutSettling(app, count: 5)
         XCTAssertTrue(app.buttons["chat-downloads"].isHittable)
         capture("immediate-return-nested-chat", app: app)
     }
@@ -2146,16 +2156,13 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    // M14: nested full pages return one level at a time; each source keeps its state.
     func testNestedPagesSwipeBackOneLevelAtATime() {
         let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("nested page draft")
-        app.buttons["历史与分支"].tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        let search = app.textFields["搜索历史与分支"]
-        search.tap(); search.typeText("保留")
-        app.buttons["history-downloads"].tap()
+        app.buttons["chat-downloads"].tap()
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
         func swipeBack() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
@@ -2163,17 +2170,15 @@ final class OrbisUITests: XCTestCase {
                        withVelocity: .slow, thenHoldForDuration: 0.1)
         }
         swipeBack()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        XCTAssertEqual(search.value as? String, "保留")
-        waitReachable(app, "history-downloads|", true)
-        waitReachable(app, "chat-composer|", false)
-        capture("nested-downloads-return-history", app: app)
-        swipeBack()
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
         XCTAssertTrue((composer.value as? String)?.contains("nested page draft") == true)
         waitReachable(app, "chat-composer|", true)
         waitReachable(app, "|打开会话目录", false)
-        capture("nested-history-return-chat", app: app)
+        capture("nested-downloads-return-chat", app: app)
+        swipeBack()
+        waitReachable(app, "|打开会话目录", true)
+        waitReachable(app, "chat-composer|", false)
+        capture("nested-chat-return-home", app: app)
     }
 
     // ADR-0054 / M14: settings and the home downloads page slide back to home like the chat.
@@ -2258,18 +2263,20 @@ final class OrbisUITests: XCTestCase {
 
     // ADR-0054: the chat's downloads page returns to that same chat, draft and all.
     func testChatDownloadsReturnToSameChat() {
-        let app = launch("chat")
+        let app = launch("chat", arguments: ["--probe-accessibility-reach"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("下载前的草稿")
         app.buttons["chat-downloads"].tap()
         XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
-        XCTAssertFalse(composer.exists)
+        // XCUI still finds the retained native text view; reachability is the covered contract.
+        waitReachable(app, "chat-composer|", false)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.1)
         XCTAssertTrue(composer.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["打开会话目录"].exists)
+        waitReachable(app, "chat-composer|", true)
+        waitReachable(app, "|打开会话目录", false)
         XCTAssertTrue((composer.value as? String)?.contains("下载前的草稿") == true)
         capture("chat-downloads-returned", app: app)
     }
@@ -2369,24 +2376,6 @@ final class OrbisUITests: XCTestCase {
         capture("detail-replacement-retained-new-owner", app: app)
     }
 
-    // ADR-0054 / ADR-0058 M16: the history page has the chat's download button and its page returns there.
-    func testHistoryDownloadsReturnToHistory() {
-        let app = launch("history")
-        let button = app.buttons["history-downloads"]
-        XCTAssertTrue(button.waitForExistence(timeout: 8))
-        let search = app.textFields["搜索历史与分支"]
-        XCTAssertTrue(search.exists)
-        button.tap()
-        XCTAssertTrue(app.staticTexts["下载"].waitForExistence(timeout: 3))
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
-        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
-                    withVelocity: .slow, thenHoldForDuration: 0.1)
-        XCTAssertTrue(button.waitForExistence(timeout: 3))
-        XCTAssertTrue(search.exists)
-        XCTAssertFalse(app.descendants(matching: .any)["chat-composer"].exists)
-        capture("history-downloads-returned", app: app)
-    }
-
     // M14: history and branch browsing is a page above the same chat, so a right swipe returns there.
     func testHistorySwipeBackReturnsToChat() {
         let app = launch("chat", arguments: ["--probe-accessibility-reach"])
@@ -2395,15 +2384,15 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(historyButton.waitForExistence(timeout: 8))
         composer.tap(); composer.typeText("历史前的草稿")
         historyButton.tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
-        waitReachable(app, "history-downloads|", true)
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 3))
+        waitReachable(app, "|筛选历史", true)
         waitReachable(app, "chat-composer|", false)
         // The covered chat must not keep the keyboard.
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.6))
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.30, dy: 0.6)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
-        XCTAssertTrue(app.buttons["history-downloads"].exists)
+        XCTAssertTrue(app.buttons["筛选历史"].exists)
         XCTAssertFalse(app.buttons["退出预览"].exists, "取消右滑不能同时打开手指下的历史卡片")
         capture("history-swipe-cancelled", app: app)
         start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.6)),
@@ -2415,7 +2404,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue((composer.value as? String)?.contains("历史前的草稿") == true)
         capture("history-swipe-back-to-chat", app: app)
         historyButton.tap()
-        XCTAssertTrue(app.buttons["history-downloads"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["筛选历史"].waitForExistence(timeout: 3))
     }
 
     func testSlashPickerStaysAboveKeyboard() {
@@ -3178,6 +3167,29 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(sixth.waitForExistence(timeout: 5))
         XCTAssertTrue(expand.label.contains("收起"), "Recycling must retain the file-summary expansion")
         capture("chat-native-file-summary-recycled", app: app)
+    }
+
+    // IOS-CHAT-13-R5: prose after a tool call splits the final reply, and the new card
+    // takes over the turn anchors. The original row must drop its retained summary.
+    func testFileSummaryFollowsAnchorsWhenTheReplySplits() throws {
+        let app = launch("changes", arguments: ["--preview-long-transcript", "--preview-source-controls",
+                                                "--preview-change-anchor-handoff"])
+        defer { app.terminate() }
+        let summaries = app.buttons.matching(identifier: "turn-changes-open-preview-review")
+        XCTAssertTrue(summaries.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(summaries.count, 1)
+        app.buttons["preview-chat-source-update"].tap()
+        let continuation = app.staticTexts["工具调用后的补充说明。"]
+        XCTAssertTrue(continuation.waitForExistence(timeout: 5))
+        // Wait for the new card's asynchronous match before counting the old row's cards.
+        func followed() -> Bool {
+            summaries.allElementsBoundByIndex.contains { $0.frame.minY > continuation.frame.minY }
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !followed() && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertTrue(followed(), "The summary follows the new final card")
+        XCTAssertEqual(summaries.count, 1, "Only the row that owns the anchors shows the summary")
+        capture("chat-file-summary-anchor-handoff", app: app)
     }
 
     // IOS-CHAT-13-R3: capture the first native frames on return, before WebKit

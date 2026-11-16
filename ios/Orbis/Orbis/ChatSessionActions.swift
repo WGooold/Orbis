@@ -28,10 +28,7 @@ struct ChatSessionActions: Equatable {
         if let current = connection.selectedRuntime, current.runtimeId == runtimeId, current.sessionId == sessionId { return current }
         return fallbackRuntime
     }
-    @MainActor var isCurrent: Bool {
-        guard store.activeConnection === connection else { return false }
-        return target.identity == (store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "")
-    }
+    @MainActor var isCurrent: Bool { target.isCurrent(in: store) }
     /// Cleanup stays with its original owner; a replacement session cannot inherit it.
     @MainActor var ownsRuntime: Bool {
         guard let id = target.runtimeId else { return false }

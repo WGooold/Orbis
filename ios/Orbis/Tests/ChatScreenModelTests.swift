@@ -373,6 +373,74 @@ struct ChatScreenModelTests {
         model.unmount(target: target, token: second)
     }
 
+    // ADR-0082 R5 / PERF-10: pages can move above a covered chat (the wide-layout
+    // directory). Chat regions keep committing; root navigation waits for motion to end
+    // and then lands without another source event.
+    @Test func coveredChatDefersOnlyNavigationUntilMotionEnds() async throws {
+        let (store, transport, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        await transport.ready(session: "session"); await settle(store)
+        let model = store.chatScreens, target = model.actions.target, token = UUID()
+        model.mount(target: target, token: token, visible: true, foreground: true)
+        defer { model.unmount(target: target, token: token) }
+        model.visibilityChanged(target: target, visible: false, foreground: true)
+        model.motionChanged(true)
+        let runtime = try #require(store.selectedRuntime)
+        let navigationChanges = ChatObservationCount()
+        withObservationTracking { _ = model.navigation } onChange: { navigationChanges.changed() }
+        store.errorMessage = "during covered motion"
+        store.saveDraft("during covered motion", for: runtime)
+        await settle(store)
+        #expect(model.snapshot.draft == "during covered motion")
+        #expect(model.navigation.error == nil)
+        #expect(navigationChanges.value == 0)
+        model.motionChanged(false)
+        await model.waitForPending()
+        #expect(model.navigation.error == "during covered motion")
+        #expect(navigationChanges.value == 1)
+    }
+
+    // ADR-0082 R5: a new selection is never deferred, so the page identity keyed on
+    // navigation cannot lag the action target during covered motion.
+    @Test func coveredMotionStillCommitsANewSelectionToNavigation() async throws {
+        let (store, transport, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        await transport.ready(session: "first"); await settle(store)
+        let model = store.chatScreens, target = model.actions.target, token = UUID()
+        model.mount(target: target, token: token, visible: true, foreground: true)
+        defer { model.unmount(target: target, token: token) }
+        model.visibilityChanged(target: target, visible: false, foreground: true)
+        model.motionChanged(true)
+        defer { model.motionChanged(false) }
+        await transport.ready(session: "replacement"); await settle(store)
+        #expect(model.actions.target != target)
+        #expect(model.navigation.target == model.actions.target)
+        #expect(model.navigation.runtime?.sessionId == "replacement")
+    }
+
+    // IOS-CHAT-10-R4: a selection change replaces the action target before the old
+    // page disappears. Its own mount token must still release mount and visibility.
+    @Test func replacedSelectionStillUnmountsTheDepartingPage() async {
+        let (store, transport, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        await transport.ready(session: "first"); await settle(store)
+        let model = store.chatScreens, target = model.actions.target, token = UUID()
+        model.mount(target: target, token: token, visible: true, foreground: true)
+        #expect(model.visualActivity.phase == .active)
+        await transport.ready(session: "replacement"); await settle(store)
+        #expect(model.actions.target != target)
+        model.unmount(target: target, token: token)
+        #expect(!model.visualActivity.active)
+        #expect(!model.ownsMount(target: target, token: token))
+    }
+
+    // IOS-CHAT-13-R5: a duplicated row ID keeps its first row instead of rejecting
+    // the whole native snapshot, which froze Release transcripts.
+    @Test func nativeItemsKeepTheFirstRowForADuplicatedID() {
+        let rows = [("a", 1), ("b", 2), ("a", 3), ("c", 4), ("b", 5)]
+        #expect(chatUniqueItems(rows, id: { $0.0 }).map { $0.1 } == [1, 2, 4])
+    }
+
     private func message(_ id: String, role: String) -> ChatMessage {
         ChatMessage(messageId: id, role: role,
             content: [ChatContent(type: "text", text: id, toolName: nil, artifact: nil)],

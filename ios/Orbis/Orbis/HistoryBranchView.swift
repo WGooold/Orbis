@@ -9,9 +9,8 @@ struct HistoryBranchView: View {
     @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    /// S45 / SC66: no downloads entry; file downloads in a preview still queue tasks.
     let onBack: () -> Void
-    /// Same download entry as the chat header; the downloads page returns here (ADR-0054, §7).
-    let onDownloads: () -> Void
     @State private var query = ""
     @State private var selected: RuntimeOption?
     @State private var previewHandle: EntryPreviewHandle?
@@ -20,9 +19,6 @@ struct HistoryBranchView: View {
     @State private var showOtherBranches = false
     @State private var showDetails = false
     @State private var actionPending = false
-    @StateObject private var downloadFlight = DownloadFlight()
-    /// The downloads page covers this one and returns here: keep the preview and the scroll position.
-    @State private var openingDownloads = false
     @State private var scrolledToCurrent = false
     @FocusState private var searchFocused: Bool
 
@@ -58,8 +54,6 @@ struct HistoryBranchView: View {
                     [OrbisMenuItem(title: L10n.tr("显示其他分支"), symbol: "arrow.triangle.branch", checked: showOtherBranches) { showOtherBranches.toggle() },
                      OrbisMenuItem(title: L10n.tr("显示工具与细节"), symbol: "wrench.and.screwdriver", checked: showDetails) { showDetails.toggle() }]
                 }
-                OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载")) { openingDownloads = true; onDownloads() }
-                    .downloadFlightTarget(downloadFlight).accessibilityIdentifier("history-downloads")
             }
             HStack(spacing: 10) {
                 OrbisActionSymbol(systemName: "magnifyingglass").foregroundStyle(OrbisPalette(scheme).secondary)
@@ -110,10 +104,8 @@ struct HistoryBranchView: View {
             }
             if let selected { preview(selected) }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .downloadFlightHost(downloadFlight)
             .onChange(of: store.historyRevision) { _, _ in onBack() }
             .onChange(of: store.pendingActionIds) { _, ids in if ids.isEmpty { actionPending = false } }
-            .onAppear { openingDownloads = false }
             .task(id: HistoryOptionsKey(target: target, catalog: optionCatalog?.id)) {
                 if let old = menuTarget, old != target, old.runtimeId != nil {
                     let actions = ChatSessionActions(store: store, target: old)
@@ -129,7 +121,7 @@ struct HistoryBranchView: View {
                     let actions = ChatSessionActions(store: store, target: target)
                     if actions.ownsRuntime { actions.cancelMenuOptions("tree") }
                 }
-                if !openingDownloads { dismissOwnedPreview() }
+                dismissOwnedPreview()
             }
     }
 

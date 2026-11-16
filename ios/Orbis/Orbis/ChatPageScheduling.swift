@@ -49,6 +49,13 @@ final class ChatTranscriptItemCache<Inputs: Equatable, Item> {
     }
 }
 
+/// Diffable snapshots require unique identifiers. A malformed source keeps each ID's
+/// first row, so later transcript updates still apply instead of being rejected.
+func chatUniqueItems<Item>(_ items: [Item], id: (Item) -> String) -> [Item] {
+    var seen = Set<String>()
+    return items.filter { seen.insert(id($0)).inserted }
+}
+
 enum ChatPagePhase: Equatable {
     case active, moving, covered, background
     var visualActive: Bool { self == .active || self == .moving }

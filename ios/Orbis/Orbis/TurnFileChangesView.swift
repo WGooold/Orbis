@@ -20,9 +20,17 @@ struct TurnChangeSummaryLoader: ViewModifier {
     let anchors: Set<String>
     let state: TurnChangeSummaryState
     func body(content: Content) -> some View {
-        if let changes, !anchors.isEmpty {
-            content.modifier(ObservedTurnChangeSummaryLoader(changes: changes, anchors: anchors, state: state))
-        } else { content }
+        let loads = changes != nil && !anchors.isEmpty
+        Group {
+            if let changes, loads {
+                content.modifier(ObservedTurnChangeSummaryLoader(changes: changes, anchors: anchors, state: state))
+            } else { content }
+        }
+        // A later row of the same turn takes over the anchors when a tool call splits
+        // the reply. The row-owned summaries outlive cell reuse, so release them here.
+        .onChange(of: loads, initial: true) { _, loads in
+            if !loads, !state.summaries.isEmpty { state.summaries = [] }
+        }
     }
 }
 

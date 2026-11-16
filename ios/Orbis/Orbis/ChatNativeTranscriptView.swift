@@ -347,11 +347,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
 
             if sourceChanged {
-                var ids = Set<String>()
-                let next = snapshot?.items ?? desired
-                guard next.allSatisfy({ ids.insert($0.id).inserted }) else {
+                let proposed = snapshot?.items ?? desired
+                let next = chatUniqueItems(proposed, id: \.id)
+                if next.count != proposed.count {
                     assertionFailure("Native transcript requires unique row IDs")
-                    return
                 }
                 desired = next
                 if let snapshot { receivedItemsRevision = snapshot.revision }

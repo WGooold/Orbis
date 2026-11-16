@@ -462,7 +462,9 @@ func makePreviewStore(screen: String) -> OrbisStore {
     let transport = PreviewTransport(screen: screen)
     PreviewViewportUpdates.schedule = screen == "viewport" && (ProcessInfo.processInfo.arguments.contains("--preview-viewport-drag") || ChatLifecycleProbe.enabled)
         ? { [weak transport] in transport?.scheduleViewportBatch() } : nil
-    PreviewViewportUpdates.advance = screen == "viewport" ? { [weak transport] in transport?.advanceViewport() } : nil
+    PreviewViewportUpdates.advance = screen == "viewport" ? { [weak transport] in transport?.advanceViewport() }
+        : screen == "changes" && ProcessInfo.processInfo.arguments.contains("--preview-change-anchor-handoff")
+        ? { [weak transport] in transport?.handOffChangeAnchor() } : nil
     // `--preview-hosts=2` pairs a second computer, to review how several computers are switched.
     let twoHosts = ProcessInfo.processInfo.arguments.contains("--preview-hosts=2")
     // PERF-12: persist like the shipping app (`UserDefaults.standard`) so a profile includes what a
@@ -674,6 +676,8 @@ private final class PreviewTransport: OrbisTransport {
     private var historyPrepend: Bool { screen == "tool" && PreviewHistoryPrependProbe.enabled }
 
     func changeList(_ operation: String) {
+    /// IOS-CHAT-13-R5: prose after a tool call splits the final reply; its anchors move to the new card.
+    private var changeAnchorHandedOff = false
         listMutation = operation
         if operation == "insert" && screen != "drawer" {
             receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-new", "sessionId": "session-new",
@@ -858,6 +862,20 @@ private final class PreviewTransport: OrbisTransport {
     }
     func advanceViewport() {
         appendViewportContent()
+    func handOffChangeAnchor() {
+        changeAnchorHandedOff = true
+        let index = messages.count - 1
+        let base = sourceSequence
+        sourceSequence += 1
+        let entry: [String: Any] = ["entryId": "node-\(index + 1)", "parentId": "node-\(index)", "type": "message",
+                                    "timestamp": "2026-10-29T00:00:00.000Z", "data": ["message": messages[index]]]
+        event(["type": "session.patch", "sessionId": "session-1", "baseSeq": base, "seq": sourceSequence,
+               "source": ["epoch": "preview-source", "seq": sourceSequence, "ready": true],
+               "head": ["leafId": "node-\(messages.count)"], "headCompleteness": "complete", "entries": [entry],
+               "display": ["projectionVersion": 3, "entries": [["displayId": "node-\(index + 1)", "entryId": "node-\(index + 1)",
+                                                                 "kind": "message", "message": messages[index]]]],
+               "live": ["complete": true, "messages": [], "tools": []]])
+    }
         if keyboardStream { scheduleViewportBatch() }
     }
     func scheduleViewportBatch() {
@@ -1333,13 +1351,18 @@ private final class PreviewTransport: OrbisTransport {
     }
     private var messages: [[String: Any]] {
         if screen == "changes" {
-            // Five steps make two virtual rows; the summary is anchored on the first step (node-2)
-            // and must still follow the turn's last row.
+            // Five steps make two cards. An older Host anchored the summary on the first step
+            // (node-2); it follows the card holding that step, not the turn's last card.
             let history = ProcessInfo.processInfo.arguments.contains("--preview-long-transcript") ? recycleHistory : []
             if !history.isEmpty {
                 // Isolate cell reuse from the existing multi-row summary-anchor fixture.
-                return history + [message("m1", role: "user", text: "查看这轮的文件变化"),
-                                  message("m2", role: "assistant", text: "已完成本轮文件修改。")]
+                let reply: [String: Any] = changeAnchorHandedOff
+                    ? ["messageId": "m2", "role": "assistant", "timestamp": 1793232000000, "content": [
+                        ["type": "text", "text": "已完成本轮文件修改。"],
+                        ["type": "tool_call", "toolCallId": "handoff-tool", "toolName": "read", "arguments": ["path": "/repo/README.md"]],
+                        ["type": "text", "text": "工具调用后的补充说明。"]]]
+                    : message("m2", role: "assistant", text: "已完成本轮文件修改。")
+                return history + [message("m1", role: "user", text: "查看这轮的文件变化"), reply]
             }
             return history + [message("m1", role: "user", text: "查看这轮的文件变化"), message("m2", role: "assistant", text: "先检查改动范围。"),
                     message("m3", role: "assistant", text: "正在更新组件。"), message("m4", role: "assistant", text: "正在运行测试。"),

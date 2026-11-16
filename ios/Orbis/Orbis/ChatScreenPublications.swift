@@ -93,13 +93,6 @@ struct ChatScreenSnapshot {
     }
 
     var identity: String { runtime.map { localSessionKey(host: host, runtime: $0) } ?? "" }
-    // Localized labels are derived from committed facts, so a locale change needs no network event.
-    var modelPresentation: SessionModelPresentation? {
-        runtime.map { .make(runtime: $0, connected: connection == .secured, modelReady: modelReady,
-            executionReady: executionReady,
-            progress: modelSaveState == 0 ? [] : [(label: "", mark: L10n.tr(modelSaveState == 2 ? "未确认" : "保存中"))],
-            failed: modelSaveFailed) }
-    }
 }
 
 extension ChatTranscript: Equatable {
@@ -271,9 +264,16 @@ struct ChatActionContext: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.owner === rhs.owner && lhs.identity == rhs.identity }
     @MainActor static func capture(_ store: OrbisStore) -> Self {
         let runtime = store.selectedRuntime
-        return Self(owner: store.activeConnection,
-            identity: runtime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? "",
+        return Self(owner: store.activeConnection, identity: selectedIdentity(store),
             runtimeId: runtime?.runtimeId, sessionId: runtime?.sessionId)
+    }
+    /// The local session key of the current selection; empty when nothing is selected.
+    @MainActor static func selectedIdentity(_ store: OrbisStore) -> String {
+        store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? ""
+    }
+    /// Cheap admission for hot callbacks: no action surface or fallback runtime lookup.
+    @MainActor func isCurrent(in store: OrbisStore) -> Bool {
+        store.activeConnection === owner && identity == Self.selectedIdentity(store)
     }
 }
 
@@ -304,7 +304,7 @@ struct NavigationScreenSnapshot: Equatable {
         runtime = store.selectedRuntime.map(ChatRuntimeTarget.init)
         selectedHost = store.selectedHost; pairings = store.pairings
         selectedHostId = store.selectedHostId; selectedRuntimeId = store.selectedRuntimeId
-        runtimeIdentity = store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) }
+        runtimeIdentity = store.selectedRuntime == nil ? nil : target.identity
         activationRevision = store.activationRevision; pairing = store.isPairing; error = store.errorMessage
     }
 }
@@ -343,6 +343,7 @@ final class ChatScreenModel {
     @ObservationIgnored private var held = false
     @ObservationIgnored private var dirty = false
     @ObservationIgnored private var rebindPending = false
+    @ObservationIgnored private var navigationPending = false
 
     init(store: OrbisStore) {
         self.store = store
@@ -377,7 +378,7 @@ final class ChatScreenModel {
     func refresh() {
         guard let store else { return }
         let owner = ObjectIdentifier(store.activeConnection)
-        let identity = store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? ""
+        let identity = ChatActionContext.selectedIdentity(store)
         if owner != sourceOwner || identity != pageIdentity {
             token = UUID(); task?.cancel(); task = nil
             sourceOwner = owner; pageIdentity = identity; observe(store.activeConnection)
@@ -388,7 +389,7 @@ final class ChatScreenModel {
     /// A covered retained page keeps its viewport. A newly mounted native scroll
     /// view starts a fresh context even when it selects the same runtime/session.
     func mount(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
-        guard actions.target == target else { return }
+        guard actionTarget == target else { return }
         if mountedToken != token {
             mountedToken = token
             viewport.resetForMount()
@@ -396,8 +397,10 @@ final class ChatScreenModel {
         }
         visibilityChanged(target: target, visible: visible, foreground: foreground)
     }
+    /// The unique mount token proves ownership. A selection change can replace the
+    /// action target before the departing page disappears; it must still unmount.
     func unmount(target: ChatActionContext, token: UUID) {
-        guard actions.target == target, mountedToken == token else { return }
+        guard mountedToken == token else { return }
         mountedToken = nil
         visible = false
         reconcilePhase()
@@ -405,16 +408,19 @@ final class ChatScreenModel {
     func motionChanged(_ active: Bool) {
         moving = active
         reconcilePhase()
+        if !active && navigationPending { schedule() }
     }
+    /// Runs on every native scroll callback; it builds no action surface.
     func ownsMount(target: ChatActionContext, token: UUID) -> Bool {
-        mountedToken == token && actionTarget == target && actions.isCurrent
+        guard mountedToken == token, actionTarget == target, let store else { return false }
+        return target.isCurrent(in: store)
     }
     func visibilityChanged(target: ChatActionContext, token: UUID, visible: Bool, foreground: Bool) {
         guard ownsMount(target: target, token: token) else { return }
         visibilityChanged(target: target, visible: visible, foreground: foreground)
     }
     func visibilityChanged(target: ChatActionContext, visible: Bool, foreground: Bool) {
-        guard actions.target == target else { return }
+        guard actionTarget == target else { return }
         self.visible = visible; self.foreground = foreground
         reconcilePhase()
     }
@@ -424,7 +430,8 @@ final class ChatScreenModel {
         viewport.setVisualActive(phase.visualActive)
         // Navigation publications still need the hold after popping chat. A retained
         // covered chat keeps committing, while an unmounted page has no visible work.
-        // OrbisHub owns the one bounded timer for both publication pipelines.
+        // OrbisHub owns the one bounded timer for both publication pipelines. Navigation
+        // itself waits for motion to end even when chat is covered (see commit).
         hold(moving && (mountedToken == nil || (foreground && visible)))
     }
     func hold(_ hold: Bool) {
@@ -440,7 +447,7 @@ final class ChatScreenModel {
             guard let self, self.token == generation, !Task.isCancelled else { return }
             self.task = nil
             guard let store = self.store else { return }
-            let identity = store.selectedRuntime.map { localSessionKey(host: store.selectedHost, runtime: $0) } ?? ""
+            let identity = ChatActionContext.selectedIdentity(store)
             if ObjectIdentifier(store.activeConnection) != self.sourceOwner || identity != self.pageIdentity { self.refresh(); return }
             // A new page context replaces every regional snapshot together, even during
             // a transition; same-page streaming continues to respect the publication hold.
@@ -462,7 +469,17 @@ final class ChatScreenModel {
         snapshot = next
         if canReadTranscript != next.canSend { canReadTranscript = next.canSend }
         // Explicit equality keeps this contract independent of the macro/toolchain.
-        if force || navigation != nav { invalidated |= ChatSchedulingTrace.RegionMask.navigation; navigation = nav }
+        // PERF-10 / ADR-0082 R5: the root re-renders every mounted page. While pages move
+        // above a covered chat, Hub facts wait for the motion to end. A new selection
+        // commits at once, so the page identity never lags the action target.
+        if force || navigation != nav {
+            if !force && moving && nav.target == navigation.target && nav.runtime == navigation.runtime {
+                navigationPending = true
+            } else {
+                invalidated |= ChatSchedulingTrace.RegionMask.navigation; navigation = nav
+                navigationPending = false
+            }
+        } else { navigationPending = false }
         if force || shell != regions.shell { invalidated |= ChatSchedulingTrace.RegionMask.shell; shell = regions.shell }
         if force || header != regions.header { invalidated |= ChatSchedulingTrace.RegionMask.header; header = regions.header }
         if force || transcript != regions.transcript {
