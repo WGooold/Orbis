@@ -39,7 +39,8 @@ data class FeedbackState(
     fun resolve(key: String) = copy(conditions = conditions - key, dismissed = dismissed - key)
     fun dismissToast(id: String) = if (toast?.id == id) copy(toast = null) else this
     fun visible(value: Boolean) = if (value) copy(foreground = true) else copy(foreground = false, toast = null)
-    fun clearScope() = FeedbackState(foreground = foreground)
+    fun clearScope(preservingConnectionConditions: Boolean = false) =
+        if (preservingConnectionConditions) copy(toast = null) else FeedbackState(foreground = foreground)
 }
 
 internal fun RemoteState.presentFeedback(level: FeedbackLevel, message: String, key: String,
@@ -54,6 +55,22 @@ internal fun RemoteState.conversationFailure(runtimeId: String?, message: String
     return copy(conversations = conversations + (runtimeId to conversation.copy(operationError = message.takeIf(String::isNotBlank))),
         sessionOperationErrors = if (message.isBlank()) sessionOperationErrors - runtimeId else sessionOperationErrors + (runtimeId to message))
 }
+/** Draft and composer failures stay on their input surface; session cards retain their own operation result. */
+internal fun RemoteState.composerFailure(runtimeId: String?, message: String): RemoteState {
+    if (runtimeId == null) return copy(sessionConfiguration = sessionConfiguration.copy(launchError = message.takeIf(String::isNotBlank)))
+    val conversation = conversations[runtimeId] ?: RuntimeConversation()
+    return copy(conversations = conversations + (runtimeId to conversation.copy(operationError = message.takeIf(String::isNotBlank))))
+}
+
+internal fun connectionRejectionStopsReconnect(code: String?): Boolean =
+    code in CONNECTION_FATAL_PROTOCOL_CODES || code == "device_mismatch"
+
+internal fun feedbackActionText(action: FeedbackAction, condition: FeedbackCondition?): String = when (action) {
+    FeedbackAction.REPAIR -> L10n.tr("重新配对")
+    FeedbackAction.SETTINGS -> if (condition == FeedbackCondition.VERSION) L10n.tr("检查更新") else L10n.tr("设置")
+    FeedbackAction.RECHECK -> L10n.tr("重新连接")
+    FeedbackAction.UNDO -> L10n.tr("撤销")
+}
 internal fun RemoteState.downloadFailure(commandId: String?, message: String): RemoteState {
     val task = commandId?.let(pendingDownloads::get)?.taskId?.let(downloads::get) ?: return this
     return copy(downloads = downloads + (task.taskId to task.copy(status = "failed", commandId = null, error = message)),
@@ -63,11 +80,32 @@ internal fun RemoteState.downloadFailure(commandId: String?, message: String): R
 internal fun RemoteState.sessionFailure(objectId: String, message: String): RemoteState =
     copy(sessionOperationErrors = sessionOperationErrors + (objectId to message))
 
-/** Native details are diagnostic-only when they contain opaque codes or internal transport names. */
+private val opaqueFeedbackCodes = CONNECTION_ACTION_PROTOCOL_CODES + setOf(
+    "host_busy", "command_id_conflict", "message_id_conflict", "invalid_command", "invalid_request", "runtime_offline",
+    "device_offline", "unsupported_command", "agent_unsupported", "spawn_failed", "spawn_limit_reached", "cwd_missing",
+    "session_not_found", "session_request_failed", "catalog_page_too_large", "model_subscription_limit", "provider_switching",
+    "interaction_not_available", "slash_commands_not_available", "slash_command_not_available", "slash_command_argument_required",
+    "slash_command_arguments_not_allowed", "slash_command_argument_not_available", "slash_command_cancelled", "not_cancelable",
+    "already_delivered", "runtime_busy", "model_not_available", "thinking_level_not_available", "session_not_available",
+    "assistant_message_not_available", "file_not_available", "file_not_a_file", "file_size_invalid", "artifact_changed",
+    "artifact_chunk_invalid", "artifact_size_mismatch",
+)
+private val opaqueFeedbackToken = Regex(
+    "(?<![A-Za-z0-9/._\\\\-])(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + ")(?![A-Za-z0-9/._\\\\-])",
+    RegexOption.IGNORE_CASE,
+)
+private val opaqueFeedbackAnnotation = Regex(
+    "[（(]\\s*(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + ")\\s*[）)]",
+    RegexOption.IGNORE_CASE,
+)
+
+/** Exact internal codes are diagnostic-only; readable reasons may contain paths, filenames or transport names. */
 internal fun feedbackFailureText(value: String?, fallback: String): String {
     val text = value?.trim()?.takeIf(String::isNotEmpty) ?: return fallback
-    if (Regex("[a-z]+_[a-z_]+|\\b(?:runtime|Host|relay|protocol)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)) return fallback
-    return text
+    if (text.lowercase(java.util.Locale.ROOT) in opaqueFeedbackCodes) return fallback
+    val display = opaqueFeedbackAnnotation.replace(text, "").trim()
+    if (display.isEmpty() || opaqueFeedbackToken.containsMatchIn(display)) return fallback
+    return display
 }
 
 /** SC94: transfers keep F1 on their row; only leaving that row adds one F3 per failed attempt. */

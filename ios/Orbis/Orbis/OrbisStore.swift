@@ -71,6 +71,7 @@ final class HostConnection: ObservableObject {
     private var toastTimeout: Task<Void, Never>?
     struct ObjectFeedback: Equatable { let sessionId: String?; let message: String }
     @Published private(set) var objectErrors: [String: ObjectFeedback] = [:] { didSet { homeViewRevision &+= 1 } }
+    @Published private(set) var composerErrors: [String: ObjectFeedback] = [:]
     @Published private(set) var sessionOperationErrors: [String: String] = [:] { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var queueErrors: [String: String] = [:]
     @Published private(set) var interactionErrors: [String: String] = [:]
@@ -79,12 +80,23 @@ final class HostConnection: ObservableObject {
         guard let error = objectErrors[runtimeId], let runtime = runtimeIndex[runtimeId], error.sessionId == runtime.sessionId else { return nil }
         return error.message
     }
+    func composerError(_ runtimeId: String) -> String? {
+        let runtime = runtimeIndex[runtimeId] ?? (selectedRuntime?.runtimeId == runtimeId ? selectedRuntime : nil)
+        guard let error = composerErrors[runtimeId], let runtime, error.sessionId == runtime.sessionId else { return nil }
+        return error.message
+    }
+    private func composerFeedback(_ message: String, newSession: Bool = false) {
+        if !newSession, let runtime = selectedRuntime {
+            composerErrors[runtime.runtimeId] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
+        } else { sessionLaunchError = FeedbackText.reason(message) }
+    }
+    func clearSessionLaunchError() { if sessionLaunchError != nil { sessionLaunchError = nil } }
     private func inlineFeedback(_ message: String, runtimeId: String? = nil) {
         if let id = runtimeId ?? selectedRuntimeId, let runtime = runtimeIndex[id] {
             objectErrors[id] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
         } else if let launch = launching, runtimeId == nil || runtimeId == launch.placeholder {
             launching?.failure = FeedbackText.reason(message)
-        } else if runtimeId == nil { sessionConfigurationError = FeedbackText.reason(message) }
+        } else if runtimeId == nil { sessionLaunchError = FeedbackText.reason(message) }
         else { recordConnectionEvent("feedback.dropped: owner_removed") }
     }
     func presentFeedback(_ level: FeedbackLevel, _ message: String, condition: FeedbackCondition? = nil, key: String? = nil, action: FeedbackAction? = nil) {
@@ -104,8 +116,8 @@ final class HostConnection: ObservableObject {
     func clearFeedbackScope(preservingConnectionConditions: Bool = false) {
         toastTimeout?.cancel(); toastTimeout = nil
         if preservingConnectionConditions { feedback.clearTransientPresentation() } else { feedback.clear() }
-        objectErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
-        sessionConfigurationError = nil; configFailures = [:]; transfers.error = nil
+        objectErrors = [:]; composerErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
+        sessionConfigurationError = nil; sessionLaunchError = nil; configFailures = [:]; transfers.error = nil
         browse = nil; toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
     }
     private func connectionFeedback(_ condition: FeedbackCondition) {
@@ -128,6 +140,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
     @Published private(set) var sessionConfigurationError: String?
+    @Published private(set) var sessionLaunchError: String?
     private var configuredLaunchId: String?
     private var configurationTimeout: Task<Void, Never>?
     private let launchJournalRoot: URL
@@ -142,7 +155,7 @@ final class HostConnection: ObservableObject {
         let id = value["launchId"] as? String
         runAsyncTransaction { [weak self] in
             if await !task.value, self?.launchJournal === journal, journal.launchId == id {
-                self?.sessionConfigurationError = L10n.tr("无法保存启动恢复记录，请重试")
+                self?.sessionLaunchError = L10n.tr("无法保存启动恢复记录，请重试")
                 if self?.launching?.requestId == id {
                     self?.launching?.unconfirmed = true
                     self?.launching?.failure = L10n.tr("无法保存启动恢复记录，请重试")
@@ -155,6 +168,7 @@ final class HostConnection: ObservableObject {
         let journal = launchJournal
         journal.update(expectedId: journal.launchId, value: nil)
         configuredLaunchId = nil
+        sessionLaunchError = nil
     }
     private func startConfigurationTimeout(_ id: String) {
         configurationTimeout?.cancel()
@@ -209,7 +223,7 @@ final class HostConnection: ObservableObject {
                                     title: L10n.tr("新会话"), cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil)
             if saved["following"] as? Bool == false { launching?.following = false }
             else { selectedRuntimeId = placeholder }
-            activationRequestId = id
+            activationRequestId = rejected ? nil : id
             if let text = saved["firstMessage"] as? String, !text.isEmpty, let messageId = saved["firstMessageId"] as? String,
                pendingSends.item(messageId) == nil {
                 pendingSendHostId = selectedHostId
@@ -229,7 +243,7 @@ final class HostConnection: ObservableObject {
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
         guard connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
               config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil else { return false }
-        guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionConfigurationError = L10n.tr("请先核对上一次启动及首句结果"); return false }
+        guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false }
         let id = UUID().uuidString, placeholder = "launch:" + id
         let creation = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
@@ -853,6 +867,7 @@ final class HostConnection: ObservableObject {
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
     /// A keystroke the composer already shows.
     func editDraft(_ text: String, for runtime: RuntimeSummary) {
+        if composerErrors[runtime.runtimeId] != nil { composerErrors[runtime.runtimeId] = nil }
         if objectError(runtime.runtimeId) != nil { objectErrors[runtime.runtimeId] = nil }
         let key = localSessionKey(host: selectedHost, runtime: runtime)
         updateDrafts(reload: false) { $0[key] = text.isEmpty ? nil : text }
@@ -1800,14 +1815,15 @@ final class HostConnection: ObservableObject {
     }
     /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
+        sessionLaunchError = nil
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
         if !sessionConfigurationSupported && hasLaunchJournal {
-            sessionConfigurationError = L10n.tr("请先核对上一次启动及首句结果"); return false
+            sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false
         }
         if sessionConfigurationSupported {
             let text = firstMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard text.isEmpty || validatedMessageBody(text) != nil else { return false }
+            guard text.isEmpty || validatedMessageBody(text, newSession: true) != nil else { return false }
             guard ledger.operations.filter({ !$0.phase.isSettled }).count + (text.isEmpty ? 1 : 2) <= ledger.capacity else { return false }
             return createConfiguredSession(agent: agentKind, cwd: cwd, firstMessage: text)
         }
@@ -1815,11 +1831,11 @@ final class HostConnection: ObservableObject {
             createSession(agentKind: agentKind, cwd: cwd)
             return activationRequestId != nil
         }
-        guard let text = validatedMessageBody(firstMessage) else { return false }
+        guard let text = validatedMessageBody(firstMessage, newSession: true) else { return false }
         // A first sentence needs one launch operation and one waiting send. Reject
         // capacity exhaustion before writing session.activate to the computer.
         guard ledger.operations.filter({ !$0.phase.isSettled }).count + 2 <= ledger.capacity else {
-            inlineFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false
+            composerFeedback(L10n.tr("待发送的消息过多，请稍后重试。"), newSession: true); return false
         }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new", displayTitle: String(text.prefix(22)))
         guard let launch = launching, selectedRuntimeId == launch.placeholder else { return false }
@@ -1843,7 +1859,7 @@ final class HostConnection: ObservableObject {
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
                               "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
             ledger.remove(requestId); handleLedger([])
-            sessionConfigurationError = L10n.tr("未连接到电脑，连接恢复后可重试。"); return
+            sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); return
         }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
@@ -1991,6 +2007,7 @@ final class HostConnection: ObservableObject {
             inlineFeedback(L10n.tr("命令未送达，请连接后重试。")); return false
         }
         objectErrors[runtime.runtimeId] = nil
+        composerErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: text, attachments: [],
@@ -2384,13 +2401,13 @@ final class HostConnection: ObservableObject {
 
     /// Validate before either a normal send or first-sentence activation, so a
     /// rejected slash command/oversized message never starts an empty session.
-    private func validatedMessageBody(_ text: String, attachmentCount: Int = 0) -> String? {
+    private func validatedMessageBody(_ text: String, attachmentCount: Int = 0, newSession: Bool = false) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = trimmed.isEmpty && attachmentCount > 0 ? L10n.tr("已发送 {0} 个附件", attachmentCount) : trimmed
         guard !body.isEmpty else { return nil }
-        guard body.utf16.count <= 100_000 else { inlineFeedback(L10n.tr("消息不能超过 100,000 个字符。")); return nil }
+        guard body.utf16.count <= 100_000 else { composerFeedback(L10n.tr("消息不能超过 100,000 个字符。"), newSession: newSession); return nil }
         guard !trimmed.hasPrefix("/") else {
-            inlineFeedback(L10n.tr("请从命令菜单选择斜杠命令。")); return nil
+            composerFeedback(L10n.tr("请从命令菜单选择斜杠命令。"), newSession: newSession); return nil
         }
         return body
     }
@@ -2424,6 +2441,7 @@ final class HostConnection: ObservableObject {
             inlineFeedback(L10n.tr("消息未送达，请连接后重试。"), runtimeId: runtime.runtimeId); return false
         }
         objectErrors[runtime.runtimeId] = nil
+        composerErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: attachments,
@@ -2445,8 +2463,9 @@ final class HostConnection: ObservableObject {
                                      conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
                                      prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
-        guard creation == .created else { inlineFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false }
+        guard creation == .created else { composerFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false }
         objectErrors[runtime.runtimeId] = nil
+        composerErrors[runtime.runtimeId] = nil
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
@@ -2769,6 +2788,37 @@ final class HostConnection: ObservableObject {
         if connectionEvents.count > 80 { connectionEvents.removeFirst(connectionEvents.count - 80) }
     }
 
+    /// A fatal connection condition can also carry a final rejection for one
+    /// operation. Reader failures are not evidence that unrelated writes failed.
+    private func rejectCorrelatedProtocolOperation(_ message: [String: Any]) {
+        let commandId = message["commandId"] as? String
+        let requestId = message["requestId"] as? String
+        let reason = message["message"] as? String ?? L10n.tr("电脑端无法完成操作。")
+        if let opId = commandId ?? requestId, ledger.operation(opId) != nil {
+            handleLedger(ledger.receipt(opId, connection: ledger.connection,
+                .failed(.init(message["code"] as? String ?? "failure", reason)), now: Date()))
+        } else if let commandId, pendingSends.owns(commandId: commandId) {
+            pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String, error: reason)
+            publishMessages()
+        } else if let commandId {
+            if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
+                let pending = pendingSyncs[syncId]
+                finishSync(syncId, readPhase: .failed)
+                if let pending, pending.range == "history", pending.historyPrefetch == nil {
+                    historyErrors[pending.runtimeId] = FeedbackText.reason(reason)
+                }
+            }
+            finishAction(commandId, succeeded: false, message: reason)
+        }
+        if let requestId, requestId == sessionConfigurationRequest {
+            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(reason)
+        }
+        if let requestId, requestId == activationRequestId { clearActivation() }
+        if let requestId, requestId == browse?.requestId {
+            browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(reason)
+        }
+    }
+
     private func receive(_ message: [String: Any], channel: String?, payload: Data? = nil, ownership: UUID? = nil) async {
         guard let type = message["type"] as? String else { return }
         guard channel != nil else {
@@ -2783,6 +2833,7 @@ final class HostConnection: ObservableObject {
         if type == "protocol.error", connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
             recordConnectionEvent("protocol.error.fatal: " + String(describing: message))
             connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
+            rejectCorrelatedProtocolOperation(message)
             return
         }
         if type == "protocol.error" {
@@ -3050,9 +3101,6 @@ final class HostConnection: ObservableObject {
             }
             refreshSessions()
         case "protocol.error":
-            if connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
-                connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version); return
-            }
             if let result = menuOptions.consume(message) {
                 menuOptionsTimeout?.cancel()
                 menuErrors[result.runtimeId + "\u{0}" + result.name] = L10n.tr("命令选项读取失败，请重新打开菜单")
@@ -3067,6 +3115,11 @@ final class HostConnection: ObservableObject {
             if isStaleConnectionError(message) { return }
             if message["code"] as? String == "session_sync_device_rejected", let commandId,
                handledSyncRejections.contains(commandId) { return }
+            if let commandId, pendingSends.owns(commandId: commandId), ledger.operation(commandId) == nil {
+                pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String,
+                                           error: message["message"] as? String)
+                publishMessages(); return
+            }
             if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
                 let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? L10n.tr("电脑端无法完成操作。"))
                 handleLedger(ledger.receipt(opId, connection: ledger.connection, .failed(rejection), now: Date())); return
@@ -3085,11 +3138,14 @@ final class HostConnection: ObservableObject {
                 browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(message["message"] as? String ?? L10n.tr("目录不可读"))
                 return
             }
-            if connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
-                connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
-            } else { recordConnectionEvent("protocol.error.unowned: " + String(describing: message)) }
+            recordConnectionEvent("protocol.error.unowned: " + String(describing: message))
         default:
-            if !["session.catalog.capabilities", "session.history.capabilities", "session.history.interest.result", "session.catalog.page", "agent.menu.options.page"].contains(type) {
+            // A known reader may decline a late, disconnected or out-of-scope
+            // reply. Its missing owner does not make the wire type unknown.
+            if ["session.catalog.capabilities", "session.history.capabilities", "session.history.interest.result", "session.catalog.page", "agent.menu.options.page",
+                "agent.state.snapshot", "agent.state.range.page", "provider.subscription.result", "provider.result", "provider.changed", "diagnostics.page"].contains(type) {
+                recordConnectionEvent("reply.unowned: " + type)
+            } else {
                 recordConnectionEvent("unknown_message: " + type); connectionFeedback(.version)
             }
         }

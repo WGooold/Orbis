@@ -84,4 +84,11 @@ struct FeedbackTests {
         }
     }
 
+    // SC98: presentation cleanup must not rewrite filenames and user paths.
+    @Test func failureReasonsPreserveUserFilenamesAndPaths() {
+        for reason in ["无法打开 my_notes.txt", "无法读取 /home/host/my_notes.txt", "找不到 /runtime/relay/protocol/file.txt"] {
+            #expect(FeedbackText.reason(reason) == reason)
+        }
+    }
+
 }

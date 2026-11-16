@@ -278,7 +278,7 @@ struct StoreTests {
         #expect(store.pendingSends.isEmpty)
         transport.acceptsSends = true
         #expect(!store.sendMessage("/unsupported"))
-        #expect(store.activeConnection.objectError("a") != nil)
+        #expect(store.activeConnection.composerError("a") != nil)
         #expect(store.sendMessage("valid message"))
 
         let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
@@ -357,6 +357,61 @@ struct StoreTests {
         await transport.emit(["type": "protocol.error", "commandId": "command-1", "code": "busy", "message": "Agent busy"])
         #expect(store.connection == .secured)
         #expect(store.errorMessage == nil) // SC94: an unknown command has no visible owner.
+    }
+
+    // SC96: a correlated Host version refusal is final for its operation even
+    // though Host keeps the encrypted connection open and the version banner remains.
+    @Test func correlatedVersionRefusalFailsTheSendAndKeepsTheBanner() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        #expect(store.sendMessage("keep the failed sentence"))
+        let sent = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" })
+        let messageId = try #require((sent["command"] as? [String: Any])?["messageId"] as? String)
+        await transport.emit(["type": "protocol.error", "commandId": sent["commandId"]!, "code": "protocol_version_mismatch", "message": "仅支持已实现的协议 18 / 19"])
+        #expect(store.pendingSends.item(messageId)?.state == .failed("仅支持已实现的协议 18 / 19"))
+        #expect(store.feedback.banner?.action == .update)
+        #expect(store.connection == .secured)
+    }
+
+    // SC96: close is ledger-owned; a connection banner cannot replace its receipt.
+    @Test func correlatedVersionRefusalSettlesTheLedgerOperation() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        await transport.event(["type": "runtime.capabilities", "capabilities": ["commands": [["name": "quit", "source": "builtin"]]]])
+        #expect(store.activeConnection.closeRuntimes(["a"]) == ["a"])
+        let command = try #require(transport.sent.last { ($0["command"] as? [String: Any])?["name"] as? String == "quit" })
+        await transport.emit(["type": "protocol.error", "commandId": command["commandId"]!, "code": "protocol_version_mismatch", "message": "仅支持已实现的协议 18 / 19"])
+        #expect(store.activeConnection.closingRuntimeIds.isEmpty)
+        #expect(store.activeConnection.objectError("a") != nil)
+        #expect(store.feedback.banner?.action == .update)
+    }
+
+    // SC96: a known reader reply can lose its owner before device.ready or during
+    // reconnect. Only a genuinely unknown top-level type signals a version defect.
+    @Test func unownedKnownStateRepliesStayDiagnosticBeforeReadyAndDuringReconnect() async throws {
+        let (store, transport) = setup()
+        for type in ["provider.subscription.result", "provider.result", "provider.changed", "diagnostics.page", "agent.state.range.page"] {
+            await transport.emit(["type": type])
+            #expect(store.feedback.banner == nil, "known reply before ready: \(type)")
+        }
+        await transport.ready([runtime("a")])
+        transport.state?(.connecting, nil)
+        for scope in ["host", "agent", "device", "retired-scope"] {
+            await transport.emit(["type": "agent.state.snapshot", "requestId": "retired", "scope": scope])
+            #expect(store.feedback.banner == nil, "known snapshot during reconnect: \(scope)")
+        }
+        await transport.emit(["type": "unknown.state.reply"])
+        #expect(store.feedback.banner?.action == .update)
+    }
+
+    // SC97: editor validation belongs to the composer, not runtime cards or the
+    // directory. Editing clears that validation without requiring another send.
+    @Test func composerValidationDoesNotBecomeARuntimeOperationFailure() async throws {
+        let (store, transport) = setup(); await transport.ready([runtime("a")])
+        #expect(!store.sendMessage("/unsupported"))
+        #expect(ChatScreenSnapshot(store: store).inputError == L10n.tr("请从命令菜单选择斜杠命令。"))
+        #expect(store.activeConnection.objectError("a") == nil)
+        #expect(store.activeConnection.sessionOperationErrors.isEmpty)
+        store.activeConnection.editDraft("fixed", for: try #require(store.selectedRuntime))
+        #expect(ChatScreenSnapshot(store: store).inputError == nil)
     }
 
     @Test func activatingAnOnlineSessionDoesNotLaunchADuplicateRuntime() async throws {

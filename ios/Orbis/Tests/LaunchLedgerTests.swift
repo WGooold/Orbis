@@ -89,6 +89,62 @@ struct LaunchLedgerTests {
         #expect(fixture.host.connection == .secured)
     }
 
+    // SC96: resolving a previous first sentence must allow a fresh launch using
+    // the still-valid configuration; the admission hint is not a configuration failure.
+    @Test func resolvingPreviousLaunchDoesNotLeaveConfigurationBlocked() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        let messageId = try #require(fixture.host.pendingSends.items.first?.messageId)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "failed", "error": "launch unavailable"])
+        fixture.host.stopFollowingLaunch()
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.host.sessionConfigurationError == nil)
+        #expect(fixture.host.sessionLaunchError == L10n.tr("请先核对上一次启动及首句结果"))
+        fixture.host.discardPendingSend(messageId)
+        fixture.host.stopFollowingLaunch()
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+    }
+
+    // SC97: invalid first-sentence text may be corrected immediately, without a
+    // redundant configuration read or damage to any previously selected runtime.
+    @Test func correctingFirstSentenceValidationReusesConfirmedConfiguration() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "/invalid"))
+        #expect(fixture.host.sessionConfigurationError == nil)
+        #expect(fixture.host.sessionLaunchError == L10n.tr("请从命令菜单选择斜杠命令。"))
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "valid first sentence"))
+    }
+
+    // SC96: Host echoes requestId for version refusals of launch/configuration
+    // requests as well as commandId for runtime commands.
+    @Test func correlatedVersionRefusalRejectsTheConfiguredLaunchByRequestId() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "preserve this"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        #expect(fixture.transport.sent.contains { $0["type"] as? String == "session.launch" && $0["requestId"] as? String == id })
+        await fixture.transport.emit(["type": "protocol.error", "requestId": id, "code": "protocol_version_mismatch", "message": "仅支持已实现的协议 18 / 19"])
+        #expect(fixture.host.launching?.failure == "仅支持已实现的协议 18 / 19")
+        #expect(fixture.host.activatingSessionId == nil)
+        #expect(fixture.host.pendingSends.items.first?.state == .failed(L10n.tr("会话启动未完成，消息未发送")))
+        #expect(fixture.host.feedback.banner?.action == .update)
+    }
+
+    @Test func correlatedVersionRefusalFinishesOnlyItsConfigurationRequest() async throws {
+        let fixture = Fixture(); await fixture.transport.ready()
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": []])
+        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+        let id = try #require(fixture.host.sessionConfigurationRequest)
+        await fixture.transport.emit(["type": "protocol.error", "requestId": id, "code": "protocol_version_mismatch", "message": "仅支持已实现的协议 18 / 19"])
+        #expect(fixture.host.sessionConfigurationRequest == nil)
+        #expect(fixture.host.sessionConfigurationError == "仅支持已实现的协议 18 / 19")
+        #expect(fixture.host.sessionLaunchError == nil)
+        #expect(fixture.host.feedback.banner?.action == .update)
+    }
+
     // PERF-08 / SC73: UI admission and draft state stay responsive while the
     // recovery write is blocked; no native launch can overtake that write.
     @Test func configuredLaunchWaitsForBackgroundDurabilityWithoutBlockingUI() async throws {

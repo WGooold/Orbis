@@ -4264,12 +4264,7 @@ internal fun FeedbackOverlay(notice: AppFeedback?, bottom: Boolean, anchor: Floa
                             tint = if (bottom) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                         Text(shown.message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         shown.action?.let { action ->
-                            NeumorphTextButton(when (action) {
-                                FeedbackAction.REPAIR -> L10n.tr("重新配对")
-                                FeedbackAction.SETTINGS -> L10n.tr("检查更新")
-                                FeedbackAction.RECHECK -> L10n.tr("重新连接")
-                                FeedbackAction.UNDO -> L10n.tr("撤销")
-                            }, { onAction(action); if (bottom) onDismiss() })
+                            NeumorphTextButton(feedbackActionText(action, shown.condition), { onAction(action); if (bottom) onDismiss() })
                         }
                         NeumorphIconButton(onClick = onDismiss, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp)
                     }

@@ -727,6 +727,9 @@ struct SessionDraftView: View {
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("电脑端默认"), message: L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
             }
+            if let error = store.sessionLaunchError {
+                Text(L10n.hostText(error)).font(.orbisCaption()).foregroundStyle(p.error)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
                     placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
@@ -760,7 +763,7 @@ struct SessionDraftView: View {
                 if !cancelling && visible && scenePhase == .active { focused = true }
             }
             // PERF-12: the card owns its text; persisting a keystroke must not publish the Host.
-            .onChange(of: text) { _, value in owner.editDraft(value, for: draftRuntime) }
+            .onChange(of: text) { _, value in owner.clearSessionLaunchError(); owner.editDraft(value, for: draftRuntime) }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
             .onChange(of: closeRequest) { _, _ in cancel() }

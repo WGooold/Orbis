@@ -756,7 +756,7 @@ enum FeedbackText {
             return L10n.tr("操作未完成，请重试")
         }
         for (term, replacement) in [("host", "Orbis"), ("runtime", L10n.tr("会话")), ("relay", L10n.tr("连接"))] {
-            display = display.replacingOccurrences(of: "(?i)(?<![A-Za-z])" + term + "(?![A-Za-z])", with: replacement, options: .regularExpression)
+            display = display.replacingOccurrences(of: "(?i)(?<![A-Za-z0-9/._\\\\-])" + term + "(?![A-Za-z0-9/._\\\\-])", with: replacement, options: .regularExpression)
         }
         display = display.trimmingCharacters(in: .whitespacesAndNewlines)
         return display.isEmpty ? L10n.tr("操作未完成，请重试") : display

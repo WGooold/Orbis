@@ -324,6 +324,7 @@ final class OrbisStore: ObservableObject {
     var sessionConfigurationValues: SessionConfigurationValues { activeConnection.sessionConfigurationValues }
     var sessionConfigurationRequest: String? { activeConnection.sessionConfigurationRequest }
     var sessionConfigurationError: String? { activeConnection.sessionConfigurationError }
+    var sessionLaunchError: String? { activeConnection.sessionLaunchError }
     func loadSessionConfiguration(agent: String, cwd: String) { activeConnection.loadSessionConfiguration(agent: agent, cwd: cwd) }
     func saveSessionConfiguration(_ values: SessionConfigurationValues) { activeConnection.saveSessionConfiguration(values) }
     var launchableAgents: [String]? { activeConnection.launchableAgents }

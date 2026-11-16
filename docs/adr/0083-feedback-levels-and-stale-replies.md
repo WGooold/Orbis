@@ -142,3 +142,19 @@ iOS 原位与连接集成用例为 `StoreTests.rejectedStopAndOfflineCloseStayOn
 应用拥有的修改文案同步维护 `localization/mobile.json`，来自电脑端的固定文案由 `mobile-host.json` 白名单保持双向映射；两者通过 `scripts/generate-mobile-localizations.py` 生成两端 `LocalizationCatalog`，并以 `--check` 校验固定文案覆盖、参数与生成结果。用户界面使用「电脑端 Orbis」等产品名称，内部错误码及协议细节保留在诊断。
 
 实施：两端完成。自动验证：上述领域、框架、读取器回归与编译通过。部署：未部署。用户验收：待用户验证；共享 QA 的候选、安装包、隔离环境与步骤按同一 Case 登记，等待用户在网页领取后构建与安装，人工验收由用户记录。
+
+### 6.4 SC96–SC98：拒绝结果结算与反馈归属回归
+
+2026-11-16，基于 `0a54d4e2` 的反馈分级实现核对并修复；不改变 §5 / §6.2 的历史验证记录。
+
+- SC96：Host 的明确拒绝同时结算所属操作与命令等待者；带 `commandId` / `requestId` 的版本拒绝保留连接横幅，并结束对应命令、账本启动或配置请求。核对读取被拒不能推断其他写操作失败。iOS 已知消息失去读取器归属时仅记诊断，未知顶层类型仍呈现版本横幅。
+- LAUNCH-FEEDBACK-01：两端将一次性启动反馈与配置读取 / 保存错误分开。上次启动结束或放弃后，可继续使用已确认配置重试；真实配置错误仍须先核对。
+- SC97：输入和首句校验留在各自输入区域，不写首页卡片或侧栏操作结果；Android 首句校验显式归属新建卡片，合法重试清除旧提示。iOS 原先只污染首页卡片，侧栏未受影响，且编辑原本能够清除错误。
+- SC98：失败原因保留文件名、用户路径及自然语言；Android 仅识别已知内部码并处理其注记，缓存正则；iOS 不再改写路径中的 `host` / `runtime` / `relay`。
+- SC92 / SC93 修正：Android 切换电脑时保留该电脑的未解除条件与关闭状态，清除短反馈；`host_disabled` 恢复自动重连，设置操作显示「设置」。iOS 此项原已使用重连操作。删除 Android 无语义的 `preserveErrorOnClose` / `preserveError` 和重复不可达错误分派。
+
+实现与用例：Android `RelayReducer.rejectProtocolOperation`、`SessionConfigurationState.admitConfiguredLaunch`、`Feedback.kt`、`HostConnection.validateMessageInput`；`CommandRejectionFeedbackTest`、`LaunchFeedbackRegressionTest`、`FeedbackTest`。iOS `HostConnection.rejectCorrelatedProtocolOperation` / `composerFeedback`、`ChatScreenSnapshot.inputError`、`SessionDraftView`；`StoreTests`、`LaunchLedgerTests`、`FeedbackTests`。
+
+自动验证：Android 首轮 19 项中 10 项预期失败，补充验证 25 项中 5 项预期失败，修复后最终 216 项通过；iOS 7 项修复前回归暴露问题，最终 162 项领域回归及另 2 项请求 ID 回归通过，应用目标编译通过。文案生成校验通过。首次失败、夹具修正、源码摘要、构建租约与清理记录见[本轮证据](../../.artifacts/feedback-review-20261116/verification.json)。
+
+部署：未部署；本轮未生成安装候选、未运行设备交互或真实旧 Host / Relay 联测。用户验收：待用户验证。

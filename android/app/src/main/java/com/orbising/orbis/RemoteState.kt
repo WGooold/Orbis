@@ -1727,7 +1727,7 @@ private fun canAdvanceQueuedMessageState(current: String?, incoming: String): Bo
     else -> false
 }
 
-internal fun RemoteState.markReconnecting(preserveError: Boolean = false): RemoteState {
+internal fun RemoteState.markReconnecting(): RemoteState {
     // A response command may be in flight when the phone disappears. Its outcome is
     // unknown, so keep the request and let the next interaction.snapshot reconcile it.
     val interactionCommandIds = conversations.values
@@ -1768,7 +1768,6 @@ internal fun RemoteState.markReconnecting(preserveError: Boolean = false): Remot
         sessionRangeFailures = emptyMap(),
         sessionSyncRequests = emptySet(),
         sessionHistory = sessionHistory.mapValues { (_, history) -> history.copy(loading = false, requestId = null) },
-        feedback = feedback,
     // 断线时已写入的操作结果未知，列表类保持叠加（L4）；新连接的首个 device.ready 再核对。
     ).ledgerCloseConnection().reconcileHistoryReads()
 }
@@ -1954,11 +1953,14 @@ class RelayReducer(
         }
         if (messageType == "protocol.error" && message.string("code") in CONNECTION_ACTION_PROTOCOL_CODES) {
             val code = message.string("code")
-            return when (code) {
+            val failed = when (code) {
                 "unauthorized", "device_mismatch", "runtime_mismatch" -> state.connectionFailure(FeedbackLevel.F4, L10n.tr("这台手机的配对已失效"), FeedbackCondition.PAIRING)
                 "host_disabled" -> state.presentFeedback(FeedbackLevel.F4, L10n.tr("这台电脑的连接已停用，请联系管理员"), "computer-disabled", FeedbackCondition.OTHER, FeedbackAction.SETTINGS)
                 else -> state.connectionFailure(FeedbackLevel.F4, if (code == "protocol_version_mismatch") PROTOCOL_VERSION_MISMATCH_ERROR else L10n.tr("无法读取电脑端消息，请更新手机和电脑端 Orbis"), FeedbackCondition.VERSION)
             }
+            // Host can reject a command's protocol version without closing this connection.
+            // The banner and the correlated operation must both receive that definite result.
+            return rejectProtocolOperation(failed, message)
         }
         // ADR-0049 §7 L5：账本发起的核对读取只交回账本。
         if (channel != null) message.string("requestId")?.takeIf { it in state.ledgerReads }?.let { requestId ->
@@ -2332,7 +2334,7 @@ class RelayReducer(
                 val current = state.sessionConfiguration
                 if (message.string("requestId") != current.requestId) state else {
                     val snapshot = json.decodeFromJsonElement<SessionConfigurationSnapshot>(message)
-                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null))
+                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null, launchError = null))
                 }
             }
             // Host 明确拒绝了一次范围请求（越界/读盘失败/身份变了）：这条 pull 传输以确定原因收场。
@@ -2359,8 +2361,7 @@ class RelayReducer(
                 if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
                 // 账本里的操作只由账本结算，并由种类给出带上下文的提示（L1）。
                 if (commandId != null && state.ledger.operation(commandId) != null) {
-                    return state.ledgerReceipt(commandId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
-                        message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), System.currentTimeMillis())
+                    return rejectProtocolOperation(state, message)
                 }
                 val requestId = message.string("requestId")
                 if (requestId != null && requestId == state.sessionConfiguration.requestId)
@@ -2394,53 +2395,45 @@ class RelayReducer(
                         sessionListError = if (browseCleared != null) state.sessionListError else syncError,
                     )
                 }
-                val sessionSync = commandId?.let(state.sessionSyncCommands::get)
-                if (sessionSync == null && commandId?.isSessionSyncCommandId() == true) return state
-                if (sessionSync != null && commandId != null) {
-                    val transient = isTransientSessionSyncFailure(message.string("code"))
-                    val failed = state.failSessionSync(
-                        commandId, syncError, transient = transient, code = message.string("code"),
-                    )
-                    return failed
-                }
-                commandId?.let { id ->
-                    if (id in state.pendingDownloads) return state.downloadFailure(id, syncError)
-                    state.pendingCommands[id]?.let { runtime ->
-                        return state.copy(pendingCommands = state.pendingCommands - id).conversationFailure(runtime, syncError)
-                    }
-                }
-                val isHistorySync = sessionSync?.range == "history"
-                // A failed history request must release its foreground paging state, and it must
-                // not cancel a forward catch-up that is still needed for the live frontier.
-                val releasedHistory = state.releaseHistoryRequest(commandId)
-                state.copy(
-                    pendingCommands = commandId?.let { state.pendingCommands - it } ?: state.pendingCommands,
-                    commandResults = commandId?.let { state.commandResults + (it to CommandResult(ok = false, status = "failure")) } ?: state.commandResults,
-                    sessionSyncCommands = commandId?.let { state.sessionSyncCommands - it } ?: state.sessionSyncCommands,
-                    sessionSyncRequests = if (isHistorySync) {
-                        state.sessionSyncRequests
-                    } else {
-                        sessionSync?.runtimeId?.let { state.sessionSyncRequests - it } ?: state.sessionSyncRequests
-                    },
-                    sessionHistory = releasedHistory.sessionHistory,
-                    conversations = sessionSync?.runtimeId?.let { runtimeId ->
-                        state.conversations[runtimeId]?.let { conversation ->
-                            state.conversations + (runtimeId to conversation.copy(
-                                isChatSyncing = false,
-                                chatSyncError = syncError,
-                            ))
-                        }
-                    } ?: state.conversations,
-                    feedback = state.feedback,
-                ).let { next ->
-                    when (message.string("code")) {
-                        "unauthorized" -> next.connectionFailure(FeedbackLevel.F4, syncError, FeedbackCondition.PAIRING)
-                        "invalid_message", "protocol_version_mismatch", "runtime_mismatch" -> next.connectionFailure(FeedbackLevel.F4, syncError, FeedbackCondition.VERSION)
-                        else -> next // F0: no remaining request owns this rejection.
-                    }
-                }
+                rejectProtocolOperation(state, message)
             }
             else -> state
+        }
+    }
+
+    /** A scoped rejection completes its operation; a failed verification read cannot reject other operations. */
+    private fun rejectProtocolOperation(state: RemoteState, message: JsonObject): RemoteState {
+        val commandId = message.string("commandId")
+        val requestId = message.string("requestId")
+        val operationId = listOfNotNull(commandId, requestId).firstOrNull { state.ledger.operation(it) != null }
+        if (operationId != null) {
+            return state.ledgerReceipt(operationId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
+                message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), System.currentTimeMillis())
+        }
+        val error = protocolErrorText(message.string("code"), message.string("message"))
+        if (requestId != null && requestId == state.sessionConfiguration.requestId)
+            return state.copy(sessionConfiguration = state.sessionConfiguration.copy(requestId = null, error = error))
+        val id = commandId ?: return state
+        if (id.startsWith("session-sync-ack:")) return state
+        if (id.startsWith("artifact-cancel:") && message.string("code") == "runtime_offline") return state
+        val sync = state.sessionSyncCommands[id]
+        if (sync != null) return state.failSessionSync(id, error,
+            transient = isTransientSessionSyncFailure(message.string("code")), code = message.string("code"))
+        if (id.isSessionSyncCommandId()) return state
+        val runtime = state.pendingCommands[id]
+        val download = id in state.pendingDownloads
+        val pendingSend = state.pendingSends.values.any { it.commandId == id }
+        if (runtime == null && !download && !pendingSend) return state // F0: no request owns this rejection.
+        val result = CommandResult(ok = false, status = "failure", error = error)
+        val settled = state.copy(
+            pendingCommands = state.pendingCommands - id,
+            commandResults = state.commandResults + (id to result),
+            pendingSends = state.pendingSends.withCommandResult(id, result, System.currentTimeMillis()),
+        )
+        return when {
+            download -> settled.downloadFailure(id, error)
+            pendingSend -> settled
+            else -> settled.composerFailure(runtime, error)
         }
     }
 

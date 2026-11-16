@@ -15,9 +15,36 @@ data class SessionConfigurationSnapshot(val agentKind: String, val cwd: String, 
     val values: SessionConfigurationValues, val catalog: SessionConfigurationCatalog)
 
 data class SessionConfigurationState(val agentKind: String = "", val cwd: String = "", val requestId: String? = null,
-    val snapshot: SessionConfigurationSnapshot? = null, val proposed: SessionConfigurationValues? = null, val error: String? = null) {
+    val snapshot: SessionConfigurationSnapshot? = null, val proposed: SessionConfigurationValues? = null, val error: String? = null,
+    val launchError: String? = null) {
     val values get() = proposed ?: snapshot?.values ?: SessionConfigurationValues()
     val model get() = snapshot?.catalog?.models?.firstOrNull { it.value == values.model }
+}
+
+internal enum class ConfiguredLaunchBlock { CONFIGURATION_UNCONFIRMED, JOURNAL_LOADING, PREVIOUS_LAUNCH }
+
+internal data class ConfiguredLaunchAdmission(val configuration: SessionConfigurationState, val block: ConfiguredLaunchBlock?) {
+    val allowed: Boolean get() = block == null
+}
+
+/** LAUNCH-FEEDBACK-01: an unresolved launch owns its warning without invalidating native configuration. */
+internal fun SessionConfigurationState.admitConfiguredLaunch(
+    kind: String, cwd: String, journalLoaded: Boolean, journalPresent: Boolean,
+): ConfiguredLaunchAdmission {
+    val block = when {
+        snapshot == null || snapshot.agentKind != kind || snapshot.cwd != cwd || error != null -> ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED
+        !journalLoaded -> ConfiguredLaunchBlock.JOURNAL_LOADING
+        journalPresent -> ConfiguredLaunchBlock.PREVIOUS_LAUNCH
+        else -> null
+    }
+    val failure = when (block) {
+        ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED -> L10n.tr("请先读取并确认启动配置")
+        ConfiguredLaunchBlock.JOURNAL_LOADING, ConfiguredLaunchBlock.PREVIOUS_LAUNCH -> L10n.tr("请先核对上一次启动及首句结果")
+        null -> return ConfiguredLaunchAdmission(copy(launchError = null), null)
+    }
+    val next = if (block == ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED) copy(error = failure, launchError = null)
+        else copy(launchError = failure)
+    return ConfiguredLaunchAdmission(next, block)
 }
 
 internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject {

@@ -155,7 +155,7 @@ internal class HostConnection(
         val snapshot = config.snapshot ?: return
         val request = UUID.randomUUID().toString()
         configurationTimeout(request)
-        updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null)) }
+        updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null, launchError = null)) }
         if (!relay.sendDeviceMessage(buildJsonObject {
             put("type", "session.configuration.save"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", request)
             put("agentKind", snapshot.agentKind); put("cwd", snapshot.cwd); put("binding", snapshot.binding); put("revision", snapshot.revision)
@@ -215,22 +215,20 @@ internal class HostConnection(
 
     private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
-        if (snapshot == null || snapshot.agentKind != kind || snapshot.cwd != cwd || config.error != null) {
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = L10n.tr("请先读取并确认启动配置"))) }; return false
+        val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
+        if (!admission.allowed) {
+            if (admission.block == ConfiguredLaunchBlock.PREVIOUS_LAUNCH) recoverConfiguredLaunch(show = true)
+            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = admission.configuration.error,
+                launchError = admission.configuration.launchError)) }; return false
         }
-        if (!configuredLaunchJournal.isLoaded) {
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = L10n.tr("请先核对上一次启动及首句结果"))) }; return false
-        }
-        if (configuredLaunchJournal.snapshot != null) {
-            recoverConfiguredLaunch(show = true)
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = L10n.tr("请先核对上一次启动及首句结果"))) }; return false
-        }
+        if (config.launchError != null) updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(launchError = null)) }
+        val confirmed = snapshot ?: return false
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
         val firstCommand = UUID.randomUUID().toString()
         val payload = buildJsonObject {
             put("type", "session.launch"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
-            put("agentKind", kind); put("cwd", cwd); put("binding", snapshot.binding); put("revision", snapshot.revision)
+            put("agentKind", kind); put("cwd", cwd); put("binding", confirmed.binding); put("revision", confirmed.revision)
             put("values", config.values.payload()); put("spawnMode", spawnMode)
         }
         // Reserve in memory immediately, then persist off UI before writing to the transport.
@@ -957,8 +955,11 @@ internal class HostConnection(
     /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
         if (!mutableState.value.sessionConfigurationSupported && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = L10n.tr("请先核对上一次启动及首句结果"))) }; return false
+            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
+                launchError = L10n.tr("请先核对上一次启动及首句结果"))) }; return false
         }
+        if (mutableState.value.sessionConfiguration.launchError != null)
+            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(launchError = null)) }
         if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
             updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("目标电脑已变更、未连接或正在创建会话，请返回目录重试")) }
             return false
@@ -1685,20 +1686,22 @@ internal class HostConnection(
      * 不允许随消息发出——否则 agent 会拿到一个不存在的路径。
      */
     /** Validate before session.activate as well as normal sends, so invalid first input stays local. */
-    internal fun validateMessageInput(text: String): Boolean {
+    internal fun validateMessageInput(text: String, newSession: Boolean = false): Boolean {
         val failure = userMessageInputError(text)
-        if (failure != null) updateState { it.conversationFailure(it.selectedRuntimeId, failure) }
+        if (failure != null || newSession) updateState { it.composerFailure(if (newSession) null else it.selectedRuntimeId, failure.orEmpty()) }
         return text.isNotBlank() && failure == null
     }
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
+            if (!mutableState.value.sessionConfigurationSupported) updateState { it.copy(sessionConfiguration =
+                it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
             // S49 / SC70: reuse the original windowed launch without a send operation.
             if (text.isBlank()) return@synchronized if (createSession(kind, cwd, expectedHost)) FirstSessionSubmission(null) else null
-            if (!validateMessageInput(text)) return@synchronized null
+            if (!validateMessageInput(text, newSession = true)) return@synchronized null
             // One local transaction owns both slots; another state writer cannot consume the send slot after launch.
             if (!mutableState.value.ledger.hasCapacity(2)) {
-                updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("待发送的消息过多，请稍后重试")) }
+                updateState { it.composerFailure(null, L10n.tr("待发送的消息过多，请稍后重试")) }
                 return@synchronized null
             }
             if (mutableState.value.sessionConfigurationSupported) {
@@ -1745,7 +1748,7 @@ internal class HostConnection(
             next
         }
         if (!created) {
-            updateState { it.conversationFailure(runtimeId, L10n.tr("待发送的消息过多，请稍后重试")) }
+            updateState { it.composerFailure(runtimeId, L10n.tr("待发送的消息过多，请稍后重试")) }
             return null
         }
         val pairedDevice = device
@@ -1789,7 +1792,7 @@ internal class HostConnection(
     private fun sendUserMessage(runtimeId: String, text: String, delivery: String?, attachments: List<String>): String? {
         val sessionId = mutableState.value.runtimes[runtimeId]?.sessionId
         if (sessionId == null) {
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("会话尚未就绪，请稍后重试")) }
+            updateState { it.composerFailure(it.selectedRuntimeId, L10n.tr("会话尚未就绪，请稍后重试")) }
             return null
         }
         val messageId = UUID.randomUUID().toString()
@@ -1924,18 +1927,18 @@ internal class HostConnection(
             // 否则一次来源抖动会让所有斜杠命令在接下来十几秒内全部「发不出去」。
             refreshAgentModel(runtimeId, force = true)
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=command_not_available")
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("电脑尚未核对可用命令，请稍后重试")) }
+            updateState { it.composerFailure(it.selectedRuntimeId, L10n.tr("电脑尚未核对可用命令，请稍后重试")) }
             return null
         }
         val normalizedArgs = args.trim()
         if (command.argument == null && normalizedArgs.isNotBlank()) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=arguments_not_allowed")
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("命令 /{0} 不接受参数", name)) }
+            updateState { it.composerFailure(it.selectedRuntimeId, L10n.tr("命令 /{0} 不接受参数", name)) }
             return null
         }
         if (command.argument?.required == true && normalizedArgs.isBlank()) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=argument_required")
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("命令 /{0} 需要参数", name)) }
+            updateState { it.composerFailure(it.selectedRuntimeId, L10n.tr("命令 /{0} 需要参数", name)) }
             return null
         }
         // ADR-0049 §6.1：产生对话的 Slash（prompt / skill）在 idle 时按消息乐观显示；其他情况维持处理中（ADR-0055 §5）。
@@ -2525,7 +2528,7 @@ internal class HostConnection(
         updateState { it.copy(feedback = it.feedback.visible(visible)) }
     }
     fun clearFeedbackScope() {
-        updateState { it.copy(feedback = it.feedback.clearScope(), menuOptionErrors = emptyMap(), sessionListError = null, sessionOperationErrors = emptyMap(),
+        updateState { it.copy(feedback = it.feedback.clearScope(preservingConnectionConditions = true), menuOptionErrors = emptyMap(), sessionListError = null, sessionOperationErrors = emptyMap(),
             conversations = it.conversations.mapValues { (_, value) -> value.copy(operationError = null) }) }
     }
     fun dismissToast(key: String) { updateState { it.copy(feedback = it.feedback.dismissToast(key)) } }
@@ -2593,8 +2596,8 @@ internal class HostConnection(
     }
 
     private fun trackCommand(commandId: String?, runtimeId: String, offlineError: String) {
-        updateState { if (commandId == null) it.conversationFailure(runtimeId, offlineError)
-            else it.copy(pendingCommands = it.pendingCommands + (commandId to runtimeId)).conversationFailure(runtimeId, "") }
+        updateState { if (commandId == null) it.composerFailure(runtimeId, offlineError)
+            else it.copy(pendingCommands = it.pendingCommands + (commandId to runtimeId)).composerFailure(runtimeId, "") }
     }
 
     private fun connect(
@@ -2620,7 +2623,6 @@ internal class HostConnection(
         reconnectJob?.cancel()
         relayEventJob?.cancel()
         val currentGeneration = ++generation
-        var preserveErrorOnClose = false
         var stopReconnectOnClose = false
         // Relay closes immediately after protocol.error; the async reducer may run after onClosed.
         val protocolVersionMismatch = AtomicBoolean(false)
@@ -2856,16 +2858,13 @@ internal class HostConnection(
                                     ?.takeIf { messageType == "runtime.event" }
                                     ?.takeIf { it["type"]?.jsonPrimitive?.contentOrNull == "runtime.error" }
                                 archiveChanged = messageType == "session.archive.changed"
-                                // SC91：被 reducer 丢弃的迟到回包只进诊断日志（F0），也不保留旧错误。
+                                // SC91：被 reducer 丢弃的迟到回包只进诊断日志（F0）。
                                 val staleReply = messageType in CONNECTION_OWNED_REPLIES ||
                                     messageType == "protocol.error" && isStaleConnectionError((message?.get("requestId") as? JsonPrimitive)?.contentOrNull, protocolCode)
                                 if (staleReply) Log.i(RELOAD_TRACE_TAG, "relay.reply_dropped reason=stale type=$messageType " +
                                     "requestId=${(message?.get("requestId") as? JsonPrimitive)?.contentOrNull} code=$protocolCode")
-                                if (messageType == "protocol.error" && !staleReply || runtimeError != null) {
-                                    preserveErrorOnClose = true
-                                }
                                 if (message?.hasUnsupportedProtocolVersion() == true ||
-                                    protocolCode in CONNECTION_ACTION_PROTOCOL_CODES ||
+                                    connectionRejectionStopsReconnect(protocolCode) ||
                                     runtimeError?.get("recoverable")?.jsonPrimitive?.contentOrNull == "false"
                                 ) {
                                     stopReconnectOnClose = true
@@ -2953,7 +2952,6 @@ internal class HostConnection(
                                 // 回归套路的入口：reduce 抛异常时只把这一帧丢掉，手机就此和电脑端
                                 // 静默分叉（状态、消息都停在旧值）。错误必须留下可定位的痕迹。
                                 Log.e(RELOAD_TRACE_TAG, "reduce.failed", error)
-                                preserveErrorOnClose = true
                                 updateState { current -> current.connectionFailure(FeedbackLevel.F4, L10n.tr("无法读取电脑端消息，请更新手机和电脑端 Orbis"), FeedbackCondition.VERSION) }
                             }
                     }
@@ -3087,7 +3085,6 @@ internal class HostConnection(
                 // 队列关闭/溢出只说明这条连接正在收尾：重连是自动的，而 connection 已经切成
                 // RECONNECTING 在界面上表达过了。以前这里往 error 里写「正在重新连接」，可
                 // error 是模态框通道——于是一抖动就弹窗，用户点掉又弹，看起来就是「一直提示」。
-                // 顺带把 preserveErrorOnClose 也去掉：它保住的正是这条自己刚写进去的噪音。
                 if (!lanes.offer(payload, channel)) {
                     Log.i(RELOAD_TRACE_TAG, "relay.frame_dropped cause=event_queue_closed kind=text")
                 }
@@ -3137,12 +3134,12 @@ internal class HostConnection(
                 }
                 pausedDownloads.values.forEach(artifactDownloadStore::register)
                 if (stopReconnectOnClose) {
-                    updateState { it.markReconnecting(preserveError = true).copy(connection = RelayConnection.OFFLINE) }
+                    updateState { it.markReconnecting().copy(connection = RelayConnection.OFFLINE) }
                     return@closed
                 }
                 // Transport loss is expected to recover; keep the alert channel for
                 // authentication, protocol, and other actionable failures.
-                updateState { it.markReconnecting(preserveErrorOnClose) }
+                updateState { it.markReconnecting() }
                 scheduleReconnect()
             },
             // ★ 必须传：这是 E2E 材料（配对会话 / pskRoot 握手）进入连接的**唯一**入口。
@@ -3960,22 +3957,22 @@ internal class HostConnection(
     fun queueUpload(uri: Uri, runtimeId: String, onQueued: (String) -> Unit = {}) {
         val runtime = mutableState.value.runtimes[runtimeId]
         if (runtime == null) {
-            updateState { it.conversationFailure(runtimeId, L10n.tr("会话已离线，无法发送文件")) }
+            updateState { it.composerFailure(runtimeId, L10n.tr("会话已离线，无法发送文件")) }
             return
         }
         scope.launch {
             val inspected = withContext(Dispatchers.IO) {
                 runCatching { ArtifactUploadStore.inspect(application.contentResolver, uri) }
             }.getOrElse { error ->
-                updateState { it.conversationFailure(runtimeId, L10n.tr("无法读取所选文件：{0}", error.message ?: L10n.tr("未知错误"))) }
+                updateState { it.composerFailure(runtimeId, L10n.tr("无法读取所选文件：{0}", error.message ?: L10n.tr("未知错误"))) }
                 return@launch
             }
             if (inspected.size > MAX_UPLOAD_BYTES) {
-                updateState { it.conversationFailure(runtimeId, L10n.tr("文件超过 {0} MB 上限", MAX_UPLOAD_BYTES / (1024 * 1024))) }
+                updateState { it.composerFailure(runtimeId, L10n.tr("文件超过 {0} MB 上限", MAX_UPLOAD_BYTES / (1024 * 1024))) }
                 return@launch
             }
             if (inspected.size == 0L) {
-                updateState { it.conversationFailure(runtimeId, L10n.tr("所选文件是空的")) }
+                updateState { it.composerFailure(runtimeId, L10n.tr("所选文件是空的")) }
                 return@launch
             }
             val task = UploadTask(
@@ -3993,7 +3990,7 @@ internal class HostConnection(
                 mimeType = inspected.mimeType,
             )
             artifactUploadStore.register(task)
-            updateState { it.copy(uploads = it.uploads + (task.taskId to task)).conversationFailure(runtimeId, "") }
+            updateState { it.copy(uploads = it.uploads + (task.taskId to task)).composerFailure(runtimeId, "") }
             onQueued(task.taskId)
             relay.initUpload(
                 requestId = task.taskId,
