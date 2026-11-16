@@ -33,6 +33,34 @@ class LaunchFeedbackRegressionTest {
         assertNull(retry.configuration.launchError)
     }
 
+    // SC100: journal settlement resolves its warning immediately, before another launch attempt or configuration read.
+    @Test fun `settled journal resolves its launch warning without a retry`() {
+        val waiting = confirmed().admitConfiguredLaunch("codex", "/repo/app", journalLoaded = true, journalPresent = true).configuration
+        assertTrue(waiting.waitingForLaunchJournal)
+        assertSame(waiting, waiting.reconcileLaunchJournal(loaded = false, present = false))
+        assertSame(waiting, waiting.reconcileLaunchJournal(loaded = true, present = true))
+        val settled = waiting.reconcileLaunchJournal(loaded = true, present = false)
+        assertNull(settled.launchError)
+        assertFalse(settled.waitingForLaunchJournal)
+        assertEquals(waiting.snapshot, settled.snapshot)
+        val loading = confirmed().admitConfiguredLaunch("codex", "/repo/app", journalLoaded = false, journalPresent = false).configuration
+        assertNull(loading.reconcileLaunchJournal(loaded = true, present = false).launchError)
+    }
+
+    // SC100: a later composer or real configuration failure has a different owner and survives old journal cleanup.
+    @Test fun `journal cleanup preserves independent composer and configuration failures`() {
+        val waiting = confirmed().admitConfiguredLaunch("codex", "/repo/app", journalLoaded = true, journalPresent = true).configuration
+        val inputFailure = userMessageInputError("/help")!!
+        val invalidInput = RemoteState(sessionConfiguration = waiting).composerFailure(null, inputFailure).sessionConfiguration
+        assertFalse(invalidInput.waitingForLaunchJournal)
+        assertSame(invalidInput, invalidInput.reconcileLaunchJournal(loaded = true, present = false))
+        assertEquals(inputFailure, invalidInput.launchError)
+        val configurationFailure = waiting.copy(error = "configuration save rejected")
+            .reconcileLaunchJournal(loaded = true, present = false)
+        assertNull(configurationFailure.launchError)
+        assertEquals("configuration save rejected", configurationFailure.error)
+    }
+
     // The retry fix must continue to require native confirmation after a real configuration failure or target change.
     @Test fun `configuration failures and mismatched targets still block launch`() {
         val blocked = listOf(confirmed().copy(error = "configuration save rejected"), confirmed().copy(snapshot = null))
@@ -55,7 +83,7 @@ class LaunchFeedbackRegressionTest {
         assertEquals(4L, result.sessionConfiguration.snapshot?.revision)
     }
 
-    // SC94 / LAUNCH-FEEDBACK-01: a first sentence is owned by the new-session card before any runtime exists.
+    // SC97 / LAUNCH-FEEDBACK-01: a first sentence is owned by the new-session card before any runtime exists.
     @Test fun `first sentence validation stays on its new session draft`() {
         val failure = userMessageInputError("/help")!!
         val rejected = RemoteState().composerFailure(null, failure)

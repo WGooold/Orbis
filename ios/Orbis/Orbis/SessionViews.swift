@@ -763,7 +763,7 @@ struct SessionDraftView: View {
                 if !cancelling && visible && scenePhase == .active { focused = true }
             }
             // PERF-12: the card owns its text; persisting a keystroke must not publish the Host.
-            .onChange(of: text) { _, value in owner.clearSessionLaunchError(); owner.editDraft(value, for: draftRuntime) }
+            .onChange(of: text) { _, value in owner.clearSessionLaunchValidationError(); owner.editDraft(value, for: draftRuntime) }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
             .onChange(of: closeRequest) { _, _ in cancel() }

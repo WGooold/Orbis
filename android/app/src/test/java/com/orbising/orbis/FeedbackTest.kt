@@ -43,7 +43,7 @@ class FeedbackTest {
         assertEquals(L10n.tr("设置"), feedbackActionText(FeedbackAction.SETTINGS, FeedbackCondition.OTHER))
         assertEquals(L10n.tr("检查更新"), feedbackActionText(FeedbackAction.SETTINGS, FeedbackCondition.VERSION))
     }
-    // SC94: an invalid draft belongs to the composer and must not mark the session card or drawer as failed.
+    // SC97: an invalid draft belongs to the composer and must not mark the session card or drawer as failed.
     @Test fun `composer validation stays local and does not replace session operation failures`() {
         val existing = mapOf("chat" to "关闭未完成", "other-session" to "归档未完成")
         val initial = RemoteState(sessionOperationErrors = existing)
@@ -56,14 +56,26 @@ class FeedbackTest {
         assertEquals(existing, corrected.sessionOperationErrors)
         assertEquals("关闭失败", initial.sessionFailure("chat", "关闭失败").sessionOperationErrors["chat"])
     }
-    // SC94: opaque codes are diagnostic-only, while filenames, paths and natural language remain useful feedback.
+    // SC98: opaque codes are diagnostic-only, while filenames, paths and natural language remain useful feedback.
     @Test fun `failure copy preserves filenames paths and ordinary transport words`() {
         val fallback = "请重试"
-        listOf("无法打开 my_notes.txt", "无法读取 /home/host/my_notes.txt", "Host 无法读取当前文件", "The runtime could not open the file", "my_notes").forEach { message ->
+        listOf("无法打开 my_notes.txt", "无法读取 /home/host/my_notes.txt", "Host 无法读取当前文件", "The runtime could not open the file", "my_notes.txt").forEach { message ->
             assertEquals(message, feedbackFailureText(message, fallback))
         }
         assertEquals(fallback, feedbackFailureText("host_busy", fallback))
         assertEquals(fallback, feedbackFailureText("protocol_version_mismatch", fallback))
+    }
+    // SC101: future and currently unlisted machine codes obey the same diagnostic-only presentation rule.
+    @Test fun `unregistered machine codes stay diagnostic only without hiding file paths`() {
+        val fallback = "请重试"
+        for (code in listOf("session_busy", "write_failed", "write_permission_denied", "future_backend_rejection", "my_notes")) {
+            assertEquals(code, fallback, feedbackFailureText(code, fallback))
+            assertEquals(code, "请求失败，请重试", feedbackFailureText("请求失败，请重试（$code）", fallback))
+            assertEquals(code, fallback, feedbackFailureText("请求失败 $code", fallback))
+        }
+        for (message in listOf("无法读取 session_busy.txt", "无法读取 /repo/write_failed", "无法读取 C:\\repo\\write_failed.txt", "WS connection closed", "QUIC connection interrupted")) {
+            assertEquals(message, feedbackFailureText(message, fallback))
+        }
     }
     @Test fun `known error annotations are hidden without removing useful failure details`() {
         assertEquals("请求失败，请重试", feedbackFailureText("请求失败，请重试（invalid_request）", "请重试"))
@@ -85,11 +97,13 @@ class FeedbackTest {
         assertNull(state.present(a).visible(true).toast)
         assertTrue(state.present(banner(FeedbackCondition.VERSION)).clearScope().conditions.isEmpty())
     }
-    @Test fun `fatal errors cannot be consumed by a matching object reader`() {
+    // SC99: finishing the rejected reader must preserve its connection condition.
+    @Test fun `fatal errors finish the matching reader and retain the connection banner`() {
         val initial = RemoteState(sessionBrowse = SessionBrowseState("browse-request", isLoading = true))
         val result = RelayReducer().reduce(initial, """{"type":"protocol.error","requestId":"browse-request","code":"unauthorized"}""")
         assertEquals(FeedbackCondition.PAIRING, result.feedback.banner?.condition)
-        assertNull(result.sessionBrowse?.error)
+        assertFalse(result.sessionBrowse?.isLoading ?: true)
+        assertFalse(result.sessionBrowse?.error.isNullOrBlank())
     }
     @Test fun `menu cannot claim a rejection without an active id`() {
         val loader = MenuOptionsLoader()

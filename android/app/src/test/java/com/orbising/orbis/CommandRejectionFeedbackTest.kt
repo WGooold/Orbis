@@ -70,20 +70,132 @@ class CommandRejectionFeedbackTest {
         val target = mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo")
         val (created, creation) = online().createLaunch(id, target, "New session", 1L)
         assertTrue(creation is LedgerCreation.Created)
-        val pending = created.ledgerWritten(id, 2L)
+        val pending = created.ledgerWritten(id, 2L).copy(
+            sessionActivateRequests = setOf(id, "other-launch"),
+            sessionActivateTargets = mapOf(id to "session", "other-launch" to "other-session"),
+        )
         val failed = reducer.reduce(pending, """{"type":"protocol.error","requestId":"$id","code":"protocol_version_mismatch"}""")
         assertEquals(FeedbackCondition.VERSION, failed.feedback.banner?.condition)
         assertFalse(failed.launching?.failure.isNullOrBlank())
         assertEquals(pending.pendingCommands, failed.pendingCommands)
+        assertEquals(setOf("other-launch"), failed.sessionActivateRequests)
+        assertEquals(mapOf("other-launch" to "other-session"), failed.sessionActivateTargets)
     }
 
     @Test fun `version rejection of a verification read cannot fail an unrelated close`() {
+        val requestId = OperationKinds.VERIFY_REQUEST_PREFIX + "request"
         val (created, _) = online().createQuit("close-agent", "agent", 1L)
-        val pending = created.ledgerWritten("close-agent", 2L).beginLedgerRead("verify-request")
-        val failed = reducer.reduce(pending, """{"type":"protocol.error","requestId":"verify-request","code":"protocol_version_mismatch"}""", channel = "ctl")
+        val pending = created.ledgerWritten("close-agent", 2L).beginLedgerRead(requestId)
+        val reply = """{"type":"protocol.error","requestId":"$requestId","commandId":"close-agent","code":"protocol_version_mismatch"}"""
+        val failed = reducer.reduce(pending, reply, channel = "ctl")
         assertEquals(FeedbackCondition.VERSION, failed.feedback.banner?.condition)
         assertEquals(pending.closingRuntimeIds, failed.closingRuntimeIds)
         assertEquals(pending.sessionOperationErrors, failed.sessionOperationErrors)
         assertEquals(pending.ledger.operations, failed.ledger.operations)
+        assertFalse("The rejected verification read must finish", requestId in failed.ledgerReads)
+        val duplicate = reducer.reduce(failed, reply, channel = "ctl")
+        assertEquals(failed.ledger.operations, duplicate.ledger.operations)
+        assertEquals(failed.sessionOperationErrors, duplicate.sessionOperationErrors)
+    }
+
+    // SC99: every correlated read ends on admission rejection, while unrelated requests stay pending.
+    @Test fun `connection and ordinary rejections release request owners consistently`() {
+        for (code in listOf("protocol_version_mismatch", "unauthorized", "host_disabled", "host_busy")) {
+            val initial = online().copy(
+                sessionListRequests = setOf("list", "other"),
+                sessionListRequestEpochs = mapOf("list" to 1L, "other" to 2L),
+                sessionActivateRequests = setOf("activate", "other"),
+                sessionActivateTargets = mapOf("activate" to "session", "other" to "other-session"),
+                sessionBrowse = SessionBrowseState("browse"),
+                agentStateRequests = setOf("home", "other"),
+                agentStateReads = mapOf("home" to AgentStateRead("home-key", "agent", setOf("identity"))),
+                agentProviders = AgentProvidersState(requestId = "provider", loading = true),
+                sessionConfiguration = SessionConfigurationState(requestId = "configuration"),
+            )
+            for (requestId in listOf("list", "activate", "browse", "home", "provider", "configuration")) {
+                val failed = reducer.reduce(initial,
+                    """{"type":"protocol.error","requestId":"$requestId","code":"$code"}""", channel = "ctl")
+                when (requestId) {
+                    "list" -> {
+                        assertEquals(code, setOf("other"), failed.sessionListRequests)
+                        assertEquals(mapOf("other" to 2L), failed.sessionListRequestEpochs)
+                    }
+                    "activate" -> {
+                        assertEquals(setOf("other"), failed.sessionActivateRequests)
+                        assertEquals(mapOf("other" to "other-session"), failed.sessionActivateTargets)
+                    }
+                    "browse" -> {
+                        assertEquals(false, failed.sessionBrowse?.isLoading)
+                        assertFalse(failed.sessionBrowse?.error.isNullOrBlank())
+                    }
+                    "home" -> {
+                        assertEquals(setOf("other"), failed.agentStateRequests)
+                        assertFalse(failed.agentStateSnapshots["home-key"]?.error.isNullOrBlank())
+                    }
+                    "provider" -> {
+                        assertNull(failed.agentProviders.requestId)
+                        assertFalse(failed.agentProviders.loading)
+                        assertFalse(failed.agentProviders.error.isNullOrBlank())
+                    }
+                    "configuration" -> {
+                        assertNull(failed.sessionConfiguration.requestId)
+                        assertFalse(failed.sessionConfiguration.error.isNullOrBlank())
+                    }
+                }
+                assertTrue("other" in failed.sessionListRequests)
+                assertTrue("other" in failed.sessionActivateRequests)
+                assertTrue("other" in failed.agentStateRequests)
+                assertEquals(initial.pendingCommands, failed.pendingCommands)
+                assertEquals(RelayConnection.ONLINE, failed.connection)
+                if (code == "host_busy") assertNull(failed.feedback.banner) else assertNotNull(failed.feedback.banner)
+            }
+        }
+    }
+
+    // SC99: both IDs must be considered even when each belongs to a different ledger operation.
+    @Test fun `one rejection settles both correlated ledger operations`() {
+        val (closing, _) = online().createQuit("close-agent", "agent", 1L)
+        val target = mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo")
+        val (created, _) = closing.ledgerWritten("close-agent", 2L).createLaunch("launch-request", target, "New session", 3L)
+        val failed = reducer.reduce(created.ledgerWritten("launch-request", 4L),
+            """{"type":"protocol.error","commandId":"close-agent","requestId":"launch-request","code":"protocol_version_mismatch"}""")
+        assertFalse("agent" in failed.closingRuntimeIds)
+        assertFalse(failed.launching?.failure.isNullOrBlank())
+    }
+
+    // SC99: a message command and a launch request can share one rejection envelope.
+    @Test fun `one rejection settles both the command and request ledger operation`() {
+        for (code in listOf("protocol_version_mismatch", "host_busy")) {
+            val target = mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo")
+            val (created, _) = online().createLaunch("launch-request", target, "New session", 1L)
+            val row = PendingSend("message", "rejected", "session", "hello", emptyList(), null, 1L, null)
+            val pending = created.ledgerWritten("launch-request", 2L).copy(pendingSends = mapOf(row.messageId to row))
+            val failed = reducer.reduce(pending,
+                """{"type":"protocol.error","commandId":"rejected","requestId":"launch-request","code":"$code"}""")
+            assertFalse(failed.launching?.failure.isNullOrBlank())
+            assertTrue(failed.pendingSends["message"]?.state is PendingSendState.Failed)
+            assertEquals(false, failed.commandResults["rejected"]?.ok)
+            assertEquals(mapOf("other" to "agent"), failed.pendingCommands)
+        }
+    }
+
+    // SC99 / L5: a failed read still supplies its read boundary to fresh authoritative state.
+    @Test fun `rejected verification read resolves an unknown close against the fresh runtime list`() {
+        for (code in listOf("protocol_version_mismatch", "unauthorized", "host_disabled")) {
+            val (created, _) = online().createQuit("close-agent", "agent", 1L)
+            val disconnected = created.ledgerWritten("close-agent", 2L).markReconnecting()
+            val ready = reducer.reduce(disconnected,
+                """{"type":"device.ready","deviceId":"phone","modelEpoch":"epoch","runtimes":[{"runtimeId":"agent","name":"Agent","cwd":"/repo","status":"idle","sessionId":"session"}]}""",
+                channel = "ctl").copy(e2eReady = true).ledgerOpenConnection()
+            val pending = ready.beginLedgerRead("verify-request")
+            assertEquals(LedgerPhase.Unknown, pending.ledger.operation("close-agent")?.phase)
+            val failed = reducer.reduce(pending,
+                """{"type":"protocol.error","requestId":"verify-request","code":"$code"}""", channel = "ctl")
+            assertFalse("verify-request" in failed.ledgerReads)
+            assertFalse("agent" in failed.closingRuntimeIds)
+            assertNull(failed.ledger.operation("close-agent"))
+            assertEquals(OperationKinds.quitUnconfirmed.reason, failed.sessionOperationErrors["agent"])
+            assertNotNull(failed.feedback.banner)
+        }
     }
 }

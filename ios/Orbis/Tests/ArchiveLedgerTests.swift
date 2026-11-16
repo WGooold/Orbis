@@ -168,6 +168,31 @@ struct ArchiveLedgerTests {
         #expect(host.sessionOperationErrors["s1"] == "归档未完成：电脑上的会话目录仍是原状态")
     }
 
+    // SC99: without a fresh catalog a rejected read cannot settle an archive.
+    // The read still ends: a later receipt replay under its old ID is ignored.
+    @Test(arguments: ["invalid_message", "invalid_request"])
+    func rejectedVerificationReadEndsWithoutInventingAWriteRejection(code: String) async throws {
+        let (host, transport, fixture) = try await setup(); defer { withExtendedLifetime(fixture) {} }
+        host.archive(try session(host, "s1"), archived: true)
+        let id = try #require(transport.archiveIds.last)
+        await reconnect(host, transport)
+        let request = try #require(transport.reads.last)
+        #expect(host.ledger.operation(id)?.phase == .unknown)
+        let error: [String: Any] = ["type": "protocol.error", "code": code, "message": "read rejected",
+            "requestId": request["requestId"]!, "commandId": id]
+        await transport.emit(error)
+        #expect(host.ledger.operation(id)?.phase == .unknown)
+        #expect(host.isArchiving("s1"))
+        #expect(host.sessionOperationErrors["s1"] == nil)
+        await transport.emit(error)
+        #expect(host.ledger.operation(id)?.phase == .unknown)
+        #expect(host.sessionOperationErrors["s1"] == nil)
+        try await transport.answerRead([id: "failure"])
+        #expect(host.ledger.operation(id)?.phase == .unknown)
+        #expect(host.sessionOperationErrors["s1"] == nil)
+        #expect((host.feedback.banner != nil) == (code == "invalid_message"))
+    }
+
     @Test func aSecondArchiveOfTheSameSessionIsBlockedUntilSettled() async throws {
         let (host, transport, fixture) = try await setup(); defer { withExtendedLifetime(fixture) {} }
         host.archive(try session(host, "s1"), archived: true)

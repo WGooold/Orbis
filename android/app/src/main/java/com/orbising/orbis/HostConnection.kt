@@ -155,7 +155,7 @@ internal class HostConnection(
         val snapshot = config.snapshot ?: return
         val request = UUID.randomUUID().toString()
         configurationTimeout(request)
-        updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null, launchError = null)) }
+        updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null, launchError = null, waitingForLaunchJournal = false)) }
         if (!relay.sendDeviceMessage(buildJsonObject {
             put("type", "session.configuration.save"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", request)
             put("agentKind", snapshot.agentKind); put("cwd", snapshot.cwd); put("binding", snapshot.binding); put("revision", snapshot.revision)
@@ -219,9 +219,8 @@ internal class HostConnection(
         if (!admission.allowed) {
             if (admission.block == ConfiguredLaunchBlock.PREVIOUS_LAUNCH) recoverConfiguredLaunch(show = true)
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = admission.configuration.error,
-                launchError = admission.configuration.launchError)) }; return false
+                launchError = admission.configuration.launchError, waitingForLaunchJournal = admission.configuration.waitingForLaunchJournal)) }; return false
         }
-        if (config.launchError != null) updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(launchError = null)) }
         val confirmed = snapshot ?: return false
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
@@ -235,7 +234,8 @@ internal class HostConnection(
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
         val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
         val target = mapOf("type" to "new", "agentKind" to kind, "cwd" to cwd)
-        updateState { it.copy(sessionActivateRequests = it.sessionActivateRequests + id).createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis()).first }
+        updateState { it.copy(sessionActivateRequests = it.sessionActivateRequests + id,
+            sessionConfiguration = admission.configuration).createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis()).first }
         if (firstMessage.isNotBlank()) {
             val launch = mutableState.value.launching ?: return false
             sendWhenReady(launch.placeholder, launch.placeholder, firstMessage, null, emptyList(), emptyList(),
@@ -951,19 +951,20 @@ internal class HostConnection(
         })
     }
 
+    private fun validateNewSessionTarget(expectedHostId: String?): Boolean {
+        if (mutableState.value.canCreateSessionOn(expectedHostId)) return true
+        updateState { it.composerFailure(null, L10n.tr("目标电脑已变更、未连接或正在创建会话，请返回目录重试")) }
+        return false
+    }
+
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
     /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
         if (!mutableState.value.sessionConfigurationSupported && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
-                launchError = L10n.tr("请先核对上一次启动及首句结果"))) }; return false
+                launchError = L10n.tr("请先核对上一次启动及首句结果"), waitingForLaunchJournal = true)) }; return false
         }
-        if (mutableState.value.sessionConfiguration.launchError != null)
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(launchError = null)) }
-        if (!mutableState.value.canCreateSessionOn(expectedHostId)) {
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("目标电脑已变更、未连接或正在创建会话，请返回目录重试")) }
-            return false
-        }
+        if (!validateNewSessionTarget(expectedHostId)) return false
         if (mutableState.value.sessionConfigurationSupported && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode)
         return activateTarget(buildJsonObject {
             put("type", "new")
@@ -999,6 +1000,7 @@ internal class HostConnection(
                     target["sessionId"]?.jsonPrimitive?.contentOrNull?.let { id -> mapOf(requestId to id) } ?: emptyMap()
                 } else emptyMap(),
                 activatedSessionToOpen = null,
+                sessionConfiguration = if (fields["type"] == "new") it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false) else it.sessionConfiguration,
             ).createLaunch(requestId, fields, title, System.currentTimeMillis()).first },
             rollback = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests - requestId,
@@ -1705,7 +1707,7 @@ internal class HostConnection(
                 return@synchronized null
             }
             if (mutableState.value.sessionConfigurationSupported) {
-                if (!mutableState.value.canCreateSessionOn(expectedHost) || !createConfiguredSession(kind, cwd, "tui", text)) return@synchronized null
+                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, "tui", text)) return@synchronized null
                 val id = configuredLaunchId ?: return@synchronized null
                 return@synchronized FirstSessionSubmission(mutableState.value.pendingSends.values.firstOrNull { it.sessionId == "launch:$id" }?.commandId)
             }
@@ -1875,7 +1877,7 @@ internal class HostConnection(
     private fun clearConfiguredFirstMessage(messageId: String) {
         val saved = configuredLaunchJournal.snapshot ?: return
         if (saved["firstMessageId"]?.jsonPrimitive?.contentOrNull == messageId && (saved["sessionId"] != null || saved["rejected"]?.jsonPrimitive?.booleanOrNull == true)) {
-            configuredLaunchJournal.update(saved["launchId"]?.jsonPrimitive?.contentOrNull) { null }
+            if (configuredLaunchJournal.update(saved["launchId"]?.jsonPrimitive?.contentOrNull) { null } != null) updateState { it }
         }
     }
 
@@ -2902,7 +2904,7 @@ internal class HostConnection(
                                             updateState { it.ledgerReceipt(id!!, LedgerReceipt.Failed(LedgerRejection("configuration_rejected",
                                                 message["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认"))), System.currentTimeMillis()) }
                                             if (saved["firstMessage"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
-                                                configuredLaunchJournal.update(id) { null }
+                                                if (configuredLaunchJournal.update(id) { null } != null) updateState { it }
                                             }
                                         }
                                     }
@@ -3556,6 +3558,8 @@ internal class HostConnection(
                 firstId != null && current.pendingSends.containsKey(firstId) && !next.pendingSends.containsKey(firstId))) {
                 configuredLaunchJournal.update(savedLaunch["launchId"]?.jsonPrimitive?.contentOrNull) { null }
             }
+            val configuration = next.sessionConfiguration.reconcileLaunchJournal(configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
+            if (configuration !== next.sessionConfiguration) next = next.copy(sessionConfiguration = configuration)
             settlementSyncs = syncs
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
             if (current.changeViewer != null && next.changeViewer == null) retiredViewer = current.changeViewer

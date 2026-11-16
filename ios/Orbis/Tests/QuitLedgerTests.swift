@@ -249,15 +249,16 @@ struct QuitLedgerTests {
         #expect(host.ledger.operations.isEmpty)
         #expect(host.errorMessage == nil)
     }
-    // SC93: an unusable connection is classified before a reader can turn its fatal error into an object failure.
-    @Test func fatalVerifyReadRaisesOnlyTheConnectionCondition() async throws {
+    // SC99: a fatal rejection ends the causal verification read as well as
+    // raising its banner; it is not a rejection receipt for the earlier close.
+    @Test func fatalVerifyReadFinishesVerificationAndKeepsTheConnectionCondition() async throws {
         let (host, transport, fixture) = await setup(); defer { withExtendedLifetime(fixture) {} }
         _ = host.closeRuntimes(["a"])
         host.advanceLedgerClock(to: Date().addingTimeInterval(61))
         let request = try #require(transport.verifyReads.last)
         await transport.emit(["type": "protocol.error", "code": "invalid_message", "message": "bad", "requestId": request["requestId"]!])
-        #expect(host.closingRuntimeIds == ["a"])
-        #expect(host.objectError("a") == nil)
+        #expect(host.closingRuntimeIds.isEmpty)
+        #expect(host.objectError("a") == OperationKinds.quitUnconfirmed.reason)
         #expect(host.feedback.banner != nil)
     }
 

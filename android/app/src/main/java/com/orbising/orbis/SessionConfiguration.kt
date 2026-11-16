@@ -16,7 +16,7 @@ data class SessionConfigurationSnapshot(val agentKind: String, val cwd: String, 
 
 data class SessionConfigurationState(val agentKind: String = "", val cwd: String = "", val requestId: String? = null,
     val snapshot: SessionConfigurationSnapshot? = null, val proposed: SessionConfigurationValues? = null, val error: String? = null,
-    val launchError: String? = null) {
+    val launchError: String? = null, val waitingForLaunchJournal: Boolean = false) {
     val values get() = proposed ?: snapshot?.values ?: SessionConfigurationValues()
     val model get() = snapshot?.catalog?.models?.firstOrNull { it.value == values.model }
 }
@@ -40,12 +40,16 @@ internal fun SessionConfigurationState.admitConfiguredLaunch(
     val failure = when (block) {
         ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED -> L10n.tr("请先读取并确认启动配置")
         ConfiguredLaunchBlock.JOURNAL_LOADING, ConfiguredLaunchBlock.PREVIOUS_LAUNCH -> L10n.tr("请先核对上一次启动及首句结果")
-        null -> return ConfiguredLaunchAdmission(copy(launchError = null), null)
+        null -> return ConfiguredLaunchAdmission(copy(launchError = null, waitingForLaunchJournal = false), null)
     }
-    val next = if (block == ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED) copy(error = failure, launchError = null)
-        else copy(launchError = failure)
+    val next = if (block == ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED) copy(error = failure, launchError = null, waitingForLaunchJournal = false)
+        else copy(launchError = failure, waitingForLaunchJournal = true)
     return ConfiguredLaunchAdmission(next, block)
 }
+
+/** SC100: a settled journal releases only the warning that was waiting on that journal. */
+internal fun SessionConfigurationState.reconcileLaunchJournal(loaded: Boolean, present: Boolean): SessionConfigurationState =
+    if (waitingForLaunchJournal && loaded && !present) copy(launchError = null, waitingForLaunchJournal = false) else this
 
 internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject {
     model?.let { put("model", it) }; thinking?.let { put("thinking", it) }

@@ -1951,17 +1951,7 @@ class RelayReducer(
         if (message.hasUnsupportedProtocolVersion()) {
             return state.connectionFailure(FeedbackLevel.F4, PROTOCOL_VERSION_MISMATCH_ERROR, FeedbackCondition.VERSION)
         }
-        if (messageType == "protocol.error" && message.string("code") in CONNECTION_ACTION_PROTOCOL_CODES) {
-            val code = message.string("code")
-            val failed = when (code) {
-                "unauthorized", "device_mismatch", "runtime_mismatch" -> state.connectionFailure(FeedbackLevel.F4, L10n.tr("这台手机的配对已失效"), FeedbackCondition.PAIRING)
-                "host_disabled" -> state.presentFeedback(FeedbackLevel.F4, L10n.tr("这台电脑的连接已停用，请联系管理员"), "computer-disabled", FeedbackCondition.OTHER, FeedbackAction.SETTINGS)
-                else -> state.connectionFailure(FeedbackLevel.F4, if (code == "protocol_version_mismatch") PROTOCOL_VERSION_MISMATCH_ERROR else L10n.tr("无法读取电脑端消息，请更新手机和电脑端 Orbis"), FeedbackCondition.VERSION)
-            }
-            // Host can reject a command's protocol version without closing this connection.
-            // The banner and the correlated operation must both receive that definite result.
-            return rejectProtocolOperation(failed, message)
-        }
+        if (messageType == "protocol.error") return rejectProtocolOperation(state, message, channel)
         // ADR-0049 §7 L5：账本发起的核对读取只交回账本。
         if (channel != null) message.string("requestId")?.takeIf { it in state.ledgerReads }?.let { requestId ->
             return state.ledgerReadReply(requestId, message, System.currentTimeMillis())
@@ -2334,7 +2324,7 @@ class RelayReducer(
                 val current = state.sessionConfiguration
                 if (message.string("requestId") != current.requestId) state else {
                     val snapshot = json.decodeFromJsonElement<SessionConfigurationSnapshot>(message)
-                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null, launchError = null))
+                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null, launchError = null, waitingForLaunchJournal = false))
                 }
             }
             // Host 明确拒绝了一次范围请求（越界/读盘失败/身份变了）：这条 pull 传输以确定原因收场。
@@ -2351,84 +2341,74 @@ class RelayReducer(
                     error = L10n.tr("下载失败：电脑无法读取这个文件"),
                 )))
             }
-            "protocol.error" -> {
-                val commandId = message.string("commandId")
-                if (commandId?.startsWith("session-sync-ack:") == true) return state
-                // SC91：例如旧 Host 对已被替换的能力探测迟到回应 invalid_request。
-                if (isStaleConnectionError(message.string("requestId"), message.string("code"))) return state
-                // Older Hosts route an already-ended download's cancellation to a runtime.
-                // Local pause/deletion is complete; only this misrouted cancellation is harmless.
-                if (commandId?.startsWith("artifact-cancel:") == true && message.string("code") == "runtime_offline") return state
-                // 账本里的操作只由账本结算，并由种类给出带上下文的提示（L1）。
-                if (commandId != null && state.ledger.operation(commandId) != null) {
-                    return rejectProtocolOperation(state, message)
-                }
-                val requestId = message.string("requestId")
-                if (requestId != null && requestId == state.sessionConfiguration.requestId)
-                    return state.copy(sessionConfiguration = state.sessionConfiguration.copy(requestId = null, error = message.string("message") ?: L10n.tr("配置未确认")))
-                if (requestId != null && state.ledger.operation(requestId) != null) {
-                    return state.ledgerReceipt(requestId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
-                        message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("请重试"))), System.currentTimeMillis())
-                }
-                val syncError = protocolErrorText(message.string("code"), message.string("message"))
-                if (requestId != null && state.agentStateReads[requestId]?.scope == "agent") {
-                    return state.failHomeRead(requestId, syncError)
-                }
-                if (requestId != null && requestId == state.agentProviders.requestId) {
-                    return state.copy(agentProviders = state.agentProviders.stopOperation(syncError))
-                }
-                // 先按 requestId 归位进程激活类请求（spec §8：错误带回 requestId）。
-                val listCleared = requestId?.takeIf { it in state.sessionListRequests }
-                val activateCleared = requestId?.takeIf { it in state.sessionActivateRequests }
-                val browseCleared = requestId?.takeIf { state.sessionBrowse?.requestId == it }
-                if (listCleared != null || activateCleared != null || browseCleared != null) {
-                    return state.copy(
-                        sessionListRequests = listCleared?.let { state.sessionListRequests - it } ?: state.sessionListRequests,
-                        sessionListRequestEpochs = listCleared?.let { state.sessionListRequestEpochs - it } ?: state.sessionListRequestEpochs,
-                        sessionActivateRequests = activateCleared?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
-                    sessionActivateTargets = activateCleared?.let { state.sessionActivateTargets - it } ?: state.sessionActivateTargets,
-                        sessionBrowse = if (browseCleared != null) {
-                            state.sessionBrowse?.copy(isLoading = false, error = syncError)
-                        } else {
-                            state.sessionBrowse
-                        },
-                        sessionListError = if (browseCleared != null) state.sessionListError else syncError,
-                    )
-                }
-                rejectProtocolOperation(state, message)
-            }
             else -> state
         }
     }
 
-    /** A scoped rejection completes its operation; a failed verification read cannot reject other operations. */
-    private fun rejectProtocolOperation(state: RemoteState, message: JsonObject): RemoteState {
+    /** SC99: connection feedback and every correlated owner receive the same definite rejection. */
+    private fun rejectProtocolOperation(state: RemoteState, message: JsonObject, channel: String?): RemoteState {
         val commandId = message.string("commandId")
         val requestId = message.string("requestId")
-        val operationId = listOfNotNull(commandId, requestId).firstOrNull { state.ledger.operation(it) != null }
-        if (operationId != null) {
-            return state.ledgerReceipt(operationId, LedgerReceipt.Failed(LedgerRejection(message.string("code") ?: "failure",
-                message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), System.currentTimeMillis())
+        val code = message.string("code")
+        val now = System.currentTimeMillis()
+        var next = when (code) {
+            "unauthorized", "device_mismatch", "runtime_mismatch" -> state.connectionFailure(FeedbackLevel.F4, L10n.tr("这台手机的配对已失效"), FeedbackCondition.PAIRING)
+            "host_disabled" -> state.presentFeedback(FeedbackLevel.F4, L10n.tr("这台电脑的连接已停用，请联系管理员"), "computer-disabled", FeedbackCondition.OTHER, FeedbackAction.SETTINGS)
+            "protocol_version_mismatch", "invalid_message" -> state.connectionFailure(FeedbackLevel.F4,
+                if (code == "protocol_version_mismatch") PROTOCOL_VERSION_MISMATCH_ERROR else L10n.tr("无法读取电脑端消息，请更新手机和电脑端 Orbis"), FeedbackCondition.VERSION)
+            else -> state
         }
-        val error = protocolErrorText(message.string("code"), message.string("message"))
-        if (requestId != null && requestId == state.sessionConfiguration.requestId)
-            return state.copy(sessionConfiguration = state.sessionConfiguration.copy(requestId = null, error = error))
-        val id = commandId ?: return state
-        if (id.startsWith("session-sync-ack:")) return state
-        if (id.startsWith("artifact-cancel:") && message.string("code") == "runtime_offline") return state
-        val sync = state.sessionSyncCommands[id]
-        if (sync != null) return state.failSessionSync(id, error,
-            transient = isTransientSessionSyncFailure(message.string("code")), code = message.string("code"))
-        if (id.isSessionSyncCommandId()) return state
-        val runtime = state.pendingCommands[id]
-        val download = id in state.pendingDownloads
-        val pendingSend = state.pendingSends.values.any { it.commandId == id }
-        if (runtime == null && !download && !pendingSend) return state // F0: no request owns this rejection.
+
+        // L5: an unsuccessful verification read still ends and verifies only fresh authority.
+        // Its error is not a failed receipt for another write operation.
+        if (channel != null && requestId != null && requestId in next.ledgerReads)
+            return next.ledgerReadReply(requestId, message, now)
+        if (requestId?.startsWith(OperationKinds.VERIFY_REQUEST_PREFIX) == true) return next
+        if (isStaleConnectionError(requestId, code)) return next
+
+        val operationIds = listOfNotNull(commandId, requestId).distinct().filter { next.ledger.operation(it) != null }
+        for (operationId in operationIds) {
+            next = next.ledgerReceipt(operationId, LedgerReceipt.Failed(LedgerRejection(code ?: "failure",
+                message.string("message")?.takeIf(String::isNotBlank) ?: L10n.tr("电脑端无法完成操作。"))), now)
+        }
+        val error = protocolErrorText(code, message.string("message"))
+        if (requestId != null) {
+            if (requestId == next.sessionConfiguration.requestId)
+                next = next.copy(sessionConfiguration = next.sessionConfiguration.copy(requestId = null, error = error))
+            if (next.agentStateReads[requestId]?.scope == "agent") next = next.failHomeRead(requestId, error)
+            if (requestId == next.agentProviders.requestId)
+                next = next.copy(agentProviders = next.agentProviders.stopOperation(error))
+            val list = requestId in next.sessionListRequests
+            val activate = requestId in next.sessionActivateRequests
+            val browse = next.sessionBrowse?.requestId == requestId
+            // Launch settlement can already remove its request while its navigation target remains.
+            if (list || activate || browse || requestId in next.sessionActivateTargets) next = next.copy(
+                sessionListRequests = next.sessionListRequests - requestId,
+                sessionListRequestEpochs = next.sessionListRequestEpochs - requestId,
+                sessionActivateRequests = next.sessionActivateRequests - requestId,
+                sessionActivateTargets = next.sessionActivateTargets - requestId,
+                sessionBrowse = if (browse) next.sessionBrowse?.copy(isLoading = false, error = error) else next.sessionBrowse,
+                sessionListError = if (list || activate) error else next.sessionListError,
+            )
+        }
+
+        val id = commandId ?: return next
+        // Ledger operations own their presentation; legacy command waiters are independent owners.
+        if (id in operationIds || id.startsWith("session-sync-ack:")) return next
+        // Older Hosts misroute cancellation of an already-ended download to a runtime.
+        if (id.startsWith("artifact-cancel:") && code == "runtime_offline") return next
+        if (id in next.sessionSyncCommands) return next.failSessionSync(id, error,
+            transient = isTransientSessionSyncFailure(code), code = code)
+        if (id.isSessionSyncCommandId()) return next
+        val runtime = next.pendingCommands[id]
+        val download = id in next.pendingDownloads
+        val pendingSend = next.pendingSends.values.any { it.commandId == id }
+        if (runtime == null && !download && !pendingSend) return next // F0: no request owns this rejection.
         val result = CommandResult(ok = false, status = "failure", error = error)
-        val settled = state.copy(
-            pendingCommands = state.pendingCommands - id,
-            commandResults = state.commandResults + (id to result),
-            pendingSends = state.pendingSends.withCommandResult(id, result, System.currentTimeMillis()),
+        val settled = next.copy(
+            pendingCommands = next.pendingCommands - id,
+            commandResults = next.commandResults + (id to result),
+            pendingSends = next.pendingSends.withCommandResult(id, result, now),
         )
         return when {
             download -> settled.downloadFailure(id, error)

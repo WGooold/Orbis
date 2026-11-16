@@ -88,9 +88,14 @@ final class HostConnection: ObservableObject {
     private func composerFeedback(_ message: String, newSession: Bool = false) {
         if !newSession, let runtime = selectedRuntime {
             composerErrors[runtime.runtimeId] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
-        } else { sessionLaunchError = FeedbackText.reason(message) }
+        } else {
+            sessionLaunchError = FeedbackText.reason(message)
+            sessionLaunchErrorIsValidation = true
+        }
     }
-    func clearSessionLaunchError() { if sessionLaunchError != nil { sessionLaunchError = nil } }
+    func clearSessionLaunchValidationError() {
+        if sessionLaunchErrorIsValidation { sessionLaunchError = nil }
+    }
     private func inlineFeedback(_ message: String, runtimeId: String? = nil) {
         if let id = runtimeId ?? selectedRuntimeId, let runtime = runtimeIndex[id] {
             objectErrors[id] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
@@ -140,7 +145,10 @@ final class HostConnection: ObservableObject {
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
     @Published private(set) var sessionConfigurationError: String?
-    @Published private(set) var sessionLaunchError: String?
+    @Published private(set) var sessionLaunchError: String? {
+        didSet { sessionLaunchErrorIsValidation = false }
+    }
+    private var sessionLaunchErrorIsValidation = false
     private var configuredLaunchId: String?
     private var configurationTimeout: Task<Void, Never>?
     private let launchJournalRoot: URL
@@ -254,6 +262,7 @@ final class HostConnection: ObservableObject {
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
         }
+        sessionLaunchError = nil
         configuredLaunchId = id; activationRequestId = id; pendingActivation = "new"; activatingSessionId = "new"
         launching = LaunchState(requestId: id, placeholder: placeholder, target: ["type": "new", "agentKind": agent, "cwd": cwd],
                                 title: firstMessage.isEmpty ? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话")) : String(firstMessage.prefix(22)),
@@ -1815,7 +1824,6 @@ final class HostConnection: ObservableObject {
     }
     /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
-        sessionLaunchError = nil
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
         if !sessionConfigurationSupported && hasLaunchJournal {
@@ -1861,6 +1869,7 @@ final class HostConnection: ObservableObject {
             ledger.remove(requestId); handleLedger([])
             sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); return
         }
+        sessionLaunchError = nil
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”；恢复已有会话时先显示缓存历史（V13）。
@@ -2788,35 +2797,64 @@ final class HostConnection: ObservableObject {
         if connectionEvents.count > 80 { connectionEvents.removeFirst(connectionEvents.count - 80) }
     }
 
-    /// A fatal connection condition can also carry a final rejection for one
-    /// operation. Reader failures are not evidence that unrelated writes failed.
-    private func rejectCorrelatedProtocolOperation(_ message: [String: Any]) {
+    /// Both fatal and ordinary errors settle every correlated owner. A failed
+    /// reconciliation read is not a rejection receipt for unrelated writes.
+    @discardableResult
+    private func rejectCorrelatedProtocolOperation(_ message: [String: Any]) -> Bool {
         let commandId = message["commandId"] as? String
         let requestId = message["requestId"] as? String
         let reason = message["message"] as? String ?? L10n.tr("电脑端无法完成操作。")
-        if let opId = commandId ?? requestId, ledger.operation(opId) != nil {
+        if let requestId, let read = ledgerReads.removeValue(forKey: requestId) {
+            consumeLedgerRead(message, type: "protocol.error", read: read)
+            return true
+        }
+        // A verification reply keeps its read ownership after completion. A
+        // duplicate cannot reinterpret its echoed commandId as a write receipt.
+        if requestId?.hasPrefix(OperationKinds.verifyRequestPrefix) == true { return true }
+        var owned = false
+        // SC99: command and request identities can refer to different owners.
+        // Consume each once, without making a reader rejection a write receipt.
+        let ledgerOwnsCommand = commandId.flatMap { ledger.operation($0) } != nil
+        var seen = Set<String>()
+        for opId in [commandId, requestId].compactMap({ $0 }) where seen.insert(opId).inserted && ledger.operation(opId) != nil {
             handleLedger(ledger.receipt(opId, connection: ledger.connection,
                 .failed(.init(message["code"] as? String ?? "failure", reason)), now: Date()))
-        } else if let commandId, pendingSends.owns(commandId: commandId) {
+            owned = true
+        }
+        if let commandId, !ledgerOwnsCommand, pendingSends.owns(commandId: commandId) {
             pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String, error: reason)
             publishMessages()
-        } else if let commandId {
+            owned = true
+        }
+        if let commandId {
+            var historyRead = false
             if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
                 let pending = pendingSyncs[syncId]
                 finishSync(syncId, readPhase: .failed)
-                if let pending, pending.range == "history", pending.historyPrefetch == nil {
+                historyRead = pending?.range == "history"
+                if let pending, historyRead, pending.historyPrefetch == nil {
                     historyErrors[pending.runtimeId] = FeedbackText.reason(reason)
                 }
+                owned = true
             }
-            finishAction(commandId, succeeded: false, message: reason)
+            if !historyRead, runtimeActions[commandId] != nil {
+                finishAction(commandId, succeeded: false, message: reason)
+                owned = true
+            }
         }
         if let requestId, requestId == sessionConfigurationRequest {
-            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(reason)
+            configurationTimeout?.cancel()
+            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(reason); owned = true
         }
-        if let requestId, requestId == activationRequestId { clearActivation() }
+        if let requestId, requestId == activationRequestId { clearActivation(); owned = true }
+        if let requestId, requestId == sessionListRequest {
+            sessionListRequest = nil; owned = true
+        }
         if let requestId, requestId == browse?.requestId {
             browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(reason)
+            owned = true
         }
+        return owned
     }
 
     private func receive(_ message: [String: Any], channel: String?, payload: Data? = nil, ownership: UUID? = nil) async {
@@ -3106,38 +3144,13 @@ final class HostConnection: ObservableObject {
                 menuErrors[result.runtimeId + "\u{0}" + result.name] = L10n.tr("命令选项读取失败，请重新打开菜单")
                 return
             }
-            if let requestId = message["requestId"] as? String, requestId == sessionConfigurationRequest {
-                sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(message["message"] as? String ?? L10n.tr("配置未确认")); return
-            }
             let commandId = message["commandId"] as? String
             if commandId?.hasPrefix("session-sync-ack:") == true { return }
             // SC91：例如旧 Host 对已被替换的能力探测迟到回应 invalid_request（设计规范 F0 静默）。
             if isStaleConnectionError(message) { return }
             if message["code"] as? String == "session_sync_device_rejected", let commandId,
                handledSyncRejections.contains(commandId) { return }
-            if let commandId, pendingSends.owns(commandId: commandId), ledger.operation(commandId) == nil {
-                pendingSends.commandResult(commandId, ok: false, status: message["code"] as? String,
-                                           error: message["message"] as? String)
-                publishMessages(); return
-            }
-            if let opId = commandId ?? message["requestId"] as? String, ledger.operation(opId) != nil {
-                let rejection = AppLedger.Rejection(message["code"] as? String ?? "failure", message["message"] as? String ?? L10n.tr("电脑端无法完成操作。"))
-                handleLedger(ledger.receipt(opId, connection: ledger.connection, .failed(rejection), now: Date())); return
-            }
-            if let syncId = pendingSyncs.first(where: { $0.value.commandId == commandId })?.key {
-                let pending = pendingSyncs[syncId]
-                finishSync(syncId, readPhase: .failed)
-                if let pending, pending.range == "history" {
-                    if pending.historyPrefetch == nil { historyErrors[pending.runtimeId] = FeedbackText.reason(message["message"] as? String ?? L10n.tr("历史读取失败，请重试。")) }
-                    return
-                }
-            }
-            if let commandId { finishAction(commandId, succeeded: false, message: message["message"] as? String) }
-            if let requestId = message["requestId"] as? String, requestId == activationRequestId { clearActivation() }
-            if let requestId = message["requestId"] as? String, requestId == browse?.requestId {
-                browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(message["message"] as? String ?? L10n.tr("目录不可读"))
-                return
-            }
+            if rejectCorrelatedProtocolOperation(message) { return }
             recordConnectionEvent("protocol.error.unowned: " + String(describing: message))
         default:
             // A known reader may decline a late, disconnected or out-of-scope

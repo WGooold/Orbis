@@ -115,6 +115,8 @@ struct LaunchLedgerTests {
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "/invalid"))
         #expect(fixture.host.sessionConfigurationError == nil)
         #expect(fixture.host.sessionLaunchError == L10n.tr("请从命令菜单选择斜杠命令。"))
+        fixture.host.clearSessionLaunchValidationError()
+        #expect(fixture.host.sessionLaunchError == nil)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "valid first sentence"))
     }
 
@@ -143,6 +145,69 @@ struct LaunchLedgerTests {
         #expect(fixture.host.sessionConfigurationError == "仅支持已实现的协议 18 / 19")
         #expect(fixture.host.sessionLaunchError == nil)
         #expect(fixture.host.feedback.banner?.action == .update)
+    }
+
+    // SC99: both correlation identities own a result, even when commandId is
+    // an in-flight sentence and requestId is a separate configured launch.
+    @Test(arguments: ["protocol_version_mismatch", "session_configuration_failed"])
+    func rejectionSettlesBothTheCommandAndRequestOwners(code: String) async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        await fixture.transport.online("source")
+        fixture.host.selectRuntime("rt-source")
+        #expect(fixture.host.sendMessage("already sending"))
+        let send = try #require(fixture.host.pendingSends.items.first)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "waiting for launch"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "protocol.error", "commandId": send.commandId, "requestId": id,
+            "code": code, "message": "launch rejected"])
+        #expect(fixture.host.launching?.failure == "launch rejected")
+        #expect(fixture.host.activatingSessionId == nil)
+        #expect(fixture.host.pendingSends.item(send.messageId)?.state == .failed("launch rejected"))
+        #expect(fixture.host.pendingSends.items.last?.state == .failed(L10n.tr("会话启动未完成，消息未发送")))
+        #expect((fixture.host.feedback.banner != nil) == (code == "protocol_version_mismatch"))
+    }
+
+    // SC99: a command-owned close and request-owned launch are independent
+    // ledger operations; each receives the explicit rejection exactly once.
+    @Test(arguments: ["protocol_version_mismatch", "session_configuration_failed"])
+    func rejectionSettlesBothLedgerIdentities(code: String) async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        await fixture.transport.online("source")
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "rt-source", "sequence": 1,
+            "event": ["type": "runtime.capabilities", "capabilities": ["commands": [["name": "quit", "source": "builtin"]]]]])
+        #expect(fixture.host.closeRuntimes(["rt-source"]) == ["rt-source"])
+        let commandId = try #require(fixture.transport.sent.last { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }?["commandId"] as? String)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: ""))
+        await fixture.store.waitForPendingEvents()
+        let requestId = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "protocol.error", "commandId": commandId, "requestId": requestId,
+            "code": code, "message": "operations rejected"])
+        #expect(fixture.host.closingRuntimeIds.isEmpty)
+        #expect(fixture.host.objectError("rt-source") == L10n.tr("关闭会话未完成：{0}", "operations rejected"))
+        #expect(fixture.host.launching?.failure == "operations rejected")
+        #expect(fixture.host.activatingSessionId == nil)
+    }
+
+    // SC100: editing can dismiss input validation, but a previous launch still
+    // needs reconciliation. An inadmissible retry cannot erase that explanation.
+    @Test func previousLaunchHintSurvivesEditingAndAnInadmissibleRetry() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
+            "phase": "failed", "error": "launch unavailable"])
+        fixture.host.stopFollowingLaunch()
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        await fixture.store.waitForPendingEvents()
+        let hint = L10n.tr("请先核对上一次启动及首句结果")
+        #expect(fixture.host.sessionLaunchError == hint)
+        fixture.host.clearSessionLaunchValidationError()
+        #expect(fixture.host.sessionLaunchError == hint)
+        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        #expect(fixture.host.sessionLaunchError == hint)
     }
 
     // PERF-08 / SC73: UI admission and draft state stay responsive while the

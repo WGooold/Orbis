@@ -158,3 +158,17 @@ iOS 原位与连接集成用例为 `StoreTests.rejectedStopAndOfflineCloseStayOn
 自动验证：Android 首轮 19 项中 10 项预期失败，补充验证 25 项中 5 项预期失败，修复后最终 216 项通过；iOS 7 项修复前回归暴露问题，最终 162 项领域回归及另 2 项请求 ID 回归通过，应用目标编译通过。文案生成校验通过。首次失败、夹具修正、源码摘要、构建租约与清理记录见[本轮证据](../../.artifacts/feedback-review-20261116/verification.json)。
 
 部署：未部署；本轮未生成安装候选、未运行设备交互或真实旧 Host / Relay 联测。用户验收：待用户验证。
+
+### 6.5 SC99–SC101：拒绝归属与启动提示生命周期补齐
+
+2026-11-16，继续核对 §6.4 的实现；原始失败及历史验证记录保留。
+
+- SC99：两端的普通与连接级协议拒绝共用各端的结算入口。Android 结束对应目录、激活、浏览、首页模型、供应商及配置请求；两端分别认领 `commandId` / `requestId`，同一回包可结束不同操作。连接横幅与所属请求结果同时保留。账本核对读取优先交回读取器并移除在途记录，只按当前连接的新鲜权威状态核对，不把读取失败当作其他写操作的拒绝回执；已结束读取的旧 ID 重复拒绝也不结算写操作。iOS 历史失败只由同步读取器收尾。
+- SC100：Android 上次启动日志加载完成或结算后，自动解除等待该日志的提示，独立输入与配置错误保留；登记新启动时统一清理旧提示。iOS 编辑只清除输入校验提示，启动恢复提示保留到对应条件解除或合法启动准入完成。Android 新建目标检查失败沿 SC97 留在新建草稿。
+- SC101：Android 未登记的内部机器码及其注记也只留诊断；文件名、路径、自然语言及 WS / QUIC 原因保留。裸蛇形标识按机器码处理，带扩展名或路径的名称保留。此前误标 SC94 的输入与文案用例改回其所属 SC97 / SC98，新增场景使用本节新 ID。
+
+实现与回归：Android `RelayReducer.rejectProtocolOperation`、`SessionConfigurationState.reconcileLaunchJournal`、`HostConnection.validateNewSessionTarget`、`feedbackFailureText`；`CommandRejectionFeedbackTest`、`LaunchFeedbackRegressionTest`、`FeedbackTest`。iOS `HostConnection.rejectCorrelatedProtocolOperation` / `clearSessionLaunchValidationError`、`SessionDraftView`；`LaunchLedgerTests`、`QuitLedgerTests`、`ArchiveLedgerTests`。
+
+自动验证：Android 修复前 11 项中 5 项失败；扩展回归中旧的“连接拒绝不结束浏览”断言失败，保留首次证据并按 SC99 更新为结束浏览且保留横幅；最终 271 项通过。iOS 新回归在修复前触发 9 条失败断言，195 项领域回归通过，补齐旧读取重复拒绝保护后 49 项定向回归通过，两组有交集。两端文案生成校验通过。原始日志、源码摘要、应用编译及构建租约清理见[本轮证据](../../.artifacts/feedback-review-followup-20261116/verification.json)。
+
+部署：未部署，未生成本轮安装候选，未运行设备交互或真实旧 Host / Relay 联测。共享 QA MCP 初始化被拒绝连接，本轮未登记；沿用同一 Case 的新轮次要求保存在本轮证据中，候选发布后再登记。用户验收：待用户验证。

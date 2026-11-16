@@ -57,7 +57,7 @@ internal fun RemoteState.conversationFailure(runtimeId: String?, message: String
 }
 /** Draft and composer failures stay on their input surface; session cards retain their own operation result. */
 internal fun RemoteState.composerFailure(runtimeId: String?, message: String): RemoteState {
-    if (runtimeId == null) return copy(sessionConfiguration = sessionConfiguration.copy(launchError = message.takeIf(String::isNotBlank)))
+    if (runtimeId == null) return copy(sessionConfiguration = sessionConfiguration.copy(launchError = message.takeIf(String::isNotBlank), waitingForLaunchJournal = false))
     val conversation = conversations[runtimeId] ?: RuntimeConversation()
     return copy(conversations = conversations + (runtimeId to conversation.copy(operationError = message.takeIf(String::isNotBlank))))
 }
@@ -90,16 +90,17 @@ private val opaqueFeedbackCodes = CONNECTION_ACTION_PROTOCOL_CODES + setOf(
     "assistant_message_not_available", "file_not_available", "file_not_a_file", "file_size_invalid", "artifact_changed",
     "artifact_chunk_invalid", "artifact_size_mismatch",
 )
+private val opaqueFeedbackCode = "(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + "|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)"
 private val opaqueFeedbackToken = Regex(
-    "(?<![A-Za-z0-9/._\\\\-])(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + ")(?![A-Za-z0-9/._\\\\-])",
+    "(?<![A-Za-z0-9/._\\\\-])" + opaqueFeedbackCode + "(?![A-Za-z0-9/._\\\\-])",
     RegexOption.IGNORE_CASE,
 )
 private val opaqueFeedbackAnnotation = Regex(
-    "[（(]\\s*(?:" + opaqueFeedbackCodes.joinToString("|") { Regex.escape(it) } + ")\\s*[）)]",
+    "[（(]\\s*" + opaqueFeedbackCode + "\\s*[）)]",
     RegexOption.IGNORE_CASE,
 )
 
-/** Exact internal codes are diagnostic-only; readable reasons may contain paths, filenames or transport names. */
+/** SC101: machine-code tokens are diagnostic-only; paths, filenames and readable transport reasons remain intact. */
 internal fun feedbackFailureText(value: String?, fallback: String): String {
     val text = value?.trim()?.takeIf(String::isNotEmpty) ?: return fallback
     if (text.lowercase(java.util.Locale.ROOT) in opaqueFeedbackCodes) return fallback
