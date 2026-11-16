@@ -655,6 +655,8 @@ private final class PreviewTransport: OrbisTransport {
     var sequence = 0
     private var archivedSessionIds: Set<String> = []
     private var providerRevision = 1
+    /// Each repeated subscription read reports one point less, so a refresh is observable.
+    private var quotaReads = 0
     private var viewportTail = 0
     private var viewportSeeded = false
     private var fullEntryFailed = false
@@ -1111,11 +1113,12 @@ private final class PreviewTransport: OrbisTransport {
             if let format = object["stateFormat"] { snapshot["stateFormat"] = format }
             receive?(snapshot, "ctl")
         } else if object["type"] as? String == "provider.subscription", let kind = object["kind"] as? String {
+            let used = quotaReads; quotaReads += 1
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(900))
                 self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
                     "quota": ["checkedAt": 1793232000000, "windows": [
-                        ["name": "five_hour", "remainingPercent": kind == "codex" ? 82 : 64, "resetsAt": 1793242000000],
+                        ["name": "five_hour", "remainingPercent": (kind == "codex" ? 82 : 64) - used, "resetsAt": 1793242000000],
                         ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
             }
         } else if object["type"] as? String == "provider.switch", let kind = object["kind"] as? String, let id = object["id"] as? String {

@@ -103,6 +103,9 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ProviderQuotaPair(state, kind, preview, canQuery = canUse,
                     onQuery = { selected -> onQuerySubscription(selected, hostId) })
+                state.subscriptionQuotas[kind]?.takeIf { it.providerId == preview?.id }?.error?.let {
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("provider-quota-error"))
+                }
                 operation?.error?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
                 state.providerCatalogProblems[kind]?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
                 val title = when {
@@ -400,13 +403,15 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
                             Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
                         }
                     }
-                    Text(window?.resetsAt?.let { L10n.tr("重置 {0}", DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it))) }
-                        ?: if (loading) L10n.tr("查询中") else L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
+                    // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
+                    Text(if (loading) L10n.tr("查询中") else window?.resetsAt?.let { L10n.tr("重置 {0}", DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it))) }
+                        ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            if (snapshot?.error != null || !loading && snapshot?.quota == null) NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
-                L10n.tr("查询订阅配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
+            // Always present: every tap after the automatic first query is a fresh subscription read.
+            NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
+                L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
         }
     }
 }

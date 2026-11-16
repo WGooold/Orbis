@@ -62,6 +62,22 @@ class ProviderDialInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf(profiles("codex")[1] to "dial-host"),changes) }
         capture("light")
     }
+    /** S36 / SC57: refresh is not hidden once a reading exists; each tap reaches a new query and failures stay visible. */
+    @Test fun quotaRefreshStaysAvailableAfterTheFirstReading() {
+        val reading=SubscriptionQuota(1_000,listOf(SubscriptionWindow("five_hour",82.0,null),SubscriptionWindow("seven_day",35.0,null)))
+        val state=mutableStateOf(ready().copy(subscriptionQuotas=mapOf("codex" to ProviderQuotaSnapshot("codex-local",reading))))
+        show(state)
+        repeat(2) { compose.onNodeWithTag("provider-query").assertIsEnabled().performClick() }
+        compose.runOnIdle { assertEquals(listOf("codex-local","codex-local"),queries.map { it.id }) }
+        compose.runOnIdle { state.value=state.value.copy(agentProviders=state.value.agentProviders.copy(hostId="dial-host",
+            quotaRequestId="query",quotaProviderId="codex-local",quotaKind="codex")) }
+        compose.onNodeWithTag("provider-query").assertIsNotEnabled()
+        compose.onAllNodesWithText("查询中").assertCountEquals(2)
+        compose.runOnIdle { state.value=state.value.copy(agentProviders=state.value.agentProviders.copy(quotaRequestId=null),
+            subscriptionQuotas=mapOf("codex" to ProviderQuotaSnapshot("codex-local",reading,"登录过期"))) }
+        compose.onNodeWithTag("provider-quota-error").assertTextEquals("登录过期")
+        compose.onNodeWithTag("provider-query").assertIsEnabled()
+    }
     @Test fun hostChangesAndDisconnectionCannotConfirmAStalePreview() {
         val state=mutableStateOf(ready());show(state)
         progress("provider-arc",1f);compose.onNodeWithTag("provider-apply").performClick()

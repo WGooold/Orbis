@@ -321,7 +321,8 @@ struct AgentProvidersView: View {
                     }
                     OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新配额"), compact: true) {
                         if let key = host.hostKey { host.querySubscription(provider, expectedHostKey: key) }
-                    }.disabled(host.queryingQuota || !host.connected).accessibilityIdentifier("provider-quota-refresh")
+                    // Same precondition as querySubscription: an enabled refresh always sends a fresh read.
+                    }.disabled(!host.canChangeProvider(for: provider.kind)).accessibilityIdentifier("provider-quota-refresh")
                 }
                 .overlay(alignment: .bottomLeading) {
                     if host.quotaProviderId == provider.id, let error = host.quotaError { Text(error).font(.orbisCaption()).foregroundStyle(palette.error) }

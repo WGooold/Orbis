@@ -3916,6 +3916,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(refresh.waitForExistence(timeout: 8))
         let action = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "provider-action-")).firstMatch
         let before = action.label
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
         refresh.tap()
         XCTAssertTrue(app.staticTexts["82"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["35"].exists)
@@ -3923,6 +3924,11 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["provider-quota-five_hour"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["provider-quota-seven_day"].exists)
         capture("provider-two-quota-windows-dark", app: app)
+        // A reading never retires the refresh: the next tap reaches a new read (the preview reports one point less).
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+        refresh.tap()
+        XCTAssertTrue(app.staticTexts["81"].waitForExistence(timeout: 8))
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
     }
 
     // S28 / SC48 and S29 / SC49: verify active protocol reporting and all three saved modes.
