@@ -674,10 +674,10 @@ private final class PreviewTransport: OrbisTransport {
     private var claudeIdentityStage = 0
     private var claudeIdentity: Bool { ProcessInfo.processInfo.arguments.contains("--preview-claude-identity") }
     private var historyPrepend: Bool { screen == "tool" && PreviewHistoryPrependProbe.enabled }
-
-    func changeList(_ operation: String) {
     /// IOS-CHAT-13-R5: prose after a tool call splits the final reply; its anchors move to the new card.
     private var changeAnchorHandedOff = false
+
+    func changeList(_ operation: String) {
         listMutation = operation
         if operation == "insert" && screen != "drawer" {
             receive?(["type": "runtime.online", "runtime": ["runtimeId": "preview-new", "sessionId": "session-new",
@@ -860,8 +860,6 @@ private final class PreviewTransport: OrbisTransport {
                "entries": entries, "display": ["projectionVersion": 3, "entries": display],
                "live": ["complete": true, "messages": keyboardLive, "tools": []]])
     }
-    func advanceViewport() {
-        appendViewportContent()
     func handOffChangeAnchor() {
         changeAnchorHandedOff = true
         let index = messages.count - 1
@@ -876,6 +874,8 @@ private final class PreviewTransport: OrbisTransport {
                                                                  "kind": "message", "message": messages[index]]]],
                "live": ["complete": true, "messages": [], "tools": []]])
     }
+    func advanceViewport() {
+        appendViewportContent()
         if keyboardStream { scheduleViewportBatch() }
     }
     func scheduleViewportBatch() {
