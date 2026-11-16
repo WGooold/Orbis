@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check app-local dyld dependencies without Xcode's injected framework paths."""
 
+import importlib.util
 import plistlib
 import subprocess
 import sys
@@ -26,7 +27,14 @@ def load_commands(binary):
 
 def check_bundle(app):
     with (app / "Info.plist").open("rb") as stream:
-        executable = app / plistlib.load(stream)["CFBundleExecutable"]
+        info = plistlib.load(stream)
+    # Simulator APNs entitlements are simulated, not included in its code signature.
+    if info.get("DTPlatformName") != "iphonesimulator":
+        spec = importlib.util.spec_from_file_location("ios_push_environment", Path(__file__).with_name("ios-push-environment.py"))
+        push = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(push)
+        push.verify_environment(app)
+    executable = app / info["CFBundleExecutable"]
     visited = set()
 
     def expand(value, loader):
@@ -65,5 +73,5 @@ def check_bundle(app):
 if __name__ == "__main__":
     try:
         check_bundle(Path(sys.argv[1]).resolve())
-    except (IndexError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (IndexError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"iOS bundle check failed: {error}")

@@ -13,7 +13,9 @@ Status: proposed
 
 设置 `ORBIS_APNS_KEY_ID`、`ORBIS_APNS_TEAM_ID`、`ORBIS_APNS_BUNDLE_ID=com.orbising.orbis.ios`、`ORBIS_APNS_PRIVATE_KEY_FILE`（指向私有 `.p8` 文件）与 `ORBIS_APNS_ENVIRONMENT=sandbox|production`（旧部署也可使用 `PI_REMOTE_` 前缀）。`sandbox` 用于开发签名；TestFlight/App Store 分发使用 `production`。Relay 状态文件目录应仅 Relay 服务账号可读写；不要把 .p8 加进仓库、镜像或日志。
 
-Apple Developer 中需为 `com.orbising.orbis.ios` App ID 启用 Push Notifications，更新开发/分发 provisioning profiles，并用相同 Team 签名。Debug 使用 `aps-environment=development`，Release 使用 `production`。普通 alert 不启用 Background Modes / `remote-notification`。
+同时服务本地开发签名与 TestFlight 时，保留 `ORBIS_APNS_ENVIRONMENT=production` 及原有密钥作为旧客户端默认值，另设 `ORBIS_APNS_SANDBOX_KEY_ID` 与 `ORBIS_APNS_SANDBOX_PRIVATE_KEY_FILE`。sandbox 默认复用相同 Team／Bundle ID，也可分别设置 `ORBIS_APNS_SANDBOX_TEAM_ID`／`ORBIS_APNS_SANDBOX_BUNDLE_ID`。两类目的地分别使用相应环境的密钥与 Apple 端点；新建环境限定密钥不能跨环境复用。
+
+Apple Developer 中需为 `com.orbising.orbis.ios` App ID 启用 Push Notifications，更新开发/分发 provisioning profiles，并用相同 Team 签名。推送环境随签名 entitlement：`development` 对应 sandbox，`production` 对应 production；本地开发签名的 Release 优化包同样使用 sandbox。普通 alert 不启用 Background Modes / `remote-notification`。
 
 ## 实现与验证入口
 
@@ -27,6 +29,8 @@ APNs sender、Relay 注册/唤醒接口：[packages/relay/src/apns.ts](../../pac
 - APNS-L11：通知点击先保存 Host，再由界面订阅消费；冷启动不依赖瞬时广播。
 - APNS-L12／L14：新版 App 注册前访问已认证的 `/v1/push/config`，仅在版本与 sandbox／production 环境匹配后上传 token；旧 Relay 返回 404 时停用远程注册。清理请求独立执行。新版 Relay 保留旧 App 的 token-only 格式与 version 1 状态文件兼容；HTTP 重定向不携带凭据继续请求。
 - APNS-L13：模拟器使用独立 QA App ID、随机 Keychain 命名空间与合成配对，实际执行重启、卸载／重装、全新安装和系统通知注入。注入成功不代表 Apple APNs 投递成功。
+- APNS-L15（2026-11-16）：构建从 `CODE_SIGN_ENTITLEMENTS` 生成包内推送配置，注册不再按 Debug／Release 推断环境；缺失或无效配置时停止 token 注册，解除配对及撤销权限仍可清理旧注册。交付包与导出后重新签名包须通过 [ios-push-environment.py](../../scripts/ios-push-environment.py) 的 `verify` 检查，确认包内配置与最终签名一致；回归见 [test_ios_push_environment.py](../../scripts/test_ios_push_environment.py) 和 `PushRegistrationTests`。
+- APNS-L16（2026-11-16）：App 在 `/v1/push/config` 查询自身签名对应的 `environment`；响应保持 version 1 的原有字段。Relay 仅接受已启用环境的注册，按持久化的设备环境选择 APNs sender，以环境和 token 共同去重。旧 App 的无查询请求及 token-only 注册仍使用默认环境；旧 Relay 忽略查询时继续由原匹配检查决定是否注册。
 
 回归入口：[PushRegistrationTests.swift](../../ios/Orbis/Tests/PushRegistrationTests.swift)、[PushLifecycleProbe.swift](../../ios/Orbis/DeviceTests/PushLifecycleProbe.swift)、[push-lifecycle.test.ts](../../packages/relay/src/push-lifecycle.test.ts)、[apns-transport.test.ts](../../packages/relay/src/apns-transport.test.ts)、[push-wake.test.ts](../../packages/host/src/push-wake.test.ts)。
 

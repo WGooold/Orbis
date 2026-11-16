@@ -25,6 +25,49 @@ import Combine
         (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])?["token"] as? String
     }
 
+    // APNS-L15: a locally optimized Release app still receives sandbox tokens
+    // with development signing; missing metadata must not invent an environment.
+    func testBundledSigningEnvironmentIsLoadedAndMissingOrCorruptMetadataIsIgnored() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".bundle")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let info = ["CFBundleIdentifier": "com.orbising.push-environment-test", "CFBundlePackageType": "BNDL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: directory.appendingPathComponent("Info.plist"))
+        let resource = directory.appendingPathComponent("OrbisPushEnvironment.plist")
+        try PropertyListSerialization.data(fromPropertyList: ["aps-environment": "development"], format: .binary, options: 0)
+            .write(to: resource)
+        let bundle = try XCTUnwrap(Bundle(url: directory))
+        XCTAssertEqual(PushRegistrationEnvironment.load(from: bundle), "sandbox")
+        try Data("invalid-plist".utf8).write(to: resource)
+        XCTAssertNil(PushRegistrationEnvironment.load(from: bundle))
+        try FileManager.default.removeItem(at: resource)
+        XCTAssertNil(PushRegistrationEnvironment.load(from: bundle))
+    }
+
+    func testSigningEnvironmentControlsRegistrationAndMissingEnvironmentAllowsCleanup() async throws {
+        for (entitlement, expected) in [("development", "sandbox"), ("production", "production")] {
+            let environment = PushRegistrationEnvironment.resolve(entitlement)
+            XCTAssertEqual(environment, expected)
+            let request = try XCTUnwrap(PushRegistrationTarget(pairing()).request(token: "token", environment: environment))
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as! [String: String]
+            XCTAssertEqual(body["environment"], expected)
+        }
+        for value in [nil, "sandbox", "", "unknown", 1] as [Any?] {
+            XCTAssertNil(PushRegistrationEnvironment.resolve(value))
+        }
+        XCTAssertNil(PushRegistrationTarget(pairing()).request(token: "token", environment: nil))
+        var requests: [URLRequest] = []
+        let state = PushRegistrationCoordinator(environment: nil, send: { requests.append($0); return 204 })
+        defer { state.shutdown() }
+        state.updatePairings([pairing()]); state.setAuthorizationAllowed(true); state.receiveToken("late-token")
+        await Task.yield()
+        XCTAssertTrue(requests.isEmpty)
+        state.setAuthorizationAllowed(false)
+        try await until("cleanup without signing metadata") { requests.count == 1 }
+        XCTAssertNil(token(requests[0]))
+    }
+
     func testFreshInstallAndRelaunchWaitForAPNsInsteadOfReusingStoredToken() async throws {
         var requests: [URLRequest] = []
         let state = PushRegistrationCoordinator(environment: "production", send: { requests.append($0); return 204 })
@@ -205,6 +248,8 @@ import Combine
             XCTAssertEqual(requests.count, count)
             XCTAssertEqual(requests.first?.url?.path, "/v1/push/config")
             XCTAssertEqual(requests.first?.httpMethod, "GET")
+            XCTAssertEqual(URLComponents(url: try XCTUnwrap(requests.first?.url), resolvingAgainstBaseURL: false)?.queryItems,
+                           [URLQueryItem(name: "environment", value: "production")])
             XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer credential")
             if count == 2 {
                 XCTAssertEqual(requests.last?.url?.path, "/v1/push/register")

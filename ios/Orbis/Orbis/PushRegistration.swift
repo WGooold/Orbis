@@ -1,6 +1,26 @@
 import Foundation
 import Combine
 
+/// APNS-L15: optimization and signing are independent (Release can be signed
+/// for development). The build copies the selected signing entitlement here;
+/// packaging verifies the result against the final code signature.
+enum PushRegistrationEnvironment {
+    static func resolve(_ entitlement: Any?) -> String? {
+        switch entitlement as? String {
+        case "development": return "sandbox"
+        case "production": return "production"
+        default: return nil
+        }
+    }
+
+    static func load(from bundle: Bundle = .main) -> String? {
+        guard let url = bundle.url(forResource: "OrbisPushEnvironment", withExtension: "plist"),
+              let data = try? Data(contentsOf: url),
+              let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return resolve(values["aps-environment"])
+    }
+}
+
 /// APNS-L11: retain a notification opened before SwiftUI subscribes at cold start.
 @MainActor final class PushNotificationOpenQueue {
     private let pending = CurrentValueSubject<String?, Never>(nil)
@@ -29,6 +49,13 @@ enum PushRegistrationHTTP {
         if body?["token"] is String {
             var capability = request
             capability.url = request.url?.deletingLastPathComponent().appendingPathComponent("config")
+            if let environment = body?["environment"] as? String,
+               let url = capability.url, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                // APNS-L16: older Relays ignore the query and still advertise
+                // their one environment, so the existing mismatch gate remains.
+                components.queryItems = [URLQueryItem(name: "environment", value: environment)]
+                capability.url = components.url
+            }
             capability.httpMethod = "GET"; capability.httpBody = nil
             let (data, response) = try await session.data(for: capability)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -51,7 +78,8 @@ struct PushRegistrationTarget: Hashable, Codable {
     let relay: RelayCredential
     init(_ pairing: HostPairing) { hostId = pairing.hostId; relay = pairing.relay }
 
-    func request(token: String?, environment: String) -> URLRequest? {
+    func request(token: String?, environment: String?) -> URLRequest? {
+        guard token == nil || ["sandbox", "production"].contains(environment ?? "") else { return nil }
         guard var url = URLComponents(string: relay.relayUrl), url.scheme == "wss",
               url.host?.isEmpty == false, url.user == nil, url.password == nil else { return nil }
         url.scheme = "https"; url.path = "/v1/push/register"; url.query = nil; url.fragment = nil
@@ -60,7 +88,9 @@ struct PushRegistrationTarget: Hashable, Codable {
         request.httpMethod = "POST"
         request.setValue("Bearer \(relay.credential)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": token as Any? ?? NSNull(), "environment": environment])
+        var body: [String: Any] = ["token": token as Any? ?? NSNull()]
+        if let environment { body["environment"] = environment }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return request
     }
 }
@@ -81,12 +111,12 @@ final class PushRegistrationCoordinator {
     private var persistence: Task<Void, Error>?
     private var loaded = false
     private var stopped = false
-    private let environment: String
+    private let environment: String?
     private let retryDelays: [UInt64]
     private let send: (URLRequest) async throws -> Int
     private let saveRetired: ([PushRegistrationTarget]) async throws -> Void
 
-    init(environment: String, retryDelays: [UInt64] = [1_000_000_000, 4_000_000_000, 15_000_000_000, 60_000_000_000],
+    init(environment: String?, retryDelays: [UInt64] = [1_000_000_000, 4_000_000_000, 15_000_000_000, 60_000_000_000],
          loadRetired: @escaping () async throws -> [PushRegistrationTarget] = { [] },
          saveRetired: @escaping ([PushRegistrationTarget]) async throws -> Void = { _ in },
          send: @escaping (URLRequest) async throws -> Int = { try await PushRegistrationHTTP.send($0) }) {

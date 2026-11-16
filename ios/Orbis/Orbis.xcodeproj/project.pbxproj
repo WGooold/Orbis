@@ -257,6 +257,7 @@
 				A00140010000000000000001 /* Sources */,
 				A00140010000000000000003 /* Frameworks */,
 				A00140010000000000000002 /* Resources */,
+				A07140010000000000000001 /* Generate Push Environment */,
 			);
 			buildRules = (
 			);
@@ -328,6 +329,21 @@
         B00140010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
         C06440010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A07140010000000000000001 /* Generate Push Environment */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ("$(SRCROOT)/../../scripts/ios-push-environment.py");
+			name = "Generate Push Environment";
+			outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OrbisPushEnvironment.plist");
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../scripts/ios-push-environment.py\" write --app \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH\" --entitlements \"$CODE_SIGN_ENTITLEMENTS\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A00140010000000000000001 /* Sources */ = {

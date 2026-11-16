@@ -265,11 +265,7 @@ import Network
 
 @MainActor
 final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
-    #if DEBUG
-    static let pushEnvironment = "sandbox"
-    #else
-    static let pushEnvironment = "production"
-    #endif
+    static let pushEnvironment = PushRegistrationEnvironment.load()
     static let pushRegistration = PushRegistrationCoordinator(environment: pushEnvironment,
         loadRetired: { try await Task.detached { try SecureStore.shared.pendingPushRemovals() }.value },
         saveRetired: { values in try await Task.detached { try SecureStore.shared.savePendingPushRemovals(values) }.value })
@@ -300,7 +296,7 @@ final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
             let allowed = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
             pushRegistration.setAuthorizationAllowed(allowed)
             pushRegistration.refresh()
-            if allowed { UIApplication.shared.registerForRemoteNotifications() }
+            if allowed, pushEnvironment != nil { UIApplication.shared.registerForRemoteNotifications() }
         }
     }
     nonisolated func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

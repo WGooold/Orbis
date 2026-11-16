@@ -13,6 +13,7 @@ export type APNsWakeHint = { category: "task-completed" | "approval-requested"; 
 
 /** APNs transport for privacy-preserving wake hints. Never include session text or credentials. */
 export class APNsSender {
+  readonly environment: APNsConfig["environment"];
   readonly #config: APNsConfig;
   #session: ClientHttp2Session | undefined;
   #jwt?: { value: string; issuedAt: number };
@@ -22,6 +23,7 @@ export class APNsSender {
     if (!/^[A-Za-z0-9.-]+$/u.test(config.bundleId)) throw new Error("Invalid APNs bundle ID");
     if (config.environment !== "sandbox" && config.environment !== "production") throw new Error("Invalid APNs environment");
     this.#config = config;
+    this.environment = config.environment;
   }
 
   async send(deviceToken: string, hint: APNsWakeHint): Promise<"sent" | "invalid-token"> {

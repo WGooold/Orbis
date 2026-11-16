@@ -18,6 +18,8 @@ if [[ "$developer_dir" == */CommandLineTools && -f "$testing_plugin" ]]; then
   package_args+=(-Xswiftc -load-plugin-library -Xswiftc "$testing_plugin")
 fi
 
+python3 -m unittest discover -s "$repo_root/scripts" -p test_ios_push_environment.py
+
 mode="${1:-all}"
 case "$mode" in
   prepare-tests)
@@ -26,10 +28,12 @@ case "$mode" in
     ;;
   tests)
     swift test "${package_args[@]}" --skip-build --disable-xctest --no-parallel
+    swift test "${package_args[@]}" --skip-build --no-parallel --filter PushRegistrationTests
     exit
     ;;
   all)
     swift test "${package_args[@]}" --disable-xctest --no-parallel
+    swift test "${package_args[@]}" --no-parallel --filter PushRegistrationTests
     ;;
   app) ;;
   *) echo "Usage: $0 [all|prepare-tests|tests|app]" >&2; exit 2 ;;
