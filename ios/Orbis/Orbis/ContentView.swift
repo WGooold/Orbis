@@ -357,6 +357,7 @@ private struct NavigationRoot: View, Equatable {
             // The card stays in the live home until the growing page has covered it, so the
             // list outside the rectangle does not move while the page expands (S35 / M27).
             if store.selectedRuntime != nil {
+                ChatSchedulingTrace.pageOpenRequested(target: "new-session")
                 navigation.replace(with: [.chat], entrance: .expand(origin)) { newSessionOpen = false }
             } else {
                 newSessionOpen = false
@@ -373,13 +374,13 @@ private struct NavigationRoot: View, Equatable {
         SessionDrawerView(store: store, updates: store.directoryUpdates, renderedState: directoryState, state: $directoryState, onClose: { setDrawer(false) },
                           onOpenSession: { session in
                               if session.archived != true, let runtime = store.runtimes.first(where: { $0.sessionId == session.sessionId }) { openRuntime(runtime) }
-                              else if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
+                              else if openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                               else {
                                   overlay.showDialog(L10n.tr("本机尚无缓存"), actions: [OrbisDialogAction(title: L10n.tr("返回"), role: .cancel)] + (store.connection == .secured ? [OrbisDialogAction(title: L10n.tr("在电脑继续会话")) { store.activate(session) }] : []))
                               }
                           },
                           onOpenHistory: { session in
-                              if store.openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
+                              if openCachedSession(session) { setDrawer(false); navigation.replace(with: [.chat]) }
                           },
                           onNewSession: { cwd in
                               navigation.replace(with: [])
@@ -406,7 +407,12 @@ private struct NavigationRoot: View, Equatable {
         ])
     }
     private func openRuntime(_ runtime: RuntimeSummary) {
+        ChatSchedulingTrace.pageOpenRequested(target: runtime.runtimeId)
         store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
+    }
+    private func openCachedSession(_ session: SessionSummary) -> Bool {
+        ChatSchedulingTrace.pageOpenRequested(target: session.sessionId)
+        return store.openCachedSession(session)
     }
 }
 

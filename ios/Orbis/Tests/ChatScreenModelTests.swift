@@ -296,6 +296,27 @@ struct ChatScreenModelTests {
         #expect(store.draft(for: runtime) == before)
     }
 
+    // PERF-15: an explicit selection refresh commits the new page identity before the
+    // coalescing task yields, so the first native mount cannot start from the old transcript.
+    @Test func explicitSelectionRefreshCommitsTheRebindSynchronously() async throws {
+        let (store, transport, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        transport.receive?(["type": "device.ready", "protocolVersion": orbisProtocolVersion,
+                            "runtimes": [
+                                ["runtimeId": "first-runtime", "name": "Agent", "cwd": "/repo",
+                                 "status": "idle", "sessionId": "first"],
+                                ["runtimeId": "second-runtime", "name": "Agent", "cwd": "/repo",
+                                 "status": "idle", "sessionId": "second"]
+                            ]], "ctl")
+        await settle(store)
+        let model = store.chatScreens, beforeRefresh = model.captureRevision
+        store.selectRuntime("second-runtime")
+        #expect(model.actions.sessionId == "second")
+        #expect(model.captureRevision == beforeRefresh + 1)
+        await model.waitForPending()
+        #expect(model.captureRevision == beforeRefresh + 1)
+    }
+
     // IOS-CHAT-10: only a visible moving page defers data. Covered/background
     // pages retain fresh state, so exposing the page cannot replay a backlog.
     @Test func coveredAndBackgroundPagesCommitWhileVisibleMotionDefers() async throws {

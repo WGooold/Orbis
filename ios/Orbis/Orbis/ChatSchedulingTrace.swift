@@ -25,6 +25,9 @@ enum ChatSchedulingTrace {
     private static var deltas = 0
     private static var transcriptCommits = 0
     private static var screenCommits = 0
+    private static var pageBodyTokens = Set<UUID>()
+    private static var pageArrivalToken: Int?
+    private static var pageArrivalInterval: OSSignpostIntervalState?
 
     static func deltaBegan() -> OSSignpostIntervalState? {
         guard signposter.isEnabled else { return nil }
@@ -67,6 +70,54 @@ enum ChatSchedulingTrace {
     static func screenCommitEnded(_ interval: OSSignpostIntervalState?, invalidatedRegions: Int) {
         guard let interval else { return }
         signposter.endInterval("ChatScreenCommit", interval, "regions=\(invalidatedRegions)")
+    }
+
+    /// Entrance timing markers for a chat page. These are opt-in Instruments events; the
+    /// disabled path does not build identifiers or payload strings.
+    static func pageOpenRequested(target: String) {
+        guard signposter.isEnabled else { return }
+        signposter.emitEvent("ChatPageOpenRequested", "target=\(target)")
+    }
+
+    static func pageBodyRendered(target: String, mountToken: UUID) {
+        guard signposter.isEnabled, pageBodyTokens.insert(mountToken).inserted else { return }
+        signposter.emitEvent("ChatPageFirstBody", "target=\(target) mount=\(mountToken.uuidString)")
+    }
+
+    static func pageArrive(token: Int, phase: String) {
+        guard signposter.isEnabled else { return }
+        if let previous = pageArrivalInterval {
+            signposter.endInterval("ChatPageArriveToFirstIdle", previous, "superseded=true")
+        }
+        pageArrivalToken = token
+        pageArrivalInterval = signposter.beginInterval("ChatPageArriveToFirstIdle", id: signposter.makeSignpostID())
+        signposter.emitEvent("ChatPageArrive", "token=\(token) phase=\(phase)")
+    }
+
+    static func pageFirstIdleFrame(token: Int) {
+        guard signposter.isEnabled else { return }
+        signposter.emitEvent("ChatPageFirstIdleFrame", "token=\(token)")
+        guard pageArrivalToken == token, let interval = pageArrivalInterval else { return }
+        signposter.endInterval("ChatPageArriveToFirstIdle", interval)
+        pageArrivalToken = nil
+        pageArrivalInterval = nil
+    }
+
+    static func pageArrivalCancelled(token: Int) {
+        guard signposter.isEnabled, pageArrivalToken == token, let interval = pageArrivalInterval else { return }
+        signposter.endInterval("ChatPageArriveToFirstIdle", interval, "cancelled=true")
+        pageArrivalToken = nil
+        pageArrivalInterval = nil
+    }
+
+    static func nativeSnapshotBegan(rows: Int, reconfigured: Int) -> OSSignpostIntervalState? {
+        guard signposter.isEnabled else { return nil }
+        return signposter.beginInterval("NativeSnapshotCommit", id: signposter.makeSignpostID())
+    }
+
+    static func nativeSnapshotEnded(_ interval: OSSignpostIntervalState?, rows: Int, reconfigured: Int) {
+        guard let interval else { return }
+        signposter.endInterval("NativeSnapshotCommit", interval, "rows=\(rows) reconfigured=\(reconfigured)")
     }
 
     static func regionBody(_ region: Region) {

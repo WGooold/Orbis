@@ -2044,11 +2044,10 @@ extension StoreTests {
         store.saveDraft("held-a", for: selected)
         await screens.waitForPending()
         #expect(screens.snapshot.draft == previous)
-        let oldIdentity = screens.snapshot.identity
         store.selectRuntime("b")
         #expect(!ChatSessionActions(store: store, target: old).isCurrent, "a late A editor callback is invalid before the queued handoff")
-        #expect(screens.snapshot.identity == oldIdentity)
-        #expect(screens.navigation.runtimeIdentity == oldIdentity)
+        #expect(screens.snapshot.runtime?.runtimeId == "b")
+        #expect(screens.navigation.runtime?.runtimeId == "b")
         await screens.waitForPending()
         #expect(screens.snapshot.runtime?.runtimeId == "b")
         #expect(screens.navigation.runtime?.runtimeId == "b")

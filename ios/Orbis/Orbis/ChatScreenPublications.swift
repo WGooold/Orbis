@@ -390,6 +390,12 @@ final class ChatScreenModel {
             token = UUID(); task?.cancel(); task = nil
             sourceOwner = owner; pageIdentity = identity; observe(store.activeConnection)
             rebindPending = true
+            // Selection/opening already finished publishing the new source before calling
+            // refresh(). Commit the rebind in this same turn so the first native mount sees
+            // the new transcript. Waiting for schedule() would let the old transcript mount,
+            // then reset the viewport during the entrance animation and reconfigure every row.
+            commit(force: true)
+            return
         }
         schedule()
     }
