@@ -18,8 +18,10 @@ describe("CI change selection", () => {
     }
   });
   it("runs all relevant checks when CI itself changes", () => {
-    expect(classifyChanges([".github/workflows/core-checks.yml"]))
-      .toEqual({ core: true, ios: true, relay: true });
+    for (const workflow of ["core-checks", "ci-pipeline"]) {
+      expect(classifyChanges([`.github/workflows/${workflow}.yml`]))
+        .toEqual({ core: true, ios: true, relay: true });
+    }
   });
   it("does not hide code removal when a file is renamed into documentation", () => {
     expect(classifyChanges([{ filename: "docs/removed.md", previous_filename: "packages/relay/src/index.ts" }]))

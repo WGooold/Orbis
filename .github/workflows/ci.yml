@@ -29,149 +29,42 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      core: ${{ steps.paths.outputs.core }}
-      ios: ${{ steps.paths.outputs.ios }}
-      relay: ${{ steps.paths.outputs.relay }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/github-script@v8
-        id: paths
-        with:
-          script: |
-            const { classifyChanges } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-changes.mjs`);
-            let selected = { core: true, ios: true, relay: true };
-            if (context.eventName === 'workflow_dispatch' && context.payload.inputs?.benchmark === 'true') {
-              selected = { core: false, ios: false, relay: false };
-            } else if (context.eventName === 'pull_request') {
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                ...context.repo, pull_number: context.payload.pull_request.number, per_page: 100,
-              });
-              // The API caps PR files at 3,000; uncertainty must run the checks.
-              if (files.length < 3000) selected = classifyChanges(files);
-            } else if (context.eventName === 'push' && !/^0+$/.test(context.payload.before)) {
-              const { data } = await github.rest.repos.compareCommitsWithBasehead({
-                ...context.repo, basehead: `${context.payload.before}...${context.sha}`,
-              });
-              // Compare caps the changed-file list at 300, independently of pagination.
-              if (data.files && data.files.length < 300) selected = classifyChanges(data.files);
-            }
-            for (const [name, value] of Object.entries(selected)) core.setOutput(name, String(value));
-            core.info(JSON.stringify(selected));
+  main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Hold the entire main pipeline through deployment. All pending commits are
+    # retained, and a slower earlier check cannot deploy after a newer commit.
+    concurrency:
+      group: ci-main-pipeline
+      queue: max
+      cancel-in-progress: false
+    uses: ./.github/workflows/ci-pipeline.yml
+    secrets: inherit
 
-  checks:
-    needs: changes
-    if: needs.changes.outputs.core == 'true'
-    uses: ./.github/workflows/core-checks.yml
-
-  ios:
-    needs: changes
-    if: needs.changes.outputs.ios == 'true'
-    uses: ./.github/workflows/ios-build.yml
+  verify:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    uses: ./.github/workflows/ci-pipeline.yml
+    with:
+      benchmark: ${{ inputs.benchmark || false }}
+      benchmark_base_ref: ${{ inputs.benchmark_base_ref || 'main' }}
+    secrets: inherit
 
   gate:
     name: CI
     if: always()
-    needs: [changes, checks, ios]
+    needs: [main, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify every selected check
+      - name: Verify pipeline result
         env:
           NEEDS: ${{ toJSON(needs) }}
+          IS_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           node <<'JS'
           const needs = JSON.parse(process.env.NEEDS);
-          if (needs.changes.result !== 'success') throw new Error('Change selection failed');
-          for (const [job, flag] of [['checks', 'core'], ['ios', 'ios']]) {
-            const expected = needs.changes.outputs[flag] === 'true' ? 'success' : 'skipped';
+          const main = process.env.IS_MAIN === 'true';
+          for (const [job, selected] of [['main', main], ['verify', !main]]) {
+            const expected = selected ? 'success' : 'skipped';
             if (needs[job].result !== expected) throw new Error(`${job}: ${needs[job].result}, expected ${expected}`);
           }
           JS
-
-  deploy:
-    needs: [changes, gate]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.relay == 'true'
-    uses: ./.github/workflows/relay-deploy.yml
-    with:
-      skip_checks: true
-    secrets: inherit
-
-  docker-benchmark:
-    if: github.event_name == 'workflow_dispatch' && inputs.benchmark
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: baseline
-            ref: ${{ inputs.benchmark_base_ref || 'main' }}
-          - label: optimized
-            ref: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ matrix.ref }}
-      - name: Measure cold, warm and source-only Docker builds
-        env:
-          BENCHMARK_LABEL: ${{ matrix.label }}
-        run: |
-          python3 <<'PY'
-          import json, os, re, subprocess, time
-          from pathlib import Path
-          output = Path('.artifacts/docker-benchmark')
-          output.mkdir(parents=True, exist_ok=True)
-          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          command = ['docker', 'build', '--progress=plain', '--build-arg', f'ORBIS_RELEASE_COMMIT={sha}', '-t', 'orbis-ci-benchmark', '.']
-          results = []
-          for phase in ('cold', 'warm', 'source-change'):
-              if phase == 'source-change':
-                  with Path('packages/relay/src/web/styles.css').open('a') as stream:
-                      stream.write('\n/* CI cache probe */\n')
-              log = output / f'{phase}.log'
-              started = time.monotonic()
-              with log.open('w') as stream:
-                  result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT)
-              text = log.read_text()
-              install = re.search(r'^(#\d+) .*RUN npm ci', text, re.M)
-              cached = bool(install and re.search(r'^' + re.escape(install[1]) + r' CACHED$', text, re.M))
-              results.append({'phase': phase, 'seconds': round(time.monotonic() - started, 3), 'exit_code': result.returncode, 'dependency_layer_cached': cached})
-              (output / 'results.json').write_text(json.dumps({'label': os.environ['BENCHMARK_LABEL'], 'sha': sha, 'results': results}, indent=2) + '\n')
-              print(json.dumps(results[-1]), flush=True)
-              if result.returncode:
-                  print(text)
-                  raise SystemExit(result.returncode)
-              if phase != 'cold' and (phase == 'warm' or os.environ['BENCHMARK_LABEL'] == 'optimized'):
-                  assert cached, f'{phase}: dependency installation was not cached'
-          PY
-      - name: Verify image runtime and web assets
-        run: |
-          docker run --rm orbis-ci-benchmark node --input-type=module -e '
-            import { spawn } from "node:child_process";
-            import { access } from "node:fs/promises";
-            await access("packages/relay/dist/web/styles.css");
-            const server = spawn(process.execPath, ["packages/relay/dist/main.js"], { stdio: "inherit" });
-            try {
-              let ready = false;
-              for (let attempt = 0; attempt < 100; attempt++) {
-                try {
-                  const response = await fetch("http://127.0.0.1:8787/healthz");
-                  const health = await response.json();
-                  if (response.ok && health.status === "ok" && health.commit === process.env.ORBIS_RELEASE_COMMIT) { ready = true; break; }
-                } catch {}
-                await new Promise(resolve => setTimeout(resolve, 100));
-              }
-              if (!ready) throw new Error("Container did not serve the expected health response");
-            } finally { server.kill("SIGTERM"); }
-          '
-      - name: Preserve Docker benchmark evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-benchmark-${{ matrix.label }}-attempt-${{ github.run_attempt }}
-          path: .artifacts/docker-benchmark/
-          retention-days: 14

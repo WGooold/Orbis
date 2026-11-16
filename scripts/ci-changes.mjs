@@ -5,6 +5,6 @@ export function classifyChanges(files) {
   return {
     core: code.length > 0,
     ios: code.some(path => /^(ios\/|shared\/|scripts\/check-ios|\.github\/workflows\/)/u.test(path)),
-    relay: code.some(path => /^(Dockerfile$|\.dockerignore$|package(?:-lock)?\.json$|tsconfig.*\.json$|packages\/|deploy\/|scripts\/(?:clean|build-relay-web)\.mjs$|scripts\/review-demo\/|\.github\/workflows\/(?:ci|core-checks|relay-deploy)\.yml$)/u.test(path)),
+    relay: code.some(path => /^(Dockerfile$|\.dockerignore$|package(?:-lock)?\.json$|tsconfig.*\.json$|packages\/|deploy\/|scripts\/(?:clean|build-relay-web)\.mjs$|scripts\/review-demo\/|\.github\/workflows\/(?:ci|ci-pipeline|core-checks|relay-deploy)\.yml$)/u.test(path)),
   };
 }
