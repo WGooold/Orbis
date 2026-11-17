@@ -128,6 +128,7 @@ final class ChatViewportController {
         .init(following: policy.following, request: policy.request, contextGeneration: policy.contextGeneration)
     }
     @ObservationIgnored private var nativeObservers: [UUID: () -> Void] = [:]
+    @ObservationIgnored let readingSurface = ChatReadingSurface()
     func observeNativeState(_ change: @escaping () -> Void) -> UUID {
         let token = UUID(); nativeObservers[token] = change; return token
     }
@@ -172,11 +173,13 @@ final class ChatViewportController {
     }
     func setVisualActive(_ active: Bool) {
         visible = active
+        if !active { readingSurface.cancel() }
         arrivals.setReadiness(active && policy.hasPositioned && sourceReady, following: policy.following)
     }
     @discardableResult func update<Result>(_ change: (inout ChatViewportPolicy) -> Result) -> Result {
         let before = nativeState
         let result = change(&policy)
+        if before.contextGeneration != policy.contextGeneration { readingSurface.cancel() }
         if following != policy.following { following = policy.following }
         if showJump != policy.showJump { showJump = policy.showJump }
         if showQuestionReminder != policy.showQuestionReminder { showQuestionReminder = policy.showQuestionReminder }
@@ -191,11 +194,68 @@ final class ChatViewportController {
         update { $0.distanceChanged(distance, hasMessages: current?.hasMessages ?? false, firstRowNearTop: viewport.firstRowNearTop) }
     }
     func interactionChanged(_ active: Bool) { update { $0.interactionChanged(active, bottomDistance: bottomDistance) } }
-    func disclosureBegan() { update { $0.disclosureBegan(bottomDistance: bottomDistance) } }
+    func disclosureBegan() {
+        readingSurface.cancel()
+        update { $0.disclosureBegan(bottomDistance: bottomDistance) }
+    }
     func viewportChanged(_ facts: ChatViewportFacts) -> Bool {
         viewport = facts
         return update { $0.viewportChanged(facts, questionID: latestQuestion?.messageId,
             canPage: current.map { !$0.syncing && !$0.historyLoading && $0.historyError == nil } ?? false) }
     }
     func owns(_ candidate: ChatViewportPolicy.Request) -> Bool { policy.owns(candidate) }
+}
+
+/// FOLD-05: a native, unobserved channel from the lower grip surface to the one
+/// transcript offset owner. Late callbacks cannot cross a gesture or mount handoff.
+@MainActor
+final class ChatReadingSurface {
+    enum Event: Equatable { case began, moved(CGFloat), released, ended }
+    private var receiver: (id: UUID, handle: (Event) -> Bool)?
+    private var gesture: (id: UUID, cancel: () -> Void)?
+
+    func attach(_ handle: @escaping (Event) -> Bool) -> UUID {
+        cancel()
+        let id = UUID()
+        receiver = (id, handle)
+        return id
+    }
+
+    func detach(_ id: UUID) {
+        guard receiver?.id == id else { return }
+        cancel()
+        receiver = nil
+    }
+
+    func begin(onCancel: @escaping () -> Void) -> UUID? {
+        cancel()
+        guard let receiver else { return nil }
+        let id = UUID()
+        gesture = (id, onCancel)
+        guard receiver.handle(.began), gesture?.id == id else { cancel(id); return nil }
+        return id
+    }
+
+    func move(_ id: UUID, by delta: CGFloat) {
+        guard gesture?.id == id, delta.isFinite, delta != 0 else { return }
+        if receiver?.handle(.moved(delta)) != true { cancel(id) }
+    }
+
+    func release(_ id: UUID) {
+        guard gesture?.id == id else { return }
+        if receiver?.handle(.released) != true { cancel(id) }
+    }
+
+    func end(_ id: UUID) {
+        guard gesture?.id == id else { return }
+        gesture = nil
+        _ = receiver?.handle(.ended)
+    }
+
+    func cancel(_ id: UUID? = nil) {
+        guard let active = gesture, id == nil || active.id == id else { return }
+        gesture = nil
+        _ = receiver?.handle(.ended)
+        active.cancel()
+    }
 }

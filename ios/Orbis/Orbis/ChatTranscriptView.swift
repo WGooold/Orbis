@@ -501,6 +501,7 @@ private struct ChatScrollObserver: ViewModifier {
                         switch request.target {
                         case .latest: readingRow = ChatFollow.bottomID
                         case .question(let id): proxy.scrollTo(id, anchor: .top)
+                        case .page: break // Fold controls require iOS 27.1; this is the iOS 17 fallback.
                         }
                     }
                 }
@@ -559,6 +560,7 @@ private struct ChatNativeScrollPosition: ViewModifier {
                     switch request.target {
                     case .latest: position.scrollTo(id: ChatFollow.bottomID, anchor: .bottom)
                     case .question(let id): position.scrollTo(id: id, anchor: .top)
+                    case .page(let delta): position.scrollTo(y: max(0, metrics.offset + delta - ChatFollow.topPadding))
                     }
                 }
             }

@@ -295,6 +295,95 @@ final class OrbisUITests: XCTestCase {
         capture("iphone-duo-partial-landscape-right-draft", app: app)
     }
 
+    // FOLD-05: synthetic horizontal hinge isolates surface/keyboard behavior from
+    // simulator posture controls; real Duo hinge transitions remain a device QA case.
+    func testFoldReadingSurfaceAndKeyboardKeepDraftAndViewport() {
+        let app = launch("viewport", arguments: ["--preview-fold-reading", "--preview-reduce-motion"])
+        defer { app.terminate() }
+        let editor = app.descendants(matching: .any)["chat-composer"].firstMatch
+        let surface = app.descendants(matching: .any)["fold-reading-surface"].firstMatch
+        let directory = app.buttons["fold-reading-directory"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        XCTAssertTrue(surface.waitForExistence(timeout: 5))
+        XCTAssertTrue(surface.isHittable)
+        XCTAssertFalse(app.descendants(matching: .any)["persistent-session-directory"].firstMatch.exists)
+        let transcript = chatTranscript(app)
+        XCTAssertLessThan(transcript.frame.maxY, surface.frame.minY)
+        func visibleAnchors() -> [String: CGFloat] {
+            let rows = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
+                .allElementsBoundByIndex.filter {
+                    $0.isHittable && $0.frame.intersects(transcript.frame)
+                }
+            return Dictionary(rows.map { ($0.label, $0.frame.minY) }, uniquingKeysWith: { first, _ in first })
+        }
+        func dragSurface(down: Bool) {
+            let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.2 : 0.8))
+            let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.8 : 0.2))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        let initial = visibleAnchors()
+        XCTAssertFalse(initial.isEmpty)
+        surface.tap()
+        XCTAssertEqual(visibleAnchors(), initial, "A resting grip or tap must not page the transcript")
+        dragSurface(down: true)
+        let pageChanged = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !visibleAnchors().isEmpty && visibleAnchors() != initial
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [pageChanged], timeout: 4), .completed)
+        let earlier = visibleAnchors()
+        dragSurface(down: false)
+        let reversed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !visibleAnchors().isEmpty && visibleAnchors() != earlier
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [reversed], timeout: 4), .completed)
+        capture("fold-reading-surface", app: app)
+
+        editor.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Requires the software keyboard")
+        let draft = String(repeating: "折叠屏多行草稿，不发送。\n", count: 6)
+        editor.typeText(draft)
+        XCTAssertTrue((editor.value as? String)?.contains("折叠屏多行草稿") == true)
+        XCTAssertFalse(surface.isHittable)
+        XCTAssertLessThanOrEqual(editor.frame.maxY, app.keyboards.firstMatch.frame.minY + 2)
+        XCTAssertLessThanOrEqual(app.buttons["发送消息"].frame.maxY, app.keyboards.firstMatch.frame.minY + 2)
+        XCTAssertLessThanOrEqual(transcript.frame.maxY, editor.frame.minY)
+        let dismiss = app.buttons["收起键盘"]
+        XCTAssertTrue(dismiss.isHittable)
+        capture("fold-reading-multiline-keyboard", app: app)
+        dismiss.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(surface.isHittable)
+        XCTAssertTrue(directory.isHittable)
+        directory.tap()
+        XCTAssertTrue(app.buttons["关闭会话目录"].waitForExistence(timeout: 4))
+        app.buttons["关闭会话目录"].tap()
+        XCTAssertTrue((editor.value as? String)?.contains("折叠屏多行草稿") == true)
+        capture("fold-reading-restored-draft", app: app)
+    }
+
+    // FOLD-05: the operation area fills the gap below navigation, and the three
+    // replaced buttons must not survive in either the header or the lower area.
+    func testFoldReadingBlankSurfaceReplacesPagingButtons() {
+        let app = launch("viewport", arguments: ["--preview-fold-reading", "--preview-reduce-motion"])
+        defer { app.terminate() }
+        let surface = app.descendants(matching: .any)["fold-reading-surface"].firstMatch
+        XCTAssertTrue(surface.waitForExistence(timeout: 8))
+        let directory = app.buttons["fold-reading-directory"]
+        let downloads = app.buttons["chat-downloads"]
+        XCTAssertTrue(directory.isHittable)
+        XCTAssertTrue(downloads.isHittable)
+        for identifier in ["fold-reading-previous", "fold-reading-latest", "fold-reading-next"] {
+            XCTAssertFalse(app.buttons[identifier].exists)
+        }
+        XCTAssertGreaterThanOrEqual(surface.frame.minY, directory.frame.maxY)
+        XCTAssertGreaterThanOrEqual(surface.frame.minY, downloads.frame.maxY)
+        XCTAssertGreaterThan(surface.frame.height, 100)
+        XCTAssertGreaterThan(surface.frame.width, 300)
+        XCTAssertLessThanOrEqual(surface.frame.maxY, app.descendants(matching: .any)["chat-composer"].firstMatch.frame.minY)
+        XCTAssertLessThan(chatTranscript(app).frame.maxY, directory.frame.minY)
+        capture("fold-reading-blank-operation-area", app: app)
+    }
+
     // The desktop Codex backend remains reachable from the four-Agent draft.
     func testDraftCodexLongPressRetainsDesktopBackend() {
         let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop"])

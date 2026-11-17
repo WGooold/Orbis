@@ -135,6 +135,7 @@ struct ChatComposerView: View, Equatable {
     let fallbackRuntime: RuntimeSummary
     private var target: ChatActionContext { actions.target }
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisFoldReading) private var foldReading
     let composerFocus: ChatComposerFocus
     let sendFlight: MessageSendFlight
     let onHistory: () -> Void
@@ -259,11 +260,13 @@ struct ChatComposerView: View, Equatable {
             AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing)
             if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
-                OrbisIconButton(symbol: "paperclip", label: L10n.tr("发送文件到电脑"), tint: accent) {
+                OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
+                                label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
+                    if foldReading && focused { composerFocus.focused = false; return }
                     guard actions.isCurrent else { return }
                     fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
                     composerFocus.focused = false; filePickerOpen = true
-                }.disabled(!facts.canSend || facts.preparing || attachments.count >= 10)
+                }.disabled(!(foldReading && focused) && (!facts.canSend || facts.preparing || attachments.count >= 10))
                 OrbisDraftEditor(text: draft,
                                  focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
                                  placeholder: L10n.tr("发给 {0}，/ 命令", agentTitle(kind)),

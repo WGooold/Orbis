@@ -1000,6 +1000,7 @@ internal object LocalizationCatalog {
         "收起细节" to "Hide details",
         "收起较早会话" to "Hide earlier sessions",
         "收起这个分支" to "Collapse this branch",
+        "收起键盘" to "Dismiss keyboard",
         "改用 {0} 并重新连接" to "Use {0} and reconnect",
         "放回输入框" to "Restore to composer",
         "文件" to "File",
@@ -1078,9 +1079,9 @@ internal object LocalizationCatalog {
         "暂无在线会话" to "No sessions online",
         "暂时无法读取此轮文件变化。" to "This turn's file changes are temporarily unavailable.",
         "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
-        "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
         "更新" to "Update",
         "更早的历史尚未缓存，连接原会话后可继续同步。" to "Earlier history is not cached. Connect to the original session to sync more.",
         "更早的消息" to "Earlier messages",
@@ -1230,9 +1231,9 @@ internal object LocalizationCatalog {
         "正在切换：" to "Switching: ",
         "正在刷新" to "Refreshing",
         "正在加载会话" to "Loading sessions",
-        "正在加载会话…" to "Loading sessions…",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "正在加载会话…" to "Loading sessions…",
         "正在加载更早的历史…" to "Loading earlier history…",
         "正在发送" to "Sending",
         "正在发送…" to "Sending…",
@@ -1382,9 +1383,9 @@ internal object LocalizationCatalog {
         "电脑端拒绝了请求（{0}）：{1}" to "Computer rejected the request ({0}): {1}",
         "电脑端拒绝了请求，但没有说明原因" to "Computer rejected the request without a reason",
         "电脑端拒绝了这条消息" to "Computer rejected this message",
-        "电脑端文件不可用" to "File unavailable on computer",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "电脑端文件不可用" to "File unavailable on computer",
         "电脑端文件不存在或已被删除" to "File on the computer is missing or deleted",
         "电脑端文件大小无效" to "Invalid file size on computer",
         "电脑端文件已发生变化，请重新下载" to "File on the computer changed. Download again.",
@@ -1534,9 +1535,9 @@ internal object LocalizationCatalog {
         "设备尚未配对" to "Device is not paired",
         "设置" to "Settings",
         "设置思考强度" to "Set reasoning effort",
-        "设置思考强度（当前 {0}）" to "Set reasoning effort (current: {0})",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "设置思考强度（当前 {0}）" to "Set reasoning effort (current: {0})",
         "设置未发送，请检查连接后重试" to "Settings were not sent. Check the connection and try again.",
         "设置未确认" to "Settings unconfirmed",
         "设置未确认，请检查当前权限后重试" to "Settings unconfirmed. Check current permissions before retrying.",
@@ -1686,9 +1687,9 @@ internal object LocalizationCatalog {
         "连接延迟" to "Connection latency",
         "连接建立后会自动读一次" to "Loaded automatically after connecting",
         "连接方式" to "Connection method",
-        "连接无法继续，请重新连接" to "The connection cannot continue. Connect again.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "连接无法继续，请重新连接" to "The connection cannot continue. Connect again.",
         "连接状态" to "Connection status",
         "连接状态 {0}    加密通道 {1}" to "Connection {0}    Encrypted channel {1}",
         "连接电脑后可下载文件。" to "Connect to the computer to download files.",
@@ -1773,6 +1774,7 @@ internal object LocalizationCatalog {
         "长按进入多选" to "Hold to select",
         "长按进入多选移除" to "Hold to select for removal",
         "问题" to "Question",
+        "阅读操作区" to "Reading controls",
         "队列项不是对象" to "Queue item is not an object",
         "队列项缺少投递方式" to "Queue item is missing delivery mode",
         "队列项缺少正文" to "Queue item is missing content",

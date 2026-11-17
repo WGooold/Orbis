@@ -186,6 +186,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private struct Alignment {
             let request: ChatViewportPolicy.Request
             var attemptedAnimation = false
+            var pageOffset: CGFloat?
         }
 
         private var input: ChatNativeTranscriptView
@@ -225,6 +226,9 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private var lastViewportHeight: CGFloat?
         private weak var observedViewport: ChatViewportController?
         private var viewportObserver: UUID?
+        private var readingSurfaceReceiver: UUID?
+        private var readingSurfaceInteracting = false
+        private var readingSurfaceDragging = false
         private var viewportUpdateScheduled = false
 
         init(_ input: ChatNativeTranscriptView, snapshotWorker: ChatNativeSnapshotWorker = .init()) {
@@ -327,6 +331,9 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             input = value
             if observedViewport !== value.viewport { observeViewport(value.viewport) }
             if ownerChanged {
+                value.viewport.readingSurface.cancel()
+                readingSurfaceInteracting = false
+                readingSurfaceDragging = false
                 if let collection {
                     // Cancel the old owner's native animator even when its current
                     // offset already equals the new owner's first requested offset.
@@ -372,7 +379,11 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
 
         private func observeViewport(_ viewport: ChatViewportController) {
             if let viewportObserver { observedViewport?.removeNativeStateObserver(viewportObserver) }
+            if let readingSurfaceReceiver { observedViewport?.readingSurface.detach(readingSurfaceReceiver) }
             observedViewport = viewport
+            readingSurfaceReceiver = viewport.readingSurface.attach { [weak self] event in
+                self?.handleReadingSurface(event) ?? false
+            }
             viewportObserver = viewport.observeNativeState { [weak self] in
                 guard let self, !self.stopped, !self.viewportUpdateScheduled else { return }
                 self.viewportUpdateScheduled = true
@@ -396,6 +407,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         /// the previous gesture's continuation, so a newer explicit intent may
         /// replace it. isDragging alone can remain true during that continuation.
         private var directManipulationActive: Bool {
+            if readingSurfaceDragging { return true }
             guard let collection else { return false }
             let pan = collection.panGestureRecognizer.state
             return collection.isTracking || pan == .began || pan == .changed
@@ -634,6 +646,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 alignment = Alignment(request: request)
                 anchors = []
                 pendingDirection = nil
+                input.viewport.readingSurface.cancel()
                 finishInteraction()
                 animatingOffset = false
                 if replacingMotion, let collection {
@@ -654,7 +667,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private func resolveAlignment() -> Bool {
             guard let collection, var active = alignment else { return false }
             let target: CGFloat
-            let targetID: String
+            let targetID: String?
             switch active.request.target {
             case .latest:
                 targetID = input.tailID
@@ -668,6 +681,12 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 guard let path = dataSource?.indexPath(for: id),
                       let attributes = collection.layoutAttributesForItem(at: path) else { return false }
                 target = attributes.frame.minY - collection.adjustedContentInset.top
+            case .page(let delta):
+                // Freeze the relative destination once; self-sizing/layout retries
+                // must not add another page on every resolution pass.
+                if active.pageOffset == nil { active.pageOffset = clamped(collection.contentOffset.y + delta) }
+                target = active.pageOffset ?? collection.contentOffset.y
+                targetID = nil
             }
             let animate = !input.reduceMotion && initialPlacementReady && !active.attemptedAnimation
             active.attemptedAnimation = true
@@ -680,7 +699,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     PreviewChatScrollProbe.shared.nativeQuestionAnimationStarted?(active.request)
                 }
                 #endif
-            } else if isMeasured(targetID), abs(collection.contentOffset.y - clamped(target)) <= 1 {
+            } else if targetID.map({ isMeasured($0) }) ?? hasMeasuredVisibleContent,
+                      abs(collection.contentOffset.y - clamped(target)) <= 1 {
                 alignment = nil
                 if !following { captureAnchorsIfNeeded() }
             }
@@ -818,7 +838,52 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
         }
 
+        /// FOLD-05: the lower surface joins the same gesture/anchor lifecycle as a
+        /// direct transcript drag. Its pixel deltas never publish SwiftUI state.
+        private func handleReadingSurface(_ event: ChatReadingSurface.Event) -> Bool {
+            guard !stopped, let collection else { return false }
+            if event == .ended {
+                guard readingSurfaceInteracting else { return false }
+                readingSurfaceInteracting = false
+                readingSurfaceDragging = false
+                finishInteraction()
+                return true
+            }
+            guard ownership.contextGeneration == input.viewport.nativeState.contextGeneration,
+                  initialPlacementReady else { return false }
+            switch event {
+            case .began:
+                guard !directManipulationActive else { return false }
+                readingSurfaceInteracting = true
+                readingSurfaceDragging = true
+                beginInteraction(collection)
+                writeOffset(collection.contentOffset.y, animated: false, force: true)
+            case .moved(let delta):
+                guard readingSurfaceInteracting else { return false }
+                let next = clamped(collection.contentOffset.y + delta)
+                let movement = next - collection.contentOffset.y
+                // At a boundary the held finger may reverse; released inertia stops.
+                guard abs(movement) > 0.001 else { return readingSurfaceDragging }
+                for index in anchors.indices {
+                    anchors[index].top -= movement
+                    anchors[index].offsetY = next
+                }
+                pendingDirection = movement < 0
+                writeOffset(next, animated: false, force: true)
+            case .released:
+                readingSurfaceDragging = false
+                scheduleResolution()
+            case .ended: break
+            }
+            return true
+        }
+
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            input.viewport.readingSurface.cancel()
+            beginInteraction(scrollView)
+        }
+
+        private func beginInteraction(_ scrollView: UIScrollView) {
             input.onInteraction(true)
             userInteracting = true
             pendingInteractionEnd = false
@@ -862,12 +927,13 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            guard !readingSurfaceInteracting else { return }
             if !decelerate { finishInteraction() }
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
             // A cancelled deceleration may end after the next touch has begun.
-            guard !directManipulationActive else { return }
+            guard !directManipulationActive, !readingSurfaceInteracting else { return }
             finishInteraction()
         }
 
@@ -893,6 +959,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             snapshotPreparation?.cancel()
             snapshotPreparation = nil
             if let viewportObserver { observedViewport?.removeNativeStateObserver(viewportObserver) }
+            if let readingSurfaceReceiver { observedViewport?.readingSurface.detach(readingSurfaceReceiver) }
+            readingSurfaceReceiver = nil
             viewportObserver = nil; observedViewport = nil
             ownershipGeneration &+= 1
             ChatDebugProbes.unbindNativeTranscript(collection)

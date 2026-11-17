@@ -269,12 +269,13 @@ struct ChatViewportTests {
     // preserve that intent, even before its target is reached. A later gesture
     // must still cancel it. Both targets share the same ownership contract.
     @Test func explicitIntentSurvivesOldGestureIdleButYieldsToANewGesture() throws {
-        for target: ChatViewportPolicy.Target in [.latest, .question("question")] {
+        for target: ChatViewportPolicy.Target in [.latest, .question("question"), .page(-510)] {
             var policy = ChatViewportPolicy()
             policy.interactionChanged(true, bottomDistance: 800)
             switch target {
             case .latest: policy.jumpToLatest()
             case .question(let id): policy.locateQuestion(id, bottomDistance: 800)
+            case .page: policy.turnPage(towardEarlier: true, viewportHeight: 600, bottomDistance: 800)
             }
             let request = try #require(policy.request)
             let intent = policy

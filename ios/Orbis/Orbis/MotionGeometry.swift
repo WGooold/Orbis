@@ -63,7 +63,7 @@ struct ChatViewportPolicy: Equatable {
     static let line: CGFloat = 20
 
     enum Mode: Equatable { case following, reading, interacting }
-    enum Target: Equatable { case latest, question(String) }
+    enum Target: Equatable { case latest, question(String), page(CGFloat) }
     struct Request: Equatable {
         let target: Target
         let sequence: Int
@@ -161,6 +161,17 @@ struct ChatViewportPolicy: Equatable {
     }
 
     mutating func olderPageFinished() { awaitingOlderPage = false }
+
+    /// FOLD-05: accessible paging keeps overlap and remains in reading mode.
+    mutating func turnPage(towardEarlier: Bool, viewportHeight: CGFloat, bottomDistance: CGFloat) {
+        guard viewportHeight.isFinite, viewportHeight > 0 else { return }
+        mode = .reading
+        hasBrowsed = true
+        lastScrollTowardEarlier = towardEarlier
+        suppressQuestionPaging = false
+        makeRequest(.page(viewportHeight * 0.85 * (towardEarlier ? -1 : 1)))
+        updateJump(bottomDistance)
+    }
 
     /// A branch or source owner changed. Editor state and native anchoring are not owned
     /// here, and resetting this value never issues a programmatic scroll request.
@@ -580,4 +591,29 @@ func usesFoldReadingLayout(partiallyOpen: Bool, containerSize: CGSize, divisionF
     return divisionFrame.width != divisionFrame.height
         ? divisionFrame.width > divisionFrame.height
         : containerSize.height > containerSize.width
+}
+
+/// FOLD-05: the blank lower area is the reading surface. Keyboard resizing reserves
+/// the editor first and removes the surface before shortening the upper viewport.
+struct FoldReadingGeometry {
+    let transcript: CGRect
+    let header: CGRect
+    let surface: CGRect
+    let composer: CGRect
+    let showsSurface: Bool
+
+    init(size: CGSize, division: CGRect, headerHeight: CGFloat, composerHeight: CGFloat, editing: Bool) {
+        let width = max(0, size.width), height = max(0, size.height)
+        let hingeTop = division == .zero ? height / 2 : division.minY
+        let hingeBottom = division == .zero ? height / 2 : division.maxY
+        let editorHeight = min(max(0, composerHeight), height)
+        let editorY = height - editorHeight
+        let surfaceY = max(0, hingeBottom + 12) + headerHeight
+        showsSurface = !editing && editorY - surfaceY >= 44
+        let readingBottom = min(max(0, hingeTop - 12), max(0, editorY - 12))
+        transcript = CGRect(x: 0, y: 0, width: width, height: readingBottom)
+        header = CGRect(x: 0, y: max(0, hingeBottom + 12), width: width, height: showsSurface ? headerHeight : 0)
+        surface = CGRect(x: 0, y: surfaceY, width: width, height: showsSurface ? editorY - surfaceY : 0)
+        composer = CGRect(x: 0, y: editorY, width: width, height: editorHeight)
+    }
 }
