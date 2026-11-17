@@ -265,6 +265,32 @@ struct ChatViewportTests {
         #expect(!policy.owns(oldContext) && policy.owns(reused))
     }
 
+    // IOS-CHAT-16: retiring the gesture that a new explicit intent superseded must
+    // preserve that intent, even before its target is reached. A later gesture
+    // must still cancel it. Both targets share the same ownership contract.
+    @Test func explicitIntentSurvivesOldGestureIdleButYieldsToANewGesture() throws {
+        for target: ChatViewportPolicy.Target in [.latest, .question("question")] {
+            var policy = ChatViewportPolicy()
+            policy.interactionChanged(true, bottomDistance: 800)
+            switch target {
+            case .latest: policy.jumpToLatest()
+            case .question(let id): policy.locateQuestion(id, bottomDistance: 800)
+            }
+            let request = try #require(policy.request)
+            let intent = policy
+            policy.interactionChanged(false, bottomDistance: 800)
+            policy.interactionChanged(false, bottomDistance: 0)
+            #expect(policy == intent && policy.owns(request))
+            #expect(policy.following == (target == .latest))
+
+            policy.interactionChanged(true, bottomDistance: 800)
+            #expect(!policy.owns(request) && policy.request == nil)
+            #expect(policy.mode == .interacting)
+            policy.interactionChanged(false, bottomDistance: 800)
+            #expect(!policy.following && policy.mode == .reading)
+        }
+    }
+
     // IOS-CHAT-04: source/branch reset clears only viewport policy and emits no jump.
     // In particular it cannot carry an automatic edge or pending old-page gate forward.
     @Test func contextResetRetiresReadingAndPagingWithoutCreatingAScrollRequest() {

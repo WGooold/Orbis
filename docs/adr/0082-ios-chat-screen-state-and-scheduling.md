@@ -568,6 +568,16 @@ S12／S17／SC55、IOS-CHAT-01／03：共用编辑器按软回车提交配置显
 
 `.artifacts/ios-review-fixes-20261117/verification.json` 记录本轮编译、54 项核心定向测试和资源清理；首次编译发现的高度类型歧义保留于 `app-build/`。`testSlashSelectionAppendsArgumentsAfterReplacement` 已加入并编译，未执行 UI／真机回归。共享 QA 服务拒绝连接，登记阻塞见 `qa-registration.json`；未部署，待用户验证。
 
+### 2026-11-17 IOS-CHAT-16 显式定位与原生运动的控制权
+
+原生列表的 `nativeMotionActive` 同时包含手指操作和松手后的惯性，原实现据此延后全部显式请求。跳到最新会先切换跟随并隐藏按钮，实际定位仍等惯性停止。首次引入为 `f1977599`，`4591dfa8` 的请求协调重构保留了该规则；R5 的列表点停样本没有覆盖惯性期间直接点击跳底按钮。
+
+控制权按手指直接操作、有效显式定位、既有惯性、自动跟随／阅读补偿排序。`ChatNativeTranscriptView.Coordinator` 区分真实触摸和原生运动：手指接触时保留 UIKit 控制；松手后，跳到最新和定位提问共用请求协调入口。新请求先取得 alignment 归属、清理旧阅读锚点与方向、结束旧交互，再通过既有唯一偏移写入入口停止被替换的运动。目标执行继续等待当前快照就绪；自动几何补偿继续保留惯性。锚点采集统一避开显式定位，迟到的惯性结束回调在直接触摸期间不结束新交互。
+
+实现：`Orbis/ChatNativeTranscriptView.swift`。策略回归为 `Tests/ChatViewportTests.swift` 的 `explicitIntentSurvivesOldGestureIdleButYieldsToANewGesture`；原生回归为 `DeviceTests/ChatNativeSnapshotTests.swift` 的 `testLatestRequestTakesOverAnUnfinishedSyntheticInteraction`、`testQuestionRequestTakesOverAnUnfinishedSyntheticInteraction`，并复用 worker 阻塞期间抢占旧定位动画的既有用例。新增原生用例使用合成 delegate 生命周期，不代表真实 UIKit 惯性。
+
+验证证据位于 `.artifacts/ios-decelerating-jump-20261117/`：修改原生实现前的策略选集 16 项通过，候选核心定向选集 24 项通过；原生实现与测试仅通过 Swift 语法解析，尚未完成本轮 iOS 编译和设备运行。共享 QA MCP 拒绝连接，登记阻塞与本轮要求保留于 `qa-registration-status.json`、`qa-request-draft.json`。真实惯性中点击现有按钮的负对照与候选、手指按住、减少动画、跳后跟随、再次拖动及 iOS 17 兼容路径均待设备验证；未生成安装包、未部署，待用户验证。
+
 ## 8. 评估后不采用与范围外
 
 - **引入状态管理依赖。** 系统的 Observation 已覆盖所需能力，不新增第三方架构库。

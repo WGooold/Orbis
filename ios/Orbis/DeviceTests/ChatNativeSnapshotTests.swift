@@ -17,13 +17,28 @@ import XCTest
 
     private func input(_ ids: [String], revision: UInt64, owner: UUID,
                        viewport: ChatViewportController,
+                       onDistance: @escaping (CGFloat) -> Void = { _ in },
+                       onInteraction: @escaping (Bool) -> Void = { _ in },
                        onViewport: @escaping ([String: CGRect], CGFloat) -> Void = { _, _ in }) -> ChatNativeTranscriptView {
         let snapshot = ChatNativeTranscriptView.Snapshot(items: ids.map {
             .init(id: $0, revision: UUID(), content: AnyView(Text($0).frame(height: 44)))
         }, revision: revision)
         return ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
             tailID: ids.last ?? "tail", mountToken: owner, requestIsCurrent: { viewport.owns($0) },
-            onDistance: { _ in }, onInteraction: { _ in }, onViewport: onViewport)
+            onDistance: onDistance, onInteraction: onInteraction, onViewport: onViewport)
+    }
+
+    private func drainResolutionQueue() async {
+        for _ in 0..<3 {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
+    }
+
+    private func bottomOffset(_ collection: UICollectionView) -> CGFloat {
+        max(-collection.adjustedContentInset.top,
+            collection.contentSize.height - collection.bounds.height + collection.adjustedContentInset.bottom)
     }
 
     private func show(_ collection: UICollectionView) -> UIWindow {
@@ -129,6 +144,107 @@ import XCTest
         XCTAssertFalse(gate.ranOnMainThread)
     }
 
+    // IOS-CHAT-16: explicit intent replaces a released user's movement rather than
+    // waiting for an end-deceleration notification that may never arrive after takeover.
+    // These delegate calls create a synthetic interaction lifecycle, not real UIKit
+    // deceleration. The target, native layout, worker and policy callbacks remain real.
+    func testLatestRequestTakesOverAnUnfinishedSyntheticInteraction() async throws {
+        try await assertExplicitRequestTakesOverSyntheticInteraction(target: .latest)
+    }
+
+    func testQuestionRequestTakesOverAnUnfinishedSyntheticInteraction() async throws {
+        try await assertExplicitRequestTakesOverSyntheticInteraction(target: .question("message-12"))
+    }
+
+    private func assertExplicitRequestTakesOverSyntheticInteraction(target: ChatViewportPolicy.Target) async throws {
+        let owner = UUID(), viewport = ChatViewportController()
+        let ids = (0..<80).map { "message-\($0)" }
+        var viewportReports = 0
+        var interactions: [Bool] = []
+        func publication(_ ids: [String], revision: UInt64) -> ChatNativeTranscriptView {
+            input(ids, revision: revision, owner: owner, viewport: viewport,
+                onDistance: { viewport.distanceChanged($0) },
+                onInteraction: { active in
+                    interactions.append(active)
+                    viewport.interactionChanged(active)
+                }, onViewport: { _, _ in viewportReports += 1 })
+        }
+        let coordinator = ChatNativeTranscriptView.Coordinator(publication(ids, revision: 1))
+        defer { coordinator.stop() }
+        let collection = coordinator.makeCollection()
+        let window = show(collection)
+        defer { window.isHidden = true }
+        try await until("synthetic interaction fixture initially positioned") {
+            viewportReports > 0 && collection.contentSize.height > collection.bounds.height * 2 &&
+                abs(self.bottomOffset(collection) - collection.contentOffset.y) <= 1
+        }
+
+        coordinator.scrollViewWillBeginDragging(collection)
+        collection.setContentOffset(CGPoint(x: 0, y: bottomOffset(collection) - 800), animated: false)
+        coordinator.scrollViewDidEndDragging(collection, willDecelerate: true)
+        XCTAssertEqual(interactions, [true])
+        XCTAssertEqual(viewport.policy.mode, .interacting)
+
+        switch target {
+        case .latest: viewport.update { $0.jumpToLatest() }
+        case .question(let id): viewport.update { $0.locateQuestion(id, bottomDistance: viewport.bottomDistance) }
+        }
+        let request = try XCTUnwrap(viewport.request)
+        func targetOffset() -> CGFloat? {
+            switch target {
+            case .latest: return bottomOffset(collection)
+            case .question(let id):
+                guard let index = ids.firstIndex(of: id),
+                      let attributes = collection.collectionViewLayout.layoutAttributesForItem(
+                        at: IndexPath(item: index, section: 0)) else { return nil }
+                return max(-collection.adjustedContentInset.top,
+                    min(bottomOffset(collection), attributes.frame.minY - collection.adjustedContentInset.top))
+            }
+        }
+        // No scrollViewDidEndDecelerating is delivered before this assertion. The
+        // old implementation cannot reach either target with userInteracting retained.
+        try await until("explicit target reached before synthetic deceleration ends") {
+            guard let expected = targetOffset() else { return false }
+            return interactions == [true, false] && !coordinator.animatingOffset &&
+                abs(expected - collection.contentOffset.y) <= 1
+        }
+        XCTAssertTrue(viewport.owns(request), "Ending the replaced interaction must preserve the accepted request")
+        switch target {
+        case .latest: XCTAssertTrue(viewport.following)
+        case .question: XCTAssertFalse(viewport.following)
+        }
+
+        coordinator.scrollViewDidEndDecelerating(collection)
+        await drainResolutionQueue()
+        XCTAssertEqual(interactions, [true, false], "A late native end callback must not finish the same interaction twice")
+        XCTAssertTrue(viewport.owns(request))
+
+        let preservedOffset = collection.contentOffset.y
+        let nextIDs = ids + ["appended-0", "appended-1", "appended-2"]
+        let next = publication(nextIDs, revision: 2)
+        coordinator.update(next, snapshot: next.snapshot())
+        try await until("new publication preserves the explicit target's policy") {
+            guard collection.numberOfItems(inSection: 0) == nextIDs.count,
+                  !coordinator.animatingOffset else { return false }
+            switch target {
+            case .latest: return abs(self.bottomOffset(collection) - collection.contentOffset.y) <= 1
+            case .question: return abs(preservedOffset - collection.contentOffset.y) <= 1
+            }
+        }
+        XCTAssertEqual(interactions, [true, false])
+
+        coordinator.scrollViewWillBeginDragging(collection)
+        XCTAssertNil(viewport.request, "A subsequent user gesture must cancel the old explicit request")
+        XCTAssertFalse(viewport.owns(request))
+        XCTAssertFalse(coordinator.animatingOffset)
+        collection.setContentOffset(CGPoint(x: 0, y: bottomOffset(collection) - 400), animated: false)
+        coordinator.scrollViewDidEndDragging(collection, willDecelerate: false)
+        try await until("subsequent synthetic gesture finishes in reading mode") {
+            interactions == [true, false, true, false] && viewport.policy.mode == .reading
+        }
+        XCTAssertFalse(viewport.following)
+    }
+
     // PERF-14: metadata preparation may defer layout, but must not defer a newer
     // explicit scroll intent's cancellation of the previous UIKit animator.
     func testLatestRequestInterruptsQuestionAnimationWhilePreparationIsBlocked() async throws {
@@ -166,11 +282,7 @@ import XCTest
         viewport.update { $0.jumpToLatest() }
         // Drain the observer/update/resolution queue rather than waiting for the
         // old animation's natural end, which could otherwise make this test pass.
-        for _ in 0..<3 {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                DispatchQueue.main.async { continuation.resume() }
-            }
-        }
+        await drainResolutionQueue()
         XCTAssertFalse(coordinator.animatingOffset, "A pending comparison must not retain the superseded question animator")
         XCTAssertEqual(gate.enteredCount, 1)
         XCTAssertFalse(gate.timedOut)

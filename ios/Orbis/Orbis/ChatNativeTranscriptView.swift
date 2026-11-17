@@ -392,6 +392,15 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 collection?.isDecelerating == true
         }
 
+        /// IOS-CHAT-16: a finger owns the viewport until release. Deceleration is
+        /// the previous gesture's continuation, so a newer explicit intent may
+        /// replace it. isDragging alone can remain true during that continuation.
+        private var directManipulationActive: Bool {
+            guard let collection else { return false }
+            let pan = collection.panGestureRecognizer.state
+            return collection.isTracking || pan == .began || pan == .changed
+        }
+
         private func applyDesiredSnapshot() {
             guard !stopped, !applyingSnapshot, snapshotPreparation == nil, dataSource != nil,
                   appliedGeneration != sourceGeneration else { return }
@@ -573,18 +582,20 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             // New user intent cancels the old animator immediately, including while
             // a worker is preparing content. Resolving the new target still waits
             // until the current snapshot has been applied and measured.
-            if !nativeMotionActive { reconcileAlignmentIntent() }
+            reconcileAlignmentIntent()
             guard !applyingSnapshot, snapshotPreparation == nil, appliedGeneration == sourceGeneration,
                   let collection, collection.bounds.height > 0,
                   collection.bounds.width > 0 else { return }
             resolving = true
             collection.layoutIfNeeded()
             var wroteOffset = false
-            if !nativeMotionActive {
+            if alignment != nil {
+                // An accepted explicit intent owns the offset even if UIKit has
+                // not yet retired every flag from the motion it replaced.
+                if !directManipulationActive, !animatingOffset { wroteOffset = resolveAlignment() }
+            } else if !nativeMotionActive {
                 if !animatingOffset {
-                    if alignment != nil {
-                        wroteOffset = resolveAlignment()
-                    } else if !initialPlacementReady || following {
+                    if !initialPlacementReady || following {
                         wroteOffset = writeOffset(bottomOffset, animated: false)
                     } else {
                         wroteOffset = restoreAnchor()
@@ -610,16 +621,22 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         private func reconcileAlignmentIntent() {
-            if let request = input.viewport.nativeState.request, request != handledRequest,
+            if !directManipulationActive,
+               let request = input.viewport.nativeState.request, request != handledRequest,
                request.contextGeneration == input.viewport.nativeState.contextGeneration,
                input.requestIsCurrent(request) {
-                if animatingOffset, let collection {
-                    writeOffset(collection.contentOffset.y, animated: false, force: true)
-                    animatingOffset = false
-                }
+                let replacingMotion = nativeMotionActive || animatingOffset
+                // Install the new owner before cancelling UIKit motion: offset
+                // writes can synchronously call layout and scroll delegates.
                 handledRequest = request
                 alignment = Alignment(request: request)
                 anchors = []
+                pendingDirection = nil
+                finishInteraction()
+                animatingOffset = false
+                if replacingMotion, let collection {
+                    writeOffset(collection.contentOffset.y, animated: false, force: true)
+                }
             }
             if let active = alignment,
                !input.requestIsCurrent(active.request) ||
@@ -736,7 +753,9 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         private func captureAnchorsIfNeeded() {
-            guard anchors.isEmpty, let collection else { return }
+            // Reading compensation never competes with an explicit positioning
+            // owner, including snapshots prepared while its target is pending.
+            guard alignment == nil, !animatingOffset, anchors.isEmpty, let collection else { return }
             anchors = visibleRows().compactMap { id, frame, measured in
                 guard measured, rendered[id]?.kind == .message, id != input.tailID else { return nil }
                 return Anchor(id: id, top: frame.minY - collection.bounds.minY, height: frame.height,
@@ -844,7 +863,11 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             if !decelerate { finishInteraction() }
         }
 
-        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { finishInteraction() }
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            // A cancelled deceleration may end after the next touch has begun.
+            guard !directManipulationActive else { return }
+            finishInteraction()
+        }
 
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             animatingOffset = false
