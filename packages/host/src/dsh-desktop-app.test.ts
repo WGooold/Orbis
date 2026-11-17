@@ -2,8 +2,8 @@
 // the endpoint only of a Desktop it launched itself, a Desktop opened elsewhere is reported as such, and
 // nothing here terminates Desktop. The fake executable stands in for Electron forwarding Host stdout.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants, readFileSync } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,6 +14,11 @@ import {
   pendingDshDesktopLaunch, readDshDesktopEndpoint, revealDshDesktop, dshDesktopLaunchEnvironment,
 } from "./dsh-desktop-app.js";
 import { writeAsarFixture } from "./fixtures/asar-fixture.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, access: vi.fn(original.access) };
+});
 
 const roots: string[] = [];
 const pids: number[] = [];
@@ -88,6 +93,13 @@ describe("Desktop installation discovery", () => {
     const image = join(await temp(), "DeepSeek Harness.app");
     await install(image, "darwin", undefined, archiveFiles("0.2.0"));
     await chmod(image, 0o555);
+    const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    // Windows chmod cannot model a read-only macOS volume; keep the same ordering
+    // assertion by simulating only that volume's W_OK result on Windows.
+    if (process.platform === "win32") vi.mocked(access).mockImplementation(async (path, mode) => {
+      if (path === image && mode === fsConstants.W_OK) throw Object.assign(new Error("Read-only fixture volume"), { code: "EROFS" });
+      return original.access(path, mode);
+    });
     try {
       const bundleLocations = vi.fn(async () => [trashed, image, external]);
       const options = { platform: "darwin" as const, env: {}, applicationFolders: [applications], bundleLocations };
@@ -99,7 +111,7 @@ describe("Desktop installation discovery", () => {
       bundleLocations.mockClear();
       expect((await findDshDesktopInstallation(options))?.root).toBe(standard);
       expect(bundleLocations).not.toHaveBeenCalled();
-    } finally { await chmod(image, 0o755); }
+    } finally { vi.mocked(access).mockImplementation(original.access); await chmod(image, 0o755); }
   });
 });
 

@@ -101,7 +101,7 @@ async function macBundleLocations(): Promise<string[]> {
  * path) stay usable but come after a copy the user installed.
  */
 async function orderBundleLocations(paths: string[]): Promise<string[]> {
-  const kept = paths.filter(path => !/\/\.Trash(?:es)?\//u.test(path));
+  const kept = paths.filter(path => !/[\\/]\.Trash(?:es)?[\\/]/u.test(path));
   const writable = await Promise.all(kept.map(path => access(path, fsConstants.W_OK).then(() => true, () => false)));
   return [...kept.filter((_, index) => writable[index]), ...kept.filter((_, index) => !writable[index])];
 }

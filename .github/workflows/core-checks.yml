@@ -1,0 +1,164 @@
+name: Core checks
+
+on:
+  workflow_call:
+    inputs:
+      native_compatibility:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint, types and build (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Verify build and signing helpers
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_mobile_toolchain.py'
+          python3 -m unittest discover -s scripts -p 'test_macos_sign.py'
+      # Tests load compiled extension fixtures; share these bytes across runners.
+      - name: Archive compiled workspace
+        run: tar -czf "$RUNNER_TEMP/ci-compiled-js.tar.gz" packages/*/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-compiled-js
+          path: ${{ runner.temp }}/ci-compiled-js.tar.gz
+          retention-days: 1
+          overwrite: true
+
+  windows:
+    name: Windows tests (${{ matrix.shard }}/4)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-compiled-js
+          path: ${{ runner.temp }}
+      - name: Restore compiled workspace
+        shell: pwsh
+        run: '& "$env:WINDIR/System32/tar.exe" -xzf (Join-Path $env:RUNNER_TEMP ''ci-compiled-js.tar.gz'')'
+      - name: Initialize Windows process provider
+        # Hosted images start the CIM provider lazily. Its first activation can
+        # exceed the application's 5s query deadline; tests retain that deadline.
+        shell: powershell
+        timeout-minutes: 2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,ExecutablePath -ErrorAction Stop | Out-Null
+          Write-Output "CIM provider ready in $($timer.ElapsedMilliseconds) ms"
+      - name: Run Windows test shard
+        run: npx vitest run --shard=${{ matrix.shard }}/4 --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/windows-${{ matrix.shard }}.xml
+      - name: Preserve Windows test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-tests-windows-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: .artifacts/ci/windows-${{ matrix.shard }}.xml
+          retention-days: 14
+
+  linux:
+    name: Linux Relay compatibility and review integration tests
+    if: inputs.native_compatibility
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-compiled-js
+          path: ${{ runner.temp }}
+      - name: Restore compiled workspace
+        run: tar -xzf "$RUNNER_TEMP/ci-compiled-js.tar.gz"
+      - name: Run Linux compatibility tests
+        run: npx vitest run packages/protocol/src packages/relay/src packages/host/src/device-protocol.test.ts packages/host/src/host-protocol-compatibility.test.ts packages/host/src/device-link.test.ts packages/host/src/loopback-server.test.ts scripts/review-demo/cleanup.test.mjs scripts/review-demo/portal.test.mjs --maxWorkers=1 --testTimeout=30000 --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/linux.xml
+      - name: Preserve Linux test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-tests-linux-attempt-${{ github.run_attempt }}
+          path: .artifacts/ci/linux.xml
+          retention-days: 14
+
+  macos:
+    name: macOS Host compatibility tests
+    if: inputs.native_compatibility
+    needs: build
+    # Native behavior needs macOS; Intel avoids the constrained ARM64 pool.
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-compiled-js
+          path: ${{ runner.temp }}
+      - name: Restore compiled workspace
+        run: tar -xzf "$RUNNER_TEMP/ci-compiled-js.tar.gz"
+      - name: Run macOS compatibility tests
+        run: |
+          npx vitest run \
+            packages/host/src/agent-installation.test.ts \
+            packages/host/src/codex-desktop-launcher.test.ts \
+            packages/host/src/codex-desktop-macos.test.ts \
+            packages/host/src/codex-desktop-wrapper.test.ts \
+            packages/host/src/codex-terminal-macos.test.ts \
+            packages/host/src/desktop-installation.test.ts \
+            packages/host/src/dsh-desktop-app.test.ts \
+            packages/host/src/login-shell-env.test.ts \
+            packages/host/src/turn-file-change-service.test.ts \
+            packages/protocol/src/relay-compatibility.test.ts \
+            packages/relay/src/protocol-compatibility.test.ts \
+            packages/relay/src/relay.test.ts \
+            packages/host/src/device-protocol.test.ts \
+            packages/host/src/host-protocol-compatibility.test.ts \
+            packages/host/src/host-service.test.ts \
+            packages/host/src/device-link.test.ts \
+            packages/host/src/loopback-server.test.ts \
+            scripts/review-demo/cleanup.test.mjs \
+            scripts/review-demo/portal.test.mjs \
+            --maxWorkers=1 --testTimeout=30000 \
+            --reporter=default --reporter=junit --outputFile.junit=.artifacts/ci/macos.xml
+      - name: Preserve macOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-tests-macos-attempt-${{ github.run_attempt }}
+          path: .artifacts/ci/macos.xml
+          retention-days: 14

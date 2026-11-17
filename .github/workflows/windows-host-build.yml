@@ -7,6 +7,11 @@ permissions:
   contents: read
 
 jobs:
+  check:
+    uses: ./.github/workflows/core-checks.yml
+    with:
+      native_compatibility: false
+
   windows-host:
     runs-on: windows-latest
     timeout-minutes: 35
@@ -28,10 +33,6 @@ jobs:
           archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
           cache: true
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm run lint
-      - run: npm run typecheck
-      # The existing multi-megabyte encryption assertions can exceed 10s on hosted CPUs.
-      - run: npx vitest run --maxWorkers=1 --testTimeout=30000
       - name: Build, package, and smoke-test native client
         shell: pwsh
         run: |

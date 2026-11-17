@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: Compare baseline and optimized Docker builds without deployment
+        type: boolean
+        default: false
+      benchmark_base_ref:
+        description: Historical commit or branch used as the Docker baseline
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+# A unique main group also avoids replacing a pending main run.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Hold the entire main pipeline through deployment. All pending commits are
+    # retained, and a slower earlier check cannot deploy after a newer commit.
+    concurrency:
+      group: ci-main-pipeline
+      queue: max
+      cancel-in-progress: false
+    uses: ./.github/workflows/ci-pipeline.yml
+    secrets: inherit
+
+  verify:
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    uses: ./.github/workflows/ci-pipeline.yml
+    with:
+      benchmark: ${{ inputs.benchmark || false }}
+      benchmark_base_ref: ${{ inputs.benchmark_base_ref || 'main' }}
+    secrets: inherit
+
+  gate:
+    name: CI
+    if: always()
+    needs: [main, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify pipeline result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          IS_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          node <<'JS'
+          const needs = JSON.parse(process.env.NEEDS);
+          const main = process.env.IS_MAIN === 'true';
+          for (const [job, selected] of [['main', main], ['verify', !main]]) {
+            const expected = selected ? 'success' : 'skipped';
+            if (needs[job].result !== expected) throw new Error(`${job}: ${needs[job].result}, expected ${expected}`);
+          }
+          JS

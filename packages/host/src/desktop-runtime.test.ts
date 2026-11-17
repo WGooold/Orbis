@@ -516,7 +516,8 @@ describe("desktop Host lifecycle", () => {
         lanPort: 0, codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false, claudeIntegrationEnabled: false });
       expect(events).toContainEqual({ event: "state", state: "connected" });
       connected!.close();
-      await vi.waitFor(() => expect(events.at(-1)).toMatchObject({ event: "state", state: "error", activationRequired: true }), { timeout: 4_000 });
+      // Background CLI detection emits independent status events after activation loss.
+      await vi.waitFor(() => expect(events.filter(event => event.event === "state").at(-1)).toMatchObject({ event: "state", state: "error", activationRequired: true }), { timeout: 4_000 });
       const terminal = events.filter(event => event.event === "state");
       await new Promise(resolve => setTimeout(resolve, 1_100));
       expect(events.filter(event => event.event === "state")).toEqual(terminal);
@@ -554,7 +555,8 @@ describe("desktop Host lifecycle", () => {
 
       // Mid-handshake: the pause returns at once, and the abandoned start settles quietly.
       const late = runtime.start({ ...settings });
-      await vi.waitFor(() => expect(connections).toBe(1));
+      // Windows discovery can exceed the default 1s wait; time pause only after the handshake starts.
+      await vi.waitFor(() => expect(connections).toBe(1), { timeout: 10_000 });
       const paused = Date.now();
       await runtime.stop();
       expect(Date.now() - paused).toBeLessThan(2_000);
@@ -562,7 +564,7 @@ describe("desktop Host lifecycle", () => {
       expect([...events].reverse().find(event => event.event === "state")?.state).toBe("stopped");
       // The pause really released the attempt: a new start is accepted.
       const again = runtime.start({ ...settings });
-      await vi.waitFor(() => expect(connections).toBe(2));
+      await vi.waitFor(() => expect(connections).toBe(2), { timeout: 10_000 });
       await runtime.stop(); await again;
     } finally {
       await runtime.close();

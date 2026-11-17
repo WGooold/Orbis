@@ -9,6 +9,21 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 MOBILE = "v0.0.0-20261011034528-197770444867"
 
+def prepare_tools(go, binary, env):
+    # Upstream publishes source only. Restore the pinned binaries in CI and rebuild
+    # them once only when either the mobile revision or host Go toolchain changes.
+    fingerprint = MOBILE + "\n" + subprocess.check_output(
+        [go, "env", "GOVERSION", "GOHOSTOS", "GOHOSTARCH"], env=env, text=True)
+    stamp = binary / "toolchain.txt"
+    suffix = ".exe" if os.name == "nt" else ""
+    tools = [binary / (tool + suffix) for tool in ("gomobile", "gobind")]
+    if stamp.is_file() and stamp.read_text() == fingerprint and all(tool.is_file() for tool in tools):
+        return
+    stamp.unlink(missing_ok=True)
+    for tool in ("gomobile", "gobind"):
+        subprocess.run([go, "install", f"golang.org/x/mobile/cmd/{tool}@{MOBILE}"], env=env, check=True)
+    stamp.write_text(fingerprint)
+
 def main():
     output = Path(sys.argv[1]).resolve()
     sdk = Path(sys.argv[2]).resolve()
@@ -21,8 +36,7 @@ def main():
     env["PATH"] = str(Path(go).resolve().parent) + os.pathsep + str(binary) + os.pathsep + env["PATH"]
     env.setdefault("ANDROID_NDK_HOME", str(sdk / "ndk/27.2.12479018"))
     suffix = ".exe" if os.name == "nt" else ""
-    for tool in ("gomobile", "gobind"):
-        subprocess.run([go, "install", f"golang.org/x/mobile/cmd/{tool}@{MOBILE}"], env=env, check=True)
+    prepare_tools(go, binary, env)
     subprocess.run([str(binary / ("gomobile" + suffix)), "bind", "-target=android", "-androidapi=26",
                     "-javapkg=orbis", "-trimpath", "-o", str(output), "./mobile"],
                    cwd=ROOT / "native/relayquic", env=env, check=True)
