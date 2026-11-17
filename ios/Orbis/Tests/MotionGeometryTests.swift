@@ -102,4 +102,38 @@ struct MotionGeometryTests {
         #expect(MotionGeometry.sendPoint(from: source, to: leftTarget, progress: 0.25) == CGPoint(x: source.x + 24, y: source.y))
         #expect(MotionGeometry.sendPoint(from: source, to: leftTarget, progress: 1) == leftTarget)
     }
+
+    // FOLD-01: Duo portrait has a horizontal division and must not display a top directory panel;
+    // Duo landscape has a vertical division and keeps the side directory; non-fold wide screens keep theirs.
+    @Test func persistentSessionDirectoryHidesOnHorizontalFoldDivisionAndKeepsSidePanels() {
+        let duoPortrait = CGSize(width: 669, height: 951)
+        let duoLandscape = CGSize(width: 951, height: 669)
+        let horizontalDivision = CGRect(x: 0, y: 475, width: 669, height: 1)
+        let verticalDivision = CGRect(x: 475, y: 0, width: 1, height: 669)
+
+        #expect(!showsPersistentSessionDirectory(hasHost: true, containerSize: duoPortrait, divisionFrame: horizontalDivision))
+        #expect(!showsPersistentSessionDirectory(hasHost: true, containerSize: duoPortrait, divisionFrame: .zero))
+        #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: duoLandscape, divisionFrame: verticalDivision))
+        #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: duoLandscape, divisionFrame: .zero))
+
+        #expect(!showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 466, height: 678), divisionFrame: nil))
+        // FOLD-03: the closed landscape viewport must remain wide enough for the provider controls.
+        #expect(!showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 678, height: 466), divisionFrame: nil, compactHeight: true))
+        #expect(!showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 678, height: 466), divisionFrame: .zero, compactHeight: true))
+        // A regular-height tablet retains its directory when the keyboard reduces the viewport.
+        #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 1180, height: 420), divisionFrame: nil))
+        #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 820, height: 1180), divisionFrame: nil))
+        #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: CGSize(width: 1180, height: 820), divisionFrame: nil))
+        #expect(!showsPersistentSessionDirectory(hasHost: false, containerSize: duoLandscape, divisionFrame: verticalDivision))
+    }
+
+    // FOLD-08: the expanded canvas can arrive before the closed screen's compact
+    // size class clears. Its first frame must already reserve the left directory.
+    @Test func expandedLandscapeDoesNotWaitForSizeClassUpdate() {
+        let size = CGSize(width: 951, height: 669)
+        for division: CGRect? in [nil, .zero, CGRect(x: 475, y: 0, width: 1, height: 669)] {
+            #expect(showsPersistentSessionDirectory(hasHost: true, containerSize: size,
+                divisionFrame: division, compactHeight: true))
+        }
+    }
 }

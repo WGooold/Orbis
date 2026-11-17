@@ -524,3 +524,60 @@ struct GlyphFeedbackState {
 
     mutating func released() { physicalCycle = false }
 }
+
+/// Foldable inner screens in portrait divide top and bottom across a horizontal hinge;
+/// keep the directory in its slide-over drawer instead of showing a top panel.
+func showsPersistentSessionDirectory(hasHost: Bool, containerSize: CGSize, divisionFrame: CGRect?, compactHeight: Bool = false) -> Bool {
+    // FOLD-07/08: posture does not hide a landscape directory. During unfolding,
+    // expanded bounds can arrive before the closed screen's size class clears.
+    // A tablet keyboard still keeps its regular-height directory.
+    guard hasHost, containerSize.width >= 600, !compactHeight || containerSize.height >= 600 else { return false }
+    guard let divisionFrame else { return true }
+    let horizontalDivision = divisionFrame.width != divisionFrame.height
+        ? divisionFrame.width > divisionFrame.height
+        : containerSize.height > containerSize.width
+    return !horizontalDivision
+}
+
+/// FOLD-08: resolve both panes together from the current layout pass. Remembering
+/// the device's hinge covers a temporarily absent/zero division while opening.
+struct SessionShellGeometry: Equatable {
+    let directory: CGRect
+    let content: CGRect
+    let reading: Bool
+    var showsDirectory: Bool { directory.width > 0 }
+
+    init(size: CGSize, divisionFrame: CGRect?, hasHost: Bool, compactHeight: Bool,
+         partiallyOpen: Bool, hasHinge: Bool = false) {
+        let division = divisionFrame ?? (hasHinge ? CGRect.zero : nil)
+        let showsDirectory = showsPersistentSessionDirectory(hasHost: hasHost, containerSize: size,
+            divisionFrame: division, compactHeight: compactHeight)
+        let directoryEnd: CGFloat
+        let contentStart: CGFloat
+        if showsDirectory, let division {
+            if division.minX > 0, division.maxX < size.width, division.height > division.width {
+                directoryEnd = division.minX
+                contentStart = division.maxX
+            } else {
+                // The inner canvas is present before its physical division has
+                // supplied a frame. Reserve its two halves immediately.
+                directoryEnd = size.width / 2
+                contentStart = directoryEnd
+            }
+        } else {
+            directoryEnd = showsDirectory ? min(320, size.width) : 0
+            contentStart = directoryEnd
+        }
+        directory = CGRect(x: 0, y: 0, width: directoryEnd, height: size.height)
+        content = CGRect(x: contentStart, y: 0, width: max(0, size.width - contentStart), height: size.height)
+        reading = usesFoldReadingLayout(partiallyOpen: partiallyOpen, containerSize: size, divisionFrame: division)
+    }
+}
+
+/// FOLD-04: use the horizontal physical division, never an ordinary wide window.
+func usesFoldReadingLayout(partiallyOpen: Bool, containerSize: CGSize, divisionFrame: CGRect?) -> Bool {
+    guard partiallyOpen, let divisionFrame else { return false }
+    return divisionFrame.width != divisionFrame.height
+        ? divisionFrame.width > divisionFrame.height
+        : containerSize.height > containerSize.width
+}

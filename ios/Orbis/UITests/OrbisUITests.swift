@@ -237,13 +237,19 @@ final class OrbisUITests: XCTestCase {
     }
 
     // FOLD-01: the session directory and primary surface must stay on opposite
-    // sides of the active Duo division, and the draft input must remain usable.
+    // sides of the active Duo division in landscape, and the draft input must remain usable.
     func testIPhoneDuoFoldDivisionKeepsDirectoryAndDraftUsable() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
         let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
         let window = app.windows.firstMatch
         let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
         let list = app.scrollViews["home-session-list"]
         XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            window.frame.width > window.frame.height
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [landscape], timeout: 5), .completed)
         XCTAssertGreaterThan(window.frame.width, 600, "Duo must be testing its inner dual-screen canvas")
         XCTAssertTrue(directory.waitForExistence(timeout: 5))
         XCTAssertTrue(list.waitForExistence(timeout: 5))
@@ -262,6 +268,31 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(draft.value as? String, "折叠屏草稿")
         XCTAssertTrue(directory.exists)
         capture("iphone-duo-fold-division-draft", app: app)
+    }
+
+    // FOLD-07: synthetic posture keeps this independent of the simulator hinge
+    // menu. Run on the inner Duo canvas; landscape must retain both side panes.
+    func testIPhoneDuoPartialLandscapeKeepsDirectoryAndDraftOnRight() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launch("home", arguments: ["--preview-partially-open", "--preview-reset-design"])
+        let window = app.windows.firstMatch
+        let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        XCTAssertGreaterThan(window.frame.width, window.frame.height)
+        XCTAssertGreaterThan(window.frame.height, 600, "Run on Duo's expanded inner canvas")
+        XCTAssertTrue(directory.waitForExistence(timeout: 5))
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(directory.frame.maxX, window.frame.midX)
+        XCTAssertGreaterThanOrEqual(list.frame.minX, window.frame.midX)
+        app.buttons["home-new-session"].tap()
+        let draft = app.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(draft.waitForExistence(timeout: 4))
+        draft.tap(); draft.typeText("横屏展开草稿")
+        XCTAssertEqual(draft.value as? String, "横屏展开草稿")
+        XCTAssertTrue(directory.exists)
+        capture("iphone-duo-partial-landscape-right-draft", app: app)
     }
 
     // The desktop Codex backend remains reachable from the four-Agent draft.

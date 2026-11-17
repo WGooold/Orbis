@@ -30,7 +30,7 @@ private struct NavigationRoot: View, Equatable {
     @State private var rootOpacity = 1.0
     @State private var rootOffset: CGFloat = 0
     @State private var rootTransition = 0
-    @State private var surfaceWidth: CGFloat = 390
+    @State private var persistentDirectory = false
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
@@ -72,7 +72,7 @@ private struct NavigationRoot: View, Equatable {
                 // Store changes wait while a page moves, so no whole-page update lands between the
                 // transition's frames (PERF-10). Each phase re-arms the safety limit; a finger drag
                 // always ends in a release or cancel, so it may hold longer.
-                OrbisPageHost(stack: navigation, rootCovered: drawerOpen && surfaceWidth < 600,
+                OrbisPageHost(stack: navigation, rootCovered: drawerOpen && !persistentDirectory,
                               onFlight: { [store] phase in
                                   if phase == .dragging { LiveActivityCoordinator.shared.cancelQueuedOpen() }
                                   store.holdScreenPublications(phase != nil, limit: phase == .dragging ? .seconds(5) : .seconds(1))
@@ -97,10 +97,12 @@ private struct NavigationRoot: View, Equatable {
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: visualStyle)
-        .modifier(SessionDrawerModifier(isOpen: $drawerOpen, hasHost: !facts.pairings.isEmpty, edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !facts.pairings.isEmpty && !facts.pairing) {
+        .modifier(SessionDrawerModifier(isOpen: $drawerOpen,
+                                        hasHost: !facts.pairings.isEmpty,
+                                        edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !facts.pairings.isEmpty && !facts.pairing,
+                                        onPersistentChange: { persistentDirectory = $0 }) {
             drawer
         })
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { surfaceWidth = $0 }
     }
 
     private var rootWithNotices: some View {
@@ -194,11 +196,11 @@ private struct NavigationRoot: View, Equatable {
             LiveActivityCoordinator.shared.navigationSelectionChanged()
             store.setFeedbackPage(downloads: navigation.pages.last == .downloads, chat: navigation.pages.last == .chat)
             store.hostState.setCatalogQuery(directoryState.networkQuery)
-            store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
+            store.hostState.setCatalogVisible((drawerOpen || persistentDirectory) && scenePhase == .active)
             overlay.dismissMenu()
         }
-        .onChange(of: surfaceWidth) { _, width in
-            store.hostState.setCatalogVisible((drawerOpen || width >= 600) && scenePhase == .active)
+        .onChange(of: persistentDirectory) { _, visible in
+            store.hostState.setCatalogVisible((drawerOpen || visible) && scenePhase == .active)
         }
         .onChange(of: facts.pairings) { _, _ in overlay.dismissMenu() }
         .onChange(of: navigation.pages) { _, pages in
@@ -211,7 +213,7 @@ private struct NavigationRoot: View, Equatable {
         .onChange(of: drawerOpen) { _, open in
             if open { LiveActivityCoordinator.shared.cancelQueuedOpen() }
             store.hostState.setCatalogQuery(directoryState.networkQuery)
-            store.hostState.setCatalogVisible((open || surfaceWidth >= 600) && scenePhase == .active)
+            store.hostState.setCatalogVisible((open || persistentDirectory) && scenePhase == .active)
             overlay.dismissMenu()
         }
         .onChange(of: newSessionOpen) { _, open in
@@ -252,7 +254,7 @@ private struct NavigationRoot: View, Equatable {
             store.setFeedbackForeground(scenePhase == .active)
             store.setFeedbackPage(downloads: navigation.pages.last == .downloads, chat: navigation.pages.last == .chat)
             store.hostState.setCatalogQuery(directoryState.networkQuery)
-            store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
+            store.hostState.setCatalogVisible((drawerOpen || persistentDirectory) && scenePhase == .active)
             store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
@@ -463,13 +465,45 @@ private struct RootTabVisibility: ViewModifier {
 /// 会话目录抽屉。关闭时在主页左侧（左 40% 宽度内）起手向右横拖即把抽屉拉出；打开时在抽屉
 /// 或遮罩上向左拖动即推回。拖动过程中抽屉与遮罩跟随手指，松手按位置与速度吸附到打开或关闭。
 /// 拉出手势挂在页面内容上与之同时识别，并按第一段位移锁定方向，竖向滚动主页时不会带出抽屉。
+private struct FoldReadingKey: EnvironmentKey { static let defaultValue = false }
+private struct OpenSessionDirectoryKey: EnvironmentKey { static let defaultValue: () -> Void = {} }
+extension EnvironmentValues {
+    var orbisFoldReading: Bool {
+        get { self[FoldReadingKey.self] }
+        set { self[FoldReadingKey.self] = newValue }
+    }
+    var orbisOpenSessionDirectory: () -> Void {
+        get { self[OpenSessionDirectoryKey.self] }
+        set { self[OpenSessionDirectoryKey.self] = newValue }
+    }
+}
+
+private struct FoldHingeObserver: ViewModifier {
+    @Binding var partiallyOpen: Bool
+    @Binding var hasHinge: Bool
+    func body(content: Content) -> some View {
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            content.onHingeChange { _, context in
+                hasHinge = hasHinge || context.hinge != nil
+                partiallyOpen = context.hinge?.status == .partiallyOpen
+            }
+        } else { content }
+        #else
+        content
+        #endif
+    }
+}
+
 private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Binding var isOpen: Bool
     let hasHost: Bool
     let edgeSwipeEnabled: Bool
+    var onPersistentChange: (Bool) -> Void = { _ in }
     @ViewBuilder let drawer: Drawer
     /// 拖动中抽屉相对完全打开位置的水平偏移，范围 [-width, 0]；nil 表示没有在拖动。
     @State private var offset: CGFloat?
@@ -477,126 +511,137 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @State private var horizontalDrag: Bool?
     /// 横拖抽屉期间停用手指下的按钮：从会话卡片或目录行上起手拖动时，松手不能再触发它们。
     @State private var suppressTaps = false
-    @State private var containerSize = CGSize(width: 390, height: 844)
+    @State private var partiallyOpen = false
+    @State private var hasHinge = false
 
-    private var containerWidth: CGFloat { containerSize.width }
-    private var width: CGFloat { min(320, containerWidth * 0.85) }
-    private var persistent: Bool { hasHost && containerWidth >= 600 }
+    private var isPartiallyOpen: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-fold-reading") ||
+            ProcessInfo.processInfo.arguments.contains("--preview-partially-open") { return true }
+        #endif
+        return partiallyOpen
+    }
 
     func body(content: Content) -> some View {
-        Group {
-            #if compiler(>=6.4)
-            // 折叠屏分栏用的是 iOS 27.1 SDK 才有的 ArrangementView；CI 上的旧工具链
-            // 没有这些符号，编不过，所以按编译器版本选布局，行为在真机上不变。
-            if #available(iOS 27.1, *) {
-                foldAwareContent(content)
-            } else {
-                ordinaryContent(content)
-            }
-            #else
-            ordinaryContent(content)
-            #endif
-        }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { containerSize = $0 }
-        .overlay {
-                let visible = !persistent && (isOpen || offset != nil)
-                let progress = visible ? max(0, min(1, 1 + (offset ?? 0) / width)) : 0
-                ZStack(alignment: .leading) {
-                    if visible {
-                        OrbisPalette(scheme).scrim.opacity(0.34 * progress).ignoresSafeArea()
-                            .allowsHitTesting(false).accessibilityHidden(true)
-                            .transition(.opacity)
-                        // The close target occupies only the exposed scrim. A full-window
-                        // accessibility button would cover the drawer's own hit targets.
-                        HStack(spacing: 0) {
-                            Color.clear.frame(width: max(0, width + (offset ?? 0))).allowsHitTesting(false)
-                            Button(action: close) { Color.clear.contentShape(Rectangle()) }
-                                .buttonStyle(.plain).accessibilityLabel(L10n.tr("关闭会话目录"))
-                        }.ignoresSafeArea()
-                        drawer
-                            .disabled(suppressTaps)
-                            .frame(width: width)
-                            .frame(maxHeight: .infinity)
-                            .orbisNested()
-                            .background {
-                                // The panel owns the material; its contents use flat tonal layers.
-                                // Extend only the shell into safe areas, keeping controls in place.
-                                Color.clear
-                                    .neuSurface(radius: OrbisRadius.card, intensity: 1, concentric: false)
-                                    .ignoresSafeArea()
-                                    .allowsHitTesting(false)
-                                    .accessibilityHidden(true)
-                            }
-                            .offset(x: offset ?? 0)
-                            .transition(.move(edge: .leading))
-                            .accessibilityElement(children: .contain)
+        GeometryReader { geometry in
+            let layout = SessionShellGeometry(size: geometry.size, divisionFrame: drawerDivision(geometry),
+                hasHost: hasHost, compactHeight: verticalSizeClass == .compact,
+                partiallyOpen: isPartiallyOpen, hasHinge: hasHinge)
+            let width = min(320, geometry.size.width * 0.85)
+            ordinaryContent(content, layout: layout, containerWidth: geometry.size.width, drawerWidth: width)
+                .overlay { drawerOverlay(persistent: layout.showsDirectory, width: width, containerWidth: geometry.size.width) }
+                .onChange(of: layout.showsDirectory, initial: true) { old, next in
+                    if !old && next {
+                        isOpen = false
+                        offset = nil
+                        horizontalDrag = nil
+                        suppressTaps = false
                     }
-                    // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
-                    // 拉出过程中这条窄带必须一直存在，否则手势会随视图移除而被取消。
-                    if edgeSwipeEnabled && !isOpen && !persistent {
-                        Color.clear.frame(width: 20).frame(maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                            .gesture(openGesture)
+                    onPersistentChange(next)
+                }
+        }
+        // FOLD-04: the shell owns the base behind centered panes, hinge gaps and
+        // outer safe areas; pane-local backgrounds leave these regions transparent.
+        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .modifier(FoldHingeObserver(partiallyOpen: $partiallyOpen, hasHinge: $hasHinge))
+    }
+
+    private func drawerOverlay(persistent: Bool, width: CGFloat, containerWidth: CGFloat) -> some View {
+        let visible = !persistent && (isOpen || offset != nil)
+        let progress = visible ? max(0, min(1, 1 + (offset ?? 0) / width)) : 0
+        return ZStack(alignment: .leading) {
+            if visible {
+                OrbisPalette(scheme).scrim.opacity(0.34 * progress).ignoresSafeArea()
+                    .allowsHitTesting(false).accessibilityHidden(true)
+                    .transition(.opacity)
+                // The close target occupies only the exposed scrim. A full-window
+                // accessibility button would cover the drawer's own hit targets.
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: max(0, width + (offset ?? 0))).allowsHitTesting(false)
+                    Button(action: close) { Color.clear.contentShape(Rectangle()) }
+                        .buttonStyle(.plain).accessibilityLabel(L10n.tr("关闭会话目录"))
+                }.ignoresSafeArea()
+                drawer
+                    .disabled(suppressTaps)
+                    .frame(width: width)
+                    .frame(maxHeight: .infinity)
+                    .orbisNested()
+                    .background {
+                        // The panel owns the material; its contents use flat tonal layers.
+                        // Extend only the shell into safe areas, keeping controls in place.
+                        Color.clear
+                            .neuSurface(radius: OrbisRadius.card, intensity: 1, concentric: false)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
+                    .offset(x: offset ?? 0)
+                    .transition(.move(edge: .leading))
+                    .accessibilityElement(children: .contain)
+            }
+            // 紧贴屏幕左缘起手时，挂在内容上的同时手势会被系统边缘手势拦下，这里单独接住。
+            // 拉出过程中这条窄带必须一直存在，否则手势会随视图移除而被取消。
+            if edgeSwipeEnabled && !isOpen && !persistent {
+                Color.clear.frame(width: 20).frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(openGesture(containerWidth: containerWidth, width: width))
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(visible ? [.isModal] : [])
+        .accessibilityHidden(!visible)
+        .simultaneousGesture(isOpen && !persistent ? closeGesture(width: width) : nil)
+    }
+
+    // FOLD-08: the directory slot and the original page keep their structural
+    // identities. Both get explicit widths before the expanded frame is drawn.
+    private func ordinaryContent(_ content: Content, layout: SessionShellGeometry,
+                                 containerWidth: CGFloat, drawerWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ZStack {
+                if layout.showsDirectory {
+                    directoryPanel(width: min(320, layout.directory.width))
+                        .frame(width: layout.directory.width)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .accessibilityElement(children: .contain)
-                .accessibilityAddTraits(visible ? [.isModal] : [])
-                .accessibilityHidden(!visible)
-                .simultaneousGesture(isOpen && !persistent ? closeGesture : nil)
             }
+            .frame(width: layout.content.minX, height: layout.content.height, alignment: .leading)
+            .clipped()
+            content.disabled(suppressTaps)
+                .environment(\.orbisFoldReading, layout.reading)
+                .environment(\.orbisOpenSessionDirectory, {
+                    withAnimation(reduceMotion ? nil : .orbisDrag) { isOpen = true }
+                })
+                .simultaneousGesture(edgeSwipeEnabled && !isOpen && !layout.showsDirectory
+                    ? openGesture(containerWidth: containerWidth, width: drawerWidth) : nil)
+                .frame(width: layout.content.width, height: layout.content.height)
+        }
+        .frame(width: containerWidth, height: layout.content.height, alignment: .topLeading)
     }
 
-    /// FOLD-01: only devices with a physical division use the system split arrangement.
-    /// Include inactive divisions so changing the hinge angle preserves the view identity.
-    #if compiler(>=6.4)
-    @available(iOS 27.1, *)
-    @ViewBuilder
-    private func foldAwareContent(_ content: Content) -> some View {
-        GeometryReader { geometry in
-            let divisions = geometry.reservedRegions(kind: .division, options: .includeInactive)
-            if persistent, let division = divisions.first {
-                ArrangementView {
-                    directoryPanel(width: width, fillsAvailableWidth: division.frame.width > division.frame.height)
-                } secondary: {
-                    content.disabled(suppressTaps)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-                .arrangementViewStyle(.split)
-                .background(OrbisPalette(scheme).base.ignoresSafeArea())
-            } else {
-                ordinaryContent(content)
-            }
+    private func drawerDivision(_ geometry: GeometryProxy) -> CGRect? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-fold-reading") {
+            return CGRect(x: 0, y: 420, width: geometry.size.width, height: 1)
         }
-    }
-    #endif
-
-    private func ordinaryContent(_ content: Content) -> some View {
-        GeometryReader { geometry in
-            HStack(spacing: 0) {
-                if persistent { directoryPanel(width: 320) }
-                content.disabled(suppressTaps)
-                    .simultaneousGesture(edgeSwipeEnabled && !isOpen && !persistent ? openGesture : nil)
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        #endif
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            return geometry.reservedRegions(kind: .division, options: .includeInactive).first?.frame
         }
+        #endif
+        return nil
     }
 
-    private func directoryPanel(width: CGFloat, fillsAvailableWidth: Bool = false) -> some View {
-        Group {
-            if fillsAvailableWidth {
-                drawer.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                drawer.frame(width: width).frame(maxHeight: .infinity)
-            }
-        }
+    private func directoryPanel(width: CGFloat) -> some View {
+        drawer.frame(width: width).frame(maxHeight: .infinity)
             .orbisNested().background(OrbisPalette(scheme).base)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("persistent-session-directory")
     }
 
-    private var openGesture: some Gesture {
+    private func openGesture(containerWidth: CGFloat, width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
                 if horizontalDrag == nil {
@@ -612,11 +657,11 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 horizontalDrag = nil
                 guard horizontal else { return }
                 releaseTaps()
-                settle(open: value.predictedEndTranslation.width > width / 2)
+                settle(open: value.predictedEndTranslation.width > width / 2, width: width)
             }
     }
 
-    private var closeGesture: some Gesture {
+    private func closeGesture(width: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
                 if horizontalDrag == nil {
@@ -631,7 +676,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 horizontalDrag = nil
                 guard horizontal else { return }
                 releaseTaps()
-                settle(open: value.predictedEndTranslation.width > -width / 2)
+                settle(open: value.predictedEndTranslation.width > -width / 2, width: width)
             }
     }
 
@@ -640,7 +685,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
         DispatchQueue.main.async { suppressTaps = false }
     }
 
-    private func settle(open: Bool) {
+    private func settle(open: Bool, width: CGFloat) {
         let animation: Animation? = reduceMotion ? nil : .orbisDrag
         if open {
             withAnimation(animation) { isOpen = true; offset = nil }
