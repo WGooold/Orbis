@@ -202,6 +202,10 @@ class TestPath {
       if (decoded.type !== "v2.frame") return;
       const envelope = decoded.envelope as EnvelopeV2;
       if (this.#handshaking) {
+        // Match the released phones: HS1 retires the old keys. A prior-session
+        // RTT/path update can already be in flight on this same socket; it is
+        // neither HS2 nor decryptable with the new session, so ignore it here.
+        if (envelope.hdr.k === "data" || envelope.hdr.k === "bin" || envelope.hdr.k === "ping") return;
         this.#queue.push(envelope);
         return;
       }
@@ -261,6 +265,8 @@ class TestPath {
     this.#room = room;
     this.#hostId = hostId;
     this.#deviceId = deviceId;
+    this.#channel = undefined;
+    this.#reassembler.clear();
     this.#handshaking = true;
 
     this.send(buildPlaintextEnvelope({
