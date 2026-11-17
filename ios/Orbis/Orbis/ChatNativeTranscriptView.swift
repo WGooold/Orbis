@@ -294,7 +294,14 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             section.interGroupSpacing = input.spacing
             section.contentInsets = NSDirectionalEdgeInsets(top: input.topInset,
                 leading: input.horizontalInset, bottom: 0, trailing: input.horizontalInset)
-            let layout = NativeTranscriptLayout(section: section)
+            // IOS-CHAT-18: SwiftUI already allocates this viewport inside its safe
+            // area. Disabling UIScrollView's adjusted insets does not disable the
+            // compositional layout's separate (default .safeArea) inset source.
+            // During a slide past Duo's shared bar those insets change, rewrapping
+            // every visible message even though the allocated viewport is unchanged.
+            let configuration = UICollectionViewCompositionalLayoutConfiguration()
+            configuration.contentInsetsReference = .none
+            let layout = NativeTranscriptLayout(section: section, configuration: configuration)
             layout.readingTarget = { [weak self] proposed, layout in
                 self?.readingTarget(proposed, layout: layout) ?? proposed
             }
@@ -305,6 +312,20 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         /// the retained row its target here preserves the actual hosting cell; fixing
         /// the offset after layout would first recycle it for a newly prepended row.
         private func readingTarget(_ proposed: CGPoint, layout: UICollectionViewLayout) -> CGPoint {
+            // IOS-CHAT-17: self-sizing may replace estimated heights during the same
+            // layout that establishes the page's viewport. Give UIKit the bottom
+            // of its new layout, before it displays a top-preserving intermediate
+            // offset. Explicit requests and native gestures keep their own target.
+            if !stopped, initialPositionSeeded, alignment == nil, !animatingOffset, !nativeMotionActive,
+               (input.viewport.nativeState.request == nil || input.viewport.nativeState.request == handledRequest),
+               !initialPlacementReady || following,
+               let collection, collection.bounds.width > 0, collection.bounds.height > 0 {
+                let height = layout.collectionViewContentSize.height
+                if height.isFinite {
+                    return CGPoint(x: proposed.x, y: max(minimumOffset,
+                        height - collection.bounds.height + collection.adjustedContentInset.bottom))
+                }
+            }
             guard initialPlacementReady, alignment == nil, !animatingOffset,
                   !following || nativeMotionActive, let collection, let dataSource else { return proposed }
             for anchor in anchors where anchor.interaction == interactionGeneration {
@@ -1030,6 +1051,11 @@ private final class NativeTranscriptCollection: UICollectionView {
 
 @MainActor
 final class NativeTranscriptCell: UICollectionViewCell {
+    // IOS-CHAT-18: SwiftUI lays out the transcript viewport inside the system
+    // safe area. UIHostingConfiguration must fit rows to their allocated cell,
+    // without applying a second, moving safe area during a page transition.
+    override var safeAreaInsets: UIEdgeInsets { .zero }
+
     let geometry = ChatNativeCellGeometry()
     var willMeasure: (() -> Void)?
     var didMeasure: (() -> Void)?

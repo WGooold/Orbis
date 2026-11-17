@@ -578,6 +578,24 @@ S12／S17／SC55、IOS-CHAT-01／03：共用编辑器按软回车提交配置显
 
 验证证据位于 `.artifacts/ios-decelerating-jump-20261117/`：修改原生实现前的策略选集 16 项通过，候选核心定向选集 24 项通过；原生实现与测试仅通过 Swift 语法解析，尚未完成本轮 iOS 编译和设备运行。共享 QA MCP 拒绝连接，登记阻塞与本轮要求保留于 `qa-registration-status.json`、`qa-request-draft.json`。真实惯性中点击现有按钮的负对照与候选、手指按住、减少动画、跳后跟随、再次拖动及 iOS 17 兼容路径均待设备验证；未生成安装包、未部署，待用户验证。
 
+### 2026-11-17 IOS-CHAT-17 系统侧栏尺寸重算时保持消息定位
+
+原生消息列表在首次定位后，跟随状态的 `targetContentOffset` 原先直接接受 UIKit 提议的位置，再由后续布局回调校正到底部。系统侧栏参与页面尺寸协商和消息自适应测量时，这两个位置可能不同。候选实现使用本次布局的内容高度和视口高度直接返回底部目标；新显式定位、进行中的定位动画和用户拖动仍优先，已完成的跳底请求继续允许跟随。系统侧栏、首页与折叠布局保持现状。
+
+实现见 [ChatNativeTranscriptView.swift](../../ios/Orbis/Orbis/ChatNativeTranscriptView.swift)。回归 `ChatNativeSnapshotTests.testNativeRelayoutTargetsLatestBeforeDeferredResolution` 使用真实原生列表，在窄屏、展开及阅读区尺寸下同步调整视口，检查布局目标、即时底部位置及等待处理的提问定位。该夹具不模拟系统侧栏本身。验证、首次编译失败与资源清理分别记录于 [.artifacts/iphone-duo-chat-entry-20261117/verification.json](../../.artifacts/iphone-duo-chat-entry-20261117/verification.json)；未安装，系统侧栏下反复进入会话的画面稳定性待用户验证。
+
+首次候选的用户验收未通过，进入会话时消息抖动仍存在；该结论与首次证据保留于 `round2/first-candidate-feedback.json`。后续修复按 IOS-CHAT-18 跟踪。
+
+### 2026-11-18 IOS-CHAT-18 消息排版的安全区归属
+
+消息视口由外层 SwiftUI 安排安全区，原生列表及消息单元格按分配尺寸排版。`contentInsetAdjustmentBehavior = .never` 之外，组合布局显式使用 `.none`，`NativeTranscriptCell.safeAreaInsets` 返回零，避免组合布局和 `UIHostingConfiguration` 再次扣除页面过渡中变化的安全区。仅固定组合布局宽度仍会让托管正文重排；失败样本保留于本轮 `native-tests/`，未放宽几何断言。
+
+回归为 `ChatNativeSnapshotTests.testChangingSystemBarSafeAreaKeepsMessageWidthHeightAndPosition`、旧配置对照 `testLegacySafeAreaReferenceReproducesMessageWidthChange` 及 `OrbisUITests.testSystemTabChatReentryKeepsMessageGeometryStable`。后者从滑入开始记录原生单元格逐帧几何，覆盖连续三次进入；预览开关只选用系统 TabView 路径，不代表实际 Duo 竖向侧栏或折叠姿态。
+
+证据：[round2/verification.json](../../.artifacts/iphone-duo-chat-entry-20261117/round2/verification.json)。共享 iPhone 17／iOS 27.0 上，同一租约内修改前源码的安全区用例失败，最终候选通过；三种视口共 45 个采样点的消息宽度、行高、纵向位置不变，窄屏对照的纵向变化为 53.67 点。原生选集 9 项通过，已有 `testHostedDisclosureResizesCellWithoutSelfSizingAnimation` 的中间帧数量断言在对照和候选均失败，原断言与证据保留；完整页面的连续进出、阅读位置／跳到最新及工具展开 3 项通过。编译通过，候选源码、产物及资源清理分别记录。
+
+本轮直接模拟器验证已获授权。Duo 设备因既有 PosterBoard 崩溃处于共享池隔离状态，未启动；QA 服务拒绝连接，登记草案保留本轮要求。仅在隔离预览环境安装模拟器包，未部署到用户设备；实际 Duo 侧栏下三个姿态及键盘交互待用户验证。
+
 ## 8. 评估后不采用与范围外
 
 - **引入状态管理依赖。** 系统的 Observation 已覆盖所需能力，不新增第三方架构库。

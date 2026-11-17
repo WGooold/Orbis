@@ -1087,6 +1087,45 @@ final class OrbisUITests: XCTestCase {
         assertPageMotionKeepsFramesDuringChatEntryAndReturn()
     }
 
+    // IOS-CHAT-18: sample in-process from the start of the entry slide, since
+    // XCUI's idle wait hides transient reflow. The preview flag selects the real
+    // system TabView path; only a Duo device can verify its vertical placement.
+    func testSystemTabChatReentryKeepsMessageGeometryStable() throws {
+        let app = launch("entry", arguments: ["--preview-fold-closed", "--preview-entry-long-turn",
+                                              "--preview-scroll-frames", "--preview-entry-frames"])
+        defer { app.terminate() }
+        let card = app.buttons["home-runtime-preview-codex"]
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        for entry in 1...3 {
+            card.tap()
+            let samples = try chatScrollFrames(app)
+            XCTAssertGreaterThan(samples.count, 6)
+            XCTAssertLessThan(try XCTUnwrap(samples.first).time, 0.05,
+                              "Sampling must start with the slide, not after XCUI becomes idle")
+            var comparisons = 0
+            for (before, after) in zip(samples, samples.dropFirst()) {
+                for (id, frame) in after.cells ?? [:] {
+                    guard let previous = before.cells?[id] else { continue }
+                    comparisons += 1
+                    XCTAssertEqual(frame[0], previous[0], accuracy: 1,
+                                   "Entry \(entry): message moved vertically: \(id)")
+                    XCTAssertEqual(frame[1], previous[1], accuracy: 1,
+                                   "Entry \(entry): message width changed: \(id)")
+                    XCTAssertEqual(frame[2], previous[2], accuracy: 1,
+                                   "Entry \(entry): message height changed: \(id)")
+                }
+            }
+            XCTAssertGreaterThan(comparisons, 6, "Compare actual native cells throughout entry")
+            XCTAssertTrue(app.staticTexts["ENTRY_LATEST"].isHittable)
+            let attachment = XCTAttachment(string: (app.buttons["chat-title"].value as? String) ?? "")
+            attachment.name = "SYSTEM_TAB_ENTRY_\(entry)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            app.buttons["返回"].firstMatch.tap()
+            XCTAssertTrue(card.waitForExistence(timeout: 5))
+        }
+    }
+
     // IOS-CHAT-10-R1: two appearance callbacks for one prepared token must retain
     // the complete entry slide and both existing return paths.
     func testRepeatedPageAppearanceDoesNotRestartTheEntryAnimation() {

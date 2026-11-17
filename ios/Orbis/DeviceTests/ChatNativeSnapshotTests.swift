@@ -41,8 +41,8 @@ import XCTest
             collection.contentSize.height - collection.bounds.height + collection.adjustedContentInset.bottom)
     }
 
-    private func show(_ collection: UICollectionView) -> UIWindow {
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    private func show(_ collection: UICollectionView, size: CGSize = CGSize(width: 390, height: 844)) -> UIWindow {
+        let window = UIWindow(frame: CGRect(origin: .zero, size: size))
         let root = UIViewController()
         window.rootViewController = root
         root.view.addSubview(collection)
@@ -102,6 +102,179 @@ import XCTest
             .contains("message-79"), "The newest actual message must finish in the viewport")
     }
 
+    // IOS-CHAT-17: a shared system sidebar can renegotiate the viewport after a
+    // page mounts. UIKit's proposed offset preserves the old top, which exposes
+    // a wrong frame before the queued bottom correction. Exercise the real layout
+    // at narrow, unfolded and reading-pane sizes, without yielding after a resize.
+    func testNativeRelayoutTargetsLatestBeforeDeferredResolution() async throws {
+        for size in [CGSize(width: 390, height: 700), CGSize(width: 669, height: 840),
+                     CGSize(width: 669, height: 408)] {
+            let viewport = ChatViewportController()
+            var reports = 0
+            var items: [ChatNativeTranscriptView.Item] = (0..<40).map { index in
+                .init(id: "message-\(index)", revision: UUID(), content: AnyView(
+                    Text(String(repeating: "Message \(index) wraps as the shared sidebar changes the viewport. ",
+                                count: index % 4 + 1))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                ))
+            }
+            items.append(.init(id: "tail", revision: UUID(), content: AnyView(Color.clear.frame(height: 4)), kind: .auxiliary))
+            let snapshot = ChatNativeTranscriptView.Snapshot(items: items, revision: 1)
+            let input = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
+                tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
+                onDistance: { viewport.distanceChanged($0) },
+                onInteraction: { viewport.interactionChanged($0) }, onViewport: { _, _ in reports += 1 })
+            let coordinator = ChatNativeTranscriptView.Coordinator(input)
+            defer { coordinator.stop() }
+            let collection = coordinator.makeCollection()
+            let window = show(collection, size: size)
+            defer { window.isHidden = true }
+            collection.autoresizingMask = []
+            try await until("initial sidebar fixture measured") {
+                reports > 0 && abs(self.bottomOffset(collection) - collection.contentOffset.y) <= 1
+            }
+
+            for nextSize in [CGSize(width: size.width - 72, height: size.height - 24), size] {
+                collection.frame.size = nextSize
+                collection.setNeedsLayout()
+                collection.layoutIfNeeded()
+                let proposed = CGPoint(x: 0, y: max(0, bottomOffset(collection) - 180))
+                let layout = collection.collectionViewLayout
+                let target = layout.targetContentOffset(forProposedContentOffset: proposed)
+                let expected = max(-collection.adjustedContentInset.top,
+                    layout.collectionViewContentSize.height - collection.bounds.height + collection.adjustedContentInset.bottom)
+                XCTAssertEqual(target.y, expected, accuracy: 1,
+                    "Latest must be the native layout target before the main queue runs: \(size) -> \(nextSize)")
+                XCTAssertEqual(collection.contentOffset.y, bottomOffset(collection), accuracy: 1,
+                    "A synchronous resize must not expose a frame away from latest")
+            }
+
+            // A pending question request has not yet reached the coordinator's
+            // async observer. It already owns positioning and must defeat follow.
+            viewport.update { $0.locateQuestion("message-12", bottomDistance: 300) }
+            let proposed = CGPoint(x: 0, y: bottomOffset(collection) - 180)
+            let target = collection.collectionViewLayout.targetContentOffset(forProposedContentOffset: proposed)
+            XCTAssertLessThan(target.y, bottomOffset(collection) - 1,
+                "Native layout must not override an explicit request waiting on the main queue")
+        }
+    }
+
+    // IOS-CHAT-18 negative control: restore the old UIKit default in this fixture
+    // only. The same allocated viewport must then lose width to the safe area,
+    // proving that the regression fixture reaches the original inset mechanism.
+    func testLegacySafeAreaReferenceReproducesMessageWidthChange() async throws {
+        let viewport = ChatViewportController()
+        let initial = input((0..<30).map { "message-\($0)" }, revision: 1,
+                            owner: UUID(), viewport: viewport)
+        let coordinator = ChatNativeTranscriptView.Coordinator(initial)
+        defer { coordinator.stop() }
+        let collection = coordinator.makeCollection()
+        let layout = try XCTUnwrap(collection.collectionViewLayout as? UICollectionViewCompositionalLayout)
+        let configuration = layout.configuration
+        configuration.contentInsetsReference = .safeArea
+        layout.configuration = configuration
+        let window = show(collection)
+        defer { window.isHidden = true }
+        let root = try XCTUnwrap(window.rootViewController)
+        let path = IndexPath(item: 29, section: 0)
+        try await until("legacy safe area fixture initially measured") {
+            collection.cellForItem(at: path) != nil &&
+                abs(self.bottomOffset(collection) - collection.contentOffset.y) <= 1
+        }
+        let before = try XCTUnwrap(collection.layoutAttributesForItem(at: path)).frame.width
+        let allocatedWidth = collection.bounds.width
+        root.additionalSafeAreaInsets.left = 72
+        root.view.setNeedsLayout()
+        root.view.layoutIfNeeded()
+        collection.layoutIfNeeded()
+        try await until("legacy layout deducted system bar safe area") {
+            (collection.layoutAttributesForItem(at: path)?.frame.width ?? before) < before - 1
+        }
+        let after = try XCTUnwrap(collection.layoutAttributesForItem(at: path)).frame.width
+        XCTAssertEqual(collection.bounds.width, allocatedWidth)
+        XCTAssertEqual(collection.adjustedContentInset, .zero)
+        XCTAssertEqual(before - after, 72, accuracy: 0.5)
+        let attachment = XCTAttachment(string: "allocated=\(allocatedWidth), before=\(before), after=\(after), safeArea=\(collection.safeAreaInsets), adjusted=\(collection.adjustedContentInset)")
+        attachment.name = "LEGACY_SYSTEM_BAR_SAFE_AREA"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    // IOS-CHAT-18: replay a system bar's changing safe area while the SwiftUI
+    // viewport keeps its allocated size. Disabling adjustedContentInset alone
+    // leaves compositional layout shrinking/reflowing cells on every such update.
+    // Sample native row frames after each transition; do not wait for stability
+    // before asserting or a later correction would hide the original defect.
+    func testChangingSystemBarSafeAreaKeepsMessageWidthHeightAndPosition() async throws {
+        for size in [CGSize(width: 390, height: 700), CGSize(width: 669, height: 840),
+                     CGSize(width: 669, height: 408)] {
+            let viewport = ChatViewportController()
+            let text = String(repeating: "A completed message must keep its line wrapping while the page slides past the system sidebar. ", count: 5)
+            var items: [ChatNativeTranscriptView.Item] = (0..<30).map { index in
+                .init(id: "message-\(index)", revision: UUID(), content: AnyView(
+                    Text(text).font(.system(size: 15)).frame(maxWidth: .infinity, alignment: .leading)
+                ))
+            }
+            items.append(.init(id: "tail", revision: UUID(), content: AnyView(Color.clear.frame(height: 4)), kind: .auxiliary))
+            let snapshot = ChatNativeTranscriptView.Snapshot(items: items, revision: 1)
+            var reports = 0
+            let input = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
+                tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
+                onDistance: { viewport.distanceChanged($0) }, onInteraction: { viewport.interactionChanged($0) },
+                onViewport: { _, _ in reports += 1 })
+            let coordinator = ChatNativeTranscriptView.Coordinator(input)
+            defer { coordinator.stop() }
+            let collection = coordinator.makeCollection()
+            let window = show(collection, size: size)
+            defer { window.isHidden = true }
+            let root = try XCTUnwrap(window.rootViewController)
+            let path = IndexPath(item: 29, section: 0)
+            try await until("safe area fixture initially measured") {
+                reports > 0 && abs(self.bottomOffset(collection) - collection.contentOffset.y) <= 1 &&
+                    collection.cellForItem(at: path) != nil
+            }
+            let baseline = try XCTUnwrap(collection.layoutAttributesForItem(at: path)).frame
+            let baselineTop = baseline.minY - collection.contentOffset.y
+            let baselineBounds = collection.bounds.size
+            var samples: [[String: CGFloat]] = []
+            defer {
+                let data = try? JSONSerialization.data(withJSONObject: samples, options: [.sortedKeys])
+                let attachment = XCTAttachment(data: data ?? Data(), uniformTypeIdentifier: "public.json")
+                attachment.name = "SYSTEM_BAR_SAFE_AREA_\(Int(size.width))x\(Int(size.height))"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+            for insets in [UIEdgeInsets(top: 0, left: 72, bottom: 0, right: 0),
+                           UIEdgeInsets(top: 0, left: 36, bottom: 0, right: 0),
+                           .zero, UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 72), .zero] {
+                root.additionalSafeAreaInsets = insets
+                root.view.setNeedsLayout()
+                root.view.layoutIfNeeded()
+                collection.setNeedsLayout()
+                collection.layoutIfNeeded()
+                if insets.left > 0 { XCTAssertGreaterThanOrEqual(collection.safeAreaInsets.left, insets.left) }
+                if insets.right > 0 { XCTAssertGreaterThanOrEqual(collection.safeAreaInsets.right, insets.right) }
+                for _ in 0..<3 {
+                    let frame = try XCTUnwrap(collection.layoutAttributesForItem(at: path)).frame
+                    let top = frame.minY - collection.contentOffset.y
+                    let cell = try XCTUnwrap(collection.cellForItem(at: path))
+                    samples.append(["width": frame.width, "height": frame.height, "top": top,
+                                    "left": collection.safeAreaInsets.left, "right": collection.safeAreaInsets.right,
+                                    "cellSafeLeft": cell.safeAreaInsets.left, "cellSafeRight": cell.safeAreaInsets.right,
+                                    "contentWidth": cell.contentView.bounds.width,
+                                    "contentMarginLeft": cell.contentView.layoutMargins.left,
+                                    "hostingWidth": cell.contentView.subviews.first?.bounds.width ?? -1])
+                    XCTAssertEqual(collection.bounds.size, baselineBounds)
+                    XCTAssertEqual(collection.adjustedContentInset, .zero)
+                    XCTAssertEqual(frame.width, baseline.width, accuracy: 0.5, "System bar must not deduct the safe area twice")
+                    XCTAssertEqual(frame.height, baseline.height, accuracy: 0.5, "A completed message must not rewrap during entry")
+                    XCTAssertEqual(top, baselineTop, accuracy: 1, "The same message must stay at the same viewport Y")
+                    try await Task.sleep(nanoseconds: 16_000_000)
+                }
+            }
+        }
+    }
+
     // The initial IDs must be installed before makeCollection returns. A stale
     // comparison must never reach UIKit, even briefly before the newest comparison.
     func testPendingComparisonCoalescesSourcesAndRejectsThePreviousOwner() async throws {
@@ -156,7 +329,11 @@ import XCTest
         try await assertExplicitRequestTakesOverSyntheticInteraction(target: .question("message-12"))
     }
 
-    private func assertExplicitRequestTakesOverSyntheticInteraction(target: ChatViewportPolicy.Target) async throws {
+    // This fixture covers absolute targets; relative page intents have separate
+    // fold-reading coverage and cannot supply its fixed destination oracle.
+    private enum AbsoluteTarget { case latest, question(String) }
+
+    private func assertExplicitRequestTakesOverSyntheticInteraction(target: AbsoluteTarget) async throws {
         let owner = UUID(), viewport = ChatViewportController()
         let ids = (0..<80).map { "message-\($0)" }
         var viewportReports = 0
@@ -356,6 +533,8 @@ import XCTest
         let initialCell = try XCTUnwrap(toolCell())
         let initialFrame = initialCell.frame
 
+        print("HOSTED_DISCLOSURE_ENV reduceMotion=\(UIAccessibility.isReduceMotionEnabled) animationsEnabled=\(UIView.areAnimationsEnabled)")
+
         state.expanded = true
         var observedHeights: [CGFloat] = []
         let deadline = Date().addingTimeInterval(1.0)
@@ -384,6 +563,10 @@ import XCTest
             try await Task.sleep(nanoseconds: 16_000_000)
         }
         let finalCell = try XCTUnwrap(toolCell())
+        let attachment = XCTAttachment(string: "reduceMotion=\(UIAccessibility.isReduceMotionEnabled); initial=\(initialFrame.height); final=\(finalCell.frame.height); sampled=\(observedHeights)")
+        attachment.name = "HOSTED_DISCLOSURE_HEIGHTS"
+        attachment.lifetime = .keepAlways
+        add(attachment)
         XCTAssertEqual(finalCell.frame.minY, initialFrame.minY, accuracy: 1)
         XCTAssertGreaterThan(finalCell.frame.height, 250)
         XCTAssertGreaterThan(observedHeights.filter { $0 > initialFrame.height + 5 && $0 < finalCell.frame.height - 5 }.count, 1)

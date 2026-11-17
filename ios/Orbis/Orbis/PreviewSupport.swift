@@ -312,6 +312,10 @@ final class PreviewChatScrollProbe: NSObject, ObservableObject {
         var frame: [String: Any] = ["time": CACurrentMediaTime() - started, "offset": Double(offset), "bottom": Double(bottom),
                         "width": Double(scroll.bounds.width), "height": Double(scroll.bounds.height), "rows": frames,
                         "cells": nativeCells?() ?? [:]]
+        frame["safeArea"] = [Double(scroll.safeAreaInsets.top), Double(scroll.safeAreaInsets.left),
+                             Double(scroll.safeAreaInsets.bottom), Double(scroll.safeAreaInsets.right)]
+        frame["adjustedInsets"] = [Double(scroll.adjustedContentInset.top), Double(scroll.adjustedContentInset.left),
+                                   Double(scroll.adjustedContentInset.bottom), Double(scroll.adjustedContentInset.right)]
         if let requestPreemption { frame["requestPreemption"] = requestPreemption }
         samples.append(frame)
     }
@@ -1926,6 +1930,9 @@ enum ChatDebugProbes {
     @MainActor static func pageAnimationStarted() {
         #if DEBUG
         PageMotionProbe.shared.animationStarted()
+        if ProcessInfo.processInfo.arguments.contains("--preview-entry-frames") {
+            PreviewChatScrollProbe.shared.beginBound()
+        }
         #endif
     }
     @MainActor static func pageMotionFlight(_ active: Bool) {
