@@ -74,6 +74,7 @@ private struct NavigationRoot: View, Equatable {
                 // always ends in a release or cancel, so it may hold longer.
                 OrbisPageHost(stack: navigation, rootCovered: drawerOpen && surfaceWidth < 600,
                               onFlight: { [store] phase in
+                                  if phase == .dragging { LiveActivityCoordinator.shared.cancelQueuedOpen() }
                                   store.holdScreenPublications(phase != nil, limit: phase == .dragging ? .seconds(5) : .seconds(1))
                               }) {
                     rootPages
@@ -155,11 +156,13 @@ private struct NavigationRoot: View, Equatable {
                 OrbisActionButton(title: feedbackActionTitle(action)) {
                     if !error { store.dismissFeedbackToast() }
                     switch action {
-                    case .pair: navigation.push(.pairing)
+                    case .pair: push(.pairing)
                     case .reconnect: store.reconnectSelectedHost()
-                    case .settings: rootTab = .settings; navigation.replace(with: [])
+                    case .settings: selectRoot(.settings); navigation.replace(with: [])
                     case .update: if let url = URL(string: "https://orbising.com/#download") { openURL(url) }
-                    case .restoreDraft: withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+                    case .restoreDraft:
+                        LiveActivityCoordinator.shared.cancelQueuedOpen()
+                        withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
                     }
                 }
             }
@@ -183,8 +186,12 @@ private struct NavigationRoot: View, Equatable {
 
     private var rootWithNavigationUpdates: some View {
         rootWithNotices
-        .onChange(of: rootTab) { _, next in switchRoot(next) }
+        .onChange(of: rootTab) { _, next in
+            LiveActivityCoordinator.shared.cancelQueuedOpen()
+            switchRoot(next)
+        }
         .onChange(of: facts.selectedHostId) { _, _ in
+            LiveActivityCoordinator.shared.navigationSelectionChanged()
             store.setFeedbackPage(downloads: navigation.pages.last == .downloads, chat: navigation.pages.last == .chat)
             store.hostState.setCatalogQuery(directoryState.networkQuery)
             store.hostState.setCatalogVisible((drawerOpen || surfaceWidth >= 600) && scenePhase == .active)
@@ -202,9 +209,13 @@ private struct NavigationRoot: View, Equatable {
             if !pages.contains(.chat) { store.stopFollowingLaunch() }
         }
         .onChange(of: drawerOpen) { _, open in
+            if open { LiveActivityCoordinator.shared.cancelQueuedOpen() }
             store.hostState.setCatalogQuery(directoryState.networkQuery)
             store.hostState.setCatalogVisible((open || surfaceWidth >= 600) && scenePhase == .active)
             overlay.dismissMenu()
+        }
+        .onChange(of: newSessionOpen) { _, open in
+            if open { LiveActivityCoordinator.shared.cancelQueuedOpen() }
         }
         .onChange(of: facts.activationRevision) { _, _ in
             setDrawer(false); newSessionOpen = false
@@ -232,6 +243,7 @@ private struct NavigationRoot: View, Equatable {
             guard let hostId else { return }
             ReplyCompletionNotifications.remoteOpens.consume()
             guard store.pairings.contains(where: { $0.hostId == hostId }) else { return }
+            LiveActivityCoordinator.shared.cancelQueuedOpen()
             store.connect(hostId: hostId)
             rootTab = .chat; displayedRoot = .chat
             navigation.replace(with: [.chat])
@@ -250,6 +262,7 @@ private struct NavigationRoot: View, Equatable {
             }
         }
         .onChange(of: scenePhase) { old, new in
+            if new == .background { LiveActivityCoordinator.shared.cancelQueuedOpen() }
             if new != .active { store.toolContent.close() }
             if old == .background && new == .active { store.resumeForeground() }
         }
@@ -289,8 +302,8 @@ private struct NavigationRoot: View, Equatable {
             GeometryReader { viewport in
                 ZStack {
                     rootContent(.chat) { home }
-                    rootContent(.providers) { AgentProvidersView(root: true, onBack: { rootTab = .chat }) }
-                    rootContent(.settings) { ConnectionStatusView(root: true, onBack: { rootTab = .chat }) }
+                    rootContent(.providers) { AgentProvidersView(root: true, onBack: { selectRoot(.chat) }) }
+                    rootContent(.settings) { ConnectionStatusView(root: true, onBack: { selectRoot(.chat) }) }
                 }.frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
                     .opacity(rootOpacity).offset(y: rootOffset)
                     .clipped()
@@ -299,7 +312,7 @@ private struct NavigationRoot: View, Equatable {
                 ForEach(RootTab.allCases, id: \.self) { tab in
                     OrbisMotionButton {
                         guard tab != rootTab else { return }
-                        OrbisHaptics.selectionChanged(); rootTab = tab
+                        OrbisHaptics.selectionChanged(); selectRoot(tab)
                     } label: {
                         VStack(spacing: 2) {
                             Image(systemName: tab == .chat && rootTab == tab ? "bubble.left.fill" : tab == .settings && rootTab == tab ? "gearshape.fill" : tab.symbol)
@@ -353,15 +366,22 @@ private struct NavigationRoot: View, Equatable {
         }
     }
 
+    private func selectRoot(_ tab: RootTab) {
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
+        rootTab = tab
+    }
+
     private var home: some View {
         HomeView(store: store, updates: store.homeUpdates, pageCovered: !navigation.pages.isEmpty,
                  draftOpen: newSessionOpen, draftCwd: newSessionCwd, draftCloseRequest: draftCloseRequest, onDraft: {
+            LiveActivityCoordinator.shared.cancelQueuedOpen()
             if newSessionOpen { draftCloseRequest += 1 }
             else { draftNotice = false; withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true } }
         }, onDraftCancelled: { retained in
             withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = false }
             if retained { store.presentFeedback(.toast, L10n.tr("草稿已保留"), action: .restoreDraft) }
         }, onDraftSubmitted: { launch, origin in
+            LiveActivityCoordinator.shared.cancelQueuedOpen()
             // The card stays in the live home until the growing page has covered it, so the
             // list outside the rectangle does not move while the page expands (S35 / M27).
             if store.selectedRuntime != nil {
@@ -372,7 +392,7 @@ private struct NavigationRoot: View, Equatable {
             } else {
                 newSessionOpen = false
             }
-        }, onSelection: { homeSelecting = $0 }, onDirectory: { setDrawer(true) }, onSettings: { rootTab = .settings },
+        }, onSelection: { homeSelecting = $0 }, onDirectory: { setDrawer(true) }, onSettings: { selectRoot(.settings) },
                  onDownloads: { push(.downloads) },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
@@ -394,17 +414,18 @@ private struct NavigationRoot: View, Equatable {
                           },
                           onNewSession: { cwd in
                               navigation.replace(with: [])
-                              newSessionCwd = cwd; setDrawer(false); rootTab = .chat
+                              newSessionCwd = cwd; setDrawer(false); selectRoot(.chat)
                               withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
                           }, onAddHost: { setDrawer(false); push(.pairing) },
-                          onProviders: { navigation.replace(with: []); setDrawer(false); rootTab = .providers },
+                          onProviders: { selectRoot(.providers); navigation.replace(with: []); setDrawer(false) },
                           onUnpair: { confirmUnpair($0) }).equatable()
     }
 
     /// A page's own back control runs the same slide as a released swipe and reveals the same source.
-    private func back() { navigation.requestBack() }
-    private func push(_ page: AppPage) { navigation.push(page) }
+    private func back() { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.requestBack() }
+    private func push(_ page: AppPage) { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.push(page) }
     private func setDrawer(_ open: Bool) {
+        if open { LiveActivityCoordinator.shared.cancelQueuedOpen() }
         withAnimation(reduceMotion ? nil : .orbisDrag) { drawerOpen = open }
     }
     private func confirmUnpair(_ host: HostPairing?) {
@@ -417,12 +438,14 @@ private struct NavigationRoot: View, Equatable {
         ])
     }
     private func openRuntime(_ runtime: RuntimeSummary) {
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
         #if DEBUG
         ChatSchedulingTrace.pageOpenRequested(target: runtime.runtimeId)
         #endif
         store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
     }
     private func openCachedSession(_ session: SessionSummary) -> Bool {
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
         #if DEBUG
         ChatSchedulingTrace.pageOpenRequested(target: session.sessionId)
         #endif

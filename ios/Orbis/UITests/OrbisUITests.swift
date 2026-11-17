@@ -2421,6 +2421,21 @@ final class OrbisUITests: XCTestCase {
         XCTAssertLessThanOrEqual(command.frame.maxY, keyboard.frame.minY)
         capture("slash-keyboard", app: app)
     }
+    // S17 / IOS-CHAT-01: replacing a slash prefix must move the native caret
+    // after the selected command so its next argument cannot split the name.
+    func testSlashSelectionAppendsArgumentsAfterReplacement() {
+        let app = launch("chat")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("/mo")
+        XCTAssertEqual(composer.value as? String, "/mo")
+        let command = app.buttons.matching(NSPredicate(format: "label == %@", "/model")).firstMatch
+        XCTAssertTrue(command.waitForExistence(timeout: 3)); command.tap()
+        let replaced = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "/model "), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [replaced], timeout: 3), .completed)
+        composer.typeText("x")
+        XCTAssertEqual(composer.value as? String, "/model x")
+    }
     func testHistoryPreviewAndNavigation() {
         let app = launch("chat")
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 8))

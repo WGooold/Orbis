@@ -355,7 +355,9 @@ struct ChatComposerView: View, Equatable {
         VStack(spacing: 10) {
             OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话"))
             if let session = facts.cachedSession {
-                OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") { if actions.isCurrent { actions.activate(session) } }
+                OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") {
+                    if actions.isCurrent { LiveActivityCoordinator.shared.cancelQueuedOpen(); actions.activate(session) }
+                }
                     .disabled(facts.connection != .secured || facts.activatingSessionId != nil)
             }
         }.padding(16)

@@ -133,3 +133,74 @@ final class LiveActivityProjectionTests: XCTestCase {
         XCTAssertNotEqual(foreign.pairingKey, pairing, "The caller must compare this full endpoint key before navigation")
     }
 }
+
+final class LiveActivityOpenQueueTests: XCTestCase {
+    private func target(host: String = "host", focus: Bool = true) throws -> LiveActivityOpenTarget {
+        let query = "hostId=\(host)&pairingKey=\(String(repeating: "a", count: 64))" +
+            (focus ? "&focusKey=\(String(repeating: "b", count: 64))" : "")
+        return try XCTUnwrap(LiveActivityOpenTarget(url: XCTUnwrap(URL(string: "orbis://activity?" + query))))
+    }
+
+    // LA-I09: an unrelated unconfirmed background inventory cannot block a
+    // positively identified runtime, but a stale route map cannot select it.
+    func testCurrentMatchingRouteDoesNotRequireUnrelatedInventoryCompletion() throws {
+        var queue = LiveActivityOpenQueue()
+        let generation = queue.enqueue(try target(), now: 10)
+        XCTAssertNil(queue.resolve(generation: generation, now: 10.1, routeIsCurrent: false,
+            complete: true, runtimeId: "runtime"))
+        XCTAssertEqual(queue.resolve(generation: generation, now: 10.2, routeIsCurrent: true,
+            complete: false, runtimeId: "runtime"), .runtime("runtime"))
+        XCTAssertNil(queue.target)
+    }
+
+    // LA-I09: continuous updates or an incomplete inventory get a bounded
+    // wait, then one home fallback; later reconciliation cannot reopen a chat.
+    func testIncompleteRoutesFallBackOnceAtDeadline() throws {
+        var queue = LiveActivityOpenQueue()
+        let generation = queue.enqueue(try target(), now: 10)
+        XCTAssertNil(queue.resolve(generation: generation, now: 11.99, routeIsCurrent: false,
+            complete: false, runtimeId: nil))
+        XCTAssertEqual(queue.resolve(generation: generation, now: 12, routeIsCurrent: false,
+            complete: false, runtimeId: nil), .home)
+        XCTAssertNil(queue.resolve(generation: generation, now: 13, routeIsCurrent: true,
+            complete: true, runtimeId: "runtime"))
+    }
+
+    // LA-I09: backgrounding and user navigation consume the intent before any
+    // delayed timer or route publication can redirect the current page.
+    func testCancelledOpenCannotRouteAfterReconciliationOrTimeout() throws {
+        var queue = LiveActivityOpenQueue()
+        let generation = queue.enqueue(try target(), now: 10)
+        queue.cancel()
+        XCTAssertNil(queue.resolve(generation: generation, now: 11, routeIsCurrent: true,
+            complete: true, runtimeId: "runtime"))
+        XCTAssertNil(queue.resolve(generation: generation, now: 12, routeIsCurrent: false,
+            complete: false, runtimeId: nil))
+    }
+
+    // LA-I09: a second tap owns a fresh deadline; the first timer cannot fall
+    // back the replacement even when both links point to the same Host.
+    func testReplacementIgnoresOldTimerAndGetsItsOwnDeadline() throws {
+        var queue = LiveActivityOpenQueue()
+        let first = queue.enqueue(try target(), now: 10)
+        let second = queue.enqueue(try target(), now: 11)
+        XCTAssertNil(queue.resolve(generation: first, now: 12, routeIsCurrent: false,
+            complete: false, runtimeId: nil))
+        XCTAssertNil(queue.resolve(generation: second, now: 12, routeIsCurrent: false,
+            complete: false, runtimeId: nil))
+        XCTAssertEqual(queue.resolve(generation: second, now: 13, routeIsCurrent: false,
+            complete: false, runtimeId: nil), .home)
+    }
+
+    // LA-I09: an authoritative missing focus and a link without focus retain
+    // immediate host-home behavior rather than waiting for the timer.
+    func testCompleteMissingFocusAndHostLinksReturnHomeImmediately() throws {
+        var queue = LiveActivityOpenQueue()
+        let missing = queue.enqueue(try target(), now: 10)
+        XCTAssertEqual(queue.resolve(generation: missing, now: 10, routeIsCurrent: true,
+            complete: true, runtimeId: nil), .home)
+        let host = queue.enqueue(try target(focus: false), now: 20)
+        XCTAssertEqual(queue.resolve(generation: host, now: 20, routeIsCurrent: false,
+            complete: false, runtimeId: nil), .home)
+    }
+}

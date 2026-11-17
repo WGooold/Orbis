@@ -562,6 +562,12 @@ IOS-CHAT-10-R1：`repair/final-ui/tests.xcresult` 的首入曾记录 0 帧。新
 
 orbis-qa 连接失败（502），本轮未登记共享测试看板。未部署；真机交互、阅读与前后台仍待用户验证。
 
+### 2026-11-17 输入框回归修复
+
+S12／S17／SC55、IOS-CHAT-01／03：共用编辑器按软回车提交配置显示发送或普通换行键；显式草稿替换把 UTF-16 光标移到末尾，普通编辑和组字保留原位置。占位符复用文字容器的 inset 与 padding。移除不存在的 `usesTextLayoutManager` 属性，并明确初始容器高度的 `CGFloat` 类型。
+
+`.artifacts/ios-review-fixes-20261117/verification.json` 记录本轮编译、54 项核心定向测试和资源清理；首次编译发现的高度类型歧义保留于 `app-build/`。`testSlashSelectionAppendsArgumentsAfterReplacement` 已加入并编译，未执行 UI／真机回归。共享 QA 服务拒绝连接，登记阻塞见 `qa-registration.json`；未部署，待用户验证。
+
 ## 8. 评估后不采用与范围外
 
 - **引入状态管理依赖。** 系统的 Observation 已覆盖所需能力，不新增第三方架构库。

@@ -9,6 +9,7 @@ Status: proposed
 - `/v1/live-activities/config`、`register`、`update` 与旧 alert 通道独立。推送只包含通用状态、数量、Agent 类别、不透明焦点键与时间；标题只保留在本机 attributes，焦点不匹配时显示通用标题。手机不因实时活动获得后台保活。
 - 注册按完整配对与活动身份串行对账；Keychain 保留清理归属，不缓存推送 token。旧活动清理、令牌轮换、配对撤销与迟到失效响应不会删除新注册。Host 发布者绑定 Relay 当前认证连接与递增版本，旧 Relay 不支持时静默回退；已发布 Host、Relay、App 的原 HTTP 与 E2E 字段保持兼容。
 - 用户划掉活动后，同轮所有运行代次的抑制记录跨 App 重启保留；聚合焦点变化或补齐开始时间不会重建同轮活动。点击仅导航，重新核对完整配对与当前会话后进入 App，不在锁屏回答审批。
+- SC110／LA-I09：点击等待当前路由最多两秒；当前映射已确认目标会话时直接进入，其余库存的待核对状态不阻塞该会话。超时或完整映射确认目标已消失时回到对应电脑首页并消费目标；进入后台、用户导航或新点击会清理或替换旧意图，迟到对账不再跳转。回归见 `LiveActivityOpenQueueTests`，本轮自动验证、构建与共享 QA 登记状态分别记录于 `.artifacts/ios-review-fixes-20261117/`；真机体验待用户验证。
 
 实现入口：iOS `LiveActivityAttributes.swift`、`LiveActivityCoordinator.swift`、`LiveActivityRegistration.swift`、`LiveActivityLifecycle.swift` 与 `LiveActivityWidget/`；Host `live-activity.ts`；Relay `live-activities.ts` 与 `apns.ts`。定向回归见对应 `LiveActivity*Tests.swift`、`live-activity.test.ts`、`live-activities.test.ts`、`live-activity-http.test.ts` 和 `apns-transport.test.ts`；实际执行记录与首次编译失败保留在 `.artifacts/ios-live-activity-20261117/`。本轮仅本机实施与自动验证；未部署，签名安装与真实 APNs／真机体验待用户验证，共享 QA 登记状态以该目录记录为准。
 

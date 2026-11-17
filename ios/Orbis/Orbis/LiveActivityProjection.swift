@@ -80,3 +80,34 @@ struct LiveActivityOpenTarget: Equatable {
         hostId = host; pairingKey = pairing; focusKey = focus
     }
 }
+
+/// LA-I09: a tap may wait briefly for a current route map, but never retains a
+/// navigation intent after fallback, replacement, backgrounding or user navigation.
+struct LiveActivityOpenQueue {
+    enum Destination: Equatable { case home, runtime(String) }
+    static let timeout: TimeInterval = 2
+    private(set) var generation: UInt64 = 0
+    private(set) var target: LiveActivityOpenTarget?
+    private var deadline: TimeInterval = 0
+
+    @discardableResult
+    mutating func enqueue(_ target: LiveActivityOpenTarget, now: TimeInterval) -> UInt64 {
+        generation &+= 1
+        self.target = target; deadline = now + Self.timeout
+        return generation
+    }
+
+    mutating func cancel() { generation &+= 1; target = nil }
+
+    mutating func resolve(generation: UInt64, now: TimeInterval, routeIsCurrent: Bool,
+                          complete: Bool, runtimeId: String?) -> Destination? {
+        guard generation == self.generation, let target else { return nil }
+        let destination: Destination
+        if target.focusKey == nil || now >= deadline { destination = .home }
+        else if routeIsCurrent, let runtimeId { destination = .runtime(runtimeId) }
+        else if routeIsCurrent && complete { destination = .home }
+        else { return nil }
+        self.target = nil
+        return destination
+    }
+}

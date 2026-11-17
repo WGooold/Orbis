@@ -174,6 +174,7 @@ struct HistoryBranchView: View {
                     guard previewHandle == handle, let target else { return }
                     let actions = ChatSessionActions(store: store, target: target)
                     guard actions.isCurrent else { return }
+                    LiveActivityCoordinator.shared.cancelQueuedOpen()
                     actions.selectCachedBranch(option.value); selected = nil; dismissOwnedPreview()
                 }.disabled(displayed?.loading == true)
             } else if ["user", "assistant"].contains(option.tree?.role ?? "") {
@@ -184,7 +185,7 @@ struct HistoryBranchView: View {
                     let actions = ChatSessionActions(store: store, target: target)
                     guard actions.isCurrent else { return }
                     actionPending = actions.moveHistory(to: option)
-                    if actionPending { OrbisHaptics.commit() }
+                    if actionPending { LiveActivityCoordinator.shared.cancelQueuedOpen(); OrbisHaptics.commit() }
                 }.disabled(actionPending || !store.canSend || !store.pendingActionIds.isEmpty || displayed?.loading == true)
             }
         }.neuSurface(radius: OrbisRadius.card, padding: 12).padding(.horizontal, 20).padding(.bottom, 12)

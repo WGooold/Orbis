@@ -279,6 +279,7 @@ struct ChatTranscriptView: View, Equatable {
             pending: inputs.pending, uploads: inputs.uploads, canResend: inputs.canSend,
             onRewind: { option in
                 if actions.isCurrent, actions.moveHistory(to: option, fallbackText: row.messages.first?.text) {
+                    LiveActivityCoordinator.shared.cancelQueuedOpen()
                     setComposerFocused(false)
                     OrbisHaptics.commit()
                 }

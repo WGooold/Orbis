@@ -983,7 +983,7 @@ struct OrbisDraftEditor: UIViewRepresentable {
         view.flush = { context.coordinator.flush(view) }
         view.backgroundColor = .clear; view.font = font
         view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = lineFragmentPadding
-        view.returnKeyType = .send
+        view.returnKeyType = submitsOnSoftwareReturn ? .send : .default
         view.tintColor = tint
         view.accessibilityIdentifier = identifier
         view.submitsOnSoftwareReturn = submitsOnSoftwareReturn
@@ -994,13 +994,18 @@ struct OrbisDraftEditor: UIViewRepresentable {
         view.submit = onSubmit; view.cancel = onCancel
         view.flush = { context.coordinator.flush(view) }
         view.submitsOnSoftwareReturn = submitsOnSoftwareReturn
+        view.returnKeyType = submitsOnSoftwareReturn ? .send : .default
         view.placeholder.text = placeholder; view.placeholder.textColor = placeholderInk
         view.placeholder.isHidden = !text.isEmpty
         view.accessibilityLabel = placeholder
-        if (view.markedTextRange == nil || view.lastProgrammaticRevision != programmaticRevision) && view.text != text {
+        let programmaticChange = view.lastProgrammaticRevision != programmaticRevision
+        if (view.markedTextRange == nil || programmaticChange) && view.text != text {
             let selected = view.selectedRange; view.text = text
             view.selectedRange = NSRange(location: min(selected.location, text.utf16.count), length: 0)
         }
+        // Slash selection and other explicit draft replacements append subsequent
+        // typing to the new value. Ordinary updates retain the user's selection.
+        if programmaticChange { view.selectedRange = NSRange(location: text.utf16.count, length: 0) }
         view.lastProgrammaticRevision = programmaticRevision
         view.textColor = ink
         view.tintColor = tint
@@ -1060,10 +1065,9 @@ struct OrbisDraftEditor: UIViewRepresentable {
         var insertingLineBreak = false
         override init(frame: CGRect, textContainer: NSTextContainer?) {
             super.init(frame: frame, textContainer: textContainer)
-            if #available(iOS 16.0, *) { usesTextLayoutManager = false }
             self.textContainer.widthTracksTextView = true
             self.textContainer.heightTracksTextView = false
-            self.textContainer.size = CGSize(width: 0, height: .greatestFiniteMagnitude)
+            self.textContainer.size = CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
             placeholder.font = .systemFont(ofSize: 15); placeholder.isUserInteractionEnabled = false; addSubview(placeholder)
         }
         func measuredEditorHeight(width: CGFloat) -> CGFloat {
@@ -1079,7 +1083,11 @@ struct OrbisDraftEditor: UIViewRepresentable {
         override var accessibilityValue: String? { get { text ?? "" } set {} }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func layoutSubviews() {
-            super.layoutSubviews(); placeholder.frame = CGRect(x: 4, y: 0, width: bounds.width - 8, height: 22)
+            super.layoutSubviews()
+            let inset = textContainerInset
+            let padding = textContainer.lineFragmentPadding
+            placeholder.frame = CGRect(x: inset.left + padding, y: inset.top,
+                                       width: max(0, bounds.width - inset.left - inset.right - padding * 2), height: 22)
         }
         override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
             guard markedTextRange == nil else { super.pressesBegan(presses, with: event); return }

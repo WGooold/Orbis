@@ -30,7 +30,9 @@ final class LiveActivityCoordinator: ObservableObject {
     // confirmed "focus not found" result.
     private var routeRevisions: [String: UInt64] = [:]
     private var routeComplete: [String: Bool] = [:]
-    private var queuedOpen: LiveActivityOpenTarget?
+    private var openQueue = LiveActivityOpenQueue()
+    private var openTimeout: Task<Void, Never>?
+    private var queuedHostId: String?
     private var dirty = false
     private var reconcile: Task<Void, Never>?
     private var renewal: Task<Void, Never>?
@@ -81,11 +83,11 @@ final class LiveActivityCoordinator: ObservableObject {
             return
         }
         guard changed else {
-            if value { schedule() }
+            if value { routeOpen(); schedule() }
             return
         }
         if value {
-            registration.refresh(); schedule()
+            routeOpen(); registration.refresh(); schedule()
             renewal = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(nanoseconds: 240_000_000_000) } catch { return }
@@ -97,38 +99,59 @@ final class LiveActivityCoordinator: ObservableObject {
 
     func receive(_ url: URL) {
         guard let target = LiveActivityOpenTarget(url: url) else { return }
-        queuedOpen = target
+        cancelQueuedOpen()
+        let generation = openQueue.enqueue(target, now: ProcessInfo.processInfo.systemUptime)
+        openTimeout = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(LiveActivityOpenQueue.timeout * 1_000_000_000)) } catch { return }
+            guard let self, self.openQueue.generation == generation else { return }
+            self.routeOpen()
+        }
         routeOpen()
     }
 
+    func cancelQueuedOpen() {
+        openQueue.cancel(); queuedHostId = nil
+        openTimeout?.cancel(); openTimeout = nil
+    }
+
+    /// Host selection publications may follow the deep link's own connect call.
+    /// Runtime restoration on device.ready is automatic, so explicit user
+    /// navigation actions cancel separately rather than treating it as navigation.
+    func navigationSelectionChanged() {
+        guard let queuedHostId, let store else { return }
+        if queuedHostId != store.selectedHostId { cancelQueuedOpen() }
+    }
+
     private func routeOpen() {
-        guard let target = queuedOpen, let store else { return }
+        guard foreground, let target = openQueue.target, let store else { return }
+        navigationSelectionChanged()
+        guard openQueue.target != nil else { return }
         guard let pairing = store.pairings.first(where: { $0.hostId == target.hostId }),
-              FileTransfers.pairingKey(pairing) == target.pairingKey else { queuedOpen = nil; return }
-        store.connect(hostId: target.hostId)
-        guard let connection = store.connection(for: target.hostId) else { return }
-        if let focus = target.focusKey {
-            guard routeComplete[target.hostId] == true,
-                  routeRevisions[target.hostId] == revisions[target.hostId, default: 0] else {
-                // The map is still being coalesced or was invalidated by a
-                // newer stream update. Keep the target until a matching map is
-                // published instead of falling back to the home page.
-                return
-            }
-            if let route = routes[target.hostId]?[focus],
-               let runtime = connection.runtimes.first(where: { $0.runtimeId == route.runtime && $0.sessionId == route.session }) {
-                store.selectRuntime(hostId: target.hostId, runtimeId: runtime.runtimeId)
-                queuedOpen = nil
-                navigation.send(Navigation(hostId: target.hostId, runtimeId: runtime.runtimeId))
-            } else if !connection.homeRuntimesUpdating {
-                // A current, complete route map proves that the requested
-                // focus no longer exists. Return to the host root once and
-                // consume the stale deep link.
-                queuedOpen = nil
-                navigation.send(Navigation(hostId: target.hostId, runtimeId: nil))
-            }
-        } else {
-            queuedOpen = nil
+              FileTransfers.pairingKey(pairing) == target.pairingKey else { cancelQueuedOpen(); return }
+        // Selecting even the same Host publishes feedback state. Do it once per
+        // tap so retries do not invalidate the route revision they need to read.
+        if queuedHostId == nil {
+            store.connect(hostId: target.hostId)
+            queuedHostId = store.selectedHostId
+        }
+        let connection = store.connection(for: target.hostId)
+        let route = target.focusKey.flatMap { routes[target.hostId]?[$0] }
+        let runtime = route.flatMap { route in
+            connection?.runtimes.first { $0.runtimeId == route.runtime && $0.sessionId == route.session }
+        }
+        let current = routeRevisions[target.hostId] == revisions[target.hostId, default: 0]
+        // A matching runtime in a current map is sufficient even when an
+        // unrelated runtime still awaits background-task reconciliation.
+        guard let destination = openQueue.resolve(generation: openQueue.generation,
+            now: ProcessInfo.processInfo.systemUptime, routeIsCurrent: current,
+            complete: routeComplete[target.hostId] == true && connection?.homeRuntimesUpdating == false,
+            runtimeId: runtime?.runtimeId) else { return }
+        cancelQueuedOpen()
+        switch destination {
+        case .runtime(let runtimeId):
+            store.selectRuntime(hostId: target.hostId, runtimeId: runtimeId)
+            navigation.send(Navigation(hostId: target.hostId, runtimeId: runtimeId))
+        case .home:
             navigation.send(Navigation(hostId: target.hostId, runtimeId: nil))
         }
     }
