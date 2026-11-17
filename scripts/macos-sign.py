@@ -109,6 +109,29 @@ def run_stapler(command, phase, report_path, report):
         time.sleep(delay)
 
 
+def run_codesign(command):
+    # Apple can omit a requested timestamp during a transient service failure.
+    # Retry the same signing command; certificate, keychain and verification
+    # errors remain immediate failures, and secure timestamp checks still run.
+    delays = (5, 10, 20)
+    for attempt in range(1, len(delays) + 2):
+        result = run(command, check=False)
+        if result.returncode == 0:
+            return result
+        diagnostic = "\n".join(value.strip() for value in (result.stdout, result.stderr) if value.strip())
+        transient_timestamp_error = bool(re.search(
+            r"A timestamp was expected but was not found\.|"
+            r"(?:timestamp|time stamp) service is (?:not available|unavailable)|"
+            r"(?:timestamp|time stamp)[^\n]*(?:timed out|network connection was lost|could not connect)",
+            diagnostic, re.IGNORECASE))
+        if not transient_timestamp_error or attempt > len(delays):
+            raise RuntimeError(f"codesign failed ({result.returncode}) after {attempt} attempt(s): {diagnostic}")
+        delay = delays[attempt - 1]
+        print(f"Transient Apple timestamp error while signing {command[-1]}; "
+              f"retrying in {delay}s ({attempt}/{len(delays) + 1})", flush=True)
+        time.sleep(delay)
+
+
 def sign_app(args):
     app = args.app.resolve()
     if app.suffix != ".app" or not (app / "Contents/Info.plist").is_file():
@@ -133,7 +156,7 @@ def sign_app(args):
         elif target == app:
             command += ["--entitlements", entitlements / "host.entitlements"]
         try:
-            run([*command, target])
+            run_codesign([*command, target])
         except RuntimeError as error:
             raise RuntimeError(f"Failed to sign {target}: {error}") from error
         if index % 20 == 0 or index == len(targets):
@@ -165,7 +188,7 @@ def notarize_dmg(args):
         command = ["codesign", "--force", "--sign", signer, "--timestamp"]
         if args.keychain:
             command += ["--keychain", args.keychain]
-        run([*command, dmg])
+        run_codesign([*command, dmg])
         submission_id = None
     run(["codesign", "--verify", "--strict", dmg])
     verify_identity(dmg, args.team_id)

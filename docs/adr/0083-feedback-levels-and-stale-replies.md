@@ -196,6 +196,7 @@ iOS 原位与连接集成用例为 `StoreTests.rejectedStopAndOfflineCloseStayOn
 - SC104：取代 Android 新建草稿统一标题。新建卡片只在上次启动待核对时显示“启动未确认”标题与说明按钮，其余草稿错误（含输入校验与目标电脑检查）直接以错误色显示原因；属 r59 候选内的可见调整，待用户验证。
 - SC105：取代 SC99 中列表与激活请求的“连接横幅与所属请求结果同时保留”。Android 连接级拒绝结束所属列表与激活请求，只由连接横幅说明，不写入会话列表错误；配置、目录浏览、首页读取与供应商请求仍同时保留横幅与原位结果。账本启动的普通拒绝仍只在启动页说明。
 - SC106：Android 启动日志在加载完成及每次变更后通知连接对账，等待该日志的提示不再依赖各处单独刷新。订阅在连接启动读取缓存后开始，随连接关闭取消；连接关闭后不复用，新配对重建连接。
+- SC106-R1：冷读恢复先发布变更序号，再解除 `awaitLoaded` 屏障；调用方恢复时可同时观察到快照与加载通知。`ConfiguredLaunchJournalTest` 以直接恢复的等待者固定原时序竞态，发布验证证据见 `.artifacts/client-release-20261117/android-race/`。
 - Android 配置化启动登记只更新提示字段，不再用读取时的配置副本整体覆盖。
 
 实现与回归：Android `feedbackFailureText`、`SessionConfigurationState.launchErrorTitle` / `SessionDraft`、`RelayReducer.rejectProtocolOperation`、`ConfiguredLaunchJournal.changes` / `HostConnection`、`HostConnection.createConfiguredSession`；`FeedbackTest`、`LaunchFeedbackRegressionTest`、`CommandRejectionFeedbackTest`、`ConfiguredLaunchJournalTest`。iOS `FeedbackText.reason`；`FeedbackTests`。
