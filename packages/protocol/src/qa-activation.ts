@@ -14,6 +14,7 @@ export function parseQaActivation(value: unknown): QaActivation {
   if (typeof input.environmentId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.environmentId)) {
     throw new Error("Invalid QA environmentId");
   }
+  // eslint-disable-next-line no-control-regex -- Reject ASCII control characters from private QA credentials.
   if (typeof input.credential !== "string" || input.credential.length < 16 || input.credential.length > 512 || /[\s\x00-\x1f\x7f]/u.test(input.credential)) {
     throw new Error("Invalid QA activation credential");
   }
