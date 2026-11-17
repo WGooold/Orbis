@@ -55,6 +55,40 @@ class SigningTests(unittest.TestCase):
         self.assertNotIn("com.apple.security.cs.disable-library-validation", host)
         self.assertTrue(node["com.apple.security.cs.disable-library-validation"])
 
+    def test_codesign_retries_missing_timestamp_with_unchanged_command(self):
+        # Preserve the exact signing identity, keychain, entitlements and runtime
+        # flags when Apple's timestamp service fails after signing a code object.
+        command = ["codesign", "--force", "--sign", "identity", "--timestamp", "--options", "runtime",
+                   "--keychain", "private-keychain", "--entitlements", "node.entitlements", "node"]
+        failed = subprocess.CompletedProcess(command, 1, stdout="", stderr="A timestamp was expected but was not found.")
+        succeeded = subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        with patch.object(SIGN, "run", side_effect=[failed, succeeded]) as run, \
+             patch.object(SIGN.time, "sleep") as sleep:
+            self.assertIs(SIGN.run_codesign(command), succeeded)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertEqual(call.args, (command,))
+            self.assertEqual(call.kwargs, {"check": False})
+        sleep.assert_called_once_with(5)
+
+    def test_codesign_does_not_retry_invalid_identity(self):
+        # A permanent credential failure must not be mistaken for a service outage.
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="The specified item could not be found in the keychain.")
+        with patch.object(SIGN, "run", return_value=failed) as run, patch.object(SIGN.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "after 1 attempt.*keychain"):
+                SIGN.run_codesign(["codesign", "--sign", "identity", "--timestamp", "Host.app"])
+        self.assertEqual(run.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_codesign_timestamp_retries_are_bounded(self):
+        # A timestamp outage cannot turn the signing job into an unbounded wait.
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="The timestamp service is not available.")
+        with patch.object(SIGN, "run", return_value=failed) as run, patch.object(SIGN.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "after 4 attempt"):
+                SIGN.run_codesign(["codesign", "--sign", "identity", "--timestamp", "Host.dmg"])
+        self.assertEqual(run.call_count, 4)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 10, 20])
+
     def exercise_notary(self, status):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -38,8 +38,9 @@ internal class ConfiguredLaunchJournal(
         scope.launch(dispatcher) {
             try {
                 snapshot = read()
-                initialized.complete(Unit)
+                // Awaiters must observe both the recovered snapshot and its load notification.
                 changeCount.update { it + 1 }
+                initialized.complete(Unit)
                 for (write in writes) {
                     // A failed write retains the in-memory identity for an explicit retry.
                     write.result.complete(runCatching { persist(write.value) }.getOrDefault(false))

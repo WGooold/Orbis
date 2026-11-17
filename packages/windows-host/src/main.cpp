@@ -597,57 +597,67 @@ int main(int argc, char *argv[]) {
                     });
                 }
             } else if (parser.isSet("smoke-agents")) {
-                QTimer::singleShot(1800, &app, [&] { QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)); });
-                QTimer::singleShot(2500, &app, [&] {
+                // Agent detection includes bounded network lookups. Start the dialog checks
+                // after the real result arrives, retaining failure for a missing agent list.
+                auto *waitAgents = new QTimer(&app); waitAgents->setInterval(100);
+                const auto started = QDateTime::currentMSecsSinceEpoch();
+                QObject::connect(waitAgents, &QTimer::timeout, &app, [&, waitAgents, started] {
+                    if (controller.agents().isEmpty() && QDateTime::currentMSecsSinceEpoch() - started < 45000) return;
+                    waitAgents->stop(); waitAgents->deleteLater();
                     if (controller.agents().isEmpty()) { app.exit(12); return; }
-                    QMetaObject::invokeMethod(window, "showAgentInstaller", Q_ARG(QVariant, controller.agents().first()));
-                });
-                QTimer::singleShot(3200, &app, [&] {
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-install.png")) app.exit(7);
-                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
-                    QMetaObject::invokeMethod(window, "showAgentBatch");
-                });
-                QTimer::singleShot(4000, &app, [&] {
-                    if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
-                    QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                    QTimer::singleShot(1800, &app, [&] { QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)); });
+                    QTimer::singleShot(2500, &app, [&] {
+                        if (controller.agents().isEmpty()) { app.exit(12); return; }
+                        QMetaObject::invokeMethod(window, "showAgentInstaller", Q_ARG(QVariant, controller.agents().first()));
+                    });
+                    QTimer::singleShot(3200, &app, [&] {
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-install.png")) app.exit(7);
+                        QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                        QMetaObject::invokeMethod(window, "showAgentBatch");
+                    });
+                    QTimer::singleShot(4000, &app, [&] {
+                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".agent-batch.png")) app.exit(7);
+                        QMetaObject::invokeMethod(window, "closeAgentDialogs");
 #ifdef ORBIS_SMOKE_INTERACTION
-                    // HOST-CLAUDE-UPDATE-02: show current/latest, and offer an update for an old CLI.
-                    // Only open and cancel the real dialog; never update the machine in smoke.
-                    controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false}, {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}, {"latestVersion", "2.1.325"}, {"updateAvailable", true}});
-                    QTimer::singleShot(250, &app, [&] {
-                        auto *button = findVisualItem(window->contentItem(), "updateClaude");
-                        auto *scroll = window->findChild<QObject *>("pageScroll");
-                        auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr;
-                        if (!button || !button->isEnabled() || !viewport) { app.exit(86); return; }
-                        auto *versions = window->findChild<QObject *>("claudeVersions");
-                        if (!versions || versions->property("text").toString() != "当前 2.1.286，最新 2.1.325，有可用更新") { app.exit(89); return; }
-                        viewport->setProperty("contentY", qMax(0.0, viewport->property("contentHeight").toReal() - viewport->property("height").toReal()));
-                        QTest::qWait(80);
-                        if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-card.png")) { app.exit(7); return; }
-                        if (!clickSmokeItem(window, "updateClaude")) { app.exit(86); return; }
-                        QTimer::singleShot(200, &app, [&] {
-                            auto *dialog = window->findChild<QObject *>("agentInstallDialog");
-                            if (!dialog || !dialog->property("visible").toBool() || dialog->property("title").toString() != "更新 Claude Code 到最新版本" || window->property("installKind").toString() != "claude") { app.exit(87); return; }
-                            if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-update.png")) { app.exit(7); return; }
-                            QMetaObject::invokeMethod(window, "closeAgentDialogs");
-                            controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.325"}, {"latestVersion", "2.1.325"}});
-                            QTest::qWait(40);
-                            auto *currentButton = findVisualItem(window->contentItem(), "updateClaude");
-                            if (!currentButton || currentButton->isEnabled() || currentButton->property("text").toString() != "已是最新版本") { app.exit(90); return; }
-                            controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.325"}, {"latestError", "Claude Code 最新版本查询失败，请检查网络后重试"}});
-                            QTest::qWait(40);
-                            if (!currentButton->isEnabled() || currentButton->property("text").toString() != "更新到最新版本") { app.exit(91); return; }
-                            controller.smokeReceive({{"event", "claudeStatus"}, {"installed", false}, {"compatible", false}});
-                            QTimer::singleShot(100, &app, [&] {
-                                auto *button = findVisualItem(window->contentItem(), "updateClaude");
-                                app.exit(button && !button->isEnabled() ? 0 : 88);
+                        // HOST-CLAUDE-UPDATE-02: show current/latest, and offer an update for an old CLI.
+                        // Only open and cancel the real dialog; never update the machine in smoke.
+                        controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", false}, {"version", "2.1.286"}, {"minimumVersion", "2.1.287"}, {"latestVersion", "2.1.325"}, {"updateAvailable", true}});
+                        QTimer::singleShot(250, &app, [&] {
+                            auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                            auto *scroll = window->findChild<QObject *>("pageScroll");
+                            auto *viewport = scroll ? scroll->property("contentItem").value<QObject *>() : nullptr;
+                            if (!button || !button->isEnabled() || !viewport) { app.exit(86); return; }
+                            auto *versions = window->findChild<QObject *>("claudeVersions");
+                            if (!versions || versions->property("text").toString() != "当前 2.1.286，最新 2.1.325，有可用更新") { app.exit(89); return; }
+                            viewport->setProperty("contentY", qMax(0.0, viewport->property("contentHeight").toReal() - viewport->property("height").toReal()));
+                            QTest::qWait(80);
+                            if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-card.png")) { app.exit(7); return; }
+                            if (!clickSmokeItem(window, "updateClaude")) { app.exit(86); return; }
+                            QTimer::singleShot(200, &app, [&] {
+                                auto *dialog = window->findChild<QObject *>("agentInstallDialog");
+                                if (!dialog || !dialog->property("visible").toBool() || dialog->property("title").toString() != "更新 Claude Code 到最新版本" || window->property("installKind").toString() != "claude") { app.exit(87); return; }
+                                if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".claude-update.png")) { app.exit(7); return; }
+                                QMetaObject::invokeMethod(window, "closeAgentDialogs");
+                                controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.325"}, {"latestVersion", "2.1.325"}});
+                                QTest::qWait(40);
+                                auto *currentButton = findVisualItem(window->contentItem(), "updateClaude");
+                                if (!currentButton || currentButton->isEnabled() || currentButton->property("text").toString() != "已是最新版本") { app.exit(90); return; }
+                                controller.smokeReceive({{"event", "claudeStatus"}, {"installed", true}, {"compatible", true}, {"version", "2.1.325"}, {"latestError", "Claude Code 最新版本查询失败，请检查网络后重试"}});
+                                QTest::qWait(40);
+                                if (!currentButton->isEnabled() || currentButton->property("text").toString() != "更新到最新版本") { app.exit(91); return; }
+                                controller.smokeReceive({{"event", "claudeStatus"}, {"installed", false}, {"compatible", false}});
+                                QTimer::singleShot(100, &app, [&] {
+                                    auto *button = findVisualItem(window->contentItem(), "updateClaude");
+                                    app.exit(button && !button->isEnabled() ? 0 : 88);
+                                });
                             });
                         });
-                    });
 #else
-                    app.exit(0);
+                        app.exit(0);
 #endif
+                    });
                 });
+                waitAgents->start();
             } else if (parser.isSet("smoke-exit")) {
                 requestSmokeExit();
                 QTimer::singleShot(500, &app, [&] {

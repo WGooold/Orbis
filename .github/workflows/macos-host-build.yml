@@ -96,9 +96,25 @@ jobs:
           set -euo pipefail
           build="$RUNNER_TEMP/orbis-macos-build"
           dmg_root="$RUNNER_TEMP/orbis-dmg-root"
+          rw_image="$RUNNER_TEMP/orbis-rw-${{ matrix.artifact }}.dmg"
+          mountpoint="$RUNNER_TEMP/orbis-dmg-mnt-${{ matrix.artifact }}"
+          staged_dmg=""
           cleanup() {
             status=$?
-            rm -rf "$build" "$dmg_root" "$RUNNER_TEMP"/orbis-rw-*.dmg "$RUNNER_TEMP"/orbis-dmg-mnt-* "$RUNNER_TEMP"/OrbisHost-*.dmg
+            trap - EXIT
+            set +e
+            python3 scripts/macos-dmg.py --image "$rw_image" --mountpoint "$mountpoint" \
+              --report .artifacts/host-diagnostics/dmg-cleanup.json
+            detach_status=$?
+            if [ "$detach_status" -eq 0 ]; then
+              rm -f "$rw_image"
+              rmdir "$mountpoint" 2>/dev/null || true
+            else
+              echo "Owned DMG cleanup failed; preserving image and mount diagnostics." >&2
+              if [ "$status" -eq 0 ]; then status=$detach_status; fi
+            fi
+            rm -rf "$build" "$dmg_root"
+            if [ -n "$staged_dmg" ]; then rm -f "$staged_dmg"; fi
             if [ "$status" -ne 0 ]; then
               mkdir -p .artifacts/host-diagnostics
               # Keep a pending/rejected signed image with its submission report.
@@ -110,6 +126,7 @@ jobs:
             exit "$status"
           }
           trap cleanup EXIT
+          python3 -m unittest discover -s scripts -p test_macos_dmg.py
           rm -rf .artifacts/host "$build" "$dmg_root"
           cmake -S packages/windows-host -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="${{ matrix.architecture }}" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
           cmake --build "$build" --parallel 2
@@ -161,11 +178,11 @@ jobs:
           # "create failed - Resource busy" 失败，而且失败点不可见。这里拆成
           # 建可写镜像 → 挂到固定 mountpoint → ditto 拷入 → 卸载 → 压成 UDZO，
           # 每一步出错都能在日志里看到是哪一个。
-          rw_image="$RUNNER_TEMP/orbis-rw-${{ matrix.artifact }}.dmg"
-          mountpoint="$RUNNER_TEMP/orbis-dmg-mnt-${{ matrix.artifact }}"
           staged_dmg="$RUNNER_TEMP/$dmg"
+          python3 scripts/macos-dmg.py --image "$rw_image" --mountpoint "$mountpoint" \
+            --report .artifacts/host-diagnostics/dmg-preflight.json
           rm -f "$rw_image" "$staged_dmg"
-          rm -rf "$mountpoint"
+          rmdir "$mountpoint" 2>/dev/null || true
           mkdir -p "$mountpoint" "$dmg_root"
           cp -R .artifacts/host/OrbisHost.app "$dmg_root/"
           ln -s /Applications "$dmg_root/Applications"
@@ -173,9 +190,11 @@ jobs:
           hdiutil attach "$rw_image" -nobrowse -readwrite -mountpoint "$mountpoint"
           ditto "$dmg_root" "$mountpoint"
           sync
-          hdiutil detach "$mountpoint"
+          python3 scripts/macos-dmg.py --image "$rw_image" --mountpoint "$mountpoint" \
+            --report .artifacts/host-diagnostics/dmg-detach.json
           rmdir "$mountpoint" 2>/dev/null || true
           hdiutil convert "$rw_image" -format UDZO -o "$staged_dmg"
+          hdiutil verify "$staged_dmg"
           mv "$staged_dmg" ".artifacts/host/$dmg"
           if [ "$ORBIS_SIGNING_MODE" = developer-id ]; then
             python3 scripts/macos-sign.py notarize-dmg --dmg ".artifacts/host/$dmg" \

@@ -61,17 +61,26 @@ class ConfiguredLaunchJournalTest {
     // SC106: loading and every accepted change are announced, so launch warnings reconcile without per-site refreshes.
     @Test fun `loading and accepted changes are announced`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val journal = ConfiguredLaunchJournal(scope, read = { record("saved") }, persist = { true })
+        val releaseRead = CountDownLatch(1)
+        val journal = ConfiguredLaunchJournal(scope, read = {
+            check(releaseRead.await(5, TimeUnit.SECONDS))
+            record("saved")
+        }, persist = { true })
         try {
-            journal.awaitLoaded()
-            val loaded = journal.changes.value
+            // Resume directly at completion so the original notification race is deterministic.
+            val loading = async(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                journal.awaitLoaded()
+                journal.changes.value
+            }
+            releaseRead.countDown()
+            val loaded = loading.await()
             assertTrue("Loading completion is a change", loaded > 0)
             journal.update("saved") { null }!!.await()
             assertTrue(journal.changes.value > loaded)
             val cleared = journal.changes.value
             assertNull(journal.update("saved") { null })
             assertEquals("A rejected update is not a change", cleared, journal.changes.value)
-        } finally { scope.cancel() }
+        } finally { releaseRead.countDown(); scope.cancel() }
     }
 
     @Test fun `failed persistence keeps identity for retry and stale cleanup cannot erase a newer launch`() = runBlocking {

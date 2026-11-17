@@ -69,8 +69,10 @@ jobs:
           $env:ORBIS_CLAUDE_INSTALL_TEST_LOG = Join-Path $claudeFixture 'calls.jsonl'
           $node = (Get-Command node).Source
           [IO.File]::WriteAllText((Join-Path $claudeFixture 'claude.cmd'), "@echo off`r`n`"$node`" `"%~dp0record.cjs`" %*`r`n", [Text.Encoding]::ASCII)
-          [IO.File]::WriteAllText((Join-Path $claudeFixture 'record.cjs'), 'require("node:fs").appendFileSync(process.env.ORBIS_CLAUDE_INSTALL_TEST_LOG, JSON.stringify(process.argv.slice(2))+"\n");', [Text.Encoding]::ASCII)
+          # Version probes are read-only; retain exact plugin-mutation counts across install/uninstall.
+          [IO.File]::WriteAllText((Join-Path $claudeFixture 'record.cjs'), 'const fs=require("node:fs"),args=process.argv.slice(2);if(args.length===1&&args[0]==="--version"){fs.appendFileSync(process.env.ORBIS_CLAUDE_INSTALL_TEST_LOG+".versions",JSON.stringify(args)+"\n");process.stdout.write("2.1.287 (Claude Code)\n");}else{fs.appendFileSync(process.env.ORBIS_CLAUDE_INSTALL_TEST_LOG,JSON.stringify(args)+"\n");}', [Text.Encoding]::ASCII)
           $env:Path = "$claudeFixture;$originalPath"
+          $verificationFailure = $null
           try {
             $installer = Start-Process -FilePath $setup.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',('/DIR="' + $installDir + '"'),('/LOG="' + $smokeDir + '\install.log"') -WindowStyle Hidden -PassThru -Wait
             if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
@@ -81,6 +83,10 @@ jobs:
             $app = Start-Process -FilePath "$installDir\OrbisHost.exe" -ArgumentList '--smoke-test','--data-dir',('"' + $smokeDir + '"'),'--screenshot',('"' + $smokeDir + '\preview.png"') -WindowStyle Hidden -PassThru -Wait -RedirectStandardError "$smokeDir\qml.log"
             if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
             if (@(Get-Content $env:ORBIS_CLAUDE_INSTALL_TEST_LOG).Count -ne 3) { throw 'Smoke test changed Claude integration' }
+          } catch {
+            $verificationFailure = $_
+            if (Test-Path -LiteralPath $env:ORBIS_CLAUDE_INSTALL_TEST_LOG) { Get-Content -LiteralPath $env:ORBIS_CLAUDE_INSTALL_TEST_LOG | Write-Output }
+            throw
           } finally {
             try {
               $env:Path = "$claudeFixture;$originalPath"
@@ -90,6 +96,9 @@ jobs:
                 $calls = @(Get-Content $env:ORBIS_CLAUDE_INSTALL_TEST_LOG | ForEach-Object { ,($_ | ConvertFrom-Json) })
                 if ($calls.Count -ne 5 -or ($calls[3][0..1] -join ' ') -ne 'plugin uninstall' -or ($calls[4] -join ' ') -ne 'plugin marketplace remove orbis-host') { throw 'Uninstaller did not remove the Claude plugin' }
               }
+            } catch {
+              # Cleanup must not replace the original installation or smoke failure.
+              if ($verificationFailure) { Write-Warning "Installer cleanup also failed: $_" } else { throw }
             } finally {
               $env:Path = $originalPath
               $env:CLAUDE_CONFIG_DIR = $originalClaudeConfig
