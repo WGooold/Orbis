@@ -229,15 +229,23 @@ struct ChatScreenModelTests {
         for _ in 0..<5 { await Task.yield() }
     }
 
-    // IOS-CHAT-07 prototype: pin the installed Observation macro's Equatable setter
-    // behavior separately from the model's explicit equality guard.
-    @Test func equatableObservableSetterSkipsEqualAssignmentsOnThisToolchain() {
+    // IOS-CHAT-07 prototype: Swift 6.2 adds an Equatable guard to the Observation
+    // macro setter. Pin both compiler generations separately from the model's
+    // explicit equality guard, and verify a changed value with a fresh observer.
+    @Test func equatableObservableSetterMatchesCompilerGeneration() {
         let prototype = ChatObservationPrototype(), count = ChatObservationCount()
         withObservationTracking { _ = prototype.value } onChange: { count.changed() }
         prototype.value = 0
+        #if compiler(>=6.2)
         #expect(count.value == 0)
+        #else
+        #expect(count.value == 1)
+        #endif
+        let changed = ChatObservationCount()
+        withObservationTracking { _ = prototype.value } onChange: { changed.changed() }
         prototype.value = 1
         #expect(count.value == 1)
+        #expect(changed.value == 1)
     }
 
     // IOS-CHAT-07/08: mount-cached callbacks belong to one connection owner,
