@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentTaskInventorySchema } from "@orbis/protocol";
+import { AgentTaskInventorySchema, agentTasksAllowQuit } from "@orbis/protocol";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
 
 // Verify generated Codex 0.165 native collaboration records, not tool names/output heuristics.
@@ -73,6 +73,50 @@ describe("Codex native child tasks", () => {
     tasks.observeStatus("a", { type: "active", activeFlags: ["waitingOnApproval"] });
     tasks.replay([{ items: [collab({ a: "completed" })] }]);
     expect(tasks.snapshot().items[0]?.status).toBe("waiting");
+  });
+
+  // SC110: an unloaded interrupted child must stay idle through notifications,
+  // repeated registry checks and cold history replay, so closure can be confirmed.
+  it.each(["activity", "collaboration"])("keeps interrupted idle through unloading and reconciliation (%s)", async source => {
+    const tasks = new CodexAgentTasks("parent");
+    const interruption = source === "activity"
+      ? { id: "interrupt", type: "subAgentActivity", agentThreadId: "a", kind: "interrupted" }
+      : collab({ a: "interrupted" });
+    const history = [{ items: [interruption] }];
+    const children = [{ id: "a", parentThreadId: "parent", status: { type: "notLoaded" } }];
+    for (let pass = 0; pass < 2; pass++) {
+      tasks.replay(history);
+      tasks.observeStatus("a", { type: "notLoaded" });
+      await tasks.reconcile(async () => children);
+      expect(tasks.snapshot()).toMatchObject({ availability: "ready", truncated: false, items: [{ id: "a", status: "idle" }] });
+      expect(agentTasksAllowQuit(tasks.snapshot())).toBe(true);
+    }
+  });
+
+  // SC110: preserving interruption must not grant closure after resumed activity
+  // or a disconnect without fresh lifecycle evidence from the current source.
+  it("withdraws interrupted idle on later activity or disconnect", async () => {
+    const tasks = new CodexAgentTasks("parent");
+    const interruption = { id: "interrupt", type: "subAgentActivity", agentThreadId: "a", kind: "interrupted" };
+    const children = [{ id: "a", parentThreadId: "parent", status: { type: "notLoaded" } }];
+    tasks.observeItem(interruption);
+    await tasks.reconcile(async () => children);
+    expect(agentTasksAllowQuit(tasks.snapshot())).toBe(true);
+    tasks.observeStatus("a", { type: "active", activeFlags: ["waitingOnApproval"] });
+    tasks.replay([{ items: [interruption] }]);
+    expect(tasks.snapshot().items[0]?.status).toBe("waiting");
+    expect(agentTasksAllowQuit(tasks.snapshot())).toBe(false);
+    tasks.observeStatus("a", { type: "notLoaded" });
+    expect(tasks.snapshot().items[0]?.status).toBe("unknown");
+
+    tasks.observeItem({ ...interruption, id: "interrupt-again" });
+    tasks.stale();
+    await tasks.reconcile(async () => children);
+    expect(tasks.snapshot().items[0]?.status).toBe("unknown");
+    expect(agentTasksAllowQuit(tasks.snapshot())).toBe(false);
+    tasks.replay([{ items: [interruption] }]);
+    await tasks.reconcile(async () => children);
+    expect(agentTasksAllowQuit(tasks.snapshot())).toBe(true);
   });
 
   it("does not revive stale status from a receiver-only partial update", () => {

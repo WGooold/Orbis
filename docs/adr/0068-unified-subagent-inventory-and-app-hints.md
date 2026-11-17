@@ -63,6 +63,8 @@ Claude 已有独立于主回合的后台任务库存；Codex / Desktop 与 DSH �
 
 ## 实现、验证与交付
 
+2026-11-17，SC110（S33）：Codex／Desktop 在有效来源代次内保留已确认的空闲状态，包括原生 `interrupted` 映射出的空闲；线程随后变为 `notLoaded` 时继续使用该状态。新的活动、错误或来源失联仍撤回原状态的确定性。实现见 [codex-agent-tasks.ts](../../packages/host/src/codex-agent-tasks.ts)，卸载、重复核对、历史恢复、重新运行与失联边界见 [投影回归](../../packages/host/src/codex-agent-tasks.test.ts) 和 [CLI／Desktop 集成回归](../../packages/host/src/codex-runtime.test.ts)。自动验证：263 项 Host 定向测试、TypeScript 检查和改动文件 ESLint 通过；指定会话的脱敏原生记录离线回放中，9 项任务的两项未知恢复为空闲，重复核对保持一致。首次失败、修复后结果及来源摘要见[验证记录](../../.artifacts/codex-task-unknown-20261117/verification.json)。本轮尚未打包部署，设备与用户验收待完成。
+
 2026-11-14，SC88（S33）：修复 Android 优先使用最低协议、兼容 Host 因而删除所有后端任务清单的问题。任务 UI 与 Host 的旧端投影保持原契约；Android 协商最高共同业务格式，最低为 18，并独立处理 Relay 外层。选择规则与旧实现验证见 [ADR-0064](0064-protocol-compatibility.md) 及 `.artifacts/subagent-display-fix-20261114/verification.json`。自动验证、候选包与人工验收分别记录。
 
 2026-11-16，SC107（S59 / S33）：Android 子代理区取消整宽凸起按钮，改为输入区上方的平置展开行：汇总状态点、原有库存标题与旋转箭头，触控高度保持 48dp，静止时无凸起。展开后在凹陷面内按父子树列出任务，每项为状态点、短标题、类型与状态；嵌套以缩进和细线表示，取代“来自：”文字。状态点的活动表现与会话状态一致：待核对清单不显示进行中，失联后的最后已知项一律为空心静止点。父项缺席、自引用或循环时作为根显示且不丢项，兄弟顺序沿用 Host，缩进最多三级。标题、提示文案、测试标识、只读与折叠语义不变；iOS 未改。实现见 [BackgroundTasks.kt](../../android/app/src/main/java/com/orbising/orbis/BackgroundTasks.kt)；树序回归见 [BackgroundTasksTest.kt](../../android/app/src/test/java/com/orbising/orbis/BackgroundTasksTest.kt)，缩进与截图见 [BackgroundTasksInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/BackgroundTasksInstrumentedTest.kt)。属 r59 候选内的可见调整。自动验证：26 项 JVM 用例通过；共享模拟器上本类 3 项中 2 项通过并保留明暗截图。首页卡片用例因“1 个子任务运行中”匹配到 2 个节点而失败，用 HEAD 版面板在相同入口对照同样失败，属既有问题，断言未改。证据见 `.artifacts/android-subagent-panel-20261116/verification.json`。未生成真机安装包（orbis-qa 未连接），安装与视觉效果待用户验证。

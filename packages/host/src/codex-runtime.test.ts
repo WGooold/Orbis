@@ -188,6 +188,26 @@ describe("Codex CLI/Desktop child task integration", () => {
     expect(tasks(h)?.availability).toBe("unknown");
   });
 
+  // SC110: both transports must publish an interrupted child's confirmed idle
+  // state after full native history and the complete unloaded descendant registry.
+  it.each([false, true])("confirms unloaded interrupted children on refresh (desktop=%s)", async desktop => {
+    const turns = [{ id: "t", status: "completed", items: [
+      { id: "interrupt", type: "subAgentActivity", agentThreadId: "child", kind: "interrupted" },
+    ] }];
+    const h = makeHarness({ desktop, taskRegistry: [{ id: "child", parentThreadId: "th-1", status: { type: "notLoaded" } }], initialTurns: turns });
+    try {
+      await activate(h);
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+      h.resolveNext({ data: turns });
+      await vi.waitFor(() => expect(tasks(h)).toMatchObject({ availability: "ready", truncated: false, items: [{ id: "child", status: "idle" }] }));
+      h.notify("thread/status/changed", { threadId: "child", status: { type: "active", activeFlags: [] } });
+      expect(tasks(h)?.items[0]?.status).toBe("running");
+      h.notify("thread/status/changed", { threadId: "child", status: { type: "notLoaded" } });
+      expect(tasks(h)?.items[0]?.status).toBe("unknown");
+    } finally { h.server.onExit?.(0); }
+  });
+
   it.each([false, true])("projects native items and child source/status without creating sessions (desktop=%s)", async desktop => {
     const h = makeHarness({ desktop }); await activate(h);
     h.notify("item/completed", { threadId: "th-1", turnId: "main", item: collab("running") });

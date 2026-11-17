@@ -92,8 +92,9 @@ export class CodexAgentTasks {
 
   #threadStatus(id: string, value: unknown): AgentTask["status"] {
     const observed = threadStatus(value), previous = this.#inventory.items.find(item => item.id === id)?.status;
-    // Registry idle/notLoaded does not undo an explicit completed/errored/shutdown task.
-    return (this.#inventory.truncated || this.#inventory.availability === "ready") && (observed === "idle" || object(value).type === "notLoaded") && previous && ["completed", "failed", "killed"].includes(previous) ? previous : observed;
+    // SC110: unloading preserves confirmed idle (including interruption) and terminal
+    // lifecycles. Active/error facts and stale source epochs still revoke that evidence.
+    return (this.#inventory.truncated || this.#inventory.availability === "ready") && (observed === "idle" || object(value).type === "notLoaded") && previous && ["idle", "completed", "failed", "killed"].includes(previous) ? previous : observed;
   }
 
   /** Only a verified full descendant registry can clear the partial-inventory flag.
