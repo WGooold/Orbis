@@ -251,7 +251,7 @@ struct ChatComposerView: View, Equatable {
                                 .contentShape(Rectangle().inset(by: -6))
                         }.buttonStyle(.plain).accessibilityLabel(L10n.tr("会话权限：{0}", L10n.hostSummary(permissions.summary)))
                     }
-                }.padding(.horizontal, 20).padding(.top, 6)
+                }.frame(minHeight: 32).padding(.horizontal, 20).padding(.top, 6)
             }
             if let error = facts.inputError { Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(p.error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).accessibilityIdentifier("composer-error") }
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {

@@ -315,6 +315,10 @@ struct OrbisPageHost<Page: Hashable, Root: View, PageContent: View>: View {
     @ObservedObject var stack: OrbisPageStack<Page>
     /// The root is also unreachable while something outside the host covers it (the phone drawer).
     var rootCovered = false
+    /// Keep UIKit root containers carrying a system vertical bar anchored during transitions.
+    var shiftsRoot = true
+    /// Extend the root dimming scrim into safe areas only when no shared vertical bar sits above it.
+    var rootScrimIgnoresSafeArea = true
     /// Called with each phase a page moves through and nil once it rests (PERF-10).
     var onFlight: ((OrbisPageMotion.Phase?) -> Void)? = nil
     @ViewBuilder let root: () -> Root
@@ -328,13 +332,17 @@ struct OrbisPageHost<Page: Hashable, Root: View, PageContent: View>: View {
             root()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .modifier(OrbisPageLayer(stack: stack, id: nil, aboveID: entries.first?.id,
-                                         isTop: entries.isEmpty, unreachable: !entries.isEmpty || rootCovered))
+                                         isTop: entries.isEmpty, unreachable: !entries.isEmpty || rootCovered,
+                                         allowsSourceShift: shiftsRoot,
+                                         scrimIgnoresSafeArea: rootScrimIgnoresSafeArea))
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                 let isTop = index == entries.count - 1
                 page(entry.page)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .modifier(OrbisPageLayer(stack: stack, id: entry.id, aboveID: isTop ? nil : entries[index + 1].id,
-                                             isTop: isTop, unreachable: !isTop))
+                                             isTop: isTop, unreachable: !isTop,
+                                             allowsSourceShift: true,
+                                             scrimIgnoresSafeArea: true))
             }
         }
         // A source moving to the leading side must not slide under the iPad directory column.
@@ -369,6 +377,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
     let isTop: Bool
     /// Not the top page, or covered by something outside the host.
     let unreachable: Bool
+    let allowsSourceShift: Bool
+    let scrimIgnoresSafeArea: Bool
     @State private var horizontalDrag: Bool?
     @State private var suppressTaps = false
     /// Read only by the swipe; a selection inside the page claims it without re-rendering the page.
@@ -391,7 +401,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
             .modifier(PageExpansionClip(motion: motion, moving: moving))
             .modifier(PageSlideMotion(motion: motion, moving: moving))
             .modifier(PageSourceMotion(motion: motion, source: source, isTop: isTop,
-                                       shifts: !reduceMotion && !(source && motion.phase == .expanding),
+                                       shifts: allowsSourceShift && !reduceMotion && !(source && motion.phase == .expanding),
+                                       scrimIgnoresSafeArea: scrimIgnoresSafeArea,
                                        scrim: OrbisPalette(scheme).scrim))
             .allowsHitTesting(isTop && !busy)
             .orbisAccessibilitySubtree(hidden: unreachable)
@@ -477,13 +488,15 @@ private struct PageSourceMotion: ViewModifier {
     let source: Bool
     let isTop: Bool
     let shifts: Bool
+    let scrimIgnoresSafeArea: Bool
     let scrim: Color
 
     func body(content: Content) -> some View {
         // A covered layer rests at the fully covered state, so starting a return from it is
         // continuous, and handing it the top after a return changes no pixel.
         let reveal: CGFloat = source ? motion.sourceProgress : (isTop ? 1 : 0)
-        content.modifier(PageSourceShade(reveal: reveal, shifts: shifts, scrim: scrim))
+        content.modifier(PageSourceShade(reveal: reveal, shifts: shifts,
+                                         scrimIgnoresSafeArea: scrimIgnoresSafeArea, scrim: scrim))
     }
 }
 
@@ -505,6 +518,7 @@ private struct PageSlideEffect: GeometryEffect {
 private struct PageSourceShade: ViewModifier, Animatable {
     var reveal: CGFloat
     let shifts: Bool
+    let scrimIgnoresSafeArea: Bool
     let scrim: Color
     var animatableData: CGFloat {
         get { reveal }
@@ -514,8 +528,13 @@ private struct PageSourceShade: ViewModifier, Animatable {
         let covered = 1 - min(1, max(0, reveal))
         content
             .overlay {
-                scrim.opacity(0.34 * covered).ignoresSafeArea()
-                    .allowsHitTesting(false).accessibilityHidden(true)
+                if scrimIgnoresSafeArea {
+                    scrim.opacity(0.34 * covered).ignoresSafeArea()
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                } else {
+                    scrim.opacity(0.34 * covered)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
             }
             .offset(x: shifts ? -24 * covered : 0)
     }

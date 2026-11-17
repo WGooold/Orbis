@@ -270,6 +270,44 @@ final class OrbisUITests: XCTestCase {
         capture("iphone-duo-fold-division-draft", app: app)
     }
 
+    // FOLD-02: unfolded Duo in portrait must not mount a top persistent directory panel,
+    // leaving the directory in the slide-over drawer and restoring the side panel in landscape.
+    func testIPhoneDuoExpandedPortraitOmitsPersistentDirectoryAndUsesDrawer() {
+        XCUIDevice.shared.orientation = .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let window = app.windows.firstMatch
+        let directory = app.descendants(matching: .any)["persistent-session-directory"].firstMatch
+        let list = app.scrollViews["home-session-list"]
+        XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 8))
+        let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            window.frame.height > window.frame.width
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 5), .completed)
+        XCTAssertGreaterThan(window.frame.width, 600, "Duo must be testing its inner dual-screen canvas")
+        XCTAssertFalse(directory.exists, "Expanded Duo portrait must not show the top directory panel")
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        XCTAssertLessThan(list.frame.minY, window.frame.height * 0.35)
+
+        app.buttons["打开会话目录"].tap()
+        let drawerList = app.descendants(matching: .any)["drawer-session-list"].firstMatch
+        XCTAssertTrue(drawerList.waitForExistence(timeout: 4))
+        app.buttons["关闭会话目录"].tap()
+        XCTAssertTrue(drawerList.waitForNonExistence(timeout: 4))
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            window.frame.width > window.frame.height
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [landscape], timeout: 5), .completed)
+        XCTAssertTrue(directory.waitForExistence(timeout: 5))
+
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertEqual(XCTWaiter.wait(for: [portrait], timeout: 5), .completed)
+        XCTAssertTrue(directory.waitForNonExistence(timeout: 5))
+        capture("iphone-duo-expanded-portrait", app: app)
+    }
+
     // FOLD-07: synthetic posture keeps this independent of the simulator hinge
     // menu. Run on the inner Duo canvas; landscape must retain both side panes.
     func testIPhoneDuoPartialLandscapeKeepsDirectoryAndDraftOnRight() {
@@ -382,6 +420,38 @@ final class OrbisUITests: XCTestCase {
         XCTAssertLessThanOrEqual(surface.frame.maxY, app.descendants(matching: .any)["chat-composer"].firstMatch.frame.minY)
         XCTAssertLessThan(chatTranscript(app).frame.maxY, directory.frame.minY)
         capture("fold-reading-blank-operation-area", app: app)
+    }
+
+    // FOLD-06: the closed fixture must expose a system tab bar, not a custom
+    // header row. Actual Duo vertical placement remains a device posture check.
+    func testClosedFoldUsesSystemTabBarAndKeepsPageActions() {
+        let app = launch("home", arguments: ["--preview-fold-closed", "--preview-reduce-motion"])
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            let tabBar = app.tabBars.firstMatch
+            XCTAssertTrue(tabBar.waitForExistence(timeout: 8))
+            XCTAssertFalse(app.descendants(matching: .any)["root-header-navigation"].firstMatch.exists)
+            XCTAssertFalse(app.descendants(matching: .any)["root-bottom-navigation"].firstMatch.exists)
+            for tab in ["聊天", "供应商", "设置"] {
+                let button = tabBar.buttons[tab]
+                XCTAssertTrue(button.isHittable)
+                XCTAssertTrue(tabBar.frame.contains(button.frame))
+            }
+            for action in ["home-downloads", "home-new-session"] {
+                let button = app.buttons[action]
+                XCTAssertTrue(button.isHittable)
+            }
+            tabBar.buttons["供应商"].tap()
+            XCTAssertTrue(tabBar.buttons["供应商"].isSelected)
+            XCTAssertTrue(app.buttons["刷新供应商"].isHittable)
+            tabBar.buttons["设置"].tap()
+            XCTAssertTrue(app.buttons["settings-connection"].waitForExistence(timeout: 4))
+            XCTAssertTrue(tabBar.buttons["设置"].isSelected)
+            tabBar.buttons["聊天"].tap()
+            XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 4))
+            capture(orientation == .portrait ? "closed-fold-root-navigation-portrait" : "closed-fold-root-navigation-landscape", app: app)
+        }
     }
 
     // The desktop Codex backend remains reachable from the four-Agent draft.
@@ -4156,6 +4226,44 @@ final class OrbisUITests: XCTestCase {
         refresh.tap()
         XCTAssertTrue(app.staticTexts["81"].waitForExistence(timeout: 8))
         XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+    }
+
+    // FOLD-03: the closed landscape screen keeps quota beside the dial and makes
+    // the lower action/count reachable by scrolling without moving either dial.
+    func testProviderClosedLandscapePlacesQuotaOnRightAndScrollsToBottom() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launch("providers", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let window = app.windows.firstMatch
+        let controls = app.scrollViews["provider-controls-scroll"]
+        XCTAssertTrue(controls.waitForExistence(timeout: 8))
+        XCTAssertLessThan(window.frame.height, 600, "Run this case on the closed Duo or a phone in landscape")
+        let quota = app.descendants(matching: .any)["provider-quota-five_hour"].firstMatch
+        let refresh = app.buttons["provider-quota-refresh"]
+        XCTAssertTrue(quota.waitForExistence(timeout: 4))
+        XCTAssertGreaterThan(quota.frame.minX, window.frame.midX)
+        XCTAssertFalse(app.descendants(matching: .any)["persistent-session-directory"].firstMatch.exists)
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+        refresh.tap()
+        XCTAssertTrue(app.staticTexts["82"].waitForExistence(timeout: 8))
+
+        let action = app.buttons["provider-action-official"]
+        let position = app.staticTexts["provider-position"]
+        let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
+        let selected = profile.value as? String
+        for _ in 0..<4 where !position.isHittable { controls.swipeUp() }
+        XCTAssertTrue(position.isHittable, "The bottom count must be reachable inside the right column")
+        XCTAssertGreaterThanOrEqual(position.frame.minY, controls.frame.minY)
+        XCTAssertLessThanOrEqual(position.frame.maxY, controls.frame.maxY)
+        XCTAssertTrue(action.exists)
+        XCTAssertFalse(action.isEnabled)
+        XCTAssertEqual(profile.value as? String, selected, "Scrolling controls must not browse the dial")
+        capture("provider-closed-landscape-right-controls", app: app)
+
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(controls.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["provider-quota-refresh"].isHittable)
+        XCTAssertEqual(app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch.value as? String, selected)
     }
 
     // S28 / SC48 and S29 / SC49: verify active protocol reporting and all three saved modes.

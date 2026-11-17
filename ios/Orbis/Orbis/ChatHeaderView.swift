@@ -144,6 +144,7 @@ struct ChatHeaderView: View, Equatable {
             OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
                 .downloadFlightTarget(downloadFlight).accessibilityIdentifier("chat-downloads")
         }
+        .accessibilityElement(children: .contain).accessibilityIdentifier("chat-navigation-bar")
         .orbisBottomSheet(isPresented: $runtimeInfoOpen) {
             SessionModelConfigurationView(target: target, fallbackRuntime: actions.runtime ?? fallbackRuntime).orbisSheet([.medium, .large])
         }

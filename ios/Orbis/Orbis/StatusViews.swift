@@ -8,6 +8,7 @@ struct ConnectionStatusView: View {
     // re-render it on every defaults write. Choices are stored to defaults directly.
     @Environment(\.orbisAppearance) private var appearance
     @Environment(\.orbisColorMode) private var colorMode
+    @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
     @EnvironmentObject private var overlay: OrbisOverlay
     @State private var connectionOpen = false
     @State private var languageOpen = false
@@ -16,10 +17,14 @@ struct ConnectionStatusView: View {
     var root = false
     let onBack: () -> Void
     var body: some View {
+        let palette = OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: appearance) ?? .mist)
+        let useSystemBar = root && systemVerticalBar
         VStack(spacing: 0) {
-            OrbisHeader {
-                if !root { OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack) }
-            } title: { Text(L10n.tr("设置")).font(.orbisTitle()) } trailing: { EmptyView() }
+            if !useSystemBar {
+                OrbisHeader {
+                    if !root { OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack) }
+                } title: { Text(L10n.tr("设置")).font(.orbisTitle()) } trailing: { EmptyView() }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     StatusSection(title: L10n.tr("连接")) {
@@ -59,7 +64,8 @@ struct ConnectionStatusView: View {
                     }
                 }.padding(.horizontal, 20).padding(.vertical, 16)
             }.accessibilityIdentifier("settings-page")
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea())
+        }.background(palette.base.ignoresSafeArea())
+            .orbisRootSystemToolbar(enabled: useSystemBar, title: L10n.tr("设置"), titleColor: palette.text)
             .orbisBottomSheet(isPresented: $connectionOpen) { connectionSheet.orbisSheet([.medium, .large]) }
             .orbisBottomSheet(isPresented: $languageOpen) {
                 VStack(spacing: 16) {
@@ -257,6 +263,8 @@ struct AgentProvidersView: View {
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var appearance
+    @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
+    @Environment(\.orbisSystemRootActions) private var systemRootActions
     @State private var selectedId: String?
     @State private var moving = false
     var root = false
@@ -264,14 +272,18 @@ struct AgentProvidersView: View {
     private let kinds = ["codex", "claude", "dsh", "pi"]
     private var selectedIndex: Int { host.providers.firstIndex { $0.id == selectedId } ?? host.providers.firstIndex(where: \.enabled) ?? 0 }
     private var provider: AgentProvider? { host.providers.indices.contains(selectedIndex) ? host.providers[selectedIndex] : nil }
-    private var palette: OrbisPalette { OrbisPalette(scheme) }
+    private var palette: OrbisPalette { OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: appearance) ?? .mist) }
     var body: some View {
+        let useSystemBar = root && systemVerticalBar
+        let refreshDisabled = host.providersLoading || host.changingProvider || !host.connected
         VStack(spacing: 0) {
-            OrbisHeader {
-                if !root { OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack) }
-            } title: { Text(L10n.tr("供应商")).font(.orbisTitle()) } trailing: {
-                OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新供应商")) { host.loadProviders(host.providerKind) }
-                    .disabled(host.providersLoading || host.changingProvider || !host.connected)
+            if !useSystemBar {
+                OrbisHeader {
+                    if !root { OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack) }
+                } title: { Text(L10n.tr("供应商")).font(.orbisTitle()) } trailing: {
+                    OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新供应商")) { host.loadProviders(host.providerKind) }
+                        .disabled(refreshDisabled)
+                }
             }
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
@@ -279,36 +291,69 @@ struct AgentProvidersView: View {
                 Text(L10n.tr("{0} 个配置", host.providers.count))
                     .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
-            ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
-                onKind: { kind in selectedId = nil; overlay.dismissDialog(); host.loadProviders(kind) },
-                onSelect: { index in if host.providers.indices.contains(index) { selectedId = host.providers[index].id } }, onMoving: { moving = $0 })
-                .frame(minHeight: 300, maxHeight: .infinity)
-                .overlay {
-                    if host.providersLoading { ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")) }
-                    else if let problem = host.providerCatalogProblem { OrbisNotice(text: problem, error: host.connected).padding(20) }
-                    else if host.providers.isEmpty { Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(20) }
+            GeometryReader { geometry in
+                // FOLD-03: a closed phone in landscape has room beside the dial, but not below it.
+                if geometry.size.width >= 560 && geometry.size.height < 500 {
+                    HStack(spacing: 0) {
+                        providerDial.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ScrollView {
+                            providerControls
+                        }
+                        .frame(width: min(340, geometry.size.width * 0.44))
+                        .accessibilityIdentifier("provider-controls-scroll")
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        providerDial.frame(minHeight: 300, maxHeight: .infinity)
+                        providerControls
+                    }
                 }
-            VStack(spacing: 16) {
-                quotaPanel.frame(height: 124)
-                if let provider {
-                    let active = provider.enabled && !provider.additive
-                    OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) {
-                        apply(provider)
-                    }.disabled(active || moving || host.providersLoading || !host.canChangeProvider)
-                        .accessibilityIdentifier("provider-action-" + provider.id)
-                } else { OrbisActionButton(title: L10n.tr("正在使用")) {}.disabled(true) }
-                HStack {
-                    Spacer()
-                    Text("\(host.providers.isEmpty ? 0 : selectedIndex + 1) / \(host.providers.count)")
-                        .accessibilityLabel(L10n.tr("配置 {0} / {1}", host.providers.isEmpty ? 0 : selectedIndex + 1, host.providers.count))
-                }.font(.orbisCaption()).foregroundStyle(palette.secondary)
-                if let notice = host.providerNotice { OrbisNotice(text: notice) }
-            }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
+            }
         }.background(palette.base.ignoresSafeArea())
+            .orbisRootSystemToolbar(
+                enabled: useSystemBar,
+                showActions: systemRootActions,
+                title: L10n.tr("供应商"),
+                titleColor: palette.text,
+                trailingLabel: L10n.tr("刷新供应商"),
+                trailingSymbol: "arrow.clockwise",
+                trailingDisabled: refreshDisabled,
+                trailingAction: { host.loadProviders(host.providerKind) }
+            )
             .onAppear { host.loadProviders(host.providerKind) }
             .onChange(of: host.providerKind) { _, _ in selectedId = nil }
             .onChange(of: host.hostKey) { _, _ in selectedId = nil; moving = false; overlay.dismissDialog() }
             .onChange(of: host.connected) { _, connected in if !connected { moving = false; overlay.dismissDialog() } }
+    }
+    private var providerDial: some View {
+        ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
+            onKind: { kind in selectedId = nil; overlay.dismissDialog(); host.loadProviders(kind) },
+            onSelect: { index in if host.providers.indices.contains(index) { selectedId = host.providers[index].id } }, onMoving: { moving = $0 })
+            .overlay {
+                if host.providersLoading { ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")) }
+                else if let problem = host.providerCatalogProblem { OrbisNotice(text: problem, error: host.connected).padding(20) }
+                else if host.providers.isEmpty { Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(20) }
+            }
+            .accessibilityIdentifier("provider-dial-area")
+    }
+    private var providerControls: some View {
+        VStack(spacing: 16) {
+            quotaPanel.frame(height: 124)
+            if let provider {
+                let active = provider.enabled && !provider.additive
+                OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) {
+                    apply(provider)
+                }.disabled(active || moving || host.providersLoading || !host.canChangeProvider)
+                    .accessibilityIdentifier("provider-action-" + provider.id)
+            } else { OrbisActionButton(title: L10n.tr("正在使用")) {}.disabled(true) }
+            HStack {
+                Spacer()
+                Text("\(host.providers.isEmpty ? 0 : selectedIndex + 1) / \(host.providers.count)")
+                    .accessibilityLabel(L10n.tr("配置 {0} / {1}", host.providers.isEmpty ? 0 : selectedIndex + 1, host.providers.count))
+                    .accessibilityIdentifier("provider-position")
+            }.font(.orbisCaption()).foregroundStyle(palette.secondary)
+            if let notice = host.providerNotice { OrbisNotice(text: notice) }
+        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
     }
     private var quotaPanel: some View {
         Group {

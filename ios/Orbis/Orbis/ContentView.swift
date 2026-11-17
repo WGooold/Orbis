@@ -31,6 +31,8 @@ private struct NavigationRoot: View, Equatable {
     @State private var rootOffset: CGFloat = 0
     @State private var rootTransition = 0
     @State private var persistentDirectory = false
+    @State private var foldClosed = false
+    @State private var hasVerticalEdge = false
     @State private var drawerOpen = false
     @State private var directoryState = SessionDirectoryState()
     @State private var newSessionOpen = false
@@ -66,6 +68,9 @@ private struct NavigationRoot: View, Equatable {
         ZStack {
             if facts.pairings.isEmpty {
                 PairingEntryView(onCancel: nil, onCode: store.pair)
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(OrbisPalette(scheme).base.ignoresSafeArea())
             } else {
                 // The root and every full page stay mounted under the page above them, so a
                 // return reveals the real source (ADR-0054 / M14).
@@ -73,6 +78,8 @@ private struct NavigationRoot: View, Equatable {
                 // transition's frames (PERF-10). Each phase re-arms the safety limit; a finger drag
                 // always ends in a release or cancel, so it may hold longer.
                 OrbisPageHost(stack: navigation, rootCovered: drawerOpen && !persistentDirectory,
+                              shiftsRoot: !usesSystemVerticalBar,
+                              rootScrimIgnoresSafeArea: !hasVerticalEdge,
                               onFlight: { [store] phase in
                                   if phase == .dragging { LiveActivityCoordinator.shared.cancelQueuedOpen() }
                                   store.holdScreenPublications(phase != nil, limit: phase == .dragging ? .seconds(5) : .seconds(1))
@@ -96,13 +103,23 @@ private struct NavigationRoot: View, Equatable {
         .tint(OrbisPalette(scheme).accent)
         .foregroundStyle(OrbisPalette(scheme).text)
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .environment(\.orbisSystemVerticalBar, usesSystemVerticalBar)
+        .environment(\.orbisSystemRootActions, usesSystemVerticalBar && (hasVerticalEdge || (navigation.pages.isEmpty && (!drawerOpen || persistentDirectory))))
+        .environment(\.orbisPersistentDirectory, persistentDirectory)
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: visualStyle)
         .modifier(SessionDrawerModifier(isOpen: $drawerOpen,
                                         hasHost: !facts.pairings.isEmpty,
                                         edgeSwipeEnabled: navigation.pages.isEmpty && rootTab == .chat && !facts.pairings.isEmpty && !facts.pairing,
-                                        onPersistentChange: { persistentDirectory = $0 }) {
+                                        onPersistentChange: { persistentDirectory = $0 },
+                                        onClosedChange: { foldClosed = $0 }) {
             drawer
         })
+        .orbisWindowBackdrop(color: resolvedBackdropColor)
+        .modifier(VerticalBarObserver(hasVerticalEdge: $hasVerticalEdge))
+    }
+
+    private var resolvedBackdropColor: UIColor {
+        UIColor(OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: visualStyle) ?? .mist).base)
     }
 
     private var rootWithNotices: some View {
@@ -305,21 +322,30 @@ private struct NavigationRoot: View, Equatable {
         #endif
     }
 
-    /// Keep root views mounted so changing tabs preserves scroll positions and selections.
+    /// Posture changes update bar visibility within the same tab container.
+    private var usesSystemVerticalBar: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-fold-closed") { return true }
+        #endif
+        return foldClosed || hasVerticalEdge
+    }
+
     private var rootPages: some View {
         VStack(spacing: 0) {
-            // Mounted inactive pages must not contribute their minimum height when the
-            // keyboard shrinks the viewport. The home header stays above its scroll view.
-            GeometryReader { viewport in
-                ZStack {
-                    rootContent(.chat) { home }
-                    rootContent(.providers) { AgentProvidersView(root: true, onBack: { selectRoot(.chat) }) }
-                    rootContent(.settings) { ConnectionStatusView(root: true, onBack: { selectRoot(.chat) }) }
-                }.frame(width: viewport.size.width, height: viewport.size.height, alignment: .top)
-                    .opacity(rootOpacity).offset(y: rootOffset)
-                    .clipped()
+            // FOLD-06: system containers own the shared vertical sidebar on Duo;
+            // keep TabView unboxed so UIKit and SwiftUI backgrounds bleed through safe areas.
+            TabView(selection: Binding(get: { displayedRoot }, set: { tab in
+                if !navigation.pages.isEmpty { navigation.replace(with: []) }
+                guard tab != rootTab else { return }
+                OrbisHaptics.selectionChanged(); selectRoot(tab)
+            })) {
+                rootContent(.chat) { home }
+                rootContent(.providers) { AgentProvidersView(root: true, onBack: { selectRoot(.chat) }) }
+                rootContent(.settings) { ConnectionStatusView(root: true, onBack: { selectRoot(.chat) }) }
             }
-            if !homeSelecting { HStack(spacing: 12) {
+            .orbisConfigureVerticalTabBar()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !homeSelecting && !usesSystemVerticalBar { HStack(spacing: 12) {
                 ForEach(RootTab.allCases, id: \.self) { tab in
                     OrbisMotionButton {
                         guard tab != rootTab else { return }
@@ -335,8 +361,10 @@ private struct NavigationRoot: View, Equatable {
                         .accessibilityIdentifier("root-tab-" + tab.rawValue)
                         .accessibilityAddTraits(rootTab == tab ? .isSelected : [])
                 }
-            }.padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12) }
-        }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+                .frame(maxWidth: 720).frame(maxWidth: .infinity)
+                .accessibilityIdentifier("root-bottom-navigation") }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(OrbisPalette(scheme).base.ignoresSafeArea())
     }
 
@@ -358,17 +386,35 @@ private struct NavigationRoot: View, Equatable {
 
     private func rootContent<Content: View>(_ tab: RootTab, @ViewBuilder content: () -> Content) -> some View {
         let active = displayedRoot == tab
+        // On real Duo (`hasVerticalEdge == true`), keep the shared vertical sidebar and
+        // navigation bar visibility constant across pushes so the system bar and status
+        // bar never switch axis or reflow safe areas mid-transition.
+        let tabBarVisible = usesSystemVerticalBar && (hasVerticalEdge || (!homeSelecting && navigation.pages.isEmpty && !drawerOpen))
+        let navBarVisible = usesSystemVerticalBar
         // The page host already withdraws a covered root; a tab only narrows that further.
-        return content().modifier(RootTabVisibility(active: active)).opacity(active ? 1 : 0)
-            .allowsHitTesting(active && rootOpacity == 1)
-            .orbisAccessibilitySubtree(hidden: !active)
+        return NavigationStack {
+            content()
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(OrbisPalette(scheme).base.ignoresSafeArea())
+                .orbisWindowBackdrop(color: resolvedBackdropColor)
+                .orbisSystemNavigationBarChrome(visible: navBarVisible)
+        }
+        .modifier(RootTabVisibility(active: active))
+        .opacity(active ? 1 : 0)
+        .opacity(rootOpacity).offset(y: rootOffset)
+        .allowsHitTesting(active && rootOpacity == 1)
+        .orbisAccessibilitySubtree(hidden: !active)
+        .tabItem { Label(tab.title, systemImage: tab.symbol) }
+        .tag(tab)
+        .orbisSystemTabBarVisible(tabBarVisible)
     }
 
     private func switchRoot(_ next: RootTab) {
         overlay.dismissMenu(); setDrawer(false); draftNotice = false
         rootTransition += 1
         let token = rootTransition
-        if reduceMotion { displayedRoot = next; rootOpacity = 1; rootOffset = 0; return }
+        if reduceMotion || usesSystemVerticalBar { displayedRoot = next; rootOpacity = 1; rootOffset = 0; return }
         withAnimation(.timingCurve(0.4, 0, 1, 1, duration: 0.09)) { rootOpacity = 0 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
             guard token == rootTransition else { return }
@@ -386,8 +432,16 @@ private struct NavigationRoot: View, Equatable {
         HomeView(store: store, updates: store.homeUpdates, pageCovered: !navigation.pages.isEmpty,
                  draftOpen: newSessionOpen, draftCwd: newSessionCwd, draftCloseRequest: draftCloseRequest, onDraft: {
             LiveActivityCoordinator.shared.cancelQueuedOpen()
-            if newSessionOpen { draftCloseRequest += 1 }
-            else { draftNotice = false; withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true } }
+            if !navigation.pages.isEmpty {
+                navigation.replace(with: [])
+                selectRoot(.chat)
+                draftNotice = false
+                withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+            } else if newSessionOpen {
+                draftCloseRequest += 1
+            } else {
+                draftNotice = false; withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+            }
         }, onDraftCancelled: { retained in
             withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = false }
             if retained { store.presentFeedback(.toast, L10n.tr("草稿已保留"), action: .restoreDraft) }
@@ -403,8 +457,10 @@ private struct NavigationRoot: View, Equatable {
             } else {
                 newSessionOpen = false
             }
-        }, onSelection: { homeSelecting = $0 }, onDirectory: { setDrawer(true) }, onSettings: { selectRoot(.settings) },
-                 onDownloads: { push(.downloads) },
+        }, onSelection: { homeSelecting = $0 },
+                 onDirectory: { if navigation.pages.isEmpty { setDrawer(true) } else { setDrawer(!drawerOpen) } },
+                 onSettings: { selectRoot(.settings) },
+                 onDownloads: { if navigation.pages.last != .downloads { push(.downloads) } },
                  onOpenRuntime: { hostId, runtime in
                      store.selectHost(hostId)
                      openRuntime(runtime)
@@ -490,12 +546,14 @@ extension EnvironmentValues {
 private struct FoldHingeObserver: ViewModifier {
     @Binding var partiallyOpen: Bool
     @Binding var hasHinge: Bool
+    var onClosedChange: (Bool) -> Void = { _ in }
     func body(content: Content) -> some View {
         #if compiler(>=6.4)
         if #available(iOS 27.1, *) {
             content.onHingeChange { _, context in
                 hasHinge = hasHinge || context.hinge != nil
                 partiallyOpen = context.hinge?.status == .partiallyOpen
+                onClosedChange(context.hinge?.status == .closed)
             }
         } else { content }
         #else
@@ -503,6 +561,32 @@ private struct FoldHingeObserver: ViewModifier {
         #endif
     }
 }
+
+private struct VerticalBarObserver: ViewModifier {
+    @Binding var hasVerticalEdge: Bool
+    func body(content: Content) -> some View {
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            content.modifier(VerticalBarEdgeReader(hasVerticalEdge: $hasVerticalEdge))
+        } else { content }
+        #else
+        content
+        #endif
+    }
+}
+
+#if compiler(>=6.4)
+@available(iOS 27.1, *)
+private struct VerticalBarEdgeReader: ViewModifier {
+    @Environment(\.toolbarVerticalEdge) private var edge
+    @Binding var hasVerticalEdge: Bool
+    func body(content: Content) -> some View {
+        content.onChange(of: edge != nil, initial: true) { _, active in
+            if hasVerticalEdge != active { hasVerticalEdge = active }
+        }
+    }
+}
+#endif
 
 private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -513,6 +597,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
     let hasHost: Bool
     let edgeSwipeEnabled: Bool
     var onPersistentChange: (Bool) -> Void = { _ in }
+    var onClosedChange: (Bool) -> Void = { _ in }
     @ViewBuilder let drawer: Drawer
     /// 拖动中抽屉相对完全打开位置的水平偏移，范围 [-width, 0]；nil 表示没有在拖动。
     @State private var offset: CGFloat?
@@ -552,7 +637,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
         // FOLD-04: the shell owns the base behind centered panes, hinge gaps and
         // outer safe areas; pane-local backgrounds leave these regions transparent.
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
-        .modifier(FoldHingeObserver(partiallyOpen: $partiallyOpen, hasHinge: $hasHinge))
+        .modifier(FoldHingeObserver(partiallyOpen: $partiallyOpen, hasHinge: $hasHinge, onClosedChange: onClosedChange))
     }
 
     private func drawerOverlay(persistent: Bool, width: CGFloat, containerWidth: CGFloat) -> some View {
@@ -615,8 +700,13 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                         .frame(width: layout.directory.width)
                 }
             }
-            .frame(width: layout.content.minX, height: layout.content.height, alignment: .leading)
-            .clipped()
+            .frame(width: layout.showsDirectory ? layout.content.minX : 0, alignment: .leading)
+            .frame(maxHeight: .infinity)
+            .background {
+                if layout.showsDirectory {
+                    OrbisPalette(scheme).base.ignoresSafeArea(edges: [.top, .bottom, .leading])
+                }
+            }
             content.disabled(suppressTaps)
                 .environment(\.orbisFoldReading, layout.reading)
                 .environment(\.orbisOpenSessionDirectory, {
@@ -624,9 +714,9 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                 })
                 .simultaneousGesture(edgeSwipeEnabled && !isOpen && !layout.showsDirectory
                     ? openGesture(containerWidth: containerWidth, width: drawerWidth) : nil)
-                .frame(width: layout.content.width, height: layout.content.height)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: containerWidth, height: layout.content.height, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func drawerDivision(_ geometry: GeometryProxy) -> CGRect? {
@@ -645,7 +735,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
 
     private func directoryPanel(width: CGFloat) -> some View {
         drawer.frame(width: width).frame(maxHeight: .infinity)
-            .orbisNested().background(OrbisPalette(scheme).base)
+            .orbisNested().background(OrbisPalette(scheme).base.ignoresSafeArea(edges: [.top, .bottom, .leading]))
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("persistent-session-directory")
     }
@@ -726,6 +816,9 @@ struct HomeView: View, Equatable {
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
+    @Environment(\.orbisSystemRootActions) private var systemRootActions
+    @Environment(\.orbisPersistentDirectory) private var persistentDirectory
     @State private var selectedRuntimeIds: Set<String> = []
     @State private var swipeTranslations: [String: CGFloat] = [:]
     private struct ExitingCard {
@@ -759,40 +852,48 @@ struct HomeView: View, Equatable {
         var contentOrigin: CGPoint = .zero
     }
 
+    private var homeHeader: some View {
+        let palette = OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: visualStyle) ?? .mist)
+        return OrbisHeader {
+            OrbisIconButton(symbol: selecting ? "xmark" : "line.3.horizontal",
+                            label: selecting ? L10n.tr("退出多选") : L10n.tr("打开会话目录"), morphFrom: "line.3.horizontal") {
+                if selecting { selectedRuntimeIds = [] } else { onDirectory() }
+            }
+        } title: {
+            if selecting {
+                OrbisMotionText(L10n.tr("已选择 {0} 项", selectedRuntimeIds.count)).font(.orbisTitle())
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Orbis").font(.orbisTitle())
+                        .foregroundStyle(palette.secondary)
+                        .shadow(color: palette.light, radius: 0, x: 1, y: 1)
+                    Text("Easy Agents Everywhere").font(.orbisCaption()).tracking(0.4)
+                        .foregroundStyle(palette.secondary)
+                        .lineLimit(1)
+                }
+            }
+        } trailing: {
+            OrbisSelectionToolbar(selecting: selecting) { progress in
+                HStack(spacing: 8) {
+                    OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
+                        .offset(x: 24 * progress).accessibilityIdentifier("home-downloads")
+                    OrbisIconButton(symbol: draftOpen ? "xmark" : "plus", label: draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"), morphFrom: "plus", action: onDraft)
+                        .offset(x: -24 * progress).accessibilityIdentifier("home-new-session")
+                }
+            } selected: {
+                Button(L10n.tr("关闭")) { closeSelectedRuntimes() }
+                    .font(.orbisLabel(.semibold)).foregroundStyle(palette.error)
+                    .buttonStyle(NeuButtonStyle(padding: 12))
+                    .accessibilityLabel(L10n.tr("关闭选中会话")).disabled(store.connection != .secured)
+            }
+        }
+    }
+
     var body: some View {
+        let palette = OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: visualStyle) ?? .mist)
         VStack(spacing: 0) {
-            OrbisHeader {
-                OrbisIconButton(symbol: selecting ? "xmark" : "line.3.horizontal",
-                                label: selecting ? L10n.tr("退出多选") : L10n.tr("打开会话目录"), morphFrom: "line.3.horizontal") {
-                    if selecting { selectedRuntimeIds = [] } else { onDirectory() }
-                }
-            } title: {
-                if selecting {
-                    OrbisMotionText(L10n.tr("已选择 {0} 项", selectedRuntimeIds.count)).font(.orbisTitle())
-                } else {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Orbis").font(.orbisTitle())
-                            .foregroundStyle(OrbisPalette(scheme).secondary)
-                            .shadow(color: OrbisPalette(scheme).light, radius: 0, x: 1, y: 1)
-                        Text("Easy Agents Everywhere").font(.orbisCaption()).tracking(0.4)
-                            .foregroundStyle(OrbisPalette(scheme).secondary)
-                            .lineLimit(1)
-                    }
-                }
-            } trailing: {
-                OrbisSelectionToolbar(selecting: selecting) { progress in
-                    HStack(spacing: 8) {
-                        OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
-                            .offset(x: 24 * progress).accessibilityIdentifier("home-downloads")
-                        OrbisIconButton(symbol: draftOpen ? "xmark" : "plus", label: draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"), morphFrom: "plus", action: onDraft)
-                            .offset(x: -24 * progress).accessibilityIdentifier("home-new-session")
-                    }
-                } selected: {
-                    Button(L10n.tr("关闭")) { closeSelectedRuntimes() }
-                        .font(.orbisLabel(.semibold)).foregroundStyle(OrbisPalette(scheme).error)
-                        .buttonStyle(NeuButtonStyle(padding: 12))
-                        .accessibilityLabel(L10n.tr("关闭选中会话")).disabled(store.connection != .secured)
-                }
+            if !systemVerticalBar {
+                homeHeader
             }
             // One fixed row: which computer this page shows, how it is connected and, once the
             // list is published, whether it is still syncing. Retry joins the row without moving the cards.
@@ -803,14 +904,29 @@ struct HomeView: View, Equatable {
                 ConnectionPill(connection: store.connection, path: store.activePath, sync: backgroundSync)
                     .accessibilityIdentifier("home-connection-pill")
                 if case .failed(let error) = backgroundSync {
-                    OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: OrbisPalette(scheme).error,
+                    OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: palette.error,
                                     compact: true, action: store.refresh)
                         .accessibilityHint(error)
                 }
             }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
             homeSessionList
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .background(palette.base.ignoresSafeArea())
+            .modifier(HomeSystemToolbarModifier(
+                enabled: systemVerticalBar,
+                showActions: systemRootActions,
+                selecting: selecting,
+                selectedCount: selectedRuntimeIds.count,
+                persistentDirectory: persistentDirectory,
+                draftOpen: draftOpen,
+                canCloseSelected: store.connection == .secured,
+                palette: palette,
+                onExitSelection: { selectedRuntimeIds = [] },
+                onDirectory: onDirectory,
+                onDownloads: onDownloads,
+                onDraft: onDraft,
+                onCloseSelected: closeSelectedRuntimes
+            ))
             .onChange(of: store.selectedHostId) { _, _ in
                 selectedRuntimeIds = []
                 exitingCards = [:]
@@ -1301,4 +1417,135 @@ func connectionTitle(_ state: ConnectionState) -> String {
 struct FeedbackComposerAnchorKey: PreferenceKey {
     static var defaultValue: Anchor<CGRect>? { nil }
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) { value = nextValue() ?? value }
+}
+
+private struct HomeSystemToolbarModifier: ViewModifier {
+    let enabled: Bool
+    let showActions: Bool
+    let selecting: Bool
+    let selectedCount: Int
+    let persistentDirectory: Bool
+    let draftOpen: Bool
+    let canCloseSelected: Bool
+    let palette: OrbisPalette
+    let onExitSelection: () -> Void
+    let onDirectory: () -> Void
+    let onDownloads: () -> Void
+    let onDraft: () -> Void
+    let onCloseSelected: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            #if compiler(>=6.4)
+            if #available(iOS 27.1, *) {
+                content
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) { principalTitle }
+                        if showActions {
+                            if selecting {
+                                ToolbarItem(placement: .topBarLeading) { exitSelectionButton }
+                                    .axisBehavior(.verticalPreferred)
+                                ToolbarItem(placement: .topBarTrailing) { closeSelectedButton }
+                                    .axisBehavior(.verticalPreferred)
+                                    .visibilityPriority(.high)
+                            } else {
+                                if !persistentDirectory {
+                                    ToolbarItem(placement: .topBarLeading) { directoryButton }
+                                        .axisBehavior(.verticalPreferred)
+                                }
+                                ToolbarItem(placement: .topBarTrailing) { downloadsButton }
+                                    .axisBehavior(.verticalPreferred)
+                                    .visibilityPriority(.high)
+                                ToolbarItem(placement: .topBarTrailing) { newSessionButton }
+                                    .axisBehavior(.verticalPreferred)
+                                    .visibilityPriority(.high)
+                            }
+                        }
+                    }
+            } else {
+                legacyToolbar(content)
+            }
+            #else
+            legacyToolbar(content)
+            #endif
+        } else {
+            content
+        }
+    }
+
+    private func legacyToolbar(_ content: Content) -> some View {
+        content
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) { principalTitle }
+                if showActions {
+                    if selecting {
+                        ToolbarItem(placement: .topBarLeading) { exitSelectionButton }
+                        ToolbarItem(placement: .topBarTrailing) { closeSelectedButton }
+                    } else {
+                        if !persistentDirectory {
+                            ToolbarItem(placement: .topBarLeading) { directoryButton }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) { downloadsButton }
+                        ToolbarItem(placement: .topBarTrailing) { newSessionButton }
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder private var principalTitle: some View {
+        if selecting {
+            OrbisMotionText(L10n.tr("已选择 {0} 项", selectedCount))
+                .font(.orbisTitle())
+                .foregroundStyle(palette.text)
+        } else {
+            VStack(spacing: 0) {
+                Text("Orbis").font(.orbisBody(.semibold))
+                    .foregroundStyle(palette.secondary)
+                Text("Easy Agents Everywhere").font(.system(size: 10, weight: .medium))
+                    .tracking(0.3)
+                    .foregroundStyle(palette.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var exitSelectionButton: some View {
+        Button(action: onExitSelection) {
+            Label(L10n.tr("退出多选"), systemImage: "xmark")
+        }
+        .accessibilityLabel(L10n.tr("退出多选"))
+    }
+
+    private var directoryButton: some View {
+        Button(action: onDirectory) {
+            Label(L10n.tr("打开会话目录"), systemImage: "line.3.horizontal")
+        }
+        .accessibilityLabel(L10n.tr("打开会话目录"))
+    }
+
+    private var downloadsButton: some View {
+        Button(action: onDownloads) {
+            Label(L10n.tr("下载"), systemImage: "arrow.down.to.line")
+        }
+        .accessibilityIdentifier("home-downloads")
+        .accessibilityLabel(L10n.tr("下载"))
+    }
+
+    private var newSessionButton: some View {
+        Button(action: onDraft) {
+            Label(draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"),
+                  systemImage: draftOpen ? "xmark" : "plus")
+        }
+        .accessibilityIdentifier("home-new-session")
+        .accessibilityLabel(draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"))
+    }
+
+    private var closeSelectedButton: some View {
+        Button(L10n.tr("关闭"), action: onCloseSelected)
+            .tint(palette.error)
+            .disabled(!canCloseSelected)
+            .accessibilityLabel(L10n.tr("关闭选中会话"))
+    }
 }

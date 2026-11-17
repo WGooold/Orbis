@@ -59,6 +59,9 @@ enum OrbisAppearance: String, CaseIterable {
 
 private struct OrbisAppearanceKey: EnvironmentKey { static let defaultValue = OrbisAppearance.mist.rawValue }
 private struct OrbisColorModeKey: EnvironmentKey { static let defaultValue = "system" }
+private struct OrbisSystemVerticalBarKey: EnvironmentKey { static let defaultValue = false }
+private struct OrbisSystemRootActionsKey: EnvironmentKey { static let defaultValue = false }
+private struct OrbisPersistentDirectoryKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     /// The stored appearance (Android: `LocalOrbisPalette`); views that follow it read this.
     var orbisAppearance: String {
@@ -68,6 +71,21 @@ extension EnvironmentValues {
     var orbisColorMode: String {
         get { self[OrbisColorModeKey.self] }
         set { self[OrbisColorModeKey.self] = newValue }
+    }
+    /// True when the system places root tabs and toolbar items into a shared vertical sidebar.
+    var orbisSystemVerticalBar: Bool {
+        get { self[OrbisSystemVerticalBarKey.self] }
+        set { self[OrbisSystemVerticalBarKey.self] = newValue }
+    }
+    /// True when the root screen owns the system toolbar's action buttons.
+    var orbisSystemRootActions: Bool {
+        get { self[OrbisSystemRootActionsKey.self] }
+        set { self[OrbisSystemRootActionsKey.self] = newValue }
+    }
+    /// True when the session directory stays visibly pinned beside the page content.
+    var orbisPersistentDirectory: Bool {
+        get { self[OrbisPersistentDirectoryKey.self] }
+        set { self[OrbisPersistentDirectoryKey.self] = newValue }
     }
 }
 
@@ -2522,5 +2540,191 @@ struct OrbisSkeleton: View {
                     }
                 }
         }.frame(width: width, height: height)
+    }
+}
+
+private final class OrbisWindowBackdropController: UIViewController {
+    var targetColor: UIColor = .clear { didSet { applyIfNeeded() } }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        applyIfNeeded()
+    }
+
+    override func didMove(toParent parent: UIViewController?) {
+        super.didMove(toParent: parent)
+        applyIfNeeded()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyIfNeeded()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyIfNeeded()
+    }
+
+    /// Synchronizes ancestor UIKit container backgrounds so safe-area margins and
+    /// system bars reveal the palette base instead of default `systemBackground`.
+    private func applyIfNeeded() {
+        if let window = view.window, window.backgroundColor?.isEqual(targetColor) != true {
+            window.backgroundColor = targetColor
+        }
+        var ancestor = parent
+        while let controller = ancestor {
+            if let hostView = controller.viewIfLoaded, hostView.backgroundColor?.isEqual(targetColor) != true {
+                hostView.backgroundColor = targetColor
+            }
+            ancestor = controller.parent
+        }
+    }
+}
+
+private struct OrbisWindowBackdropView: UIViewControllerRepresentable {
+    let color: UIColor
+
+    func makeUIViewController(context: Context) -> OrbisWindowBackdropController {
+        let controller = OrbisWindowBackdropController()
+        controller.targetColor = color
+        return controller
+    }
+
+    func updateUIViewController(_ controller: OrbisWindowBackdropController, context: Context) {
+        if !controller.targetColor.isEqual(color) {
+            controller.targetColor = color
+        }
+    }
+}
+
+extension View {
+    func orbisWindowBackdrop(color: UIColor) -> some View {
+        background {
+            OrbisWindowBackdropView(color: color)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder func orbisSystemNavigationBarChrome(visible: Bool) -> some View {
+        if #available(iOS 18.0, *) {
+            toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+                .toolbarVisibility(visible ? .visible : .hidden, for: .navigationBar)
+        } else {
+            toolbarBackground(.hidden, for: .navigationBar)
+                .toolbar(visible ? .visible : .hidden, for: .navigationBar)
+        }
+    }
+
+    @ViewBuilder func orbisSystemTabBarVisible(_ visible: Bool) -> some View {
+        if #available(iOS 18.0, *) {
+            toolbarVisibility(visible ? .visible : .hidden, for: .tabBar)
+        } else {
+            toolbar(visible ? .visible : .hidden, for: .tabBar)
+        }
+    }
+
+    @ViewBuilder func orbisConfigureVerticalTabBar() -> some View {
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) {
+            toolbarVerticalBehavior(.automatic)
+                .toolbarVerticalCompressionBehavior(.automatic)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    func orbisRootSystemToolbar(enabled: Bool, showActions: Bool = true, title: String, titleColor: Color,
+                                trailingLabel: String? = nil, trailingSymbol: String? = nil,
+                                trailingDisabled: Bool = false, trailingIdentifier: String? = nil,
+                                trailingAction: (() -> Void)? = nil) -> some View {
+        modifier(OrbisRootToolbarModifier(
+            enabled: enabled, showActions: showActions, title: title, titleColor: titleColor,
+            trailingLabel: trailingLabel, trailingSymbol: trailingSymbol,
+            trailingDisabled: trailingDisabled, trailingIdentifier: trailingIdentifier,
+            trailingAction: trailingAction
+        ))
+    }
+}
+
+private struct OrbisRootToolbarModifier: ViewModifier {
+    let enabled: Bool
+    let showActions: Bool
+    let title: String
+    let titleColor: Color
+    let trailingLabel: String?
+    let trailingSymbol: String?
+    let trailingDisabled: Bool
+    let trailingIdentifier: String?
+    let trailingAction: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if enabled {
+            #if compiler(>=6.4)
+            if #available(iOS 27.1, *) {
+                content
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) { titleLabel }
+                        if showActions, let label = trailingLabel, let symbol = trailingSymbol, let action = trailingAction {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                actionButton(label: label, symbol: symbol, action: action)
+                            }
+                            .axisBehavior(.verticalPreferred)
+                            .visibilityPriority(.high)
+                        }
+                    }
+            } else {
+                legacyToolbar(content)
+            }
+            #else
+            legacyToolbar(content)
+            #endif
+        } else {
+            content
+        }
+    }
+
+    private func legacyToolbar(_ content: Content) -> some View {
+        content
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) { titleLabel }
+                if showActions, let label = trailingLabel, let symbol = trailingSymbol, let action = trailingAction {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        actionButton(label: label, symbol: symbol, action: action)
+                    }
+                }
+            }
+    }
+
+    private var titleLabel: some View {
+        Text(title).font(.orbisTitle()).foregroundStyle(titleColor).lineLimit(1)
+    }
+
+    private func actionButton(label: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(label, systemImage: symbol)
+        }
+        .disabled(trailingDisabled)
+        .accessibilityLabel(label)
+        .modifier(OptionalAccessibilityIdentifier(identifier: trailingIdentifier))
+    }
+}
+
+private struct OptionalAccessibilityIdentifier: ViewModifier {
+    let identifier: String?
+    func body(content: Content) -> some View {
+        if let identifier {
+            content.accessibilityIdentifier(identifier)
+        } else {
+            content
+        }
     }
 }
