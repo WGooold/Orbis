@@ -190,6 +190,11 @@ HostController::~HostController() { shutdown(); }
 int HostController::pairSeconds() const { return int(qMax<qint64>(0, (m_pairExpires - QDateTime::currentMSecsSinceEpoch() + 999) / 1000)); }
 void HostController::launchBridge() {
     if (m_shutdown || m_exiting || m_bridge.state() != QProcess::NotRunning) return;
+    if (!configureBridge()) return;
+    m_stdout.clear();
+    m_bridge.start();
+}
+bool HostController::configureBridge() {
     QString node = m_runtimeRoot + "/node/node";
 #ifdef Q_OS_WIN
     node = m_runtimeRoot + "/node/node.exe";
@@ -198,15 +203,14 @@ void HostController::launchBridge() {
     if (!QFile::exists(node)) node = QStandardPaths::findExecutable("node");
 #endif
     const auto entry = m_runtimeRoot + "/packages/host/dist/desktop-bridge.js";
-    if (node.isEmpty() || !QFile::exists(entry)) { m_state = "error"; setMessage("安装不完整：未找到内置 Host 或 Node.js，请重新安装客户端"); return; }
+    if (node.isEmpty() || !QFile::exists(entry)) { m_state = "error"; setMessage("安装不完整：未找到内置 Host 或 Node.js，请重新安装客户端"); return false; }
     auto env = m_qaMode ? QaActivation::processEnvironment(m_runtimeRoot, m_dataDir, m_hostStateDir)
                         : QProcessEnvironment::systemEnvironment();
     if (!m_hostStateDir.isEmpty()) env.insert("ORBIS_HOST_STATE_DIR", m_hostStateDir);
     m_bridge.setProcessEnvironment(env);
     m_bridge.setWorkingDirectory(m_runtimeRoot);
     m_bridge.setProgram(node); m_bridge.setArguments({entry});
-    m_stdout.clear();
-    m_bridge.start();
+    return true;
 }
 static bool isProviderBackgroundRequest(const QString &method) {
     return method == "provider.check" || method == "provider.models";
@@ -1277,6 +1281,12 @@ void HostController::requestInstallerExit() {
     if (!m_exiting && !m_updating) emit installerConfirmationRequested();
     else emit exitCancelled();
 }
+void HostController::prepareInstallerExit() {
+    // HOST-UPDATE-03: an idle installation only runs verified cleanup, never the desktop bridge.
+    m_installerOnly = true; m_deferStartup = true; m_shutdown = true; m_tick.stop();
+    if (!configureBridge()) { emit exitFailed(); return; }
+    confirmExit();
+}
 void HostController::cancelExit() { if (!m_exiting) emit exitCancelled(); }
 void HostController::confirmExit() {
     if (m_exiting) return;
@@ -1298,7 +1308,11 @@ void HostController::beginExit(const QString &installer) {
 }
 void HostController::failExit(const QString &message) {
     m_exitDeadline.stop(); m_exiting = false; m_shutdown = false; m_updating = false;
-    m_exitInstaller.clear(); m_tick.start();
+    m_exitInstaller.clear();
+    if (m_installerOnly) {
+        m_shutdown = true; setMessage(message); emit exitFailed(); return;
+    }
+    m_tick.start();
     // Reopen only the bridge after partial cleanup; the user explicitly resumes connections.
     if (m_bridge.state() == QProcess::NotRunning) { m_deferStartup = true; m_state = "stopped"; launchBridge(); }
     setMessage(message);

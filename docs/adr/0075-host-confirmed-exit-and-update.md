@@ -22,7 +22,9 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 | HOST-EXIT-06 | Codex 桌面桥接沿用 Codex 桌面端的生命周期：退出和更新都不停止它，也不核验它的端点记录；Host 再次开始连接后按端点记录重新接入。收尾失败时 Host 窗口回到前台显示原因。 |
 | HOST-EXIT-07 | Host 退出和更新保留由 Host 打开的 DeepSeek Desktop 及其后代。独立启动记录在创建进程前发布，初始快照、后续扫描与逐次终止均核对同一归属边界；Desktop 后端尚未就绪不改变归属。 |
 | HOST-UPDATE-01 | 应用内 Host 更新先确认中断影响，再下载和校验；成功收尾后才打开安装包。重复点击只执行一次；下载、校验、收尾或启动安装包失败均保持可见失败状态。下载期间仍可请求退出。 |
-| HOST-UPDATE-02 | Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认。取消或失败暂停安装。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
+| HOST-UPDATE-02 | 旧版 Windows 安装器通过 `--prepare-update` 请求已有 Host 展示确认的兼容入口继续保留。应用内已收尾的更新传递专用参数，避免二次确认，并在安装完成后重新打开 Host。 |
+| HOST-UPDATE-03 | Windows 安装器自行显示停止后台确认，再以 `--prepare-update-confirmed` 请求收尾。Host 未运行时仅执行收尾，不创建页面、托盘或核心；失败也不拉起核心。运行中的新版 Host 经独立本地端点接受已确认的请求；不支持此入口的旧版本回退到安装器内的手动关闭确认。取消、收尾失败或静默安装未获确认均暂停覆盖。 |
+| HOST-UPDATE-04 | QUIC 打包将 Go 缓存复制出的 LICENSE 设为可写，保留许可内容。Windows 安装器可覆盖旧包中的只读文件，卸载也可移除这些文件。 |
 | HOST-LIVE-01 | 运行中的 Host 不再要求先手动暂停：常规设置中的启动参数（电脑名称、中继、预启动开关、DSH 启动链接）、Agent 安装 / 批量更新和 DSH Server 重启由 Host 自行暂停、执行并恢复连接；终端接入开关与登录启动仍即时生效。操作按钮写明“并重新连接”，有在线会话时确认页显示会暂时断开的会话数。 |
 | HOST-LIVE-02 | 退出期间完成的变更不再自动恢复连接。启动入口在改写运行意图前核对退出状态；收尾失败后，原先暂停的 Host 保持可由用户重新启动。 |
 
@@ -41,6 +43,8 @@ Host 更新的哈希与文件提交移到后台线程，使用独立临时目录
 - [Main.qml](../../packages/windows-host/src/qml/Main.qml)：退出、应用内更新、外部安装器确认和收尾进度。
 - [desktop-shutdown.ts](../../packages/host/src/desktop-shutdown.ts)、[owned-processes.ts](../../packages/host/src/owned-processes.ts)：独立收尾协议、旧记录识别、进程树与身份核验。
 - [OrbisHost.iss](../../packages/windows-host/installer/OrbisHost.iss)：安装前请求与应用内更新后的重新启动。
+
+2026-11-17，HOST-UPDATE-03 / 04 定向验证：`InstallerUpdateTest.cpp` 执行真实 Host 入口，覆盖无运行实例的成功 / 失败、已有实例的已确认请求和旧端点不被激活；原退出回归继续通过。`scripts/build-host-quic.test.mjs` 使用只读缓存夹具核对打包 LICENSE 的内容、可写属性与原缓存不变。证据：[原生最终结果](../../.artifacts/windows-installer-fix-20261117/native-results-fixed/)、[首轮失败](../../.artifacts/windows-installer-fix-20261117/native-results/)、[验证状态](../../.artifacts/windows-installer-fix-20261117/verification.json)。Windows 安装器只读覆盖 / 卸载用例加入 `windows-host-build.yml`，本轮尚未执行 Windows 打包与实机安装；共享 QA 服务无法连接，未登记，用户验收待完成。
 
 ## 已执行验证
 

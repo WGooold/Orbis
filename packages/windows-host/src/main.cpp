@@ -75,6 +75,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"host-state-dir", "Isolated Host identity directory", "path"});
     parser.addOption({"tray", "Start in the system tray"});
     parser.addOption({"prepare-update", "Confirm stopping managed backgrounds before an installer proceeds"});
+    parser.addOption({"prepare-update-confirmed", "Stop managed backgrounds after confirmation in the installer"});
     parser.addOption({"smoke-test", "Render the window and exit after checking the Host bridge"});
     parser.addOption({"smoke-motion", "Check intermediate sidebar and metric motion in the isolated smoke window"});
     parser.addOption({"smoke-appearance", "Check all four appearance palettes in isolated settings"});
@@ -117,11 +118,15 @@ int main(int argc, char *argv[]) {
 #endif
     if (parser.isSet("smoke-test") && parser.isSet("smoke-providers")) qputenv("ORBIS_PROVIDER_TEST_ROOT", (dataDir + "/test-agents").toUtf8());
     const auto serverName = "OrbisHost-" + QString::fromLatin1(QCryptographicHash::hash(dataDir.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
+    const auto installerServerName = "OrbisSetup-" + serverName.right(24);
     QLockFile lock(dataDir + "/desktop.lock"); lock.setStaleLockTime(0);
     if (!lock.tryLock(100)) {
-        QLocalSocket other; other.connectToServer(serverName);
-        if (parser.isSet("prepare-update")) {
-            if (!other.waitForConnected(2000)) return 20;
+        const bool confirmed = parser.isSet("prepare-update-confirmed");
+        // A separate endpoint cannot accidentally activate an older portable Host which
+        // treats unknown commands as "show window". Setup falls back to manual closure.
+        QLocalSocket other; other.connectToServer(confirmed ? installerServerName : serverName);
+        if (confirmed || parser.isSet("prepare-update")) {
+            if (!other.waitForConnected(2000)) return confirmed ? 1 : 20;
             other.write("prepare-update\n"); other.waitForBytesWritten(1000);
             QByteArray result = other.readAll();
             while (!result.contains('\n') && other.waitForReadyRead(180000)) result += other.readAll();
@@ -138,6 +143,16 @@ int main(int argc, char *argv[]) {
 #endif
     if (parser.isSet("smoke-test") && hostStateDir.isEmpty()) hostStateDir = dataDir + "/test-host";
     HostController controller(QDir(runtimeRoot).absolutePath(), dataDir, hostStateDir, credentialDir, !parser.isSet("smoke-test"));
+    if (parser.isSet("prepare-update-confirmed")) {
+        // HOST-UPDATE-03: no QML engine, tray or core is created for installer-only cleanup.
+        app.setQuitOnLastWindowClosed(false);
+        QObject::connect(&controller, &HostController::exitReady, &app, [&] { app.exit(0); }, Qt::QueuedConnection);
+        QObject::connect(&controller, &HostController::exitFailed, &app, [&] {
+            std::fprintf(stderr, "%s\n", qPrintable(controller.message())); app.exit(20);
+        }, Qt::QueuedConnection);
+        controller.prepareInstallerExit();
+        return app.exec();
+    }
     if (parser.isSet("prepare-update")) controller.deferStartup();
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("host", &controller);
@@ -164,22 +179,28 @@ int main(int argc, char *argv[]) {
     const auto replyInstaller = [&](const QByteArray &reply) {
         if (installerClient) { installerClient->write(reply + '\n'); installerClient->flush(); installerClient->disconnectFromServer(); installerClient.clear(); }
     };
-    QObject::connect(&instance, &QLocalServer::newConnection, &app, [&] {
-        while (auto *socket = instance.nextPendingConnection()) {
+    QLocalServer installerInstance; installerInstance.setSocketOptions(QLocalServer::UserAccessOption);
+    if (!installerInstance.listen(installerServerName)) return 2;
+    const auto acceptConnections = [&](QLocalServer &server, bool confirmed) {
+        while (auto *socket = server.nextPendingConnection()) {
             QObject::connect(socket, &QLocalSocket::disconnected, socket, &QObject::deleteLater);
-            const auto receive = [&, socket] {
+            const auto receive = [&, socket, confirmed] {
                 if (socket->bytesAvailable() > 1024) { socket->disconnectFromServer(); return; }
                 if (!socket->canReadLine()) return;
                 const auto command = socket->readLine().trimmed();
                 if (command == "prepare-update") {
                     if (installerClient || controller.exitApproved()) { socket->write("busy\n"); socket->disconnectFromServer(); return; }
-                    installerClient = socket; controller.requestInstallerExit();
-                } else { show(); socket->disconnectFromServer(); }
+                    installerClient = socket;
+                    if (confirmed) controller.confirmExit();
+                    else controller.requestInstallerExit();
+                } else { if (!confirmed) show(); socket->disconnectFromServer(); }
             };
             QObject::connect(socket, &QLocalSocket::readyRead, &app, receive);
             if (socket->canReadLine()) receive();
         }
-    });
+    };
+    QObject::connect(&instance, &QLocalServer::newConnection, &app, [&] { acceptConnections(instance, false); });
+    QObject::connect(&installerInstance, &QLocalServer::newConnection, &app, [&] { acceptConnections(installerInstance, true); });
     QObject::connect(&controller, &HostController::exitReady, &app, [&] { replyInstaller("ready"); });
     QObject::connect(&controller, &HostController::exitCancelled, &app, [&] { replyInstaller("cancelled"); if (parser.isSet("prepare-update")) app.exit(20); });
     // HOST-EXIT-06: a failed cleanup keeps the Host running; bring its reason to the front.

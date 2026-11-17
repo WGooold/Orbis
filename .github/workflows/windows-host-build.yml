@@ -96,6 +96,33 @@ jobs:
               Remove-Item Env:ORBIS_CLAUDE_INSTALL_TEST_LOG -ErrorAction SilentlyContinue
             }
           }
+      - name: Verify read-only license upgrade
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem .artifacts/host -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:RUNNER_TEMP 'OrbisHost-readonly-upgrade'
+          $smokeDir = Join-Path $setup.DirectoryName 'installer-smoke'
+          $license = Join-Path $installDir 'runtime\packages\host\native\licenses\github.com_gorilla_websocket\LICENSE'
+          try {
+            $installArgs = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',('/DIR="' + $installDir + '"'))
+            $first = Start-Process -FilePath $setup.FullName -ArgumentList ($installArgs + @('/LOG="' + $smokeDir + '\readonly-first.log"')) -WindowStyle Hidden -PassThru -Wait
+            if ($first.ExitCode -ne 0) { throw "Read-only fixture install failed: $($first.ExitCode)" }
+            $expected = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash
+            # HOST-UPDATE-04: reproduce a notice shipped with Go-cache read-only attributes.
+            (Get-Item -LiteralPath $license).IsReadOnly = $true
+            # This fixture has no running Host; native tests separately exercise verified cleanup.
+            $upgrade = Start-Process -FilePath $setup.FullName -ArgumentList ($installArgs + @('/ORBISHOSTCLOSED=1',('/LOG="' + $smokeDir + '\readonly-upgrade.log"'))) -WindowStyle Hidden -PassThru -Wait
+            if ($upgrade.ExitCode -ne 0) { throw "Read-only license upgrade failed: $($upgrade.ExitCode)" }
+            if ((Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash -ne $expected) { throw 'Upgrade changed the license contents' }
+            if ((Get-Item -LiteralPath $license).IsReadOnly) { throw 'Upgrade retained the read-only license attribute' }
+            (Get-Item -LiteralPath $license).IsReadOnly = $true
+          } finally {
+            if (Test-Path -LiteralPath "$installDir\unins000.exe") {
+              $uninstaller = Start-Process -FilePath "$installDir\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -PassThru -Wait
+              if ($uninstaller.ExitCode -ne 0) { throw "Read-only fixture uninstall failed: $($uninstaller.ExitCode)" }
+              if (Test-Path -LiteralPath $license) { throw 'Uninstall left the read-only license behind' }
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: OrbisHost-windows-x64
@@ -108,6 +135,7 @@ jobs:
             .artifacts/host/**/preview.png
             .artifacts/host/**/smoke-result.json
             .artifacts/host/**/qml.log
+            .artifacts/host/**/installer-smoke/*.log
       - name: Preserve native test diagnostics
         if: always()
         uses: actions/upload-artifact@v4

@@ -226,6 +226,7 @@ public:
     Q_INVOKABLE void confirmExit();
     Q_INVOKABLE void cancelExit();
     void requestInstallerExit();
+    void prepareInstallerExit();
     void deferStartup() { m_deferStartup = true; }
     Q_INVOKABLE void openDownloads();
     Q_INVOKABLE void openDataDirectory();
@@ -266,6 +267,7 @@ private:
     friend class HostLiveChangeTest;
     using Callback = std::function<void(const QJsonValue &)>;
     void launchBridge();
+    bool configureBridge();
     void beginExit(const QString &installer = {});
     void finishExit();
     void failExit(const QString &message);
@@ -331,6 +333,7 @@ private:
     bool m_exiting = false, m_updating = false, m_exitApproved = false, m_exitWorkerDone = false;
     bool m_automaticIntegrations = true;
     bool m_deferStartup = false;
+    bool m_installerOnly = false;
     int m_updateGeneration = 0;
     QList<QPointer<QNetworkReply>> m_updateReplies;
     std::function<bool(const QString &)> m_installLauncher;
