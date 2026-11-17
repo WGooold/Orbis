@@ -896,6 +896,10 @@ enum MarkdownDocuments {
     static let worker = MarkdownParsingWorker(cache: cache)
     static func cached(_ text: String) -> PreparedMarkdownDocument? { cache.cached(text) }
     static func resolve(_ text: String) async -> PreparedMarkdownDocument { await worker.resolve(text) }
+    static func warm(_ text: String) {
+        guard !text.isEmpty, cache.cached(text) == nil else { return }
+        cache.insert(PreparedMarkdownDocument(text), text: text)
+    }
 }
 
 struct PreparedMarkdownState {
@@ -962,6 +966,7 @@ actor ChatTranscriptWorker {
         previousInput = nil
         let next = ChatTranscript(messages: messages, turnTimings: timings, previousRows: self.identity == identity ? previousRows : [],
             previous: self.identity == identity ? previousTranscript : nil, prepareToolText: prepareToolText)
+        warmTailMarkdown(next.rows)
         self.identity = identity; previousRows = next.rows; previousTranscript = next
         return next
     }
@@ -980,6 +985,7 @@ actor ChatTranscriptWorker {
             transcript = ChatTranscript(messages: publishedMessages, turnTimings: input.timings,
                 previousRows: self.identity == identity ? previousRows : [], displayIds: input.displayIds, aliases: input.aliases,
                 previous: self.identity == identity ? previousTranscript : nil, prepareToolText: prepareToolText)
+            warmTailMarkdown(transcript.rows)
         }
         previousInput = input; previousTranscript = transcript
         let messageIds = Set(publishedMessages.map(\.messageId))
@@ -993,6 +999,20 @@ actor ChatTranscriptWorker {
         return ChatPublication(messages: publishedMessages, messageToken: messageToken, messageIds: messageIds, transcript: transcript,
             streaming: input.unfinished.intersection(publishedMessages.lazy.filter { $0.role == "assistant" }.map(\.messageId)),
             changeEntries: changeEntries, changeTurns: changeTurns)
+    }
+
+    /// Pre-parses recent assistant Markdown off the main actor so mounted chat rows
+    /// settle at their real height immediately instead of expanding after entry.
+    private func warmTailMarkdown(_ rows: [ChatRow]) {
+        for row in rows.suffix(24) where !row.isUser {
+            for message in row.messages {
+                for content in message.content where !["thinking", "tool_call", "toolCall", "artifact"].contains(content.type) {
+                    if let text = content.text, !text.isEmpty, text.utf16.count <= 32_768 {
+                        MarkdownDocuments.warm(text)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -373,6 +373,33 @@ struct PresentationTests {
         #expect(rendered.runs.contains { $0.link != nil })
     }
 
+    @Test func transcriptWorkerPrewarmsRecentAssistantMarkdownOffMain() async {
+        let token = UUID().uuidString
+        let oldText = "old-unwarmed-\(token)"
+        let recentText = "recent-warmed-\(token)"
+        let thinkingText = "thinking-unwarmed-\(token)"
+        var messages: [ChatMessage] = [
+            ChatMessage(messageId: "m-old", role: "assistant",
+                        content: [ChatContent(type: "text", text: oldText, toolName: nil, artifact: nil)],
+                        timestamp: 0, isError: nil)
+        ]
+        for index in 0..<24 {
+            messages.append(ChatMessage(messageId: "u-\(index)", role: "user",
+                content: [ChatContent(type: "text", text: "user-\(index)-\(token)", toolName: nil, artifact: nil)],
+                timestamp: Int64(index + 1), isError: nil))
+        }
+        messages.append(ChatMessage(messageId: "m-recent", role: "assistant",
+            content: [ChatContent(type: "thinking", text: thinkingText, toolName: nil, artifact: nil),
+                      ChatContent(type: "text", text: recentText, toolName: nil, artifact: nil)],
+            timestamp: 100, isError: nil))
+        #expect(MarkdownDocuments.cached(recentText) == nil)
+        let worker = ChatTranscriptWorker()
+        _ = await worker.publish(identity: "session-\(token)", input: ChatPublicationInput(messages: messages, timings: [:]))
+        #expect(MarkdownDocuments.cached(recentText) != nil)
+        #expect(MarkdownDocuments.cached(oldText) == nil)
+        #expect(MarkdownDocuments.cached(thinkingText) == nil)
+    }
+
     @Test func projectionBatchMatchesSequentialReplacementRemovalAndReinsertion() {
         func message(_ id: Int, _ text: String) -> ChatMessage {
             ChatMessage(messageId: "m\(id)", role: "assistant", content: [ChatContent(type: "text", text: text, toolName: nil, artifact: nil)], timestamp: 0, isError: nil)

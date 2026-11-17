@@ -493,6 +493,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             snapshot.appendItems(plan.ids, toSection: 0)
             snapshot.reconfigureItems(plan.reconfigured)
             ChatDebugProbes.nativeSnapshotApplied()
+            let hasBaseline = appliedGeneration != nil
             applyingSnapshot = true
             snapshotMutationDepth += 1
             UIView.performWithoutAnimation {
@@ -504,17 +505,23 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     self.appliedOwnershipGeneration = owner
                     if owner == self.ownershipGeneration, generation == self.sourceGeneration {
                         self.rendered = Dictionary(uniqueKeysWithValues: self.desired.map { ($0.id, $0) })
-                        self.scheduleResolution()
+                        if self.snapshotMutationDepth == 0, hasBaseline,
+                           let collection = self.collection, collection.window != nil,
+                           collection.bounds.width > 0, collection.bounds.height > 0 {
+                            self.resolveLayout()
+                        } else {
+                            self.scheduleResolution()
+                        }
                     }
                     self.applyDesiredSnapshot()
                 }
                 // Complete the snapshot's native layout before this transaction can
-                // be displayed when a reader anchor or an explicit scroll target is
-                // active. A following, idle transcript has no retained anchor to
-                // protect; its scheduled resolution can perform the same layout after
-                // UIKit has committed the snapshot, avoiding a duplicate hosted-cell
-                // fitting pass on long chats.
-                if !canDeferSnapshotLayout {
+                // be displayed when a reader anchor, an explicit scroll target, or an
+                // already-visible update is active. A first mount lays out once the
+                // collection receives its initial bounds.
+                let canSyncVisibleUpdate = hasBaseline && !applyingSnapshot &&
+                    collection?.window != nil && (collection?.bounds.width ?? 0) > 0 && (collection?.bounds.height ?? 0) > 0
+                if !canDeferSnapshotLayout || canSyncVisibleUpdate {
                     collection?.layoutIfNeeded()
                 }
             }
@@ -593,16 +600,35 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     anchors[index].offsetY = collection.contentOffset.y
                 }
             }
-            // Finish native-only reading compensation in this layout transaction.
-            // Metrics still publish asynchronously, outside SwiftUI/UIKit layout.
-            if nativeLayoutDepth == 0, !resolving, !compensatingLayout,
-               initialPlacementReady, alignment == nil, !animatingOffset, !following || nativeMotionActive {
-                resolving = true
-                _ = restoreAnchor()
-                resolving = false
+            // Finish native-only placement and reading compensation in this layout
+            // transaction so resized composers or newly measured cells never show an
+            // unaligned intermediate frame. Metrics publish asynchronously afterward.
+            if nativeLayoutDepth == 0, !resolving, !compensatingLayout, alignment == nil, !animatingOffset {
+                if initialPlacementReady, !following || nativeMotionActive {
+                    resolving = true
+                    _ = restoreAnchor()
+                    resolving = false
+                } else if !applyingSnapshot, snapshotPreparation == nil,
+                          appliedGeneration == sourceGeneration, initialPositionSeeded,
+                          (!initialPlacementReady || following), !nativeMotionActive,
+                          let collection, collection.bounds.width > 0, collection.bounds.height > 0 {
+                    resolving = true
+                    _ = convergeBottom(in: collection)
+                    resolving = false
+                }
             }
             refreshCellGeometry()
             scheduleResolution()
+        }
+
+        @discardableResult
+        private func convergeBottom(in collection: UICollectionView) -> Bool {
+            var moved = false
+            for _ in 0..<6 {
+                guard abs(collection.contentOffset.y - bottomOffset) > 0.5 else { break }
+                if writeOffset(bottomOffset, animated: false) { moved = true } else { break }
+            }
+            return moved
         }
 
         private func refreshCellGeometry() {
@@ -630,7 +656,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             } else if !nativeMotionActive {
                 if !animatingOffset {
                     if !initialPlacementReady || following {
-                        wroteOffset = writeOffset(bottomOffset, animated: false)
+                        wroteOffset = convergeBottom(in: collection)
                     } else {
                         wroteOffset = restoreAnchor()
                     }
@@ -652,7 +678,9 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             let needsBottomCorrection = !nativeMotionActive && !animatingOffset && alignment == nil &&
                 (!initialPlacementReady || following) &&
                 abs(collection.contentOffset.y - bottomOffset) > 0.5
-            if wroteOffset || needsBottomCorrection { scheduleResolution() }
+            if needsBottomCorrection || !initialPlacementReady || ((alignment != nil || !following) && wroteOffset) {
+                scheduleResolution()
+            }
         }
 
         private func reconcileAlignmentIntent() {
