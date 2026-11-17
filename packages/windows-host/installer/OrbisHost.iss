@@ -27,7 +27,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly uninsremovereadonly
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; Flags: unchecked
@@ -46,6 +46,16 @@ begin
   Result := ExpandConstant('{param:ORBISRELAUNCH|0}') = '1';
 end;
 
+function SupportsInstallerCleanup(const InstalledHost: String): Boolean;
+var
+  SupportedHash: AnsiString;
+begin
+  { A downgraded executable must not inherit a newer install's capability marker. }
+  Result := LoadStringFromFile(ExpandConstant('{app}\installer-update-v1.sha256'), SupportedHash);
+  if Result then
+    Result := CompareText(Trim(String(SupportedHash)), GetSHA256OfFile(InstalledHost)) = 0;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ExitCode: Integer;
@@ -55,18 +65,26 @@ begin
   if ExpandConstant('{param:ORBISHOSTCLOSED|0}') = '1' then Exit;
   InstalledHost := ExpandConstant('{app}\OrbisHost.exe');
   if not FileExists(InstalledHost) then Exit;
-  ExitCode := -1;
-  { HOST-UPDATE-02: installed Host owns confirmation and verified background cleanup. }
-  if not Exec(InstalledHost, '--prepare-update', '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExitCode) then begin
-    Result := '无法启动 Host 收尾流程，请关闭相关应用后重试。';
+  { HOST-UPDATE-03: setup owns confirmation; cleanup never opens a Host page. }
+  if SuppressibleMsgBox('停止后台并安装新版 Host？' + #13#10 + #13#10 +
+    '手机连接将断开，Orbis 管理的相关后台将停止，正在执行的任务可能中断。',
+    mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) <> IDYES then begin
+    Result := '安装已取消。';
     Exit;
   end;
+  ExitCode := 1;
+  if SupportsInstallerCleanup(InstalledHost) then begin
+    if not Exec(InstalledHost, '--prepare-update-confirmed', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then begin
+      Result := '无法启动后台收尾流程，请关闭相关应用后重试。';
+      Exit;
+    end;
+  end;
   if ExitCode = 1 then begin
-    { Older Qt builds reject the unknown option before starting any processes. }
-    if MsgBox('旧版 Host 不支持自动收尾。请先退出 Host、DeepSeek Web 和 Codex 桌面端，相关任务会中断。确认全部关闭后继续安装？', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) <> IDYES then
+    { Older executables or running instances cannot accept setup-owned confirmation. }
+    if SuppressibleMsgBox('旧版 Host 不支持安装器自动收尾。请先退出 Host、DeepSeek Web 和 Codex 桌面端，相关任务会中断。确认全部关闭后继续安装？', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) <> IDYES then
       Result := '安装已取消。';
   end else if ExitCode <> 0 then
-    Result := '安装已暂停。请在 Host 中确认停止后台，或处理收尾失败提示后重试。';
+    Result := '后台收尾未完成，安装已暂停。请关闭相关应用后重试。';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

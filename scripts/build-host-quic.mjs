@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,8 @@ for (const item of modules.values()) {
   await mkdir(target, { recursive: true });
   // All modules used by the helper supply LICENSE. Fail packaging if it is absent.
   await cp(join(item.directory, "LICENSE"), join(target, "LICENSE"));
+  // HOST-UPDATE-04: Go's module cache is read-only; staged notices must stay replaceable on Windows.
+  await chmod(join(target, "LICENSE"), 0o644);
   inventory.push({ name: item.name, version: item.version, license: `licenses/${item.name.replaceAll("/", "_")}/LICENSE` });
 }
 const goroot = run(["env", "GOROOT"]).trim();
