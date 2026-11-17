@@ -4,7 +4,7 @@
 
 <h1 align="center">Orbis</h1>
 
-<p align="center"><strong>Easy Agents Everywhere.</strong><br>把电脑上的 Agent，带到手边。</p>
+<p align="center"><strong>Easy Agents Everywhere.</strong><br>零侵入桌面，做各家 Agent 背后最顺手的移动远控。</p>
 
 <p align="center"><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
 
@@ -16,9 +16,9 @@
   <a href="https://github.com/WGooold/Orbis/issues">问题反馈</a>
 </p>
 
-Orbis 让你从手机继续使用电脑上的 AI 编程 Agent。离开工位，也能继续对话、查看任务进度、审阅文件改动，把生成的文件下载到手机。
+Orbis 不做多合一桌面融合端，也不替代你正在用的任何原生 Agent。各工具在电脑照常独立运行，Orbis 安静承接在后，专注做移动端最顺手的远控。
 
-电脑上运行 **Orbis Host**，手机上安装 **Orbis App**，扫码配对后，就能把熟悉的工作接着做下去。
+电脑运行 **Orbis Host**，手机安装 **Orbis App**，扫码配对即可续聊对话、看进度、审改动、下文件。
 
 ## 在手机上，你可以
 

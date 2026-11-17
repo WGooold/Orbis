@@ -4,7 +4,7 @@
 
 <h1 align="center">Orbis</h1>
 
-<p align="center"><strong>Easy Agents Everywhere.</strong><br>Your desktop agents, wherever you are.</p>
+<p align="center"><strong>Easy Agents Everywhere.</strong><br>Zero desktop intrusion. The smoothest mobile remote behind all your agents.</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <strong>English</strong></p>
 
@@ -16,9 +16,9 @@
   <a href="https://github.com/WGooold/Orbis/issues">Feedback</a>
 </p>
 
-Orbis brings the AI coding agents on your computer to your phone. Keep a conversation going, check task progress, review file changes, and download the results while you are away from your desk.
+Orbis never merges or gets in the way of your native desktop agents. Keep using Claude Code, Codex, DeepSeek, or Pi as usual—Orbis quietly backs them up, focused purely on the smoothest mobile remote control.
 
-Run **Orbis Host** on your computer, install **Orbis App** on your phone, and scan a QR code to pair them. Then pick up where you left off.
+Run **Orbis Host** on your computer, install **Orbis App** on your phone, scan once to continue chats, follow progress, review diffs, and download files.
 
 ## What you can do from your phone
 
