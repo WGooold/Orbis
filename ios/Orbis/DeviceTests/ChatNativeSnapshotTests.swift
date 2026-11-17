@@ -325,6 +325,82 @@ import XCTest
         XCTAssertFalse(gate.timedOut)
         XCTAssertFalse(gate.ranOnMainThread)
     }
+
+    // Hosted disclosures drive their own frame-by-frame clip height. Collection
+    // self-sizing layout must apply each change without starting a UIKit bounds/center
+    // animation that lags behind SwiftUI and shifts the cell content upward.
+    func testHostedDisclosureResizesCellWithoutSelfSizingAnimation() async throws {
+        let state = ChatTranscriptInteractionState.Disclosure()
+        let viewport = ChatViewportController()
+        let snapshot = ChatNativeTranscriptView.Snapshot(items: [
+            .init(id: "above", revision: UUID(), content: AnyView(Text("Above").frame(height: 60)), kind: .message),
+            .init(id: "tool", revision: UUID(), content: AnyView(HostedDisclosureCellFixture(state: state)), kind: .message),
+            .init(id: "tail", revision: UUID(), content: AnyView(Color.clear.frame(height: 4)))
+        ], revision: 1)
+        let view = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
+            tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
+            onDistance: { _ in }, onInteraction: { _ in }, onViewport: { _, _ in })
+        let coordinator = ChatNativeTranscriptView.Coordinator(view)
+        defer { coordinator.stop() }
+        let collection = coordinator.makeCollection()
+        let window = show(collection)
+        defer { window.isHidden = true }
+
+        func toolCell() -> NativeTranscriptCell? {
+            collection.visibleCells.compactMap { $0 as? NativeTranscriptCell }.first { $0.representedID == "tool" }
+        }
+        try await until("initial hosted disclosure cell measured") {
+            guard let cell = toolCell() else { return false }
+            return cell.hasMeasured(id: "tool", height: cell.frame.height) && cell.frame.height > 30 && cell.frame.height < 80
+        }
+        let initialCell = try XCTUnwrap(toolCell())
+        let initialFrame = initialCell.frame
+
+        state.expanded = true
+        var observedHeights: [CGFloat] = []
+        let deadline = Date().addingTimeInterval(1.0)
+        while Date() < deadline {
+            CATransaction.flush()
+            let cell = try XCTUnwrap(toolCell())
+            XCTAssertTrue((cell.layer.animationKeys() ?? []).isEmpty,
+                          "Cell must not attach implicit self-sizing animations: \(cell.layer.animationKeys() ?? [])")
+            XCTAssertTrue((cell.contentView.layer.animationKeys() ?? []).isEmpty,
+                          "Cell contentView must not attach implicit self-sizing animations")
+            let windowLayer = window.layer.presentation() ?? window.layer
+            let cellRect = (cell.layer.presentation() ?? cell.layer).convert(cell.bounds, to: windowLayer)
+            let expectedRect = collection.convert(cell.frame, to: window)
+            XCTAssertEqual(cellRect.minY, expectedRect.minY, accuracy: 1)
+            XCTAssertEqual(cellRect.height, expectedRect.height, accuracy: 1)
+            if let hosting = cell.contentView.subviews.first {
+                XCTAssertTrue((hosting.layer.animationKeys() ?? []).isEmpty,
+                              "Hosted root view must not inherit UIKit self-sizing animations")
+                let hostingRect = (hosting.layer.presentation() ?? hosting.layer).convert(hosting.bounds, to: windowLayer)
+                XCTAssertEqual(hostingRect.minY, expectedRect.minY, accuracy: 1)
+            }
+            observedHeights.append(cell.frame.height)
+            if cell.frame.height > 250 && observedHeights.suffix(4).allSatisfy({ abs($0 - cell.frame.height) <= 0.5 }) {
+                break
+            }
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+        let finalCell = try XCTUnwrap(toolCell())
+        XCTAssertEqual(finalCell.frame.minY, initialFrame.minY, accuracy: 1)
+        XCTAssertGreaterThan(finalCell.frame.height, 250)
+        XCTAssertGreaterThan(observedHeights.filter { $0 > initialFrame.height + 5 && $0 < finalCell.frame.height - 5 }.count, 1)
+    }
+}
+
+private struct HostedDisclosureCellFixture: View {
+    let state: ChatTranscriptInteractionState.Disclosure
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Tool header").frame(height: 44)
+            OrbisCollapse(expanded: state.expanded) {
+                Text((1...16).map { "Line \($0)" }.joined(separator: "\n"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
 }
 
 /// A native row's fitting callback gives the first-mount test observable evidence

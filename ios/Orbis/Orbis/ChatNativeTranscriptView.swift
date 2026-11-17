@@ -587,7 +587,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                   let collection, collection.bounds.height > 0,
                   collection.bounds.width > 0 else { return }
             resolving = true
-            collection.layoutIfNeeded()
+            if animatingOffset { collection.layoutIfNeeded() }
+            else { UIView.performWithoutAnimation { collection.layoutIfNeeded() } }
             var wroteOffset = false
             if alignment != nil {
                 // An accepted explicit intent owns the offset even if UIKit has
@@ -604,7 +605,8 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             } else {
                 wroteOffset = restoreAnchor()
             }
-            collection.layoutIfNeeded()
+            if animatingOffset { collection.layoutIfNeeded() }
+            else { UIView.performWithoutAnimation { collection.layoutIfNeeded() } }
             let measuredVisibleContent = hasMeasuredVisibleContent
             placement.measured(visibleContent: measuredVisibleContent,
                 bottomDistance: bottomOffset - collection.contentOffset.y)
@@ -932,7 +934,12 @@ private final class NativeTranscriptCollection: UICollectionView {
             preparingInitialPlacement = false
         }
         willLayout?()
-        super.layoutSubviews()
+        // Hosted cells drive their own frame-by-frame motion (disclosures, reply growth).
+        // Suppress UIKit's implicit self-sizing animation during collection layout so
+        // cell bounds/centers never lag behind or shift hosted content vertically.
+        UIView.performWithoutAnimation {
+            super.layoutSubviews()
+        }
         didLayout?()
     }
 
@@ -977,10 +984,13 @@ final class NativeTranscriptCell: UICollectionViewCell {
             guard let self else { return }
             // UIHostingConfiguration still provides its real fitting result. Explicit
             // intrinsic invalidation carries each reply-height animation frame through
-            // UICollectionView's supported self-sizing path.
-            self.contentView.invalidateIntrinsicContentSize()
-            self.invalidateIntrinsicContentSize()
-            self.setNeedsLayout()
+            // UICollectionView's supported self-sizing path without inheriting UIKit's
+            // own self-sizing animation on top of the hosted frame.
+            UIView.performWithoutAnimation {
+                self.contentView.invalidateIntrinsicContentSize()
+                self.invalidateIntrinsicContentSize()
+                self.setNeedsLayout()
+            }
             self.didMeasure?()
         }
     }

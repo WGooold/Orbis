@@ -3082,36 +3082,45 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(group.waitForExistence(timeout: 8))
         let transcript = app.collectionViews["chat-transcript-native"].firstMatch
         XCTAssertTrue(transcript.exists)
-        for opening in [true, false, true] {
-            let button = app.buttons[opening ? "展开3 次工具调用，已完成" : "收起3 次工具调用，已完成"]
-            let header = button.frame
-            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: header.midX, dy: header.minY + 20)).tap()
-            let samples = try chatScrollFrames(app)
-            let values = samples.compactMap { sample -> ([Double], [Double])? in
+        func assertContinuousLayout(_ samples: [ChatScrollFrame], opening: Bool) throws {
+            let values = try samples.compactMap { sample -> ([Double], [Double], [Double])? in
                 guard let row = sample.rows["tool-card:preview-tool"],
                       let cell = sample.cells?["tool-card:preview-tool"] else { return nil }
-                return (row, cell)
+                let presented = try XCTUnwrap(sample.cells?["#presentation:tool-card:preview-tool"])
+                return (row, cell, presented)
             }
             let first = try XCTUnwrap(values.first), last = try XCTUnwrap(values.last)
             let direction = opening ? 1.0 : -1.0
             XCTAssertGreaterThan(values.count, 3)
             XCTAssertGreaterThan((last.0[2] - first.0[2]) * direction, 100)
             XCTAssertGreaterThan((last.1[2] - first.1[2]) * direction, 100)
-            for (row, cell) in values {
+            XCTAssertGreaterThan((last.2[2] - first.2[2]) * direction, 100)
+            for (row, cell, presented) in values {
                 XCTAssertEqual(row[0], first.0[0], accuracy: 1)
                 XCTAssertEqual(row[1], first.0[1], accuracy: 1)
                 XCTAssertEqual(cell[0], first.1[0], accuracy: 1)
                 XCTAssertEqual(cell[1], first.1[1], accuracy: 1)
+                XCTAssertEqual(presented[0], first.2[0], accuracy: 1)
+                XCTAssertEqual(presented[1], first.2[1], accuracy: 1)
                 XCTAssertEqual(cell[2], row[2], accuracy: 1, "The native cell must follow the hosted reply's measured height")
+                XCTAssertEqual(presented[2], row[2], accuracy: 1, "The presented native cell must follow the hosted reply without UIKit self-sizing lag")
             }
             for (before, after) in zip(values, values.dropFirst()) {
                 XCTAssertGreaterThanOrEqual((after.1[2] - before.1[2]) * direction, -1)
+                XCTAssertGreaterThanOrEqual((after.2[2] - before.2[2]) * direction, -1)
             }
             let low = min(first.1[2], last.1[2]), high = max(first.1[2], last.1[2])
             XCTAssertGreaterThan(values.filter { $0.1[2] > low + 1 && $0.1[2] < high - 1 }.count, 2)
+            XCTAssertGreaterThan(values.filter { $0.2[2] > low + 1 && $0.2[2] < high - 1 }.count, 2)
+        }
+        for opening in [true, false, true] {
+            let button = app.buttons[opening ? "展开3 次工具调用，已完成" : "收起3 次工具调用，已完成"]
+            let header = button.frame
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: header.midX, dy: header.minY + 20)).tap()
+            try assertContinuousLayout(try chatScrollFrames(app), opening: opening)
         }
         app.buttons["展开read，已完成"].tap()
-        _ = try chatScrollFrames(app)
+        try assertContinuousLayout(try chatScrollFrames(app), opening: true)
         let expandedCall = app.buttons["收起read，已完成"]
         XCTAssertTrue(expandedCall.exists)
         for _ in 0..<8 { transcript.swipeDown() }
