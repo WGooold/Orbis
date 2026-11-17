@@ -2,6 +2,41 @@
 
 Status: proposed
 
+## 多电脑、多手机的提醒与来源展示（2026-11-18，SC111–SC114）
+
+本节设计先于实现落定。沿用 S61 的实时活动、现有通知权限与配对关系；一个 Host 的不同手机分别判定提醒，一部手机的不同 Host 分别展示。实现、自动验证、部署及人工验收分别记录。
+
+### SC111：实时活动的来源与层级（LA-I11）
+
+- 每个 Host 保持一个聚合活动，不把不同电脑的任务合成一个总数。锁屏与展开视图首先显示电脑名，其后显示任务标题、运行／待处理数量；数量只属于这台电脑。Agent 图标保留在任务信息中，不能代替电脑来源。
+- 紧凑态左侧为电脑短名，右侧为现有耗时／数量／待处理状态；最小态使用本机生成的简短来源标记，VoiceOver 读出完整电脑名与状态。同名或截断后相同的来源使用稳定的 Host 摘要后缀区分，颜色仅表达状态。长名称单行截断，不能挤掉状态。
+- 待处理活动的 relevance 高于普通运行活动，过期／结束最低；最终展示数量和位置交由 iOS 决定，不轮播抢占，也不承诺所有 Host 同时占据灵动岛。系统不允许新活动时继续保留普通提醒。
+- 电脑名及来源标记保存在本机 activity attributes，兼容缺少新增字段的旧活动；旧活动使用通用电脑名与 Host 摘要兜底。活动创建后的改名在下一次活动生效，不为改名重建当前活动。现有过期、终态、划掉抑制与点击校验保持有效。
+
+### SC112：通知中心的分组与隐私（APNS-L17）
+
+- 每条提醒都显示来源电脑。标题为电脑显示名，正文为“任务已完成”或“有待处理的审批”；已有本地会话标题作为副标题。相同电脑名将稳定短标记放在开头，例如“7C2A · Mac mini”，避免长名称截掉区分标记。通知按 Host 分组，事件身份继续由 Host＋类别＋事件区分，两个 Host 的相同会话／事件 ID 不能互相覆盖。
+- 远程 alert 只携带既有 Host、类别及事件标识。新增 Notification Service Extension 从 App Group 中的本机来源目录补齐电脑名与语言；目录只含展示信息与不透明配对指纹，不含 credential、密钥、聊天内容或 APNs token。App 在配对新增、改名、解除时异步原子更新目录。
+- Relay 加入标准 APNs `thread-id`、`mutable-content`；扩展不可用、执行超时、目录缺失或旧 App 时保留“Orbis／电脑短标记＋通用提醒”的可用兜底。扩展不访问网络，不代替 E2E 状态核对。App Group 与扩展需在签名配置中一致启用，真实签名及 APNs 展示属于设备验证。
+
+### SC113：逐手机路由（APNS-L18／L19）
+
+- 完成／待处理事件按每台未撤销手机判断。正在接收该会话的手机走原 E2E 更新；查看另一会话、另一 Host、首页或后台的手机走 APNs。某手机的前台状态不改变其他手机的提醒。
+- 已保留的 E2E 会话与实际可达性分开。Relay 的 `device_offline` 不能被 `active` 路径掩盖；不通过销毁会话修正提醒，仍保留原重连恢复行为。当前可见会话在发送事件后通过有界加密探测确认通路；探测失败／超时则回退 APNs，覆盖先完成、后收到离线回报的竞态。
+- 未声明 history interest 的旧 App 沿用可达时 E2E、不可达时 APNs。去重记录针对同一事件，路由判断为每台手机独立；推送仍是尽力提醒，不承诺系统级可靠投递或跨通道严格一次。前台正在阅读对应会话时不额外弹本地完成横幅。
+
+### SC114：通知点击与安全落点（APNS-L20）
+
+- 本地及远程通知使用同一保留式点击队列，支持冷启动。兼容既有顶层 `hostId/sessionId` 的本地通知和 `orbis.v=1` 远程通知。
+- 新本地通知携带本机配对指纹及会话 ID；先验证当前配对，再仅在当前映射确认该会话时进入。远程提醒不携带会话内容，打开对应电脑首页；本地目标会话消失时也回该电脑首页，不进入该电脑之前记住的另一个会话。已解除或已替换配对的新通知被丢弃，旧格式只能按其已有 Host 信息校验。
+- 本轮实现范围为 Host／Relay 路由、iOS APNs、本地通知与实时活动；Android 不具有本轮 APNs／ActivityKit 通道，其独立通知能力另行演进。
+
+兼容边界：不改变 E2E 版本、业务帧及注册／wake 请求字段；APNs 扩展键为系统标准字段，旧 App 仍能显示提醒；新增本地 attributes 字段为可缺省值。旧 Relay 的通知没有 `mutable-content`，继续显示原通用提醒；旧 Host 继续使用原路由，新展示与修复分别随相应组件升级生效。
+
+实现入口：Host `DeviceLink.confirmNotificationReachability` 与 `HostService` 的逐设备 wake；Relay `APNsSender`；iOS `NotificationSource.swift`、`PushRegistration.swift`、`Notifications.swift`、`NotificationService/` 及原实时活动组件。回归见 `device-link.test.ts`、`host-service.test.ts` 的 APNS-L18／L19、`apns-transport.test.ts`、`NotificationSourceTests`、`PushRegistrationTests`、`LiveActivityPresentationTests`。
+
+2026-11-18 本机实施与自动验证完成：Node 定向验证 92 项通过；Swift 定向验证与独立发布版互通共 32 项通过；TypeScript 检查及 iOS App／Widget／通知扩展的 arm64、x86_64 编译通过。覆盖 2 Host × 2 手机、仅一台手机断开／切换、事件与离线反馈竞态、旧 App 无 interest、相同 Host 名及相同事件 ID、点击冷启动和完整配对替换。最近发布 v0.1.21 的真实 Relay 与 Swift 点击解析器通过注册、重连、回退和新通知包对照；E2E schema 与设备协议源码哈希保持一致。原缺陷证据保留于 `.artifacts/push-multihost-audit-20261117/`，本轮结果、首次失败及清理证据见 `.artifacts/push-multihost-fix-20261118/verification.json`。未部署、未安装到设备；App Group／扩展签名、真实 APNs 投递和灵动岛观感待用户验证。共享 QA MCP 当前连接被拒绝，登记请求条件与本轮完整验收要求保留在同目录 `qa-registration.json`；尚未建立可领取轮次。
+
 ## iOS 实时活动（2026-11-17，S61／SC109）
 
 - 每个 Host 聚合一个实时活动：单会话显示静态 Agent 图标与上次确认的约分钟耗时，多会话显示数量；待处理请求优先，展开显示焦点会话及其余运行数量。静止状态无旋转、闪烁或秒计时，过期显示待更新，结束后退出灵动岛并在锁屏短留。
@@ -16,7 +51,7 @@ Status: proposed
 ## 决策
 
 - 为 iOS 增加 APNs alert 提醒，覆盖 Host 观察到的任务正常完成、出现待审批两种低频边缘事件。推送只携带类别和随机/稳定事件标识，不包含聊天正文、审批参数、密钥或回答动作；APNs/Relay 均不是业务状态权威。
-- Host 仅对当前没有可用 E2E HostDeviceSession 的已配对设备发送 Relay wake 请求。Relay 校验已认证 Host 的 credential 与当前 Host 身份匹配、设备必须绑定到该 Host，再向 APNs 投递。收到通知后由用户打开 App，通过既有 E2E transport 获取 Host 权威状态。推送不作可靠投递承诺。
+- Host 按 SC113 对每台手机的会话关注范围及实际通路判定 Relay wake；保留的 E2E 会话不等于手机可达。Relay 校验已认证 Host 的 credential 与当前 Host 身份匹配、设备必须绑定到该 Host，再向 APNs 投递。收到通知后由用户打开 App，通过既有 E2E transport 获取 Host 权威状态。推送不作可靠投递承诺。
 - iOS 使用配对的 Relay device credential 注册 APNs token；设备撤销时由 Relay 清理 token。token 按 Host 配对作用域保存，Relay 状态文件权限为 0600。APNs .p8 仅由 Relay 进程从密钥文件读取。
 - 这不是 ADR-0009 中已删除的电脑到手机业务推送恢复：不传文件/会话内容、不保存投递进度、不需要手机明文 ACK；Relay 仍不解析 E2E 帧。
 

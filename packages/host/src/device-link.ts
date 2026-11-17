@@ -252,6 +252,7 @@ export class DeviceLink {
   readonly #reassembler: EnvelopeReassembler;
   /** 尚未回来的探测：`key` → 发出时刻与所属路径。 */
   readonly #pending = new Map<string, { sentAt: number; kind: PathKind }>();
+  #notificationProbe: { key: string; kind: PathKind; promise: Promise<boolean>; finish: (reachable: boolean) => void } | undefined;
   #probeTimer: NodeJS.Timeout | undefined;
   #probeCounter = 0;
   #closed = false;
@@ -281,6 +282,34 @@ export class DeviceLink {
   /** 当前生效路径。`undefined` 表示所有路径都不可用。 */
   get active(): PathKind | undefined {
     return this.#selector.active;
+  }
+
+  /** APNS-L18: a retained session is not evidence that the phone can receive
+   * an event. Probe the actual delivery path without changing reconnect state.
+   * Concurrent notification edges share one bounded round trip. */
+  confirmNotificationReachability(timeoutMs = 1_500): Promise<boolean> {
+    const kind = this.active;
+    if (this.#closed || kind === undefined || this.#absentPeers.has(kind)) return Promise.resolve(false);
+    if (this.#notificationProbe?.kind === kind) return this.#notificationProbe.promise;
+    this.#notificationProbe?.finish(false);
+    const token = Buffer.alloc(8);
+    token.writeBigUInt64BE(BigInt(this.#probeCounter++));
+    const key = token.toString("hex");
+    let finish!: (reachable: boolean) => void;
+    const promise = new Promise<boolean>(resolve => {
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      timer.unref?.();
+      finish = reachable => {
+        clearTimeout(timer);
+        this.#pending.delete(key);
+        if (this.#notificationProbe?.key === key) this.#notificationProbe = undefined;
+        resolve(reachable);
+      };
+    });
+    this.#notificationProbe = { key, kind, promise, finish };
+    this.#pending.set(key, { sentAt: performance.now(), kind });
+    if (!this.#sendSealed("ping", Buffer.concat([Buffer.from([PROBE_TAG_HOST]), token]), kind, "ctl")) finish(false);
+    return promise;
   }
 
   get activeRttMs(): number | undefined {
@@ -377,6 +406,7 @@ export class DeviceLink {
    * 丢已封帧才留不下空洞；在别处丢（例如逐帧的 `attach`）就是那个永久空洞。
    */
   #resetMux(kind: PathKind): void {
+    if (this.#notificationProbe?.kind === kind) this.#notificationProbe.finish(false);
     this.#muxes.get(kind)?.stop();
     this.#loseSyncDeliveries(kind);
     this.#muxes.set(kind, this.#createMux(kind));
@@ -387,6 +417,7 @@ export class DeviceLink {
    * 如果它正是生效路径，选路器会**立刻**换到剩下的最优路径——不等采样。
    */
   detach(kind: PathKind): void {
+    if (this.#notificationProbe?.kind === kind) this.#notificationProbe.finish(false);
     this.#sinks.delete(kind);
     this.#sessions.delete(kind);
     this.#absentPeers.delete(kind);
@@ -459,6 +490,7 @@ export class DeviceLink {
   markPeerAbsent(kind: PathKind): boolean {
     if (this.#absentPeers.has(kind)) return false;
     this.#absentPeers.add(kind);
+    if (this.#notificationProbe?.kind === kind) this.#notificationProbe.finish(false);
     return true;
   }
 
@@ -696,6 +728,7 @@ export class DeviceLink {
 
   close(): void {
     this.#closed = true;
+    this.#notificationProbe?.finish(false);
     for (const [kind, mux] of this.#muxes) {
       mux.stop();
       this.#loseSyncDeliveries(kind);
@@ -734,6 +767,7 @@ export class DeviceLink {
       this.#pending.delete(key);
       const rttMs = Math.max(0, performance.now() - pending.sentAt);
       if (rttMs > PROBE_TIMEOUT_MS) return;
+      if (this.#notificationProbe?.key === key) this.#notificationProbe.finish(true);
       this.#selector.observeRtt(kind, rttMs);
       if (this.#selector.active === kind) this.#options.onActiveRttUpdated?.(kind, rttMs);
       return;

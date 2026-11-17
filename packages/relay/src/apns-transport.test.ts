@@ -43,11 +43,11 @@ describe("APNs transport lifecycle", () => {
     await f.sender.sendActivity("a".repeat(64), { event: "update", timestamp: 123, priority: 5, contentState });
     expect(f.sent[0]!.headers).toMatchObject({ "apns-topic": `${config.bundleId}.push-type.liveactivity`,
       "apns-push-type": "liveactivity", "apns-priority": "5", "apns-expiration": "423" });
-    expect(f.sent[0]!.payload).toEqual({ aps: { timestamp: 123, event: "update", "content-state": contentState, "stale-date": 723 } });
+    expect(f.sent[0]!.payload).toEqual({ aps: { timestamp: 123, event: "update", "content-state": contentState, "stale-date": 723, "relevance-score": 50 } });
     await f.sender.sendActivity("a".repeat(64), { event: "end", timestamp: 124, priority: 10,
       contentState: { ...contentState, phase: "ended", runningCount: 0 } });
     expect(f.sent[1]!.headers["apns-priority"]).toBe("10");
-    expect(f.sent[1]!.payload.aps).toMatchObject({ timestamp: 124, event: "end", "dismissal-date": 424 });
+    expect(f.sent[1]!.payload.aps).toMatchObject({ timestamp: 124, event: "end", "dismissal-date": 424, "relevance-score": 0 });
     expect(f.sent[1]!.payload.aps).not.toHaveProperty("stale-date");
     f.sender.close();
   });
@@ -76,6 +76,9 @@ describe("APNs transport lifecycle", () => {
     expect(Number(headers["apns-expiration"])).toBeGreaterThan(Date.now() / 1000);
     expect(Number(headers["apns-expiration"])).toBeLessThanOrEqual(Date.now() / 1000 + 300);
     expect(f.sent[0]!.payload.orbis).toEqual({ v: 1, ...hint });
+    expect(f.sent[0]!.payload.aps).toMatchObject({ "mutable-content": 1,
+      "thread-id": expect.stringMatching(/^orbis\.host\.[0-9a-f]{64}$/u),
+      alert: { title: "Orbis", subtitle: expect.stringMatching(/^电脑 [0-9A-F]{4}$/u), body: "任务已完成" } });
     expect(Object.keys(f.sent[0]!.payload)).toEqual(["aps", "orbis"]);
     f.sender.close();
   });
@@ -98,6 +101,7 @@ describe("APNs transport lifecycle", () => {
     expect(mocked.connect).toHaveBeenCalledTimes(2);
     expect(f.session.close).toHaveBeenCalled();
     expect(f.sent[0]!.headers["apns-collapse-id"]).not.toBe(f.sent[1]!.headers["apns-collapse-id"]);
+    expect((f.sent[0]!.payload.aps as Record<string, unknown>)["thread-id"]).not.toBe((f.sent[1]!.payload.aps as Record<string, unknown>)["thread-id"]);
     f.sender.close();
   });
 

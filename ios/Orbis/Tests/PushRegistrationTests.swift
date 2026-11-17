@@ -215,8 +215,8 @@ import Combine
         let queue = PushNotificationOpenQueue()
         queue.receive(["orbis": ["v": 1, "hostId": "host", "category": "task-completed"]])
         var opened: [String] = []
-        let subscription = queue.publisher.sink { host in
-            if let host { opened.append(host); queue.consume() }
+        let subscription = queue.publisher.sink { target in
+            if let target { opened.append(target.hostId); queue.consume() }
         }
         XCTAssertEqual(opened, ["host"])
         XCTAssertNil(queue.hostId)
@@ -224,6 +224,49 @@ import Combine
         queue.receive(["orbis": ["v": 1, "hostId": "wrong", "category": "unknown"]])
         XCTAssertEqual(opened, ["host"])
         subscription.cancel()
+    }
+
+    // SC114: local completions used to be silently rejected by the remote-only
+    // parser. Both generations survive cold start and never open a random chat.
+    func testLocalNotificationOpenValidatesPairingAndExactSession() throws {
+        let queue = PushNotificationOpenQueue()
+        queue.receive(["hostId": "host", "sessionId": "session"])
+        var opened: [PushNotificationOpenTarget] = []
+        let subscription = queue.publisher.sink { target in
+            if let target { opened.append(target); queue.consume() }
+        }
+        defer { subscription.cancel() }
+        XCTAssertEqual(opened.count, 1)
+        let sessions: [(runtimeId: String, sessionId: String?)] = [("runtime", "session"), ("other", "other-session")]
+        XCTAssertEqual(opened[0].destination(currentPairingKey: "pairing", sessions: sessions, confirmed: true), .runtime("runtime"))
+        XCTAssertEqual(opened[0].destination(currentPairingKey: "pairing", sessions: sessions, confirmed: false), .home)
+        XCTAssertEqual(opened[0].destination(currentPairingKey: "pairing", sessions: [("other", "other-session")], confirmed: true), .home)
+        queue.receive(["orbis": ["v": 1, "category": "task-completed", "hostId": "host", "sessionId": "session", "pairingKey": "original"]])
+        XCTAssertEqual(opened.count, 2)
+        XCTAssertNil(opened[1].destination(currentPairingKey: "replacement", sessions: sessions, confirmed: true))
+        XCTAssertNil(opened[1].destination(currentPairingKey: nil, sessions: sessions, confirmed: true))
+        XCTAssertEqual(opened[1].destination(currentPairingKey: "original", sessions: sessions, confirmed: true), .runtime("runtime"))
+        queue.receive(["orbis": ["v": 1, "category": "approval-requested", "hostId": "second"]])
+        XCTAssertEqual(opened.last?.hostId, "second")
+        XCTAssertEqual(opened.last?.destination(currentPairingKey: "second-pairing", sessions: sessions, confirmed: true), .home)
+        XCTAssertNil(queue.hostId)
+        XCTAssertNil(PushNotificationOpenTarget(["hostId": " ", "sessionId": "session"]))
+        XCTAssertNil(PushNotificationOpenTarget(["hostId": "host", "sessionId": 3]))
+        XCTAssertNil(PushNotificationOpenTarget(["orbis": ["v": 9, "hostId": "host"], "hostId": "host"]))
+        XCTAssertNil(PushNotificationOpenTarget(["orbis": "malformed", "hostId": "host", "sessionId": "session"]))
+    }
+
+    // Replacing credentials under the same Host/device IDs must invalidate a
+    // local alert, whereas renaming the computer leaves the pairing unchanged.
+    func testNotificationBindingIncludesCompletePairing() {
+        let original = pairing()
+        var renamed = original; renamed.hostName = "New display name"
+        XCTAssertEqual(PushNotificationIdentity.pairingKey(original), PushNotificationIdentity.pairingKey(renamed))
+        XCTAssertNotEqual(PushNotificationIdentity.pairingKey(original),
+                          PushNotificationIdentity.pairingKey(pairing(credential: "replacement")))
+        let rekeyed = HostPairing(hostId: original.hostId, hostName: original.hostName, hostPub: original.hostPub,
+            pskRoot: "new-root", relay: original.relay, lan: original.lan)
+        XCTAssertNotEqual(PushNotificationIdentity.pairingKey(original), PushNotificationIdentity.pairingKey(rekeyed))
     }
 
     // APNS-L12: test the actual capability gate and request sequence, including
@@ -279,19 +322,21 @@ import Combine
         task.cancel()
     }
 
-    // APNS-L14: the isolated compatibility runner starts the actual v0.1.19
-    // and candidate Relay sources and passes loopback URLs to this real client.
+    // APNS-L14/SC113: the isolated runner supplies actual release sources. Old
+    // v0.1.19 lacks config; recent releases advertise it. The fixture declares
+    // which contract it is exercising, including upgrade and rollback.
     func testRealPreviousReleaseRelayCompatibilityWhenFixtureProvided() async throws {
         guard let old = ProcessInfo.processInfo.environment["ORBIS_PUSH_COMPAT_OLD"],
               let candidate = ProcessInfo.processInfo.environment["ORBIS_PUSH_COMPAT_NEW"] else {
             throw XCTSkip("Run via apns-lifecycle compatibility fixture")
         }
         let token = String(repeating: "c", count: 64)
+        let releasedStatus = ProcessInfo.processInfo.environment["ORBIS_PUSH_COMPAT_OLD_SUPPORTS_CONFIG"] == "1" ? 204 : 404
         var request = try XCTUnwrap(PushRegistrationTarget(pairing(credential: "compat-phone-secret"))
             .request(token: token, environment: "production"))
         request.url = URL(string: old + "/v1/push/register")
         var status = try await PushRegistrationHTTP.send(request)
-        XCTAssertEqual(status, 404)
+        XCTAssertEqual(status, releasedStatus)
         request.url = URL(string: candidate + "/v1/push/register")
         status = try await PushRegistrationHTTP.send(request)
         XCTAssertEqual(status, 204)
@@ -299,9 +344,10 @@ import Combine
         status = try await PushRegistrationHTTP.send(request)
         XCTAssertEqual(status, 409)
         // Reconnecting after an upgrade/revert renegotiates every time.
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": token, "environment": "production"])
         request.url = URL(string: old + "/v1/push/register")
         status = try await PushRegistrationHTTP.send(request)
-        XCTAssertEqual(status, 404)
+        XCTAssertEqual(status, releasedStatus)
     }
 }
 

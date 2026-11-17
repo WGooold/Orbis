@@ -3759,11 +3759,13 @@ final class HostConnection: ObservableObject {
                   branch == branchGenerations[runtimeId] ?? 0 else { return false }
             if replyCompletions.consume(event, sessionId: session) {
                 #if canImport(UIKit) && canImport(UserNotifications)
-                if preferences != nil, let hostId = selectedHostId,
+                if preferences != nil, !(historyWindowVisible && selectedRuntimeId == runtimeId),
+                   let hostId = selectedHostId, let pairing = pairings.first(where: { $0.hostId == hostId }),
                    let turnId = ((event["live"] as? [String: Any])?["turn"] as? [String: Any])?["turnId"] as? String,
                    let epoch = (event["source"] as? [String: Any])?["epoch"] as? String,
                    let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) {
-                    ReplyCompletionNotifications.shared.post(hostId: hostId, sessionId: session, epoch: epoch, turnId: turnId, title: displayName(runtime))
+                    ReplyCompletionNotifications.shared.post(hostId: hostId, pairingKey: PushNotificationIdentity.pairingKey(pairing),
+                        sessionId: session, epoch: epoch, turnId: turnId, title: displayName(runtime))
                 }
                 #endif
             }

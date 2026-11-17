@@ -53,7 +53,7 @@ enum PushLifecycleProbe {
                     let queue = PushNotificationOpenQueue()
                     queue.receive(notification.request.content.userInfo)
                     var observed: String?
-                    let subscription = queue.publisher.sink { observed = $0 }
+                    let subscription = queue.publisher.sink { observed = $0?.hostId }
                     result["coldOpenHost"] = observed as Any? ?? NSNull()
                     subscription.cancel()
                 }

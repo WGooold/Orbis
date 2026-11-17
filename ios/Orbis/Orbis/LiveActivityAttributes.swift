@@ -38,6 +38,9 @@ struct OrbisLiveActivityState: Codable, Hashable, Sendable {
         default: return true
         }
     }
+
+    /// LA-I11: relative priority between this app's independent Host activities.
+    var relevanceScore: Double { !isValid ? 0 : phase == "attention" ? 100 : phase == "running" ? 50 : 0 }
 }
 
 /// LA-02: display values use the last confirmed timestamp, with approximate
@@ -47,12 +50,15 @@ struct OrbisLiveActivityPresentation {
     let isStale: Bool
     let language: String
     let title: String
+    let source: NotificationSource
 
     init(state: OrbisLiveActivityState, isStale: Bool, language: String,
-         initialFocusKey: String? = nil, initialTitle: String? = nil) {
+         initialFocusKey: String? = nil, initialTitle: String? = nil,
+         hostId: String = "", source: NotificationSource? = nil) {
         self.state = state
         self.isStale = !state.isValid || state.phase == "stale" || (isStale && state.phase != "ended")
         self.language = language
+        self.source = source ?? .fallback(hostId: hostId, language: language)
         let localTitle = initialTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let focus = state.focusKey, focus == initialFocusKey,
            let localTitle, !localTitle.isEmpty {
@@ -157,6 +163,7 @@ struct OrbisLiveActivityPresentation {
     var actionText: String {
         isAttention ? (chinese ? "查看请求" : "View request") : (chinese ? "打开会话" : "Open session")
     }
+    var sourceAccessibilityLabel: String { source.name + ", " + headline }
 }
 
 #if os(iOS) && canImport(ActivityKit)
@@ -172,6 +179,7 @@ struct OrbisLiveActivityAttributes: ActivityAttributes {
     /// changed focus cannot reuse the title of the previous session.
     var initialFocusKey: String? = nil
     var initialTitle: String? = nil
+    var source: NotificationSource? = nil
 
     func url(focusKey: String?) -> URL? {
         var components = URLComponents()

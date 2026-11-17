@@ -286,6 +286,7 @@ final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
     }
     static func updatePairings(_ value: [HostPairing]) {
         pushRegistration.updatePairings(value)
+        ReplyCompletionNotifications.shared.updateSources(value)
     }
     static func registerForPushIfAllowed() {
         authorizationRevision += 1
@@ -317,6 +318,27 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
     static let shared = ReplyCompletionNotifications()
     static let remoteOpens = PushNotificationOpenQueue()
     private var requesting = false
+    private let sourceQueue = DispatchQueue(label: "orbis.notification.sources", qos: .utility)
+    private var sources = NotificationSourceDirectory(language: "zh-Hans", hosts: [:])
+    private var sourceRevision = 0
+
+    func updateSources(_ pairings: [HostPairing]) {
+        sourceRevision += 1
+        let revision = sourceRevision
+        let inputs = pairings.map { NotificationSource.Input(hostId: $0.hostId, name: $0.hostName,
+            pairingKey: PushNotificationIdentity.pairingKey($0)) }
+        let language = AppLocalization.shared.language.rawValue
+        // Serial, atomic writes keep an older pairing snapshot from overwriting
+        // a newer removal. All filesystem work runs away from the main thread.
+        sourceQueue.async { [weak self] in
+            let directory = NotificationSourceDirectory(language: language, hosts: NotificationSource.make(inputs, language: language))
+            if let url = NotificationSourceDirectory.sharedURL() { try? directory.write(to: url) }
+            Task { @MainActor in
+                guard let self, self.sourceRevision == revision else { return }
+                self.sources = directory
+            }
+        }
+    }
     func prepare() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -332,12 +354,15 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
             requesting = false
         }
     }
-    func post(hostId: String, sessionId: String, epoch: String, turnId: String, title: String) {
+    func post(hostId: String, pairingKey: String, sessionId: String, epoch: String, turnId: String, title: String) {
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = L10n.tr("回复完成")
+        content.title = sources.source(hostId: hostId).name
+        content.subtitle = String(title.prefix(160))
+        content.body = sources.body(category: "task-completed")
+        content.threadIdentifier = NotificationSource.threadIdentifier(hostId)
         content.sound = .default
-        content.userInfo = ["hostId": hostId, "sessionId": sessionId]
+        content.userInfo = ["orbis": ["v": 1, "category": "task-completed", "hostId": hostId,
+            "sessionId": sessionId, "pairingKey": pairingKey]]
         // Use an identity key so repeated delivery replaces the same OS notification.
         let identifier = Data((hostId + "\u{0}" + sessionId + "\u{0}" + epoch + "\u{0}" + turnId).utf8).base64EncodedString()
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))

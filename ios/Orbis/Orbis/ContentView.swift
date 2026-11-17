@@ -241,14 +241,23 @@ private struct NavigationRoot: View, Equatable {
             rootTab = .chat; displayedRoot = .chat
             navigation.replace(with: target.runtimeId == nil ? [] : [.chat])
         }
-        .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { hostId in
-            guard let hostId else { return }
+        .onReceive(ReplyCompletionNotifications.remoteOpens.publisher) { target in
+            guard let target else { return }
             ReplyCompletionNotifications.remoteOpens.consume()
-            guard store.pairings.contains(where: { $0.hostId == hostId }) else { return }
+            let pairing = store.pairings.first { $0.hostId == target.hostId }
+            let connection = store.connection(for: target.hostId)
+            guard let destination = target.destination(currentPairingKey: pairing.map { PushNotificationIdentity.pairingKey($0) },
+                sessions: connection?.runtimes.map { ($0.runtimeId, $0.sessionId) } ?? [],
+                confirmed: connection?.connection == .secured && connection?.homeRuntimesUpdating == false) else { return }
             LiveActivityCoordinator.shared.cancelQueuedOpen()
-            store.connect(hostId: hostId)
+            store.connect(hostId: target.hostId)
             rootTab = .chat; displayedRoot = .chat
-            navigation.replace(with: [.chat])
+            switch destination {
+            case .home: navigation.replace(with: [])
+            case .runtime(let runtimeId):
+                store.selectRuntime(hostId: target.hostId, runtimeId: runtimeId)
+                navigation.replace(with: [.chat])
+            }
         }
         .task(id: scenePhase) {
             store.setFeedbackForeground(scenePhase == .active)

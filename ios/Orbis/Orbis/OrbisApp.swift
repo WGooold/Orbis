@@ -75,6 +75,7 @@ struct OrbisApp: App {
             .environment(\.layoutDirection, .leftToRight)
             .task { prepareReplyNotifications() }
             .onChange(of: store.pairings) { _, _ in prepareReplyNotifications() }
+            .onChange(of: AppLocalization.shared.language) { _, _ in prepareReplyNotifications() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     AppLocalization.shared.refreshSystemLanguage(); prepareReplyNotifications()

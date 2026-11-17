@@ -35,7 +35,7 @@ struct OrbisLiveActivityWidget: Widget {
             let presentation = context.presentation
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    OrbisActivityMark(presentation: presentation, size: 24)
+                    OrbisActivityIdentity(presentation: presentation)
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -53,7 +53,12 @@ struct OrbisLiveActivityWidget: Widget {
                         .padding(.bottom, 4)
                 }
             } compactLeading: {
-                OrbisActivityMark(presentation: presentation, size: 19)
+                Text(presentation.source.compactName)
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .frame(maxWidth: 56)
+                    .privacySensitive()
+                    .accessibilityLabel(presentation.sourceAccessibilityLabel)
             } compactTrailing: {
                 HStack(spacing: 4) {
                     if presentation.isAttention {
@@ -67,13 +72,17 @@ struct OrbisLiveActivityWidget: Widget {
                 .foregroundStyle(presentation.tint)
                 .accessibilityLabel(presentation.headline)
             } minimal: {
-                if presentation.isAttention {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(presentation.tint)
-                        .accessibilityLabel(presentation.statusText)
-                } else {
-                    OrbisActivityMark(presentation: presentation, size: 19)
+                HStack(spacing: 1) {
+                    Text(presentation.source.badge)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .minimumScaleFactor(0.65)
+                        .lineLimit(1)
+                        .privacySensitive()
+                    if presentation.isAttention { Image(systemName: "exclamationmark").font(.system(size: 9, weight: .bold)) }
                 }
+                .foregroundStyle(presentation.tint)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(presentation.sourceAccessibilityLabel)
             }
             .widgetURL(context.attributes.url(focusKey: context.state.focusKey))
             .keylineTint(presentation.tint)
@@ -84,7 +93,8 @@ struct OrbisLiveActivityWidget: Widget {
 private extension ActivityViewContext where Attributes == OrbisLiveActivityAttributes {
     var presentation: OrbisLiveActivityPresentation {
         OrbisLiveActivityPresentation(state: state, isStale: isStale, language: attributes.language,
-            initialFocusKey: attributes.initialFocusKey, initialTitle: attributes.initialTitle)
+            initialFocusKey: attributes.initialFocusKey, initialTitle: attributes.initialTitle,
+            hostId: attributes.hostId, source: attributes.source)
     }
 }
 
@@ -113,9 +123,12 @@ private struct OrbisActivityIdentity: View {
     let presentation: OrbisLiveActivityPresentation
     var body: some View {
         HStack(spacing: 8) {
-            OrbisActivityMark(presentation: presentation, size: 22)
-            Text("Orbis").font(.subheadline.weight(.medium))
+            Image(systemName: "desktopcomputer").font(.subheadline)
+                .foregroundStyle(Color(white: 0.65))
+            Text(presentation.source.name).font(.subheadline.weight(.medium))
+                .lineLimit(1).privacySensitive()
         }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -125,11 +138,14 @@ private struct OrbisActivityDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(presentation.title)
-                .font(.headline)
-                .privacySensitive()
-                .foregroundStyle(.white)
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                OrbisActivityMark(presentation: presentation, size: 18)
+                Text(presentation.title)
+                    .font(.headline)
+                    .privacySensitive()
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
             Text(presentation.detail)
                 .font(.subheadline)
                 .foregroundStyle(Color(white: 0.65))

@@ -177,6 +177,10 @@ final class LiveActivityCoordinator: ObservableObject {
     private func refresh() async {
         guard let store else { return }
         let hosts = store.hosts
+        let sourceInputs = hosts.map { NotificationSource.Input(hostId: $0.hostId, name: $0.name,
+            pairingKey: PushNotificationIdentity.pairingKey($0.pairing)) }
+        let language = AppLocalization.shared.language.rawValue
+        let sources = await Task.detached(priority: .utility) { NotificationSource.make(sourceInputs, language: language) }.value
         for (id, activity) in activities {
             let valid = hosts.contains { $0.hostId == id && FileTransfers.pairingKey($0.pairing) == activity.attributes.pairingKey }
             if !valid { await finish(activity, state: nil, immediate: true) }
@@ -236,7 +240,7 @@ final class LiveActivityCoordinator: ObservableObject {
                 let localTitle = projection.1.first { _, key in key == state.focusKey }?.0.title
                 let attributes = OrbisLiveActivityAttributes(hostId: host.hostId, language: AppLocalization.shared.language.rawValue,
                     pairingKey: FileTransfers.pairingKey(host.pairing), initialFocusKey: state.focusKey,
-                    initialTitle: localTitle.map { String($0.prefix(120)) })
+                    initialTitle: localTitle.map { String($0.prefix(120)) }, source: sources[host.hostId])
                 do {
                     let activity = try Activity.request(attributes: attributes, content: content(state), pushType: .token)
                     lifecycle.noteCreated(pairingKey: pairingKey, activityId: activity.id, runKeys: runKeys)
@@ -253,7 +257,8 @@ final class LiveActivityCoordinator: ObservableObject {
     }
 
     private func content(_ state: OrbisLiveActivityState) -> ActivityContent<OrbisLiveActivityState> {
-        ActivityContent(state: state, staleDate: state.phase == "stale" ? Date() : Date().addingTimeInterval(600))
+        ActivityContent(state: state, staleDate: state.phase == "stale" ? Date() : Date().addingTimeInterval(600),
+            relevanceScore: state.relevanceScore)
     }
 
     private func watch(_ activity: Activity<OrbisLiveActivityAttributes>) {

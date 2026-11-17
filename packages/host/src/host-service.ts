@@ -2993,11 +2993,13 @@ export class HostService {
       this.#recordAgentDiagnostic(runtimeId, "interaction", "Interaction requested");
       const ids = this.#interactionIds.get(runtimeId) ?? new Set<string>();
       if (ids.size < 64) ids.add(event.request.requestId); this.#interactionIds.set(runtimeId, ids);
-      this.#wakeOfflineDevices("approval-requested", createHash("sha256").update(`approval:${runtimeId}:${event.request.requestId}`).digest("hex"));
+      const scope = this.#agentFacts.scopeOf(runtimeId);
+      this.#wakeDevices("approval-requested", createHash("sha256").update(`approval:${runtimeId}:${event.request.requestId}`).digest("hex"),
+        runtimeId, scope?.kind === "agent" ? scope.key.sessionId : undefined);
     }
     if (event.type === "session.patch" && event.live?.turn?.outcome === "completed") {
       const turnId = event.live.turn.turnId;
-      if (turnId) this.#wakeOfflineDevices("task-completed", createHash("sha256").update(`completed:${runtimeId}:${event.sessionId}:${turnId}`).digest("hex"));
+      if (turnId) this.#wakeDevices("task-completed", createHash("sha256").update(`completed:${runtimeId}:${event.sessionId}:${turnId}`).digest("hex"), runtimeId, event.sessionId);
     }
     if (event.type === "interaction.snapshot") this.#interactionIds.set(runtimeId, new Set(event.requests.map(item => item.requestId)));
     if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
@@ -3041,10 +3043,25 @@ export class HostService {
   }
 
   readonly #pushWakeReceipts = new PushWakeReceipts();
-  #wakeOfflineDevices(category: "task-completed" | "approval-requested", eventId: string): void {
+  #wakeDevices(category: "task-completed" | "approval-requested", eventId: string, runtimeId: string, sessionId?: string): void {
     if (!this.#pushWakeReceipts.observe(category, eventId)) return;
-    const deviceIds = this.#store.devices.filter(device => !device.revoked && this.#links.get(device.deviceId)?.active === undefined)
-      .map(device => device.deviceId);
+    // APNS-L19: capture each phone's interest at the semantic edge. Defer the
+    // reachability probe until the event has been queued for its E2E recipients.
+    const recipients = this.#store.devices.filter(device => !device.revoked).map(device => ({ device,
+      link: this.#links.get(device.deviceId), interest: this.#historyInterests.get(device.deviceId) }));
+    queueMicrotask(() => {
+      void Promise.all(recipients.map(async ({ device, link, interest }) => {
+        const watching = interest === undefined || interest !== null && interest.runtimeId === runtimeId && interest.sessionId === sessionId;
+        if (watching && await link?.confirmNotificationReachability()) return undefined;
+        // Unpair/replacement may race the probe. Never revive an old recipient.
+        return this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
+          ? device.deviceId : undefined;
+      })).then(ids => this.#sendPushWake(category, eventId, ids.filter((id): id is string => id !== undefined)))
+        .catch(error => this.#options.log?.(`APNs routing failed: ${describeError(error)}`));
+    });
+  }
+
+  #sendPushWake(category: "task-completed" | "approval-requested", eventId: string, deviceIds: string[]): void {
     if (deviceIds.length === 0 || this.#relay?.state !== "connected") return;
     const url = `${relayHttpBase(this.#options.relayUrl)}/v1/push/wake`;
     if (!url.startsWith("https://")) return;

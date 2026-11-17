@@ -3,6 +3,22 @@ import XCTest
 @testable import OrbisCore
 
 final class LiveActivityPresentationTests: XCTestCase {
+    // SC111: Host identity is retained for every phase, never inferred from the
+    // Agent icon or the selected Host, and attention outranks running activities.
+    func testHostSourceAndPriorityRemainIndependentFromTaskState() {
+        let sources = NotificationSource.make([.init(hostId: "one", name: "Work Mac", pairingKey: "p")], language: "en")
+        let p = OrbisLiveActivityPresentation(state: state(), isStale: false, language: "en", hostId: "one", source: sources["one"])
+        XCTAssertEqual(p.source.name, "Work Mac")
+        XCTAssertTrue(p.sourceAccessibilityLabel.hasPrefix("Work Mac, "))
+        XCTAssertEqual(state().relevanceScore, 50)
+        var attention = state(); attention.phase = "attention"; attention.pendingCount = 1
+        XCTAssertEqual(attention.relevanceScore, 100)
+        var stale = state(); stale.phase = "stale"
+        XCTAssertEqual(stale.relevanceScore, 0)
+        let legacy = OrbisLiveActivityPresentation(state: state(), isStale: true, language: "en", hostId: "one")
+        XCTAssertTrue(legacy.source.name.hasPrefix("Computer "))
+        XCTAssertTrue(legacy.sourceAccessibilityLabel.contains("Update needed"))
+    }
     private let focus = String(repeating: "a", count: 64)
     private func state(_ phase: String = "running", running: Int = 1, pending: Int = 0,
                        outcome: String? = nil) -> OrbisLiveActivityState {
@@ -102,6 +118,7 @@ final class LiveActivityPresentationTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(object["title"])
         XCTAssertNil(object["initialTitle"])
+        XCTAssertNil(object["source"])
     }
 
     // LA-02: cap large compact counts, preserve full expanded counts, and use

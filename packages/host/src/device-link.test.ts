@@ -675,6 +675,49 @@ describe("DeviceLink", () => {
     } finally { now.mockRestore(); h.link.close(); }
   });
 
+  // APNS-L18: a fresh proof belongs to the event's delivery path, and a late
+  // absence/timeout cannot turn a retained session into evidence of reachability.
+  it("confirms notification reachability by echo, coalesces probes and handles late absence", async () => {
+    const h = harness({ pskRoot: randomKey() });
+    try {
+      h.handshake("relay");
+      const reachable = h.link.confirmNotificationReachability();
+      expect(h.link.confirmNotificationReachability()).toBe(reachable);
+      const probe = h.shift("notification probe");
+      h.link.handle("relay", h.peer("relay").echoPing(probe.envelope));
+      expect(await reachable).toBe(true);
+      const absent = h.link.confirmNotificationReachability();
+      h.link.markPeerAbsent("relay");
+      expect(await absent).toBe(false);
+      expect(h.link.active).toBe("relay");
+      expect(await h.link.confirmNotificationReachability()).toBe(false);
+    } finally { h.link.close(); }
+  });
+
+  it("times out a silent phone and cancels pending notification probes on close", async () => {
+    const h = harness({ pskRoot: randomKey() });
+    try {
+      h.handshake("relay");
+      expect(await h.link.confirmNotificationReachability(10)).toBe(false);
+      const closing = h.link.confirmNotificationReachability();
+      h.link.close();
+      expect(await closing).toBe(false);
+    } finally { h.link.close(); }
+  });
+
+  it("keeps a working LAN delivery path eligible when only Relay is absent", async () => {
+    const h = harness({ pskRoot: randomKey() });
+    try {
+      h.handshake("lan"); h.handshake("relay");
+      h.link.markPeerAbsent("relay");
+      const reachable = h.link.confirmNotificationReachability();
+      const probe = h.shift("LAN notification probe");
+      expect(probe.kind).toBe("lan");
+      h.link.handle("lan", h.peer("lan").echoPing(probe.envelope));
+      expect(await reachable).toBe(true);
+    } finally { h.link.close(); }
+  });
+
   // 易错点：中继不通知设备掉线，relay 会话停在 ready，探针每两秒换回一条 device_offline、
   // Host 日志每 10 秒刷一行。缺席只停该路探针、每段只报一次，手机重连发 HS1 后恢复。
   it("对端在中继缺席时停探该路，每段缺席只报一次，重新握手后恢复", () => {

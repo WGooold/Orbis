@@ -57,6 +57,7 @@ import { createBusinessRelayServer as createRelayServer, relayBusinessHostOption
 
 import { HostService, channelForDeviceMessage } from "./host-service.js";
 import { HostRelayClient } from "./relay-client.js";
+import * as pushRelayConfig from "./config.js";
 import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
@@ -4584,5 +4585,163 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     expect(host.readDiagnostics({ category: "backend.transport" }).records).toContainEqual(expect.objectContaining({ agentKind: "claude",
       message: "Claude Code bridge refused", detail: expect.objectContaining({ reason: "claude_version_too_old:2.1.287", claudeVersion: "2.1.100" }) }));
     expect(launches).toEqual([]);
+  });
+});
+
+// SC113: real isolated pairing/AEAD/Relay traffic; only HTTPS wake is captured.
+describe("APNS-L18/L19 per-phone push routing", () => {
+  let relay: RelayServer;
+  let host: HostService;
+  let runtime: TestRuntime;
+  let directory: string;
+  const phones: TestDevice[] = [];
+  const logs: string[] = [];
+  const setup = async () => {
+    directory = await mkdtemp(join(tmpdir(), "orbis-push-audit-"));
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret" });
+    host = await HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir: directory, reconnect: false, relayTransport: "ws", lan: false, probeIntervalMs: 20, log: line => logs.push(line) });
+    await host.start();
+  };
+  const pair = async () => {
+    const opened = await host.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "synthetic phone" });
+    phones.push(connected.device);
+    const pskRoot = await connected.device.pair(connected.payload);
+    return { device: connected.device, pskRoot, payload: opened.payload };
+  };
+  const until = async (phone: TestDevice, predicate: (message: any) => boolean) => {
+    for (let index = 0; index < 100; index++) {
+      const message = await phone.receiveMessage();
+      if (predicate(message)) return message;
+    }
+    throw new Error("Expected FIFO barrier did not arrive");
+  };
+  const open = async (paired: { device: TestDevice; pskRoot: Buffer; payload: PairingQrPayload }) => {
+    await paired.device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await until(paired.device, message => message.type === "device.path");
+  };
+  const backend = async () => {
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "runtime", sessionId: "session", name: "Synthetic Pi", cwd: directory, status: "idle" } });
+    await runtime.next();
+  };
+  const captureWake = () => {
+    vi.spyOn(pushRelayConfig, "relayHttpBase").mockReturnValue("https://push-audit.invalid");
+    return vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+  };
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    runtime?.close(); phones.splice(0).forEach(phone => phone.close());
+    await host?.stop(); await relay?.close();
+    if (directory) await rm(directory, { recursive: true, force: true });
+    runtime = undefined!; logs.length = 0;
+  });
+
+  it("wakes both a disconnected retained session and a never-connected phone", async () => {
+    await setup();
+    const disconnected = await pair(); await open(disconnected);
+    const control = await pair();
+    await backend();
+    await until(disconnected.device, message => message.type === "runtime.online");
+    const wake = captureWake();
+    disconnected.device.closePath("relay");
+    await vi.waitFor(() => expect(logs.some(line => line.includes(`设备 ${disconnected.device.deviceId} 不在中继上`))).toBe(true));
+    expect(host.activePathOf(disconnected.device.deviceId)).toBe("relay");
+    runtime.publish(1, { type: "interaction.requested", request: { runtimeId: "runtime", requestId: "approval-offline",
+      extensionId: "ask", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(wake.mock.calls[0]![1]!.body as string);
+    expect(body.category).toBe("approval-requested");
+    expect(body.deviceIds.sort()).toEqual([control.device.deviceId, disconnected.device.deviceId].sort());
+  });
+
+  it("wakes the phone viewing another Host without resuming its hidden chat stream", async () => {
+    await setup();
+    const online = await pair(); await open(online);
+    const control = await pair();
+    const viewing = await pair(); await open(viewing);
+    await backend();
+    await until(online.device, message => message.type === "runtime.online");
+    online.device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "capability" }));
+    await until(online.device, message => message.requestId === "capability");
+    viewing.device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "viewer-capability" }));
+    await until(viewing.device, message => message.requestId === "viewer-capability");
+    viewing.device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: PROTOCOL_VERSION,
+      requestId: "viewing", runtimeId: "runtime", sessionId: "session" }));
+    expect(await until(viewing.device, message => message.requestId === "viewing")).toMatchObject({ accepted: true });
+    const fixture = JSON.parse(await readFile(new URL("../../../ios/Orbis/Tests/Fixtures/field-transport-session.json", import.meta.url), "utf8"));
+    fixture.initial.event.live.turn = { turnId: "completed-hidden", startedAt: 1000 };
+    // Publish a real accepted baseline through the sync coordinator first.
+    online.device.sendCommand("runtime", "sync", { type: "session.sync", sessionId: "session", syncId: "sync", range: "preview" });
+    let request: any;
+    do { request = await runtime.next(2000); } while (request.type !== "runtime.command");
+    runtime.publish(1, { ...fixture.initial.event, syncId: request.command.syncId });
+    await until(online.device, message => message.event?.type === "session.snapshot");
+    // Seed the running turn before simulating navigation away from this Host.
+    online.device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: PROTOCOL_VERSION,
+      requestId: "hidden", runtimeId: null, sessionId: null }));
+    expect(await until(online.device, message => message.requestId === "hidden")).toMatchObject({ accepted: true });
+    const wake = captureWake();
+    const patch = structuredClone(fixture.patch.event);
+    patch.live.turn = { turnId: "completed-hidden", startedAt: 1000, durationMs: 100, outcome: "completed" };
+    runtime.publish(2, patch);
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(wake.mock.calls[0]![1]!.body as string);
+    expect(body.category).toBe("task-completed");
+    expect(body.deviceIds).not.toContain(viewing.device.deviceId);
+    expect(body.deviceIds.sort()).toEqual([control.device.deviceId, online.device.deviceId].sort());
+    online.device.sendCommand("runtime", "barrier", { type: "stop" });
+    expect(await runtime.next()).toMatchObject({ commandId: "barrier" });
+    runtime.publish(3, { type: "command.result", commandId: "barrier", ok: true });
+    for (;;) {
+      const message: any = await online.device.receiveMessage();
+      expect(message.event?.type).not.toBe("session.patch");
+      if (message.event?.commandId === "barrier") break;
+    }
+    // RTT announcements may arrive every 20ms. Observe a fixed time window;
+    // waiting for an idle interval would make this audit hang on a healthy link.
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      const incoming = await online.device.nextIncoming(Math.max(1, deadline - Date.now())).catch(() => undefined);
+      if (!incoming) break;
+      if ("payload" in incoming) expect(JSON.parse(incoming.payload.toString()).event?.type).not.toBe("session.patch");
+    }
+  });
+
+  // The same Host decides separately for each pairing; a legacy subscriber
+  // receives the edge over E2E, even while the other phone needs APNs.
+  it("keeps reachable legacy subscribers on E2E and deduplicates approval edges", async () => {
+    await setup();
+    const online = await pair(); await open(online);
+    const offline = await pair(); await backend();
+    await until(online.device, message => message.type === "runtime.online");
+    const wake = captureWake();
+    const event = { type: "interaction.requested" as const, request: { runtimeId: "runtime", requestId: "same-request",
+      extensionId: "ask", kind: "confirm" as const, title: "Continue?", expiresAt: Date.now() + 60_000 } };
+    runtime.publish(1, event);
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(wake.mock.calls[0]![1]!.body as string).deviceIds).toEqual([offline.device.deviceId]);
+    runtime.publish(2, event);
+    online.device.sendCommand("runtime", "replay-barrier", { type: "stop" });
+    expect(await runtime.next()).toMatchObject({ commandId: "replay-barrier" });
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  // No periodic probe has observed device_offline yet: the event's own bounded
+  // probe must discover loss without destroying the retained E2E session.
+  it("falls back when completion delivery races the first offline report", async () => {
+    await setup();
+    const phone = await pair(); await open(phone); await backend();
+    await until(phone.device, message => message.type === "runtime.online");
+    const wake = captureWake();
+    phone.device.closePath("relay");
+    runtime.publish(1, { type: "interaction.requested", request: { runtimeId: "runtime", requestId: "race-request",
+      extensionId: "ask", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    expect(JSON.parse(wake.mock.calls[0]![1]!.body as string).deviceIds).toEqual([phone.device.deviceId]);
+    expect(host.activePathOf(phone.device.deviceId)).toBe("relay");
   });
 });

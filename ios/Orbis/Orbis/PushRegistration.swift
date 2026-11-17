@@ -21,16 +21,58 @@ enum PushRegistrationEnvironment {
     }
 }
 
+enum PushNotificationIdentity {
+    /// APNS-L20: the transfer-cache key deliberately survives credential changes;
+    /// an actionable notification must instead belong to the complete pairing.
+    static func pairingKey(_ pairing: HostPairing) -> String {
+        let values = [pairing.hostId, pairing.hostPub, pairing.pskRoot, pairing.relay.relayUrl,
+                      pairing.relay.deviceId, pairing.relay.credential]
+        return NotificationSource.digest(values.map { "\($0.utf8.count):\($0)" }.joined())
+    }
+}
+
+/// APNS-L20: tolerate released local and remote envelopes, but never guess a
+/// session from the selected Host's remembered chat.
+struct PushNotificationOpenTarget: Equatable {
+    let hostId: String
+    let sessionId: String?
+    let pairingKey: String?
+
+    init?(_ userInfo: [AnyHashable: Any]) {
+        let payload: [AnyHashable: Any]
+        if let envelope = userInfo["orbis"] {
+            guard let remote = envelope as? [String: Any], remote["v"] as? Int == 1,
+                  ["task-completed", "approval-requested"].contains(remote["category"] as? String ?? "") else { return nil }
+            payload = remote
+        } else { payload = userInfo }
+        guard let host = payload["hostId"] as? String, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              host.utf8.count <= 128 else { return nil }
+        func identifier(_ key: String, limit: Int) -> String? {
+            guard let value = payload[key] as? String, !value.isEmpty, value.utf8.count <= limit else { return nil }
+            return value
+        }
+        if payload["sessionId"] != nil && identifier("sessionId", limit: 4096) == nil { return nil }
+        if payload["pairingKey"] != nil && identifier("pairingKey", limit: 128) == nil { return nil }
+        hostId = host; sessionId = identifier("sessionId", limit: 4096); pairingKey = identifier("pairingKey", limit: 128)
+    }
+
+    enum Destination: Equatable { case home, runtime(String) }
+    func destination(currentPairingKey: String?, sessions: [(runtimeId: String, sessionId: String?)], confirmed: Bool) -> Destination? {
+        guard let currentPairingKey, pairingKey == nil || pairingKey == currentPairingKey else { return nil }
+        guard confirmed, let sessionId else { return .home }
+        let matches = sessions.filter { $0.sessionId == sessionId }
+        return matches.count == 1 ? .runtime(matches[0].runtimeId) : .home
+    }
+}
+
 /// APNS-L11: retain a notification opened before SwiftUI subscribes at cold start.
 @MainActor final class PushNotificationOpenQueue {
-    private let pending = CurrentValueSubject<String?, Never>(nil)
-    var hostId: String? { pending.value }
-    var publisher: AnyPublisher<String?, Never> { pending.eraseToAnyPublisher() }
+    private let pending = CurrentValueSubject<PushNotificationOpenTarget?, Never>(nil)
+    var hostId: String? { pending.value?.hostId }
+    var publisher: AnyPublisher<PushNotificationOpenTarget?, Never> { pending.eraseToAnyPublisher() }
     func receive(_ userInfo: [AnyHashable: Any]) {
-        guard let payload = userInfo["orbis"] as? [String: Any], payload["v"] as? Int == 1,
-              let host = payload["hostId"] as? String, !host.isEmpty, host.utf8.count <= 128,
-              ["task-completed", "approval-requested"].contains(payload["category"] as? String ?? "") else { return }
-        pending.send(host)
+        guard let target = PushNotificationOpenTarget(userInfo) else { return }
+        pending.send(target)
     }
     func consume() { pending.send(nil) }
 }

@@ -36,7 +36,9 @@ export class APNsSender {
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 300),
       "apns-collapse-id": createHash("sha256").update(JSON.stringify([hint.hostId, hint.category, hint.eventId])).digest("hex").slice(0, 32),
     }, {
-      aps: { alert: { title: "Orbis", body: hint.category === "approval-requested" ? "有待处理的审批" : "任务已完成" }, sound: "default" },
+      aps: { alert: { title: "Orbis", subtitle: `电脑 ${createHash("sha256").update(hint.hostId).digest("hex").slice(0, 4).toUpperCase()}`,
+        body: hint.category === "approval-requested" ? "有待处理的审批" : "任务已完成" }, sound: "default",
+        "thread-id": `orbis.host.${createHash("sha256").update(hint.hostId).digest("hex")}`, "mutable-content": 1 },
       orbis: { v: 1, category: hint.category, eventId: hint.eventId, hostId: hint.hostId },
     });
   }
@@ -52,6 +54,7 @@ export class APNsSender {
       "apns-collapse-id": createHash("sha256").update(activityToken).digest("hex").slice(0, 32),
     }, { aps: {
       timestamp: push.timestamp, event: push.event, "content-state": push.contentState,
+      "relevance-score": push.contentState.phase === "attention" ? 100 : push.contentState.phase === "running" ? 50 : 0,
       ...(push.event === "end" ? { "dismissal-date": push.timestamp + 300 } : { "stale-date": push.timestamp + 600 }),
     } });
   }
