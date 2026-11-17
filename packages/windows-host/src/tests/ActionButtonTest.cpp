@@ -63,8 +63,17 @@ private slots:
         window.setColor(theme->property("surfaceBase").value<QColor>());
         button->setParentItem(window.contentItem());
         button->setPosition(QPointF(30, 26)); button->setSize(QSizeF(160, 48));
+        auto *spinner = button->findChild<QQuickItem *>("actionButtonSpinner"); QVERIFY(spinner);
+        QSignalSpy painted(spinner, SIGNAL(painted())); QVERIFY(painted.isValid());
+        QSignalSpy rendered(&window, &QQuickWindow::afterRendering); QVERIFY(rendered.isValid());
         window.show();
-        QTest::qWait(300);
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(!painted.isEmpty());
+        // Canvas painting completes asynchronously. Sample only after a new
+        // software-rendered frame can include that paint, including still mode.
+        const auto framesBeforeUpdate = rendered.count();
+        window.update();
+        QTRY_VERIFY(rendered.count() > framesBeforeUpdate);
         auto *glyph = button->findChild<QQuickItem *>("actionButtonGlyph"); QVERIFY(glyph);
         const auto frame = window.grabWindow(); QVERIFY(!frame.isNull());
         const double scale = double(frame.width()) / window.width();
