@@ -36,6 +36,14 @@ class SessionPreviewWindowRecoveryTest {
                 sourceEpoch = "epoch", sourceSeq = 10, sourceHeadLeafId = "old-9", hasLiveSnapshot = true)))
     }
 
+    private fun coldStart(cached: List<SessionGraphEntry> = old): RemoteState {
+        val fresh = RemoteState(selectedRuntimeId = "runtime", connection = RelayConnection.ONLINE, e2eReady = true,
+            runtimes = initial().runtimes)
+        val read = fresh.beginSessionRead("runtime", SessionReadKind.FIRST_PAGE, "cached-first-page")
+        return read.state.applyFirstSessionPage(requireNotNull(read.acceptance.operationId),
+            fixtureGraph("session", cached, SessionBranchCursor(cached.last().entryId), cacheEpoch = "epoch"))
+    }
+
     private fun request(state: RemoteState = initial(), syncId: String = "sync"): RemoteState {
         val wanted = state.copy(sessionSyncRequests = state.sessionSyncRequests + "runtime")
         val task = requireNotNull(wanted.requestedSessionRecovery("runtime", 0, syncId))
@@ -112,6 +120,61 @@ class SessionPreviewWindowRecoveryTest {
     @Test fun `same epoch reconnect recovers without restarting the process`() {
         val reconnected = initial().markReconnecting().copy(connection = RelayConnection.ONLINE, e2eReady = true)
         assertRecovered(receive(request(reconnected), snapshot()))
+    }
+
+    // FT-G12-GAP-02: production first-page restoration has a view/paging boundary but no source
+    // checkpoint. Both a cached root and an older truncated cache must page through the gap.
+    @Test fun `cold start rebases cached paging and retrieves the entire missed interval`() {
+        for (cached in listOf(old, old.takeLast(5))) {
+            val restored = coldStart(cached)
+            assertEquals(cached.map(SessionGraphEntry::entryId), ids(restored))
+            assertEquals("old-9", restored.runtimeSessionViews.getValue("runtime").leafId)
+            assertEquals(cached.first().parentId != null, restored.sessionHistory.getValue("runtime").hasOlder)
+            assertNull(restored.conversations.getValue("runtime").sourceEpoch)
+            assertNull(restored.conversations.getValue("runtime").sourceHeadLeafId)
+            assertNull(restored.conversations.getValue("runtime").retainedProjectionLeafId)
+            val sent = request(restored)
+            assertNull(sent.sessionSyncCommands.getValue("cmd-sync").knownState)
+
+            var state = receive(sent, snapshot())
+            assertRecovered(state)
+            assertEquals("new-40", state.sessionHistory.getValue("runtime").oldestEntryId)
+            assertTrue(state.sessionHistory.getValue("runtime").hasOlder)
+            assertTrue(cached.all { it.entryId in state.sessionGraphs.getValue("session").entries })
+
+            val pages = listOf(produced.subList(10, 40), old + produced.take(10))
+            for ((index, entries) in pages.withIndex()) {
+                val readId = "cold-older-$index"
+                val read = state.beginHistoryRead("runtime", readId)
+                assertNull(read.acceptance.rejection)
+                val operation = read.state.sessionReads.getValue(requireNotNull(read.acceptance.operationId))
+                assertEquals(if (index == 0) "new-40" else "new-10", operation.beforeEntryId)
+                assertEquals("new-69", operation.leafId)
+                val task = PendingSessionSync("runtime", "session", readId, range = "history",
+                    targetLeafId = operation.leafId, beforeEntryId = operation.beforeEntryId, historyOperationId = readId)
+                val queued = advanceSessionSyncTasks(read.state.queueSessionSync("cmd-$readId", task),
+                    System.currentTimeMillis(), 0).state
+                val lastPage = index == pages.lastIndex
+                val page = snapshot(readId, entries).copy(mode = "prepend", range = "history",
+                    beforeEntryId = operation.beforeEntryId, selection = null, checkpoint = null, live = null,
+                    hasOlder = !lastPage, complete = lastPage,
+                    rangeStatus = if (lastPage) "complete" else "older_available")
+                state = receive(queued, page, index + 2L)
+                assertEquals(if (lastPage) SessionReadPhase.END_REACHED else SessionReadPhase.SUCCEEDED,
+                    state.sessionReads.getValue(readId).phase)
+            }
+            assertEquals((old + produced).map(SessionGraphEntry::entryId), ids(state))
+            assertEquals("old-0", state.sessionHistory.getValue("runtime").oldestEntryId)
+            assertFalse(state.sessionHistory.getValue("runtime").hasOlder)
+        }
+    }
+
+    // The restored view is an anchor, not a reason to discard a connected cached prefix.
+    @Test fun `cold start preserves a cached prefix connected to the preview window`() {
+        val recovered = receive(request(coldStart(old + produced.take(45))), snapshot())
+        assertRecovered(recovered, old + produced)
+        assertEquals("old-0", recovered.sessionHistory.getValue("runtime").oldestEntryId)
+        assertFalse(recovered.sessionHistory.getValue("runtime").hasOlder)
     }
 
     @Test fun `missed patch interval recovers and subsequent live patches keep advancing`() {
@@ -288,7 +351,12 @@ class SessionPreviewWindowRecoveryTest {
         assumeTrue("Requires frozen published and current Host selector fixtures", directory != null)
         for (name in listOf("published-snapshot.json", "current-snapshot.json")) {
             val page = json.decodeFromString<SessionGraphSnapshot>(File(directory, name).readText())
-            assertRecovered(receive(request(), page, committed = CommittedSessionBatch(page.entries, page.display)))
+            for (state in listOf(initial(), coldStart())) {
+                val recovered = receive(request(state), page, committed = CommittedSessionBatch(page.entries, page.display))
+                assertRecovered(recovered)
+                assertEquals("new-40", recovered.sessionHistory.getValue("runtime").oldestEntryId)
+                assertTrue(recovered.sessionHistory.getValue("runtime").hasOlder)
+            }
         }
     }
 }

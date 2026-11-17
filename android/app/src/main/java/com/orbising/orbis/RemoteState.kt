@@ -2951,6 +2951,8 @@ class RelayReducer(
                     else -> state.sessionSyncRequests - runtimeId
                 }
                 val graphForProjection = if (staleTarget) mergedGraph.copy(cursor = currentGraph.cursor) else mergedGraph
+                val currentViewLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
+                    ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                 // FT-G12-GAP-01: a complete source checkpoint can intentionally return only its
                 // latest window after a missed interval. Its external parent is not a live patch
                 // arriving out of order. Adopt that committed window and its paging boundary
@@ -2959,7 +2961,9 @@ class RelayReducer(
                     sourceReadyCheckpoint && cacheGate.cacheAllowed &&
                     graphForProjection.hasBoundedPreviewWindow(snapshot) &&
                     graphForProjection.isWaitingForParent(
-                        epochConversation.retainedProjectionLeafId ?: epochConversation.sourceHeadLeafId,
+                        // FT-G12-GAP-02: cold-start cache restoration has a displayed leaf but
+                        // no source checkpoint yet. Rebase paging from that same display anchor.
+                        epochConversation.retainedProjectionLeafId ?: epochConversation.sourceHeadLeafId ?: currentViewLeaf,
                         incomingCheckpoint?.head?.leafId,
                     )
                 val projectionConversation = if (replacesDisconnectedWindow) epochConversation.copy(
@@ -3005,8 +3009,6 @@ class RelayReducer(
                             .withHistoryCache(state.runtimes[runtimeId]?.hostname)
                     )
                 }
-                val currentViewLeaf = if (sourceEpochChanged) null else state.runtimeSessionViews[runtimeId]
-                    ?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                 val hasRenderableCurrentView = currentViewLeaf != null && currentGraph.entries.containsKey(currentViewLeaf)
                 val hasRenderableTarget = targetLeafId != null && mergedGraph.entries.containsKey(targetLeafId)
                 val retainAdvancedView = pending.viewLeafId != null && liveLeafId != pending.viewLeafId &&
