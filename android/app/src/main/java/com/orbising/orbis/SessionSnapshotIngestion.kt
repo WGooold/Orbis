@@ -81,6 +81,19 @@ internal fun mergedPatchEntries(entries: List<SessionGraphEntry>, patches: List<
     return merged.values.toList()
 }
 
+/** A checkpoint and its buffered suffix share one commit, including all their display rows.
+ * Later display identities and the latest explicit window replace earlier values. A projection
+ * version change requires a fresh representation, never a batch mixing two interpretations. */
+internal fun mergedSnapshotDisplay(snapshot: DisplayBatch?, patches: List<SessionPatch>): DisplayBatch? {
+    val batches = listOfNotNull(snapshot) + patches.mapNotNull(SessionPatch::display)
+    if (batches.isEmpty()) return null
+    val version = batches.first().projectionVersion
+    require(batches.all { it.projectionVersion == version }) { "display_projection_version_mismatch" }
+    val rows = linkedMapOf<String, DisplayEntry>()
+    batches.forEach { batch -> batch.entries.forEach { rows[it.displayId] = it } }
+    return DisplayBatch(version, rows.values.toList(), batches.last().windowStart)
+}
+
 internal fun RuntimeConversation.snapshotSourceGate(
     snapshot: SessionGraphSnapshot,
     range: String,
@@ -169,7 +182,7 @@ internal fun ingestSessionSnapshot(
     }.orEmpty()
     val page = if (patches.isEmpty()) snapshot else snapshot.copy(
         entries = mergedPatchEntries(snapshot.entries, patches), source = patches.last().source,
-        display = mergedPatchDisplay(patches) ?: snapshot.display,
+        display = mergedSnapshotDisplay(snapshot.display, patches),
     )
     val finalObserved = if (patches.isEmpty()) observed else patches.last().head.leafId?.takeIf { id ->
         page.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)

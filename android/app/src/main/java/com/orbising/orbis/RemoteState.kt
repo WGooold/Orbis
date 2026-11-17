@@ -2905,7 +2905,7 @@ class RelayReducer(
                 val isCatchUp = pending.range == "catchup" && !isHistory
                 // Cache generation changes invalidate old edges, not the native Entry identity.
                 val currentGraph = state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)
-                val projectionConversation = if (sourceEpochChanged && !sourceRetired) conversation.copy(
+                val epochConversation = if (sourceEpochChanged && !sourceRetired) conversation.copy(
                     messages = emptyList(),
                     streamingMessageIds = emptySet(),
                     finishedMessageIds = emptySet(),
@@ -2951,6 +2951,42 @@ class RelayReducer(
                     else -> state.sessionSyncRequests - runtimeId
                 }
                 val graphForProjection = if (staleTarget) mergedGraph.copy(cursor = currentGraph.cursor) else mergedGraph
+                // FT-G12-GAP-01: a complete source checkpoint can intentionally return only its
+                // latest window after a missed interval. Its external parent is not a live patch
+                // arriving out of order. Adopt that committed window and its paging boundary
+                // together; patch/unknown/internally incomplete responses keep ADR-0057's guard.
+                val replacesDisconnectedWindow = pending.range == "preview" && !staleTarget &&
+                    sourceReadyCheckpoint && cacheGate.cacheAllowed &&
+                    graphForProjection.hasBoundedPreviewWindow(snapshot) &&
+                    graphForProjection.isWaitingForParent(
+                        epochConversation.retainedProjectionLeafId ?: epochConversation.sourceHeadLeafId,
+                        incomingCheckpoint?.head?.leafId,
+                    )
+                val projectionConversation = if (replacesDisconnectedWindow) epochConversation.copy(
+                    messages = emptyList(),
+                    streamingMessageIds = emptySet(),
+                    finishedMessageIds = emptySet(),
+                    streamingSessionId = null,
+                    sourceHeadLeafId = null,
+                    retainedProjectionLeafId = null,
+                ) else epochConversation
+                if (replacesDisconnectedWindow) {
+                    // Local IO and remote history responses still refer to the old window. They
+                    // cannot prepend those rows or restore its boundary after this atomic rebase.
+                    val retiredReads = nextHistoryReads.filterValues {
+                        it.historyKey == runtimeId && (it.phase.active || it.phase == SessionReadPhase.FAILED) &&
+                            it.kind != SessionReadKind.SOURCE
+                    }.keys
+                    nextHistoryReads = nextHistoryReads.mapValues { (id, read) ->
+                        if (id in retiredReads) read.copy(phase = SessionReadPhase.SUPERSEDED, error = null) else read
+                    }
+                    val retiredCommands = nextSessionSyncCommands.filterValues {
+                        it.runtimeId == runtimeId && (it.range in setOf("history", "catchup") || it.historyOperationId in retiredReads)
+                    }.keys
+                    nextSessionSyncCommands = nextSessionSyncCommands - retiredCommands
+                    nextPendingCommands = nextPendingCommands - retiredCommands
+                    nextRangeFailures = nextRangeFailures.filterNot { it.key.startsWith("$runtimeId\u0000") }
+                }
                 if (!staleTarget && isHistory && snapshotForProjection.entries.any { !graphForProjection.hasDisplayFor(it) }) {
                     return@reduceRuntimeEvent state.failSessionSync(commandId, L10n.tr("历史页缺少显示结果，请更新并重启电脑端会话后重试"))
                 }
@@ -3002,7 +3038,7 @@ class RelayReducer(
                     // UI re-request the same page forever). Appending to the branch never
                     // invalidates its ancestors, so only the paging target leaf is refreshed.
                     val continuedHistory = existingHistory?.takeIf {
-                        !sourceEpochChanged && currentGraph.cacheEpoch == mergedGraph.cacheEpoch &&
+                        !sourceEpochChanged && !replacesDisconnectedWindow && currentGraph.cacheEpoch == mergedGraph.cacheEpoch &&
                             !isHistory && it.sessionId == snapshot.sessionId && it.oldestEntryId != null
                     }
                     val nextHistory = if (continuedHistory != null) {
@@ -3092,7 +3128,7 @@ class RelayReducer(
                             revision = conversation.revision + 1)
                 } else if (!staleTarget && viewLeafId != null && canProject &&
                     (isCanonicalPage || sourceReadyCheckpoint)) {
-                    val oldLeaf = if (sourceEpochChanged) null else projectionConversation.retainedProjectionLeafId
+                    val oldLeaf = if (sourceEpochChanged || replacesDisconnectedWindow) null else projectionConversation.retainedProjectionLeafId
                         ?: state.runtimeSessionViews[runtimeId]?.takeIf { it.sessionId == snapshot.sessionId }?.leafId
                     val baseMessages = projectionConversation.messages.filterNot {
                         it.messageId in projectionConversation.streamingMessageIds

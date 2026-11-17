@@ -57,3 +57,5 @@ RuntimeConversation 以 retainedProjectionLeafId 记录实际保留的显示分�
 缺父窗口不再发布孤立结果，也不在历史回补时产生 canonical / live 双份内容。源端事实仍可前进，用户已读内容和分页边界保持连续；完整状态到齐后一次完成交接。
 
 若源端迟迟不提供可接续父链或完整 checkpoint，客户端会继续显示保留内容及核对状态；该恢复依赖仍存在。已知全量失败和未执行门禁继续登记在 [UI 回归证据](../../.artifacts/ui-regression/20261101-pi-tool-continuity/summary.md)，完整双端验收仍待完成。
+
+2026-11-17：`FT-G12-GAP-01` 区分实时 patch 缺父与来源已确认的有界恢复尾页。后者在校验提交后窗口完整性后建立新显示及分页窗口，不再等待窗口外祖先；短暂乱序和未确认来源继续保留原投影。实现、回归与验收边界见 [ADR-0069 §8.9](0069-session-catalog-and-bounded-history-loading.md#89-2026-11-17-android-大缺口的有界窗口恢复)。

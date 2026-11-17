@@ -246,6 +246,10 @@ class SessionGraphStoreInstrumentedTest {
             live = SessionLiveState(true), display = fixtureDisplayBatch(listOf(root)))
         val persisted = ingestSessionSnapshot(store, device, "r", "cmd", snapshot, { state }, { true })!!
         assertEquals(listOf(root, child), persisted.entries)
+        // The reducer must consume the display that SQLite actually committed, including the
+        // checkpoint prefix; rebuilding it from fixture entries would conceal ingestion loss.
+        assertEquals(listOf("a", "b"), persisted.display?.entries?.map(DisplayEntry::entryId))
+        assertEquals(setOf("a", "b"), store.readCommittedDisplay(device, "s", listOf("a", "b")).entries.keys)
         assertEquals("e", store.cacheEpoch(device, "s"))
         assertEquals("b", store.latestLeaf(device, "s"))
         assertTrue(store.hasContinuousCoverage(device, "s", "b"))
@@ -257,7 +261,7 @@ class SessionGraphStoreInstrumentedTest {
                 put("type", "session.snapshot")
             })
         }
-        val reduced = FixtureRelayReducer().reduce(state, event.toString(), committedFixtureBatch(persisted.entries))
+        val reduced = FixtureRelayReducer().reduce(state, event.toString(), persisted)
         assertEquals(3L, reduced.conversations.getValue("r").sourceSeq)
         assertEquals("b", reduced.runtimeSessionViews.getValue("r").leafId)
         assertEquals(listOf("a", "b"), reduced.conversations.getValue("r").messages.map { it.messageId })

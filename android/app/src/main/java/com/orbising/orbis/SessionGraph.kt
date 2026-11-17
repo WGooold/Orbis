@@ -206,6 +206,21 @@ internal fun SessionGraph.isWaitingForParent(oldLeafId: String?, newLeafId: Stri
     return false
 }
 
+/** A deliberately bounded preview can establish its own window. Validate the committed rows,
+ * including display coverage, rather than treating a missing external ancestor as packet loss.
+ * Ingestion may also commit buffered successors, so only the original page IDs bound this check. */
+internal fun SessionGraph.hasBoundedPreviewWindow(snapshot: SessionGraphSnapshot): Boolean {
+    if (snapshot.mode != "replace" || snapshot.selection !in setOf(null, "snapshot") ||
+        snapshot.complete != false || snapshot.rangeStatus != "limit_reached" || snapshot.hasOlder != true ||
+        snapshot.entries.isEmpty() || displayVersion != DISPLAY_PROJECTION_VERSION) return false
+    val head = snapshot.checkpoint?.head?.leafId ?: return false
+    if (head != snapshot.cursor.leafId || snapshot.targetLeafId?.let { it != head } == true) return false
+    val window = snapshot.entries.map { entries[it.entryId] ?: return false }
+    return window.last().entryId == head && window.map(SessionGraphEntry::entryId).distinct().size == window.size &&
+        window.zipWithNext().all { (parent, child) -> child.parentId == parent.entryId } &&
+        window.all { hasDisplayFor(it) }
+}
+
 internal fun SessionGraph.isDescendant(leafId: String?, ancestorId: String?): Boolean {
     if (leafId == null || ancestorId == null) return false
     var current = leafId
