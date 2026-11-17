@@ -829,36 +829,46 @@ struct OrbisCopyButton: View {
 
 // MARK: - Sheets
 
-/// Sheet chrome in the shared material: the base color behind the content and a
-/// recessed grab handle instead of the system indicator. Content starts outside any surface.
-/// The requested stops reach the app-owned panel through a preference (S62).
-private struct OrbisSheetChrome: ViewModifier {
+enum OrbisSheetDetent: Int, Comparable, Hashable {
+    case medium, large
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+private protocol OrbisSheetDetentProviding {
+    var orbisSheetDetents: [OrbisSheetDetent] { get }
+}
+
+private struct OrbisSheetConfiguredView<Content: View>: View, OrbisSheetDetentProviding {
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisAppearance) private var visualStyle
-    let detents: Set<PresentationDetent>
-    func body(content: Content) -> some View {
-        content.environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
+    let content: Content
+    let rawDetents: Set<PresentationDetent>
+    let stops: [OrbisSheetDetent]
+    var orbisSheetDetents: [OrbisSheetDetent] { stops }
+
+    var body: some View {
+        content
+            .environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
             .preference(key: OrbisSheetDetentsKey.self, value: stops)
-    }
-    private var stops: [OrbisSheetGeometry.Detent] {
-        var result: [OrbisSheetGeometry.Detent] = []
-        if detents.contains(.medium) { result.append(.medium) }
-        // Other system detents have no app-owned equivalent; they open at the large stop.
-        if detents.contains(where: { $0 != .medium }) || result.isEmpty { result.append(.large) }
-        return result
+            .presentationDetents(rawDetents)
+            .presentationDragIndicator(.hidden)
+            .presentationCornerRadius(OrbisRadius.sheet)
+            .presentationBackground(OrbisPalette(scheme).base)
     }
 }
 
 private struct OrbisSheetDetentsKey: PreferenceKey {
-    static let defaultValue: [OrbisSheetGeometry.Detent] = []
-    static func reduce(value: inout [OrbisSheetGeometry.Detent], nextValue: () -> [OrbisSheetGeometry.Detent]) {
+    static let defaultValue: [OrbisSheetDetent] = []
+    static func reduce(value: inout [OrbisSheetDetent], nextValue: () -> [OrbisSheetDetent]) {
         if value.isEmpty { value = nextValue() }
     }
 }
 
 extension View {
     func orbisSheet(_ detents: Set<PresentationDetent> = [.large]) -> some View {
-        modifier(OrbisSheetChrome(detents: detents))
+        var stops: [OrbisSheetDetent] = []
+        if detents.contains(.medium) { stops.append(.medium) }
+        if detents.contains(where: { $0 != .medium }) || stops.isEmpty { stops.append(.large) }
+        return OrbisSheetConfiguredView(content: self, rawDetents: detents, stops: stops)
     }
 }
 
@@ -869,7 +879,7 @@ extension EnvironmentValues {
     var orbisRetire: (() -> Void)? { get { self[OrbisRetireKey.self] } set { self[OrbisRetireKey.self] = newValue } }
 }
 
-/// Native sheets and custom sheets expose one dismissal action to their content.
+/// Native sheets expose one dismissal action to their content.
 @propertyWrapper struct OrbisDismiss: DynamicProperty {
     @Environment(\.dismiss) private var system
     @Environment(\.orbisDismiss) private var custom
@@ -888,14 +898,21 @@ extension EnvironmentValues {
 @MainActor
 private final class OrbisLiveSheetSource: ObservableObject {
     var content: () -> AnyView = { AnyView(EmptyView()) }
+    var mountCount = 0
     private var scheduled = false
+
+    func prepare(_ builder: @escaping () -> AnyView) {
+        content = builder
+    }
+
     func update(_ builder: @escaping () -> AnyView) {
         content = builder
-        guard !scheduled else { return }
+        guard mountCount > 0, !scheduled else { return }
         scheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.scheduled = false
+            guard self.mountCount > 0 else { return }
             self.objectWillChange.send()
         }
     }
@@ -903,7 +920,11 @@ private final class OrbisLiveSheetSource: ObservableObject {
 
 private struct OrbisLiveSheetContent: View {
     @ObservedObject var source: OrbisLiveSheetSource
-    var body: some View { source.content() }
+    var body: some View {
+        source.content()
+            .onAppear { source.mountCount += 1 }
+            .onDisappear { source.mountCount = max(0, source.mountCount - 1) }
+    }
 }
 
 private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
@@ -911,6 +932,8 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
     @Environment(\.orbisStoreReference) private var storeReference
     @Environment(\.orbisAccent) private var accent
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.locale) private var locale
+    @Environment(\.layoutDirection) private var layoutDirection
     @Binding var presented: Bool
     var onDismiss: (() -> Void)?
     let retireIndependently: Bool
@@ -918,27 +941,43 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
     @State private var owner = UUID()
     // @State retains the source without subscribing the presenter to its publications.
     @State private var liveSheet = OrbisLiveSheetSource()
-    private var store: OrbisStore {
-        guard let storeReference else { preconditionFailure("A sheet requires an Orbis store action context") }
-        return storeReference
+
+    private func wrapSheet(_ view: Sheet) -> AnyView {
+        let base = view
+            .environment(\.orbisAccent, accent)
+            .tint(accent ?? OrbisPalette(scheme).accent)
+            .environment(\.locale, locale)
+            .environment(\.layoutDirection, layoutDirection)
+        guard let store = storeReference else { return AnyView(base) }
+        return AnyView(base
+            .environmentObject(store)
+            .environment(\.orbisStoreReference, store)
+            .environmentObject(store.hostState)
+            .environmentObject(store.transfers)
+            .environmentObject(store.toolInventories)
+            .environment(\.orbisFileActions, store.transfers)
+            .environmentObject(store.notifications)
+            .environmentObject(store.agentState))
     }
+
     func body(content: Content) -> some View {
-        let _ = liveSheet.update {
-            AnyView(sheet().environmentObject(store).environment(\.orbisStoreReference, store).environmentObject(store.hostState)
-                .environmentObject(store.transfers).environmentObject(store.toolInventories)
-                .environment(\.orbisFileActions, store.transfers)
-                .environmentObject(store.notifications).environmentObject(store.agentState)
-                .environment(\.orbisAccent, accent).tint(accent ?? OrbisPalette(scheme).accent))
+        if presented {
+            liveSheet.update { wrapSheet(sheet()) }
         }
         return content.onChange(of: presented, initial: true) { _, open in
             if open {
+                let initial = sheet()
+                let detents = (initial as? OrbisSheetDetentProviding)?.orbisSheetDetents ?? [.large]
+                liveSheet.prepare { wrapSheet(sheet()) }
                 let binding = $presented
                 let dismissed = onDismiss
-                overlay.showSheet(owner: owner, content: { AnyView(OrbisLiveSheetContent(source: liveSheet)) },
+                overlay.showSheet(owner: owner, detents: detents,
+                                  content: { AnyView(OrbisLiveSheetContent(source: liveSheet)) },
                                   onDismiss: { binding.wrappedValue = false; dismissed?() })
             } else { releasePresentation() }
         }.onDisappear { releasePresentation() }
     }
+
     private func releasePresentation() {
         if retireIndependently { overlay.retireSheet(owner: owner) }
         else { overlay.dismissSheet(owner: owner) }
@@ -946,9 +985,8 @@ private struct OrbisBottomSheetPresenter<Sheet: View>: ViewModifier {
 }
 
 extension View {
-    /// S62 / M30 (revises S37 / M29): app-owned sheets slide from the bottom edge, honor the
-    /// requested medium / large stops, and follow the finger anywhere on the panel. Inner
-    /// scroll views keep scrolling and hand off to the panel only from their top edge.
+    /// App-owned sheets backed by native `UISheetPresentationController` with Orbis material,
+    /// recessed grab handle, and per-sheet `OrbisOverlay` support for nested sheets and dialogs.
     func orbisBottomSheet<Sheet: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, retireIndependently: Bool = false, @ViewBuilder content: @escaping () -> Sheet) -> some View {
         modifier(OrbisBottomSheetPresenter(presented: isPresented, onDismiss: onDismiss, retireIndependently: retireIndependently, sheet: content))
     }
@@ -959,85 +997,296 @@ private struct OrbisSheetContent: View {
     var body: some View { content() }
 }
 
-private struct OrbisBottomPanel: View {
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisReduceMotion) private var reduced
-    let request: OrbisOverlay.SheetRequest
-    let geometry: OrbisSheetGeometry
-    /// Only the top sheet follows drags.
-    let interactive: Bool
-    let dismiss: () -> Void
-    let retire: () -> Void
-    @State private var detents: [OrbisSheetGeometry.Detent]?
-    @State private var selected: OrbisSheetGeometry.Detent?
-    @State private var drag: CGFloat = 0
+private struct OrbisSheetThemedContainer<Content: View>: View {
+    @ObservedObject private var display = OrbisDisplaySettings.shared
+    let content: Content
 
-    private var stops: [OrbisSheetGeometry.Detent] { detents ?? [.large] }
-    /// The smallest requested stop until a drag chooses another one.
-    private var current: OrbisSheetGeometry.Detent {
-        if let selected, stops.contains(selected) { return selected }
-        return stops.first ?? .large
-    }
-    private var canExpand: Bool {
-        guard let top = stops.last else { return false }
-        return geometry.height(top) > geometry.height(current) + 1
+    private var preferredScheme: ColorScheme? {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
+        #endif
+        switch display.colorMode {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
     }
 
     var body: some View {
-        let frame = geometry.frame(detents: stops, current: current, translation: drag)
+        content
+            .modifier(OrbisDisplayPreferences())
+            .preferredColorScheme(preferredScheme)
+    }
+}
+
+private struct OrbisSheetRootView: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisAppearance) private var visualStyle
+    @Environment(\.orbisColorMode) private var colorMode
+    @ObservedObject var overlay: OrbisOverlay
+    let content: () -> AnyView
+    let dismiss: () -> Void
+    let retire: () -> Void
+    let onDetentsChanged: ([OrbisSheetDetent]) -> Void
+    let onStyleChanged: (UIColor, UIUserInterfaceStyle) -> Void
+    let onDialogStateChanged: (Bool) -> Void
+
+    private var interfaceStyle: UIUserInterfaceStyle {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
+        #endif
+        return colorMode == "light" ? .light : colorMode == "dark" ? .dark : .unspecified
+    }
+
+    var body: some View {
         let palette = OrbisPalette(scheme)
         VStack(spacing: 0) {
             Capsule().fill(.clear).frame(width: 36, height: 6)
                 .neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
-                .frame(maxWidth: .infinity).frame(height: 28)
-            OrbisSheetContent(content: request.content)
+                .frame(maxWidth: .infinity).frame(height: 24)
+                .padding(.top, 4)
+                .accessibilityHidden(true)
+            OrbisSheetContent(content: content)
                 .environment(\.orbisSurface, OrbisSurfaceContext(layer: 1, depth: 1, innerRadius: 16))
                 .environment(\.orbisDismiss, dismiss)
                 .environment(\.orbisRetire, retire)
-                // Short content stays under the handle instead of floating mid-panel.
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .foregroundStyle(palette.text)
+        .background(palette.base.ignoresSafeArea())
+        .orbisOverlayHost(overlay)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("orbis-bottom-sheet")
         .onPreferenceChange(OrbisSheetDetentsKey.self) { requested in
             let next = Array(Set(requested.isEmpty ? [.large] : requested)).sorted()
-            guard next != detents else { return }
-            if detents == nil || reduced { detents = next }
-            else { withAnimation(.orbisDrag) { detents = next } }
+            onDetentsChanged(next)
         }
-        .frame(maxWidth: 720).frame(height: frame.height, alignment: .top)
-        .background(palette.base)
-        .neuSurface(radius: 32, intensity: 1, concentric: false)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 32, topTrailingRadius: 32))
-        // The material continues under the home indicator and below a rubber-band lift.
-        .background(alignment: .bottom) { palette.base.frame(height: 160).offset(y: 159) }
-        .background(OrbisSheetDragSurface(enabled: interactive, canExpand: canExpand,
-            onChanged: { drag = $0 }, onEnded: settle))
-        .offset(y: frame.offset).frame(maxWidth: .infinity)
-        .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal)
-        .accessibilityAction(.escape, dismiss)
-        .accessibilityIdentifier("orbis-bottom-sheet")
-    }
-
-    private func settle(translation: CGFloat, velocity: CGFloat) {
-        switch geometry.settle(detents: stops, current: current, translation: translation, velocity: velocity) {
-        case .dismiss:
-            // The removal transition continues from the released position.
-            dismiss()
-        case .detent(let next):
-            withAnimation(reduced ? nil : .orbisDrag) { selected = next; drag = 0 }
+        .onAppear {
+            onStyleChanged(UIColor(palette.base), interfaceStyle)
+            onDialogStateChanged(overlay.dialog != nil)
+        }
+        .onChange(of: scheme) { _, next in
+            onStyleChanged(UIColor(OrbisPalette(next).base), interfaceStyle)
+        }
+        .onChange(of: visualStyle) { _, _ in
+            onStyleChanged(UIColor(OrbisPalette(scheme).base), interfaceStyle)
+        }
+        .onChange(of: colorMode) { _, _ in
+            onStyleChanged(UIColor(OrbisPalette(scheme).base), interfaceStyle)
+        }
+        .onChange(of: overlay.dialog != nil) { _, active in
+            onDialogStateChanged(active)
         }
     }
 }
 
-/// S62: one window-level pan follows the finger anywhere on the top sheet. SwiftUI cannot
-/// coordinate a parent drag with a child ScrollView, so UIKit decides at recognition time:
-/// a vertical scroller under the finger keeps the drag unless it is at its top edge and the
-/// finger pulls down, or a taller stop remains and the finger pushes up. Text selection and
-/// long presses already in progress keep their touches.
-private struct OrbisSheetDragSurface: UIViewRepresentable {
-    var enabled: Bool
-    var canExpand: Bool
-    var onChanged: (CGFloat) -> Void
-    var onEnded: (_ translation: CGFloat, _ velocity: CGFloat) -> Void
+@MainActor
+private final class OrbisSheetViewController: UIViewController, UISheetPresentationControllerDelegate {
+    var ownerID: UUID
+    let sheetOverlay = OrbisOverlay()
+    var onDismissedBySystem: ((UUID) -> Void)?
+    var onRequestDismiss: ((UUID) -> Void)?
+    var onRequestRetire: ((UUID) -> Void)?
+    var didNotifyDismissal = false
+
+    private var currentDetents: [OrbisSheetDetent]
+    private var userInteractedWithDetent = false
+    private var hasAppeared = false
+    private let reduceMotion: Bool
+    private var hostingController: UIHostingController<AnyView>?
+    private var pendingContent: (() -> AnyView)?
+
+    init(request: OrbisOverlay.SheetRequest, reduceMotion: Bool) {
+        self.ownerID = request.id
+        self.currentDetents = request.initialDetents.isEmpty ? [.large] : Array(Set(request.initialDetents)).sorted()
+        self.reduceMotion = reduceMotion
+        self.pendingContent = request.content
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .pageSheet
+        definesPresentationContext = true
+        overrideUserInterfaceStyle = Self.resolvedInterfaceStyle(colorMode: OrbisDisplaySettings.shared.colorMode)
+        if let sheet = sheetPresentationController {
+            sheet.delegate = self
+            applySheetConfiguration(to: sheet, detents: currentDetents, animated: false)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor(OrbisPalette(currentColorScheme()).base)
+        if let content = pendingContent {
+            pendingContent = nil
+            installHosting(content: content)
+        }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        hasAppeared = true
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if (isBeingDismissed || (presentingViewController == nil && view.window == nil)), !didNotifyDismissal {
+            hasAppeared = false
+            didNotifyDismissal = true
+            onDismissedBySystem?(ownerID)
+        }
+    }
+
+    override func accessibilityPerformEscape() -> Bool {
+        onRequestDismiss?(ownerID)
+        return true
+    }
+
+    func replace(with request: OrbisOverlay.SheetRequest) {
+        ownerID = request.id
+        didNotifyDismissal = false
+        userInteractedWithDetent = false
+        sheetOverlay.dismissMenu()
+        sheetOverlay.dismissDialog()
+        if let nested = sheetOverlay.sheets.first {
+            sheetOverlay.dismissSheet(owner: nested.id)
+        }
+        if presentedViewController != nil {
+            dismiss(animated: false)
+        }
+        let nextDetents = request.initialDetents.isEmpty ? [.large] : Array(Set(request.initialDetents)).sorted()
+        updateDetents(nextDetents, animated: !reduceMotion && hasAppeared)
+        if isViewLoaded {
+            installHosting(content: request.content)
+        } else {
+            pendingContent = request.content
+        }
+    }
+
+    func updateDetents(_ detents: [OrbisSheetDetent], animated: Bool) {
+        let normalized = detents.isEmpty ? [OrbisSheetDetent.large] : Array(Set(detents)).sorted()
+        guard normalized != currentDetents else { return }
+        currentDetents = normalized
+        if let sheet = sheetPresentationController {
+            applySheetConfiguration(to: sheet, detents: normalized, animated: animated && hasAppeared)
+        }
+    }
+
+    func sheetPresentationControllerDidChangeSelectedDetentIdentifier(_ sheetPresentationController: UISheetPresentationController) {
+        userInteractedWithDetent = true
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        guard !didNotifyDismissal else { return }
+        didNotifyDismissal = true
+        onDismissedBySystem?(ownerID)
+    }
+
+    private func installHosting(content: @escaping () -> AnyView) {
+        if let existing = hostingController {
+            existing.willMove(toParent: nil)
+            existing.view.removeFromSuperview()
+            existing.removeFromParent()
+            hostingController = nil
+        }
+        let root = OrbisSheetThemedContainer(content: OrbisSheetRootView(
+            overlay: sheetOverlay,
+            content: content,
+            dismiss: { [weak self] in
+                guard let self else { return }
+                self.onRequestDismiss?(self.ownerID)
+            },
+            retire: { [weak self] in
+                guard let self else { return }
+                self.onRequestRetire?(self.ownerID)
+            },
+            onDetentsChanged: { [weak self] detents in
+                self?.updateDetents(detents, animated: !(self?.reduceMotion ?? false))
+            },
+            onStyleChanged: { [weak self] background, style in
+                guard let self else { return }
+                self.view.backgroundColor = background
+                if self.overrideUserInterfaceStyle != style {
+                    self.overrideUserInterfaceStyle = style
+                }
+            },
+            onDialogStateChanged: { [weak self] active in
+                self?.isModalInPresentation = active
+            }
+        ))
+        let hosting = UIHostingController(rootView: AnyView(root))
+        hosting.view.backgroundColor = .clear
+        addChild(hosting)
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(hosting.view)
+        NSLayoutConstraint.activate([
+            hosting.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hosting.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hosting.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            hosting.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        hosting.didMove(toParent: self)
+        hostingController = hosting
+    }
+
+    private func applySheetConfiguration(to sheet: UISheetPresentationController,
+                                         detents: [OrbisSheetDetent],
+                                         animated: Bool) {
+        let normalized = detents.isEmpty ? [OrbisSheetDetent.large] : Array(Set(detents)).sorted()
+        let uiDetents: [UISheetPresentationController.Detent] = normalized.map {
+            $0 == .medium ? .medium() : .large()
+        }
+        let preferred: UISheetPresentationController.Detent.Identifier =
+            normalized.first == .medium ? .medium : .large
+        let currentFits = sheet.selectedDetentIdentifier.map { id in
+            normalized.contains(id == .medium ? .medium : .large)
+        } ?? false
+
+        let apply = {
+            sheet.detents = uiDetents
+            if !self.userInteractedWithDetent || !currentFits {
+                sheet.selectedDetentIdentifier = preferred
+            }
+            sheet.prefersGrabberVisible = false
+            sheet.preferredCornerRadius = OrbisRadius.sheet
+            sheet.prefersScrollingExpandsWhenScrolledToEdge = true
+            sheet.largestUndimmedDetentIdentifier = nil
+        }
+        if animated {
+            sheet.animateChanges(apply)
+        } else {
+            apply()
+        }
+    }
+
+    private func currentColorScheme() -> ColorScheme {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
+        #endif
+        switch OrbisDisplaySettings.shared.colorMode {
+        case "dark": return .dark
+        case "light": return .light
+        default: return traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        }
+    }
+
+    private static func resolvedInterfaceStyle(colorMode: String) -> UIUserInterfaceStyle {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--preview-dark") { return .dark }
+        #endif
+        switch colorMode {
+        case "light": return .light
+        case "dark": return .dark
+        default: return .unspecified
+        }
+    }
+}
+
+private struct OrbisNativeSheetBridge: UIViewRepresentable {
+    let overlay: OrbisOverlay
+    let sheetIDs: [UUID]
+    let reduceMotion: Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeUIView(context: Context) -> Probe {
@@ -1047,137 +1296,159 @@ private struct OrbisSheetDragSurface: UIViewRepresentable {
         return probe
     }
     func updateUIView(_ view: Probe, context: Context) {
-        context.coordinator.surface = self
-        context.coordinator.attach(to: view.window)
+        context.coordinator.overlay = overlay
+        context.coordinator.reduceMotion = reduceMotion
+        context.coordinator.scheduleReconcile()
     }
-    static func dismantleUIView(_ view: Probe, coordinator: Coordinator) { coordinator.detach() }
+    static func dismantleUIView(_ view: Probe, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
 
     final class Probe: UIView {
         weak var coordinator: Coordinator?
         init() {
             super.init(frame: .zero)
-            isUserInteractionEnabled = false; isAccessibilityElement = false
+            isUserInteractionEnabled = false
+            isAccessibilityElement = false
             backgroundColor = .clear
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            coordinator?.attach(to: window)
+            if window != nil { coordinator?.scheduleReconcile() }
         }
-    }
-
-    @MainActor final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var surface: OrbisSheetDragSurface?
-        weak var probe: Probe?
-        private var pan: UIPanGestureRecognizer?
-        private weak var scrollView: UIScrollView?
-        private var origin: CGFloat = 0
-
-        func attach(to window: UIWindow?) {
-            guard pan?.view !== window else { return }
-            detach()
-            guard let window else { return }
-            let pan = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
-            pan.maximumNumberOfTouches = 1
-            pan.delegate = self
-            window.addGestureRecognizer(pan)
-            self.pan = pan
-        }
-        func detach() {
-            if let pan { pan.view?.removeGestureRecognizer(pan) }
-            pan = nil; scrollView = nil
-        }
-
-        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-            guard recognizer === pan, let pan, let surface, surface.enabled,
-                  let probe, let window = probe.window, !probe.isHidden else { return false }
-            guard probe.bounds.contains(pan.location(in: probe)) else { return false }
-            let translation = pan.translation(in: window)
-            let velocity = pan.velocity(in: window)
-            let dy = abs(translation.y) > 0.5 ? translation.y : velocity.y
-            let dx = abs(translation.x) > 0.5 ? translation.x : velocity.x
-            guard dy != 0, abs(dy) > abs(dx) else { return false }
-            let hit = window.hitTest(pan.location(in: window), with: nil)
-            if Self.interactionInProgress(from: hit, excluding: pan) { return false }
-            scrollView = Self.verticalScroller(from: hit, inside: probe)
-            guard let scrollView else { return true }
-            if dy > 0 { return Self.atTop(scrollView) }
-            // An upward drag over a scroller that is not at its top belongs to the
-            // scroller. Only hand it to the sheet when the content is already at
-            // the top and another detent can expand the panel.
-            return surface.canExpand && Self.atTop(scrollView)
-        }
-
-        func gestureRecognizer(_ recognizer: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            // Both may start on the same touch; the scroller is cancelled once the panel owns it.
-            guard let owner = other.view as? UIScrollView else { return false }
-            return other === owner.panGestureRecognizer
-        }
-
-        @objc private func handle(_ pan: UIPanGestureRecognizer) {
-            guard let window = pan.view else { return }
-            let y = pan.translation(in: window).y
-            switch pan.state {
-            case .began:
-                // Start from zero so recognition slop does not jump the panel.
-                origin = y
-                if let scrollView {
-                    let pullingDown = y > 0
-                    scrollView.panGestureRecognizer.isEnabled = false
-                    scrollView.panGestureRecognizer.isEnabled = true
-                    if pullingDown {
-                        scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x,
-                                                            y: -scrollView.adjustedContentInset.top), animated: false)
+        var nearestViewController: UIViewController? {
+            var responder: UIResponder? = self
+            while let next = responder?.next {
+                if var vc = next as? UIViewController {
+                    while let parent = vc.parent, parent is OrbisSheetViewController {
+                        vc = parent
                     }
+                    return vc
                 }
-                surface?.onChanged(0)
-            case .changed:
-                surface?.onChanged(y - origin)
-            case .ended:
-                surface?.onEnded(y - origin, pan.velocity(in: window).y)
-                scrollView = nil
-            case .cancelled, .failed:
-                surface?.onEnded(y - origin, 0)
-                scrollView = nil
-            default:
-                break
-            }
-        }
-
-        private static func atTop(_ scrollView: UIScrollView) -> Bool {
-            scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + 0.5
-        }
-
-        /// The nearest scroller under the finger that can actually scroll vertically and lies
-        /// inside the panel; pages behind the overlay never take part.
-        private static func verticalScroller(from view: UIView?, inside probe: UIView) -> UIScrollView? {
-            let panel = probe.convert(probe.bounds, to: nil).insetBy(dx: -1, dy: -1)
-            var current = view
-            while let candidate = current {
-                if let scroll = candidate as? UIScrollView, scroll.isScrollEnabled,
-                   panel.contains(scroll.convert(scroll.bounds, to: nil)) {
-                    let inset = scroll.adjustedContentInset
-                    if scroll.alwaysBounceVertical || scroll.contentSize.height + inset.top + inset.bottom > scroll.bounds.height + 0.5 {
-                        return scroll
-                    }
-                }
-                current = candidate.superview
+                responder = next
             }
             return nil
         }
+    }
 
-        private static func interactionInProgress(from view: UIView?, excluding pan: UIGestureRecognizer) -> Bool {
-            var current = view
-            while let candidate = current {
-                for recognizer in candidate.gestureRecognizers ?? [] where recognizer !== pan
-                    && recognizer is UILongPressGestureRecognizer
-                    && (recognizer.state == .began || recognizer.state == .changed) {
-                    return true
+    @MainActor final class Coordinator {
+        weak var probe: Probe?
+        weak var overlay: OrbisOverlay?
+        var reduceMotion = false
+        private var displayed: [OrbisSheetViewController] = []
+        private var transitionInFlight = false
+        private var scheduled = false
+
+        func scheduleReconcile() {
+            guard !scheduled else { return }
+            scheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.scheduled = false
+                self.reconcile()
+            }
+        }
+
+        func teardown() {
+            for vc in displayed { vc.didNotifyDismissal = true }
+            if let first = displayed.first, let presenter = first.presentingViewController, presenter.presentedViewController === first {
+                presenter.dismiss(animated: false)
+            }
+            displayed.removeAll()
+            overlay = nil
+        }
+
+        private func waitForTransition(_ coordinator: UIViewControllerTransitionCoordinator?) -> Bool {
+            guard let coordinator else { return false }
+            let attached = coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.transitionInFlight = false
+                    self.reconcile()
                 }
-                current = candidate.superview
+            }
+            if attached {
+                transitionInFlight = true
+                return true
             }
             return false
+        }
+
+        func reconcile() {
+            guard !transitionInFlight else { return }
+            guard let overlay, let hostVC = probe?.nearestViewController, hostVC.view.window != nil else { return }
+            let desired = overlay.sheets
+
+            displayed.removeAll { $0.presentingViewController == nil && !$0.isBeingPresented }
+
+            var prefix = 0
+            while prefix < displayed.count && prefix < desired.count && displayed[prefix].ownerID == desired[prefix].id {
+                prefix += 1
+            }
+
+            if prefix == displayed.count - 1 && desired.count == displayed.count && displayed[prefix].presentedViewController == nil {
+                displayed[prefix].replace(with: desired[prefix])
+                return
+            }
+
+            if prefix < displayed.count {
+                let victim = displayed[prefix]
+                let animated = !reduceMotion && desired.count <= prefix
+                guard let presenter = victim.presentingViewController, presenter.presentedViewController === victim else {
+                    displayed.removeSubrange(prefix...)
+                    reconcile()
+                    return
+                }
+                if waitForTransition(presenter.transitionCoordinator) { return }
+                for vc in displayed[prefix...] { vc.didNotifyDismissal = true }
+                displayed.removeSubrange(prefix...)
+                transitionInFlight = true
+                presenter.dismiss(animated: animated) { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.transitionInFlight = false
+                        self.reconcile()
+                    }
+                }
+                return
+            }
+
+            if prefix < desired.count {
+                let presenter: UIViewController = displayed.last ?? hostVC
+                if waitForTransition(presenter.transitionCoordinator) { return }
+                if presenter.presentedViewController != nil {
+                    _ = waitForTransition(presenter.presentedViewController?.transitionCoordinator)
+                    return
+                }
+                let request = desired[prefix]
+                let vc = makeSheetController(for: request)
+                displayed.append(vc)
+                transitionInFlight = true
+                presenter.present(vc, animated: !reduceMotion) { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.transitionInFlight = false
+                        self.reconcile()
+                    }
+                }
+            }
+        }
+
+        private func makeSheetController(for request: OrbisOverlay.SheetRequest) -> OrbisSheetViewController {
+            let vc = OrbisSheetViewController(request: request, reduceMotion: reduceMotion)
+            vc.onDismissedBySystem = { [weak self, weak overlay] ownerID in
+                guard let self, let overlay else { return }
+                self.displayed.removeAll { $0.ownerID == ownerID }
+                overlay.dismissSheet(owner: ownerID)
+            }
+            vc.onRequestDismiss = { [weak overlay] ownerID in
+                overlay?.dismissSheet(owner: ownerID)
+            }
+            vc.onRequestRetire = { [weak overlay] ownerID in
+                overlay?.retireSheet(owner: ownerID)
+            }
+            return vc
         }
     }
 }
@@ -1231,14 +1502,16 @@ final class OrbisOverlay: ObservableObject {
     }
     struct SheetRequest: Identifiable {
         let id: UUID
+        let initialDetents: [OrbisSheetDetent]
         let content: () -> AnyView
         let onDismiss: () -> Void
     }
     @Published private(set) var sheets: [SheetRequest] = []
-    func showSheet(owner: UUID, content: @escaping () -> AnyView, onDismiss: @escaping () -> Void) {
+    func showSheet(owner: UUID, detents: [OrbisSheetDetent] = [.large],
+                   content: @escaping () -> AnyView, onDismiss: @escaping () -> Void) {
         guard !sheets.contains(where: { $0.id == owner }) else { return }
         menu = nil
-        sheets.append(SheetRequest(id: owner, content: content, onDismiss: onDismiss))
+        sheets.append(SheetRequest(id: owner, initialDetents: detents, content: content, onDismiss: onDismiss))
     }
     func dismissSheet(owner: UUID) {
         guard let index = sheets.firstIndex(where: { $0.id == owner }) else { return }
@@ -1521,7 +1794,6 @@ private struct OrbisOverlayLayer: View {
     @Environment(\.orbisAppearance) private var visualStyle
     @ObservedObject var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
-    @State private var keyboardVisible = false
 
     var body: some View {
         ZStack {
@@ -1533,21 +1805,6 @@ private struct OrbisOverlayLayer: View {
                                     width: max(0, proxy.size.width - insets.leading - insets.trailing),
                                     height: max(0, proxy.size.height - insets.top - insets.bottom))
                 ZStack(alignment: .topLeading) {
-                    if !overlay.sheets.isEmpty {
-                        OrbisPalette(scheme).scrim.opacity(0.34).ignoresSafeArea()
-                            .onTapGesture { if let top = overlay.sheets.last { overlay.dismissSheet(owner: top.id) } }
-                            .transition(.opacity)
-                        ForEach(overlay.sheets) { sheet in
-                            VStack { Spacer(minLength: 0); OrbisBottomPanel(request: sheet, geometry: sheetGeometry(proxy),
-                                interactive: overlay.sheets.last?.id == sheet.id,
-                                dismiss: { overlay.dismissSheet(owner: sheet.id) }, retire: { overlay.retireSheet(owner: sheet.id) }) }
-                                .frame(width: proxy.size.width, height: proxy.size.height)
-                                .id(sheet.id).accessibilityHidden(overlay.sheets.last?.id != sheet.id)
-                                .transition(reduceMotion ? .identity : .asymmetric(
-                                    insertion: .move(edge: .bottom).animation(InteractionMotion.sheetEnter),
-                                    removal: .move(edge: .bottom).animation(InteractionMotion.sheetExit)))
-                        }
-                    }
                     if let menu = overlay.menu {
                         Color.clear.contentShape(Rectangle())
                             .onTapGesture { overlay.dismissMenu() }
@@ -1578,30 +1835,10 @@ private struct OrbisOverlayLayer: View {
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
         }
-        .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.sheets.map(\.id))
+        .background(OrbisNativeSheetBridge(overlay: overlay, sheetIDs: overlay.sheets.map(\.id), reduceMotion: reduceMotion))
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.menu?.id)
         .animation(reduceMotion ? nil : InteractionMotion.panel, value: overlay.dialog?.id)
-        .allowsHitTesting(overlay.isPresenting)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-            // Shortcut bars of hardware keyboards are not a keyboard for sheet sizing.
-            guard let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-                  end.width > 0, end.height > 0 else { return }
-            // UIKit does not reliably set Notification.object for keyboard events.
-            // The frame is in screen coordinates, so use the associated screen when
-            // available and fall back to the current main screen.
-            let screen = (note.object as? UIScreen)?.bounds ?? UIScreen.main.bounds
-            keyboardVisible = max(0, screen.maxY - end.minY) > 120
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardVisible = false
-        }
-    }
-
-    /// The proxy respects the keyboard; its height plus bottom inset stays the full viewport.
-    private func sheetGeometry(_ proxy: GeometryProxy) -> OrbisSheetGeometry {
-        let bottom = proxy.safeAreaInsets.bottom
-        return OrbisSheetGeometry(available: proxy.size.height, reference: proxy.size.height + bottom,
-                                  bottomInset: keyboardVisible ? 0 : bottom, keyboard: keyboardVisible)
+        .allowsHitTesting(overlay.menu != nil || overlay.dialog != nil)
     }
 
     private func menuTransitionAnchor(_ anchor: CGRect, in bounds: CGRect) -> UnitPoint {

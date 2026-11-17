@@ -2812,6 +2812,50 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["历史与分支"].waitForExistence(timeout: 3))
     }
 
+    func testToolDetailSheetScrollsAndDismissesBySwipeAndInfoDialogWorksInsideSheet() {
+        let app = launch("tool")
+        let disclosure = app.buttons["展开read，已完成"]
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 8)); disclosure.tap()
+        XCTAssertTrue(app.buttons["查看输出"].waitForExistence(timeout: 3)); app.buttons["查看输出"].tap()
+        XCTAssertTrue(app.buttons["读取下一页"].waitForExistence(timeout: 5))
+        for _ in 0..<4 {
+            if app.staticTexts["已到当前读取范围末尾"].exists { break }
+            if app.buttons["读取下一页"].waitForExistence(timeout: 3) { app.buttons["读取下一页"].tap() }
+        }
+        XCTAssertTrue(app.staticTexts["已到当前读取范围末尾"].waitForExistence(timeout: 5))
+
+        let scroller = app.scrollViews.firstMatch
+        XCTAssertTrue(scroller.waitForExistence(timeout: 3))
+        scroller.swipeLeft()
+        scroller.swipeUp()
+        XCTAssertTrue(app.buttons["关闭"].firstMatch.exists, "Scrolling inside the detail well must not dismiss the sheet")
+
+        let header = app.staticTexts["read"].firstMatch
+        XCTAssertTrue(header.exists)
+        let start = header.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.92)),
+                    withVelocity: .fast, thenHoldForDuration: 0.05)
+        XCTAssertTrue(app.buttons["关闭"].firstMatch.waitForNonExistence(timeout: 5))
+        let history = app.buttons["历史与分支"]
+        XCTAssertTrue(history.waitForExistence(timeout: 3))
+        XCTAssertTrue(history.isHittable)
+        app.terminate()
+
+        let status = launch("status")
+        let row = status.buttons["settings-protocol"]
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        let page = status.descendants(matching: .any)["settings-page"].firstMatch
+        for _ in 0..<4 where !row.isHittable && page.exists { page.swipeUp() }
+        row.tap()
+        let info = status.buttons["查看QUIC说明"]
+        XCTAssertTrue(info.waitForExistence(timeout: 3)); info.tap()
+        XCTAssertTrue(status.staticTexts["当前网络不支持 QUIC 时无法连接"].waitForExistence(timeout: 3))
+        status.buttons["知道了"].tap()
+        XCTAssertTrue(status.staticTexts["当前网络不支持 QUIC 时无法连接"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(status.buttons["relay-mode-apply"].exists)
+        status.terminate()
+    }
+
     func testLongTranscriptAppearsAndToolExpansionKeepsItsPositionWithoutDragging() {
         let app = launch("tool", arguments: ["--preview-long-transcript"])
         let disclosure = app.buttons["展开read，已完成"]
