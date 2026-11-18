@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        F08500010000000000000001 /* ExternalImportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000001; };
+        F08500010000000000000002 /* ExternalImportInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000002; };
         A11100010000000000000001 /* NotificationSource in App */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
         A11100010000000000000002 /* NotificationSource in Widget */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
         A11100010000000000000003 /* NotificationSource in Service */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
@@ -102,6 +104,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        F08510010000000000000001 /* ExternalImportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalImportStore.swift; sourceTree = "<group>"; };
+        F08510010000000000000002 /* ExternalImportInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalImportInboxView.swift; sourceTree = "<group>"; };
         A11110010000000000000001 /* NotificationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSource.swift; sourceTree = "<group>"; };
         A11110010000000000000002 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
         A11110010000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -246,6 +250,8 @@
 				C06410010000000000000010 /* RelaySocket.swift */,
 				A00110010000000000000009 /* OrbisStore.swift */,
 				A0011001000000000000000A /* ContentView.swift */,
+                F08510010000000000000001 /* ExternalImportStore.swift */,
+                F08510010000000000000002 /* ExternalImportInboxView.swift */,
 				A0011001000000000000000B /* PairingScannerView.swift */,
 				A0011001000000000000000C /* Assets.xcassets */,
 				A0011001000000000000000D /* Info.plist */,
@@ -468,6 +474,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00100010000000000000001 /* OrbisApp.swift in Sources */,
+                F08500010000000000000001 /* ExternalImportStore.swift in Sources */,
+                F08500010000000000000002 /* ExternalImportInboxView.swift in Sources */,
 				C06300010000000000000001 /* Localization.swift in Sources */,
 				C06300010000000000000002 /* LocalizationCatalog.swift in Sources */,
 				A00100010000000000000002 /* Models.swift in Sources */,

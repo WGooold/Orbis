@@ -75,3 +75,9 @@
 Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子收件箱及可重开预览已实现。入口只入本地存储，不接 Host。源码见 [Intent 接收](../../android/app/src/main/java/com/orbising/orbis/ExternalImportIntent.kt)、[收件存储](../../android/app/src/main/java/com/orbising/orbis/ExternalImportStore.kt)与[平台用例](../../android/app/src/androidTest/java/com/orbising/orbis/ExternalImportIntentTest.kt)。
 
 `ExternalImportStoreTest` 4/4 通过，平台用例已编译、未在设备执行；首轮编译失败及修正后结果分别保存在 [首轮日志](../../.artifacts/external-import/oi-01/run.log)和[自动验证](../../.artifacts/external-import/oi-01-verified/)。
+
+### OI-02 实施记录
+
+[iOS 文档声明](../../ios/Orbis/Orbis/Info.plist)按常见 UTI 注册为备用查看器，文件 URL 进入[本地收件](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)，非文件 URL 沿原路由。在有效文件访问期内经协调读取，按实际字节复制到[专用 App Group](../../ios/Orbis/Orbis/ExternalImportStore.swift)；跨进程按所有权清理暂存。
+
+[Swift 持久化与边界用例](../../ios/Orbis/Tests/ExternalImportStoreTests.swift) 4/4 通过；iOS 通用模拟器目标编译和包内依赖检查通过，未安装。证据见[单测](../../.artifacts/external-import/oi-02-core/run.log)、[编译](../../.artifacts/external-import/oi-02-app/run.log)及[构建租约后续核验](../../.artifacts/external-import/oi-02-app/cleanup-audit.json)。正式签名需为主 App 配置专用 App Group；设备上的文档来源及文件交付待用户验证。

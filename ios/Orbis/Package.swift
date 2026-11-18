@@ -9,7 +9,7 @@ let package = Package(
     targets: [
         .target(name: "OrbisCore", path: "Orbis", exclude: [
             "en.lproj", "zh-Hans.lproj", "InteractionMotion.swift", "PageNavigation.swift", "OrbisApp.swift", "ContentView.swift", "PairingScannerView.swift", "OrbisDesign.swift",
-            "MathFragment.swift", "PreviewSupport.swift", "ToolDetailView.swift", "TurnFileChangesView.swift", "DownloadView.swift", "InteractionView.swift", "SessionViews.swift", "ChatView.swift", "ChatHeaderView.swift", "ChatTranscriptView.swift", "ChatNativeTranscriptView.swift", "ChatNativeTranscriptEnvironment.swift", "ChatTranscriptInteractionState.swift", "ChatComposerView.swift", "ChatMessageRow.swift", "ChatMarkdownView.swift", "ChatConfigurationViews.swift", "StatusViews.swift", "HistoryBranchView.swift", "Info.plist", "Assets.xcassets"
+            "MathFragment.swift", "PreviewSupport.swift", "ToolDetailView.swift", "TurnFileChangesView.swift", "DownloadView.swift", "InteractionView.swift", "SessionViews.swift", "ChatView.swift", "ChatHeaderView.swift", "ChatTranscriptView.swift", "ChatNativeTranscriptView.swift", "ChatNativeTranscriptEnvironment.swift", "ChatTranscriptInteractionState.swift", "ChatComposerView.swift", "ChatMessageRow.swift", "ChatMarkdownView.swift", "ChatConfigurationViews.swift", "StatusViews.swift", "ExternalImportInboxView.swift", "HistoryBranchView.swift", "Info.plist", "Assets.xcassets"
         ], resources: [.copy("MathResources")], linkerSettings: [.linkedLibrary("sqlite3")]),
         .testTarget(name: "OrbisCoreTests", dependencies: ["OrbisCore"], path: "Tests", resources: [.copy("Fixtures")])
     ]
