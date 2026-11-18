@@ -180,7 +180,14 @@ export class CodexAppServer {
           child.once("exit", code => reject(new Error(`codex app-server 启动即退出（code=${code ?? "signal"}）`)));
         });
         spawnFailed.catch(() => undefined);
-        await Promise.race([waitHealthz(port, timeoutMs), spawnFailed]);
+        // Spawn may fail before /healthz is reachable (for example, Codex is not installed).
+        // Stop the losing poll so its retries do not keep the Host process alive after fallback.
+        const startupAbort = new AbortController();
+        try {
+          await Promise.race([waitHealthz(port, timeoutMs, startupAbort.signal), spawnFailed]);
+        } finally {
+          startupAbort.abort(new Error("codex app-server startup ended"));
+        }
         server.#transport = await wsTransport(server.#endpoint, timeoutMs);
       }
       server.#attachTransport();
@@ -372,12 +379,18 @@ export class CodexAppServer {
         // 关闭失败不影响收尾。
       }
     }
-    if (child === undefined) return;
+    // A failed spawn has no pid and may emit "error" without an "exit" event.
+    if (child === undefined || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
     await new Promise<void>((resolve) => {
-      child.once("exit", () => resolve());
+      let timer: NodeJS.Timeout | undefined;
+      const finish = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      };
+      child.once("close", finish);
+      // Wait for process and stdio closure; keep the fallback referenced while stop() awaits it.
+      timer = setTimeout(finish, 1_000);
       child.kill();
-      // Windows 上 kill 后事件可能不触发兜底；给进程 1s 自行退出。
-      setTimeout(resolve, 1_000).unref();
     });
   }
 
@@ -416,20 +429,22 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-/** app-server 就绪后提供 /healthz；轮询到 200 为止。 */
-async function waitHealthz(port: number, timeoutMs: number): Promise<void> {
+/** app-server 就绪后提供 /healthz；轮询到 200 为止，启动结束时可取消。 */
+async function waitHealthz(port: number, timeoutMs: number, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
-  while (Date.now() < deadline) {
+  while (!signal.aborted && Date.now() < deadline) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+      const response = await fetch(`http://127.0.0.1:${port}/healthz`, { signal });
       if (response.ok) return;
       lastError = `HTTP ${response.status}`;
     } catch (error) {
+      if (signal.aborted) throw error;
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await delay(150);
+    await delay(150, undefined, { signal });
   }
+  if (signal.aborted) throw signal.reason;
   throw new Error(`codex app-server 的 healthz 一直未就绪（${lastError}）`);
 }
 
