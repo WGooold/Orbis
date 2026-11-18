@@ -6,5 +6,7 @@ func importProblemText(_ problem: ExternalImportProblem) -> String {
     case .full: L10n.tr("待导入空间已满")
     case .busy: L10n.tr("已有导入正在进行，请稍后重试")
     case .unreadable: L10n.tr("无法读取导入内容")
+    case .targetUnavailable: L10n.tr("所选会话已不可用")
+    case .alreadyAssigned: L10n.tr("此内容已加入其他会话草稿")
     }
 }

@@ -27,6 +27,19 @@ import SwiftUI
 
     func select(_ id: UUID?) { selected = id; problem = nil }
 
+    func assign(_ id: UUID, to destination: ExternalImportDestination, ifCurrent: () -> Bool) {
+        guard !busy else { return }
+        guard ifCurrent() else { problem = .targetUnavailable; return }
+        problem = nil
+        perform { try ExternalImportStore.applicationInbox().assign(id, to: destination).id }
+    }
+
+    func unassign(_ id: UUID, from target: ExternalImportTarget) {
+        guard !busy else { return }
+        problem = nil
+        perform { try ExternalImportStore.applicationInbox().unassign(id, from: target).id }
+    }
+
     func openDocument(_ url: URL) {
         guard !busy else { isOpen = true; problem = .busy; return }
         selected = nil; problem = nil; isOpen = true
@@ -102,38 +115,79 @@ struct ExternalImportInboxView: View {
     @OrbisDismiss private var dismiss
     @Environment(\.colorScheme) private var scheme
     @EnvironmentObject private var overlay: OrbisOverlay
+    let store: OrbisStore
+    @State private var targets: [ExternalImportDestination]?
 
     private var selected: ExternalImportBatch? { model.batches.first { $0.id == model.selected } }
     var body: some View {
         VStack(spacing: 0) {
-            OrbisPageHeader(title: L10n.tr("待导入"), closes: true, back: { dismiss() }) {
+            OrbisPageHeader(title: L10n.tr(targets == nil ? "待导入" : "选择已有会话"), closes: true, back: { dismiss() }) {
                 if selected != nil {
-                    OrbisIconButton(symbol: "chevron.left", label: L10n.tr("返回")) { model.select(nil) }
+                    OrbisIconButton(symbol: "chevron.left", label: L10n.tr("返回")) {
+                        if targets != nil { targets = nil } else { model.select(nil) }
+                    }.disabled(model.busy)
                 }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let problem = model.problem { OrbisNotice(text: importProblemText(problem), error: true) }
                     if model.busy { ProgressView(L10n.tr("正在处理导入…")) }
-                    if let selected { detail(selected) }
+                    if let selected, let targets { targetList(targets, batch: selected) }
+                    else if let selected { detail(selected) }
                     else if model.batches.isEmpty && !model.busy && model.problem == nil {
                         Text(L10n.tr("暂无待导入内容")).font(.orbisBody())
                     } else {
-                        ForEach(model.batches) { batch in
-                            OrbisMotionButton { model.select(batch.id) } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(batch.files.first?.name ?? String((batch.text ?? "").prefix(120))).font(.orbisBody()).lineLimit(2)
-                                    if !batch.files.isEmpty { Text(L10n.tr("{0} 个文件", batch.files.count)).font(.orbisCaption()) }
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
-                            }.buttonStyle(NeuButtonStyle())
+                        ForEach(model.batches.filter { $0.destination == nil }, content: batchRow)
+                        let drafts = model.batches.filter { $0.destination != nil }
+                        if !drafts.isEmpty {
+                            Text(L10n.tr("导入草稿")).font(.orbisLabel())
+                            ForEach(drafts, content: batchRow)
                         }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
             }
-        }.accessibilityIdentifier("external-import-sheet")
+        }
+        .onChange(of: model.selected) { _, _ in targets = nil }
+        .accessibilityIdentifier("external-import-sheet")
     }
+
+    private func batchRow(_ batch: ExternalImportBatch) -> some View {
+        OrbisMotionButton { model.select(batch.id) } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(batch.files.first?.name ?? String((batch.text ?? "").prefix(120))).font(.orbisBody()).lineLimit(2)
+                if let destination = batch.destination {
+                    Text(L10n.tr("{0} · {1}", destination.hostName, destination.sessionName)).font(.orbisCaption()).lineLimit(1)
+                } else if !batch.files.isEmpty {
+                    Text(L10n.tr("{0} 个文件", batch.files.count)).font(.orbisCaption())
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        }.buttonStyle(NeuButtonStyle()).disabled(model.busy)
+    }
+
+    @ViewBuilder private func targetList(_ destinations: [ExternalImportDestination], batch: ExternalImportBatch) -> some View {
+        if destinations.isEmpty { Text(L10n.tr("暂无可加入的会话")).font(.orbisBody()) }
+        ForEach(destinations) { destination in
+            OrbisMotionButton {
+                targets = nil
+                model.assign(batch.id, to: destination) {
+                    store.connection(for: destination.target.hostId)?.externalImportRuntime(destination.target) != nil
+                }
+            } label: {
+                destinationLabel(destination).frame(maxWidth: .infinity, alignment: .leading).padding(16)
+            }.buttonStyle(NeuButtonStyle()).disabled(model.busy)
+        }
+    }
+
+    private func destinationLabel(_ destination: ExternalImportDestination) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(destination.sessionName).font(.orbisBody(.medium))
+            Text(L10n.tr("{0} · {1}", destination.hostName, destination.target.cwd)).font(.orbisCaption())
+        }
+    }
+
     private func detail(_ batch: ExternalImportBatch) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let destination = batch.destination { destinationLabel(destination) }
             ForEach(Array(batch.files.enumerated()), id: \.offset) { _, file in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(file.name).font(.orbisBody())
@@ -142,6 +196,14 @@ struct ExternalImportInboxView: View {
             }
             if let body = batch.text {
                 Text(body.count > 2000 ? String(body.prefix(2000)) + "…" : body).font(.orbisBody()).textSelection(.enabled)
+            }
+            if let destination = batch.destination {
+                OrbisActionButton(title: L10n.tr("移回待导入")) { model.unassign(batch.id, from: destination.target) }
+                    .disabled(model.busy)
+            } else {
+                OrbisActionButton(title: L10n.tr("加入会话草稿")) {
+                    targets = store.hosts.flatMap { $0.connection.externalImportDestinations() }
+                }.disabled(model.busy).accessibilityIdentifier("external-import-choose-target")
             }
             Button(L10n.tr("删除")) {
                 overlay.showDialog(L10n.tr("删除待导入内容？"), actions: [

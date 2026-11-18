@@ -319,7 +319,7 @@ private struct NavigationRoot: View, Equatable {
             }
         }
         .orbisBottomSheet(isPresented: $externalImports.isOpen) {
-            ExternalImportInboxView(model: externalImports).orbisSheet([.large])
+            ExternalImportInboxView(model: externalImports, store: store).orbisSheet([.large])
         }
         .orbisOverlayHost(overlay)
         .modifier(OrbisInputModality())

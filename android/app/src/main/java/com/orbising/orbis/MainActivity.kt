@@ -273,7 +273,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi,
                         importCount = imports.batches.size, onOpenImports = externalImports::show)
-                    if (imports.open) ExternalImportSheet(imports, externalImports)
+                    if (imports.open) ExternalImportSheet(imports, externalImports, model)
                     state.changeViewer?.let { viewer ->
                         state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.let { manifest ->
                             key(viewer.runtimeId, viewer.summary.versionKey) { FileChangeViewerSheet(viewer, manifest,

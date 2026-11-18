@@ -369,6 +369,29 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         connection.selectRuntime(runtimeId)
     }
 
+    internal suspend fun externalImportDestinations(): List<ExternalImportDestination> = withContext(Dispatchers.Default) {
+        val current = synchronized(lock) { connections.values.toList() }
+        current.flatMap { connection ->
+            val pairing = connection.pairing
+            val state = connection.state.value
+            val pairingKey = externalImportPairingKey(pairing)
+            val hostName = HostSnapshot(pairing, state, hasPendingInteraction = false).name
+            state.externalImportRuntimes().mapNotNull { runtime ->
+                val session = runtime.sessionId ?: return@mapNotNull null
+                ExternalImportDestination(ExternalImportTarget(pairing.hostId, pairingKey, session, runtime.cwd),
+                    hostName, state.sessionDisplayName(session, runtime))
+            }
+        }
+    }
+
+    internal fun externalImportRuntime(target: ExternalImportTarget): RuntimeSummary? {
+        val connection = connectionFor(target.hostId) ?: return null
+        if (externalImportPairingKey(connection.pairing) != target.pairingKey) return null
+        val state = connection.state.value
+        if (state.hostId != target.hostId) return null
+        return state.externalImportRuntimes().firstOrNull { it.sessionId == target.sessionId && it.cwd == target.cwd }
+    }
+
     fun setSessionArchived(sessionId: String, archived: Boolean) =
         active()?.setSessionArchived(sessionId, archived)
 

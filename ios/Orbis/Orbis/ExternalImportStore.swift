@@ -6,15 +6,32 @@ struct ExternalImportedFile: Codable, Equatable, Sendable {
     let bytes: Int64
 }
 
+/// A local draft can only be used by this exact paired computer and Session.
+struct ExternalImportTarget: Codable, Hashable, Sendable {
+    let hostId: String
+    let pairingKey: String
+    let sessionId: String
+    let cwd: String
+}
+
+/// Display labels are a snapshot, never used as routing identity.
+struct ExternalImportDestination: Codable, Equatable, Identifiable, Sendable {
+    let target: ExternalImportTarget
+    let hostName: String
+    let sessionName: String
+    var id: ExternalImportTarget { target }
+}
+
 struct ExternalImportBatch: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let createdAt: Date
     let text: String?
     let files: [ExternalImportedFile]
+    var destination: ExternalImportDestination? = nil
 }
 
 enum ExternalImportProblem: Error, Equatable {
-    case empty, unsupported, limit, full, busy, unreadable
+    case empty, unsupported, limit, full, busy, unreadable, targetUnavailable, alreadyAssigned
 }
 
 /// Retains ownership across asynchronous provider callbacks and across process death.
@@ -152,6 +169,37 @@ struct ExternalImportStore: Sendable {
         }
     }
 
+    /// Replaces only the manifest. The original payload and batch identity never move or duplicate.
+    func assign(_ id: UUID, to destination: ExternalImportDestination) throws -> ExternalImportBatch {
+        try update(id) { batch in
+            if let assigned = batch.destination {
+                guard assigned.target == destination.target else { throw ExternalImportProblem.alreadyAssigned }
+            } else {
+                batch.destination = destination
+            }
+        }
+    }
+
+    func unassign(_ id: UUID, from target: ExternalImportTarget) throws -> ExternalImportBatch {
+        try update(id) { batch in
+            guard batch.destination?.target == target else { throw ExternalImportProblem.targetUnavailable }
+            batch.destination = nil
+        }
+    }
+
+    private func update(_ id: UUID, _ change: (inout ExternalImportBatch) throws -> Void) throws -> ExternalImportBatch {
+        try withLock {
+            let directory = ready(id)
+            var batch = try readBatch(directory, id: id)
+            let before = batch
+            try change(&batch)
+            if batch != before {
+                try JSONEncoder().encode(batch).write(to: directory.appendingPathComponent("batch.json"), options: .atomic)
+            }
+            return batch
+        }
+    }
+
     func delete(_ id: UUID) throws {
         try withLock {
             let source = ready(id)
@@ -230,10 +278,14 @@ struct ExternalImportStore: Sendable {
         try entries().compactMap { directory in
             let name = directory.lastPathComponent
             guard name.hasPrefix("ready-"), let id = UUID(uuidString: String(name.dropFirst(6))) else { return nil }
-            let batch = try JSONDecoder().decode(ExternalImportBatch.self, from: Data(contentsOf: directory.appendingPathComponent("batch.json")))
-            guard batch.id == id else { throw ExternalImportProblem.unreadable }
-            return batch
+            return try readBatch(directory, id: id)
         }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func readBatch(_ directory: URL, id: UUID) throws -> ExternalImportBatch {
+        let batch = try JSONDecoder().decode(ExternalImportBatch.self, from: Data(contentsOf: directory.appendingPathComponent("batch.json")))
+        guard batch.id == id else { throw ExternalImportProblem.unreadable }
+        return batch
     }
 
     private func move(_ source: URL, to destination: URL) throws {

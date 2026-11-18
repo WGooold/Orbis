@@ -12,6 +12,47 @@ class ExternalImportStoreTest {
     @get:Rule val temporary = TemporaryFolder()
     private fun source(name: String, bytes: String) = ImportSource(name) { ByteArrayInputStream(bytes.toByteArray()) }
 
+    // A second selection cannot duplicate or relocate a committed batch, even across reopen.
+    @Test fun assignmentKeepsOneOwnerAndCanBeExplicitlyReturned() {
+        val root = temporary.newFolder()
+        val store = ExternalImportStore(root)
+        val batch = store.save("caption", listOf(source("report.pdf", "contents")))
+        val target = ExternalImportTarget("host-a", "pair-a", "same-session", "/work")
+        val other = target.copy(hostId = "host-b", pairingKey = "pair-b")
+        val destination = ExternalImportDestination(target, "Computer A", "Report")
+        val assigned = store.assign(batch.id, destination)
+        val reopened = ExternalImportStore(root)
+        assertEquals(destination, assigned.destination)
+        assertEquals(listOf(assigned), reopened.list())
+        assertEquals(assigned, reopened.assign(batch.id, destination))
+        assertEquals(ImportProblem.ALREADY_ASSIGNED, assertThrows(ImportRejected::class.java) {
+            reopened.assign(batch.id, destination.copy(target = other))
+        }.problem)
+        assertEquals(ImportProblem.TARGET_UNAVAILABLE, assertThrows(ImportRejected::class.java) {
+            reopened.unassign(batch.id, other)
+        }.problem)
+        assertEquals(batch, reopened.unassign(batch.id, target))
+        assertEquals("contents", File(root, "ready-${batch.id}/file-0").readText())
+    }
+
+    @Test fun requiresLiveUnambiguousSessionAndBindsThePairing() {
+        val runtime = RuntimeSummary("r1", "Agent", "/project", "idle", "s1")
+        val current = RemoteState(hostId = "h1", connection = RelayConnection.ONLINE, e2eReady = true,
+            homeDirectoryReceived = true, runtimes = mapOf(runtime.runtimeId to runtime))
+        assertEquals(listOf(runtime), current.externalImportRuntimes())
+        assertTrue(current.copy(homeDirectoryReceived = false).externalImportRuntimes().isEmpty())
+        assertTrue(current.copy(e2eReady = false).externalImportRuntimes().isEmpty())
+        assertTrue(current.copy(runtimes = current.runtimes + ("r2" to runtime.copy(runtimeId = "r2")))
+            .externalImportRuntimes().isEmpty())
+        assertTrue(current.copy(sessions = mapOf("s1" to SessionCatalogEntry("s1", archived = true)))
+            .externalImportRuntimes().isEmpty())
+        val pairing = HostPairing("h1", "Computer A", "pub", "root", relayUrl = "wss://example.test",
+            deviceId = "device", credential = "first")
+        val key = externalImportPairingKey(pairing)
+        assertEquals(key, externalImportPairingKey(pairing.copy(hostName = "Renamed")))
+        assertNotEquals(key, externalImportPairingKey(pairing.copy(credential = "replacement")))
+    }
+
     // Source bytes and mixed text survive permission loss/process re-open, not just a recorded URI.
     @Test fun publishesOwnCopyAndDeletesByBatchId() {
         val root = temporary.newFolder()

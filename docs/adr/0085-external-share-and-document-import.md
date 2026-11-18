@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-状态：方案拟定，第一阶段实施中；独立工作树 `codex/external-import-20261119`。未部署、未验收。
+状态：本地入口已实现，会话投递实施中；独立工作树 `codex/external-import-20261119`。未部署、未验收。
 
 关联：[ADR-0049 乐观发送](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0051 移动 UI 基线](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055 Agent 输入生命周期](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0064 兼容性](0064-protocol-compatibility.md)、[ADR-0072 会话配置与可恢复启动](0072-session-configuration-and-recoverable-launch.md)、[ADR-0083 反馈等级](0083-feedback-levels-and-stale-replies.md)。
 
@@ -63,9 +63,10 @@
 | OI-01 | Android 分享／打开方式、系统授权内复制、主 App 收件页（IMPORT-01/02/05） | OI-00 |
 | OI-02 | iOS 文档打开、主 App 收件页与共享区存储核心（IMPORT-04/05） | OI-00 |
 | OI-03 | iOS 分享扩展、入口与签名检查（IMPORT-03） | OI-02 |
-| OI-04 | 主 App 选择已有会话、加入草稿、确认发送（IMPORT-05/06） | OI-01/02；iOS 分享入口由 OI-03 接入 |
-| OI-05 | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04 |
-| OI-06 | Host/Relay 独立授权、加密投递与跨版本回退（IMPORT-08） | OI-04 |
+| OI-04a | 主 App 选择已有会话、持久绑定导入草稿（IMPORT-05/06） | OI-01/02/03 |
+| OI-04b | 显式发送、附件传输与命令对账（IMPORT-06） | OI-04a |
+| OI-05 | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04b |
+| OI-06 | Host/Relay 独立授权、加密投递与跨版本回退（IMPORT-08） | OI-04b |
 | OI-07 | iOS 扩展发送已有会话、后台上传与回执；新建目标按 OI-05 能力接入（IMPORT-08） | OI-03/05/06 |
 
 各提交只包含本 Ticket 的实现、相应测试和证据指针。A 的本地批次与持久化测试、构建和设备验证分别登记；阶段 B/C 不以 A 的结果代替。待真机回归的候选由共享 QA Case 管理，领取后由节点构建；验收以用户记录为准。
@@ -87,3 +88,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 [iOS Share Extension](../../ios/Orbis/ShareExtension/ShareViewController.swift) 显示本批文件与可编辑正文；[来源读取](../../ios/Orbis/Orbis/ExternalShareReader.swift)在临时文件回调有效期内复制。确认「存入 Orbis」才发布到与主 App 共用的收件箱；取消不发布。扩展不唤起主 App、不使用配对凭据或网络。
 
 [表示选择与来源交付用例](../../ios/Orbis/Tests/ExternalShareReaderTests.swift)及既有持久化回归合计 12/12 通过，[首次失败](../../.artifacts/external-import/oi-03/selection-tests.log)保留。通用模拟器目标编译通过，并核对内嵌扩展、版本、注册信息与模拟器签名下的 App Group，见[构建与包校验](../../.artifacts/external-import/oi-03/final-app/run.log)、[单测](../../.artifacts/external-import/oi-03/final-core/run.log)和[构建租约后续核验](../../.artifacts/external-import/oi-03/final-app/cleanup-audit.json)。真机签名需主 App 和扩展共同授权 `.imports` App Group；未安装、未分发，微信／QQ 的实际入口和交付待用户验证。
+
+### OI-04a 实施记录
+
+主 App 可从已认证的在线会话选择电脑、会话与项目。选择只在原批次清单中原子绑定目标，使它从待选列表进入「导入草稿」，可显式移回，且不复制文件、不覆盖聊天输入框、不上传。配对更换、项目变化、离线或会话归属不明确时，不替用户选择其他目标。确认发送与恢复历史会话尚未接入。
+
+[Android 存储和目标筛选](../../android/app/src/test/java/com/orbising/orbis/ExternalImportStoreTest.kt) 6/6、[iOS 存储及多电脑定向回归](../../ios/Orbis/Tests/MultiHostTests.swift)与分享回归合计 14/14 通过。见 [Android 编译及单测](../../.artifacts/external-import/oi-04a/android/run.log)、[iOS 单测](../../.artifacts/external-import/oi-04a/ios-core-first/run.log)、[iOS 模拟器构建](../../.artifacts/external-import/oi-04a/ios-app/run.log)及[租约核验](../../.artifacts/external-import/oi-04a/ios-app/cleanup-audit.json)。未安装、未分发、未验收。

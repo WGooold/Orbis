@@ -94,6 +94,31 @@ private final class MultiHostFixture {
 
 @Suite("Independent always-on Hosts") @MainActor
 struct MultiHostTests {
+    // IMPORT-06: target selection stays scoped to authenticated pairing / session / project.
+    // Opening the picker or revalidating a row must not send anything to either Host.
+    @Test func externalImportDestinationIsNotRetargetedBySelectionOrReconnect() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.store.connection(for: "host-1"))
+        let second = try #require(fixture.store.connection(for: "host-2"))
+        let transport = try #require(fixture.transports["host-1"])
+        let otherTransport = try #require(fixture.transports["host-2"])
+        let offered = try #require(first.externalImportDestinations().first)
+        fixture.store.selectHost("host-2")
+        let baseline = (transport.sent.count, otherTransport.sent.count)
+        #expect(first.externalImportRuntime(offered.target)?.sessionId == "shared-session")
+        #expect(second.externalImportRuntime(offered.target) == nil)
+        let wrongProject = ExternalImportTarget(hostId: "host-1", pairingKey: offered.target.pairingKey,
+            sessionId: "shared-session", cwd: "/different")
+        #expect(first.externalImportRuntime(wrongProject) == nil)
+        let oldPairing = ExternalImportTarget(hostId: "host-1", pairingKey: "old-pairing",
+            sessionId: "shared-session", cwd: "/repo")
+        #expect(first.externalImportRuntime(oldPairing) == nil)
+        #expect(transport.sent.count == baseline.0 && otherTransport.sent.count == baseline.1)
+        transport.state?(.offline, nil)
+        #expect(first.externalImportRuntime(offered.target) == nil)
+    }
+
     // S29 / SC49: all three modes are saved per Host; policy changes retain the live adapter.
     @Test func relayTransportModeIsSavedPerSelectedHostWithoutReplacingTheActiveLink() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }

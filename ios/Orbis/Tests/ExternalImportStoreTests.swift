@@ -11,6 +11,31 @@ struct ExternalImportStoreTests {
         try run(directory, directory.appendingPathComponent("inbox", isDirectory: true))
     }
 
+    // An import draft has one persistent owner, even when both hosts use the same session ID.
+    @Test func assignsWholeBatchOnceAndRestoresTheInboxItem() throws {
+        try withRoot { directory, inbox in
+            let store = ExternalImportStore(root: inbox)
+            let source = directory.appendingPathComponent("report.pdf")
+            let bytes = Data([0, 2, 3])
+            try bytes.write(to: source)
+            let batch = try store.importDocument(source)
+            let target = ExternalImportTarget(hostId: "a", pairingKey: "pair-a", sessionId: "same", cwd: "/work")
+            let other = ExternalImportTarget(hostId: "b", pairingKey: "pair-b", sessionId: "same", cwd: "/work")
+            let destination = ExternalImportDestination(target: target, hostName: "Computer A", sessionName: "Report")
+            let assigned = try store.assign(batch.id, to: destination)
+            let reopened = ExternalImportStore(root: inbox)
+            #expect(assigned.destination == destination)
+            #expect(try reopened.list() == [assigned])
+            #expect(try reopened.assign(batch.id, to: destination) == assigned)
+            #expect(throws: ExternalImportProblem.alreadyAssigned) {
+                _ = try reopened.assign(batch.id, to: .init(target: other, hostName: "Computer B", sessionName: "Report"))
+            }
+            #expect(throws: ExternalImportProblem.targetUnavailable) { _ = try reopened.unassign(batch.id, from: other) }
+            #expect(try reopened.unassign(batch.id, from: target) == batch)
+            #expect(try Data(contentsOf: inbox.appendingPathComponent("ready-\(batch.id.uuidString)/file-0")) == bytes)
+        }
+    }
+
     // File-provider URLs are not durable. After the source vanishes our own copy must still be readable.
     @Test func copiesThenReopensWithoutOriginalDocument() throws {
         try withRoot { directory, inbox in

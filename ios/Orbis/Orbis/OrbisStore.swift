@@ -427,6 +427,36 @@ final class HostConnection: ObservableObject {
         return cards.filter { !closing.contains($0.id) }.map { card in var copy = card; copy.error = runtimeIndex[card.id]?.sessionId == card.runtime.sessionId ? objectError(card.id) : nil; return copy }
     }
     var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
+    /// IMPORT-06: read the live catalog, not the selected chat or cached history.
+    func externalImportRuntime(_ target: ExternalImportTarget) -> RuntimeSummary? {
+        guard let host = selectedHost, target.hostId == host.hostId,
+              target.pairingKey == PushNotificationIdentity.pairingKey(host) else { return nil }
+        return externalImportRuntimes().first { $0.sessionId == target.sessionId && $0.cwd == target.cwd }
+    }
+
+    func externalImportDestinations() -> [ExternalImportDestination] {
+        guard let host = selectedHost else { return [] }
+        let pairingKey = PushNotificationIdentity.pairingKey(host)
+        return externalImportRuntimes().compactMap { runtime in
+            guard let sessionId = runtime.sessionId else { return nil }
+            return ExternalImportDestination(target: .init(hostId: host.hostId, pairingKey: pairingKey,
+                sessionId: sessionId, cwd: runtime.cwd), hostName: host.hostName,
+                sessionName: directoryCatalog.titles[sessionId] ?? sessionTitle(runtime: runtime, session: sessionIndex[sessionId]))
+        }
+    }
+
+    private func externalImportRuntimes() -> [RuntimeSummary] {
+        guard connection == .secured, homeDirectoryReceived else { return [] }
+        let counts = Dictionary(grouping: runtimes.compactMap(\.sessionId), by: { $0 }).mapValues(\.count)
+        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger)
+        return runtimes.filter { runtime in
+            guard let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
+                  ["idle", "running"].contains(runtime.status), !closing.contains(runtime.runtimeId),
+                  archiving[id] == nil else { return false }
+            guard let session = sessionIndex[id] else { return true }
+            return session.archived != true && providerMismatch(session) == nil
+        }
+    }
     private var homeActionsRevision = -1
     private var selectableHomeIds: Set<String> = []
     private var closableHomeIds: Set<String> = []

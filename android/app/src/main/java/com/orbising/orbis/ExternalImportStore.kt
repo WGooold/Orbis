@@ -4,19 +4,30 @@ import java.io.File
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE }
+internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE, TARGET_UNAVAILABLE, ALREADY_ASSIGNED }
 internal class ImportRejected(val problem: ImportProblem) : Exception()
 
 @Serializable
 internal data class ImportedFile(val name: String, val bytes: Long)
 
+/** A local draft can only be used by this exact paired computer and Session. */
+@Serializable
+internal data class ExternalImportTarget(val hostId: String, val pairingKey: String, val sessionId: String, val cwd: String)
+
+/** Display labels are a snapshot, never used as routing identity. */
+@Serializable
+internal data class ExternalImportDestination(val target: ExternalImportTarget, val hostName: String, val sessionName: String)
+
 @Serializable
 internal data class ExternalImportBatch(
     val id: String, val createdAt: Long, val text: String?, val files: List<ImportedFile>,
+    val destination: ExternalImportDestination? = null,
 )
 
 internal data class ImportSource(val name: String?, val open: () -> InputStream)
@@ -34,7 +45,7 @@ internal class ExternalImportStore(
         return checkNotNull(root.listFiles()).mapNotNull { directory ->
             val id = directory.name.removePrefix(READY)
             if (!directory.name.startsWith(READY) || !validId(id) || !directory.isDirectory) return@mapNotNull null
-            Json.decodeFromString<ExternalImportBatch>(File(directory, MANIFEST).readText()).also { check(it.id == id) }
+            readBatch(directory, id)
         }.sortedByDescending { it.createdAt }
     }
 
@@ -85,6 +96,44 @@ internal class ExternalImportStore(
         }
     }
 
+    /** Replaces only the manifest; the batch ID and payload bytes remain unchanged. */
+    fun assign(id: String, destination: ExternalImportDestination): ExternalImportBatch = update(id) { batch ->
+        val assigned = batch.destination
+        if (assigned == null) batch.copy(destination = destination)
+        else {
+            if (assigned.target != destination.target) reject(ImportProblem.ALREADY_ASSIGNED)
+            batch
+        }
+    }
+
+    fun unassign(id: String, target: ExternalImportTarget): ExternalImportBatch = update(id) { batch ->
+        if (batch.destination?.target != target) reject(ImportProblem.TARGET_UNAVAILABLE)
+        batch.copy(destination = null)
+    }
+
+    private fun update(id: String, change: (ExternalImportBatch) -> ExternalImportBatch): ExternalImportBatch = synchronized(lock) {
+        if (!validId(id)) reject(ImportProblem.UNREADABLE)
+        val directory = File(root, READY + id)
+        val current = readBatch(directory, id)
+        val next = change(current)
+        if (current != next) {
+            val temporary = File(directory, "$MANIFEST.tmp")
+            try {
+                temporary.outputStream().use {
+                    it.write(Json.encodeToString(ExternalImportBatch.serializer(), next).toByteArray(Charsets.UTF_8))
+                    it.fd.sync()
+                }
+                Files.move(temporary.toPath(), File(directory, MANIFEST).toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+            } finally {
+                temporary.delete()
+            }
+        }
+        next
+    }
+
+    private fun readBatch(directory: File, id: String): ExternalImportBatch =
+        Json.decodeFromString<ExternalImportBatch>(File(directory, MANIFEST).readText()).also { check(it.id == id) }
+
     fun delete(id: String) = synchronized(lock) {
         if (!validId(id)) return@synchronized
         val ready = File(root, READY + id)
@@ -102,6 +151,26 @@ internal class ExternalImportStore(
         const val MANIFEST = "batch.json"
         const val MAX_BATCHES = 16
         const val TEXT_BYTES = 256 * 1024
+    }
+}
+
+internal fun externalImportPairingKey(pairing: HostPairing): String {
+    val raw = listOf(pairing.hostId, pairing.hostPub, pairing.pskRoot, pairing.relayUrl, pairing.deviceId, pairing.credential)
+        .joinToString("") { "${it.toByteArray(Charsets.UTF_8).size}:$it" }
+    return MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+}
+
+/** Only an authenticated, unambiguous live session can receive a draft. */
+internal fun RemoteState.externalImportRuntimes(): List<RuntimeSummary> {
+    if (!canOperateSessions || !homeDirectoryReceived) return emptyList()
+    val counts = runtimes.values.mapNotNull(RuntimeSummary::sessionId).groupingBy { it }.eachCount()
+    val closing = closingRuntimeIds
+    val archiving = archivingSessionIds
+    return runtimes.values.filter { runtime ->
+        val session = runtime.sessionId ?: return@filter false
+        session.isNotBlank() && counts[session] == 1 && runtime.cwd.isNotBlank() &&
+            runtime.status in setOf("idle", "running") && runtime.runtimeId !in closing && session !in archiving &&
+            sessions[session]?.archived != true && codexProviderMismatch(session) == null
     }
 }
 

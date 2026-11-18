@@ -56,15 +56,29 @@ internal class ExternalImportViewModel(app: Application) : AndroidViewModel(app)
     fun select(id: String?) { mutableUi.update { it.copy(selected = id, problem = null) } }
     fun close() { mutableUi.update { it.copy(open = false, problem = null) } }
 
-    fun delete(id: String) {
+    fun assign(id: String, destination: ExternalImportDestination, ifCurrent: () -> Boolean) {
+        if (mutableUi.value.busy) return
+        if (!ifCurrent()) {
+            mutableUi.update { it.copy(problem = ImportProblem.TARGET_UNAVAILABLE) }
+            return
+        }
+        mutate(id, id) { store.assign(id, destination) }
+    }
+
+    fun unassign(id: String, target: ExternalImportTarget) = mutate(id, id) { store.unassign(id, target) }
+
+    fun delete(id: String) = mutate(id, null) { store.delete(id) }
+
+    private fun mutate(id: String, selectedAfter: String?, action: () -> Unit) {
         if (mutableUi.value.busy) return
         mutableUi.update { it.copy(busy = true, problem = null) }
         viewModelScope.launch {
             disk.withLock {
-                val deleted = withContext(Dispatchers.IO) { runCatching { store.delete(id) } }
+                val result = withContext(Dispatchers.IO) { runCatching { action() } }
                 refresh()
-                mutableUi.update { it.copy(busy = false, selected = if (deleted.isSuccess) null else id,
-                    problem = if (deleted.isFailure) ImportProblem.UNREADABLE else it.problem) }
+                mutableUi.update { it.copy(busy = false, selected = if (result.isSuccess) selectedAfter else id,
+                    problem = result.exceptionOrNull()?.let { error -> (error as? ImportRejected)?.problem ?: ImportProblem.UNREADABLE }
+                        ?: it.problem) }
             }
         }
     }
