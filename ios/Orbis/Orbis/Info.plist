@@ -33,7 +33,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>CFBundleShortVersionString</key>
