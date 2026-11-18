@@ -86,4 +86,4 @@ Status: accepted（开始实施；尚未完成 Linux 构建、打包、部署及
 
 ## 当前实施状态
 
-本 ADR 与 ticket 顺序已在提交 `e3ba2ece`（`LINUX-HOST-CLI-00`）记录。`LINUX-HOST-CLI-01` 已实现 CLI bin 声明、Linux 无桌面平台策略、前台启动的信号监听 / 清理，以及桌面专属后端抑制；完成源码构建、定向测试、CLI help 与 npm pack dry-run 核对。证据只证明当前 macOS 开发环境中的编译 / 静态 CLI 入口，不证明 Linux 原生运行、打包部署或手机闭环。Agent 适配、移动端模式、Linux 发行包和完整闭环 ticket 尚未完成；用户安装验收仍待完成。
+本 ADR 与 ticket 顺序已在提交 `e3ba2ece`（`LINUX-HOST-CLI-00`）记录。`LINUX-HOST-CLI-01` 已实现 CLI bin 声明、Linux 无桌面平台策略、前台启动的信号监听 / 清理，以及桌面专属后端抑制；源码构建、定向测试、CLI help 与 npm pack dry-run 核对通过。`LINUX-AGENT-HEADLESS-02` 已让 Linux CLI 默认启用 Codex app-server，并让 Codex `auto` 走 headless 且回执与 TUI 行为一致；Pi RPC 与 DSH 后端沿用现有 headless 路径，复核测试通过。验证：`npm run typecheck`；`vitest` 4 个文件、349 项通过。以上均在 macOS 开发机执行，不证明 Linux 原生运行。当前 Android / iOS 普通新建仍显式发送 `tui`，因此移动端 `auto` ticket 完成前，Pi / Codex 新建流程仍会按显式模式拒绝或保持既有后端语义；尚未完成手机闭环。Claude、移动端模式、Linux 发行包与完整验收仍未完成；用户安装验收待进行。

@@ -134,7 +134,7 @@ async function runHostUntilShutdown(
     });
 
     // Codex TUI 后端按需启用；Codex Desktop 独立提供给 App 按需打开。
-    if (codexEnabled) {
+    if (codexEnabled || profile.headless) {
       try {
         codexServer = await CodexAppServer.create({
           log: (line) => console.error(`[codex] ${line}`),
@@ -142,6 +142,7 @@ async function runHostUntilShutdown(
         });
         codexRuntime = new CodexRuntime({
           server: codexServer,
+          ...(profile.headless ? { headless: true } : {}),
           sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS,
           log: (line) => console.error(`[codex] ${line}`),
           onEvent: () => {}, // 真正的出口由 HostService 接管（setEventSink）

@@ -16,7 +16,7 @@ import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, RuntimeEventSchema
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CODEX_RUNTIME_ID, CodexRequestError, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
-import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
+import { CodexRuntime, codexHeadWindowLaunch, type CodexRuntimeOptions } from "./codex-runtime.js";
 import type { CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 function makeHarness(options?: {
@@ -31,6 +31,9 @@ function makeHarness(options?: {
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
   desktop?: boolean;
+  headless?: boolean;
+  endpoint?: string;
+  openHeadWindow?: CodexRuntimeOptions["openHeadWindow"];
   taskRegistry?: unknown[];
 }): {
   runtime: CodexRuntime;
@@ -88,15 +91,18 @@ function makeHarness(options?: {
     stop: vi.fn(async () => {}),
     request,
     notify: vi.fn(),
+    ...(options?.endpoint === undefined ? {} : { endpoint: options.endpoint }),
   } as unknown as CodexAppServer;
   // 磁盘 rollout 扫描指向空临时目录：既不让测试读到本机真实的 ~/.codex/sessions，
   // 又给磁盘目录用例一个可写入的根。
   const rolloutRoot = testDirectorySync(join(tmpdir(), "orbis-codex-rollout-"));
   const runtime = new CodexRuntime({
     server,
+    ...(options?.headless === undefined ? {} : { headless: options.headless }),
     onEvent: (event) => events.push(event),
     rolloutRoot,
     sourceCoalesceMs: options?.sourceCoalesceMs ?? 0,
+    ...(options?.openHeadWindow === undefined ? {} : { openHeadWindow: options.openHeadWindow }),
   });
   return {
     runtime,
@@ -1520,6 +1526,30 @@ describe("Codex bounded canonical history", () => {
 });
 
 describe("CodexRuntime", () => {
+  // LINUX-AGENT-HEADLESS-02: an auto request on a Linux CLI Host stays in app-server and never opens a TUI.
+  it("reports headless and skips TUI setup for a server-owned Linux profile", async () => {
+    const openHeadWindow = vi.fn();
+    const h = makeHarness({ headless: true, endpoint: "ws://127.0.0.1:12345", openHeadWindow });
+    const onCreated = vi.fn();
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" }, { spawnMode: "auto", onCreated });
+    h.resolveNext({ thread: { id: "th-headless", cwd: "D:/repo", turns: [] } });
+
+    await expect(activating).resolves.toEqual({ sessionId: "th-headless", spawnMode: "headless" });
+    expect(onCreated).toHaveBeenCalledWith({ sessionId: "th-headless", spawnMode: "headless" });
+    expect(openHeadWindow).not.toHaveBeenCalled();
+    expect(h.requests).not.toHaveBeenCalledWith("config/read", expect.anything(), expect.anything());
+    h.server.onExit?.(0);
+  });
+
+  it("rejects an explicit TUI request before creating a thread on a headless Host", async () => {
+    const h = makeHarness({ headless: true, endpoint: "ws://127.0.0.1:12345" });
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" }, { spawnMode: "tui" });
+
+    await expect(activating).rejects.toMatchObject({ code: "spawn_failed" });
+    expect(h.requests).not.toHaveBeenCalledWith("thread/start", expect.anything(), expect.anything());
+    h.server.onExit?.(0);
+  });
+
   it("archive state follows native success; retries and external notifications preserve the same session", async () => {
     const h = makeHarness();
     h.runtime.markStarted();
