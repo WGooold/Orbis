@@ -10,7 +10,7 @@ import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";
 
 const SCOPES = ["operator.read", "operator.write"];
 const generateEd25519 = promisify(generateKeyPair);
-const METHODS = ["sessions.list", "sessions.create", "sessions.subscribe", "sessions.messages.subscribe", "sessions.patch",
+const METHODS = ["sessions.list", "sessions.create", "sessions.subscribe", "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch",
   "chat.history", "chat.send", "chat.abort"] as const;
 export type OpenClawMethod = typeof METHODS[number];
 export type OpenClawConfig = Readonly<{ url: string; token?: string }>;

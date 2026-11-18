@@ -3471,7 +3471,9 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ready.ready.agents).not.toContain("dshDesktop");
       expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
       expect(ready.ready).not.toHaveProperty("dshDesktop");
-      expect(ready.ready.hostFeatures).toEqual(["device.features"]);
+      // The existing string-list extension is safe for the released Desktop requester.
+      expect(ready.ready.hostFeatures).toEqual(["device.features", "agent.openclaw"]);
+      expect(ready.ready).not.toHaveProperty("deviceFeatures");
       RelayToDeviceMessageSchema.parse(ready.ready);
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
         for (let i = 0; i < 80; i++) {

@@ -71,9 +71,9 @@ export function providerMetadata(value: unknown): ProviderMetadata {
   return result;
 }
 /** Desktop entries keep their native provider settings (ADR-0022 / ADR-0076 DSH-DESKTOP-05). */
-export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop" | "dshDesktop"> {
-  if (!kinds.includes(value as Exclude<AgentKind, "codexDesktop" | "dshDesktop">)) throw new ProviderError("未知 Agent");
-  return value as Exclude<AgentKind, "codexDesktop" | "dshDesktop">;
+export function agentKind(value: unknown): Exclude<AgentKind, "codexDesktop" | "dshDesktop" | "openclaw"> {
+  if (!kinds.includes(value as typeof kinds[number])) throw new ProviderError("未知 Agent");
+  return value as typeof kinds[number];
 }
 const missing = (error: unknown): boolean => object(error) && error.code === "ENOENT";
 async function read(path: string): Promise<string | null> {

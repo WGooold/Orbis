@@ -16,18 +16,18 @@ export class CompactStateModel {
   // FT-G11: retained catalog versions let a read reconcile the client's applied
   // revision, rather than assuming the last publication was received. Bounded
   // independently of sessions; eviction simply returns a recovery snapshot.
-  readonly #catalogVersions = new Map<number, { state: DomainState<unknown>; projected?: DomainState<unknown>; bytes: number }>();
-  #projectedCatalog: DomainState<unknown> | undefined;
+  readonly #catalogVersions = new Map<number, { state: DomainState<unknown>; projected: ReadonlyMap<string, DomainState<unknown>>; bytes: number }>();
+  readonly #projectedCatalog = new Map<string, DomainState<unknown>>();
   #catalogBytes = 0;
   readonly #unsubscribe: () => void;
-  constructor(readonly source: AgentStateRegistry, readonly catalogProjection?: (value: unknown) => unknown) {
+  constructor(readonly source: AgentStateRegistry, readonly catalogProjections: Readonly<Record<string, (value: unknown) => unknown>> = {}) {
     this.registry = new AgentStateRegistry({ modelEpoch: source.currentModelEpoch(), maxValueBytes: 4 * 1024 * 1024 });
     this.#unsubscribe = source.subscribe(change => {
-      if (change.kind === "reset") { this.registry.beginModelEpoch(change.modelEpoch); this.#scopes.clear(); this.menuOptions.clear(); this.#catalogVersions.clear(); this.#projectedCatalog = undefined; this.#catalogBytes = 0; return; }
+      if (change.kind === "reset") { this.registry.beginModelEpoch(change.modelEpoch); this.#scopes.clear(); this.menuOptions.clear(); this.#catalogVersions.clear(); this.#projectedCatalog.clear(); this.#catalogBytes = 0; return; }
       if (!this.#scopes.has(JSON.stringify(change.scope))) return;
       if (change.kind === "closed") {
         this.registry.endScope(change.scope); this.#scopes.delete(JSON.stringify(change.scope)); this.menuOptions.release(JSON.stringify(change.scope));
-        if (change.scope.kind === "host") { this.#catalogVersions.clear(); this.#projectedCatalog = undefined; this.#catalogBytes = 0; }
+        if (change.scope.kind === "host") { this.#catalogVersions.clear(); this.#projectedCatalog.clear(); this.#catalogBytes = 0; }
         return;
       }
       this.#commit(change.scope, change.domain, change.state);
@@ -43,9 +43,9 @@ export class CompactStateModel {
     return this.registry;
   }
 
-  catalogBaseline(modelEpoch: string, revision: number, projected = false): DomainState<unknown> | undefined {
+  catalogBaseline(modelEpoch: string, revision: number, projection?: string): DomainState<unknown> | undefined {
     const entry = this.#catalogVersions.get(revision);
-    const state = projected ? entry?.projected : entry?.state;
+    const state = projection === undefined ? entry?.state : entry?.projected.get(projection);
     return state?.modelEpoch === modelEpoch ? structuredClone(state) : undefined;
   }
 
@@ -71,9 +71,9 @@ export class CompactStateModel {
       source: { ...state.source, sourceEpoch: createHash("sha256").update("compact-v1:" + state.source.sourceEpoch).digest("base64url") } });
     if (!result.ok) throw new Error(`Compact state rejected: ${result.code}`);
     if (previous && result.changed && !this.#catalogVersions.has(previous.revision)) {
-      const projected = this.#projectedCatalog?.revision === previous.revision ? this.#projectedCatalog : undefined;
-      const bytes = Buffer.byteLength(JSON.stringify(previous)) + (projected ? Buffer.byteLength(JSON.stringify(projected)) : 0);
-      this.#catalogVersions.set(previous.revision, { state: previous, ...(projected ? { projected } : {}), bytes }); this.#catalogBytes += bytes;
+      const projected = new Map([...this.#projectedCatalog].filter(([, view]) => view.revision === previous.revision));
+      const bytes = [previous, ...projected.values()].reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item)), 0);
+      this.#catalogVersions.set(previous.revision, { state: previous, projected, bytes }); this.#catalogBytes += bytes;
       while (this.#catalogVersions.size > 16 || this.#catalogBytes > 4 * 1024 * 1024) {
         const oldest = this.#catalogVersions.keys().next().value!;
         this.#catalogBytes -= this.#catalogVersions.get(oldest)!.bytes; this.#catalogVersions.delete(oldest);
@@ -81,11 +81,11 @@ export class CompactStateModel {
     }
     // Preserve the exact filtered prefix while its source inventory is current.
     // Re-projecting a historical raw value after inventory replacement loses its cursor.
-    if (scope.kind === "host" && domain === "catalog" && this.catalogProjection && result.changed) {
+    if (scope.kind === "host" && domain === "catalog" && result.changed) {
       const current = this.registry.read(scope, domain)!;
-      this.#projectedCatalog = { ...current, value: this.catalogProjection(current.value) };
+      for (const [key, project] of Object.entries(this.catalogProjections)) this.#projectedCatalog.set(key, { ...current, value: project(current.value) });
     }
   }
 
-  close(): void { this.#unsubscribe(); this.#scopes.clear(); this.menuOptions.clear(); this.#catalogVersions.clear(); this.#projectedCatalog = undefined; this.#catalogBytes = 0; }
+  close(): void { this.#unsubscribe(); this.#scopes.clear(); this.menuOptions.clear(); this.#catalogVersions.clear(); this.#projectedCatalog.clear(); this.#catalogBytes = 0; }
 }

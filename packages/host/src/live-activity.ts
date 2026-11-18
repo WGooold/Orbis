@@ -109,7 +109,9 @@ export class LiveActivityPublisher {
     this.#unsubscribe = options.registry.subscribe(change => {
       if (this.#closing || this.#closed) return;
       if (change.kind === "reset") { this.#queueCollection(); return; }
-      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId ||
+      // Live Activity updates have no per-App Agent negotiation and older Relays
+      // strictly validate the Agent kind. OpenClaw stays on negotiated E2E paths.
+      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId || change.scope.key.agentKind === "openclaw" ||
           !["execution", "availability"].includes(change.domain)) return;
       const id = agentKeyId(change.scope.key);
       const tracked = this.#tracked.get(id);

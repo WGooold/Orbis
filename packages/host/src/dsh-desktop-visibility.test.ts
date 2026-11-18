@@ -65,3 +65,51 @@ describe("Desktop visibility for released Apps", () => {
       .toEqual({ type: "diagnostics.page", page: { records: [{ agentKind: null }], nextCursor: null, truncated: false } });
   });
 });
+
+// OPENCLAW-02: neither declaration enables the other backend. A cursor and its totals
+// describe one visibility view, including when an App upgrades or rolls back.
+const allKinds = ["dsh", "dshDesktop", "openclaw"] as const;
+describe("independent Desktop and OpenClaw views", () => {
+  it.each([[["dshDesktop"]], [["openclaw"]], [["dshDesktop", "openclaw"]]] as const)("isolates %j in bootstrap and catalog pages", (hidden) => {
+    const registry = new AgentStateRegistry({ modelEpoch: "matrix" });
+    const facts = new HostStateFacts({ registry });
+    const rows = Array.from({ length: 30 }, (_, i) => {
+      const kind = allKinds[i % allKinds.length]!;
+      return { ...session(i, kind), sessionId: `${kind === "dshDesktop" ? "dsh-desktop" : kind}:${i}`, modelProvider: kind };
+    });
+    const isHidden = (kind: string) => hidden.some(item => item === kind);
+    const visible = rows.filter(row => !isHidden(row.agentKind));
+    const kinds = allKinds.filter(kind => !isHidden(kind));
+    facts.catalog({ totalSessions: rows.length, truncated: false, sessions: rows, backends: allKinds.map(kind =>
+      ({ kind, ready: true, complete: true, sessions: 10, elapsedMs: 1 })) });
+    const committed = registry.read<HostCatalogState>({ kind: "host" }, "catalog")!;
+    const initial = HostCatalogStateSchema.parse(legacyHostDomain("catalog", committed.value, value => facts.hiddenCatalog(value, hidden), hidden));
+    expect(initial.totalSessions).toBe(visible.length);
+    const query = { type: "session.catalog.query", requestId: "q", format: "v1", query: { text: "", agentKind: null,
+      archived: false, provider: "all" }, cursor: null, limit: 1 } as const;
+    const first = facts.catalogQuery(query, hidden);
+    expect(first.page.totalSessions).toBe(visible.length);
+    expect(first.providers).toEqual([...kinds].sort());
+    expect(facts.catalogQuery({ ...query, cursor: first.page.nextCursor }, []).page.error).toBe("invalid_cursor");
+    const received = [...initial.sessions!];
+    let cursor = initial.nextCursor;
+    while (cursor) {
+      const page = HostCatalogRangeSchema.parse(facts.catalogRange({ cursor, limit: 5 }, hidden));
+      expect(page).toMatchObject({ offset: received.length, totalSessions: visible.length });
+      received.push(...page.sessions);
+      cursor = page.nextCursor;
+    }
+    expect(received).toEqual(visible);
+    const runtimes = allKinds.map(kind => ({ agentKind: kind, runtimeId: `${kind === "dshDesktop" ? "dsh-desktop" : kind}:a` }));
+    const dshDesktop = { state: "closed" };
+    const deviceFeatures = ["agent.openclaw"];
+    expect(legacyDeviceMessage({ type: "device.ready", agents: allKinds, launchableAgents: allKinds, runtimes, dshDesktop, deviceFeatures }, hidden)).toEqual({
+      type: "device.ready", agents: kinds, launchableAgents: kinds, runtimes: runtimes.filter(r => !isHidden(r.agentKind)),
+      ...(isHidden("dshDesktop") ? {} : { dshDesktop }), ...(isHidden("openclaw") ? {} : { deviceFeatures }),
+    });
+    expect(legacyHostDomain("backends", { backends: allKinds.map(kind => ({ kind })) }, value => value, hidden))
+      .toEqual({ backends: kinds.map(kind => ({ kind })) });
+    for (const runtime of runtimes) expect(hiddenFromLegacy({ type: "runtime.event", runtimeId: runtime.runtimeId }, hidden)).toBe(isHidden(runtime.agentKind));
+    expect(hiddenFromLegacy({ type: "session.activate", target: { type: "resume", sessionId: "openclaw:a" } }, hidden)).toBe(isHidden("openclaw"));
+  });
+});

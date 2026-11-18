@@ -64,6 +64,20 @@ describe("Host Live Activity summary", () => {
     await h.publisher.close();
   });
 
+  // OPENCLAW-02: unnegotiated Relay/APNs metadata must keep its released kind set.
+  it("does not count OpenClaw in Live Activity traffic for old Relays or Apps", async () => {
+    const h = setup();
+    h.publisher.setConnected(true);
+    h.write(key("claw", "openclaw"), execution("running"));
+    await h.flush();
+    expect(h.sent).toEqual([]);
+    h.write(key("existing"), execution("running"));
+    await h.flush();
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]?.contentState).toMatchObject({ phase: "running", agentKind: "codex", runningCount: 1 });
+    await h.publisher.close();
+  });
+
   // LA-H03: tool/stream churn must not spend APNs budget. Ordinary count changes
   // collapse to the latest value, and elapsed minutes are rendered on-device.
   it("coalesces ordinary changes and only renews quiet activity freshness every four minutes", async () => {

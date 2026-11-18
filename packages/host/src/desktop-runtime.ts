@@ -707,6 +707,7 @@ export class DesktopRuntime {
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
+        ...(this.#qa ? { openClaw: false } : {}),
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
         managementBackends: () => (["pi", "codex", "dsh"] as const).map(kind => {

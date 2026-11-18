@@ -271,10 +271,11 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  * 设备与 Host 按实际解析能力协商的功能（ADR-0064、ADR-0076 DSH-DESKTOP-06）。
  *
  * Host 先在 `device.ready.hostFeatures` 公告自己能接收 `device.features`；设备只在看到公告后声明。
- * 未声明 `agent.dshDesktop` 的设备（包括全部已发布 App）不会收到 `dshDesktop` 枚举、会话或运行时。
+ * 未声明对应能力的设备不会收到该 Agent 的枚举、会话或运行时。
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
+export const DEVICE_FEATURE_OPENCLAW = "agent.openclaw";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
@@ -1385,6 +1386,8 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
      dshDesktop: DshDesktopAttachSchema.nullable().optional(),
      /** Host 能接收的设备侧协商消息；旧 App 忽略此字段。 */
      hostFeatures: z.array(DeviceFeatureSchema).max(32).optional(),
+     /** Echo the admitted features only to an App that has declared OpenClaw support. */
+     deviceFeatures: z.array(DeviceFeatureSchema).max(32).optional(),
   }),
   /**
    * 当前生效的传输路径（spec §6.2 / §14 B4）。

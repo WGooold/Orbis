@@ -65,7 +65,7 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
           verify(null, Buffer.from(signed), key, Buffer.from(device.signature, "base64url")) });
       socket.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { type: "hello-ok", protocol: 4,
         server: { version: "fixture", connId: "fixture" }, features: { methods: ["sessions.list", "sessions.create", "sessions.subscribe",
-          "sessions.messages.subscribe", "sessions.patch", "chat.history", "chat.send", "chat.abort"], events: [] },
+          "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch", "chat.history", "chat.send", "chat.abort"], events: [] },
         snapshot: { presence: [], health: {}, stateVersion: { presence: 0, health: 0 }, uptimeMs: 0 },
         auth: { role: "operator", scopes, deviceToken: "paired-token" },
         policy: { maxPayload: 1000000, maxBufferedBytes: 1000000, tickIntervalMs: 10000 } } }));
