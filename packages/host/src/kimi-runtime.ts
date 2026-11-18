@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import type { AgentSessionSummary, RuntimeMetadata, SessionConfigurationCatalog } from "@orbis/protocol";
+import type { AgentKey, AgentSessionSummary, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SessionConfigurationCatalog } from "@orbis/protocol";
+import { ToolActivityProducer, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
+import { KimiConversation, kimiObject, type KimiFrame } from "./kimi-conversation.js";
 import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { KimiBusinessError, KimiWebConnector, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
 import { KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
@@ -9,10 +11,8 @@ import { localHostname } from "./sessions.js";
 
 const SUBSCRIBE_TIMEOUT_MS = 5_000;
 const MAX_SUBSCRIPTIONS = 12;
-export type KimiFrame = Record<string, unknown>;
-export const kimiObject = (value: unknown): KimiFrame => value !== null && typeof value === "object" && !Array.isArray(value) ? value as KimiFrame : {};
-
-type Active = { native: KimiSession; cwd: string; id: string; subscribed: boolean; subscribing?: Promise<void> };
+type Active = { native: KimiSession; cwd: string; id: string; subscribed: boolean; subscribing?: Promise<void>;
+  conversation?: KimiConversation; toolProducer?: ToolActivityProducer; thinking?: string };
 type Connection = { sessions: KimiSessions; socket: WebSocket; generation: number };
 type KimiOptions = KimiWebClientOptions & { log?: (message: string) => void };
 
@@ -24,6 +24,9 @@ export class KimiRuntime implements AgentBackend {
   readonly #active = new Map<string, Active>();
   readonly #requests = new Map<string, (code: number) => void>();
   #connection: Connection | undefined;
+  #toolStore: ToolContentStore | undefined;
+  #hostId = "local";
+  #sink: (event: RuntimeEvent, runtimeId: string) => void = () => undefined;
   onCatalogChange?: () => void;
   onMetadataChange?: (metadata: RuntimeMetadata) => void;
   onOffline?: (runtime: RuntimeMetadata, reason: string) => void;
@@ -44,6 +47,20 @@ export class KimiRuntime implements AgentBackend {
     });
   }
 
+  setEventSink(sink: (event: RuntimeEvent, runtimeId: string) => void): void { this.#sink = sink; }
+  setToolContentStore(store: ToolContentStore, hostId: string): void { this.#toolStore = store; this.#hostId = hostId; }
+  readonly toolContents: ToolContentReader = {
+    read: (owner, request, signal) => this.#active.get(request.runtimeId)?.toolProducer?.read(owner, request, signal)
+      ?? Promise.reject(new ToolContentReadError("content_unavailable")),
+    cancel: async (owner, id) => { await this.#toolStore?.cancel(owner, id); },
+  };
+  async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
+    return runtimeId === sessionId ? this.#active.get(runtimeId)?.conversation?.entry(entryId) : undefined;
+  }
+  announce(): void {
+    for (const item of this.#active.values()) if (item.subscribed) this.#sink({ type: "runtime.capabilities", capabilities: { commands: [] } }, item.id);
+  }
+
   start(): void { this.#connector.start(); }
   async stop(): Promise<void> {
     this.#disconnected("Kimi Code 已断开");
@@ -59,7 +76,8 @@ export class KimiRuntime implements AgentBackend {
     return { runtimeId: item.id, sessionId: item.id, cwd: item.cwd, name: "Kimi Code", status: item.native.main_turn_active ? "running" : "idle",
       hostname: localHostname() ?? "localhost", sessionGraphSync: true,
       ...(item.native.title ? { sessionName: item.native.title.slice(0, 256) } : {}),
-      ...(model && model.length <= 256 ? { model: { provider: "Kimi Code", id: model } } : {}) };
+      ...(model && model.length <= 256 ? { model: { provider: "Kimi Code", id: model } } : {}),
+      ...(item.thinking ? { thinkingLevel: item.thinking } : {}) };
   }
   async #connected(client: KimiWebClient, socket: WebSocket, generation: number): Promise<void> {
     const key = await kimiSourceKey(this.#home);
@@ -79,6 +97,7 @@ export class KimiRuntime implements AgentBackend {
     for (const complete of this.#requests.values()) complete(-1);
     this.#requests.clear();
     for (const item of this.#active.values()) {
+      this.#clearConversation(item);
       if (item.subscribed) this.onOffline?.(this.#metadata(item), reason);
       item.subscribed = false;
       delete item.subscribing;
@@ -134,14 +153,10 @@ export class KimiRuntime implements AgentBackend {
     const activation = { sessionId: connection.sessions.publicId(native.id), spawnMode: "headless" as const };
     await context.onCreated?.(activation);
     this.#assertConnection(connection);
-    const ready = await this.#resume(connection, native.id);
-    if (!native.agent_config.model && !this.#active.get(activation.sessionId)?.native.agent_config.model) {
-      throw new Error("Kimi Code 已创建会话，但尚未确认可用模型；不会发送首句");
-    }
-    return ready;
+    return this.#resume(connection, native.id, true);
   }
 
-  async #resume(connection: Connection, nativeId: string): Promise<BackendActivation> {
+  async #resume(connection: Connection, nativeId: string, requireModel = false): Promise<BackendActivation> {
     let native: KimiSession;
     try { native = await connection.sessions.read(nativeId); }
     catch (error) {
@@ -166,6 +181,11 @@ export class KimiRuntime implements AgentBackend {
     }
     this.#assertConnection(connection);
     if (this.#active.get(id) !== item || !item.subscribed) throw new Error("Kimi Code 未确认会话订阅");
+    const conversation = item.conversation;
+    if (!conversation) throw new Error("Kimi Code 未确认会话订阅");
+    await conversation.waitForBaseline();
+    this.#assertConnection(connection);
+    if (requireModel && !item.native.agent_config.model) throw new Error("Kimi Code 会话尚未确认可用模型");
     return { sessionId: id, spawnMode: "headless" };
   }
 
@@ -179,6 +199,14 @@ export class KimiRuntime implements AgentBackend {
         }
         item.subscribed = true;
         this.onMetadataChange?.(this.#metadata(item));
+        const agent = (): AgentKey => ({ hostId: this.#hostId, agentKind: this.kind, sessionId: item.id });
+        const conversation = item.conversation = new KimiConversation({ agent, nativeId: item.native.id,
+          client: connection.sessions.client, emit: event => this.#sink(event, item.id) });
+        conversation.invalidate(); // publish an explicit epoch boundary before any native baseline
+        item.toolProducer = new ToolActivityProducer({ agent, runtimeId: () => item.id,
+          source: () => ({ epoch: conversation.epoch, ready: conversation.ready && this.#connection === connection }),
+          native: locator => conversation.toolPart(locator), ...(this.#toolStore ? { store: this.#toolStore } : {}) });
+        this.announce();
         resolve();
       };
       const timer = setTimeout(() => { finish(-1); connection.socket.terminate(); }, SUBSCRIBE_TIMEOUT_MS);
@@ -201,6 +229,7 @@ export class KimiRuntime implements AgentBackend {
         const id = connection.sessions.publicId(native);
         const item = this.#active.get(id);
         if (item && frame.type !== "event.session.restored") {
+          this.#clearConversation(item);
           this.#active.delete(id);
           if (item.subscribed) this.onOffline?.(this.#metadata(item), "Kimi Code 会话已关闭");
         }
@@ -215,12 +244,32 @@ export class KimiRuntime implements AgentBackend {
     if (frame.type === "agent" && frame.agent_id === "main") {
       const model = typeof frame.model === "string" ? frame.model : "";
       item.native = { ...item.native, main_turn_active: frame.status === "running", agent_config: { model } };
+      if (typeof frame.thinking === "string" && frame.thinking.length > 0 && frame.thinking.length <= 64) item.thinking = frame.thinking; else delete item.thinking;
       this.onMetadataChange?.(this.#metadata(item));
     } else if (frame.type === "session.meta.updated") {
       const title = kimiObject(frame.payload).title;
       if (typeof title === "string") { item.native = { ...item.native, title }; this.onMetadataChange?.(this.#metadata(item)); }
     }
+    if (frame.agent_id === "main") {
+      const ready = item.conversation?.ready;
+      item.conversation?.frame(frame);
+      if (ready && !item.conversation?.ready && frame.type !== "turns.failed") connection.socket.terminate();
+    }
   }
 
-  dispatchCommand(): CommandDispatch { return "unsupported"; }
+  #clearConversation(item: Active): void {
+    item.conversation?.invalidate(); delete item.conversation;
+    void item.toolProducer?.dispose().catch(() => undefined); delete item.toolProducer;
+  }
+
+  dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
+    const item = this.#active.get(runtimeId);
+    if (!this.isReady() || !item?.subscribed || !item.conversation) return "offline";
+    if (command.type !== "session.sync") return "unsupported";
+    const conversation = item.conversation;
+    void conversation.sync(command).then(event => {
+      if (this.#active.get(runtimeId)?.conversation === conversation) this.#sink(event, runtimeId);
+    }).catch(() => this.#sink({ type: "command.result", commandId, ok: false, error: "kimi_history_unavailable" }, runtimeId));
+    return "handled";
+  }
 }
