@@ -33,6 +33,7 @@ import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
+import { hostCliProfile } from "./cli-profile.js";
 
 const USAGE = `orbis —— 电脑侧的 Host 进程
 
@@ -70,6 +71,11 @@ async function main(): Promise<void> {
   const [command, ...rest] = parsed.positionals;
   const stateDir = parsed.values["state-dir"];
 
+  if (parsed.values.help === true && command !== undefined) {
+    console.log(USAGE);
+    return;
+  }
+
   switch (command) {
     case "pair":
       await runPair(stateDir, parsed.values["print-payload"] === true);
@@ -93,152 +99,174 @@ async function runHost(
   dshEnabled: boolean,
   sessionsRoot: string | undefined,
 ): Promise<void> {
+  const shutdown = waitForSignal();
+  try {
+    await runHostUntilShutdown(stateDirOption, codexEnabled, dshEnabled, sessionsRoot, shutdown.promise);
+  } finally {
+    shutdown.dispose();
+  }
+}
+
+async function runHostUntilShutdown(
+  stateDirOption: string | undefined,
+  codexEnabled: boolean,
+  dshEnabled: boolean,
+  sessionsRoot: string | undefined,
+  shutdown: Promise<void>,
+): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
-  const config = await loadHostConfig({ stateDir });
-
+  const profile = hostCliProfile(process.platform);
   let service: HostService | undefined;
-  // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。
-  const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
-  const providers = new ProviderManager(stateDir, undefined, {
-    beforeApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch && !liveApply(kind, liveEdit)) await service?.assertProviderSwitchReady(kind); },
-    afterApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch) await service?.reloadProviderConfiguration(kind, await providers.environment(kind), liveApply(kind, liveEdit)); },
-  });
-
-  // Codex TUI 后端按需启用；Codex Desktop 独立提供给 App 按需打开。
   let codexServer: CodexAppServer | undefined;
   let codexRuntime: CodexRuntime | undefined;
-  if (codexEnabled) {
-    try {
-      codexServer = await CodexAppServer.create({
-        log: (line) => console.log(`[codex] ${line}`),
-        onExit: (code) => console.log(`[codex] app-server 已退出（code=${code ?? "signal"}），Codex 后端不可用`),
-      });
-      codexRuntime = new CodexRuntime({
-        server: codexServer,
-        sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS,
-        log: (line) => console.log(`[codex] ${line}`),
-        onEvent: () => {}, // 真正的出口由 HostService 接管（setEventSink）
-      });
-    } catch (error) {
-      console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  const wrapper = resolveCodexWrapper();
-  const endpointPath = codexDesktopEndpointPath(stateDir);
-  if (wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入");
-  const codexDesktopLifecycle = new CodexDesktopLifecycle({
-    log: line => console.log(`[codex-desktop] ${line}`),
-    onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
-    onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
-    resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-    resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
-    desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-    launchApp: async () => {
-      if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;
-      await launchCodexDesktopApp();
-    },
-  });
-
-  const codexDesktopLaunchable = await codexDesktopLifecycle.isInstalled();
-
   let dshRuntime: DshRuntime | undefined;
-  let dshLaunchable = false;
-  try { await resolveDshCommand(await providers.environment("dsh")); dshLaunchable = true; }
-  catch { /* Keep DeepSeek unavailable when its CLI or native provider configuration is missing. */ }
-  if (dshEnabled) {
-    try { dshRuntime = await DshRuntime.create(await providers.environment("dsh")); }
-    catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  // DeepSeek Desktop (ADR-0076): opened by this Host on a phone request and attached through its own API Peer.
-  // Stopping releases only that connection (DSH-DESKTOP-07).
   let dshDesktopRuntime: DshRuntime | undefined;
-  const dshDesktopLifecycle = new DshDesktopLifecycle({
-    stateDir,
-    log: line => console.log(`[dsh-desktop] ${line}`),
-    onStatusChange: status => {
-      console.log(`[dsh-desktop] ${status.state} · ${status.reason}`);
-      service?.announceDshDesktopStatus();
-    },
-  });
-  const dshDesktopLaunchable = await dshDesktopLifecycle.isInstalled();
-  const connectDshDesktop = async (existingOnly: boolean): Promise<DshRuntime | undefined> => {
-    if (dshDesktopRuntime?.isReady()) return dshDesktopRuntime;
-    const runtime = existingOnly ? await dshDesktopLifecycle.connectExisting() : await dshDesktopLifecycle.ensure();
-    if (runtime) dshDesktopRuntime = runtime;
-    return runtime;
-  };
-
+  let codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
+  let dshDesktopLifecycle: DshDesktopLifecycle | undefined;
   try {
-    service = await HostService.create({
-      providers,
-      relayUrl: config.relayUrl,
-      relayTransport: config.relayTransport,
-      relayHistoryMode: config.relayHistoryMode,
-      credential: config.runtimeCredential,
-      stateDir,
-      ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
-      // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
-      ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
-      ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
-      ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
-      ensureCodexDesktop: () => codexDesktopLifecycle.ensureReady(),
-      codexDesktopLaunchable,
-      codexDesktopStatus: () => codexDesktopLifecycle.status,
-      ...(dshRuntime === undefined ? {} : { dshRuntime }),
-      ensureDshRuntime: async () => {
-        if (dshRuntime?.isReady()) return dshRuntime;
-        dshRuntime = await DshRuntime.create(await providers.environment("dsh"));
-        return dshRuntime;
-      },
-      recoverDshRuntime: async () => {
-        if (dshRuntime?.isReady()) return dshRuntime;
-        const runtime = await DshRuntime.connectExisting(await providers.environment("dsh"));
-        if (runtime) dshRuntime = runtime;
-        return runtime;
-      },
-      dshLaunchable,
-      dshDesktopLaunchable,
-      dshDesktopStatus: () => dshDesktopLifecycle.status,
-      ensureDshDesktopRuntime: () => connectDshDesktop(false),
-      recoverDshDesktopRuntime: () => connectDshDesktop(true),
-      onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
-      claude: {},
-      log: (line) => console.log(`[host] ${line}`),
-      onStateChange: (state) => console.log(`[host] relay ${state}`),
-      onPathChange: (deviceId, change) => {
-        console.log(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
-      },
-      onData: (_deviceId, payload) => {
-        console.log(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
+    const config = await loadHostConfig({ stateDir });
+
+    // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。
+    const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
+    const providers = new ProviderManager(stateDir, undefined, {
+      beforeApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch && !liveApply(kind, liveEdit)) await service?.assertProviderSwitchReady(kind); },
+      afterApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch) await service?.reloadProviderConfiguration(kind, await providers.environment(kind), liveApply(kind, liveEdit)); },
+    });
+
+    // Codex TUI 后端按需启用；Codex Desktop 独立提供给 App 按需打开。
+    if (codexEnabled) {
+      try {
+        codexServer = await CodexAppServer.create({
+          log: (line) => console.error(`[codex] ${line}`),
+          onExit: (code) => console.error(`[codex] app-server 已退出（code=${code ?? "signal"}），Codex 后端不可用`),
+        });
+        codexRuntime = new CodexRuntime({
+          server: codexServer,
+          sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS,
+          log: (line) => console.error(`[codex] ${line}`),
+          onEvent: () => {}, // 真正的出口由 HostService 接管（setEventSink）
+        });
+      } catch (error) {
+        console.error(`[codex] 后端未启用：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const wrapper = profile.launchDesktopAgents ? resolveCodexWrapper() : undefined;
+    const endpointPath = codexDesktopEndpointPath(stateDir);
+    if (profile.launchDesktopAgents && wrapper === undefined) console.error("[codex-desktop] 未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入");
+    codexDesktopLifecycle = new CodexDesktopLifecycle({
+      log: line => console.error(`[codex-desktop] ${line}`),
+      onReady: runtime => service?.attachCodexDesktopRuntime(runtime),
+      onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
+      resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+      resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
+      desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
+      launchApp: async () => {
+        if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath)) return;
+        await launchCodexDesktopApp();
       },
     });
 
-    await service.start();
-    await codexDesktopLifecycle?.probe().catch(error => console.log(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
-    dshDesktopLifecycle.watch();
-    console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
-    if (service.lan !== undefined) {
-      const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
-      console.log(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
-    }
-    if (service.loopback !== undefined) {
-      for (const runtime of service.localRuntimes) {
-        console.log(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
-      }
-      console.log("[host] 在另一台终端启动 Pi 即会自动接上本机通道；Ctrl+C 退出");
+    const codexDesktopLaunchable = profile.launchDesktopAgents && await codexDesktopLifecycle!.isInstalled();
+
+    let dshLaunchable = false;
+    try { await resolveDshCommand(await providers.environment("dsh")); dshLaunchable = true; }
+    catch { /* Keep DeepSeek unavailable when its CLI or native provider configuration is missing. */ }
+    if (dshEnabled) {
+      try { dshRuntime = await DshRuntime.create(await providers.environment("dsh")); }
+      catch (error) { console.error(`[dsh] 后端未启用：${error instanceof Error ? error.message : String(error)}`); }
     }
 
-    await waitForSignal();
-  } finally {
-    try { await service?.stop(); }
-    finally {
-      dshDesktopLifecycle.stop();
-      await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop(), dshDesktopRuntime?.stop()]);
+    // DeepSeek Desktop (ADR-0076): opened by this Host on a phone request and attached through its own API Peer.
+    // Stopping releases only that connection (DSH-DESKTOP-07).
+    dshDesktopLifecycle = new DshDesktopLifecycle({
+      stateDir,
+      log: line => console.error(`[dsh-desktop] ${line}`),
+      onStatusChange: status => {
+        console.error(`[dsh-desktop] ${status.state} · ${status.reason}`);
+        service?.announceDshDesktopStatus();
+      },
+    });
+    const dshDesktopLaunchable = profile.launchDesktopAgents && await dshDesktopLifecycle!.isInstalled();
+    const connectDshDesktop = async (existingOnly: boolean): Promise<DshRuntime | undefined> => {
+      if (dshDesktopRuntime?.isReady()) return dshDesktopRuntime;
+      const runtime = existingOnly ? await dshDesktopLifecycle!.connectExisting() : await dshDesktopLifecycle!.ensure();
+      if (runtime) dshDesktopRuntime = runtime;
+      return runtime;
+    };
+
+      service = await HostService.create({
+        providers,
+        relayUrl: config.relayUrl,
+        relayTransport: config.relayTransport,
+        relayHistoryMode: config.relayHistoryMode,
+        credential: config.runtimeCredential,
+        stateDir,
+        ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
+        // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
+        ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
+        ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
+        ...(codexRuntime === undefined ? {} : { codexRuntime, codexLaunch: (request: { cwd: string }) => codexRuntime!.prepareTerminalLaunch(request.cwd) }),
+        ensureCodexDesktop: profile.launchDesktopAgents ? () => codexDesktopLifecycle!.ensureReady() : async () => undefined,
+        codexDesktopLaunchable,
+        codexDesktopStatus: () => codexDesktopLifecycle!.status,
+        ...(dshRuntime === undefined ? {} : { dshRuntime }),
+        ensureDshRuntime: async () => {
+          if (dshRuntime?.isReady()) return dshRuntime;
+          dshRuntime = await DshRuntime.create(await providers.environment("dsh"));
+          return dshRuntime;
+        },
+        recoverDshRuntime: async () => {
+          if (dshRuntime?.isReady()) return dshRuntime;
+          const runtime = await DshRuntime.connectExisting(await providers.environment("dsh"));
+          if (runtime) dshRuntime = runtime;
+          return runtime;
+        },
+        dshLaunchable,
+        dshDesktopLaunchable,
+        dshDesktopStatus: () => dshDesktopLifecycle!.status,
+        ensureDshDesktopRuntime: profile.launchDesktopAgents ? () => connectDshDesktop(false) : async () => undefined,
+        recoverDshDesktopRuntime: profile.launchDesktopAgents ? () => connectDshDesktop(true) : async () => undefined,
+        onDshDesktopOffline: reason => dshDesktopLifecycle!.noteOffline(reason),
+        claude: {},
+        log: (line) => console.error(`[host] ${line}`),
+        onStateChange: (state) => console.error(`[host] relay ${state}`),
+        onPathChange: (deviceId, change) => {
+          console.error(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
+        },
+        onData: (_deviceId, payload) => {
+          console.error(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
+        },
+      });
+
+      await service.start();
+      if (profile.launchDesktopAgents) {
+        await codexDesktopLifecycle!.probe().catch(error => console.error(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
+        dshDesktopLifecycle!.watch();
+      }
+      console.error(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
+      if (service.lan !== undefined) {
+        const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
+        console.error(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
+      }
+      if (service.loopback !== undefined) {
+        for (const runtime of service.localRuntimes) {
+          console.error(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
+        }
+        console.error(profile.headless
+          ? "[host] Linux 无头 Host 已就绪；按 Ctrl+C 停止"
+          : "[host] 在另一台终端启动 Pi 即会自动接上本机通道；Ctrl+C 退出");
+      }
+
+      await shutdown;
+    } finally {
+      try { await service?.stop(); }
+      finally {
+        dshDesktopLifecycle?.stop();
+        await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop(), dshDesktopRuntime?.stop()]);
+      }
     }
-  }
-  console.log("[host] 已退出");
+  console.error("[host] 已退出");
 }
 
 /** 配对模式：短命进程。开窗、收 PAIR_REQUEST、落盘，然后退出。 */
@@ -381,12 +409,18 @@ async function renderTerminalQr(text: string): Promise<string> {
   return await QRCode.toString(text, { type: "terminal", small: true });
 }
 
-function waitForSignal(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const done = (): void => resolve();
-    process.once("SIGINT", done);
-    process.once("SIGTERM", done);
-  });
+function waitForSignal(): { promise: Promise<void>; dispose: () => void } {
+  let resolveSignal!: () => void;
+  const promise = new Promise<void>(resolve => { resolveSignal = resolve; });
+  let settled = false;
+  const done = (): void => {
+    if (settled) return;
+    settled = true;
+    resolveSignal();
+  };
+  process.once("SIGINT", done);
+  process.once("SIGTERM", done);
+  return { promise, dispose: () => { process.off("SIGINT", done); process.off("SIGTERM", done); } };
 }
 
 await main();

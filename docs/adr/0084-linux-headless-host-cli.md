@@ -86,4 +86,4 @@ Status: accepted（开始实施；尚未完成 Linux 构建、打包、部署及
 
 ## 当前实施状态
 
-本 ADR 已确定首阶段范围：在独立 worktree 内实现 Linux 无头 CLI 与服务器型 Agent 后端；桌面专属 Agent 仅准确声明不适用。当前尚未完成代码改动、测试、Linux 构建、打包、部署或手机验收。实施结果与未解决项随后回填本 ADR 或关联实现记录，用户手动安装验收仍标记为待验证。
+本 ADR 与 ticket 顺序已在提交 `e3ba2ece`（`LINUX-HOST-CLI-00`）记录。`LINUX-HOST-CLI-01` 已实现 CLI bin 声明、Linux 无桌面平台策略、前台启动的信号监听 / 清理，以及桌面专属后端抑制；完成源码构建、定向测试、CLI help 与 npm pack dry-run 核对。证据只证明当前 macOS 开发环境中的编译 / 静态 CLI 入口，不证明 Linux 原生运行、打包部署或手机闭环。Agent 适配、移动端模式、Linux 发行包和完整闭环 ticket 尚未完成；用户安装验收仍待完成。
