@@ -97,6 +97,7 @@ import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
+import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_KIND, OPENCODE_KIND, hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
@@ -127,13 +128,6 @@ import type { UsageSnapshot } from "./provider-usage-cache.js";
  * 手机在激活/重连/回前台时都会请求，短 TTL 足以把那些重复请求收敛成一次扫描，
  * 又不至于让用户察觉「刚建的会话不在列表里」——激活路径另走 `#invalidateCatalog`。
  */
-function catalogContainsKind(value: unknown, kind: AgentKind): boolean {
-  if (value === null || typeof value !== "object") return false;
-  const catalog = value as { sessions?: unknown[]; backends?: unknown[]; currentProviders?: unknown[] };
-  const rows = [...(catalog.sessions ?? []), ...(catalog.backends ?? []), ...(catalog.currentProviders ?? [])];
-  return rows.some(row => row !== null && typeof row === "object" &&
-    ((row as { agentKind?: unknown; kind?: unknown }).agentKind === kind || (row as { kind?: unknown }).kind === kind));
-}
 const CATALOG_TTL_MS = 5_000;
 type DshKind = "dsh" | "dshDesktop";
 const DSH_KINDS: readonly DshKind[] = ["dsh", "dshDesktop"];
@@ -580,12 +574,12 @@ export class HostService {
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
     const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", OPENCODE_KIND];
-    const openCodeReason = this.#opencodeConnection.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "backend_not_attached";
+    const openCodeReason = this.#opencodeConnection.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend !== undefined ? backend.isReady() ? null : "backend_not_ready"
+        reason: backend !== undefined ? backend.isReady() ? null : kind === OPENCODE_KIND ? openCodeReason : "backend_not_ready"
           : kind === OPENCODE_KIND ? openCodeReason : "backend_not_attached" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const grouped = new Map<string, Set<string>>();
@@ -696,6 +690,8 @@ export class HostService {
   #providerFactsClosing = false;
   #serviceClosed = false;
   readonly #opencodeConnection: OpenCodeServiceConnection;
+  readonly #openCodeBackend: OpenCodeBackend;
+  readonly #openCodePublishedRuntimes = new Set<string>();
   readonly #unsubscribeOpenCodeStatus: () => void;
   readonly #providerFactsPending = new Set<Promise<void>>();
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
@@ -941,14 +937,25 @@ export class HostService {
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
-    this.#compactState = new CompactStateModel(agentStateRegistry,
-      value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND)));
+    const catalogViews = [[DSH_DESKTOP_KIND], [OPENCODE_KIND], [DSH_DESKTOP_KIND, OPENCODE_KIND]] as const;
+    this.#compactState = new CompactStateModel(agentStateRegistry, new Map(catalogViews.map(kinds =>
+      [[...kinds].sort().join(","), value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, kinds), kinds)])));
     this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
+    this.#openCodeBackend = new OpenCodeBackend({
+      connection: this.#opencodeConnection,
+      hostId: this.#identity.hostId,
+      onRuntimeOnline: runtime => this.#registerOpenCodeRuntime(runtime),
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+      onCatalogChange: () => this.#invalidateCatalog(),
+      onAvailabilityChange: () => { if (!this.#providerFactsClosing) this.#broadcastDeviceReady(); },
+    });
+    this.#backends.push(this.#openCodeBackend);
     this.refreshHostFacts();
   }
 
@@ -1031,6 +1038,26 @@ export class HostService {
     };
     this.#backends.push(dsh);
     this.#dsh[kind].runtime = dsh;
+  }
+
+  #registerOpenCodeRuntime(runtime: RuntimeMetadata): void {
+    const alreadyPublished = this.#openCodePublishedRuntimes.has(runtime.runtimeId);
+    const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
+    if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+    this.#openCodePublishedRuntimes.add(runtime.runtimeId);
+    this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    if (!alreadyPublished) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+    if (alreadyPublished) this.#publishRuntimeEvent(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    else this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+    this.refreshHostFacts();
+  }
+
+  #unregisterOpenCodeRuntime(runtimeId: string, reason: string): void {
+    if (!this.#openCodePublishedRuntimes.delete(runtimeId) && this.#agentFacts.scopeOf(runtimeId) === undefined) return;
+    this.#notifications.end(runtimeId);
+    this.#markRuntimeOffline(runtimeId, reason);
+    this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    this.refreshHostFacts();
   }
 
   /** Attach a newly connected DeepSeek backend and publish the changed capability. */
@@ -1307,18 +1334,7 @@ export class HostService {
   }
 
   #compactCatalogBaseline(epoch: string, revision: number, hiddenKinds: readonly AgentKind[]) {
-    // CompactStateModel retains unfiltered and DSH-only catalog versions. OpenCode
-    // can share either baseline only while neither version names OpenCode; otherwise
-    // send a full snapshot until the filtered baseline is available.
-    if (hiddenKinds.some(kind => kind !== DSH_DESKTOP_KIND && kind !== OPENCODE_KIND)) return undefined;
-    const baseline = this.#compactState.catalogBaseline(epoch, revision);
-    if (!baseline) return undefined;
-    if (hiddenKinds.includes(OPENCODE_KIND)) {
-      const current = this.#compactState.registry.read({ kind: "host" }, "catalog");
-      if (catalogContainsKind(baseline.value, OPENCODE_KIND) || catalogContainsKind(current?.value, OPENCODE_KIND)) return undefined;
-    }
-    return hiddenKinds.includes(DSH_DESKTOP_KIND)
-      ? this.#compactState.catalogBaseline(epoch, revision, true) : baseline;
+    return this.#compactState.catalogBaseline(epoch, revision, [...hiddenKinds].sort().join(","));
   }
   #hiddenKindsForDevice(deviceId: string): AgentKind[] {
     return hiddenAgentKinds(this.#deviceFeatures.get(deviceId));
@@ -1709,6 +1725,7 @@ export class HostService {
     await relay.start();
     this.#modelLifecycle = "running";
     // Discovery is read-only; a missing service does not block Relay or Host startup.
+    this.#openCodeBackend.start();
     void this.#opencodeConnection.start();
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
@@ -1735,6 +1752,7 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    this.#openCodeBackend.close();
     this.#opencodeConnection.close(); this.#unsubscribeOpenCodeStatus();
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
@@ -2113,7 +2131,6 @@ export class HostService {
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
       const hidden = this.#hiddenKindsForDevice(deviceId);
-      if (hidden.length > 0) 
       void this.readHostRange(message, hidden.length === 0 ? undefined : hidden).then(page => {
         if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
@@ -2427,6 +2444,9 @@ export class HostService {
     const backends: HostCatalogBackend[] = [];
     for (const backend of this.#backends) {
       if (!backend.isReady()) {
+        // Discovery status lives in the backends domain. An unattached optional service
+        // must not consume the shared catalog prefix budget.
+        if (backend.kind === OPENCODE_KIND) continue;
         backends.push({ kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 });
         continue;
       }
@@ -2441,7 +2461,7 @@ export class HostService {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
         this.recordDiagnostic({
-          scope: "host", agentKind: null, sessionId: null, category: "catalog", severity: "error",
+          scope: "host", agentKind: backend.kind === OPENCODE_KIND ? OPENCODE_KIND : null, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
         backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
