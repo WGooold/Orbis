@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Endpoint } from "@opencode/client/service";
 import { OPENCODE_CLIENT_VERSION, OpenCodeServiceConnection } from "./opencode-service-connection.js";
@@ -78,4 +82,48 @@ describe("OpenCode shared-service connection", () => {
     expect(JSON.stringify(connection.status)).not.toContain("local-service-secret");
     connection.close();
   });
+});
+it("validates a real registration before probing and refuses redirects with the actual SDK", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "orbis-opencode-registration-"));
+  const registrationPath = join(directory, "service.json");
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url ?? "");
+    res.writeHead(302, { location: "/must-not-follow" });
+    res.end();
+  });
+  const connection = new OpenCodeServiceConnection({ registrationPath });
+  try {
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("loopback bind failed");
+    await writeFile(registrationPath, JSON.stringify({ url: "http://192.0.2.10:4096", pid: 1, password: "fixture" }));
+    await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "invalid_endpoint" });
+    await writeFile(registrationPath, JSON.stringify({ url: `http://127.0.0.1:${address.port}`, pid: 1, password: "fixture" }));
+    await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "connection_failed" });
+    expect(requests).toEqual(["/api/info"]);
+  } finally {
+    connection.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("retains one SDK client across polls and reports a same-version process replacement", async () => {
+  let pid = 1;
+  const onChange = vi.fn();
+  const createClient = vi.fn(() => client(OPENCODE_CLIENT_VERSION) as never);
+  const connection = new OpenCodeServiceConnection({ discover: async () => ({ ...endpoint, pid }), createClient, onChange });
+  try {
+    await connection.refresh();
+    await connection.refresh();
+    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    pid = 2;
+    createClient.mockImplementation(() => ({ server: { info: async () => ({ version: OPENCODE_CLIENT_VERSION, pid }) } }) as never);
+    await connection.refresh();
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(connection.isReady).toBe(true);
+  } finally { connection.close(); }
 });
