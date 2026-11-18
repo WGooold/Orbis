@@ -146,6 +146,54 @@ describe("Codex desktop attachment", () => {
     expect(h.stop).toHaveBeenCalledOnce();
   });
 
+  it("keeps catalog reads independent of desktop status, usage and permission metadata", async () => {
+    const h = desktopHarness();
+    h.loaded.add("first"); h.native.add("first");
+    h.runtime.markStarted();
+    try {
+      await vi.waitFor(() => expect(h.events.some(({ event }) => event.type === "runtime.metadata")).toBe(true));
+      const catalogChanged = vi.fn(), metadataChanged = vi.fn();
+      h.runtime.onCatalogChange = catalogChanged;
+      h.runtime.onMetadataChange = metadataChanged;
+      h.notify("thread/status/changed", { threadId: "first", status: { type: "active" } });
+      h.notify("thread/tokenUsage/updated", { threadId: "first", tokenUsage: { last: { inputTokens: 10 }, modelContextWindow: 100 } });
+      h.notify("thread/settings/updated", { threadId: "first", model: "gpt-5.5", reasoningEffort: "high",
+        sandbox: "workspaceWrite", approvalPolicy: "on-request" });
+      h.notify("thread/name/updated", { threadId: "first", threadName: "first" });
+      await Promise.all([h.runtime.catalog(), h.runtime.catalog(true)]);
+      expect(metadataChanged).toHaveBeenCalledTimes(4);
+      expect(catalogChanged).not.toHaveBeenCalled();
+      expect(h.runtime.directoryEntries()[0]).toMatchObject({ status: "running", contextUsage: { tokens: 10 } });
+    } finally { await h.runtime.stop(); }
+  });
+
+  it("refreshes the persistent catalog for names, directories, inputs, completed turns and reverts", async () => {
+    const h = desktopHarness();
+    h.loaded.add("first");
+    h.runtime.markStarted();
+    try {
+      await vi.waitFor(() => expect(h.events.some(({ event }) => event.type === "runtime.metadata")).toBe(true));
+      const catalogChanged = vi.fn();
+      h.runtime.onCatalogChange = catalogChanged;
+      h.notify("thread/name/updated", { threadId: "first", threadName: "Renamed" });
+      h.notify("thread/name/updated", { threadId: "first", threadName: "Renamed" });
+      expect(catalogChanged).toHaveBeenCalledTimes(1);
+      h.notify("thread/settings/updated", { threadId: "first", cwd: "D:/moved", modelProvider: "openai" });
+      h.notify("thread/settings/updated", { threadId: "first", cwd: "D:/moved", modelProvider: "openai" });
+      expect(catalogChanged).toHaveBeenCalledTimes(2);
+      h.notify("turn/started", { threadId: "first", turn: { id: "turn-1", status: "inProgress" } });
+      expect(catalogChanged).toHaveBeenCalledTimes(2);
+      h.notify("item/completed", { threadId: "first", turnId: "turn-1",
+        item: { id: "user-1", type: "userMessage", content: [{ type: "text", text: "New preview" }] } });
+      expect(catalogChanged).toHaveBeenCalledTimes(3);
+      h.notify("turn/completed", { threadId: "first", turn: { id: "turn-1", status: "completed" } });
+      expect(catalogChanged).toHaveBeenCalledTimes(4);
+      h.notify("thread/reverted", { threadId: "first" });
+      await vi.waitFor(() => expect(catalogChanged).toHaveBeenCalledTimes(5));
+      expect(h.runtime.directoryEntries()[0]).toMatchObject({ cwd: "D:/moved", sessionName: "Renamed", status: "idle" });
+    } finally { await h.runtime.stop(); }
+  });
+
   // Startup ordering is arbitrary: descendants only become tasks of an adopted root.
   it("restores already loaded nested children without attaching them as sessions", async () => {
     const h = desktopHarness();

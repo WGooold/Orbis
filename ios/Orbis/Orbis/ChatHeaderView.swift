@@ -1,4 +1,11 @@
 import SwiftUI
+import Observation
+
+/// Only the notice leaf observes this boundary; scrolling never rebuilds the transcript.
+@MainActor @Observable
+final class ChatHistoryHeaderVisibility {
+    var visible = false
+}
 
 struct ChatNoticesRegion: View, Equatable {
     let model: ChatScreenModel
@@ -7,13 +14,16 @@ struct ChatNoticesRegion: View, Equatable {
     private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
     private var target: ChatActionContext { actions.target }
     let viewport: ChatViewportController
+    let historyHeader: ChatHistoryHeaderVisibility
     let setComposerFocused: (Bool) -> Void
     let onBack: () -> Void
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.orbisVisualActive) private var visualActive
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken }
-    private var showQuestion: Bool { viewport.showQuestionReminder && viewport.latestQuestion != nil }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken && lhs.historyHeader === rhs.historyHeader
+    }
+    private var showQuestion: Bool { viewport.showQuestionReminder && viewport.latestQuestion != nil && !historyHeader.visible }
     private var facts: ChatNoticesState { model.notices }
     private var hasNotices: Bool {
         guard let projection = facts.notice else { return false }
@@ -38,7 +48,7 @@ struct ChatNoticesRegion: View, Equatable {
                         RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
                                            supported: facts.supported).padding(.horizontal, 16)
                     }
-                }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
+                }.animation(reduceMotion || !visualActive || historyHeader.visible ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
             }
         }
     }

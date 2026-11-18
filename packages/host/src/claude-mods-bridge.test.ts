@@ -385,18 +385,19 @@ describe("ClaudeModsBridge", () => {
       } finally { bridge.close(); }
     });
 
-  it("retires queued commands with an unknown-delivery failure when the bridge disconnects or reconnects", () => {
+  it("retires queued commands as unconfirmed when the bridge disconnects or reconnects", () => {
     const events: RuntimeEvent[] = [];
     const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
     const first = online(bridge);
     bridge.sendCommand(first.runtimeId, "message-1", { type: "user_message", text: "hello" });
     const second = online(bridge);
-    expect(events).toContainEqual({ type: "command.result", commandId: "message-1", ok: false, status: "failure",
+    expect(events).toContainEqual({ type: "command.result", commandId: "message-1", ok: false, status: "unconfirmed",
       error: "claude_bridge_disconnected_result_unknown" });
     expect(bridge.poll(second.runtimeId, second.generation)).toMatchObject({ ok: true, commands: [] });
     bridge.sendCommand(second.runtimeId, "message-2", { type: "user_message", text: "again" });
     bridge.disconnect(second.runtimeId);
-    expect(events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "message-2", ok: false }));
+    expect(events).toContainEqual({ type: "command.result", commandId: "message-2", ok: false, status: "unconfirmed",
+      error: "claude_bridge_disconnected_result_unknown" });
   });
 
   it("disconnects the previous Session when the same Mods instance changes session and expires silent clients", () => {

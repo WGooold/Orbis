@@ -116,6 +116,7 @@ struct FileTransferTests {
         let runtime = RuntimeSummary(runtimeId: "agent", name: "Agent", cwd: "D:\\repo", status: "idle", sessionId: "s")
         store.upload(urls: [file], runtime: runtime)
         await store.waitForPendingIO()
+        #expect(FileManager.default.fileExists(atPath: file.path), "A Files picker source remains owned by its original provider")
         let task = try #require(store.tasks.first)
         #expect(sent.first?["type"] as? String == "file.upload.init")
         #expect((sent.first?["directory"] as? String)?.hasPrefix("D:\\repo\\.orbis-uploads\\") == true)
@@ -135,6 +136,40 @@ struct FileTransferTests {
         store.detach([task.id]); #expect(store.tasks.first?.attached == false)
         await store.waitForPendingIO()
     }
+
+    @Test func photoTemporarySourceIsRemovedOnlyAfterTheUploadHasItsOwnCopy() async throws {
+        let path = root(), source = root()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: source) }
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let file = source.appendingPathComponent("photo.jpg"), body = Data([0xff, 0xd8, 0xff, 0xd9])
+        try body.write(to: file)
+        let store = FileTransfers(root: path); store.send = { _ in true }; store.setConnection(host(), connected: true)
+        await store.waitForPendingIO()
+        let runtime = RuntimeSummary(runtimeId: "agent", name: "Agent", cwd: "/repo", status: "idle", sessionId: "s")
+        #expect(store.upload(urls: [file], runtime: runtime, temporarySourceDirectories: [source]))
+        #expect(FileManager.default.fileExists(atPath: source.path), "The picker source must outlive the asynchronous preparation handoff")
+        await store.waitForPendingIO()
+        let task = try #require(store.tasks.first)
+        #expect(task.name == "photo.jpg")
+        #expect(try Data(contentsOf: URL(fileURLWithPath: #require(task.localPath))) == body)
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @Test func failedPhotoPreparationStillRemovesItsTemporarySource() async throws {
+        let path = root(), source = root()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: source) }
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let store = FileTransfers(root: path); store.send = { _ in true }; store.setConnection(host(), connected: true)
+        await store.waitForPendingIO()
+        let runtime = RuntimeSummary(runtimeId: "agent", name: "Agent", cwd: "/repo", status: "idle", sessionId: "s")
+        #expect(store.upload(urls: [source.appendingPathComponent("missing.jpg")], runtime: runtime, temporarySourceDirectories: [source]))
+        await store.waitForPendingIO()
+        #expect(store.tasks.isEmpty)
+        #expect(store.error != nil)
+        #expect(!store.preparing)
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+    }
+
     @Test func downloadBuffersOutOfOrderChunksUntilTheDurablePrefixIsComplete() async throws {
         let path = root(); defer { try? FileManager.default.removeItem(at: path) }
         let store = FileTransfers(root: path); var sent: [[String: Any]] = []

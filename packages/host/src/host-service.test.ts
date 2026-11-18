@@ -2060,18 +2060,22 @@ describe("host end-to-end over relay", () => {
     expect((before.value as { sessions: unknown[]; nextCursor: string | null }).sessions.length).toBeLessThan(180);
     expect((before.value as { nextCursor: string | null }).nextCursor).toBeTruthy();
     expect(Buffer.byteLength(JSON.stringify(initial))).toBeLessThan(32 * 1024);
-    const firstSession = ((before.value as { sessions: Array<{ sessionId: string }> }).sessions[0]!);
+    const firstSession = ((before.value as { sessions: Array<{ sessionId: string; name: string }> }).sessions[0]!);
     const firstSessionNumber = Number(firstSession.sessionId.slice(-12));
     const firstSessionPath = join(group, `${firstSession.sessionId}.jsonl`);
     const firstSessionMtime = (await stat(firstSessionPath)).mtime;
-    await writeSession(firstSessionNumber, "Renamed without changing directory order");
+    // Keep the byte-bounded page membership fixed too. A shorter title can fit
+    // another row, which correctly makes the generic array splice replace a page.
+    const renamedTitle = "Renamed without changing directory order".padEnd(firstSession.name.length, ".");
+    await writeSession(firstSessionNumber, renamedTitle);
     await utimes(firstSessionPath, firstSessionMtime, firstSessionMtime);
     await host.reloadProviderConfiguration("pi", {});
     const published = await readMatching(device, message => message.requestId === "catalog-before" && message.update === true);
     const current = (published.domains as AgentStateDomainSnapshot[])[0]!;
     const value = current.delta ? applyStateDelta(before.value, current.delta.operations) : current.value;
     expect((value as { sessions: Array<{ sessionId: string; name?: string }> }).sessions.find(session => session.sessionId === firstSession.sessionId)?.name)
-      .toBe("Renamed without changing directory order");
+      .toBe(renamedTitle);
+    expect((value as { sessions: unknown[] }).sessions).toHaveLength((before.value as { sessions: unknown[] }).sessions.length);
     read("catalog-after-loss", [{ domain: "catalog", modelEpoch: before.modelEpoch, revision: before.revision }]);
     const recovered = await readMatching(device, message => message.requestId === "catalog-after-loss");
     const delta = (recovered.domains as AgentStateDomainSnapshot[])[0]!;
@@ -2102,7 +2106,7 @@ describe("host end-to-end over relay", () => {
     device.sendData(JSON.stringify({ type: "session.catalog.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "query-capability" }));
     expect(await readMatching(device, message => message.requestId === "query-capability"))
       .toMatchObject({ type: "session.catalog.capabilities", format: "v1" });
-    const query = { text: "Renamed without changing directory order", agentKind: "pi", archived: false, provider: "all" };
+    const query = { text: renamedTitle, agentKind: "pi", archived: false, provider: "all" };
     device.sendData(JSON.stringify({ type: "session.catalog.query", protocolVersion: PROTOCOL_VERSION, requestId: "query-global", format: "v1",
       query, cursor: null, limit: 100 }));
     const result = await readMatching(device, message => message.requestId === "query-global");
@@ -2310,6 +2314,98 @@ describe("host end-to-end over relay", () => {
       }
     }
     expect(legacyMenuEvents).toEqual([]);
+  });
+
+  it("FT-G10 negotiates delayed compact bootstrap before async reads and remembers it across encrypted handshakes", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-menu-negotiation-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-delayed-menu", sessionId: "menu-session", name: "Pi", cwd: stateDir, status: "idle" } });
+    await runtime.next();
+    await readMatching(device, message => message.type === "runtime.online");
+    const command = { name: "model", source: "builtin" as const, argument: { kind: "select" as const, required: true,
+      options: Array.from({ length: 2_000 }, (_, index) => ({ value: `model-${index}`, label: `Model ${index} ${"x".repeat(300)}` })) } };
+    runtime.publish(1, { type: "runtime.capabilities", capabilities: { commands: [command] } });
+    const initialMenu = await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities");
+    expect(Buffer.byteLength(JSON.stringify(initialMenu))).toBeGreaterThan(634_000);
+
+    const collectLegacyMenus = async (durationMs: number): Promise<Record<string, unknown>[]> => {
+      const deadline = Date.now() + durationMs;
+      const menus: Record<string, unknown>[] = [];
+      while (Date.now() < deadline) {
+        try {
+          const incoming = await device!.nextIncoming(deadline - Date.now());
+          if (!("payload" in incoming)) continue;
+          const message = JSON.parse(incoming.payload.toString("utf8")) as Record<string, unknown>;
+          if (message.type === "runtime.event" && message.runtimeId === "pi-delayed-menu"
+            && (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities") menus.push(message);
+        } catch (error) {
+          if (error instanceof Error && error.message.includes("超时")) break;
+          throw error;
+        }
+      }
+      return menus;
+    };
+
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    // The observed phone needs 428–456ms to declare compact after ready. The old
+    // 250ms fallback queued its full menu before this valid request could arrive.
+    await new Promise(resolve => setTimeout(resolve, 450));
+    let releaseProviders!: () => void;
+    const pendingProviders = new Promise<void>(resolve => { releaseProviders = resolve; });
+    const providers = vi.spyOn(host, "refreshProviderFacts").mockImplementationOnce(() => pendingProviders);
+    try {
+      device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "slow-host-compact",
+        scope: "host", stateFormat: "compact-v2", domains: ["providers"] }));
+      await vi.waitFor(() => expect(providers).toHaveBeenCalledTimes(1));
+      // Pass the 1s compatibility deadline while providers still blocks. There
+      // is no agent subscription yet: recognizing format after await is too late.
+      expect(await collectLegacyMenus(700)).toEqual([]);
+      releaseProviders();
+      expect(await readMatching(device, message => message.requestId === "slow-host-compact"))
+        .toMatchObject({ type: "agent.state.snapshot", stateFormat: "compact-v2" });
+    } finally {
+      releaseProviders();
+      providers.mockRestore();
+    }
+
+    // Negotiating bootstrap is not a global filter for real capability changes.
+    // Without a scoped agent subscription this new menu must still reach the phone.
+    runtime.publish(2, { type: "runtime.capabilities", capabilities: { commands: [{ name: "new-model", source: "builtin" }] } });
+    expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities"))
+      .toMatchObject({ runtimeId: "pi-delayed-menu", event: { capabilities: { commands: [{ name: "new-model" }] } } });
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "delayed-agent-compact",
+      scope: "agent", runtimeId: "pi-delayed-menu", stateFormat: "compact-v2", domains: ["capabilities"], subscribe: true }));
+    expect(await readMatching(device, message => message.requestId === "delayed-agent-compact"))
+      .toMatchObject({ type: "agent.state.snapshot", stateFormat: "compact-v2",
+        domains: [{ domain: "capabilities", value: { "new-model": expect.any(Object) } }] });
+
+    // A new E2E session clears scoped subscriptions. The negotiated pairing hint
+    // still prevents legacy replay even if this reconnect's reads arrive after grace.
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    expect(await collectLegacyMenus(1_150)).toEqual([]);
+
+    // An explicit legacy menu read is an observable downgrade, so it restores
+    // legacy replay now and on the next passive same-relay handshake.
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "legacy-menu-again",
+      scope: "agent", runtimeId: "pi-delayed-menu", domains: ["capabilities"], subscribe: true }));
+    expect(await readMatching(device, message => message.requestId === "legacy-menu-again"))
+      .toMatchObject({ type: "agent.state.snapshot" });
+    expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities"))
+      .toMatchObject({ runtimeId: "pi-delayed-menu", event: { capabilities: { commands: [{ name: "new-model" }] } } });
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    expect(await readMatching(device, message => (message.event as RuntimeEvent | undefined)?.type === "runtime.capabilities"))
+      .toMatchObject({ runtimeId: "pi-delayed-menu", event: { capabilities: { commands: [{ name: "new-model" }] } } });
   });
 
   it("FT-G10 legacy client gets menu and directory after same-relay reconnect", async () => {

@@ -115,6 +115,52 @@ struct WaitingSendTests {
         #expect(fixture.transport.userMessages.compactMap { $0["text"] as? String } == ["第一条", "第二条"])
     }
 
+    @Test func aBusyClaudeReceiptKeepsOneAcceptedBubbleWithoutAllowingDuplicateSend() async throws {
+        let fixture = await setup(); let host = fixture.host
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "a", "sequence": 1,
+                                      "event": ["type": "runtime.status", "status": "running"]])
+        #expect(host.sendMessage("等 CC 空闲再处理"))
+        let item = try #require(host.pendingSends.items.first)
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "a", "sequence": 2,
+                                      "event": ["type": "command.result", "commandId": item.commandId, "ok": true, "status": "pending"]])
+        #expect(host.pendingSends.item(item.messageId)?.state == .accepted)
+        #expect(host.pendingSends.item(item.messageId)?.submissionConfirmed == false)
+        #expect(host.messages.filter { $0.messageId == item.messageId }.count == 1)
+        #expect(!host.resendPendingSend(item.messageId))
+        #expect(fixture.transport.userMessages.count == 1)
+
+        // Losing native execution changes acceptance to unknown; it still cannot be retried blindly.
+        await fixture.transport.emit(["type": "runtime.offline", "runtimeId": "a"])
+        #expect(host.pendingSends.item(item.messageId)?.state == .unconfirmed)
+        #expect(!host.resendPendingSend(item.messageId))
+        #expect(fixture.transport.userMessages.count == 1)
+    }
+
+    @Test func retryingARejectedClaudeSteerPreservesItsBusyDeliveryAndUsesANewIdentity() async throws {
+        let fixture = await setup(); let host = fixture.host
+        await fixture.transport.emit(["type": "runtime.online", "runtime": [
+            "runtimeId": "a", "sessionId": "session-a", "name": "Claude Code", "agentKind": "claude", "cwd": "/repo", "status": "running"]])
+        #expect(host.sendMessage("现在插话", delivery: "steer"))
+        let first = try #require(host.pendingSends.items.first)
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "a", "sequence": 1,
+                                      "event": ["type": "command.result", "commandId": first.commandId, "ok": false, "status": "failure", "error": "runtime_busy"]])
+        #expect(host.resendPendingSend(first.messageId))
+        let retry = try #require(fixture.transport.userMessages.last)
+        #expect(retry["delivery"] as? String == "steer")
+        #expect(retry["messageId"] as? String != first.messageId)
+        #expect(fixture.transport.userMessages.count == 2)
+
+        // The same failed intent becomes an ordinary prompt after CC returns idle.
+        let second = try #require(host.pendingSends.items.first)
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "a", "sequence": 2,
+                                      "event": ["type": "command.result", "commandId": second.commandId, "ok": false, "status": "failure", "error": "runtime_busy"]])
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": "a", "sequence": 3,
+                                      "event": ["type": "runtime.status", "status": "idle"]])
+        #expect(host.resendPendingSend(second.messageId))
+        #expect(fixture.transport.userMessages.last?["delivery"] == nil)
+        #expect(fixture.transport.userMessages.count == 3)
+    }
+
     @Test func anUploadFailureFailsOnlyItsOwnMessage() async throws {
         let fixture = await setup(); let host = fixture.host
         let task = try await fixture.upload("hello.txt")

@@ -280,9 +280,12 @@ private struct PendingSendStatus: View {
         let palette = OrbisPalette(scheme)
         HStack(spacing: 2) {
             switch state {
-            case .sending, .accepted:
+            case .sending:
                 ProgressView().controlSize(.mini).dynamicTypeSize(...DynamicTypeSize.large).frame(width: 28, height: 28)
                 Text(L10n.tr("发送中")).font(.orbisCaption()).foregroundStyle(palette.secondary)
+            case .accepted:
+                OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 28, height: 28)
+                Text(L10n.tr("电脑已接收，等待处理")).font(.orbisCaption()).foregroundStyle(palette.secondary)
             case .queued:
                 OrbisActionSymbol(systemName: "clock").font(.orbisCaption()).foregroundStyle(palette.secondary).frame(width: 28, height: 28)
                 Text(L10n.tr("已排队")).font(.orbisCaption()).foregroundStyle(palette.secondary)

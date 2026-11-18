@@ -5,6 +5,7 @@ import Foundation
 struct PendingSend: Equatable, Identifiable {
     enum State: Equatable {
         case sending
+        /// 电脑已接收、源端记录尚未落地；Host 的 pending 回执不证明原生提交完成。
         case accepted
         case queued
         case failed(String)

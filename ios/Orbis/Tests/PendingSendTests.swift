@@ -118,6 +118,25 @@ struct PendingSendTests {
         #expect(outbox.isEmpty)
     }
 
+    @Test func hostAcceptanceSurvivesThePreviousTurnWithoutClaimingNativeSubmission() {
+        var outbox = PendingSendOutbox()
+        outbox.add(send("claude"))
+        outbox.commandResult("c-claude", ok: true, status: "pending", error: nil, now: start)
+        #expect(outbox.item("claude")?.state == .accepted)
+        #expect(outbox.item("claude")?.submissionConfirmed == false)
+        #expect(!reconcile(&outbox, status: "running", revision: 1, at: 1))
+        // The earlier turn finishing and an empty queue cannot settle a Claude prompt awaiting idle.
+        #expect(!reconcile(&outbox, status: "idle", revision: 2, at: 120))
+        #expect(!reconcile(&outbox, status: "idle", revision: 3, at: 121))
+        #expect(outbox.item("claude")?.state == .accepted)
+        outbox.connectionLost()
+        #expect(outbox.item("claude")?.state == .accepted)
+        outbox.commandResult("c-claude", ok: true, status: "success", error: nil, now: start.addingTimeInterval(122))
+        #expect(outbox.item("claude")?.submissionConfirmed == true)
+        reconcile(&outbox, revision: 4, at: 123, present: ["claude"])
+        #expect(outbox.isEmpty)
+    }
+
     @Test func acceptedRowOnAnIdleRuntimeIsCheckedAfterTheGracePeriod() {
         var outbox = PendingSendOutbox()
         outbox.add(send("quiet"))

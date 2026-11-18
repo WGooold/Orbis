@@ -732,10 +732,11 @@ private final class PreviewTransport: OrbisTransport {
                 ["runtimeId": "preview-pi", "sessionId": "session-2", "sessionName": "梳理项目中的页面结构", "name": "Pi", "cwd": "/Projects/website", "status": "running", "agentKind": "pi"],
                 ["runtimeId": "preview-dsh", "sessionId": "session-3", "sessionName": "检查服务端连接状态", "name": "DeepSeek", "cwd": "/Projects/orbis", "status": "idle", "agentKind": "dsh"]
             ]
-            if self.claudeIdentity {
+            if self.claudeIdentity || self.sendMode == "claude-busy" {
                 runtimes[0]["agentKind"] = "claude"
                 runtimes[0]["name"] = "Claude Code"
             }
+            if self.sendMode == "claude-busy" { runtimes[0]["status"] = "running" }
             if ProcessInfo.processInfo.arguments.contains("--preview-home-long-list") {
                 runtimes += (4...15).map { index in
                     ["runtimeId": "preview-scroll-\(index)", "sessionId": "session-\(index)",
@@ -1054,7 +1055,7 @@ private final class PreviewTransport: OrbisTransport {
                 var value: [String: Any] = name == "identity" ? ["runtimeId": runtime, "sessionId": session,
                     "name": agentTitle(kind), "sessionName": session == "replacement" ? "已完整切换的会话" : titles[runtime] ?? "滚动测试会话 \(session)", "cwd": cwd, "agentKind": kind] :
                     name == "interactions" ? previewInteractions(runtime) : name == "execution" ? ["phase": "idle", "waitingFor": [], "retry": "unavailable", "compaction": compacting && runtime == "preview-codex" ? ["phase": "running"] : "unavailable", "turn": ["turnId": "preview-turn", "startedAt": 1793232000000, "durationMs": 3240]] : name == "model" ? ["provider": "openai", "id": "gpt-5.4", "name": modelName, "thinkingLevel": "high"] : ["tokens": 24000, "contextWindow": 128000, "percent": 18.75]
-                if name == "execution", keyboardStream, runtime == "preview-codex" { value["phase"] = "running" }
+                if name == "execution", (keyboardStream || sendMode == "claude-busy"), runtime == "preview-codex" { value["phase"] = "running" }
                 if ProcessInfo.processInfo.arguments.contains("--preview-current-turn"), runtime == "preview-codex" {
                     if name == "execution" { value["phase"] = "running" }
                     if name == "model", !ProcessInfo.processInfo.arguments.contains("--preview-old-turn-host") {
@@ -1235,6 +1236,15 @@ private final class PreviewTransport: OrbisTransport {
                 let mode = sendMode
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: mode == "codex" ? 0 : 400_000_000)
+                    if mode == "claude-busy" {
+                        guard command["delivery"] as? String == "steer" else {
+                            self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "忙碌时默认发送必须插话"], runtimeId: runtime)
+                            return
+                        }
+                        self.event(["type": "runtime.status", "status": "running"], runtimeId: runtime)
+                        self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "pending"], runtimeId: runtime)
+                        return
+                    }
                     if mode == "queue" {
                         self.event(["type": "message.queued", "queueId": clientId, "text": text, "delivery": "followUp", "state": "accepted"], runtimeId: runtime)
                         self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)

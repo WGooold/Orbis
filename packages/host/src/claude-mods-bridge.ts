@@ -55,7 +55,7 @@ export type ClaudeModsHello = {
 };
 
 export type ClaudeModsCommand =
-  | { type: "user_message"; text: string; messageId?: string }
+  | { type: "user_message"; text: string; messageId?: string; delivery?: "steer" | "followUp" }
   | { type: "slash"; name: string; args: string }
   | { type: "stop" };
 
@@ -199,6 +199,7 @@ export class ClaudeModsBridge {
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   supportsTurnConfiguration(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("configuration.turn") === true; }
+  supportsPromptSendNow(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("prompt.sendNow") === true; }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
   findLaunch(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined {
@@ -610,7 +611,7 @@ export class ClaudeModsBridge {
    */
   #abandonCommands(runtimeId: string, session: Session): void {
     for (const { commandId } of session.commands.values()) {
-      this.#options.onEvent?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure",
+      this.#options.onEvent?.(runtimeId, { type: "command.result", commandId, ok: false, status: "unconfirmed",
         error: "claude_bridge_disconnected_result_unknown" });
     }
     session.commands.clear();

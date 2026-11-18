@@ -2090,6 +2090,22 @@ describe("CodexRuntime", () => {
     expect(finished).toMatchObject({ turnId: "t-dur", startedAt: 1_800_000_000_000, durationMs: 4_321 });
   });
 
+  it("native history reconciliation invalidates the catalog when a missed input changes the persisted preview", async () => {
+    const h = makeHarness();
+    await activate(h);
+    const catalogChanged = vi.fn();
+    h.runtime.onCatalogChange = catalogChanged;
+    try {
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(h.historyReads).toHaveBeenCalledTimes(1));
+      h.resolveNext({ data: [{ id: "missed-turn", status: "completed", items: [
+        { id: "missed-user", type: "userMessage", content: [{ type: "text", text: "Recovered preview" }] },
+      ] }] });
+      await vi.waitFor(() => expect(catalogChanged).toHaveBeenCalledOnce());
+      expect(syncHistory(h)).toMatchObject({ entries: [{ entryId: "missed-user" }] });
+    } finally { h.server.onExit?.(0); }
+  });
+
   it("runtime.metadata 带 model（model/list 的 displayName）与 contextUsage（tokenUsage 通知）", async () => {
     const h = makeHarness({
       modelList: {

@@ -147,6 +147,7 @@ struct ChatTranscriptView: View, Equatable {
     private var acceptedSends: PassthroughSubject<Set<String>, Never> { mount.acceptedSends }
     private var onBack: () -> Void { mount.onBack }
     @State private var metrics = ChatViewportMetrics()
+    @State private var historyHeader = ChatHistoryHeaderVisibility()
     @State private var nativeInteractions = ChatTranscriptInteractionState()
     @State private var nativeSnapshots = ChatTranscriptSnapshotCache<ChatNativeSnapshotInputs, ChatNativeTranscriptView.Snapshot>()
     @State private var nativeItems = ChatTranscriptItemCache<ChatNativeRowInputs, ChatNativeTranscriptView.Item>()
@@ -164,6 +165,7 @@ struct ChatTranscriptView: View, Equatable {
         let _ = ChatDebugProbes.rendered(.transcript)
         conversation(state: state, revision: revision).overlay(alignment: .top) {
             ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
+                historyHeader: historyHeader,
                 setComposerFocused: setComposerFocused, onBack: onBack).equatable()
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
@@ -214,6 +216,10 @@ struct ChatTranscriptView: View, Equatable {
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 transcriptHeader(state: state).id("chat-header")
+                    .onGeometryChange(for: Bool.self) { geometry in
+                        let frame = geometry.frame(in: .named("chat-viewport"))
+                        return frame.maxY > 0 && frame.minY < height
+                    } action: { visible in if ownsViewport { historyHeader.visible = visible } }
                 if transcript.rows.isEmpty {
                     OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: state.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
                         .frame(minHeight: max(180, height - 100))
@@ -343,9 +349,10 @@ struct ChatTranscriptView: View, Equatable {
                     if !active { ChatDebugProbes.viewportStopped(viewport) }
                 }, onViewport: { frames, height in
                     guard ownsViewport else { return }
+                    historyHeader.visible = frames["chat-header"].map { $0.maxY > 0 && $0.minY < height } ?? false
                     var facts = ChatViewportFacts()
                     let question = viewport.latestQuestion?.messageId
-                    for (id, frame) in frames {
+                    for (id, frame) in frames where id != "chat-header" {
                         facts.merge(ChatViewportFacts(frame: frame, viewportHeight: height,
                             firstRow: id == transcript.firstMessageId, questionID: id == question ? question : nil))
                     }
@@ -383,8 +390,10 @@ struct ChatTranscriptView: View, Equatable {
                 Text(error).font(.orbisCaption()).foregroundStyle(p.error).lineLimit(1)
                 Spacer(minLength: 0)
                 OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
+                    .accessibilityIdentifier("chat-history-older")
             } else if state.hasOlder {
                 OrbisTextButton(title: L10n.tr("更早的消息"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
+                    .accessibilityIdentifier("chat-history-older")
                 Spacer(minLength: 0)
             } else {
                 Spacer(minLength: 0)

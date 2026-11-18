@@ -217,7 +217,7 @@ export type HostServiceOptions = {
    * 出站多路复用器的职责，与这个上限无关——即使限速全开，控制帧也照样插队。
    */
   bulkBytesPerSecond?: number;
-  /** Grace period for compact-state bootstrap before replaying the full legacy menu. */
+  /** Grace period for unknown clients before replaying the full legacy menu. Defaults to 1 second. */
   bootstrapReplayDelayMs?: number;
   /** Pi 会话根目录。测试注入临时目录；缺省 `~/.pi/agent/sessions`。 */
   sessionsRoot?: string;
@@ -667,6 +667,8 @@ export class HostService {
   });
   readonly #interactionIds = new Map<string, Set<string>>();
   readonly #bootstrapReplayTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** A negotiated compact read survives transport handshakes, until an explicit legacy menu read. */
+  readonly #compactBootstrapDevices = new Set<string>();
   readonly #notificationChecks = new Map<string, number>();
   #persistChain: Promise<void> = Promise.resolve();
   /**
@@ -947,12 +949,12 @@ export class HostService {
       this.#publishRuntimeEvent(runtimeId, event);
     });
     codex.onMetadataChange = () => {
-      if (codex.kind === "codexDesktop") this.#invalidateCatalog();
       for (const runtime of codex.directoryEntries()) {
         if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
         this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
       }
     };
+    codex.onCatalogChange = () => this.#invalidateCatalog();
     codex.onOffline = (reason, runtimes) => {
       if (codex.kind === "codexDesktop") {
         this.#invalidateCatalog();
@@ -1064,6 +1066,7 @@ export class HostService {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codex") return;
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     this.#backends.splice(index, 1);
@@ -1087,6 +1090,7 @@ export class HostService {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codexDesktop") return;
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     runtime.onDesktopThread = undefined;
@@ -1226,6 +1230,18 @@ export class HostService {
    */
   async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
     const authenticatedLink = this.#links.get(deviceId);
+    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
+    // The validated wire request declares the read format before providers/catalog
+    // can block. Waiting for subscription registration lets legacy replay win the race.
+    if (compact) {
+      this.#compactBootstrapDevices.add(deviceId);
+      this.#cancelBootstrapReplay(deviceId);
+    } else if ((request.domains === undefined || request.domains.includes("capabilities"))
+      && this.#resolveAgentStateScope(deviceId, request)?.kind === "agent"
+      && this.#compactBootstrapDevices.delete(deviceId) && authenticatedLink?.active) {
+      // A downgraded App can explicitly return to legacy menus on the same pairing.
+      this.#scheduleBootstrapReplay(deviceId, authenticatedLink.active);
+    }
     this.refreshHostFacts();
     // 点名要供应商摘要就先现读一次：模型里那份是「上次有人读时」的，不能当成刚核对过。
     if (request.domains?.includes("providers") === true) await this.refreshProviderFacts();
@@ -1259,7 +1275,6 @@ export class HostService {
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
-    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
     const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
     const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
     if (request.subscribe !== undefined) (compact ? this.#agentStateSubscriptions : this.#compactStateSubscriptions).register(deviceId, scope, { ...request, subscribe: false });
@@ -1491,11 +1506,18 @@ export class HostService {
     };
   }
 
-  /** Give compact clients time to request their scoped model after device.ready;
-   * strict old clients still receive the full menu after the bounded grace period. */
-  #scheduleBootstrapReplay(deviceId: string, kind: PathKind): void {
+  #cancelBootstrapReplay(deviceId: string): void {
     const old = this.#bootstrapReplayTimers.get(deviceId);
     if (old !== undefined) clearTimeout(old);
+    this.#bootstrapReplayTimers.delete(deviceId);
+  }
+
+  /** Unknown clients get a bounded negotiation grace; a previous compact read
+   * skips this legacy-only replay across reconnects. This is not a wire-level
+   * capability declaration and cannot cover every cold-connection RTT. */
+  #scheduleBootstrapReplay(deviceId: string, kind: PathKind): void {
+    this.#cancelBootstrapReplay(deviceId);
+    if (this.#compactBootstrapDevices.has(deviceId)) return;
     const timer = setTimeout(() => {
       if (this.#bootstrapReplayTimers.get(deviceId) !== timer) return;
       this.#bootstrapReplayTimers.delete(deviceId);
@@ -1510,7 +1532,7 @@ export class HostService {
         this.#sendToDeviceOn(deviceId, kind, { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
           sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event });
       }
-    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 250)));
+    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 1_000)));
     this.#bootstrapReplayTimers.set(deviceId, timer);
   }
 
@@ -1704,6 +1726,7 @@ export class HostService {
     this.#commandOwners.close();
     for (const timer of this.#bootstrapReplayTimers.values()) clearTimeout(timer);
     this.#bootstrapReplayTimers.clear();
+    this.#compactBootstrapDevices.clear();
     this.refreshHostFacts();
     clearInterval(this.#toolDiagnosticTimer); this.#toolDiagnosticTimer = undefined; this.#flushToolDiagnostics();
     // HOST-PREP-05: a DeepSeek start still in flight (a Web service lock may take a minute) does not hold
@@ -1826,6 +1849,8 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
+    this.#cancelBootstrapReplay(deviceId);
+    this.#compactBootstrapDevices.delete(deviceId);
     this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
     this.#historyInterests.delete(deviceId);
     this.#catalogQueryDevices.delete(deviceId);
@@ -2375,21 +2400,20 @@ export class HostService {
 
   /** 实际扫一遍所有后端（`#catalogWithCache` 的唯一慢路径）。 */
   async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
-    const sessions: AgentSessionSummary[] = [];
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
-    const backends: HostCatalogBackend[] = [];
-    for (const backend of this.#backends) {
+    // 后端相互独立；并行读取后按原顺序合并，避免累加 native RPC 的等待时间。
+    const catalogs = await Promise.all(this.#backends.map(async (backend): Promise<{
+      sessions: AgentSessionSummary[]; backend: HostCatalogBackend;
+    }> => {
       if (!backend.isReady()) {
-        backends.push({ kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 });
-        continue;
+        return { sessions: [], backend: { kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 } };
       }
       const started = Date.now();
       try {
         const [active, archived] = await Promise.all([backend.catalog(), backend.catalog(true)]);
         const catalog = [...new Map([...active, ...archived].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
-        sessions.push(...catalog);
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: true, elapsedMs: Date.now() - started });
+        return { sessions: catalog, backend: { kind: backend.kind, ready: true, sessions: catalog.length, complete: true, elapsedMs: Date.now() - started } };
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2397,9 +2421,11 @@ export class HostService {
           scope: "host", agentKind: null, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
-        backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
+        return { sessions: [], backend: { kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail } };
       }
-    }
+    }));
+    const sessions = catalogs.flatMap(catalog => catalog.sessions);
+    const backends = catalogs.map(catalog => catalog.backend);
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
     const limited = visible.slice(0, 2_000);

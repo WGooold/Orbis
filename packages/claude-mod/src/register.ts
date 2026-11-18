@@ -10,7 +10,7 @@ type QuestionAnswer = { toolCallId: string; answers: Record<string, string> } | 
 type ToolCall = Parameters<Hook<"tool.call">>[1];
 type ToolNext = Parameters<Hook<"tool.call">>[2];
 type BridgeEvent = Record<string, unknown>;
-type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "slash"; name: string; args: string } | { type: "stop" };
+type RemoteCommand = { type: "user_message"; text: string; messageId?: string; delivery?: "steer" | "followUp" } | { type: "slash"; name: string; args: string } | { type: "stop" };
 type CachedCommand = { state: "running"; commandType: "user_message" | "slash" } |
   { state: "running"; commandType: "stop"; turnId: string } | { state: "result"; event: BridgeEvent };
 
@@ -442,7 +442,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     interactive: true, claudeVersion: version.version, bridgeVersion: "4",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed", "configuration.effort.snapshot"],
+    capabilities: ["prompt.submit", "prompt.sendNow", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed", "configuration.effort.snapshot"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -535,6 +535,23 @@ async function readDescriptor($: Api): Promise<Descriptor | undefined> {
   return undefined;
 }
 
+async function submitNativePrompt($: Api, command: Extract<RemoteCommand, { type: "user_message" }>) {
+  const turnId = command.delivery === "steer" ? activeTurnId : undefined;
+  if (turnId === undefined) return await $.prompt.submit({ text: command.text, asUser: true });
+  if (command.text.trim().length === 0) return { drop: "claude_steer_invalid_text" };
+  if (command.text.trimStart().startsWith("/")) return { drop: "claude_steer_slash_not_supported" };
+  // Both calls run inside the native TUI. The composer and its Bash mode are
+  // untouched; foreground work stops before the next user prompt is submitted.
+  await $.turn.abort({ turnId });
+  try {
+    const result = await $.prompt.submit({ text: command.text, asUser: true });
+    if ("drop" in result) return { drop: `claude_steer_stopped_but_not_submitted: 当前轮已停止，消息未提交：${result.drop}` };
+    return result;
+  } catch (error) {
+    throw new Error(`claude_steer_stopped_but_not_submitted: 当前轮已停止，消息未提交：${errorText(error)}`);
+  }
+}
+
 async function runCommand($: Api, target: Connection, commandId: string,
   command: RemoteCommand): Promise<void> {
   if (connection !== target) return;
@@ -548,8 +565,14 @@ async function runCommand($: Api, target: Connection, commandId: string,
   // the next idle poll instead of starting an idle-waiting Mods call during
   // native execution. Reserve one submission at a time so
   // a batch cannot start several idle-waiting calls before turn.start arrives.
-  if (command.type === "user_message" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
-      [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) return;
+  const submitting = [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop");
+  if (command.type === "user_message" && command.delivery === "steer" && (activeCompactions.size > 0 || submitting)) {
+    await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
+      status: "failure", error: "runtime_busy" });
+    return;
+  }
+  if (command.type === "user_message" && command.delivery !== "steer" &&
+      (activeTurnId !== undefined || activeCompactions.size > 0 || submitting)) return;
   if (command.type === "slash" && ((!['model', 'effort'].includes(command.name) && (activeTurnId !== undefined || activeCompactions.size > 0)) ||
       [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) {
     await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
@@ -562,7 +585,7 @@ async function runCommand($: Api, target: Connection, commandId: string,
   trimCommands();
   if (command.type === "user_message") {
     try {
-      const result = await $.prompt.submit({ text: command.text, asUser: true });
+      const result = await submitNativePrompt($, command);
       const denied = "drop" in result && typeof result.drop === "string";
       await finishCommand($, target, commandId, {
         type: "command.result", commandId, ok: !denied, status: denied ? "failure" : "success",

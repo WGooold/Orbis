@@ -302,9 +302,9 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
       onCommandResult: (_id, event) => events.push(event), onEvent: (_id, event) => events.push(event) });
     return { backend, mods, launches, events, repo, root };
   }
-  const connect = (mods: ClaudeModsBridge, sessionId: string, launchId?: string, cwd = "/repo") => {
+  const connect = (mods: ClaudeModsBridge, sessionId: string, launchId?: string, cwd = "/repo", capabilities: readonly string[] = CLAUDE_BRIDGE_CAPABILITIES) => {
     const result = mods.hello({ type: "hello", instanceId: `i-${sessionId}`, sessionId, cwd, claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true,
-      capabilities: [...CLAUDE_BRIDGE_CAPABILITIES], ...(launchId === undefined ? {} : { launchId }) });
+      capabilities, ...(launchId === undefined ? {} : { launchId }) });
     if (!result.ok) throw new Error(result.error);
     return result;
   };
@@ -397,6 +397,18 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
       { commandId: "c3", command: { type: "user_message", text: "看这个\n\n附件路径：\n/tmp/a.png" } },
     ] });
     expect(events).toContainEqual({ type: "command.result", commandId: "c4", ok: false, status: "failure", error: "claude_steer_unsupported" });
+  });
+
+  it("routes steer only to a native window advertising the PTY send-now channel", async () => {
+    const { backend, mods, events } = await fixture();
+    const current = connect(mods, "steer", undefined, "/repo", [...CLAUDE_BRIDGE_CAPABILITIES, "prompt.sendNow"]);
+    expect(mods.supportsPromptSendNow(current.runtimeId)).toBe(true);
+    expect(backend.dispatchCommand(current.runtimeId, "now", { type: "user_message", text: "change direction", delivery: "steer", messageId: "m-now" })).toBe("handled");
+    expect(mods.poll(current.runtimeId, current.generation)).toMatchObject({ commands: [
+      { commandId: "now", command: { type: "user_message", text: "change direction", delivery: "steer", messageId: "m-now" } },
+    ] });
+    expect(events).toContainEqual({ type: "command.result", commandId: "now", ok: true, status: "pending" });
+    expect(events.some(event => (event as { status?: string }).status === "success")).toBe(false);
   });
 
   it("is not launchable without a launcher and stays out of the directory without a catalog", async () => {

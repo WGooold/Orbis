@@ -1667,5 +1667,9 @@
   "子代理": "Subagents",
   "后台命令": "Background commands",
   "命令": "Command",
-  "监听": "Monitor"
+  "监听": "Monitor",
+  "添加附件": "Add attachments",
+  "照片": "Photos",
+  "无法读取所选照片": "The selected photo could not be read",
+  "电脑已接收，等待处理": "Received by computer. Waiting for processing"
 }

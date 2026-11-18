@@ -315,8 +315,10 @@ final class FileTransfers: ObservableObject {
         }
         save()
     }
-    func upload(urls: [URL], runtime: RuntimeSummary) {
-        guard connected, let pairing, !preparing else { return }
+    /// A successful handoff owns photo-picker directories until copying and hashing finish.
+    @discardableResult
+    func upload(urls: [URL], runtime: RuntimeSummary, temporarySourceDirectories: [URL] = []) -> Bool {
+        guard connected, let pairing, !preparing, !urls.isEmpty else { return false }
         let key = hostKey, generation = UUID()
         preparing = true; preparingGeneration = generation
         var staged: [(String, TransferDiskWorker, UUID)] = []
@@ -326,7 +328,7 @@ final class FileTransfers: ObservableObject {
             staged.append((id, disk, token))
         }
         enqueueIO { [weak self] in
-            guard let self else { return }
+            guard let self else { await Self.removeTemporaryUploadDirectories(temporarySourceDirectories); return }
             var prepared: [FileTransfer] = []
             do {
                 for (url, item) in zip(urls.prefix(10), staged) {
@@ -345,7 +347,15 @@ final class FileTransfers: ObservableObject {
                 }
                 if self.preparingGeneration == generation { self.preparing = false; self.error = error.localizedDescription }
             }
+            await Self.removeTemporaryUploadDirectories(temporarySourceDirectories)
         }
+        return true
+    }
+    nonisolated static func removeTemporaryUploadDirectories(_ directories: [URL]) async {
+        guard !directories.isEmpty else { return }
+        await Task.detached {
+            for directory in directories { try? FileManager.default.removeItem(at: directory) }
+        }.value
     }
     func cancel(_ id: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }

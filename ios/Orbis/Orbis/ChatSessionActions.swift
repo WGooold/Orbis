@@ -81,8 +81,11 @@ struct ChatSessionActions: Equatable {
         isCurrent ? connection.acquireChatInterest(runtimeId: runtimeId, sessionId: sessionId) : nil
     }
     @MainActor func releaseInterest(_ lease: AgentInterestLease) { connection.releaseChatInterest(lease) }
-    @MainActor func upload(_ urls: [URL], capacity: Int) {
-        if isCurrent, let runtime { connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime) }
+    @MainActor @discardableResult
+    func upload(_ urls: [URL], capacity: Int, temporarySourceDirectories: [URL] = []) -> Bool {
+        guard isCurrent, let runtime else { return false }
+        return connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime,
+                                           temporarySourceDirectories: temporarySourceDirectories)
     }
     @MainActor func uploadFailed(_ message: String) { if isCurrent { connection.transfers.error = message } }
     @MainActor func restartUpload(_ id: String) { if isCurrent { connection.transfers.restart(id) } }

@@ -30,8 +30,12 @@ export function setup(on: On, options: { home?: string } = {}) {
     resumed: false,
     rejection: "",
     pollError: "",
-    commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } | { type: "slash"; name: string; args: string } }[],
+    commands: [] as { commandId: string; command: { type: "user_message"; text: string; delivery?: "steer" | "followUp" } | { type: "stop" } | { type: "slash"; name: string; args: string } }[],
     submits: 0,
+    draft: "",
+    draftReads: 0,
+    draftWrites: 0,
+    nativeCalls: [] as string[],
     toolResult: "still working" as unknown,
     toolCalls: [] as unknown[],
     /** How long the native tool stays open, as an AskUserQuestion dialog does until someone answers. */
@@ -73,17 +77,20 @@ export function setup(on: On, options: { home?: string } = {}) {
   on("turn.start", (_$, event) => ({ turnId: event.turnId }));
   on("classic.Stop", () => ({}));
   on("turn.complete", (_$, event) => ({ text: event.answer }));
-  on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });
+  on("turn.abort", (_$, event) => { world.nativeCalls.push("abort"); world.aborts.push(event.turnId); return { value: undefined }; });
   on("tool.call", async (_$, event) => {
     world.toolCalls.push(event);
     if (world.toolDelay > 0) await clock.sleep(world.toolDelay);
     return { result: world.toolResult };
   });
   on("prompt.submit", async () => {
+    world.nativeCalls.push("submit");
     world.submits++;
     await clock.sleep(3000);
     return world.denyPrompt ? { drop: "Test: no model is called" } : { text: "accepted by test" };
   });
+  on("prompt.read", () => { world.draftReads++; return { value: { text: world.draft, cursor: world.draft.length } }; });
+  on("prompt.fill", () => { world.draftWrites++; return { isFilled: false }; });
   on("ui.status", (_$, event) => { world.statuses.push(event.text); return { value: undefined }; });
   on("fs.read", (_$, event) => {
     const requested = discoveryPaths.find(path => sameFile(event.path, path));

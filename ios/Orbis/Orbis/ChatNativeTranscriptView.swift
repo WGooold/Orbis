@@ -876,7 +876,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
             var frames: [String: CGRect] = [:]
             for (id, frame, measured) in visibleRows()
-                where measured && rendered[id]?.kind == .message && id != input.tailID {
+                where measured && (rendered[id]?.kind == .message || id == "chat-header") && id != input.tailID {
                 frames[id] = frame.offsetBy(dx: -collection.bounds.minX, dy: -collection.bounds.minY)
             }
             let height = collection.bounds.height

@@ -421,6 +421,8 @@ export class CodexRuntime implements AgentBackend {
   onFileChangeEvidence: ((runtimeId: string, evidence: import("./codex-turn-file-changes.js").CodexFileChangeEvidence) => void) | undefined;
   fileChangeTurnUnconfirmed: ((runtimeId: string) => Promise<void>) | undefined;
   onMetadataChange: (() => void) | undefined;
+  /** Persistent directory changes only; status, usage and permission updates do not invalidate a catalog read. */
+  onCatalogChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
   onDesktopThread: ((threadId: string) => void) | undefined;
   /**
@@ -2912,7 +2914,8 @@ export class CodexRuntime implements AgentBackend {
           throw new Error("codex_native_history_incomplete");
         }
         const signature = nativeHistorySignature(turns);
-        if (signature !== thread.nativeHistorySignature || thread.nativeSourceDirty || !thread.sourceReady) {
+        const historyChanged = signature !== thread.nativeHistorySignature;
+        if (historyChanged || thread.nativeSourceDirty || !thread.sourceReady) {
           thread.sourceReady = false;
           // A successful periodic read is committed with its buffered notifications below.
           // Publishing the transient rebuild state here makes every native check look like
@@ -2927,6 +2930,7 @@ export class CodexRuntime implements AgentBackend {
           thread.sourceReady = true;
           this.#touchSource(thread);
           this.#publishMetadataEvent(thread);
+          if (historyChanged) this.onCatalogChange?.();
         } else {
           // Activity can be stale even when the canonical history signature has not changed.
           this.#reconcileCompaction(thread, turns);
@@ -2979,6 +2983,7 @@ export class CodexRuntime implements AgentBackend {
       await this.#queueReconcile(thread, async (generation) => {
         this.#beginSourceReconcile(thread);
         await this.#server.request("thread/revert", { threadId: thread.id, beforeTurnId });
+        this.onCatalogChange?.();
         const turns = await this.#listAllTurns(thread.id);
         if (!this.#isCurrentReconcile(thread, generation)) return;
         const replayed = this.#replayTurns(thread, { turns }, true);
@@ -3640,20 +3645,26 @@ export class CodexRuntime implements AgentBackend {
         // The notification is evidence that the native source changed. It is not a
         // request to issue another revert; one authoritative turns/list reconciliation
         // is enough and duplicate notifications collapse through the generation queue.
+        this.onCatalogChange?.();
         this.#reconcileExternalRevert(thread);
         return;
       case "thread/name/updated": {
         if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
-        thread.name = codexSessionName(record.threadName);
+        const name = codexSessionName(record.threadName);
+        const changed = thread.name !== name;
+        thread.name = name;
         this.#publishMetadataEvent(thread);
+        if (changed) this.onCatalogChange?.();
         return;
       }
       case "thread/settings/updated": {
         const settings = object(record.threadSettings ?? record);
+        const cwd = thread.cwd, provider = thread.modelProvider;
         this.#applyNativeSettings(thread, settings);
         if (typeof settings.cwd === "string") thread.cwd = settings.cwd;
         thread.permissions = codexPermissions(settings) ?? thread.permissions;
         this.#publishMetadataEvent(thread);
+        if (cwd !== thread.cwd || provider !== thread.modelProvider) this.onCatalogChange?.();
         return;
       }
       case "thread/status/changed": {
@@ -3809,7 +3820,10 @@ export class CodexRuntime implements AgentBackend {
         }
         // item 通知自带 turnId（`ItemCompletedNotification` 的 required 字段），条目归属由此确定。
         this.#completeItem(thread, data, typeof record.turnId === "string" ? record.turnId : undefined);
-        if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
+        if (data.type === "userMessage") {
+          this.#confirmQueuedMessage(thread, data.clientId);
+          this.onCatalogChange?.();
+        }
         this.#pruneCanonicalLive(thread);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw !== undefined) {
@@ -3941,6 +3955,7 @@ export class CodexRuntime implements AgentBackend {
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
         // turn 结束（含被 steer/interrupt 打断）：补跑排队的下一条消息。
+        this.onCatalogChange?.();
         this.#drainQueue(thread);
         return;
       }

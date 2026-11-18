@@ -2816,7 +2816,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(bubble.waitForExistence(timeout: 1))
         let sending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-status-")).firstMatch
         XCTAssertTrue(sending.waitForExistence(timeout: 1))
-        XCTAssertTrue(app.staticTexts["发送中"].exists)
+        XCTAssertTrue(app.staticTexts["电脑已接收，等待处理"].waitForExistence(timeout: 2))
         XCTAssertEqual((composer.value as? String)?.contains(text), false)
         capture("optimistic-send-pending", app: app)
         let settled = NSPredicate(format: "exists == false")
@@ -2841,6 +2841,49 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: restored, object: input)], timeout: 4), .completed)
         XCTAssertFalse(rejected.staticTexts["会话正在运行，请选择插入或完成后发送"].exists)
     }
+    func testClaudeBusySendShowsHostAcceptanceWithoutClaimingDelivery() {
+        let app = launch("chat", arguments: ["--preview-send=claude-busy"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("等待 CC 空闲的消息")
+        app.buttons["发送消息"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["电脑已接收，等待处理"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["发送中"].exists)
+        XCTAssertFalse(app.staticTexts["已送达"].exists)
+        XCTAssertFalse(app.buttons["重新发送"].exists)
+        XCTAssertFalse(app.buttons["撤回排队消息"].exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "等待 CC 空闲的消息")).count, 1)
+        capture("claude-busy-host-accepted", app: app)
+    }
+
+    func testAttachmentChooserSeparatesPhotosAndFilesAndKeepsTheDraft() {
+        let app = launch("chat")
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap(); composer.typeText("选择附件前的草稿")
+        app.buttons["发送文件到电脑"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["照片"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["文件"].exists)
+        capture("attachment-source-choices", app: app)
+        let systemCancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel"])).firstMatch
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.16)).tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 3))
+        XCTAssertEqual(composer.value as? String, "选择附件前的草稿")
+        app.buttons["发送文件到电脑"].firstMatch.tap()
+        app.buttons["照片"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["文件"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(systemCancel.waitForExistence(timeout: 8))
+        capture("attachment-native-photos-picker", app: app)
+        systemCancel.tap()
+        app.buttons["发送文件到电脑"].firstMatch.tap()
+        app.buttons["文件"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["照片"].waitForNonExistence(timeout: 3))
+        XCTAssertTrue(systemCancel.waitForExistence(timeout: 8))
+        capture("attachment-native-files-picker", app: app)
+        systemCancel.tap()
+        XCTAssertEqual(composer.value as? String, "选择附件前的草稿")
+    }
+
     func testUnconfirmedSendCanBeCheckedWithoutResending() {
         let app = launch("chat", arguments: ["--preview-send=unknown"])
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
@@ -3823,6 +3866,33 @@ final class OrbisUITests: XCTestCase {
         }
         XCTAssertTrue(older.isHittable, "The applied response must expose real older messages above the original page")
         XCTAssertEqual(protocolFields()["requests"], "1", "The completed history range must not request a second page")
+    }
+
+    func testQuestionReminderKeepsTheHistoryHeaderAccessible() {
+        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-reduce-motion"])
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
+        let transcript = chatTranscript(app)
+        let viewport = transcript.frame
+        let reminder = app.buttons["chat-question-reminder"]
+        for _ in 0..<12 where !reminder.exists {
+            transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.45)).press(forDuration: 0.05,
+                thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.7)),
+                withVelocity: .slow, thenHoldForDuration: 0.2)
+        }
+        XCTAssertTrue(reminder.waitForExistence(timeout: 3), "The latest question is below the reader before reaching history controls")
+        let older = app.buttons["chat-history-older"]
+        for _ in 0..<20 where !older.isHittable {
+            transcript.swipeDown()
+            settle()
+        }
+        XCTAssertTrue(older.isHittable, "The reminder must leave the older-history control reachable")
+        XCTAssertTrue(reminder.waitForNonExistence(timeout: 3), "History controls take precedence while their row is visible")
+        XCTAssertEqual(transcript.frame, viewport, "Giving the history control priority must not resize or reposition the transcript")
+        capture("question-reminder-history-control", app: app)
+        let delivery = app.buttons["preview-history-deliver"]
+        XCTAssertTrue(waitUntilEnabled(delivery, timeout: 3), "Reaching the header must still request actual older history")
+        XCTAssertTrue((delivery.value as? String ?? "").contains("requests=1;responses=0"))
     }
 
     func testQuestionReminderAppearsWhileReadingAndLocatesTheOriginalWithoutFollowing() {

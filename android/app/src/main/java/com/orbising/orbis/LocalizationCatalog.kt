@@ -1061,6 +1061,7 @@ internal object LocalizationCatalog {
         "无法读取安全凭据，请解锁设备后重新启动 App。" to "Could not read credentials. Unlock the device and restart the app.",
         "无法读取所选文件" to "Could not read the selected file",
         "无法读取所选文件：{0}" to "Could not read the selected file: {0}",
+        "无法读取所选照片" to "The selected photo could not be read",
         "无法读取电脑端消息，请更新手机和电脑端 Orbis" to "The message from your computer could not be read. Update Orbis on your phone and computer.",
         "旧 {0}" to "Old {0}",
         "昨天 HH:mm" to "'Yesterday' HH:mm",
@@ -1078,9 +1079,9 @@ internal object LocalizationCatalog {
         "暂无可用选项" to "No options available",
         "暂无在线会话" to "No sessions online",
         "暂时无法读取此轮文件变化。" to "This turn's file changes are temporarily unavailable.",
-        "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
         "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
         "更新" to "Update",
         "更早的历史尚未缓存，连接原会话后可继续同步。" to "Earlier history is not cached. Connect to the original session to sync more.",
@@ -1230,9 +1231,9 @@ internal object LocalizationCatalog {
         "正在切换配置" to "Switching provider",
         "正在切换：" to "Switching: ",
         "正在刷新" to "Refreshing",
-        "正在加载会话" to "Loading sessions",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "正在加载会话" to "Loading sessions",
         "正在加载会话…" to "Loading sessions…",
         "正在加载更早的历史…" to "Loading earlier history…",
         "正在发送" to "Sending",
@@ -1320,6 +1321,7 @@ internal object LocalizationCatalog {
         "深色" to "Dark",
         "添加到 Pi 配置，可与其他供应商同时启用。" to "Add to Pi configuration. Multiple providers can be enabled together.",
         "添加电脑" to "Add computer",
+        "添加附件" to "Add attachments",
         "清单不完整" to "Incomplete list",
         "清单不完整，显示已知任务" to "Incomplete list. Showing known tasks.",
         "清单未读到" to "List not loaded",
@@ -1333,6 +1335,7 @@ internal object LocalizationCatalog {
         "点下面的按钮读一页" to "Tap the button below to load a page",
         "点击下载" to "Tap to download",
         "点击额度环查询" to "Tap the quota dial to check it",
+        "照片" to "Photos",
         "片帧不能再被切片" to "A piece frame cannot be split again",
         "版本 {0}" to "Version {0}",
         "版本不兼容，请更新手机和电脑端 Orbis" to "The versions are incompatible. Update Orbis on your phone and computer.",
@@ -1360,6 +1363,7 @@ internal object LocalizationCatalog {
         "电脑尚未核对" to "Not yet checked by computer",
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
         "电脑尚未核对此 Agent 的供应商配置" to "The computer has not checked this Agent's provider configuration",
+        "电脑已接收，等待处理" to "Received by computer. Waiting for processing",
         "电脑已离线，以下为最后读取的状态" to "Computer is offline. Showing the last loaded state.",
         "电脑文件" to "Computer files",
         "电脑文件的完整路径" to "Full file path on the computer",
@@ -1379,12 +1383,12 @@ internal object LocalizationCatalog {
         "电脑端安全握手未响应，正在重新连接。" to "The computer did not answer the secure handshake. Reconnecting.",
         "电脑端已结束此交互" to "The computer ended this interaction",
         "电脑端执行失败" to "Execution failed on computer",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "电脑端拒绝了请求（{0}）" to "Computer rejected the request ({0})",
         "电脑端拒绝了请求（{0}）：{1}" to "Computer rejected the request ({0}): {1}",
         "电脑端拒绝了请求，但没有说明原因" to "Computer rejected the request without a reason",
         "电脑端拒绝了这条消息" to "Computer rejected this message",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "电脑端文件不可用" to "File unavailable on computer",
         "电脑端文件不存在或已被删除" to "File on the computer is missing or deleted",
         "电脑端文件大小无效" to "Invalid file size on computer",
@@ -1531,12 +1535,12 @@ internal object LocalizationCatalog {
         "记录读取未发送，请连接电脑后重试" to "The records request was not sent. Connect to your computer and try again.",
         "记录读取未发送，请重新连接" to "Record request was not sent. Reconnect.",
         "记录读取超时，请重试" to "Record read timed out. Try again.",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "设备公钥长度不对" to "Invalid device public key length",
         "设备尚未配对" to "Device is not paired",
         "设置" to "Settings",
         "设置思考强度" to "Set reasoning effort",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "设置思考强度（当前 {0}）" to "Set reasoning effort (current: {0})",
         "设置未发送，请检查连接后重试" to "Settings were not sent. Check the connection and try again.",
         "设置未确认" to "Settings unconfirmed",
@@ -1683,12 +1687,12 @@ internal object LocalizationCatalog {
         "连接已断开，请重新读取" to "Disconnected. Reload.",
         "连接已断开，请重试。" to "Disconnected. Try again.",
         "连接已断开，连接后可应用设置" to "Disconnected. Apply settings after reconnecting.",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "连接已断开，连接后可重试" to "Disconnected. Retry after reconnecting.",
         "连接延迟" to "Connection latency",
         "连接建立后会自动读一次" to "Loaded automatically after connecting",
         "连接方式" to "Connection method",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "连接无法继续，请重新连接" to "The connection cannot continue. Connect again.",
         "连接状态" to "Connection status",
         "连接状态 {0}    加密通道 {1}" to "Connection {0}    Encrypted channel {1}",

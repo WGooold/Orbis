@@ -358,8 +358,8 @@ export class ClaudeBackend implements AgentBackend {
 
     if (command.type === "user_message") {
       if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
-      // Claude Mods only submits once the turn ends; a Pi-style steer would be a lie.
-      if (command.delivery === "steer") {
+      // Older native plugins cannot interrupt and submit; don't silently queue a steer.
+      if (command.delivery === "steer" && !this.#options.modsBridge.supportsPromptSendNow(runtimeId)) {
         this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
           status: "failure", error: "claude_steer_unsupported" });
         return "handled";
@@ -368,7 +368,8 @@ export class ClaudeBackend implements AgentBackend {
       const text = command.attachments === undefined || command.attachments.length === 0
         ? command.text : `${command.text}\n\n附件路径：\n${command.attachments.join("\n")}`;
       const result = this.#options.modsBridge.sendCommand(runtimeId, commandId,
-        { type: "user_message", text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }) });
+        { type: "user_message", text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }),
+          ...(command.delivery === undefined ? {} : { delivery: command.delivery }) });
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }
     if (command.type === "slash.execute") {
