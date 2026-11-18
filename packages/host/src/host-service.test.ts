@@ -4023,6 +4023,47 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(listRequests).toHaveLength(2);
   });
 
+  it("keeps active sessions visible while marking an unsupported archived catalog incomplete", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-partial-agent-catalog-"));
+    relay = await startRelayLocal(stateDir);
+    const client: DshConnection = {
+      onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshRuntime(client, {
+      list: async () => [],
+      read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }),
+      close: async () => {},
+    });
+    Object.defineProperty(runtime, "archivedCatalogSupported", { value: false });
+    const catalog = vi.spyOn(runtime, "catalog").mockImplementation(async archived => archived ? [] : [{
+      sessionId: "dsh:active", agentKind: "dsh", hostname: "fixture-host", cwd: stateDir!,
+      createdAt: 1, modifiedAt: 2, messageCount: 1, archived: false,
+    }]);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+    try {
+      await host.start();
+      device = await readyDeviceLocal({ host, relay });
+      sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "partial-catalog-list" });
+      await expect(device.receiveMessage()).resolves.toMatchObject({
+        type: "session.list.result", sessions: [expect.objectContaining({ sessionId: "dsh:active" })],
+      });
+      sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "partial-catalog-state",
+        scope: "host", domains: ["catalog"] });
+      const state = await device.receiveMessage() as { domains: AgentStateDomainSnapshot[] };
+      const catalogState = state.domains.find(domain => domain.domain === "catalog")?.value as {
+        backends: Array<{ kind: string; complete: boolean; error?: string }>;
+        sessions: Array<{ sessionId: string }>;
+      };
+      expect(catalogState.sessions.map(session => session.sessionId)).toContain("dsh:active");
+      expect(catalogState.backends.find(backend => backend.kind === "dsh")).toMatchObject({
+        complete: false, error: "archived_catalog_unsupported",
+      });
+      expect(catalog.mock.calls).toEqual([[]]);
+    } finally { await runtime.stop(); }
+  });
+
   it("keeps terminal and desktop Codex identities separate over the device protocol", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dual-codex-host-"));
     relay = await startRelayLocal(stateDir);

@@ -55,6 +55,10 @@ export type AgentActivateContext = {
 
 export interface AgentBackend {
   readonly kind: AgentKind;
+  /** False when the native catalog has no way to enumerate archived rows; active rows may still be complete. */
+  readonly archivedCatalogSupported?: boolean;
+  /** Whether the most recent active catalog read is known complete. */
+  readonly catalogComplete?: boolean;
   /** Device-private full entry read; never publish native details into the shared event stream. */
   readSessionEntry?(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined>;
   /** Device-private content access; never returns raw content through the shared event sink. */

@@ -2385,11 +2385,19 @@ export class HostService {
       }
       const started = Date.now();
       try {
-        const [active, archived] = await Promise.all([backend.catalog(), backend.catalog(true)]);
+        const [active, archived] = await Promise.all([
+          backend.catalog(),
+          backend.archivedCatalogSupported === false ? Promise.resolve([]) : backend.catalog(true),
+        ]);
         const catalog = [...new Map([...active, ...archived].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
         sessions.push(...catalog);
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: true, elapsedMs: Date.now() - started });
+        const incompleteReasons = [
+          ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
+          ...(backend.catalogComplete === false ? ["catalog_limit_reached"] : []),
+        ];
+        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: incompleteReasons.length === 0,
+          elapsedMs: Date.now() - started, ...(incompleteReasons.length ? { error: incompleteReasons.join(",") } : {}) });
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);

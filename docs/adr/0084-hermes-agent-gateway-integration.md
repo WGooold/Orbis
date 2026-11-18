@@ -122,4 +122,8 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 ## 当前状态
 
-本 ADR 采用 TUI Gateway 为自定义 Host 的主路线，并以 Orbis 已有 AgentBackend / RuntimeCommand / RuntimeEvent 能力为首阶段边界。当前开发机只执行了 `hermes --version` 与 `hermes gateway ensure --help`（观察到 Hermes Agent v0.22.5；ensure 子命令存在）；没有执行 ensure、没有启动/连接 Gateway、没有读取或修改 profile/session。HERMES-01 JSON-RPC transport 和 HERMES-02 CLI/bootstrap 的本地 fixture 已通过；Hermes AgentBackend、AgentKind/能力协商和跨端 UI 尚未实现。上游 v0.23.2 文档基线不证明其他安装版本的配置或 wire contract 一致；Host 对未知 Gateway protocol / capability fail closed。
+本 ADR 采用 TUI Gateway 为自定义 Host 的主路线，并以 Orbis 已有 AgentBackend / RuntimeCommand / RuntimeEvent 能力为首阶段边界。当前开发机只执行了 `hermes --version` 与 `hermes gateway ensure --help`（观察到 Hermes Agent v0.22.5；安装源码 commit `bf0203a794`）；没有执行 ensure、没有启动/连接 Gateway、没有读取或修改 profile/session。
+
+HERMES-01 JSON-RPC transport、HERMES-02 CLI/bootstrap 与 HERMES-03 隔离 AgentBackend 现有本地 fixture 测试。HERMES-03 按运行时契约映射 live/stored 目录、create/resume、文本 prompt、interrupt/cancel、历史快照和带序号事件回放；历史 tool-call 按 ADR-0045 投影为带 Hermes 身份的摘要，原始 arguments 与 tool-result 正文不进入共享历史或 wire。为此仅 `ToolSummary` 的工具身份暂时识别 `hermes`，不将其加入可选择 `AgentKind` 或客户端能力；完整 AgentKind / feature gate 留在 HERMES-05。v0.22.5 canonical session-list 行不含 cwd，冷会话先以空 cwd 表示，恢复后以原生 snapshot 的 `info.cwd` 更新；列表每个 scope 最多 200 行且无游标，因此满页标为不完整。该契约没有可核验的 archived-list 投影，故归档目录能力显式不完整，不能把“未返回”说成“没有归档会话”。
+
+AgentBackend 尚未挂入 Host 生命周期，`AgentKind`、设备 feature 协商、旧客户端隔离与跨端 UI 留在 HERMES-05；因此当前实现没有向 Relay/App 广播 `hermes`。上游 v0.23.2 文档基线不证明其他安装版本的配置或 wire contract 一致；Host 对未知 Gateway protocol / capability fail closed。未进行真实 Gateway/session 联动、打包或用户验收。

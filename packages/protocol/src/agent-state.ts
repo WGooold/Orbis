@@ -37,7 +37,8 @@ export const AgentKeySchema = z.strictObject({
 export type AgentKey = z.infer<typeof AgentKeySchema>;
 
 /** 稳定的会话身份字符串。只用于本地索引与日志，不是线上字段。 */
-export const agentKeyId = (key: AgentKey): string => JSON.stringify([key.hostId, key.agentKind, key.sessionId]);
+export const agentKeyId = (key: { hostId: string; agentKind: string; sessionId: string }): string =>
+  JSON.stringify([key.hostId, key.agentKind, key.sessionId]);
 
 /**
  * 设备身份。设备视图是 Host 持有的**按设备投影**：同一份共享事实，只对该设备可见的

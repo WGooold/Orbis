@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentKeySchema, agentKeyId } from "./agent-state.js";
+import { AgentKeySchema, AgentKindSchema, agentKeyId } from "./agent-state.js";
 
 // ADR-0045 §8：限制完整 JSON 字节；身份超限必须拒绝，不能截断身份冒充原项。
 export const TOOL_PROJECTION_VERSION = 1 as const;
@@ -49,9 +49,15 @@ export function toolSummaryText(text: string, maximum = TOOL_SUMMARY_TEXT_MAX_BY
   return { text: value, omitted: originalBytes > textBytes(value), originalBytes };
 }
 
+/** Tool identity can name Hermes history before Hermes is exposed as a generally selectable AgentKind. */
+export const ToolAgentKeySchema = z.strictObject({
+  hostId: identity, agentKind: AgentKindSchema.or(z.literal("hermes")), sessionId: identity,
+});
+export type ToolAgentKey = z.infer<typeof ToolAgentKeySchema>;
 export const ToolIdentitySchema = z.strictObject({ agent: AgentKeySchema, toolCallId: identity });
 export type ToolIdentity = z.infer<typeof ToolIdentitySchema>;
-export const toolIdentityId = (tool: ToolIdentity): string =>
+const ToolSummaryIdentitySchema = z.strictObject({ agent: ToolAgentKeySchema, toolCallId: identity });
+export const toolIdentityId = (tool: { agent: ToolAgentKey; toolCallId: string }): string =>
   JSON.stringify([agentKeyId(tool.agent), tool.toolCallId]);
 export const ToolContentPartSchema = z.enum(["arguments", "output", "result"]);
 export const ToolContentFormatSchema = z.enum(["text", "json", "media-references"]);
@@ -75,7 +81,7 @@ export const ToolContentDescriptorSchema = z.strictObject({
 /** Current byte counts/TTL/readId are deliberately absent from immutable historical summaries. */
 export const ToolSummarySchema = z.strictObject({
   projectionVersion: z.literal(TOOL_PROJECTION_VERSION),
-  tool: ToolIdentitySchema,
+  tool: ToolSummaryIdentitySchema,
   toolName: identity,
   phase: z.enum(["started", "running", "finished", "cancelled"]),
   isError: z.boolean().optional(),

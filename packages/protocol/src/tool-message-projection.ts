@@ -1,13 +1,12 @@
-import { createToolSummary, type ToolSummary } from "./tool-activity.js";
-import type { AgentKey } from "./agent-state.js";
+import { createToolSummary, type ToolAgentKey, type ToolSummary } from "./tool-activity.js";
 import type { ChatMessage, RemoteContent, RemoteSessionEntry } from "./index.js";
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
-export type ToolMessageProjectionContext = { agent: AgentKey; order: number; entryId?: string;
+export type ToolMessageProjectionContext = { agent: ToolAgentKey; order: number; entryId?: string;
   phase?: ToolSummary["phase"]; readCapability?: "range" | "whole-source" | "none"; contents?: ToolSummary["contents"] };
 
-/** Shared Pi/DSH facts only. Unknown tool inputs never become serialized JSON previews. */
+/** Known input summaries only; unknown tool arguments never become JSON previews. */
 export function messageToolSummary(context: ToolMessageProjectionContext, callId: string, name: string,
   args?: unknown, isError?: boolean): ToolSummary {
   const input = record(args);
