@@ -78,3 +78,9 @@ APP 从第一个版本起就把"已配对电脑"当成单数：`CredentialStore`
 场景 MH-01 以两种入口顺序反复启动，核验 Activity 与连接中枢身份保持一致，见 [SingleActivityInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SingleActivityInstrumentedTest.kt)。现场连接与重复 Activity 证据、构建及自动对照保存在 `.artifacts/android-sync-reconnect-20261106/`。现场重启后已恢复单实例；修复包安装与持续使用待用户验证。
 
 共享 API 35 对照：原版两项均触发重复 Activity 断言，修复版两项通过；详见 `entry-comparison-corrected/`。真机重启恢复后的 50 秒观察未出现连接替换、Relay 失败或 LAN 断连，见 `restart/connection/`；该观察使用原安装版本，防复发修复包尚未安装到真机。
+
+## 修订（2026-11-18）：Android 上次会话的历史接续（MH-02）
+
+启动恢复先展示本地缓存时，保留等待同一 Session 运行窗口的归属；目录随后到达即进入正常聊天并使用既有来源同步。匹配优先采用 Session 身份，旧 Runtime 标识复用到其他 Session 时继续等待原会话。缓存首屏只读取一次，其他会话的更新和重连不结束等待；用户返回、另选会话或发起新会话时结束自动恢复。启动记录随本地缓存在后台读取。
+
+实现见 [LastSessionRestorer.kt](../../android/app/src/main/java/com/orbising/orbis/LastSessionRestorer.kt) 与 [HostConnection.kt](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)；回归见 [LastSessionRestorerTest.kt](../../android/app/src/test/java/com/orbising/orbis/LastSessionRestorerTest.kt)。保留原终止式历史回退的对照在 8 项用例中失败 3 项，修复后连同启动缓存与来源同步共 52 项定向测试通过。证据见 [本次验证目录](../../.artifacts/android-last-session-restore-20261118/)，原断言与首次失败分别保留。代码已本地实现，未部署；安装包、共享 QA 候选登记与用户验收待完成。

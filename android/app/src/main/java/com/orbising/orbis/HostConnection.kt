@@ -222,6 +222,7 @@ internal class HostConnection(
                 launchError = admission.configuration.launchError, waitingForLaunchJournal = admission.configuration.waitingForLaunchJournal)) }; return false
         }
         val confirmed = snapshot ?: return false
+        lastSessionRestorer.cancel()
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
         val firstCommand = UUID.randomUUID().toString()
@@ -468,13 +469,9 @@ internal class HostConnection(
     /** 本次连接已经就「握手没成」提示过一次，避免每次自动重连都弹同一句话。 */
     private var handshakeStalled = false
 
-    /**
-     * 「上次会话恢复」是否已经不再介入：用户自己选过（或已经被恢复过一次）之后，
-     * 就绝不把人从当前页面拽走。未 settle 时会持续尝试，因为 Runtime 目录可能比
-     * 中继的第一份 device.ready 晚到（那份里还没有 Pi runtime）。
-     */
-    private var restoreSettled = false
-    private var restoreAttempts = 0
+    /** MH-02: a restored cache remains eligible for handover until live chat or user navigation. */
+    private val lastSessionRestorer = LastSessionRestorer()
+    private var lastSessionToRestore: LastSession? = null
 
     /** Local execution handles, keyed by logical ID; first-page/history share one cleanup rule. */
     private val historyJobs = mutableMapOf<String, Job>()
@@ -498,6 +495,7 @@ internal class HostConnection(
                     uploads = artifactUploadStore.load().filter { it.hostId == pairing.hostId }.associateBy(UploadTask::taskId))
                 // V17: restore waiting copies before the connection's automatic resume runs.
                 draftStore.restoreWaiting()
+                lastSessionToRestore = lastSessionStore.load(pairing.hostId)
                 cached
             }
             if (!shouldConnect) return@launch
@@ -519,10 +517,7 @@ internal class HostConnection(
                     historyJobs.filterKeys { mutableState.value.historyReads[it]?.phase?.active != true }.values.toList()
                 }
                 abandoned.forEach(Job::cancel)
-                if (!restoreSettled &&
-                    current.connection == RelayConnection.ONLINE &&
-                    current.runtimes.isNotEmpty()
-                ) {
+                if (!lastSessionRestorer.settled && current.connection == RelayConnection.ONLINE) {
                     maybeRestoreLastSession(current)
                 }
             }
@@ -979,7 +974,7 @@ internal class HostConnection(
     }
 
     private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
-        restoreSettled = true
+        lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
         val fields = target.mapNotNull { (key, value) -> (value as? JsonPrimitive)?.contentOrNull?.let { key to it } }.toMap()
@@ -1186,7 +1181,7 @@ internal class HostConnection(
         relayEventJob?.cancel()
         relayEventJob = null
         relay.disconnect()
-        restoreSettled = true
+        lastSessionRestorer.cancel()
     }
 
     /**
@@ -1199,40 +1194,21 @@ internal class HostConnection(
      * 先按 sessionId 找（Pi 进程可能换了 runtimeId），再按 runtimeId 兜底。
      */
     private fun maybeRestoreLastSession(current: RemoteState) {
-        if (restoreAttempts++ > 200) {
-            restoreSettled = true
-            return
-        }
-        val saved = lastSessionStore.load(pairing.hostId) ?: run {
-            restoreSettled = true
-            return
-        }
-        if (current.deviceId != null && current.deviceId != saved.deviceId) {
+        val saved = lastSessionToRestore
+        if (saved != null && current.deviceId != null && current.deviceId != saved.deviceId) {
             // 记录属于另一台电脑（理论上 unpair 已清过），直接作废。
             lastSessionStore.clear(pairing.hostId)
-            restoreSettled = true
-            return
         }
-        val runtime = current.runtimes.values.firstOrNull { it.runtimeId == saved.runtimeId }
-            ?: saved.sessionId?.let { sessionId ->
-                current.runtimes.values.firstOrNull { it.sessionId == sessionId }
-            }
-        if (runtime != null) {
-            selectRuntime(runtime.runtimeId)
-            return
+        when (val target = lastSessionRestorer.next(current, saved)) {
+            is LastSessionRestoreTarget.Runtime -> selectRuntime(target.runtimeId)
+            is LastSessionRestoreTarget.History -> openCachedSession(target.sessionId, restoringLastSession = true)
+            null -> Unit
         }
-        // Runtime 已经不在了：有本地缓存就带用户去看只读历史（§14 B7 的离线阅读）。
-        // 先 settle 再跳——否则每次状态更新都会重新加载一遍缓存图。
-        val cachedSession = saved.sessionId?.takeIf { current.sessions[it]?.hasHistoryCache == true }
-        if (cachedSession != null) {
-            restoreSettled = true
-            selectOfflineSession(cachedSession)
-        }
-        // 既没 Runtime 也没缓存：可能只是 Runtime 目录还没补齐，留待下一帧再看（attempts 兜底）。
     }
 
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
+        lastSessionRestorer.cancel()
         closeToolDetail()
         closeChangeViewer()
         runtimeId?.let { refreshAgentModel(it) }
@@ -1275,7 +1251,6 @@ internal class HostConnection(
         }
         // 用户（或被恢复流程）已经选定了去处，恢复逻辑不再介入；同时记下这一处，
         // 供掉线重连/APP 重启后自动回到这里（spec 第 16 行、§14 B7）。
-        restoreSettled = true
         val pairedDevice = device
         if (pairedDevice != null) {
             if (runtimeId == null) {
@@ -1372,17 +1347,23 @@ internal class HostConnection(
 
     /** Opens only an already-cached Session graph as a read-only history view. */
     fun selectOfflineSession(sessionId: String?) {
+        lastSessionRestorer.cancel()
+        openCachedSession(sessionId)
+    }
+
+    private fun openCachedSession(sessionId: String?, restoringLastSession: Boolean = false) {
         closeToolDetail()
         closeChangeViewer()
         val current = mutableState.value
-        // 用户（或恢复流程）已经选定了去处，别再被「恢复上次会话」拽走。
-        restoreSettled = true
         if (sessionId == null) {
             updateState { it.copy(selectedOfflineSessionId = null) }
             return
         }
-        if (current.runtimes.values.any { it.sessionId == sessionId }) {
-            updateState { it.sessionFailure(sessionId, L10n.tr("此会话正在运行，请从会话列表进入")) }
+        val runtime = current.runtimes.values.firstOrNull { it.sessionId == sessionId }
+        if (runtime != null) {
+            // The directory can arrive between the restoration decision and opening its cache.
+            if (restoringLastSession) selectRuntime(runtime.runtimeId)
+            else updateState { it.sessionFailure(sessionId, L10n.tr("此会话正在运行，请从会话列表进入")) }
             return
         }
         if (current.sessions[sessionId]?.hasHistoryCache != true) {
