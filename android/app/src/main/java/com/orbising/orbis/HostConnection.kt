@@ -2659,7 +2659,7 @@ internal class HostConnection(
                     if (filtered && relay.sendDeviceMessage(buildJsonObject {
                             put("type", "device.features")
                             put("protocolVersion", PROTOCOL_VERSION)
-                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"))))
+                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"), JsonPrimitive("agent.opencode"))))
                         })) {
                         val fallback = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
                         pendingFilteredReady = fallback

@@ -2,10 +2,10 @@
 // released App validates. Released iOS rejects a whole catalog page containing an unknown agent kind and
 // checks offsets and totals across range pages, so Desktop rows are filtered with consistent cursors.
 import { describe, expect, it } from "vitest";
-import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogState } from "@orbis/protocol";
+import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_OPENCODE, HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
-import { hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 
 const session = (index: number, agentKind: AgentSessionSummary["agentKind"]): AgentSessionSummary => ({
   agentKind, sessionId: `${agentKind === "dshDesktop" ? "dsh-desktop" : "dsh"}:s${index}`, hostname: "Host", cwd: `D:/${"目录".repeat(800)}`,
@@ -64,4 +64,21 @@ describe("Desktop visibility for released Apps", () => {
     expect(legacyDeviceMessage({ type: "diagnostics.page", page: { records: [{ agentKind: "dshDesktop" }, { agentKind: null }], nextCursor: null, truncated: false } }))
       .toEqual({ type: "diagnostics.page", page: { records: [{ agentKind: null }], nextCursor: null, truncated: false } });
   });
+
+describe("OpenCode visibility negotiation", () => {
+  it("keeps each feature independent and hides OpenCode from clients that did not declare it", () => {
+    expect(hiddenAgentKinds(new Set([DEVICE_FEATURE_DSH_DESKTOP]))).toEqual(["opencode"]);
+    expect(hiddenAgentKinds(new Set([DEVICE_FEATURE_OPENCODE]))).toEqual(["dshDesktop"]);
+    expect(hiddenAgentKinds(new Set([DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_OPENCODE]))).toEqual([]);
+    expect(hiddenFromLegacy({ type: "runtime.event", runtimeId: "opencode:ses_1" }, ["opencode"])).toBe(true);
+    expect(hiddenFromLegacy({ type: "runtime.event", runtimeId: "opencode:ses_1" }, [])).toBe(false);
+    expect(legacyDeviceMessage({ type: "device.ready", runtimes: [
+      { runtimeId: "opencode:ses_1", agentKind: "opencode" }, { runtimeId: "dsh-desktop:1", agentKind: "dshDesktop" },
+    ], agents: ["opencode", "dshDesktop", "pi"], launchableAgents: ["opencode"] }, ["opencode"]))
+      .toEqual({ type: "device.ready", runtimes: [{ runtimeId: "dsh-desktop:1", agentKind: "dshDesktop" }], agents: ["dshDesktop", "pi"], launchableAgents: [] });
+    expect(legacyHostDomain("backends", { backends: [{ kind: "opencode" }, { kind: "pi" }], agents: ["opencode", "pi"], launchableAgents: ["opencode"] }, value => value, ["opencode"]))
+      .toEqual({ backends: [{ kind: "pi" }], agents: ["pi"], launchableAgents: [] });
+  });
+});
+
 });

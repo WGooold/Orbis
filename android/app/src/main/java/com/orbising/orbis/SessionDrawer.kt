@@ -97,7 +97,8 @@ internal enum class DrawerAgentFilter(
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
-    Claude("claude", "Claude Code", "claude");
+    Claude("claude", "Claude Code", "claude"),
+    OpenCode("opencode", "OpenCode", "opencode");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)

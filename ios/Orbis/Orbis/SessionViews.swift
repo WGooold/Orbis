@@ -369,7 +369,7 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude"].filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "opencode"].filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
                 ? sessionProviderOptions(catalog.sessions, kind: kind, current: store.currentProvider(for: kind)) : []
             return OrbisMenuItem(title: filterTitle(kind), agentKind: kind, checked: state.kind == kind,

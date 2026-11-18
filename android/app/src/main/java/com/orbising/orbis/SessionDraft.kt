@@ -91,7 +91,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
     val supported = state.launchableAgents ?: state.supportedAgents
-    val kinds = listOf("codex", "claude", "dsh", "pi")
+    val kinds = listOf("codex", "claude", "dsh", "pi", "opencode")
     val family = agentFamily(kind)
     /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
     fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
@@ -118,7 +118,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
     LaunchedEffect(supported) { if (supported != null && kind !in supported)
-        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi")).firstOrNull { it in supported } ?: "pi"
+        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "opencode")).firstOrNull { it in supported } ?: "pi"
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },

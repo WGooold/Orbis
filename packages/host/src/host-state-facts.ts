@@ -44,9 +44,15 @@ function boundedArray<T>(items: readonly T[], bytes: number, wrap: (items: T[]) 
   return items.slice(0, low);
 }
 
-/** A hidden-kind view (ADR-0076 DSH-DESKTOP-06) has its own cursor space; full and filtered offsets never mix. */
-const catalogCursor = (snapshotId: string, offset: number, hide?: AgentKind, queryHash?: string): string =>
-  Buffer.from(JSON.stringify([snapshotId, offset, ...(queryHash === undefined ? [] : [queryHash]), ...(hide === undefined ? [] : [`-${hide}`])])).toString("base64url");
+/** A feature-filtered view has its own cursor space; full and filtered offsets never mix. */
+type HiddenKinds = AgentKind | readonly AgentKind[];
+const hiddenKinds = (value?: HiddenKinds): AgentKind[] => [...new Set(typeof value === "string" ? [value] : value ?? [])].sort();
+const hiddenKindsToken = (value: readonly AgentKind[]): string | undefined => value.length === 0 ? undefined : `-${value.join(",")}`;
+const catalogCursor = (snapshotId: string, offset: number, hide?: HiddenKinds, queryHash?: string): string => {
+  const hidden = hiddenKinds(hide);
+  const token = hiddenKindsToken(hidden);
+  return Buffer.from(JSON.stringify([snapshotId, offset, ...(queryHash === undefined ? [] : [queryHash]), ...(token === undefined ? [] : [token])])).toString("base64url");
+};
 const queryKey = (query: CatalogQuery): string => createHash("sha256").update(JSON.stringify([
   query.text, query.agentKind, query.archived, query.provider, query.directory ?? null,
 ])).digest("hex");
@@ -195,10 +201,12 @@ export class HostStateFacts {
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
   // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
-  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}, hide?: AgentKind): HostCatalogRange {
+  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}, hide?: HiddenKinds): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
     const full = this.#catalogInventory;
-    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
+    const hidden = hiddenKinds(hide);
+    const hiddenToken = hiddenKindsToken(hidden);
+    const inventory = full && hidden.length > 0 ? this.#hiddenInventory(full, hidden) : full;
     const empty = (error: NonNullable<HostCatalogRange["error"]>): HostCatalogRange => ({
       modelEpoch: this.#registry.currentModelEpoch(), revision: state?.revision ?? 0, snapshotId: state?.value?.snapshotId ?? null,
       offset: 0, totalSessions: inventory?.state.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
@@ -212,9 +220,9 @@ export class HostStateFacts {
       let cursor: unknown;
       if (request.cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(request.cursor)) return empty("invalid_cursor");
       try { cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString("utf8")); } catch { return empty("invalid_cursor"); }
-      if (!Array.isArray(cursor) || cursor.length !== 2 + (query ? 1 : 0) + (hide === undefined ? 0 : 1)
+      if (!Array.isArray(cursor) || cursor.length !== 2 + (query ? 1 : 0) + (hiddenToken === undefined ? 0 : 1)
         || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0
-        || query && cursor[2] !== hash || hide !== undefined && cursor[query ? 3 : 2] !== `-${hide}`) return empty("invalid_cursor");
+        || query && cursor[2] !== hash || hiddenToken !== undefined && cursor[query ? 3 : 2] !== hiddenToken) return empty("invalid_cursor");
       if (cursor[0] !== inventory.snapshotId) return empty("snapshot_changed");
       offset = cursor[1] as number;
       if (offset > matched.length) return empty("invalid_cursor");
@@ -232,18 +240,22 @@ export class HostStateFacts {
     const complete = backends.length > 0 && backends.every(backend => backend.complete) && !inventory.state.truncated;
     return { modelEpoch: inventory.modelEpoch, revision: state.revision, snapshotId: inventory.snapshotId,
       offset, totalSessions: query ? matched.length : inventory.state.totalSessions, sessions,
-      nextCursor: next < matched.length ? catalogCursor(inventory.snapshotId, next, hide, hash) : null,
+      nextCursor: next < matched.length ? catalogCursor(inventory.snapshotId, next, hidden, hash) : null,
       complete, truncated: inventory.state.truncated };
   }
 
-  #hidden: { source: CatalogInventory; hide: AgentKind; view: CatalogInventory } | undefined;
-  /** The committed inventory without one agent kind; the order is kept, so a filtered prefix is a prefix of this view. */
-  #hiddenInventory(inventory: CatalogInventory, hide: AgentKind): CatalogInventory {
+  #hidden: { source: CatalogInventory; hide: string; view: CatalogInventory } | undefined;
+  /** The committed inventory without hidden kinds; order and cursor offsets use that filtered view. */
+  #hiddenInventory(inventory: CatalogInventory, kinds: HiddenKinds): CatalogInventory {
+    const hidden = hiddenKinds(kinds);
+    const hide = hidden.join(",");
+    const hiddenSet = new Set(hidden);
     if (this.#hidden?.source === inventory && this.#hidden.hide === hide) return this.#hidden.view;
-    const sessions = inventory.sessions.filter(session => session.agentKind !== hide);
-    const removed = Math.max(inventory.sessions.length - sessions.length, inventory.state.backends.find(backend => backend.kind === hide)?.sessions ?? 0);
-    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => backend.kind !== hide),
-      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => row.agentKind !== hide) }),
+    const sessions = inventory.sessions.filter(session => !hiddenSet.has(session.agentKind));
+    const backendCount = inventory.state.backends.filter(backend => hiddenSet.has(backend.kind)).reduce((count, backend) => count + backend.sessions, 0);
+    const removed = Math.max(inventory.sessions.length - sessions.length, backendCount);
+    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => !hiddenSet.has(backend.kind)),
+      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => !hiddenSet.has(row.agentKind)) }),
       totalSessions: inventory.state.truncated ? Math.max(sessions.length, inventory.state.totalSessions - removed) : sessions.length };
     const view = { ...inventory, state, sessions };
     this.#hidden = { source: inventory, hide, view };
@@ -254,10 +266,17 @@ export class HostStateFacts {
    * The committed catalog value as a device without `hide` sees it: same snapshot and revision,
    * sessions/rows of that kind removed, totals and next cursor from the filtered inventory.
    */
-  hiddenCatalog(value: Record<string, unknown>, hide: AgentKind): Record<string, unknown> {
+  hiddenCatalog(value: Record<string, unknown>, kinds: HiddenKinds): Record<string, unknown> {
+    const hidden = hiddenKinds(kinds);
+    if (hidden.length === 0) return value;
+    const hiddenSet = new Set(hidden);
     const inventory = this.#catalogInventory;
-    const keep = (row: unknown): boolean => !(row !== null && typeof row === "object" && (row as { agentKind?: unknown; kind?: unknown }).agentKind === hide)
-      && !(row !== null && typeof row === "object" && (row as { kind?: unknown }).kind === hide);
+    const keep = (row: unknown): boolean => {
+      if (row === null || typeof row !== "object") return true;
+      const object = row as { agentKind?: unknown; kind?: unknown };
+      const kind = object.agentKind ?? object.kind;
+      return typeof kind !== "string" || !hiddenSet.has(kind as AgentKind);
+    };
     const next: Record<string, unknown> = { ...value };
     if (Array.isArray(value.sessions)) next.sessions = value.sessions.filter(keep);
     if (Array.isArray(value.backends)) next.backends = value.backends.filter(keep);
@@ -267,16 +286,17 @@ export class HostStateFacts {
       const sessions = Array.isArray(next.sessions) ? next.sessions.length : 0;
       return { ...next, nextCursor: null, totalSessions: sessions, truncated: value.nextCursor !== null && value.nextCursor !== undefined || value.truncated === true };
     }
-    const view = this.#hiddenInventory(inventory, hide);
+    const view = this.#hiddenInventory(inventory, hidden);
     const count = Array.isArray(next.sessions) ? next.sessions.length : 0;
     return { ...next, totalSessions: view.state.totalSessions,
-      nextCursor: count < view.sessions.length ? catalogCursor(inventory.snapshotId, count, hide) : null };
+      nextCursor: count < view.sessions.length ? catalogCursor(inventory.snapshotId, count, hidden) : null };
   }
 
-  catalogQuery(request: CatalogQueryRequest, hide?: AgentKind): CatalogQueryPage {
+  catalogQuery(request: CatalogQueryRequest, hide?: HiddenKinds): CatalogQueryPage {
     const page = this.catalogRange(request, hide);
     const full = this.#catalogInventory;
-    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
+    const hidden = hiddenKinds(hide);
+    const inventory = full && hidden.length > 0 ? this.#hiddenInventory(full, hidden) : full;
     const rows = inventory?.sessions.filter(row => request.query.agentKind === null || row.agentKind === request.query.agentKind) ?? [];
     const all = [...new Set(rows.flatMap(row => row.modelProvider ? [row.modelProvider] : []))].sort();
     const providers = boundedArray(all.slice(0, 64), 8 * 1024, providers => providers);

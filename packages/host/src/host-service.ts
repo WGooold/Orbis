@@ -42,7 +42,6 @@ import {
 } from "@orbis/e2e";
 import {
   DeviceE2ePayloadSchema,
-  DEVICE_FEATURE_DSH_DESKTOP,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -98,7 +97,7 @@ import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, hiddenFromLegacy, isDshDesktopRuntime, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { DSH_DESKTOP_KIND, OPENCODE_KIND, hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -127,6 +126,13 @@ import type { UsageSnapshot } from "./provider-usage-cache.js";
  * 手机在激活/重连/回前台时都会请求，短 TTL 足以把那些重复请求收敛成一次扫描，
  * 又不至于让用户察觉「刚建的会话不在列表里」——激活路径另走 `#invalidateCatalog`。
  */
+function catalogContainsKind(value: unknown, kind: AgentKind): boolean {
+  if (value === null || typeof value !== "object") return false;
+  const catalog = value as { sessions?: unknown[]; backends?: unknown[]; currentProviders?: unknown[] };
+  const rows = [...(catalog.sessions ?? []), ...(catalog.backends ?? []), ...(catalog.currentProviders ?? [])];
+  return rows.some(row => row !== null && typeof row === "object" &&
+    ((row as { agentKind?: unknown; kind?: unknown }).agentKind === kind || (row as { kind?: unknown }).kind === kind));
+}
 const CATALOG_TTL_MS = 5_000;
 type DshKind = "dsh" | "dshDesktop";
 const DSH_KINDS: readonly DshKind[] = ["dsh", "dshDesktop"];
@@ -314,8 +320,8 @@ export class HostService {
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
   readonly #deviceFeatures = new Map<string, ReadonlySet<string>>();
-  /** Devices that read a host-scope view without `dshDesktop`; their cached revisions are not full views. */
-  readonly #legacyHostServed = new Set<string>();
+  /** Device visibility changed after feature negotiation; invalidate its next Host-state revision baseline once. */
+  readonly #forceFullHostState = new Set<string>();
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -612,7 +618,7 @@ export class HostService {
   }
 
   /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
-  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind): Promise<HostCatalogRange> {
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind | readonly AgentKind[]): Promise<HostCatalogRange> {
     if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
     return this.#hostStateFacts.catalogRange(request, hide);
   }
@@ -1268,14 +1274,15 @@ export class HostService {
       return;
     }
     // A device that has just declared `agent.dshDesktop` may hold revisions of the filtered view.
-    const known = scope.kind === "host" && this.#showsDshDesktop(deviceId) && this.#legacyHostServed.delete(deviceId) ? undefined : request.known;
+    const hiddenKinds = this.#hiddenKindsForDevice(deviceId);
+    const known = scope.kind === "host" && this.#forceFullHostState.delete(deviceId) ? undefined : request.known;
     for (const part of buildAgentStateSnapshotParts({
       registry,
       requestId: request.requestId,
       scope,
       identity,
       stateFormat: request.stateFormat,
-      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, !this.#showsDshDesktop(deviceId)) } : {}),
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactCatalogBaseline(epoch, revision, hiddenKinds) } : {}),
       projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(known === undefined ? {} : { known }),
@@ -1284,20 +1291,35 @@ export class HostService {
     }
   }
 
-  #showsDshDesktop(deviceId: string): boolean {
-    return this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_DSH_DESKTOP) === true;
+  #compactCatalogBaseline(epoch: string, revision: number, hiddenKinds: readonly AgentKind[]) {
+    // CompactStateModel retains unfiltered and DSH-only catalog versions. OpenCode
+    // can share either baseline only while neither version names OpenCode; otherwise
+    // send a full snapshot until the filtered baseline is available.
+    if (hiddenKinds.some(kind => kind !== DSH_DESKTOP_KIND && kind !== OPENCODE_KIND)) return undefined;
+    const baseline = this.#compactState.catalogBaseline(epoch, revision);
+    if (!baseline) return undefined;
+    if (hiddenKinds.includes(OPENCODE_KIND)) {
+      const current = this.#compactState.registry.read({ kind: "host" }, "catalog");
+      if (catalogContainsKind(baseline.value, OPENCODE_KIND) || catalogContainsKind(current?.value, OPENCODE_KIND)) return undefined;
+    }
+    return hiddenKinds.includes(DSH_DESKTOP_KIND)
+      ? this.#compactState.catalogBaseline(epoch, revision, true) : baseline;
+  }
+  #hiddenKindsForDevice(deviceId: string): AgentKind[] {
+    return hiddenAgentKinds(this.#deviceFeatures.get(deviceId));
   }
 
-  /** Host-scope values for a device without `agent.dshDesktop` (ADR-0076 DSH-DESKTOP-06). */
+  /** Host-scope values are projected before compact deltas are computed. */
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
-    if (scope.kind !== "host" || this.#showsDshDesktop(deviceId)) return value;
-    this.#legacyHostServed.add(deviceId);
-    return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND));
+    const hidden = this.#hiddenKindsForDevice(deviceId);
+    if (scope.kind !== "host" || hidden.length === 0) return value;
+    
+    return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, hidden), hidden);
   }
 
   /** What one device may receive; `undefined` drops the message for that device. */
   #visibleTo(deviceId: string, message: object): object | undefined {
-    return this.#showsDshDesktop(deviceId) ? message : legacyDeviceMessage(message);
+    return legacyDeviceMessage(message, this.#hiddenKindsForDevice(deviceId));
   }
 
   #resolveAgentStateScope(
@@ -1826,7 +1848,7 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
-    this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
+    this.#deviceFeatures.delete(deviceId); this.#forceFullHostState.delete(deviceId);
     this.#historyInterests.delete(deviceId);
     this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
@@ -1941,15 +1963,20 @@ export class HostService {
       return;
     }
     if (message.type === "device.features") {
-      const before = this.#showsDshDesktop(deviceId);
+      const before = this.#hiddenKindsForDevice(deviceId);
       this.#deviceFeatures.set(deviceId, new Set(message.features));
-      if (before === this.#showsDshDesktop(deviceId)) return;
-      // The filtered device.ready and notification snapshots of this handshake are replaced by the full view.
+      const after = this.#hiddenKindsForDevice(deviceId);
+      if (before.join("\0") === after.join("\0")) return;
+      // Revisions from the previous feature-filtered view cannot be used as a baseline.
+      this.#forceFullHostState.add(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
+      const newlyVisible = new Set(before.filter(kind => !after.includes(kind)));
       for (const runtime of this.#runtimesSnapshot()) {
-        if (isDshDesktopRuntime(runtime.runtimeId)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+        const kind = runtime.runtimeId.startsWith("dsh-desktop:") ? DSH_DESKTOP_KIND
+          : runtime.runtimeId.startsWith("opencode:") ? "opencode" : undefined;
+        if (kind && newlyVisible.has(kind)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
       }
-      this.#dsh.dshDesktop.runtime?.announce();
+      if (newlyVisible.has(DSH_DESKTOP_KIND)) this.#dsh.dshDesktop.runtime?.announce();
       return;
     }
     if (message.type === "device.version.report") {
@@ -1978,7 +2005,8 @@ export class HostService {
       const link = this.#links.get(deviceId);
       void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
         if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
-        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#showsDshDesktop(deviceId) ? undefined : "dshDesktop"), protocolVersion: PROTOCOL_VERSION };
+        const hidden = this.#hiddenKindsForDevice(deviceId);
+        const response = { ...this.#hostStateFacts.catalogQuery(message, hidden.length === 0 ? undefined : hidden), protocolVersion: PROTOCOL_VERSION };
         if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
           this.#sendToDevice(deviceId, { type: "protocol.error",
             requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
@@ -2066,8 +2094,9 @@ export class HostService {
     }
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
-      if (!this.#showsDshDesktop(deviceId)) this.#legacyHostServed.add(deviceId);
-      void this.readHostRange(message, this.#showsDshDesktop(deviceId) ? undefined : DSH_DESKTOP_KIND).then(page => {
+      const hidden = this.#hiddenKindsForDevice(deviceId);
+      if (hidden.length > 0) 
+      void this.readHostRange(message, hidden.length === 0 ? undefined : hidden).then(page => {
         if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
           requestId: message.requestId, scope: "host", domain: "catalog", page });
@@ -3080,7 +3109,7 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    const hidden = hiddenFromLegacy(message);
+    const hidden = hiddenFromLegacy(message, ["dshDesktop", "opencode"]);
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
       "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
     if (message.type === "runtime.event" && chatEvent) {
@@ -3090,7 +3119,7 @@ export class HostService {
         const interest = this.#historyInterests.get(deviceId);
         if (interest !== undefined &&
             (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (hiddenFromLegacy(message, this.#hiddenKindsForDevice(deviceId))) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
@@ -3100,14 +3129,14 @@ export class HostService {
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (hiddenFromLegacy(message, this.#hiddenKindsForDevice(deviceId))) continue;
         try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
       return;
     }
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength),
-      hidden ? deviceId => this.#showsDshDesktop(deviceId) : undefined);
+      hidden ? deviceId => !hiddenFromLegacy(message, this.#hiddenKindsForDevice(deviceId)) : undefined);
   }
 
   /** 广播给所有握好手的设备。单台设备封帧失败不影响其他设备。 */
