@@ -26,7 +26,7 @@ export type KimiSession = z.infer<typeof KimiSessionSchema>;
 const environment = z.object({ environment_id: z.string(), workspace_id: z.string(), cwd: cwd.optional() });
 const catalogPage = z.object({ items: z.array(z.object({
   id: nativeId, workspace: z.object({ cwd }),
-  meta: z.object({ title: z.string(), created_at: z.number().int().nonnegative(), updated_at: z.number().int().nonnegative(), archived: z.boolean() }),
+  meta: z.object({ title: z.string().nullable(), created_at: z.number().int().nonnegative(), updated_at: z.number().int().nonnegative(), archived: z.boolean() }),
 })).max(PAGE_SIZE), has_more: z.boolean(), next_page_token: z.string().min(1).max(4096).nullable() });
 const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE), has_more: z.boolean() });
 export class KimiLaunchBlocked extends ActivationError {}

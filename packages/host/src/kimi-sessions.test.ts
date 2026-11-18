@@ -22,11 +22,12 @@ function fixture(handler: (path: string, init?: { method?: string; body?: unknow
 describe("KIMI-02 native session identity", () => {
   it("keeps names independent of identity and propagates an opaque cursor without interpreting it", async () => {
     const { sessions, request } = fixture(path => new URL(path, "http://localhost").searchParams.has("page_token")
-      ? { items: [item(other)], has_more: false, next_page_token: null }
+      ? { items: [{ ...item(other), meta: { ...item(other).meta, title: null } }], has_more: false, next_page_token: null }
       : { items: [item(id)], has_more: true, next_page_token: "opaque/+?=" });
     const result = await sessions.catalog(false);
     expect(result.complete).toBe(true);
     expect(result.sessions.map(value => value.sessionId)).toEqual([sessions.publicId(id), sessions.publicId(other)]);
+    expect(result.sessions[1]?.name).toBeUndefined();
     expect(request.mock.calls[1]?.[0]).toContain("page_token=opaque%2F%2B%3F%3D");
     expect(await kimiSourceKey(root)).toEqual(await kimiSourceKey(root));
     expect(sessions.nativeId(sessions.publicId(id))).toBe(id);
