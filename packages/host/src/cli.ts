@@ -31,6 +31,7 @@ import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
+import { KimiWebConnector } from "./kimi-web-client.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 
@@ -45,6 +46,7 @@ const USAGE = `orbis —— 电脑侧的 Host 进程
   --state-dir <路径>             覆盖状态目录（默认 ~/.orbis）
   --codex                        host 子命令：预启动 Codex 终端后端（需已全局安装 codex-cli）
   --dsh                          host 子命令：预启动 DeepSeek Harness；App 启动会话时也可按需启动
+  --kimi-code                    host 子命令：连接已由用户启动的本机 Kimi Code Web 服务（只连接，不启停）
   --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
                                  免得把真实会话列进来；默认 ~/.pi/agent/sessions）
   --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
@@ -63,6 +65,7 @@ async function main(): Promise<void> {
       "print-payload": { type: "boolean" },
       codex: { type: "boolean" },
       dsh: { type: "boolean" },
+      "kimi-code": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
@@ -75,7 +78,7 @@ async function main(): Promise<void> {
       await runPair(stateDir, parsed.values["print-payload"] === true);
       return;
     case "host":
-      await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true, parsed.values["sessions-root"]);
+      await runHost(stateDir, parsed.values.codex === true, parsed.values.dsh === true, parsed.values["sessions-root"], parsed.values["kimi-code"] === true);
       return;
     case "devices":
       await runDevices(rest[0], rest[1], stateDir);
@@ -92,11 +95,16 @@ async function runHost(
   codexEnabled: boolean,
   dshEnabled: boolean,
   sessionsRoot: string | undefined,
+  kimiCodeFlag = false,
 ): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
   const config = await loadHostConfig({ stateDir });
 
   let service: HostService | undefined;
+  const kimiConnector = config.kimiCodeEnabled || kimiCodeFlag
+    ? new KimiWebConnector({ homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
+      onStatus: status => console.log(`[kimi-code] ${status.state}`) })
+    : undefined;
   // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。
   const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
   const providers = new ProviderManager(stateDir, undefined, {
@@ -216,6 +224,8 @@ async function runHost(
     });
 
     await service.start();
+    // Discovery and WebSocket handshake are intentionally detached from Host startup.
+    kimiConnector?.start();
     await codexDesktopLifecycle?.probe().catch(error => console.log(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
     dshDesktopLifecycle.watch();
     console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
@@ -232,7 +242,7 @@ async function runHost(
 
     await waitForSignal();
   } finally {
-    try { await service?.stop(); }
+    try { await kimiConnector?.stop(); await service?.stop(); }
     finally {
       dshDesktopLifecycle.stop();
       await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop(), dshDesktopRuntime?.stop()]);

@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-Status: proposed（已完成原生服务探针；Orbis 适配、构建、部署和用户验收未执行）
+Status: accepted（KIMI-01 Host 发现与认证通道已实现并通过定向自动验证；目录/交互/移动端及发布验收仍按票据待完成）
 
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0067](0067-host-app-field-transport-rules.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0081](0081-host-startup-blocking-and-feedback.md)。
 
@@ -20,9 +20,9 @@ Status: proposed（已完成原生服务探针；Orbis 适配、构建、部署�
 
 ### 1. Host 只连接已经运行、由用户管理的本机服务
 
-Host 本地启用后，按配置的 Kimi 数据根和可选显式回环地址选择一个服务。默认数据根沿用 `KIMI_CODE_HOME` / `~/.kimi-code`。版本化读取[官方实例登记][instances]，只使用它提供候选端口和身份；对有效且未过期的登记，仍需在认证后的 `/api/v1/meta` 核对 `server_id`、能力和受支持的 API 契约。只接受字面回环地址，拒绝重定向、无认证实例和不匹配的身份；找不到或有多个匹配而未指定时不自动选。诊断区分未启用、未运行、未授权、歧义和版本不支持，不把探针失败写成「没有会话」。
+Host 本地启用后，按配置的 Kimi 数据根和可选显式回环地址选择一个服务。默认数据根沿用 `KIMI_CODE_HOME` / `~/.kimi-code`。版本化读取[官方实例登记][instances]，只使用它提供候选端口和身份；对有效且未过期的登记，仍需在认证后的 `/api/v1/meta` 核对产品版本、能力、启动时间和受支持的 API 契约。Kimi 2.6.3 的登记 `server_id` 与 `/meta.server_id` 是两个不同作用域、不能直接比较；使用登记版本与 `/meta.server_version` 精确相同且启动时间相差不超过 10 秒来绑定本次监听，两个不透明 ID 分别保留，不互相充当会话身份。只接受字面回环地址，拒绝重定向、无认证实例和不匹配的启动身份；找不到或有多个匹配而未指定时不自动选。诊断区分未启用、未运行、未授权、歧义和版本不支持，不把探针失败写成「没有会话」。
 
-REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避。Host 停止、取消接入或断线只解除订阅、关闭自己的连接；不启动第二个 `kimi web`，不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版要求用户先用 Kimi 官方方式安装、登录（或配置模型）并开启本机 Web 服务。
+REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避；默认禁用，用户通过 `orbis host --kimi-code` 或 `ORBIS_KIMI_CODE_ENABLED=1` 明确启用，可用 `KIMI_CODE_HOME` 和 `ORBIS_KIMI_CODE_ENDPOINT` 指定数据根和唯一实例。Host 停止、取消接入或断线只解除订阅、关闭自己的连接；不启动第二个 `kimi web`，不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版要求用户先用 Kimi 官方方式安装、登录（或配置模型）并开启本机 Web 服务。
 
 ### 2. 目录、激活与会话身份
 
@@ -62,7 +62,8 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 
 - 在 macOS arm64 / Node `22.23.2` 下，以独立 `KIMI_CODE_HOME`、隔离目录和本机合成模型启动真实 Kimi Code `2.6.3`。已观察：健康探针与认证边界、OpenAPI / AsyncAPI 可读取、新建与查回 metadata、两个原生 WS 订阅者收到同一回合、相同 `prompt_id` 重提交只调用一次合成模型、REST 历史与 WS 重订阅的条目身份一致、归档 / 恢复。无生产账号、会话、外部模型或 Orbis Relay 参与。
 - 第一轮探针将结束状态错断言为 `completed`，实测为 `status: ended`、`outcome: completed`。双订阅探针第一次在一个 WS 尚未关闭时，服务未在 4 秒内退出；关闭两个测试订阅后复测通过。保留首轮和复核记录。证据在 [`.artifacts/kimi-code-adaptation-20261119/verification.json`](../../.artifacts/kimi-code-adaptation-20261119/verification.json)（本机）。
-- 适配实现、双端构建、已发布 App / Host / Relay 对照、其他平台、真实网页 UI、真实问答及用户安装验收均未执行。候选包验收走共享 QA；固定版本、安装方法、独立环境与结果在对应 ticket 记录，不以本探针充当发布或用户验收。
+- KIMI-01 的 TypeScript 客户端以隔离 `KIMI_CODE_HOME` 启动实际 Kimi Code 2.6.3，确认凭据权限、认证 `/meta`、REST / WS schema SHA-256 和字面回环 WS 连通。实测发现登记 ULID 与 `/meta.server_id` 不同；实现依据精确产品版本及 10 秒内启动时间关联，并各自保留 ID。客户端只关闭自己的 WebSocket，不调用 shutdown；测试服务由本次验证单独启动并清理。
+- KIMI-01 的 Host 发现、认证、契约核验、有限重连与隔离停止已实现；目录、双端构建、已发布 App / Host / Relay 对照、其他平台、真实网页 UI、真实问答及用户安装验收仍未执行。候选包验收走共享 QA；固定版本、安装方法、独立环境与结果在对应 ticket 记录，不以本探针充当发布或用户验收。
 
 [release]: https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.6.3
 [api]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/server-api.md

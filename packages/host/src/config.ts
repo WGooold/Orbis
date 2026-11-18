@@ -30,6 +30,10 @@ export type HostConfig = {
    * LAN 监听端口。缺省时用 `DEFAULT_LAN_PORT`（见 `lan-server.ts` 为什么要固定）。
    */
   lanPort: number | undefined;
+  /** Kimi's user-managed Web service is opt-in and never launched by Orbis. */
+  kimiCodeEnabled: boolean;
+  kimiCodeHome: string;
+  kimiCodeEndpoint: string | undefined;
 };
 
 export type LoadHostConfigOptions = {
@@ -52,6 +56,9 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   const runtimeCredential = configuredCredential ?? stringField(agentConfig, "runtimeCredential");
   const adminToken = orbisEnvironment(env, "ADMIN_TOKEN") ?? stringField(hostConfig, "adminToken");
   const lanPort = numberField(orbisEnvironment(env, "LAN_PORT")) ?? numberField(hostConfig?.["lanPort"]);
+  const kimiCodeEnabled = env["ORBIS_KIMI_CODE_ENABLED"] === "1" || hostConfig?.["kimiCodeEnabled"] === true;
+  const kimiCodeHome = env["KIMI_CODE_HOME"] || stringField(hostConfig, "kimiCodeHome") || join(homedir(), ".kimi-code");
+  const kimiCodeEndpoint = env["ORBIS_KIMI_CODE_ENDPOINT"] || stringField(hostConfig, "kimiCodeEndpoint");
 
   if (relayUrl === undefined) {
     throw new Error(
@@ -67,7 +74,7 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   const relayTransport = relayTransportMode(env["ORBIS_RELAY_TRANSPORT"] ?? hostConfig?.["relayTransport"]);
   const historyMode = relayHistoryMode(env["ORBIS_RELAY_HISTORY_MODE"] ?? hostConfig?.["relayHistoryMode"]);
 
-  return { relayUrl: relayUrl.replace(/\/$/, ""), relayTransport, relayHistoryMode: historyMode, runtimeCredential, adminToken, lanPort };
+  return { relayUrl: relayUrl.replace(/\/$/, ""), relayTransport, relayHistoryMode: historyMode, runtimeCredential, adminToken, lanPort, kimiCodeEnabled, kimiCodeHome, kimiCodeEndpoint };
 }
 
 /**
