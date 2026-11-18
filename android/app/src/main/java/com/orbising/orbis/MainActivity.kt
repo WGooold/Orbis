@@ -2517,6 +2517,7 @@ internal fun ChatScreen(
                             runtimeId = runtimeId,
                             message = item.message,
                             pending = state.pendingSends[item.message.messageId]?.state,
+                            submissionConfirmed = state.pendingSends[item.message.messageId]?.submissionConfirmed == true,
                             uploads = state.pendingSends[item.message.messageId]?.uploadIds.orEmpty().mapNotNull(state.uploads::get),
                             canResend = state.e2eReady && runtime != null,
                             onPendingAction = { action ->
@@ -3762,6 +3763,7 @@ internal fun UserMessageCard(
     rewindEnabled: Boolean = false,
     /** ADR-0049：本地待确认发送的状态；权威行为 null。 */
     pending: PendingSendState? = null,
+    submissionConfirmed: Boolean = false,
     /** ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。 */
     uploads: List<UploadTask> = emptyList(),
     canResend: Boolean = false,
@@ -3790,7 +3792,7 @@ internal fun UserMessageCard(
                 }
             }
             }
-            if (pending != null) {
+            if (pending != null && shouldShowPendingStatus(pending, submissionConfirmed)) {
                 PendingSendStatus(pending, canResend, onPendingAction)
             }
         }

@@ -29,12 +29,14 @@ class OptimisticActionsInstrumentedTest {
 
     @Test fun pendingSendShowsItsStateInPlaceOfMessageActions() {
         val pending = mutableStateOf<PendingSendState?>(PendingSendState.Sending)
+        val submissionConfirmed = mutableStateOf(false)
         val actions = mutableListOf<PendingSendAction>()
         compose.setContent {
             OrbisTheme {
                 UserMessageCard("runtime", ChatMessage("app-1", "user", listOf(RemoteContent("text", "乐观发送")), 1),
                     downloads = emptyMap(), downloadArtifact = {}, downloadFile = {},
-                    pending = pending.value, canResend = true, onPendingAction = { actions += it })
+                    pending = pending.value, submissionConfirmed = submissionConfirmed.value,
+                    canResend = true, onPendingAction = { actions += it })
             }
         }
         compose.onNodeWithText("乐观发送").assertIsDisplayed()
@@ -44,6 +46,12 @@ class OptimisticActionsInstrumentedTest {
         compose.runOnIdle { pending.value = PendingSendState.Accepted }
         compose.onNodeWithText("电脑已接收，等待处理").assertIsDisplayed()
         compose.onNodeWithText("发送中").assertDoesNotExist()
+        compose.onNodeWithContentDescription("重新发送").assertDoesNotExist()
+
+        // Native success clears only the waiting label; retain the local bubble and pending protections.
+        compose.runOnIdle { submissionConfirmed.value = true }
+        compose.onNodeWithTag("pending-send-status").assertDoesNotExist()
+        compose.onNodeWithText("乐观发送").assertIsDisplayed()
         compose.onNodeWithContentDescription("重新发送").assertDoesNotExist()
 
         compose.runOnIdle { pending.value = PendingSendState.Failed("会话正在运行，请选择插入或完成后发送") }

@@ -94,6 +94,7 @@ struct ChatMessageRow: View, Equatable {
     var rewindEnabled = false
     /// ADR-0049：本地待确认发送的状态；权威行为 nil。
     var pending: PendingSend.State? = nil
+    var submissionConfirmed = false
     /// ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。
     var uploads: [FileTransfer] = []
     var canResend = false
@@ -104,7 +105,8 @@ struct ChatMessageRow: View, Equatable {
             lhs.timings == rhs.timings && lhs.changeAnchors == rhs.changeAnchors && lhs.changes === rhs.changes &&
             lhs.readContext == rhs.readContext &&
             lhs.streamingMessageIds == rhs.streamingMessageIds && lhs.rewindOption == rhs.rewindOption &&
-            lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending && lhs.uploads == rhs.uploads &&
+            lhs.rewindEnabled == rhs.rewindEnabled && lhs.pending == rhs.pending &&
+            lhs.submissionConfirmed == rhs.submissionConfirmed && lhs.uploads == rhs.uploads &&
             lhs.canResend == rhs.canResend
     }
     var body: some View {
@@ -152,7 +154,7 @@ struct ChatMessageRow: View, Equatable {
                                                   rewindEnabled: rewindEnabled, rewind: messageRewind))
                 if !row.isUser { Spacer(minLength: 8) }
             }
-            if row.isUser, let pending {
+            if row.isUser, let pending, !(pending == .accepted && submissionConfirmed) {
                 PendingSendStatus(state: pending, canResend: canResend, rowId: row.id, onAction: onPending)
             }
         }.modifier(ChatAssistantAccessibility(enabled: !row.isUser, id: row.id) { UIPasteboard.general.string = copyText })

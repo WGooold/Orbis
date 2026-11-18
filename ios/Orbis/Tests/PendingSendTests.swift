@@ -133,8 +133,18 @@ struct PendingSendTests {
         #expect(outbox.item("claude")?.state == .accepted)
         outbox.commandResult("c-claude", ok: true, status: "success", error: nil, now: start.addingTimeInterval(122))
         #expect(outbox.item("claude")?.submissionConfirmed == true)
-        reconcile(&outbox, revision: 4, at: 123, present: ["claude"])
+        // A late Host receipt must not restore the waiting label or remove the local bubble.
+        outbox.commandResult("c-claude", ok: true, status: "pending", error: nil, now: start.addingTimeInterval(123))
+        #expect(outbox.item("claude")?.submissionConfirmed == true)
+        #expect(outbox.item("claude")?.state == .accepted)
+        #expect(outbox.chatRows(sessionId: "s1").map(\.messageId) == ["claude"])
+        let source = [message("native-user", role: "user", client: "claude")]
+        outbox.reconcile(sessionId: "s1", status: "running", queue: [], revision: 4, connected: true,
+                         now: start.addingTimeInterval(124)) { id in
+            source.contains { $0.messageId == id || $0.clientMessageId == id }
+        }
         #expect(outbox.isEmpty)
+        #expect(PendingSendOutbox.merge(source, pending: outbox.chatRows(sessionId: "s1")).map(\.messageId) == ["native-user"])
     }
 
     @Test func acceptedRowOnAnIdleRuntimeIsCheckedAfterTheGracePeriod() {

@@ -70,6 +70,7 @@ private struct ChatNativeMessageInputs: Equatable {
     let rewind: RuntimeOption?
     let rewindEnabled: Bool
     let pending: PendingSend.State?
+    let submissionConfirmed: Bool
     let uploads: [FileTransfer]
     let context: ChatReadContext
     let changes: ObjectIdentifier
@@ -265,13 +266,14 @@ struct ChatTranscriptView: View, Equatable {
     private func messageInputs(_ row: ChatRow, state: ChatTranscriptState,
                                context: ChatReadContext, streaming: Set<String>) -> ChatNativeMessageInputs {
         let transcript = state.transcript
+        let pending = row.isUser ? state.pending.item(row.messages.first?.messageId) : nil
         return ChatNativeMessageInputs(revision: row.contentRevision, kind: state.kind,
             toolResults: transcript.toolResultsByRow[row.id] ?? [:], timings: transcript.timingsByRow[row.id] ?? [],
             changeAnchors: transcript.changeAnchorsByRow[row.id] ?? [],
             streaming: streaming.isEmpty ? [] : streaming.intersection(row.messages.map(\.messageId)),
             rewind: row.isUser ? state.rewind[row.id] : nil,
             rewindEnabled: row.isUser && state.canSend && state.status == "idle" && state.pendingActions.isEmpty,
-            pending: row.isUser ? state.pending.item(row.messages.first?.messageId)?.state : nil,
+            pending: pending?.state, submissionConfirmed: pending?.submissionConfirmed ?? false,
             uploads: row.isUser ? pendingUploads(row.messages.first?.messageId, state: state) : [],
             context: context, changes: ObjectIdentifier(target.owner.turnFileChanges), canSend: row.isUser && state.canSend)
     }
@@ -282,7 +284,8 @@ struct ChatTranscriptView: View, Equatable {
             changes: target.owner.turnFileChanges, readContext: inputs.context,
             changeAnchors: inputs.changeAnchors, streamingMessageIds: inputs.streaming, replyArrivals: viewport.arrivals,
             rewindOption: inputs.rewind, rewindEnabled: inputs.rewindEnabled,
-            pending: inputs.pending, uploads: inputs.uploads, canResend: inputs.canSend,
+            pending: inputs.pending, submissionConfirmed: inputs.submissionConfirmed,
+            uploads: inputs.uploads, canResend: inputs.canSend,
             onRewind: { option in
                 if actions.isCurrent, actions.moveHistory(to: option, fallbackText: row.messages.first?.text) {
                     LiveActivityCoordinator.shared.cancelQueuedOpen()

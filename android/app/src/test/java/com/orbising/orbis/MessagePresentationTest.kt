@@ -36,6 +36,20 @@ class MessagePresentationTest {
     }
 
     @Test
+    fun `native submission clears waiting before source materialization without losing the bubble`() {
+        val send = PendingSend("app-1", "command", "session", "optimistic input", emptyList(), null, 0, null)
+        var pending = mapOf(send.messageId to send)
+            .withCommandResult("command", CommandResult(true, "pending"), 1)
+        assertTrue(shouldShowPendingStatus(pending.getValue("app-1").state, pending.getValue("app-1").submissionConfirmed))
+
+        pending = pending.withCommandResult("command", CommandResult(true, "success"), 2)
+            .withCommandResult("command", CommandResult(true, "pending"), 3)
+        val confirmed = pending.getValue("app-1")
+        assertFalse(shouldShowPendingStatus(confirmed.state, confirmed.submissionConfirmed))
+        assertEquals(listOf("app-1"), mergePendingSends(emptyList(), pending.chatRows("session")).map(ChatMessage::messageId))
+    }
+
+    @Test
     fun `collapsed activity summary is one compact readable line`() {
         val summary = compactActivitySummary(
             """

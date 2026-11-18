@@ -9,6 +9,10 @@ internal enum class ContentPresentation(val startsCollapsed: Boolean) {
 internal const val CHAT_CARD_PROSE_LIMIT = 4
 internal const val CHAT_TOOL_PAGE_SIZE = 8
 
+/** The optimistic row remains owned locally after native success, but no longer needs a waiting label. */
+internal fun shouldShowPendingStatus(state: PendingSendState?, submissionConfirmed: Boolean): Boolean =
+    state != null && (state != PendingSendState.Accepted || !submissionConfirmed)
+
 internal fun contentPresentation(role: String, contentType: String): ContentPresentation = when {
     role == "tool" -> ContentPresentation.TOOL
     contentType == "thinking" -> ContentPresentation.THINKING

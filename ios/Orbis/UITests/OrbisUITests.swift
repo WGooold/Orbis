@@ -2815,12 +2815,22 @@ final class OrbisUITests: XCTestCase {
         let bubble = app.staticTexts[text]
         XCTAssertTrue(bubble.waitForExistence(timeout: 1))
         let sending = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "pending-status-")).firstMatch
-        XCTAssertTrue(sending.waitForExistence(timeout: 1))
-        XCTAssertTrue(app.staticTexts["电脑已接收，等待处理"].waitForExistence(timeout: 2))
-        XCTAssertEqual((composer.value as? String)?.contains(text), false)
-        capture("optimistic-send-pending", app: app)
+        // The fixture returns native success before committing the source row. The local
+        // bubble must survive that interval without continuing to claim it is waiting.
+        let localId = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "user-message-")).allElementsBoundByIndex
+            .first { $0.label.contains(text) }?.identifier
+        let local = localId.map { app.descendants(matching: .any)[$0].firstMatch }
+        XCTAssertNotNil(local)
         let settled = NSPredicate(format: "exists == false")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: sending)], timeout: 8), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: sending)], timeout: 2), .completed)
+        XCTAssertFalse(app.staticTexts["电脑已接收，等待处理"].exists)
+        XCTAssertTrue(local?.exists == true)
+        XCTAssertFalse(app.buttons["重新发送"].exists)
+        XCTAssertEqual((composer.value as? String)?.contains(text), false)
+        capture("optimistic-send-submitted", app: app)
+        if let local {
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: settled, object: local)], timeout: 8), .completed)
+        }
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
         // The remaining bubble is the canonical row, whose id is the Host entry id rather than the App id.
         bubble.press(forDuration: 0.6)
