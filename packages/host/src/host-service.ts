@@ -90,6 +90,8 @@ import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import type { KimiRuntime } from "./kimi-runtime.js";
+import { KimiLaunchBlocked } from "./kimi-sessions.js";
 import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
@@ -249,6 +251,8 @@ export type HostServiceOptions = {
   dshLaunchable?: boolean;
   /** DeepSeek Harness Desktop (ADR-0076): a separate entry with its own kind, namespace and connection. */
   dshDesktopRuntime?: DshRuntime;
+  /** Added to the device backend inventory only after KIMI-06. */
+  kimiCodeRuntime?: KimiRuntime;
   /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
   ensureDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
   /** Reconnect only to the Desktop instance Orbis launched; automatic recovery never opens Desktop. */
@@ -1671,6 +1675,7 @@ export class HostService {
 
     await relay.start();
     this.#modelLifecycle = "running";
+    this.#options.kimiCodeRuntime?.start();
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
@@ -1699,6 +1704,7 @@ export class HostService {
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
+    await this.#options.kimiCodeRuntime?.stop();
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
@@ -2385,11 +2391,13 @@ export class HostService {
       }
       const started = Date.now();
       try {
-        const [active, archived] = await Promise.all([backend.catalog(), backend.catalog(true)]);
-        const catalog = [...new Map([...active, ...archived].map((entry) => [entry.sessionId, entry])).values()];
+        const load = (archived: boolean) => backend.catalogCoverage?.(archived)
+          ?? backend.catalog(archived).then(sessions => ({ sessions, complete: true }));
+        const [active, archived] = await Promise.all([load(false), load(true)]);
+        const catalog = [...new Map([...active.sessions, ...archived.sessions].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
         sessions.push(...catalog);
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: true, elapsedMs: Date.now() - started });
+        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete, elapsedMs: Date.now() - started });
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2512,7 +2520,8 @@ export class HostService {
       await sendLaunch(message.launchId);
       try {
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, launchId: message.launchId, spawnMode: message.spawnMode ?? "tui", configuration: message.values,
+          deviceId, launchId: message.launchId, spawnMode: message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
+          ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
             await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "configuring",
@@ -2526,7 +2535,7 @@ export class HostService {
       } catch (error) {
         // Native create may already have happened. Unknown is retained and never automatically re-created.
         await this.#sessionConfigurations.update(deviceId, message.launchId, {
-          phase: error instanceof ClaudeStartupBlocked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
+          phase: error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
       }
       await sendLaunch(message.launchId);
     } catch (error) {
@@ -2552,13 +2561,21 @@ export class HostService {
   async #recoverSessionLaunch(deviceId: string, launchId: string): Promise<void> {
     const prior = await this.#sessionConfigurations.result(deviceId, launchId, launchId);
     if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
-      const backend = await this.#configuredBackend(prior.agentKind);
-      const expectedSessionId = await this.#sessionConfigurations.expectedSessionId(deviceId, launchId);
-      // Legacy unknown records without a reserved identity cannot safely adopt an
-      // arbitrary hello: the native process may already have switched sessions.
-      const found = expectedSessionId === undefined ? undefined : backend.findLaunch?.(launchId, expectedSessionId);
-      if (found?.sessionId) await this.#sessionConfigurations.update(deviceId, launchId,
-        { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
+      if (prior.agentKind === "kimiCode") {
+        try {
+          const backend = await this.#configuredBackend(prior.agentKind);
+          const launch = await this.#sessionConfigurations.launchMarker(deviceId, launchId);
+          const sessionId = launch && await backend.recoverLaunch?.(launch.marker, launch.cwd, launch.binding);
+          if (sessionId) await this.#sessionConfigurations.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
+        } catch { /* Native absence/unavailability is not permission to repeat the create. */ }
+      } else {
+        const backend = await this.#configuredBackend(prior.agentKind);
+        const expectedSessionId = await this.#sessionConfigurations.expectedSessionId(deviceId, launchId);
+        // Legacy unknown records without a reserved identity cannot safely adopt an arbitrary hello.
+        const found = expectedSessionId === undefined ? undefined : backend.findLaunch?.(launchId, expectedSessionId);
+        if (found?.sessionId) await this.#sessionConfigurations.update(deviceId, launchId,
+          { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
+      }
     }
     const record = await this.#sessionConfigurations.recover(deviceId, launchId);
     if (!record?.sessionId) return;

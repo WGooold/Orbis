@@ -48,6 +48,8 @@ export type AgentActivateContext = {
   launchId?: string;
   /** Claude's preallocated native identity, durably recorded before terminal launch. */
   expectedSessionId?: string;
+  /** Opaque marker reserved in the launch ledger before Kimi creates a session. */
+  nativeLaunchMarker?: string;
   spawnMode?: SpawnMode;
   configuration?: SessionConfigurationValues;
   onCreated?: (activation: BackendActivation) => Promise<void>;
@@ -68,10 +70,12 @@ export interface AgentBackend {
   syncNotifications?(runtimeId: string): void;
   /** 本后端名下的会话目录（§7.5）。失败抛错，由上层聚合（单后端失败不拖垮整个列表）。 */
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
+  catalogCoverage?(archived?: boolean): Promise<{ sessions: AgentSessionSummary[]; complete: boolean }>;
   /** Effective configured provider, independent of any open session. Unknown on failure. */
   currentProvider?(): Promise<string | undefined>;
   sessionConfiguration?(cwd: string): Promise<SessionConfigurationCatalog>;
   findLaunch?(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined;
+  recoverLaunch?(marker: string, cwd: string, binding: string): Promise<string | undefined>;
   setArchived(sessionId: string, archived: boolean): Promise<void>;
   /**
    * 激活一个会话。不归本后端的会话抛 `ActivationError("session_not_found")`，

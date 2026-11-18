@@ -31,7 +31,7 @@ import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
-import { KimiWebConnector } from "./kimi-web-client.js";
+import { KimiRuntime } from "./kimi-runtime.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 
@@ -101,9 +101,9 @@ async function runHost(
   const config = await loadHostConfig({ stateDir });
 
   let service: HostService | undefined;
-  const kimiConnector = config.kimiCodeEnabled || kimiCodeFlag
-    ? new KimiWebConnector({ homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
-      onStatus: status => console.log(`[kimi-code] ${status.state}`) })
+  const kimiRuntime = config.kimiCodeEnabled || kimiCodeFlag
+    ? new KimiRuntime({ homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
+      log: line => console.log(`[kimi-code] ${line}`) })
     : undefined;
   // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。
   const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
@@ -180,6 +180,7 @@ async function runHost(
 
   try {
     service = await HostService.create({
+      ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),
       providers,
       relayUrl: config.relayUrl,
       relayTransport: config.relayTransport,
@@ -224,8 +225,6 @@ async function runHost(
     });
 
     await service.start();
-    // Discovery and WebSocket handshake are intentionally detached from Host startup.
-    kimiConnector?.start();
     await codexDesktopLifecycle?.probe().catch(error => console.log(`[codex-desktop] 探测失败：${error instanceof Error ? error.message : String(error)}`));
     dshDesktopLifecycle.watch();
     console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
@@ -242,7 +241,7 @@ async function runHost(
 
     await waitForSignal();
   } finally {
-    try { await kimiConnector?.stop(); await service?.stop(); }
+    try { await service?.stop(); }
     finally {
       dshDesktopLifecycle.stop();
       await Promise.all([codexRuntime ? codexRuntime.stop() : codexServer?.stop(), codexDesktopLifecycle?.stop(), dshRuntime?.stop(), dshDesktopRuntime?.stop()]);

@@ -56,6 +56,10 @@ export type KimiWebClientOptions = {
   requestTimeoutMs?: number;
 };
 
+export class KimiBusinessError extends Error {
+  constructor(readonly code: number) { super(`Kimi Code 请求未完成（业务码 ${code}）`); }
+}
+
 export class KimiWebError extends Error {
   constructor(readonly reason: "not_running" | "ambiguous" | "unauthorized" | "unsupported" | "unsafe" | "unavailable", message: string) {
     super(message);
@@ -196,7 +200,7 @@ export class KimiWebClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #timeoutMs: number;
   #socket: WebSocket | undefined;
-  #closed = false;
+  readonly #lifetime = new AbortController();
 
   private constructor(options: { endpoint: URL; instance: KimiInstance; meta: KimiServerMeta; token: string; fetch: typeof globalThis.fetch; timeoutMs: number }) {
     this.endpoint = options.endpoint;
@@ -278,7 +282,7 @@ export class KimiWebClient {
 
   /** Authenticated JSON request. Redirects, credentials in output, and unbounded bodies are excluded. */
   async requestJson<T>(path: string, init: { method?: string; body?: unknown; signal?: AbortSignal; maxBytes?: number } = {}): Promise<T> {
-    if (this.#closed) throw new KimiWebError("unavailable", "Kimi Code 连接已关闭");
+    if (this.#lifetime.signal.aborted) throw new KimiWebError("unavailable", "Kimi Code 连接已关闭");
     const relative = path.startsWith("/") ? path : `/${path}`;
     if (!relative.startsWith("/api/v1/") && !relative.startsWith("/api/v2/")) throw new KimiWebError("unsafe", "Kimi Code 请求路径无效");
     let target: URL;
@@ -288,42 +292,40 @@ export class KimiWebClient {
     if (target.origin !== this.endpoint.origin || /[\\]/u.test(decodedPath)
       || decodedPath.split("/").some(segment => segment === "." || segment === "..")
       || /(?:^|\/|:)(?:shutdown|takeover|delete)(?:$|:|\/)/iu.test(decodedPath)
-      || /^\/api\/v1\/(?:oauth|auth|remote-control)(?:\/|$)/iu.test(decodedPath)) {
+      || /^\/api\/v1\/(?:oauth|remote-control)(?:\/|$)/iu.test(decodedPath)) {
       throw new KimiWebError("unsafe", "该 Kimi Code 操作不在 Orbis 接入权限内");
     }
-    const controller = new AbortController();
-    const abort = () => controller.abort(init.signal?.reason);
-    init.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const signal = AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(this.#timeoutMs), ...(init.signal ? [init.signal] : [])]);
     try {
       const response = await this.#fetch(target, {
         method: init.method ?? "GET",
         headers: { authorization: `Bearer ${this.#token}`, accept: "application/json", ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-        signal: controller.signal,
+        signal,
         redirect: "manual",
       });
       if (response.status >= 300 && response.status < 400) throw new KimiWebError("unsafe", "Kimi Code 不允许 HTTP 重定向");
-      if (response.status === 401 || response.status === 403) throw new KimiWebError("unauthorized", "Kimi Code 本机 Web 凭据已失效");
+      if (response.status === 401 || response.status === 403) {
+        this.#socket?.terminate();
+        throw new KimiWebError("unauthorized", "Kimi Code 本机 Web 凭据已失效");
+      }
       if (!response.ok) throw new KimiWebError("unavailable", `Kimi Code 请求失败（HTTP ${response.status}）`);
       const bytes = await boundedBody(response, init.maxBytes ?? MAX_REST_BYTES);
       if (response.status === 204 || bytes.byteLength === 0) return undefined as T;
       const envelope = JSON.parse(new TextDecoder().decode(bytes)) as { code?: unknown; msg?: unknown; data?: T };
-      if (envelope.code !== 0) throw new KimiWebError("unavailable", `Kimi Code 请求未完成（业务码 ${String(envelope.code)}）`);
+      if (typeof envelope?.code !== "number" || !Number.isSafeInteger(envelope.code)) throw new KimiWebError("unsupported", "Kimi Code 响应格式无效");
+      if (envelope.code !== 0) throw new KimiBusinessError(envelope.code);
       return envelope.data as T;
     } catch (error) {
-      if (error instanceof KimiWebError) throw error;
+      if (error instanceof KimiWebError || error instanceof KimiBusinessError) throw error;
       if (error instanceof SyntaxError) throw new KimiWebError("unsupported", "Kimi Code 响应 JSON 无效");
       throw new KimiWebError("unavailable", "Kimi Code 本机请求中断或超时");
-    } finally {
-      clearTimeout(timer);
-      init.signal?.removeEventListener("abort", abort);
     }
   }
 
   /** Opens an authenticated subscription; close() only closes this client's socket. */
   openSocket(onFrame: (frame: Record<string, unknown>) => void, onClose: (reason: string) => void): WebSocket {
-    if (this.#closed) throw new KimiWebError("unavailable", "Kimi Code 连接已关闭");
+    if (this.#lifetime.signal.aborted) throw new KimiWebError("unavailable", "Kimi Code 连接已关闭");
     if (this.#socket && this.#socket.readyState < WebSocket.CLOSING) throw new Error("Kimi Code WebSocket already open");
     const url = new URL("/api/v1/ws", this.endpoint);
     url.protocol = "ws:";
@@ -345,17 +347,17 @@ export class KimiWebClient {
       if (value.type === "ping") { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "pong" })); return; }
       onFrame(value);
     });
-    socket.once("close", (code, reason) => {
+    socket.once("close", code => {
       clearInterval(watchdog);
       if (this.#socket === socket) this.#socket = undefined;
-      if (!this.#closed) onClose(`连接关闭（${code}${reason.length ? `: ${reason.toString("utf8").slice(0, 120)}` : ""}）`);
+      if (!this.#lifetime.signal.aborted) onClose(`Kimi Code 连接关闭（${code}）`);
     });
     socket.once("error", () => { /* close is the single lifecycle notification */ });
     return socket;
   }
 
   close(): void {
-    this.#closed = true;
+    this.#lifetime.abort();
     const socket = this.#socket;
     this.#socket = undefined;
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "Orbis disconnected");
