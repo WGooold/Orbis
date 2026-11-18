@@ -48,11 +48,11 @@ Hermes 的 session、历史和 turn 由所选 Gateway profile 持有；CLI、桌
 
 | Ticket | 范围 | 提交边界 |
 | --- | --- | --- |
-| HERMES-01 | TUI Gateway wire contract、attach/bootstrap、`runtime.describe` capability 解析与错误类型 | Gateway transport 与纯单元测试，不触及 AgentKind / UI。 |
-| HERMES-02 | Orbis-compatible Hermes AgentBackend：session catalog、new/resume、prompt、stream/history、cancel、native result state | backend 纯逻辑及协议 fixture 测试。 |
-| HERMES-03 | Orbis 已支持的工具事件、交互/审批、模型/会话配置映射 | 只映射现有 Orbis command/event/config 语义，补充对应 Host 测试。 |
-| HERMES-04 | Host 生命周期、安装/可用性、launchable/supported Agent 能力与持久来源身份 | 新枚举/feature 先过新旧协议兼容测试。 |
-| HERMES-05 | Android、iOS、Windows Host 的 Hermes 标识、筛选、Composer/状态与已有 Agent UI 路径 | 对齐既有交互基线并补平台定向测试。 |
+| HERMES-01 | TUI Gateway JSON-RPC/WebSocket transport：request correlation、events、server→client request 与错误/关闭语义 | 纯 transport 与本地 WebSocket fixture；不触及 Gateway 身份、AgentBackend 或 UI。 |
+| HERMES-02 | Hermes CLI 发现、Gateway ensure/attach、凭据 ticket 与 profile 身份绑定、`runtime.describe` 能力协商 | 固定已验证版本的 bootstrap contract 与 isolated fixture；不得连接用户 Gateway 做测试。 |
+| HERMES-03 | Orbis-compatible Hermes AgentBackend：session catalog、new/resume、prompt、stream/history、cancel、native result state | backend 纯逻辑及 Gateway RPC fixture 测试。 |
+| HERMES-04 | Orbis 已支持的工具事件、交互/审批、模型/会话配置映射 | 只映射现有 Orbis command/event/config 语义，补充对应 Host 测试。 |
+| HERMES-05 | Host 生命周期、安装/可用性、launchable/supported Agent 能力、AgentKind 与跨端 Hermes UI | 新枚举/feature 先过新旧协议兼容测试；平台 UI 按现有 Agent 路径接入。 |
 | HERMES-06 | 端到端兼容、打包/安装验证、使用说明与 ADR 状态更新 | 自动验证、用户安装验收、发布状态分别记录。 |
 
 Ticket 合并前分别审查并提交；没有可配置 issue tracker 的工作树中，`HERMES-01` 等 ID 用于本地 ticket / commit 关联，不声称已在远程看板登记。
