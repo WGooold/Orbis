@@ -96,6 +96,7 @@ import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
 import type { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_KIND, OPENCODE_KIND, hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
@@ -235,6 +236,8 @@ export type HostServiceOptions = {
    */
   codexRuntime?: CodexRuntime;
   codexDesktopRuntime?: CodexRuntime;
+  /** Read-only connection monitor for the already-running OpenCode shared service. */
+  opencodeConnection?: OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
   /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
@@ -576,12 +579,14 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", OPENCODE_KIND];
+    const openCodeReason = this.#opencodeConnection.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "backend_not_attached";
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null : "backend_not_ready" };
+        reason: backend !== undefined ? backend.isReady() ? null : "backend_not_ready"
+          : kind === OPENCODE_KIND ? openCodeReason : "backend_not_attached" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const grouped = new Map<string, Set<string>>();
     for (const session of [...(this.#catalogCache?.sessions ?? []), ...runtimes]) {
@@ -690,6 +695,8 @@ export class HostService {
   #providerFactsGeneration = 0;
   #providerFactsClosing = false;
   #serviceClosed = false;
+  readonly #opencodeConnection: OpenCodeServiceConnection;
+  readonly #unsubscribeOpenCodeStatus: () => void;
   readonly #providerFactsPending = new Set<Promise<void>>();
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
@@ -709,6 +716,12 @@ export class HostService {
     store: DeviceStore,
   ) {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
+    this.#opencodeConnection = options.opencodeConnection ?? new OpenCodeServiceConnection();
+    this.#unsubscribeOpenCodeStatus = this.#opencodeConnection.subscribe(() => {
+      if (this.#serviceClosed || this.#providerFactsClosing) return;
+      this.refreshHostFacts();
+      this.#invalidateCatalog();
+    });
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
@@ -1136,6 +1149,8 @@ export class HostService {
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
   }
+
+  get opencodeServiceStatus(): OpenCodeServiceStatus { return this.#opencodeConnection.status; }
 
   /** 本机 loopback 端点。未启用或未启动时为 `undefined`。 */
   get loopback(): HostLoopbackServer | undefined {
@@ -1693,6 +1708,8 @@ export class HostService {
 
     await relay.start();
     this.#modelLifecycle = "running";
+    // Discovery is read-only; a missing service does not block Relay or Host startup.
+    void this.#opencodeConnection.start();
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
@@ -1718,6 +1735,7 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    this.#opencodeConnection.close(); this.#unsubscribeOpenCodeStatus();
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
