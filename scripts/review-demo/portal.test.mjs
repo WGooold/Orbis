@@ -81,6 +81,7 @@ it("rejects a wrong fixed code and keeps API/administrator secrets out of the pa
   const denied = await fetch(`${portal.url}/v1/pairings`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "wrong", deviceName: "test" }) });
   expect(denied.status).toBe(401);
   const response = await fetch(`${portal.url}${pairing.pagePath}`); const page = await response.text();
+  expect(page).toContain("Scan to pair"); expect(page).toContain("Choose from photos"); expect(page).toContain("Paste pairing QR code data");
   expect(page).not.toContain("review-admin"); expect(page).not.toContain("review-runtime");
   expect(response.headers.get("cache-control")).toBe("no-store");
 });

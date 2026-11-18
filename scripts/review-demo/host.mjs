@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadOrCreateHostIdentity } from "@orbis/e2e";
@@ -26,6 +26,8 @@ process.env.PI_OFFLINE = "1";
 process.env.PI_SKIP_VERSION_CHECK = "1";
 process.env.DEEPSEEK_API_KEY = (await readFile("/run/secrets/deepseek.key", "utf8")).trim();
 for (const dir of [stateDir, agentDir, workspace]) await mkdir(dir, { recursive: true, mode: 0o700 });
+// Container restarts reuse low PIDs that can collide with persisted lock files on /data.
+await rm(join(stateDir, "temporary-content"), { recursive: true, force: true });
 for (const file of await readdir("/app/scripts/review-demo/sample")) {
   await copyFile(join("/app/scripts/review-demo/sample", file), join(workspace, file), constants.COPYFILE_EXCL)
     .catch(error => { if (error.code !== "EEXIST") throw error; });
