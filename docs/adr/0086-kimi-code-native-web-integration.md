@@ -48,15 +48,15 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 
 | 场景 | 交付边界 | 依赖 |
 | --- | --- | --- |
-| `KIMI-01` | 只读发现已运行的原生服务，验证 REST / WS 认证、版本、身份、断线及断开所有权。 | — |
-| `KIMI-02` | 接入 AgentBackend 的目录、恢复、新建、归档与 launch 对账；在能力门禁完成前不对设备注册。 | `KIMI-01` |
-| `KIMI-03` | 有界历史及实时正文、工具摘要、源重置、基线与分页核对。 | `KIMI-02` |
-| `KIMI-04` | 首句和后续消息的身份对账、真实排队、原生主回合停止。 | `KIMI-03` |
-| `KIMI-05` | 原生工具审批与问答的请求、回执、重连与多端竞态。 | `KIMI-03` |
-| `KIMI-06` | Host / App 能力门禁与兼容投影；先完成协议验证再向 App 开放。 | `KIMI-02`；对外开放待 `KIMI-03`–`05` 完成 |
-| `KIMI-07` | Android 使用原有目录、草稿、会话与交互组件接入。 | `KIMI-03`–`06` |
-| `KIMI-08` | iOS 使用原有目录、草稿、会话与交互组件接入。 | `KIMI-03`–`06` |
-| `KIMI-09` | 原生服务、浏览器与移动端闭环；用实际发布旧版本验证互通和回退，分别记录构建、自动验证、部署与人工验收。 | `KIMI-07`、`KIMI-08` |
+| [`KIMI-01` (#48)](https://github.com/WGooold/Orbis/issues/48) | 只读发现已运行的原生服务，验证 REST / WS 认证、版本、身份、断线及断开所有权。 | — |
+| [`KIMI-02` (#49)](https://github.com/WGooold/Orbis/issues/49) | 接入 AgentBackend 的目录、恢复、新建、归档与 launch 对账；在能力门禁完成前不对设备注册。 | `KIMI-01` |
+| [`KIMI-03` (#50)](https://github.com/WGooold/Orbis/issues/50) | 有界历史及实时正文、工具摘要、源重置、基线与分页核对。 | `KIMI-02` |
+| [`KIMI-04` (#51)](https://github.com/WGooold/Orbis/issues/51) | 首句和后续消息的身份对账、真实排队、原生主回合停止。 | `KIMI-03` |
+| [`KIMI-05` (#52)](https://github.com/WGooold/Orbis/issues/52) | 原生工具审批与问答的请求、回执、重连与多端竞态。 | `KIMI-03` |
+| [`KIMI-06` (#53)](https://github.com/WGooold/Orbis/issues/53) | Host / App 能力门禁与兼容投影；先完成协议验证再向 App 开放。 | `KIMI-02`；对外开放待 `KIMI-03`–`05` 完成 |
+| [`KIMI-07` (#54)](https://github.com/WGooold/Orbis/issues/54) | Android 使用原有目录、草稿、会话与交互组件接入。 | `KIMI-03`–`06` |
+| [`KIMI-08` (#55)](https://github.com/WGooold/Orbis/issues/55) | iOS 使用原有目录、草稿、会话与交互组件接入。 | `KIMI-03`–`06` |
+| [`KIMI-09` (#56)](https://github.com/WGooold/Orbis/issues/56) | 原生服务、浏览器与移动端闭环；用实际发布旧版本验证互通和回退，分别记录构建、自动验证、部署与人工验收。 | `KIMI-07`、`KIMI-08` |
 
 ## 已有证据与未完成项
 
