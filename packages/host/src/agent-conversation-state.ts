@@ -358,10 +358,12 @@ export class AgentConversationState {
     }
     return bytesOfEvent(base) <= this.#limits.maxPageBytes ? base : undefined;
   }
-  offline(scope: StateScope, companion?: PreparedRegistryCommit): void {
+  /** Retire a stale baseline while retaining last-known rows for later reconciliation. */
+  invalidateBaseline(scope: StateScope, companion?: PreparedRegistryCommit): void {
     if (scope.kind !== "agent") return;
     const current = this.#current.get(scopeKey(scope));
     const changes: RegistryMutation[] = current ? ["history", "live", "artifacts"].map(domain => ({ kind: "value", scope, domain: domain as "history" | "live" | "artifacts", fact: { source: { producer: "adapter", sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: current.source.epoch, sourceRevision: current.source.seq }, availability: "unknown", completeness: "unknown", value: null } })) : [];
     this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => { if (current) current.source.ready = false; companion?.onCommitted(); });
   }
+  offline(scope: StateScope, companion?: PreparedRegistryCommit): void { this.invalidateBaseline(scope, companion); }
 }

@@ -37,6 +37,26 @@ describe("Host conversation projection", () => {
     expect(recovered?.entries.map(entry => entry.entryId)).toEqual(["a", "call-1", "call-2", "result-2"]);
   });
 
+  it("invalidates a stale source baseline without serving cached preview state", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    expect(model.accept(scope, snapshot("old-source", 8))).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(true);
+
+    model.invalidateBaseline(scope);
+    expect(model.hasBaseline(scope)).toBe(false);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "stale", range: "preview",
+      knownState: { epoch: "old-source", seq: 8, head: { leafId: "a" } } })).toBeUndefined();
+
+    const fresh = snapshot("new-source", 1);
+    const entry: RemoteSessionEntry = { entryId: "a", parentId: null, type: "message", timestamp: "1", data: { text: "fresh" } };
+    fresh.entries = [entry];
+    fresh.display = displayBatchFor([entry], new Map([[entry.entryId, entry]]), entry.entryId);
+    expect(model.accept(scope, fresh)).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(true);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "fresh", range: "preview" }))
+      .toMatchObject({ syncId: "fresh", source: { epoch: "new-source", seq: 1 }, selection: "snapshot", entries: [entry] });
+  });
+
   it("supports 256 current sessions with the default registry and rejects the 257th atomically", () => {
     const registry = new AgentStateRegistry();
     const model = new AgentConversationState(registry);
