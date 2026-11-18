@@ -49,7 +49,8 @@ internal class MarkdownDocumentCache(private val maxCharacters: Int = 2 * 1024 *
                 if (node is Paragraph || node is Heading || node is TableCell || node is Image) {
                     val value = renderMarkdownInline(node)
                     if (math != null) {
-                        if (mathHtml.size < 32) MathMarkupEngine.html(value, math)?.let { mathHtml[node] = it }
+                        // MATH-01: the scanner caps renderable formulas at 128, so this keeps one local view per math-bearing block without hiding later blocks at 32.
+                        if (mathHtml.size < 128) MathMarkupEngine.html(value, math)?.let { mathHtml[node] = it }
                         inline[node] = MathMarkupEngine.restore(value, math)
                     } else inline[node] = value
                 }

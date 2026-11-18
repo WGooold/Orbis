@@ -923,7 +923,8 @@ final class PreparedMarkdownDocument: @unchecked Sendable {
         var mathFragments = 0
         func inline(_ text: String) -> AttributedString {
             let value = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-            lastHTML = mathFragments < 32 ? math.flatMap { MathMarkupEngine.shared.html(value, prepared: $0) } : nil
+            // MATH-01: the scanner caps renderable formulas at 128; match that bound so later Markdown rows are not left as source.
+            lastHTML = mathFragments < 128 ? math.flatMap { MathMarkupEngine.shared.html(value, prepared: $0) } : nil
             if lastHTML != nil { mathFragments += 1 }
             return math?.restore(value) ?? value
         }

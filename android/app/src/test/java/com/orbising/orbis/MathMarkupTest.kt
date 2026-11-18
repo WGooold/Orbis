@@ -30,6 +30,13 @@ class MathMarkupTest {
         assertTrue(document.mathHtml.isEmpty())
         assertEquals(source, document.inline.values.single().text)
     }
+    @Test fun rendersMathFragmentsBeyondTheFormerThirtyTwoFragmentLimit() = runBlocking {
+        val source = (0 until 40).joinToString("\n\n") { index -> "Paragraph $index \\(x_$index\\)" }
+        val document = MarkdownDocumentCache().resolve(source)
+        assertEquals(40, document.mathHtml.size)
+        assertTrue(document.mathHtml.values.any { it.contains("data-tex=\"x_39\"") })
+        assertTrue(document.inline.values.any { it.text.contains("\\(x_39\\)") })
+    }
     @Test fun protectsTablePipesAndRetainsNativeLinkAndEmphasis() = runBlocking {
         val source = "| Name | Formula |\n|---|---|\n| **TLX** | [ref](https://example.test) \\(\\sum w_iR_i/15 + |x|\\) |"
         val document = MarkdownDocumentCache().resolve(source)
