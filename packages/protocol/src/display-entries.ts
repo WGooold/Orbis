@@ -29,10 +29,10 @@ import {
 /**
  * 投影算法版本。改变任何显示语义都要 +1，否则旧缓存会继续用旧表示。
  *
- * v2：批次开始携带 `windowStart`，压缩摘要带 `anchor: "head"`——窗口与顺序从「客户端自己算」
- * 变成「投影说出来」，这是 App 能够删掉原生解释的前提。
+ * v2：批次开始携带 `windowStart`，压缩摘要带 `anchor: "head"`。
+ * v4：显示消息可包含 Host 归一化的 `render` 内容项，App 按能力原生渲染或降级占位。
  */
-export const DISPLAY_PROJECTION_VERSION = 3;
+export const DISPLAY_PROJECTION_VERSION = 4;
 
 /**
  * 显示结果与显示批次的形状定义在协议里（它是线上负载），这里只做投影：
@@ -261,24 +261,25 @@ function projectMessage(entry: RemoteSessionEntry): DisplayEntry[] {
   const rawClientMessageId = role === "user" ? asString(message["clientMessageId"]) : undefined;
   const clientMessageId = rawClientMessageId !== undefined && rawClientMessageId.length > 0 && rawClientMessageId.length <= 256
     ? rawClientMessageId : undefined;
+  const projectedMessage: ChatMessage = {
+    messageId: entry.entryId,
+    role,
+    content,
+    timestamp: asNumber(message["timestamp"]) ?? toTimestampMillis(entry.timestamp),
+    ...(toolCallId === undefined ? {} : { toolCallId }),
+    ...(toolName === undefined ? {} : { toolName }),
+    ...(message["toolSummary"] === undefined ? {} : { toolSummary: message["toolSummary"] as ChatMessage["toolSummary"] }),
+    // ADR-0049 §2：只复制身份对应，不改变显示语义，因此不升级 projectionVersion。
+    ...(clientMessageId === undefined ? {} : { clientMessageId }),
+    isError: failed,
+  };
   return [{
     displayId: entry.entryId,
     entryId: entry.entryId,
     nativeType: entry.type,
     kind: "message",
     reason: null,
-    message: {
-      messageId: entry.entryId,
-      role,
-      content,
-      timestamp: asNumber(message["timestamp"]) ?? toTimestampMillis(entry.timestamp),
-      ...(toolCallId === undefined ? {} : { toolCallId }),
-      ...(toolName === undefined ? {} : { toolName }),
-      ...(message["toolSummary"] === undefined ? {} : { toolSummary: message["toolSummary"] as ChatMessage["toolSummary"] }),
-      // ADR-0049 §2：只复制身份对应，不改变显示语义，因此不升级 projectionVersion。
-      ...(clientMessageId === undefined ? {} : { clientMessageId }),
-      isError: failed,
-    },
+    message: projectedMessage,
   }];
 }
 
@@ -356,6 +357,25 @@ function contentBlocks(value: unknown): RemoteContent[] {
           ...(block["summary"] === undefined ? { arguments: block["arguments"] } : { summary: block["summary"] as Extract<RemoteContent, { type: "tool_call" }>["summary"] }),
         });
         break;
+      case "image":
+      case "input_image":
+        blocks.push({ type: "render", renderKind: "image", text: "图片内容暂不可显示" });
+        break;
+      case "document":
+      case "attachment":
+        blocks.push({ type: "render", renderKind: "document", text: "附件内容暂不可显示" });
+        break;
+      case "citation": {
+        const url = asString(block["url"]);
+        const title = asString(block["title"]) ?? asString(block["name"]) ?? asString(block["cited_text"]);
+        if (url !== undefined && /^https?:\/\/[^\s<>"']+$/iu.test(url) && title !== undefined && ![...url].some(character => {
+          const code = character.charCodeAt(0);
+          return code < 0x20 || code === 0x7f;
+        })) {
+          blocks.push({ type: "text", text: `[${title.replace(/[\\[\]]/gu, "\\$&")}](${url.replace(/[()\\]/gu, "\\$&")})` });
+        } else blocks.push({ type: "render", renderKind: "citation", text: title === undefined ? "引用来源暂不可显示" : `引用：${title}` });
+        break;
+      }
       default: break;
     }
   }

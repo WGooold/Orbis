@@ -27,6 +27,7 @@ export * from "./tool-activity.js";
 export * from "./tool-message-projection.js";
 export * from "./tool-inventory-receiver.js";
 export * from "./tool-inventory-source.js";
+export * from "./message-rendering.js";
 
 /**
  * 内部业务 schema 修订（ADR-0064 / ADR-0032 §7）。
@@ -275,6 +276,8 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
+/** ADR-0084: clients advertising this feature can consume normalized rich message blocks. */
+export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
@@ -506,6 +509,14 @@ export const LoopbackDescriptorSchema = z.strictObject({
 });
 export type LoopbackDescriptor = z.infer<typeof LoopbackDescriptorSchema>;
 
+const MessageFileReferenceSchema = z.strictObject({
+  referenceId: z.string().regex(/^orbis-message-file:[a-f0-9]{64}$/).optional(),
+  fileName: safeFileName,
+  line: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  endLine: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+});
+export type MessageFileReference = z.infer<typeof MessageFileReferenceSchema>;
+
 export const RemoteContentSchema = z.discriminatedUnion("type", [
   // ADR-0038 §5：被截断的载荷必须带标记，客户端据此显示"已截断（原始 N）"。
   z.strictObject({
@@ -523,6 +534,16 @@ export const RemoteContentSchema = z.discriminatedUnion("type", [
     toolName: z.string(),
     arguments: z.unknown().optional(),
     summary: ToolSummarySchema.optional(),
+  }),
+  /** Host-normalized user-visible content. Unknown renderKind values use `text` as the safe fallback. */
+  z.strictObject({
+    type: z.literal("render"),
+    renderKind: z.string().min(1).max(64),
+    /** Human-readable label used for copy, accessibility and unsupported-kind fallback. Never a source payload. */
+    text: z.string().max(4_096),
+    /** File actions use a Host-issued identifier. Unknown kinds ignore the action. */
+    file: MessageFileReferenceSchema.optional(),
+    purpose: z.literal("output").optional(),
   }),
 ]);
 export type RemoteContent = z.infer<typeof RemoteContentSchema>;
