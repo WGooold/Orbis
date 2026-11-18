@@ -1,5 +1,3 @@
-> 此仓库是 [WGooold/Orbis](https://github.com/WGooold/Orbis) 的非官方 fork。原作由 WGooold 和 Orbis contributors 开发，保留原作者署名与 MIT 许可证。本分支的连接、消息投递和移动端修改见[修复说明](docs/fork-release-20261118.md)。
-
 <p align="center">
   <img src="branding/orbis/master/orbis-app-1024.png" width="96" height="96" alt="Orbis 应用图标">
 </p>
