@@ -34,6 +34,26 @@ Run **Orbis Host** on your computer, install **Orbis App** on your phone, scan o
 
 [Try the interactive demo on the website](https://orbising.com/#experience) to explore chat, file review, and session switching.
 
+## Screens
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/01-agents-everywhere.jpg" width="290" alt="Your agents, with you"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/02-four-agents.jpg" width="290" alt="Four agents, one palm"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/03-provider-dial.jpg" width="290" alt="A turn switches the pick"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/04-scan-and-connect.jpg" width="290" alt="One scan connects your computer"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/05-approval.jpg" width="290" alt="Nothing runs until you decide"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/06-review-changes.jpg" width="290" alt="Every change in plain sight"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/07-files-to-phone.jpg" width="290" alt="Files from your computer, on your phone"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/08-completion-and-push.jpg" width="290" alt="Know when it matters"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/09-smooth-experience.jpg" width="290" alt="Refined in every interaction"></td>
+  </tr>
+</table>
+
 ## Supported agents
 
 **Claude Code · Codex · Codex Desktop · Pi · DeepSeek (via DeepSeek Harness)**
@@ -49,7 +69,7 @@ See the [website](https://orbising.com/) for upcoming integrations.
 | Computer | Windows 10 / 11 (x64) | [Get Orbis Host](https://orbising.com/#download) as an EXE installer or a portable ZIP. |
 | Computer | macOS (Apple Silicon / Intel) | [Get Orbis Host](https://orbising.com/#download) as a DMG for your chip. |
 | Phone | Android | [Download the Orbis App APK](https://orbising.com/downloads/orbis.apk). |
-| Phone | iOS | A public installation link is not yet available on the website. Follow the [download page](https://orbising.com/#download) and [releases](https://github.com/WGooold/Orbis/releases) for updates. |
+| Phone | iOS | [Join the iOS TestFlight beta](https://testflight.apple.com/join/9zGP1NZX) and install the Orbis App through TestFlight. |
 
 Orbis is currently in preview. Check the website for current downloads and availability, or visit [GitHub Releases](https://github.com/WGooold/Orbis/releases) for earlier versions.
 

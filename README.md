@@ -34,6 +34,26 @@ Orbis 不做多合一桌面融合端，也不替代你正在用的任何原生 A
 
 想先感受一下？[打开官网交互演示](https://orbising.com/#experience)，试试对话、文件审阅和会话切换。
 
+## 界面一览
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/01-agents-everywhere.jpg" width="290" alt="手机在手，Agent 随行"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/02-four-agents.jpg" width="290" alt="四位搭档，一掌掌控"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/03-provider-dial.jpg" width="290" alt="轻轻一转，切换所选"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/04-scan-and-connect.jpg" width="290" alt="轻松一扫，连上你的电脑"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/05-approval.jpg" width="290" alt="该你决定，才继续执行"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/06-review-changes.jpg" width="290" alt="每一处改动，看得清楚"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/assets/promo/07-files-to-phone.jpg" width="290" alt="电脑里的文件，手机拿到"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/08-completion-and-push.jpg" width="290" alt="重要进展，及时知道"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/09-smooth-experience.jpg" width="290" alt="深度优化，丝滑体验"></td>
+  </tr>
+</table>
+
 ## 支持的 Agent
 
 **Claude Code · Codex · Codex Desktop · Pi · DeepSeek（通过 DeepSeek Harness）**
@@ -49,7 +69,7 @@ Orbis 不做多合一桌面融合端，也不替代你正在用的任何原生 A
 | 电脑 | Windows 10 / 11（x64） | [下载 Orbis Host](https://orbising.com/#download)，选择安装版 EXE 或免安装 ZIP。 |
 | 电脑 | macOS（Apple Silicon / Intel） | [下载 Orbis Host](https://orbising.com/#download)，按芯片类型选择 DMG。 |
 | 手机 | Android | [下载 Orbis App APK](https://orbising.com/downloads/orbis.apk)。 |
-| 手机 | iOS | 当前官网暂未提供公开安装入口，请关注[下载页](https://orbising.com/#download)和[版本更新](https://github.com/WGooold/Orbis/releases)。 |
+| 手机 | iOS | [加入 iOS TestFlight 测试](https://testflight.apple.com/join/9zGP1NZX)，通过 TestFlight 安装 Orbis App。 |
 
 Orbis 目前为预览版。最新安装包和发布状态以官网为准，历史版本见 [GitHub Releases](https://github.com/WGooold/Orbis/releases)。
 
