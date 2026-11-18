@@ -81,3 +81,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 [iOS 文档声明](../../ios/Orbis/Orbis/Info.plist)按常见 UTI 注册为备用查看器，文件 URL 进入[本地收件](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)，非文件 URL 沿原路由。在有效文件访问期内经协调读取，按实际字节复制到[专用 App Group](../../ios/Orbis/Orbis/ExternalImportStore.swift)；跨进程按所有权清理暂存。
 
 [Swift 持久化与边界用例](../../ios/Orbis/Tests/ExternalImportStoreTests.swift) 4/4 通过；iOS 通用模拟器目标编译和包内依赖检查通过，未安装。证据见[单测](../../.artifacts/external-import/oi-02-core/run.log)、[编译](../../.artifacts/external-import/oi-02-app/run.log)及[构建租约后续核验](../../.artifacts/external-import/oi-02-app/cleanup-audit.json)。正式签名需为主 App 配置专用 App Group；设备上的文档来源及文件交付待用户验证。
+
+### OI-03 实施记录
+
+[iOS Share Extension](../../ios/Orbis/ShareExtension/ShareViewController.swift) 显示本批文件与可编辑正文；[来源读取](../../ios/Orbis/Orbis/ExternalShareReader.swift)在临时文件回调有效期内复制。确认「存入 Orbis」才发布到与主 App 共用的收件箱；取消不发布。扩展不唤起主 App、不使用配对凭据或网络。
+
+[表示选择与来源交付用例](../../ios/Orbis/Tests/ExternalShareReaderTests.swift)及既有持久化回归合计 12/12 通过，[首次失败](../../.artifacts/external-import/oi-03/selection-tests.log)保留。通用模拟器目标编译通过，并核对内嵌扩展、版本、注册信息与模拟器签名下的 App Group，见[构建与包校验](../../.artifacts/external-import/oi-03/final-app/run.log)、[单测](../../.artifacts/external-import/oi-03/final-core/run.log)和[构建租约后续核验](../../.artifacts/external-import/oi-03/final-app/cleanup-audit.json)。真机签名需主 App 和扩展共同授权 `.imports` App Group；未安装、未分发，微信／QQ 的实际入口和交付待用户验证。

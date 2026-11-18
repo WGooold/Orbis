@@ -439,6 +439,7 @@ internal object LocalizationCatalog {
         "再显示 {0} 个会话" to "Show {0} more sessions",
         "分享" to "Share",
         "分享导出文件" to "Share exported file",
+        "分享文字" to "Shared text",
         "分支会停在这条回复之后，接着往下聊" to "The branch will move after this reply so you can continue chatting",
         "分支会移到这条消息之前，原文回到输入框" to "The branch will move before this message and its text will return to the composer",
         "分支信息待同步" to "Branch info awaiting sync",
@@ -470,9 +471,9 @@ internal object LocalizationCatalog {
         "刷新目录" to "Refresh folders",
         "刷新配额" to "Refresh quota",
         "前置操作已失效" to "Prerequisite operation expired",
-        "剩余 " to "Remaining ",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "剩余 " to "Remaining ",
         "剩余 {0} 秒" to "{0} seconds remaining",
         "剩余 {0}{1}" to "{0}{1} remaining",
         "加密帧 {0} 缺少 hdr.ch" to "Encrypted frame {0} is missing hdr.ch",
@@ -622,9 +623,9 @@ internal object LocalizationCatalog {
         "启用后可查询配额" to "Enable to view quota",
         "周" to "Week",
         "周配额" to "Weekly quota",
-        "命令" to "Command",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "命令" to "Command",
         "命令 /{0} 不接受参数" to "Command /{0} does not accept arguments",
         "命令 /{0} 需要参数" to "Command /{0} requires arguments",
         "命令发送到了错误的会话" to "The command was sent to a different session",
@@ -679,6 +680,7 @@ internal object LocalizationCatalog {
         "子代理 · {0} 项 · 状态待核对" to "Subagents · {0} · Status unconfirmed",
         "子代理运行中" to "Subagents running",
         "子任务 · {0} 项" to "Subtasks · {0}",
+        "存入 Orbis" to "Save to Orbis",
         "完全访问" to "Full access",
         "完全访问模式允许联网，无法单独限制网络；请先选择只读或工作区可写。" to "Full access allows network access and cannot restrict it separately. Select read-only or workspace write first.",
         "完成" to "Completed",
@@ -773,10 +775,10 @@ internal object LocalizationCatalog {
         "差异版本不匹配，请重新打开。" to "Diff version mismatch. Reopen it.",
         "差异版本已变化，请关闭后重新打开" to "Diff version changed. Close and reopen it.",
         "差异版本已更新，请重新打开。" to "Diff version updated. Reopen it.",
-        "差异范围或版本无效" to "Invalid diff range or version",
-        "差异行 {0} / {1}" to "Diff line {0} / {1}",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "差异范围或版本无效" to "Invalid diff range or version",
+        "差异行 {0} / {1}" to "Diff line {0} / {1}",
         "差异读取未送达，请连接电脑后重试。" to "Diff request was not delivered. Connect to the computer and try again.",
         "差异读取超时，可重试" to "Diff read timed out. You can retry.",
         "已" to "Done",
@@ -925,10 +927,10 @@ internal object LocalizationCatalog {
         "所选会话已不可用" to "The selected session is no longer available",
         "所选助手尚未就绪，请在电脑端检查" to "The selected assistant is not ready. Check it on your computer.",
         "所选参数已不可用，请重新选择" to "Selected argument is no longer available. Select again.",
-        "所选命令不接受参数" to "Selected command does not accept arguments",
-        "所选命令已不可用，请重新打开菜单" to "Selected command is no longer available. Reopen the menu.",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "所选命令不接受参数" to "Selected command does not accept arguments",
+        "所选命令已不可用，请重新打开菜单" to "Selected command is no longer available. Reopen the menu.",
         "所选命令需要参数" to "Selected command requires arguments",
         "所选思考级别已不可用" to "Selected reasoning level is no longer available",
         "所选文件是空的" to "Selected file is empty",
@@ -1077,10 +1079,10 @@ internal object LocalizationCatalog {
         "显示其他分支" to "Show other branches",
         "显示工具与细节" to "Show tools and details",
         "显示投影版本不匹配（Host：{0}），请更新 App" to "Presentation version mismatch (Host: {0}). Update the app.",
-        "显示更多工具（剩余 {0} 项）" to "Show more tools ({0} remaining)",
-        "显示：{0}" to "Showing: {0}",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "显示更多工具（剩余 {0} 项）" to "Show more tools ({0} remaining)",
+        "显示：{0}" to "Showing: {0}",
         "暂不可关闭" to "Cannot close yet",
         "暂不可用" to "Unavailable",
         "暂停" to "Pause",
@@ -1229,10 +1231,10 @@ internal object LocalizationCatalog {
         "模型快照缺少领域清单" to "Model snapshot is missing domain list",
         "模型快照里的领域不是对象" to "Model snapshot domain is not an object",
         "模型快照里的领域缺少 envelope 字段" to "Model snapshot domain is missing envelope fields",
-        "模型未确认" to "Model unconfirmed",
-        "模板" to "Template",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "模型未确认" to "Model unconfirmed",
+        "模板" to "Template",
         "正在下载" to "Downloading",
         "正在下载 {0}/{1}" to "Downloading {0}/{1}",
         "正在使用" to "In use",
@@ -1381,10 +1383,10 @@ internal object LocalizationCatalog {
         "电脑根目录" to "Computer root directory",
         "电脑正在切换供应商" to "Computer is switching providers",
         "电脑正在切换供应商，请等待完成后再操作。" to "Computer is switching providers. Wait for it to finish.",
-        "电脑没有报任何供应商" to "The computer reported no providers",
-        "电脑没有报告此 Agent 的供应商配置" to "The computer has not reported this Agent's provider configuration",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "电脑没有报任何供应商" to "The computer reported no providers",
+        "电脑没有报告此 Agent 的供应商配置" to "The computer has not reported this Agent's provider configuration",
         "电脑没有报这个领域" to "The computer has not reported this domain",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" to "Orbis Host is not responding: the phone is connected to the relay, but the computer has not answered the encryption handshake.",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Orbis Host is not responding to the secure handshake. Start Orbis Host on the computer. The app will reconnect automatically.",
@@ -1533,10 +1535,10 @@ internal object LocalizationCatalog {
         "补齐范围未推进，请重试" to "Catch-up range made no progress. Try again.",
         "计划模式" to "Plan mode",
         "认证" to "Authentication",
-        "让 {0} 做什么？" to "What should {0} do?",
-        "记录" to "Record",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "让 {0} 做什么？" to "What should {0} do?",
+        "记录" to "Record",
         "记录不完整" to "Incomplete capture",
         "记录不是对象" to "Record is not an object",
         "记录缺少字段" to "Record is missing fields",
@@ -1685,10 +1687,10 @@ internal object LocalizationCatalog {
         "连接中" to "Connecting",
         "连接你的电脑" to "Connect your computer",
         "连接协议" to "Connection protocol",
-        "连接已关闭" to "Connection closed",
-        "连接已断开，仅显示已缓存内容" to "Disconnected. Showing cached content only.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "连接已关闭" to "Connection closed",
+        "连接已断开，仅显示已缓存内容" to "Disconnected. Showing cached content only.",
         "连接已断开，可在重连后继续" to "Disconnected. Continue after reconnecting.",
         "连接已断开，权限设置尚未确认；重新连接后请检查当前权限" to "Disconnected. Permissions remain unconfirmed. Check them after reconnecting.",
         "连接已断开，草稿已保留，连接后可重试" to "Disconnected. Draft saved. Retry after reconnecting.",

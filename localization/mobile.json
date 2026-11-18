@@ -1,6 +1,8 @@
 {
   "{0} 个文件": "{0} files",
   "待导入": "Import inbox",
+  "存入 Orbis": "Save to Orbis",
+  "分享文字": "Shared text",
   "待导入 · {0}": "Import inbox · {0}",
   "暂无待导入内容": "No pending imports",
   "正在处理导入…": "Processing import…",

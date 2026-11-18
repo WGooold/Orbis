@@ -164,19 +164,25 @@ struct ExternalImportStore: Sendable {
     }
 
     func importDocument(_ source: URL) throws -> ExternalImportBatch {
+        let stage = try begin()
+        defer { discard(stage) }
+        let file = try copyOpenedDocument(source, into: stage, index: 0, used: 0)
+        return try publish(stage, text: nil, files: [file])
+    }
+
+    func copyOpenedDocument(_ source: URL, name: String? = nil, into stage: ExternalImportStage,
+                            index: Int, used: Int64) throws -> ExternalImportedFile {
         guard source.isFileURL else { throw ExternalImportProblem.unsupported }
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        let stage = try begin()
-        defer { discard(stage) }
         var coordinatedError: NSError?
         var file: Result<ExternalImportedFile, Error>?
         NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinatedError) { readable in
-            file = Result { try copy(readable, name: source.lastPathComponent, into: stage, index: 0, used: 0) }
+            file = Result { try copy(readable, name: name ?? source.lastPathComponent, into: stage, index: index, used: used) }
         }
         if let coordinatedError { throw coordinatedError }
         guard let file else { throw ExternalImportProblem.unreadable }
-        return try publish(stage, text: nil, files: [file.get()])
+        return try file.get()
     }
 
     static func checkedText(_ text: String?) throws -> String? {
