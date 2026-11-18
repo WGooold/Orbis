@@ -41,6 +41,11 @@ class OptimisticActionsInstrumentedTest {
         compose.onNodeWithText("发送中").assertIsDisplayed()
         compose.onNodeWithContentDescription("复制消息").assertDoesNotExist()
 
+        compose.runOnIdle { pending.value = PendingSendState.Accepted }
+        compose.onNodeWithText("电脑已接收，等待处理").assertIsDisplayed()
+        compose.onNodeWithText("发送中").assertDoesNotExist()
+        compose.onNodeWithContentDescription("重新发送").assertDoesNotExist()
+
         compose.runOnIdle { pending.value = PendingSendState.Failed("会话正在运行，请选择插入或完成后发送") }
         compose.onNodeWithText("会话正在运行，请选择插入或完成后发送").assertIsDisplayed()
         compose.onNodeWithContentDescription("重新发送").assertIsEnabled().performClick()

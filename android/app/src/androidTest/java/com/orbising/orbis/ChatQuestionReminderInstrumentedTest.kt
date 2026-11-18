@@ -146,6 +146,24 @@ class ChatQuestionReminderInstrumentedTest {
         reminder.assertIsDisplayed()
     }
 
+    @Test fun historyControlsTakePriorityWithoutMovingTheTranscript() = withChat { _, scroll, scope ->
+        val transcript = compose.onNodeWithTag("chat-transcript")
+        val viewport = transcript.fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { scope.launch { scroll.scrollToItem(0) } }
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat-history-controls").assertIsDisplayed()
+        compose.onNodeWithTag("chat-question-reminder").assertDoesNotExist()
+        assertEquals(viewport, transcript.fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test fun attachmentSourcesKeepTheComposerDraft() = withChat { _, _, _ ->
+        compose.onNode(hasSetTextAction()).performTextInput("选择附件前的草稿")
+        compose.onNodeWithContentDescription("发送文件到电脑").performClick()
+        compose.onNodeWithText("照片").assertIsDisplayed()
+        compose.onNodeWithText("文件").assertIsDisplayed()
+        compose.onNode(hasSetTextAction()).assertTextContains("选择附件前的草稿")
+    }
+
     private fun capture(name: String) {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val directory = File(context.getExternalFilesDir(null), "question-reminder").apply { mkdirs() }

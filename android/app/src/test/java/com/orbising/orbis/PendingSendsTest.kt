@@ -105,6 +105,21 @@ class PendingSendsTest {
         assertTrue(result.first.observe(revision = 3, at = 6).first.isEmpty())
     }
 
+    @Test fun `host acceptance survives the previous turn without claiming native submission`() {
+        val accepted = outbox(send("claude", delivery = "steer"))
+            .withCommandResult("c-claude", CommandResult(true, "pending"), start)
+        val previousTurn = accepted.observe(status = "running", revision = 1).first
+            .observe(status = "idle", revision = 2).first
+            .observe(status = "idle", revision = 3, at = PENDING_SEND_ACCEPTED_IDLE_GRACE_MS + 1).first
+        assertEquals(PendingSendState.Accepted, previousTurn["claude"]?.state)
+        assertEquals(false, previousTurn["claude"]?.submissionConfirmed)
+        assertTrue(previousTurn.queueRows("s1").isEmpty())
+        assertEquals(listOf("claude"), previousTurn.chatRows("s1").map(PendingSend::messageId))
+        val unknown = previousTurn.withCommandResult("c-claude", CommandResult(false, "unconfirmed"), start)
+        assertEquals(PendingSendState.Unconfirmed, unknown["claude"]?.state)
+        assertEquals(true, unknown["claude"]?.needsDeliveryEvidence)
+    }
+
     @Test fun `accepted row on an idle runtime is checked after the grace period`() {
         val pending = outbox(send("quiet")).withCommandResult("c-quiet", CommandResult(true), start)
         assertTrue(pending.observe(revision = 1, at = PENDING_SEND_ACCEPTED_IDLE_GRACE_MS - 1).second.isEmpty())

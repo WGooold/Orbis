@@ -1,3 +1,5 @@
+> This is an unofficial fork of [WGooold/Orbis](https://github.com/WGooold/Orbis), originally developed by WGooold and the Orbis contributors. Original credits and the MIT license are preserved. See the [fork change notes](docs/fork-release-20261118.md) for this branch's connection, message delivery, and mobile changes.
+
 <p align="center">
   <img src="branding/orbis/master/orbis-app-1024.png" width="96" height="96" alt="Orbis app icon">
 </p>

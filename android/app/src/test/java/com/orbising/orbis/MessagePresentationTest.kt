@@ -156,6 +156,13 @@ class MessagePresentationTest {
         assertEquals(ComposerAction.Send, composerAction(isWorking = true, input = "hello"))
     }
 
+    @Test fun `an attachment can be sent without text while the agent is running`() {
+        assertEquals(ComposerAction.Send, composerAction(isWorking = true, input = "", hasAttachments = true))
+        assertTrue(canSubmitInput("", emptyList(), null, hasAttachments = true))
+        assertFalse(canSubmitInput("", emptyList(), null))
+        assertFalse(canSubmitInput("/unknown", emptyList(), null, hasAttachments = true))
+    }
+
     @Test
     fun `slash input can only submit after choosing the published menu item`() {
         val commands = listOf(

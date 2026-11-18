@@ -1811,10 +1811,10 @@ internal class HostConnection(
         }
         // 附件没传成的失败：从原文件重新上传，作为一条新的等待消息（L6：新操作、新身份）。
         if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return resendAfterUpload(runtimeId, send)
-        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        // 空闲时直接发送；忙时保留原来的插话意图。
         val delivery = when {
             runtime.status == "idle" -> null
-            send.delivery == "steer" && runtime.agentKind != "claude" -> "steer"
+            send.delivery == "steer" -> "steer"
             else -> "followUp"
         }
         val commandId = sendUserMessage(runtimeId, send.text, delivery, send.attachments) ?: return null
