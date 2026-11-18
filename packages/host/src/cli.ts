@@ -102,7 +102,7 @@ async function runHost(
 
   let service: HostService | undefined;
   const kimiRuntime = config.kimiCodeEnabled || kimiCodeFlag
-    ? new KimiRuntime({ homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
+    ? new KimiRuntime({ stateDir, homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
       log: line => console.log(`[kimi-code] ${line}`) })
     : undefined;
   // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。

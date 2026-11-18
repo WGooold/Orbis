@@ -22,7 +22,7 @@ const nativeItem = z.object({
   outcome: z.string().optional(), text: z.string().optional(), name: z.string().optional(), input: z.unknown().optional(),
   input_text: z.string().optional(), output: z.string().optional(), error: z.string().optional(),
   stage: z.string().optional(), truncated: z.boolean().optional(), prompt_ids: z.array(ID).max(256).optional(),
-  kind: z.string().optional(), summary: z.string().optional(), title: z.string().optional(), body: z.string().optional(),
+  placement: z.string().optional(), kind: z.string().optional(), summary: z.string().optional(), title: z.string().optional(), body: z.string().optional(),
 });
 export const kimiTurn = z.object({
   turn_id: ID, ordinal: z.number().int().nonnegative(), kind: z.enum(["agent", "system"]),
@@ -66,7 +66,6 @@ export class KimiConversation {
   #generation = 0;
   #renderTimer: NodeJS.Timeout | undefined;
   #prepending: Promise<void> | undefined;
-  #activeTurn: KimiTurn | undefined;
   #waiters = new Set<(ready: boolean) => void>();
 
   constructor(readonly options: { agent: () => AgentKey; client: Pick<KimiWebClient, "requestJson">; nativeId: string;
@@ -75,7 +74,7 @@ export class KimiConversation {
   }) { this.#source = this.#newSource(); }
 
   get ready(): boolean { return this.#ready; }
-  get runningTurn(): KimiTurn | undefined { return this.#activeTurn?.status === "running" ? this.#activeTurn : undefined; }
+  get runningTurn(): KimiTurn | undefined { return [...this.#turns.values()].find(turn => turn.status === "running"); }
   get epoch(): string { return this.#source.version.epoch; }
 
   #newSource(): RecoverableSessionSource {
@@ -99,7 +98,7 @@ export class KimiConversation {
     this.#ready = false; this.#generation++; this.#prepending = undefined;
     this.#historyMore = false; this.#pageBlocked = false;
     this.#turns.clear(); this.#bytes.clear(); this.#bridges.clear(); this.#knownEntries.clear(); this.#parts.clear(); this.#messageCache = new WeakMap();
-    this.#entries = []; this.#timings = []; this.#boundary = undefined; this.#activeTurn = undefined;
+    this.#entries = []; this.#timings = []; this.#boundary = undefined;
     this.#preparer.invalidate();
     this.#source = this.#newSource(); this.#source.reestablish();
     for (const settle of [...this.#waiters]) settle(false);
@@ -121,6 +120,8 @@ export class KimiConversation {
         }
         this.#historyMore = latest.has_more; this.#pageBlocked = false;
         this.#putPage(latest.turns);
+        for (const turn of latest.turns) for (const item of turn.items ?? [])
+          if (item.type === "user_message" && item.prompt_ids?.length) this.options.onUserItem?.(turn, item.prompt_ids);
         this.#ready = true;
         this.#render();
         for (const settle of [...this.#waiters]) settle(true);
@@ -208,7 +209,7 @@ export class KimiConversation {
       case "user_message": {
         const ids = this.options.clientMessageIds?.(item.prompt_ids ?? []) ?? [];
         return { messageId, timestamp, role: "user", content: [{ type: "text", text: item.text ?? "" }],
-          ...(ids[0] === undefined ? {} : { clientMessageId: ids[0] }) };
+          ...(ids[0] === undefined ? {} : { clientMessageId: ids[0] }), ...(ids.length > 1 ? { clientMessageIds: [...ids].slice(0, 256) } : {}) };
       }
       case "assistant_message": return { messageId, timestamp, role: "assistant", content: [{ type: "text", text: item.text ?? "" }] };
       case "reasoning": return { messageId, timestamp, role: "assistant", content: [{ type: "thinking", text: item.text ?? "" }] };
@@ -277,7 +278,6 @@ export class KimiConversation {
       }
       if (anchor && turn.status === "ended") timings.push({ turnId: turn.turn_id, startedAt: stamp(turn.started_at), durationMs: duration(turn), messageId: anchor });
     }
-    this.#activeTurn = active;
     this.#boundary = boundary; this.#entries = entries; this.#timings = timings; this.#parts = parts; this.#knownEntries = entriesById;
     const turn = active ?? turns.at(-1);
     this.#source.transaction(() => {
