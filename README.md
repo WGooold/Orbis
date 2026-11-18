@@ -71,10 +71,10 @@ Agent 在你自己的电脑上运行。手机与电脑之间的会话和文件�
 欢迎交流使用体验、提出想法，或一起讨论遇到的问题。使用微信扫描下方二维码加入 **Orbis 交流群**。
 
 <p align="center">
-  <img src="docs/assets/weixinqrcode.jpeg" width="360" alt="Orbis 微信交流群二维码，有效期至 2026 年 11 月 16 日前">
+  <img src="docs/assets/weixinqrcode.png" width="360" alt="Orbis 微信交流群二维码，有效期至 2026 年 11 月 25 日前">
 </p>
 
-二维码标注有效期至 **2026 年 11 月 16 日前**。如果已失效，可在 [GitHub Issues](https://github.com/WGooold/Orbis/issues) 留言请求更新。反馈问题时，请附上设备系统、Orbis 版本和复现步骤。
+二维码标注有效期至 **2026 年 11 月 25 日前**。如果已失效，可在 [GitHub Issues](https://github.com/WGooold/Orbis/issues) 留言请求更新。反馈问题时，请附上设备系统、Orbis 版本和复现步骤。
 
 ## 开源与许可
 
