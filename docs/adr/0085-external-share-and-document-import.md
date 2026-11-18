@@ -69,3 +69,9 @@
 | OI-07 | iOS 扩展发送已有会话、后台上传与回执；新建目标按 OI-05 能力接入（IMPORT-08） | OI-03/05/06 |
 
 各提交只包含本 Ticket 的实现、相应测试和证据指针。A 的本地批次与持久化测试、构建和设备验证分别登记；阶段 B/C 不以 A 的结果代替。待真机回归的候选由共享 QA Case 管理，领取后由节点构建；验收以用户记录为准。
+
+### OI-01 实施记录
+
+Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子收件箱及可重开预览已实现。入口只入本地存储，不接 Host。源码见 [Intent 接收](../../android/app/src/main/java/com/orbising/orbis/ExternalImportIntent.kt)、[收件存储](../../android/app/src/main/java/com/orbising/orbis/ExternalImportStore.kt)与[平台用例](../../android/app/src/androidTest/java/com/orbising/orbis/ExternalImportIntentTest.kt)。
+
+`ExternalImportStoreTest` 4/4 通过，平台用例已编译、未在设备执行；首轮编译失败及修正后结果分别保存在 [首轮日志](../../.artifacts/external-import/oi-01/run.log)和[自动验证](../../.artifacts/external-import/oi-01-verified/)。
