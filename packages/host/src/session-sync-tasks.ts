@@ -41,7 +41,7 @@ type Options = {
     Partial<Pick<DeviceLink, "sessionSyncRejection">>) | undefined;
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
   encodeEvent: (runtimeId: string, event: RuntimeEvent, deviceId: string) => Buffer;
-  acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean;
+  acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean | "baseline-required";
   needsBaseline?: (runtimeId: string, command: SessionSyncRequest) => boolean;
   sendEvent: (deviceId: string, runtimeId: string, event: RuntimeEvent) => void;
   error: (deviceId: string, commandId: string, code: string, message?: string) => void;
@@ -149,7 +149,14 @@ export class SessionSyncTasks {
         this.#fail(task, "session_sync_model_rejected");
         return true;
       }
-      if (this.#options.acceptSnapshot?.(runtimeId, event) === false) {
+      const acceptance = this.#options.acceptSnapshot?.(runtimeId, event);
+      if (acceptance === "baseline-required") {
+        if (!task.baseline && task.command.range !== "preview") {
+          this.#restartWithBaseline(task, runtimeId, "range_source_epoch_mismatch");
+        } else this.#fail(task, "session_sync_model_rejected");
+        return true;
+      }
+      if (acceptance === false) {
         this.#fail(task, "session_sync_model_rejected");
         return true;
       }
@@ -231,6 +238,21 @@ export class SessionSyncTasks {
       this.#fail(task, "session_sync_backend_failed", event.message);
     }
     return true;
+  }
+
+  #restartWithBaseline(task: Task, runtimeId: string, reason: string): void {
+    this.#backend.delete(task.backendId);
+    task.backendId = BACKEND_PREFIX + randomUUID();
+    task.baseline = true;
+    task.lastProgressAt = this.#now();
+    this.#backend.set(task.backendId, task);
+    this.#log(task, "baseline", `restart=${reason}`);
+    this.#notifyPending(task);
+    const backendId = task.backendId;
+    queueMicrotask(() => {
+      if (!this.#current(task) || task.stage !== "processing" || task.backendId !== backendId || this.#backend.get(backendId) !== task) return;
+      this.#dispatch(task, { type: "session.sync", sessionId: task.command.sessionId, syncId: backendId, range: "preview" });
+    });
   }
 
   #pending(task: Task): boolean { return task.stage === "queued" || task.stage === "processing" || task.stage === "sending"; }

@@ -407,7 +407,21 @@ export class HostService {
       message: "Producer temporary content usage", detail: Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, String(value)])) });
   }
 
-  #acceptConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>): boolean {
+  #invalidateConversationBaseline(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>, reason: string): boolean {
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    if (scope?.kind !== "agent") return false;
+    this.#conversationState.invalidateBaseline(scope);
+    this.recordDiagnostic({ scope: "agent", agentKind: scope.key.agentKind, sessionId: scope.key.sessionId,
+      category: "recovery", severity: "warning", message: "Invalidated stale conversation baseline for source reconciliation",
+      ...(event.type === "session.snapshot" ? { operationId: event.syncId } : {}),
+      detail: { reason, runtimeId, eventType: event.type, sourceEpoch: event.source?.epoch ?? "missing",
+        sourceSeq: String(event.source?.seq ?? "missing"),
+        ...(event.type === "session.snapshot" ? { range: event.range ?? "missing" } : { baseSeq: String(event.baseSeq) }) } });
+    return true;
+  }
+
+  #acceptConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>,
+                      onRejected?: (reason: string) => void): boolean {
     const scope = this.#agentFacts.scopeOf(runtimeId);
     let reason = "runtime_scope_missing";
     let inventory: PreparedToolInventory | undefined;
@@ -421,7 +435,7 @@ export class HostService {
         return { changes: plans.flatMap(plan => [...plan.changes]), conversationSource: inventory.conversationSource!,
           isCurrent: () => plans.every(plan => plan.isCurrent?.() !== false),
           onCommitted: () => { for (const plan of plans) plan.onCommitted(); } };
-      }, code => { reason = code; });
+      }, code => { reason = code; onRejected?.(code); });
     } catch (error) { reason = error instanceof Error ? error.message : "tool_inventory_rejected"; }
     if (accepted && inventory?.publication) this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, inventory.publication));
     if (!accepted) this.recordDiagnostic({ scope: scope ? "agent" : "host",
@@ -776,7 +790,12 @@ export class HostService {
       },
       encodeEvent: (runtimeId, event, deviceId) => this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
       acceptSnapshot: (runtimeId, event) => {
-        return this.#acceptConversation(runtimeId, event);
+        let rejectionReason: string | undefined;
+        const accepted = this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; });
+        if (accepted) return true;
+        if (rejectionReason === "range_epoch_mismatch" && event.range !== "preview" &&
+            this.#invalidateConversationBaseline(runtimeId, event, rejectionReason)) return "baseline-required";
+        return false;
       },
       sendEvent: (deviceId, runtimeId, event) => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
       error: (deviceId, commandId, code, message) => {
@@ -2990,7 +3009,10 @@ export class HostService {
     if (event.type === "session.snapshot") { this.#sessionSync.handleEvent(runtimeId, event); return; }
     if (event.type === "session.patch") {
       this.#countToolTraffic(runtimeId, "bodyJsonBytes", Buffer.byteLength(JSON.stringify(event.live?.messages ?? []), "utf8"));
-      if (!this.#acceptConversation(runtimeId, event)) {
+      let rejectionReason: string | undefined;
+      if (!this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; })) {
+        if (["patch_baseline_mismatch", "handshake_base_mismatch", "unknown_patch_base_mismatch", "unknown_epoch_base_mismatch"]
+            .includes(rejectionReason ?? "")) this.#invalidateConversationBaseline(runtimeId, event, rejectionReason!);
         this.#loopback?.sendResync(runtimeId, "model_baseline_required");
         return;
       }

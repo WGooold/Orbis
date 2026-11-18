@@ -1123,6 +1123,69 @@ describe("host end-to-end over relay", () => {
     expect(delivered).toMatchObject({ event: { type: "session.snapshot", syncId: "catchup-original", range: "catchup" } });
   });
 
+  it("rebuilds a stale source baseline and retries the original history request", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-epoch-recovery-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-epoch-recovery", name: "epoch recovery", cwd: "/work", status: "idle", sessionId: "session" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+
+    const baselineRequest = { type: "session.sync", sessionId: "session", syncId: "old-preview", range: "preview" } as const;
+    device.sendCommand("pi-epoch-recovery", "old-preview-command", baselineRequest);
+    const initial = await runtime.next();
+    runtime.publish(1, { type: "session.snapshot", sessionId: "session", syncId: (initial.command as { syncId: string }).syncId,
+      range: "preview", mode: "replace", cursor: { leafId: "tail" }, targetLeafId: "tail", entries: [],
+      complete: true, hasOlder: false, rangeStatus: "complete",
+      source: { epoch: "source-before-restart", seq: 8, ready: true },
+      checkpoint: { checkpointId: "old:8", head: { leafId: "tail" }, headCompleteness: "complete", inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+    expect(await readMatching(device, message => (message.event as { syncId?: string } | undefined)?.syncId === "old-preview"))
+      .toMatchObject({ event: { type: "session.snapshot", source: { epoch: "source-before-restart" } } });
+    device.sendCommand("pi-epoch-recovery", "old-preview-applied", { type: "session.snapshot.ack", syncId: "old-preview", result: "applied" });
+
+    device.sendCommand("pi-epoch-recovery", "history-original", { type: "session.sync", sessionId: "session", syncId: "history-original",
+      range: "history", targetLeafId: "tail", beforeEntryId: "tail", maxEntries: 30 });
+    const staleRangeRequest = await runtime.next();
+    const staleRange = staleRangeRequest.command as { syncId: string };
+    runtime.publish(2, { type: "session.snapshot", sessionId: "session", syncId: staleRange.syncId,
+      range: "history", mode: "prepend", cursor: { leafId: "tail" }, targetLeafId: "tail", beforeEntryId: "tail",
+      entries: [], complete: true, hasOlder: false, rangeStatus: "complete",
+      source: { epoch: "source-after-restart", seq: 1, ready: true } });
+
+    const rebuild = await runtime.next();
+    expect(rebuild.command).toMatchObject({ type: "session.sync", sessionId: "session", range: "preview" });
+    expect(rebuild.command).not.toHaveProperty("knownState");
+    expect(rebuild.command).not.toHaveProperty("beforeEntryId");
+    runtime.publish(3, { type: "session.snapshot", sessionId: "session", syncId: (rebuild.command as { syncId: string }).syncId,
+      range: "preview", mode: "replace", cursor: { leafId: "tail" }, targetLeafId: "tail", entries: [],
+      complete: true, hasOlder: false, rangeStatus: "complete",
+      source: { epoch: "source-after-restart", seq: 1, ready: true },
+      checkpoint: { checkpointId: "new:1", head: { leafId: "tail" }, headCompleteness: "complete", inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+
+    const retriedHistory = await runtime.next();
+    expect(retriedHistory.command).toMatchObject({ type: "session.sync", sessionId: "session", range: "history",
+      targetLeafId: "tail", beforeEntryId: "tail", maxEntries: 30 });
+    const retriedSyncId = (retriedHistory.command as { syncId: string }).syncId;
+    runtime.publish(4, { type: "session.snapshot", sessionId: "session", syncId: retriedSyncId,
+      range: "history", mode: "prepend", cursor: { leafId: "tail" }, targetLeafId: "tail", beforeEntryId: "tail",
+      entries: [], complete: true, hasOlder: false, rangeStatus: "complete",
+      source: { epoch: "source-after-restart", seq: 1, ready: true } });
+
+    const delivered = await readMatching(device, message => {
+      const event = message.event as { syncId?: string; type?: string } | undefined;
+      return event?.type === "session.snapshot" && event.syncId === "history-original";
+    });
+    expect(delivered).toMatchObject({ event: { type: "session.snapshot", range: "history", source: { epoch: "source-after-restart" } } });
+    expect(delivered.type).not.toBe("protocol.error");
+    device.sendCommand("pi-epoch-recovery", "history-applied", { type: "session.snapshot.ack", syncId: "history-original", result: "applied" });
+  });
+
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);
