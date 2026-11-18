@@ -49,7 +49,7 @@ Hermes 的 session、历史和 turn 由所选 Gateway profile 持有；CLI、桌
 | Ticket | 范围 | 提交边界 |
 | --- | --- | --- |
 | HERMES-01 | TUI Gateway JSON-RPC/WebSocket transport：request correlation、events、server→client request 与错误/关闭语义 | 纯 transport 与本地 WebSocket fixture；不触及 Gateway 身份、AgentBackend 或 UI。 |
-| HERMES-02 | Hermes CLI 发现、Gateway ensure/attach、凭据 ticket 与 profile 身份绑定、`runtime.describe` 能力协商 | 固定已验证版本的 bootstrap contract 与 isolated fixture；不得连接用户 Gateway 做测试。 |
+| HERMES-02 | Hermes CLI 发现、`gateway ensure --json`、本机 ticket bootstrap、profile 身份绑定与 `runtime.describe` 能力协商 | 首批对照本机 v0.22.5 的公开 ensure 命令和 runtime protocol 1；ticket / WS 使用隔离 fixture，不连接用户 Gateway。协议版本不符即拒绝。 |
 | HERMES-03 | Orbis-compatible Hermes AgentBackend：session catalog、new/resume、prompt、stream/history、cancel、native result state | backend 纯逻辑及 Gateway RPC fixture 测试。 |
 | HERMES-04 | Orbis 已支持的工具事件、交互/审批、模型/会话配置映射 | 只映射现有 Orbis command/event/config 语义，补充对应 Host 测试。 |
 | HERMES-05 | Host 生命周期、安装/可用性、launchable/supported Agent 能力、AgentKind 与跨端 Hermes UI | 新枚举/feature 先过新旧协议兼容测试；平台 UI 按现有 Agent 路径接入。 |
@@ -68,7 +68,7 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 ### 2. Gateway 连接与执行所有权
 
 - v1 仅接入 Host 所在机器的用户默认 Hermes profile。先验证 profile 身份；远程 endpoint、profile 不匹配、工作目录不属于该 Host 的情况默认拒绝或保持不可用，避免在另一台机器上执行文件工具却显示为本机操作。
-- 使用 `hermes gateway attach --json` 与受支持的 Hermes Gateway client；若 SDK 在 Orbis 的 Node 环境不可直接依赖，才在独立模块中实现其文档化 JSON-RPC framing / ticket 流程，并锁定经过验证的 wire contract。ticket、token、credential 不写日志或发往 App。
+- 首批已验证本机 Hermes v0.22.5 的公开 `hermes gateway ensure --json --timeout` 命令。Host 只在需要 Hermes 后端时调用 ensure；它可启动该 profile 的 Gateway，不在纯目录/状态读取时隐式启动。之后从 ensure 返回的 endpoint/control home 走同 profile 的本机 session-ticket 控制通道，再用 canonical Gateway WebSocket 协议连接；逐项验证 protocol、profile、instance、authority epoch 与 `runtime.describe`。控制通道与 JSON-RPC contract 均独立封装、版本锁定及 fixture 测试；未知 wire 版本、路径权限不安全、profile 或 instance 不匹配时 fail closed。若后续 Hermes 版本以 `gateway attach --json` 替代 ensure，需增加并验证独立 CLI adapter，不猜测或拼接远程 URL。ticket、token、credential 不写日志或发往 App。
 - 使用同一 profile 当前的 Gateway owner。连接流程可按 Hermes 支持的 attach / start / recover 行为建立连接；Host 不按进程名杀停、更新或重启 Gateway，也不打开 SQLite 作为第二写者。Host 负责自己建立的 transport 生命周期；执行、工具、审批、profile 和 SessionDB 由 Hermes/Gateway 持有。
 - `session.create` 的 `source` 从 runtime 公布的允许值中选择，并验证该值对应的 provider/tool/approval policy；不能无条件硬编码自定义 `orbis` source。若 `client` 能力存在，使用稳定的 `orbis` 名称辅助归因；client label 不是权限证明。
 - Gateway profile 是会话边界。v1 只呈现当前授权 profile 通过 session APIs 返回的原生会话；同 profile 的 CLI、ACP 或其它 Hermes surface 会话可作为共享 Hermes 历史恢复。用户选择的 profile 变化要重新建立身份与目录映射，禁止跨 profile 静默混合。
@@ -106,7 +106,7 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 | 验证 ID | 验证目标 |
 | --- | --- |
-| HERMES-DISC-01 | macOS、Windows、Linux 覆盖 CLI 发现、`gateway attach --json` 输出、ACP extra 缺失、owner 不可用、不同 Hermes 安装和用户显式路径；不自动安装、更新或修改 profile。 |
+| HERMES-DISC-01 | macOS、Windows、Linux 覆盖 CLI 发现、支持版本的 `gateway ensure --json` 输出、本机 ticket / 命名管道或 Unix socket、owner 不可用、不同 Hermes 安装和用户显式路径；不自动安装、更新或修改 profile。 |
 | HERMES-GATEWAY-01 | 对无 owner、既有 owner、attach/start/recover、Gateway 重启与 Host 停止验证：连接同一 profile；Host 只清理所属 socket/process，不误杀共享 Gateway；ticket / profile mismatch fail closed。 |
 | HERMES-CAPABILITY-01 | 用 v0.23.2 与至少一个后续正式版本做 `runtime.describe`/feature 对照；未知字段、未知 methods、缺少 capability 不崩溃、不假报可用。 |
 | HERMES-OWNERSHIP-01 | 同 profile 中分别由 Orbis、CLI、ACP 创建 session；验证官方 Gateway 目录与 transcript 的共享语义、`client` attribution 可展示但不可授权；另一 profile 的 session 不泄露。 |
@@ -122,4 +122,4 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 ## 当前状态
 
-本 ADR 已将主路线修正为官方推荐的 TUI Gateway，自定义 Host 原型和兼容门槛仍待实施与验证。尚未实现 Hermes backend、AgentKind/设备能力协商、跨端 UI 或 Gateway transport；本机 Hermes 安装、用户配置和真实 session 均未操作。上游 v0.23.2 静态源码调查不证明用户机器安装版本与本次基线一致。
+本 ADR 采用 TUI Gateway 为自定义 Host 的主路线，并以 Orbis 已有 AgentBackend / RuntimeCommand / RuntimeEvent 能力为首阶段边界。当前开发机只执行了 `hermes --version` 与 `hermes gateway ensure --help`（观察到 Hermes Agent v0.22.5；ensure 子命令存在）；没有执行 ensure、没有启动/连接 Gateway、没有读取或修改 profile/session。HERMES-01 JSON-RPC transport 和 HERMES-02 CLI/bootstrap 的本地 fixture 已通过；Hermes AgentBackend、AgentKind/能力协商和跨端 UI 尚未实现。上游 v0.23.2 文档基线不证明其他安装版本的配置或 wire contract 一致；Host 对未知 Gateway protocol / capability fail closed。
