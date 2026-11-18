@@ -37,7 +37,7 @@ Host 将 OpenCode API 事件与按需读取的 session/message 数据映射到�
 
 ### 2. 只连接已运行的共享服务
 
-Host 使用 `@opencode/client` 发布的 Node Promise client 和 service `discover` helper 获取 endpoint / authentication headers。Host 不自行解析 OpenCode 私有 service registration 文件，不记录或向手机发送 endpoint 密码，也不将其写入日志。
+Host 使用 `@opencode/client` 发布的 Node Promise client，并使用 SDK 公开的 `fallback()`、`Info` 和 `Service.headers()` 读取服务注册、生成认证头。`2.3.2` 的 `Service.discover()` 在向调用者返回 URL 之前就对文件中的 URL 发送带认证头的请求，且未禁止 HTTP 重定向。为保证校验早于网络请求，Host 只读 `Info` 的 `url`、`pid`、`version` 和 `password`，先校验 loopback，再调用 `server.info` 核对 PID 和版本。SDK 请求禁止重定向。Host 不记录、写入或向手机发送注册文件密码。
 
 首版只做只读发现与连接：不得调用会启动、替换、停止服务的 `ensure` / `stop` helper，不启动 `opencode serve` 或 `opencode acp`，不安装或更新 OpenCode。没有可用共享服务时，OpenCode backend 标记 unavailable，并给出用户可自行执行的启动说明；Host 启动和 OpenCode backend 激活均不得中断已有 OpenCode 会话。
 
@@ -55,7 +55,7 @@ Host 将经过验证的 OpenCode catalog、history、message、tool、execution�
 
 ### 5. 版本、安全与恢复门槛
 
-首版固定 `@opencode/client` 与服务端版本均为 `2.3.2`；运行时通过 `server.info` 验证服务端版本，任何不完全匹配的版本都拒绝连接，不作 semver minor 或 patch 兼容推断。后续扩大支持范围必须先加入对应版本的真实服务验收。所有 API 请求仅连接官方 service discovery 返回的本机 endpoint，并使用 discovery helper 提供的认证 headers；除非将来另立 ADR 并明确授权，不接受任意 LAN / Internet OpenCode server。
+首版固定 `@opencode/client` 与服务端版本均为 `2.3.2`；运行时通过 `server.info` 验证服务端版本，任何不完全匹配的版本都拒绝连接，不作 semver minor 或 patch 兼容推断。后续扩大支持范围必须先加入对应版本的真实服务验收。所有 API 请求仅连接经过校验的 SDK 服务注册 endpoint，并使用 `Service.headers()` 提供的认证 headers；除非将来另立 ADR 并明确授权，不接受任意 LAN / Internet OpenCode server。
 
 验证至少覆盖：service 不存在 / 未就绪 / 认证失败 / 版本不兼容；服务发现和 Host 重启不启动或停止 OpenCode 进程；session 列表分页；session 创建 / 恢复；history 与 live event 对齐；SSE 断线、溢出后的重同步；输入、取消、权限与 question 生命周期；密码和原始工具内容不进入共享日志 / App 消息；未声明 `agent.opencode` 的旧客户端完全不可观察到新 kind。
 
