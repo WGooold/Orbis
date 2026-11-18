@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { KimiInteractions } from "./kimi-interactions.js";
 import { KimiInput, KimiPromptJournal } from "./kimi-input.js";
 import WebSocket from "ws";
 import type { AgentKey, AgentSessionSummary, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SessionConfigurationCatalog } from "@orbis/protocol";
@@ -14,7 +15,7 @@ import { localHostname } from "./sessions.js";
 const SUBSCRIBE_TIMEOUT_MS = 5_000;
 const MAX_SUBSCRIPTIONS = 12;
 type Active = { native: KimiSession; cwd: string; id: string; subscribed: boolean; subscribing?: Promise<void>;
-  compacting?: boolean; input?: KimiInput; conversation?: KimiConversation; toolProducer?: ToolActivityProducer; thinking?: string };
+  compacting?: boolean; input?: KimiInput; interactions?: KimiInteractions; conversation?: KimiConversation; toolProducer?: ToolActivityProducer; thinking?: string };
 type Connection = { sessions: KimiSessions; socket: WebSocket; generation: number };
 type KimiOptions = KimiWebClientOptions & { stateDir: string; log?: (message: string) => void };
 
@@ -62,7 +63,10 @@ export class KimiRuntime implements AgentBackend {
     return runtimeId === sessionId ? this.#active.get(runtimeId)?.conversation?.entry(entryId) : undefined;
   }
   announce(): void {
-    for (const item of this.#active.values()) if (item.subscribed) this.#sink({ type: "runtime.capabilities", capabilities: { commands: [] } }, item.id);
+    for (const item of this.#active.values()) if (item.subscribed) {
+      this.#sink({ type: "runtime.capabilities", capabilities: { commands: [] } }, item.id);
+      item.interactions?.announce();
+    }
   }
 
   start(): void { this.#connector.start(); }
@@ -212,6 +216,15 @@ export class KimiRuntime implements AgentBackend {
           onTurnEnded: turn => item.input?.observeEnd(turn), onInvalidated: () => item.input?.invalidate() });
         item.input = new KimiInput({ sessionId: item.id, nativeId: item.native.id, sessions: connection.sessions, journal: this.#journal, conversation,
           idle: () => !item.native.main_turn_active && !item.compacting, emit: event => this.#sink(event, item.id) });
+        item.interactions = new KimiInteractions({ runtimeId: item.id, nativeId: item.native.id, client: connection.sessions.client,
+          emit: event => this.#sink(event, item.id), resubscribe: () => { if (this.#connection === connection) connection.socket.terminate(); },
+          verifyLocal: async () => {
+            const current = await connection.sessions.read(item.native.id);
+            if (current.id !== item.native.id || current.archived) throw new Error();
+            await connection.sessions.requireLocal(current);
+            this.#assertConnection(connection);
+          },
+        });
         item.input.requestPoll();
         conversation.invalidate(); // publish an explicit epoch boundary before any native baseline
         item.toolProducer = new ToolActivityProducer({ agent, runtimeId: () => item.id,
@@ -263,7 +276,9 @@ export class KimiRuntime implements AgentBackend {
       const title = kimiObject(frame.payload).title;
       if (typeof title === "string") { item.native = { ...item.native, title }; this.onMetadataChange?.(this.#metadata(item)); }
     }
+    if (frame.type === "interaction") item.interactions?.frame(frame);
     if (frame.agent_id === "main") {
+      if (frame.type === "turns" || frame.type === "turns.failed") item.interactions?.finishReplay();
       const ready = item.conversation?.ready;
       item.conversation?.frame(frame);
       if (frame.type === "turns") item.input?.requestPoll();
@@ -272,6 +287,7 @@ export class KimiRuntime implements AgentBackend {
   }
 
   #clearConversation(item: Active): void {
+    item.interactions?.close(); delete item.interactions;
     item.input?.close(); delete item.input;
     item.conversation?.invalidate(); delete item.conversation;
     void item.toolProducer?.dispose().catch(() => undefined); delete item.toolProducer;
@@ -281,9 +297,11 @@ export class KimiRuntime implements AgentBackend {
     const item = this.#active.get(runtimeId);
     if (!this.isReady() || !item?.subscribed || !item.conversation) return "offline";
     if (command.type === "user_message" && item.input) { void item.input.send(commandId, command); return "handled"; }
+    if (command.type === "interaction.respond" && item.interactions) { void item.interactions.respond(commandId, command); return "handled"; }
     if (command.type === "stop" && item.input) { void item.input.stop(commandId); return "handled"; }
     if (command.type !== "session.sync") return "unsupported";
     item.input?.announce();
+    item.interactions?.announce();
     const conversation = item.conversation;
     void conversation.sync(command).then(event => {
       if (this.#active.get(runtimeId)?.conversation === conversation) this.#sink(event, runtimeId);
