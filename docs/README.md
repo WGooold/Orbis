@@ -14,6 +14,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [ADR-0082](adr/0082-ios-chat-screen-state-and-scheduling.md)：iOS 会话页状态模型与界面调度；`@Observable` 页面模型与区域状态、会话动作面、页面阶段、视口控制器，以及阅读锚点诊断与按测量开启的调度项（IOS-CHAT-06–15）；07–11 及 13 的原生迁移已实施，自动回归与真机验收分开记录，06 的真机流式测量及用户验收待完成，未部署。
 - [ADR-0083](adr/0083-feedback-levels-and-stale-replies.md)：错误与提示分级（F0–F5，规范见[设计规范](design/orbis-design-system.md)§8）；SC91 迟到回包静默，以及 SC92–SC95 的底部短反馈、顶部横幅、连接状态、对象原位错误和菜单读取归属迁移。两端实施与定向自动验证完成，作为 r59 候选，未部署，待用户验证。
 - [ADR-0084](adr/0084-zcode-cli-integration.md)：ZCode 独立 CLI 接入；V4 stdio 协议、Orbis-owned session DB 与 Desktop 隔离、设备 feature gate，按 ZCODE-02–05 实现与验证。
+- [ADR-0085](adr/0085-opencode-shared-service-integration.md)：OpenCode 共享服务接入；Host 只读发现已运行服务、经官方 API 映射 Agent state、不启动或停止 OpenCode，按 OPENCODE-02–06 实现与验证。
 
 - [QUIC 诊断复核](architecture/native-quic-peer-project-review.md)。
 
