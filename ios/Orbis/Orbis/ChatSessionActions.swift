@@ -82,7 +82,9 @@ struct ChatSessionActions: Equatable {
     }
     @MainActor func releaseInterest(_ lease: AgentInterestLease) { connection.releaseChatInterest(lease) }
     @MainActor func upload(_ urls: [URL], capacity: Int) {
-        if isCurrent, let runtime { connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime) }
+        if isCurrent, let runtime, !isKimiCode(kind: connection.agentKind(runtime), id: runtime.runtimeId) {
+            connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime)
+        }
     }
     @MainActor func uploadFailed(_ message: String) { if isCurrent { connection.transfers.error = message } }
     @MainActor func restartUpload(_ id: String) { if isCurrent { connection.transfers.restart(id) } }

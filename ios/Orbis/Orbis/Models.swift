@@ -616,6 +616,10 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var toolName: String? = nil
     /// ADR-0049：由手机发送产生时，源端带回的原 messageId；只用于对账本地待确认发送。
     var clientMessageId: String? = nil
+    var clientMessageIds: [String]? = nil
+    func materializesClientMessage(_ id: String) -> Bool {
+        messageId == id || clientMessageId == id || clientMessageIds?.contains(id) == true
+    }
     var id: String { messageId }
     var text: String {
         content.compactMap { item -> String? in

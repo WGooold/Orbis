@@ -175,9 +175,13 @@ struct SessionDrawerView: View, Equatable {
     @State private var incomingProjection: SessionDirectoryProjection?
     @State private var hostMenuAnchor = OrbisAnchor()
     private var catalog: SessionDirectoryCatalog { store.activeConnection.directoryCatalog }
+    private var filterKind: String? { state.kind == kimiCodeKind && !store.activeConnection.kimiCodeSupported ? nil : state.kind }
+    private var networkQuery: CatalogQuery {
+        var projection = state; projection.kind = filterKind; return projection.networkQuery
+    }
     private var request: SessionDirectoryFilter {
         SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
-            kind: state.kind, archived: state.archived, provider: state.providerKey,
+            kind: filterKind, archived: state.archived, provider: state.providerKey,
             currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language),
             queryRevision: store.hostState.catalogQueryRevision)
     }
@@ -300,7 +304,7 @@ struct SessionDrawerView: View, Equatable {
             .onAppear(perform: resolveExpansion)
             .onChange(of: directories.map(\.path)) { _, _ in resolveExpansion() }
             .onChange(of: store.selectedHostId) { _, _ in state.providerKey = "current"; restartExpansion() }
-            .onChange(of: state.kind) { _, _ in restartExpansion() }
+            .onChange(of: filterKind) { _, _ in restartExpansion() }
             .onChange(of: state.archived) { _, _ in restartExpansion() }
             .onChange(of: state.providerKey) { _, _ in restartExpansion() }
             .onChange(of: request.currentProvider) { _, _ in restartExpansion() }
@@ -310,16 +314,16 @@ struct SessionDrawerView: View, Equatable {
             }
             .task(id: request) {
                 let filter = request, source = catalog
-                let facets = store.hostState.catalogQuery.flatMap { $0.query.agentKind == state.kind ? $0 : nil }
+                let facets = store.hostState.catalogQuery.flatMap { $0.query.agentKind == filterKind ? $0 : nil }
                 let next = await directoryWorker.resolve(catalog: source, filter: filter,
                     knownProviders: facets?.providers ?? [], hasUnknown: facets?.unknownProvider == true)
                 guard !Task.isCancelled else { return }
                 incomingProjection = next
                 if !viewport.scrolling { resolveExpansion() }
             }
-            .task(id: state.networkQuery) {
+            .task(id: networkQuery) {
                 do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
-                store.hostState.setCatalogQuery(state.networkQuery)
+                store.hostState.setCatalogQuery(networkQuery)
             }
             .onChange(of: viewport.scrolling) { _, active in if !active { resolveExpansion() } }
             .onDisappear { selectedSessionIds = [] }
@@ -363,13 +367,13 @@ struct SessionDrawerView: View, Equatable {
     }
 
     private var filterAccessibilityLabel: String {
-        let agent = state.kind.map(filterTitle) ?? L10n.tr("全部")
+        let agent = filterKind.map(filterTitle) ?? L10n.tr("全部")
         return L10n.tr("筛选会话：{0}", hasProviderFilter ? L10n.tr("{0}，{1}", agent, providerLabel) : agent)
     }
 
     private var filterMenuItems: [OrbisMenuItem] {
-        [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude"].filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
+        [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: filterKind == nil) { selectFilter(nil) }]
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", kimiCodeKind].filter { $0 != kimiCodeKind || store.activeConnection.kimiCodeSupported }.filter { $0 != "dshDesktop" || store.supportedAgents?.contains($0) == true || store.launchableAgents?.contains($0) == true || catalog.sessions.contains { $0.agentKind == "dshDesktop" } }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
                 ? sessionProviderOptions(catalog.sessions, kind: kind, current: store.currentProvider(for: kind)) : []
             return OrbisMenuItem(title: filterTitle(kind), agentKind: kind, checked: state.kind == kind,
@@ -418,7 +422,7 @@ struct SessionDrawerView: View, Equatable {
         if searching { return L10n.tr("没有找到匹配的目录或会话") }
         if state.archived { return L10n.tr("没有已归档的会话") }
         if hasProviderFilter && effectiveProviderKey == "current" && store.currentProvider(for: state.kind ?? "codex") == nil { return L10n.tr("尚未获取当前 provider") }
-        return state.kind.map { L10n.tr("没有{0}会话", filterTitle($0)) } ?? L10n.tr("还没有可显示的会话")
+        return filterKind.map { L10n.tr("没有{0}会话", filterTitle($0)) } ?? L10n.tr("还没有可显示的会话")
     }
 
     private func directoryGroup(_ directory: SessionDirectory, selectedIds: Set<String>) -> some View {
@@ -578,6 +582,7 @@ private func filterTitle(_ kind: String) -> String {
     case "dsh": return "DeepSeek"
     case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
     case "claude": return "Claude Code"
+    case kimiCodeKind: return "Kimi Code"
     default: return "Pi"
     }
 }
@@ -633,7 +638,10 @@ struct SessionDraftView: View {
     }
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
-    private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
+    private var allowed: [String] {
+        let choices: [String] = store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"]
+        return choices.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }
+    }
     private var family: String { agentFamily(agent) }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
@@ -659,13 +667,14 @@ struct SessionDraftView: View {
 
     private var canStart: Bool {
         currentPath?.isEmpty == false &&
-            store.connection == .secured && store.activatingSessionId == nil && allowed.contains(agent)
+            store.connection == .secured && store.activatingSessionId == nil && allowed.contains(agent) &&
+            (agent != kimiCodeKind || configuration != nil)
     }
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 4) {
-                ForEach(["codex", "claude", "dsh", "pi"], id: \.self) { kind in
+                ForEach(["codex", "claude", "dsh", "pi"] + (allowed.contains(kimiCodeKind) ? [kimiCodeKind] : []), id: \.self) { kind in
                     let variants = agentVariants(kind), chosen = family == kind
                     OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
                         AgentEmblem(kind: kind, size: 20, recessed: false)
@@ -709,13 +718,15 @@ struct SessionDraftView: View {
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
             if store.sessionConfigurationSupported {
-                // S55 / SC79: the model owns a row; permission text cannot resize either value.
-                VStack(spacing: 8) {
-                    configurationButton(L10n.tr("模型"), value: configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"),
-                        panel: "model", enabled: configuration?.catalog.models.isEmpty == false)
-                    HStack(spacing: 8) {
-                        configurationButton(L10n.tr("思考深度"), value: thinkingTitle, panel: "thinking", enabled: configurationModel?.thinking.isEmpty == false)
-                        configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
+                if agent != kimiCodeKind {
+                    // S55 / SC79: the model owns a row; permission text cannot resize either value.
+                    VStack(spacing: 8) {
+                        configurationButton(L10n.tr("模型"), value: configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"),
+                            panel: "model", enabled: configuration?.catalog.models.isEmpty == false)
+                        HStack(spacing: 8) {
+                            configurationButton(L10n.tr("思考深度"), value: thinkingTitle, panel: "thinking", enabled: configurationModel?.thinking.isEmpty == false)
+                            configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
+                        }
                     }
                 }
                 if let error = store.sessionConfigurationError {
@@ -769,12 +780,13 @@ struct SessionDraftView: View {
                 if !cancelling && visible && scenePhase == .active { focused = true }
             }
             // PERF-12: the native editor persists committed text without publishing each IME mark.
+            .onChange(of: allowed) { _, choices in if !choices.contains(agent), let first = choices.first { agent = first } }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
             .onChange(of: closeRequest) { _, _ in cancel() }
             .onChange(of: visible) { _, active in if !active { focused = false } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { focused = false } }
-            .task(id: "\(agent)|\(currentPath ?? "")|\(store.connection == .secured)|\(store.sessionConfigurationSupported)") { loadConfiguration() }
+            .task(id: "\(agent)|\(currentPath ?? "")|\(store.connection == .secured)|\(store.sessionConfigurationSupported)|\(owner.kimiCodeSupported)") { loadConfiguration() }
             .onKeyPress(.escape) { cancel(); return .handled }
             .orbisBottomSheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
             .orbisBottomSheet(isPresented: $choosingConfiguration) { configurationSheet.orbisSheet(configurationPanel == "permissions" ? [.large] : [.medium, .large]) }

@@ -153,6 +153,7 @@ struct ChatComposerView: View, Equatable {
     private var transfers: FileTransfers { target.owner.transfers }
     private var kind: String? { facts.kind }
     private var claudeComposer: Bool { kind == "claude" }
+    private var kimiComposer: Bool { isKimiCode(kind: kind, id: runtime.runtimeId) }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     /// PERF-12 / IOS-CHAT-01: typed text belongs to the editor subtree and persists without
     /// invalidating the transcript owner. A store-originated draft (command result, restored copy,
@@ -178,11 +179,11 @@ struct ChatComposerView: View, Equatable {
     private var slash: Bool { currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { facts.commands.first { $0.name == selectedCommand } }
     private var attachments: [FileTransfer] {
-        facts.attached
+        kimiComposer ? [] : facts.attached
     }
     private var canSubmit: Bool {
         // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
-        guard facts.canSend, !facts.preparing, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
+        guard facts.canSend, !facts.preparing, !kimiComposer || runtime.status != "running", attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
               hasText || !attachments.isEmpty else { return false }
         if slash {
             guard let command, currentDraft.hasPrefix("/" + command.name), facts.pendingActions.isEmpty else { return false }
@@ -219,7 +220,7 @@ struct ChatComposerView: View, Equatable {
                 }.frame(height: 2).accessibilityLabel(L10n.tr("上下文已使用 {0}%", Int(percent)))
             } else { Color.clear.frame(height: 2) }
             QueuedMessagesView(model: model, actions: actions, runtimeId: runtime.runtimeId).equatable()
-            OrbisCollapse(expanded: deliveryChoices) {
+            OrbisCollapse(expanded: !kimiComposer && deliveryChoices) {
                 HStack(spacing: 12) {
                     OrbisActionButton(title: deliveryTitle("followUp"), tint: accent) { submit(delivery: "followUp") }
                     OrbisActionButton(title: deliveryTitle("steer"), tint: accent) { submit(delivery: "steer") }
@@ -257,16 +258,18 @@ struct ChatComposerView: View, Equatable {
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
                 HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
             }
-            AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing)
+            if !kimiComposer { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
             if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
-                OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
-                                label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
-                    if foldReading && focused { composerFocus.focused = false; return }
-                    guard actions.isCurrent else { return }
-                    fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
-                    composerFocus.focused = false; filePickerOpen = true
-                }.disabled(!(foldReading && focused) && (!facts.canSend || facts.preparing || attachments.count >= 10))
+                if !kimiComposer || foldReading && focused {
+                    OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
+                                    label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
+                        if foldReading && focused { composerFocus.focused = false; return }
+                        guard actions.isCurrent else { return }
+                        fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
+                        composerFocus.focused = false; filePickerOpen = true
+                    }.disabled(!(foldReading && focused) && (!facts.canSend || facts.preparing || attachments.count >= 10))
+                }
                 OrbisDraftEditor(text: draft,
                                  focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
                                  placeholder: L10n.tr("发给 {0}，/ 命令", agentTitle(kind)),
@@ -284,7 +287,7 @@ struct ChatComposerView: View, Equatable {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 56)
                     .orbisField(focused: focused).orbisAnchor(sendFlight.composer)
-                if runtime.status == "running" && !hasText && attachments.isEmpty {
+                if runtime.status == "running" && (kimiComposer || !hasText && attachments.isEmpty) {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if actions.isCurrent, actions.stopRuntime() { OrbisHaptics.commit() }
                     }.disabled(!facts.canSend)
@@ -481,7 +484,7 @@ struct QueuedMessagesView: View, Equatable {
             HStack {
                 Text(deliveryTitle(item.delivery) + L10n.tr("，") + queueStateTitle(item.state)).font(.orbisCaption(.semibold))
                 Spacer(minLength: 8)
-                if item.state == "accepted" {
+                if !isKimiCode(kind: actions.runtime?.agentKind, id: runtimeId), item.state == "accepted" {
                     // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
                     let unconfirmed = model.workspace.queueCancellations.contains(item.queueId)
                     OrbisTextButton(title: unconfirmed ? L10n.tr("撤回未确认") : L10n.tr("撤回"), symbol: "xmark") { if actions.isCurrent { _ = actions.cancelQueuedMessage(item.queueId) } }
