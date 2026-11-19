@@ -73,7 +73,7 @@ struct HostCatalogRange {
 
     private static func validSession(_ session: SessionSummary) -> Bool {
         !session.sessionId.isEmpty && session.createdAt >= 0 && session.modifiedAt >= 0 && session.messageCount >= 0 &&
-        session.messageCount <= 100_000 && ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", kimiCodeKind].contains(session.agentKind ?? "")
+        session.messageCount <= 100_000 && ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", kimiCodeKind, "opencode"].contains(session.agentKind ?? "")
     }
 }
 

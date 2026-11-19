@@ -70,6 +70,8 @@ import type { DshConnection } from "./dsh-client.js";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
+import { SessionConfigurationStore } from "./session-configuration-store.js";
+import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
@@ -2996,6 +2998,117 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     device.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  it("gates OpenCode by device feature and keeps deduplicated command receipts private", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-opencode-feature-"));
+    relay = await startRelayLocal(stateDir);
+    const info = { id: "oc-session", title: "OpenCode fixture", location: { directory: stateDir }, time: { created: 1000, updated: 2000 } };
+    const selected = { providerID: "fixture-provider", id: "fixture-model" };
+    const newId = "oc-configured";
+    let nativeSelection: typeof selected | undefined;
+    const get = vi.fn(async ({ sessionID }: { sessionID: string }) => sessionID === newId ? { ...info, id: newId, model: nativeSelection } : info);
+    const create = vi.fn(async () => ({ ...info, id: newId }));
+    const switchModel = vi.fn(async ({ model }: { model: typeof selected }) => { nativeSelection = model; });
+    const prompt = vi.fn(async ({ sessionID, text, metadata }: { sessionID: string; text: string; metadata?: unknown }) =>
+      ({ id: "oc-inbox", sessionID, type: "user", delivery: "queue", time: { created: 3000 }, payload: { text, metadata } }));
+    const client = {
+      server: { info: async () => ({ version: "2.3.2", pid: 1 }) },
+      event: { async *subscribe({ signal }: { signal: AbortSignal }) {
+        yield { type: "server.connected", data: {} };
+        if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      } },
+      session: { get, create, switchModel, active: async () => ({}), list: async () => ({ data: [info], cursor: {} }), prompt,
+        form: { list: async () => [] }, inbox: { list: async () => [] } },
+      message: { list: async () => ({ data: [], cursor: {} }) }, permission: { list: async () => [] },
+      model: { list: async () => ({ data: [{ ...selected, enabled: true, name: "Fixture model", variants: [] }] }),
+        default: async () => ({ data: selected }) }, agent: { list: async () => ({ data: [] }) },
+    };
+    const connection = new OpenCodeServiceConnection({ discover: async () => ({ url: "http://127.0.0.1:4096" }),
+      createClient: () => client as unknown as OpenCodeClient });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, opencodeConnection: connection });
+    await host.start();
+    device = await readyDevice({ host, relay });
+    const owner = device;
+    const other = await readyDevice({ host, relay });
+    try {
+      const until = async (phone: TestDevice, predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 100; i++) {
+          const message = await phone.receiveMessage(true);
+          if (predicate(message)) return message;
+        }
+        throw new Error("OpenCode E2E response missing");
+      };
+      const request = (phone: TestDevice, payload: Record<string, unknown>) => sendRequest(phone, { protocolVersion: PROTOCOL_VERSION, ...payload });
+      const reply = (phone: TestDevice, requestId: string) => until(phone, message => message.requestId === requestId);
+      const runtimeId = "opencode:oc-session";
+      const kind = { agentKind: "opencode", cwd: stateDir };
+      const launches = new SessionConfigurationStore(join(stateDir, "opencode-session-configuration.json"));
+      await launches.begin(owner.deviceId, { type: "session.launch", requestId: "seed", launchId: "known-opencode-launch",
+        agentKind: "opencode", cwd: stateDir, binding: "fixture", revision: 0, values: {} });
+      await launches.update(owner.deviceId, "known-opencode-launch", { phase: "ready", sessionId: info.id, spawnMode: "headless" });
+
+      for (const [requestId, payload] of [
+        ["config-hidden", { type: "session.configuration.read", ...kind }],
+        ["launch-hidden", { type: "session.launch", ...kind, binding: "fixture", revision: 0, values: {}, launchId: "hidden-launch" }],
+        ["archive-hidden", { type: "session.archive", agentKind: "opencode", sessionId: info.id, archived: true }],
+        ["resume-hidden", { type: "session.activate", target: { type: "resume", sessionId: info.id, agentKind: "opencode" } }],
+      ] as const) {
+        request(owner, { requestId, ...payload });
+        await expect(reply(owner, requestId)).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      }
+      request(owner, { type: "session.launch.read", requestId: "launch-read-hidden", launchId: "known-opencode-launch" });
+      await expect(reply(owner, "launch-read-hidden")).resolves.toMatchObject({ type: "session.launch.result", phase: "absent" });
+      request(owner, { type: "session.activate", requestId: "resume-legacy", target: { type: "resume", sessionId: info.id } });
+      await expect(reply(owner, "resume-legacy")).resolves.toMatchObject({ type: "protocol.error", code: "session_not_found" });
+      const input = { type: "runtime.command", runtimeId, commandId: "oc-input",
+        command: { type: "user_message", text: "Fixture prompt", messageId: "app-id" } };
+      request(owner, input);
+      await expect(until(owner, message => message.commandId === input.commandId)).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      expect(get).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+
+      request(owner, { type: "device.features", features: ["agent.opencode"] });
+      await until(owner, message => message.type === "device.ready");
+      request(owner, { type: "session.configuration.read", requestId: "config-visible", ...kind });
+      const config = await reply(owner, "config-visible");
+      expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "opencode" });
+      request(owner, { type: "session.launch", requestId: "launch-visible", launchId: "stable-opencode-launch", ...kind,
+        binding: config.binding, revision: config.revision, values: config.values });
+      const unknown = await until(owner, message => message.requestId === "launch-visible" && message.phase === "unknown");
+      expect(unknown).toMatchObject({ sessionId: newId, agentKind: "opencode" });
+      request(owner, { type: "session.launch.read", requestId: "restore-config", launchId: "stable-opencode-launch" });
+      await expect(reply(owner, "restore-config")).resolves.toMatchObject({ phase: "ready", sessionId: newId, agentKind: "opencode" });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(switchModel).toHaveBeenCalledExactlyOnceWith({ sessionID: newId, model: selected }, expect.anything());
+      request(owner, { type: "session.launch.read", requestId: "lookup-visible", launchId: "known-opencode-launch" });
+      await expect(reply(owner, "lookup-visible")).resolves.toMatchObject({ phase: "ready", sessionId: info.id, agentKind: "opencode" });
+      const receipt = (phone: TestDevice) => until(phone, message =>
+        message.type === "runtime.event" && (message.event as { commandId?: string })?.commandId === input.commandId);
+      request(owner, input);
+      await expect(receipt(owner)).resolves.toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      request(owner, input);
+      await expect(receipt(owner)).resolves.toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      expect(prompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadata: { "orbis.clientMessageId": "app-id" } }), expect.anything());
+
+      // For the other device, the E2E payloads sent before opting in contain neither the runtime nor the private receipt.
+      request(other, { type: "session.list", requestId: "legacy-list" });
+      const legacy = await until(other, message => {
+        expect(JSON.stringify(message)).not.toMatch(/oc-session|oc-input|opencode/);
+        return message.requestId === "legacy-list";
+      });
+      expect(legacy.sessions).toEqual([]);
+      request(other, { type: "device.features", features: ["agent.opencode"] });
+      await until(other, message => message.type === "device.ready");
+      request(other, input);
+      const conflict = await until(other, message => {
+        expect((message.event as { commandId?: string } | undefined)?.commandId).not.toBe(input.commandId);
+        return message.commandId === input.commandId;
+      });
+      expect(conflict).toMatchObject({ type: "protocol.error", code: "command_id_conflict" });
+      expect(prompt).toHaveBeenCalledTimes(1);
+    } finally { other.close(); }
+  });
+
   it("session.browse 返回目录和可下载文件，并标出有会话历史的目录", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
@@ -5090,10 +5203,10 @@ describe("APNS-L18/L19 per-phone push routing", () => {
     await paired.device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     await until(paired.device, message => message.type === "device.path");
   };
-  const backend = async () => {
+  const backend = async (runtimeId = "runtime") => {
     const descriptor = host.loopback!.descriptor!;
     runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
-      metadata: { runtimeId: "runtime", sessionId: "session", name: "Synthetic Pi", cwd: directory, status: "idle" } });
+      metadata: { runtimeId, sessionId: "session", name: "Synthetic Pi", cwd: directory, status: "idle" } });
     await runtime.next();
   };
   const captureWake = () => {
@@ -5106,6 +5219,27 @@ describe("APNS-L18/L19 per-phone push routing", () => {
     await host?.stop(); await relay?.close();
     if (directory) await rm(directory, { recursive: true, force: true });
     runtime = undefined!; logs.length = 0;
+  });
+
+  it("does not send OpenCode APNs wake requests to devices without its handshake feature", async () => {
+    await setup();
+    const legacy = await pair(); await open(legacy);
+    const aware = await pair(); await open(aware);
+    aware.device.sendData(JSON.stringify({ type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.opencode"] }));
+    await until(aware.device, message => message.type === "device.ready");
+    aware.device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "history-enabled" }));
+    await until(aware.device, message => message.requestId === "history-enabled");
+    aware.device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: PROTOCOL_VERSION,
+      requestId: "not-viewing", runtimeId: null, sessionId: null }));
+    expect(await until(aware.device, message => message.requestId === "not-viewing")).toMatchObject({ accepted: true });
+    const runtimeId = "opencode:synthetic-opencode";
+    await backend(runtimeId);
+    await until(aware.device, message => message.type === "runtime.online");
+    const wake = captureWake();
+    runtime.publish(1, { type: "interaction.requested", request: { runtimeId, requestId: "approval-opencode",
+      extensionId: "opencode.permission", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(wake.mock.calls[0]![1]!.body as string)).toMatchObject({ category: "approval-requested", deviceIds: [aware.device.deviceId] });
   });
 
   it("wakes both a disconnected retained session and a never-connected phone", async () => {

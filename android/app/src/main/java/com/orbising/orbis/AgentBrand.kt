@@ -30,6 +30,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Codex("Codex", R.drawable.ic_agent_codex),
     DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
     Claude("Claude Code", R.drawable.ic_agent_claude),
+    OpenCode("OpenCode", R.drawable.ic_agent_opencode),
     Kimi("Kimi Code", R.drawable.ic_agent_kimi),
 }
 
@@ -38,6 +39,7 @@ internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
+    "opencode" -> AgentBrand.OpenCode
     KIMI_CODE_KIND -> AgentBrand.Kimi
     else -> AgentBrand.Pi
 }
@@ -51,6 +53,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Codex -> if (LocalOrbisDarkTheme.current) Color(0xFF77D6C7) else Color(0xFF00655D)
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
     AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA9BBFF) else Color(0xFF3550CF)
+    AgentBrand.OpenCode -> if (LocalOrbisDarkTheme.current) Color(0xFFA99BFF) else Color(0xFF5E4CAD)
     AgentBrand.Kimi -> if (LocalOrbisDarkTheme.current) Color(0xFFBDC6FF) else Color(0xFF343B8E)
     AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
 }

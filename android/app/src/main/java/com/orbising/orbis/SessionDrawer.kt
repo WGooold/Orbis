@@ -98,7 +98,8 @@ internal enum class DrawerAgentFilter(
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude"),
-    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND);
+    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND),
+    OpenCode("opencode", "OpenCode", "opencode");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -118,6 +119,7 @@ private fun DrawerAgentFilterMenu(
     onRequestProviders: () -> Unit,
     desktopDeepSeek: Boolean = false,
     kimiCode: Boolean = false,
+    openCode: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -155,7 +157,7 @@ private fun DrawerAgentFilterMenu(
                 }
             } else {
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
-            DrawerAgentFilter.values().filter { (it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected) && (it != DrawerAgentFilter.Kimi || kimiCode) }.forEach { filter ->
+            DrawerAgentFilter.values().filter { (it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected) && (it != DrawerAgentFilter.Kimi || kimiCode) && (it != DrawerAgentFilter.OpenCode || openCode || it == selected) }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -226,6 +228,7 @@ internal fun SessionDrawer(
     var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
+    val openCodeUnavailable = state.openCodeAvailability?.takeIf { state.e2eReady && agentFilter == DrawerAgentFilter.OpenCode }?.message()
     val currentProvider = state.currentProviders[agentFilter.key]
     val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
     var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
@@ -401,6 +404,7 @@ internal fun SessionDrawer(
                         onRequestProviders = onRequestProviders,
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
                         kimiCode = state.kimiCodeSupported,
+                        openCode = state.openCodeAvailability != null || state.supportedAgents?.contains("opencode") == true || state.sessions.values.any { it.agentKind == "opencode" },
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
                     )
@@ -483,7 +487,7 @@ internal fun SessionDrawer(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                if (searchTerm.isEmpty()) {
+                                openCodeUnavailable ?: if (searchTerm.isEmpty()) {
                                     if (showArchived) L10n.tr("没有已归档的会话")
                                     else if (agentFilter.hasProviderFilter && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) L10n.tr("尚未获取当前 provider")
                                     else if (agentFilter == DrawerAgentFilter.All) L10n.tr("还没有可显示的会话")

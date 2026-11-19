@@ -184,6 +184,7 @@ struct OrbisPalette {
         switch kind {
         case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x00655D)
         case "dsh", "dshDesktop": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
+        case "opencode": return Color(hex: dark ? 0xA99BFF : 0x5E4CAD)
         case kimiCodeKind: return Color(hex: dark ? 0xBDC6FF : 0x343B8E)
         case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
         default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
@@ -2218,10 +2219,17 @@ struct AgentEmblem: View {
         }.accessibilityLabel(agentTitle(kind))
     }
     private var mark: some View {
-        Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == nil ? .original : .template)
-            .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
-            .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
-            .modifier(OrbisActionPulse())
+        Group {
+            if kind == "opencode" {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: size * (recessed ? 0.42 : 0.7), weight: .medium))
+                    .foregroundStyle(OrbisPalette(scheme).agent(kind))
+            } else {
+                Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == nil ? .original : .template)
+                    .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
+                    .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
+            }
+        }.frame(width: size, height: size).modifier(OrbisActionPulse())
     }
 }
 
@@ -2231,6 +2239,7 @@ func agentTitle(_ kind: String?) -> String {
     case "dsh", "dshDesktop": return "DeepSeek"
     case "claude": return "Claude Code"
     case kimiCodeKind: return "Kimi Code"
+    case "opencode": return "OpenCode"
     default: return "Pi"
     }
 }

@@ -1,22 +1,26 @@
-import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, type AgentKind } from "@orbis/protocol";
+import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCODE, type AgentKind } from "@orbis/protocol";
 import { isKimiId, KIMI_KIND } from "./kimi-sessions.js";
 export const DSH_DESKTOP_KIND = "dshDesktop" satisfies AgentKind;
+export const OPENCODE_KIND = "opencode" satisfies AgentKind;
+export const OPENCODE_RUNTIME_PREFIX = "opencode:";
 const isDshDesktopRuntime = (value: unknown): boolean => typeof value === "string" && value.startsWith("dsh-desktop:");
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Obj : undefined;
 
 /** Each distinct hidden-kind set is one directory/cursor projection. */
-export type AgentView = 0 | 1 | 2 | 3;
-const views = [[], [KIMI_KIND], [DSH_DESKTOP_KIND], [DSH_DESKTOP_KIND, KIMI_KIND]] as const satisfies ReadonlyArray<readonly AgentKind[]>;
-export const agentViews = [0, 1, 2, 3] as const;
-export const hiddenKinds = (view: AgentView): readonly AgentKind[] => views[view];
+export type AgentView = number;
+export const agentViews = [0, 1, 2, 3, 4, 5, 6, 7];
+const negotiatedAgents = [KIMI_KIND, DSH_DESKTOP_KIND, OPENCODE_KIND] as const;
+export const hiddenKinds = (view: AgentView): readonly AgentKind[] => negotiatedAgents.filter((_, index) => (view & (1 << index)) !== 0);
 export function deviceAgentView(features?: ReadonlySet<string>): AgentView {
-  return ((features?.has(DEVICE_FEATURE_KIMI_CODE) ? 0 : 1) | (features?.has(DEVICE_FEATURE_DSH_DESKTOP) ? 0 : 2)) as AgentView;
+  return (features?.has(DEVICE_FEATURE_KIMI_CODE) ? 0 : 1) | (features?.has(DEVICE_FEATURE_DSH_DESKTOP) ? 0 : 2)
+    | (features?.has(DEVICE_FEATURE_OPENCODE) ? 0 : 4);
 }
 export const allowsAgent = (view: AgentView, kind: unknown): boolean => !hiddenKinds(view).some(hidden => hidden === kind);
 export const allowsRuntime = (view: AgentView, id: unknown): boolean =>
-  (!(view & 1) || !isKimiId(id)) && (!(view & 2) || !isDshDesktopRuntime(id));
+  (!(view & 1) || !isKimiId(id)) && (!(view & 2) || !isDshDesktopRuntime(id)) &&
+  (!(view & 4) || typeof id !== "string" || !id.startsWith(OPENCODE_RUNTIME_PREFIX));
 export function allowsAgentIdentity(view: AgentView, value: object): boolean {
   const row = value as Obj;
   return allowsAgent(view, row.agentKind) && allowsAgent(view, row.kind) && allowsRuntime(view, row.sessionId) && allowsRuntime(view, row.runtimeId);

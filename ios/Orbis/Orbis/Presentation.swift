@@ -212,7 +212,7 @@ private let kimiCodeFeature = "agent.kimiCode"
 func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
     let advertised = ready["hostFeatures"] as? [String] ?? []
     guard advertised.contains("device.features") else { return [] }
-    return ["agent.dshDesktop"] + [kimiCodeFeature, messageRenderFeature].filter { advertised.contains($0) }
+    return ["agent.dshDesktop", "agent.opencode"] + [kimiCodeFeature, messageRenderFeature].filter { advertised.contains($0) }
 }
 
 /// A full authenticated ready follows the declaration; a filtered fallback is not an acknowledgment.
@@ -229,6 +229,7 @@ func kimiSpawnMode(_ kind: String?, otherwise mode: String = "tui") -> String {
 }
 
 func runtimeAgentKind(_ runtimeId: String) -> String? {
+    if runtimeId.hasPrefix("opencode:") { return "opencode" }
     func owned(by prefix: String) -> Bool { runtimeId == prefix || runtimeId.hasPrefix(prefix + ":") }
     if owned(by: "codex-desktop") { return "codexDesktop" }
     if owned(by: "codex") { return "codex" }
