@@ -197,7 +197,7 @@ internal fun RemoteState.reconcilePendingSends(now: Long): Pair<RemoteState, Set
             queue = conversation?.queuedMessages.orEmpty(),
             revision = sessionRevisions[sessionId] ?: 0L,
             connected = connected,
-            isMaterialized = { id -> conversation?.messages?.any { it.messageId == id || it.clientMessageId == id } == true },
+            isMaterialized = { id -> conversation?.messages?.any { it.materializesClientMessage(id) } == true },
         )
     }
     val syncs = sessions.mapNotNullTo(mutableSetOf()) { sessionId -> runtimes.entries.firstOrNull { it.value.sessionId == sessionId }?.key }

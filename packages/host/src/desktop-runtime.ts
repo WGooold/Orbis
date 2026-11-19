@@ -17,6 +17,8 @@ import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDe
 import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
+import { loadKimiCodeConfig } from "./config.js";
+import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
@@ -705,8 +707,16 @@ export class DesktopRuntime {
         if (runtime) this.#dshDesktopRuntime = runtime;
         return runtime;
       };
+      const kimi = this.#qa ? undefined : await loadKimiCodeConfig(this.#stateDir).catch(() => {
+        this.log("Kimi Code Web: 无法读取本地接入配置");
+        return undefined;
+      });
+      if (this.#desired !== settings) { await this.#dispose(); return; }
+      const kimiRuntime = kimi?.kimiCodeEnabled ? new KimiRuntime({ stateDir: this.#stateDir, homeDir: kimi.kimiCodeHome,
+        ...(kimi.kimiCodeEndpoint === undefined ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) }) : undefined;
       let relayAuthenticated = false;
       const service = await HostService.create({
+        ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
         managementBackends: () => (["pi", "codex", "dsh"] as const).map(kind => {

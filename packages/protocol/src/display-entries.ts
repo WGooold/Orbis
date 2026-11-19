@@ -271,6 +271,7 @@ function projectMessage(entry: RemoteSessionEntry): DisplayEntry[] {
     ...(message["toolSummary"] === undefined ? {} : { toolSummary: message["toolSummary"] as ChatMessage["toolSummary"] }),
     // ADR-0049 §2：只复制身份对应，不改变显示语义，因此不升级 projectionVersion。
     ...(clientMessageId === undefined ? {} : { clientMessageId }),
+    ...(role === "user" && Array.isArray(message["clientMessageIds"]) ? { clientMessageIds: message["clientMessageIds"] as string[] } : {}),
     isError: failed,
   };
   return [{

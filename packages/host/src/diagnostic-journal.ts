@@ -139,7 +139,7 @@ export class DiagnosticJournal {
    * 「比这一页更新的还没读的那些」，为 null 表示已经追平最新。客户端别把它当成「还有更早的」——
    * 那会让界面把「一页里最新的一条」说成「最近的一条」。
    */
-  page(request: DiagnosticPageRequest = {}): DiagnosticPage {
+  page(request: DiagnosticPageRequest = {}, admits?: (row: DiagnosticRecord) => boolean): DiagnosticPage {
     if (this.#evict() > 0) this.#rewriteAll();
     const limit = Math.min(Math.max(1, request.limit ?? this.#maxPageSize), this.#maxPageSize);
     const from = this.#decodeCursor(request.cursor);
@@ -154,7 +154,7 @@ export class DiagnosticJournal {
     for (const entry of this.#entries) {
       if (entry.seq < startSeq) continue;
       if (matched.length >= limit) break;
-      if (!this.#matches(entry.record, request)) {
+      if (admits?.(entry.record) === false || !this.#matches(entry.record, request)) {
         // 被过滤掉的记录也算「看过了」，游标必须越过它，否则下一页会原地打转。
         lastSeq = entry.seq;
         continue;
@@ -179,14 +179,15 @@ export class DiagnosticJournal {
     return removed;
   }
 
-  stats(): { records: number; dropped: number; persistFailures: number; oldestAt: number | null; newestAt: number | null } {
+  stats(admits?: (row: DiagnosticRecord) => boolean): { records: number; dropped: number; persistFailures: number; oldestAt: number | null; newestAt: number | null } {
+    const entries = admits ? this.#entries.filter(({ record }) => admits(record)) : this.#entries;
     return {
-      records: this.#entries.length,
+      records: entries.length,
       dropped: this.#dropped,
       // 落盘失败次数：>0 表示盘上那份比内存里这份少，读盘的人必须知道有缺口。
       persistFailures: this.#persistFailures,
-      oldestAt: this.#entries[0]?.record.at ?? null,
-      newestAt: this.#entries[this.#entries.length - 1]?.record.at ?? null,
+      oldestAt: entries[0]?.record.at ?? null,
+      newestAt: entries.at(-1)?.record.at ?? null,
     };
   }
 

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadHostConfig } from "./config.js";
+import { loadHostConfig, loadKimiCodeConfig } from "./config.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -10,6 +10,31 @@ afterEach(async () => {
 });
 
 describe("Orbis Host configuration", () => {
+  it("keeps Kimi Code disabled unless explicitly enabled and resolves its local data root", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-config-"));
+    temporaryDirectories.push(stateDir);
+    const required = { ORBIS_RUNTIME_CREDENTIAL: "fixture", ORBIS_RELAY_URL: "wss://relay.example.test" };
+    const defaults = await loadHostConfig({ stateDir, env: required });
+    expect(defaults.kimiCodeEnabled).toBe(false);
+    expect(defaults.kimiCodeHome).toMatch(/\.kimi-code$/u);
+    const configured = await loadHostConfig({ stateDir, env: {
+      ...required, ORBIS_KIMI_CODE_ENABLED: "1", KIMI_CODE_HOME: join(stateDir, "kimi"),
+      ORBIS_KIMI_CODE_ENDPOINT: "http://127.0.0.1:58627",
+    } });
+    expect(configured).toMatchObject({ kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" });
+    expect((await loadHostConfig({ stateDir, env: { ...required, ORBIS_KIMI_CODE_ENABLED: "true" } })).kimiCodeEnabled).toBe(false);
+  });
+  // Desktop settings supply Relay credentials independently; a Kimi-only file enables the same connector.
+  it("reads the desktop Kimi opt-in without any Relay settings", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-config-"));
+    temporaryDirectories.push(stateDir);
+    expect((await loadKimiCodeConfig(stateDir, {})).kimiCodeEnabled).toBe(false);
+    const settings = { kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" };
+    await writeFile(join(stateDir, "config.json"), JSON.stringify(settings));
+    expect(await loadKimiCodeConfig(stateDir, {})).toEqual(settings);
+    expect(await loadKimiCodeConfig(stateDir, { KIMI_CODE_HOME: join(stateDir, "other") }))
+      .toEqual({ ...settings, kimiCodeHome: join(stateDir, "other") });
+  });
   // 尾网链路本身已加密，隔离环境的中继就在尾网里，用 ws:// 是安全的。
   it("accepts an unencrypted relay only on loopback or inside the tailnet", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "orbis-relay-url-"));

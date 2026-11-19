@@ -279,6 +279,7 @@ data class ChatMessage(
     val toolSummary: ToolSummary? = null,
     /** ADR-0049：由手机发送产生时，源端带回的原 messageId；只用于对账本地待确认发送。 */
     val clientMessageId: String? = null,
+    val clientMessageIds: List<String>? = null,
 )
 
 @Serializable
@@ -605,6 +606,7 @@ data class RemoteState(
     /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
     val launchableAgents: Set<String>? = null,
     val sessionConfigurationSupported: Boolean = false,
+    val kimiCodeSupported: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
@@ -1335,7 +1337,9 @@ internal fun cachedHistoryRows(
 ): List<CachedSessionRow> {
     if (host == null) return emptyList()
     // ADR-0049 §6.4：未结算的归档叠加在目录上，卡片立即出现在目标列表。
-    val catalog = state.sessionsWithLedger()
+    val catalog = state.sessionsWithLedger().let { rows ->
+        if (state.kimiCodeSupported) rows else rows.filterValues { !isKimiCode(it.agentKind, it.sessionId) }
+    }
     val runtimesBySession = state.runtimes.values
         .filter { it.sessionId != null }
         .sortedBy { title(it.sessionId, it) }
@@ -1781,6 +1785,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
     return copy(
         connection = RelayConnection.RECONNECTING,
         homeDirectoryReceived = false,
+        kimiCodeSupported = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, queriedEntries = emptySet(), queriedTurns = emptySet(), manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
         changeViewer = null,
@@ -2022,7 +2027,7 @@ class RelayReducer(
                 }
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
-                }.orEmpty().associateBy(RuntimeSummary::runtimeId)
+                }.orEmpty().map { it.withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
                 // 显式 `null`（它不知道装没装 codex）；任何一种"不知道"都保持原判（未知 = 不限制）。
                 val supportedAgents = message["agents"]
@@ -2039,6 +2044,7 @@ class RelayReducer(
                 val codexDesktop = message["codexDesktop"]
                     ?.takeIf { it !is JsonNull }
                     ?.let { element -> json.decodeFromJsonElement<CodexDesktopAttach>(element) }
+                val kimiCodeSupported = hasNegotiatedKimiCode(message)
                 val sessionChanged = runtimes.keys.associateWith { runtimeId ->
                     val previousRuntime = state.runtimes[runtimeId]
                     val hasPrevious = previousRuntime != null ||
@@ -2112,6 +2118,7 @@ class RelayReducer(
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     homeDirectoryReceived = true,
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
+                    kimiCodeSupported = kimiCodeSupported,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2181,7 +2188,7 @@ class RelayReducer(
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                } ?: return state
+                }?.withKimiIdentity() ?: return state
                 val previousRuntime = state.runtimes[runtime.runtimeId]
                 val hasPreviousRuntime = previousRuntime != null ||
                     state.knownRuntimeSessions.containsKey(runtime.runtimeId)
@@ -2300,6 +2307,7 @@ class RelayReducer(
                 state.copy(
                     e2eReady = false,
                     homeDirectoryReceived = false,
+                    kimiCodeSupported = false,
                     currentProviders = emptyMap(),
                     sessionActivateRequests = emptySet(),
                     sessionActivateTargets = emptyMap(),
@@ -2664,7 +2672,7 @@ class RelayReducer(
             "runtime.metadata" -> {
                 val metadata = event["metadata"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                } ?: return state
+                }?.withKimiIdentity() ?: return state
                 if (metadata.runtimeId != runtimeId) return state
                 val previousRuntime = state.runtimes[runtimeId]
                 val previousView = state.runtimeSessionViews[runtimeId]

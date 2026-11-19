@@ -500,7 +500,7 @@ internal fun RemoteApp(
             val kind = agentBrand(activation.agentKind).title
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
-            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind)) L10n.tr("，此会话无头（电脑上无窗口）") else ""
+            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind) && activation.agentKind != KIMI_CODE_KIND) L10n.tr("，此会话无头（电脑上无窗口）") else ""
             model.showShortFeedback(L10n.tr("会话已启动"), "activation:${activation.sessionId}")
             model.clearActivationNotice()
         }
@@ -1589,6 +1589,7 @@ internal fun ChatScreen(
     // ADR-0049 §6.8：启动中的会话用占位身份进入聊天页，可以写草稿和发送，消息等会话上线后再提交。
     val launch = state.launchPage
     val launchOpen = launch != null && launch.failure == null
+    val kimiCode = isKimiCode(runtime?.agentKind ?: launch?.target?.get("agentKind"), runtimeId)
     val sessionId = runtime?.sessionId
     // 启动页还没有 Runtime：本地行与发送飞入按启动请求的会话归属（恢复时是原会话，新建时是占位身份）。
     val pageSessionId = sessionId ?: launch?.let { it.resumed ?: it.placeholder }
@@ -1752,7 +1753,7 @@ internal fun ChatScreen(
     var input by remember(runtimeId, sessionId, state.deviceId) {
         mutableStateOf(model.loadDraft(runtimeId))
     }
-    val composerMode = composerAction(isWorking = runtime?.status == "running", input = input)
+    val composerMode = composerAction(isWorking = runtime?.status == "running", input = if (kimiCode) "" else input)
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
     var modelConfigurationOpen by remember(runtimeId) { mutableStateOf(false) }
     var modelConfigurationSetting by remember(runtimeId) { mutableStateOf<String?>(null) }
@@ -1807,7 +1808,7 @@ internal fun ChatScreen(
     val attachedUploads = runtimeUploads.filter { it.taskId in attachedTaskIds }
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 基础协议支持附件路径，不使用 `messageAttachments` 能力位（ADR-0012）。
-    val canAttachFiles = runtime != null && state.hostId != null
+    val canAttachFiles = !kimiCode && runtime != null && state.hostId != null
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -2214,9 +2215,10 @@ internal fun ChatScreen(
                         messages = state.queuePanelItems(runtimeId),
                         unconfirmed = OperationKinds.unconfirmedQueueIds(state.ledger, runtimeId),
                         canSend = state.e2eReady && runtime != null,
+                        allowCancel = !kimiCode,
                         onCancel = model::cancelQueuedMessage,
                     )
-                    OrbisCollapse(expanded = deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
+                    OrbisCollapse(expanded = !kimiCode && deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2292,7 +2294,7 @@ internal fun ChatScreen(
                             }
                         }
                     }
-                    if (attachedUploads.isNotEmpty()) {
+                    if (canAttachFiles && attachedUploads.isNotEmpty()) {
                         AttachmentChips(
                             uploads = attachedUploads,
                             onRemove = { taskId ->
@@ -2558,14 +2560,16 @@ internal fun ChatScreen(
                             downloadArtifact = { artifact -> if (model.downloadArtifact(artifact)) chatFlight.launch() },
                             downloadFile = { path -> if (model.downloadFile(path)) chatFlight.launch() },
                             fileChanges = {
-                                val changes = state.turnChanges[runtimeId]
-                                turnChangeProjection?.summariesByRow?.get(item.key).orEmpty().forEach { summary ->
-                                    if (changes == null) return@forEach
-                                    key(summary.changeSetId) {
-                                        TurnChangeSummaryView(summary, changes.manifests[summary.versionKey] ?: ChangeManifest(summary),
-                                            state.connection == RelayConnection.ONLINE,
-                                            onReadManifest = { model.readChangeManifest(runtimeId, summary) },
-                                            onOpenFile = { model.openChangeViewer(runtimeId, summary, it) })
+                                if (!kimiCode) {
+                                    val changes = state.turnChanges[runtimeId]
+                                    turnChangeProjection?.summariesByRow?.get(item.key).orEmpty().forEach { summary ->
+                                        if (changes == null) return@forEach
+                                        key(summary.changeSetId) {
+                                            TurnChangeSummaryView(summary, changes.manifests[summary.versionKey] ?: ChangeManifest(summary),
+                                                state.connection == RelayConnection.ONLINE,
+                                                onReadManifest = { model.readChangeManifest(runtimeId, summary) },
+                                                onOpenFile = { model.openChangeViewer(runtimeId, summary, it) })
+                                        }
                                     }
                                 }
                             },
@@ -4209,6 +4213,7 @@ private fun PendingMessagesPanel(
     unconfirmed: Set<String>,
     canSend: Boolean,
     onCancel: (String) -> String?,
+    allowCancel: Boolean = true,
 ) {
     if (messages.isEmpty()) return
     // S6：附属物用真凹陷面（inset 面 + 内阴影）；半透明叠加的色随底板漂移，和其他凹陷面对不上。
@@ -4230,7 +4235,7 @@ private fun PendingMessagesPanel(
             ) {
                 items(messages, key = { "queued:${it.queueId}" }) { message ->
                     // ADR-0049 §6.3：撤回结果不明时回到原位并标“撤回未确认”，核对前不能再撤回。
-                    QueuedMessageRow(message, message.queueId in unconfirmed, canSend) { onCancel(message.queueId) }
+                    QueuedMessageRow(message, message.queueId in unconfirmed, canSend, allowCancel) { onCancel(message.queueId) }
                 }
             }
         }
@@ -4238,7 +4243,7 @@ private fun PendingMessagesPanel(
 }
 
 @Composable
-private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSend: Boolean, onCancel: () -> Unit) {
+private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSend: Boolean, allowCancel: Boolean, onCancel: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -4253,7 +4258,7 @@ private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSe
             )
         }
         // 只有还没送进上下文的消息能撤回；结果由队列事件回报（与 iOS 一致）。
-        if (message.state == "accepted") {
+        if (allowCancel && message.state == "accepted") {
             NeumorphTextButton(if (unconfirmed) L10n.tr("撤回未确认") else L10n.tr("撤回"), onClick = onCancel, icon = OrbisSymbols.Close,
                 enabled = canSend && !unconfirmed)
         }

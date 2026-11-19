@@ -20,7 +20,7 @@ export const WIRE_ENTRY_LIMIT_BYTES = 24 * 1024;
 const MAX_DEPTH = 32;
 /** Fixed live text target; complete inventories and their identities remain authoritative. */
 export const WIRE_LIVE_LIMIT_BYTES = 8 * 1024;
-const IDENTITY_FIELDS = new Set(["id", "entryId", "parentId", "messageId", "clientMessageId", "toolCallId",
+const IDENTITY_FIELDS = new Set(["id", "entryId", "parentId", "messageId", "clientMessageId", "clientMessageIds", "toolCallId",
   "firstKeptEntryId", "type", "role", "timestamp", "toolName", "turnId", "epoch", "checkpointId"]);
 
 const encoder = new TextEncoder();
@@ -134,7 +134,7 @@ export function truncateWireEntry<T extends { data: Record<string, unknown> }>(
       const preview: Record<string, unknown> = {
         ...pick(original, ["firstKeptEntryId", "display"]),
         ...(typeof original.summary === "string" ? { summary: truncateWireText(original.summary, 1024) } : {}),
-        ...(message ? { message: { ...pick(message, ["messageId", "role", "timestamp", "clientMessageId", "toolCallId", "toolName", "isError", "stopReason"]), content } } : {}),
+        ...(message ? { message: { ...pick(message, ["messageId", "role", "timestamp", "clientMessageId", "clientMessageIds", "toolCallId", "toolName", "isError", "stopReason"]), content } } : {}),
         ...(original.content === undefined ? {} : { content }),
         wireTruncation: { originalBytes },
       };

@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
-import { hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { projectAgentMessage, projectBackendDomain } from "./device-agent-visibility.js";
+const legacyDeviceMessage = (value: object) => projectAgentMessage(2, value);
+const legacyHostDomain = (domain: string, value: unknown) => projectBackendDomain(2, domain, value);
+const hiddenFromLegacy = (value: object) => legacyDeviceMessage(value) === undefined;
 
 const session = (index: number, agentKind: AgentSessionSummary["agentKind"]): AgentSessionSummary => ({
   agentKind, sessionId: `${agentKind === "dshDesktop" ? "dsh-desktop" : "dsh"}:s${index}`, hostname: "Host", cwd: `D:/${"目录".repeat(800)}`,
@@ -24,7 +27,7 @@ describe("Desktop visibility for released Apps", () => {
       { kind: "dshDesktop", ready: true, complete: true, sessions: all.length - visible.length, elapsedMs: 1 },
     ], currentProviders: [{ agentKind: "dsh", provider: "deepseek-web" }, { agentKind: "dshDesktop", provider: "native" }] });
     const committed = registry.read<HostCatalogState>({ kind: "host" }, "catalog")!;
-    const first = legacyHostDomain("catalog", committed.value, value => facts.hiddenCatalog(value, "dshDesktop")) as HostCatalogState;
+    const first = facts.hiddenCatalog(committed.value as Record<string, unknown>, "dshDesktop") as HostCatalogState;
     HostCatalogStateSchema.parse(first);
     expect(JSON.stringify(first)).not.toContain("dshDesktop");
     expect(first.totalSessions).toBe(visible.length);
@@ -45,10 +48,10 @@ describe("Desktop visibility for released Apps", () => {
 
   it("removes Desktop backends, statuses, providers and operations from host-scope values", () => {
     const backends = legacyHostDomain("backends", { backends: [{ kind: "dsh" }, { kind: "dshDesktop" }], agents: ["dsh", "dshDesktop"],
-      launchableAgents: ["dshDesktop"], codexDesktop: null, dshDesktop: { state: "attached", reason: "x" } }, value => value);
+      launchableAgents: ["dshDesktop"], codexDesktop: null, dshDesktop: { state: "attached", reason: "x" } });
     expect(backends).toEqual({ backends: [{ kind: "dsh" }], agents: ["dsh"], launchableAgents: [], codexDesktop: null });
-    expect(legacyHostDomain("providers", { providers: [{ agentKind: "dshDesktop" }, { agentKind: "pi" }] }, value => value)).toEqual({ providers: [{ agentKind: "pi" }] });
-    expect(legacyHostDomain("operations", { items: [{ agentKind: "dshDesktop" }, { agentKind: null }] }, value => value)).toEqual({ items: [{ agentKind: null }] });
+    expect(legacyHostDomain("providers", { providers: [{ agentKind: "dshDesktop" }, { agentKind: "pi" }] })).toEqual({ providers: [{ agentKind: "pi" }] });
+    expect(legacyHostDomain("operations", { items: [{ agentKind: "dshDesktop" }, { agentKind: null }] })).toEqual({ items: [{ agentKind: null }] });
   });
 
   it("drops Desktop runtime traffic and filters bootstrap, list and diagnostics messages", () => {

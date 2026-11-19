@@ -206,6 +206,28 @@ func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String
     return runtimeAgentKind(runtimeId)
 }
 
+let kimiCodeKind = "kimiCode"
+private let kimiCodeFeature = "agent.kimiCode"
+
+func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
+    let advertised = ready["hostFeatures"] as? [String] ?? []
+    guard advertised.contains("device.features") else { return [] }
+    return ["agent.dshDesktop"] + [kimiCodeFeature, messageRenderFeature].filter { advertised.contains($0) }
+}
+
+/// A full authenticated ready follows the declaration; a filtered fallback is not an acknowledgment.
+func hasNegotiatedKimiCode(_ ready: [String: Any]) -> Bool {
+    ready["dshDesktop"] != nil && deviceAgentFeatures(ready).contains(kimiCodeFeature)
+}
+
+func isKimiCode(kind: String?, id: String?) -> Bool {
+    kind == kimiCodeKind || id?.hasPrefix("kimi-code:") == true
+}
+
+func kimiSpawnMode(_ kind: String?, otherwise mode: String = "tui") -> String {
+    kind == kimiCodeKind ? "headless" : mode
+}
+
 func runtimeAgentKind(_ runtimeId: String) -> String? {
     func owned(by prefix: String) -> Bool { runtimeId == prefix || runtimeId.hasPrefix(prefix + ":") }
     if owned(by: "codex-desktop") { return "codexDesktop" }
@@ -213,6 +235,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if runtimeId.hasPrefix("dsh-desktop:") { return "dshDesktop" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
     if runtimeId.hasPrefix("claude:") { return "claude" }
+    if isKimiCode(kind: nil, id: runtimeId) { return kimiCodeKind }
     return nil
 }
 
@@ -471,7 +494,7 @@ func chatRows(_ messages: [ChatMessage], turnIdsByMessageId: [String: String] = 
             var fragment = ChatMessage(messageId: message.messageId, role: message.role, content: Array(message.content[start..<end]),
                                        timestamp: message.timestamp, isError: message.isError)
             fragment.toolSummary = message.toolSummary; fragment.toolCallId = message.toolCallId
-            fragment.toolName = message.toolName; fragment.clientMessageId = message.clientMessageId
+            fragment.toolName = message.toolName; fragment.clientMessageId = message.clientMessageId; fragment.clientMessageIds = message.clientMessageIds
             pending.append(fragment)
         }
         if end == message.content.count { completed.insert(message.messageId) }
@@ -1124,7 +1147,8 @@ actor SessionDirectoryCatalogWorker {
     init(beforeRows: (@Sendable () -> Void)? = nil) { self.beforeRows = beforeRows }
 
     func resolve(sessions: [SessionSummary], runtimes: [RuntimeSummary], messages: [String: [ChatMessage]],
-                 archived: [String: Bool]) -> SessionDirectoryCatalog {
+                 archived: [String: Bool], kimiCodeSupported: Bool = false) -> SessionDirectoryCatalog {
+        let sessions = kimiCodeSupported ? sessions : sessions.filter { !isKimiCode(kind: $0.agentKind, id: $0.sessionId) }
         let bySession = Dictionary(runtimes.compactMap { runtime in runtime.sessionId.map { ($0, runtime) } },
                                    uniquingKeysWith: { first, _ in first })
         let sameSessions = source == sessions

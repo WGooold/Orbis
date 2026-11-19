@@ -106,7 +106,7 @@ export class FieldTrafficMeter {
     }).sort((a, b) => b.totalSampleBytes - a.totalSampleBytes);
   }
   release(device: string): void { this.#pages.delete(device); }
-  page(device: string, request: TransportFieldsRequest): TransportFieldsPage {
+  page(device: string, request: TransportFieldsRequest, admits?: (backend: string) => boolean): TransportFieldsPage {
     const now = this.now(); let page = this.#pages.get(device), offset = 0;
     const failure = (): TransportFieldsPage => ({ type: "transport.fields.page", protocolVersion: Protocol.PROTOCOL_VERSION, requestId: request.requestId,
       snapshotId: null, offset: 0, totalRows: 0, rows: [], nextCursor: null, startedAt: this.#started, observedAt: now,
@@ -119,7 +119,7 @@ export class FieldTrafficMeter {
         offset = cursor[1] as number;
       } catch { return failure(); }
     } else {
-      page = { id: randomUUID(), at: now, sampledMessages: this.#sampledMessages, sampledBytes: this.#sampledBytes, skippedSamples: this.#skipped, rows: this.snapshot().filter(row => (!request.backend || row.backend === request.backend) && (!request.messageType || row.messageType === request.messageType)) };
+      page = { id: randomUUID(), at: now, sampledMessages: this.#sampledMessages, sampledBytes: this.#sampledBytes, skippedSamples: this.#skipped, rows: this.snapshot().filter(row => admits?.(row.backend) !== false && (!request.backend || row.backend === request.backend) && (!request.messageType || row.messageType === request.messageType)) };
       this.#pages.set(device, page);
       while (this.#pages.size > 8 || [...this.#pages.values()].reduce((count, item) => count + item.rows.length, 0) > 16_384) this.#pages.delete(this.#pages.keys().next().value!);
     }

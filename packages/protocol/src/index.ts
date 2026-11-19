@@ -278,6 +278,7 @@ export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 /** ADR-0084: clients advertising this feature can consume normalized rich message blocks. */
 export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
+export const DEVICE_FEATURE_KIMI_CODE = "agent.kimiCode";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
@@ -562,6 +563,8 @@ export const ChatMessageSchema = z.strictObject({
    * 它只声明对应关系，不替代后端自己的 `messageId`；客户端据此精确对账本地待确认发送。
    */
   clientMessageId: z.string().min(1).max(256).optional(),
+  /** KIMI-04: a Kimi native item can materialize more than one authorized submission. */
+  clientMessageIds: z.array(z.string().min(1).max(256)).min(2).max(256).optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 
