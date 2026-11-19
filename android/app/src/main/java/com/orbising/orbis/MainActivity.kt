@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -227,6 +229,13 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.JsonArray
 
 class MainActivity : ComponentActivity() {
+    private val externalImports: ExternalImportViewModel by viewModels()
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        externalImports.receive(intent)
+    }
+
     override fun onResume() {
         super.onResume()
         AppLocalization.refreshSystemLanguage()
@@ -241,6 +250,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppLocalization.configure(this)
         AppAppearance.configure(this)
+        if (savedInstanceState == null) externalImports.receive(intent)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -249,6 +259,7 @@ class MainActivity : ComponentActivity() {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val homeUi by model.homeUi.collectAsStateWithLifecycle()
+                val imports by externalImports.ui.collectAsStateWithLifecycle()
                 val hosts = homeUi.hosts
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
                 val pairingInProgress by model.pairingInProgress.collectAsStateWithLifecycle()
@@ -265,7 +276,9 @@ class MainActivity : ComponentActivity() {
                     LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
-                    RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi)
+                    RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi,
+                        importCount = imports.batches.size, onOpenImports = externalImports::show)
+                    if (imports.open) ExternalImportSheet(imports, externalImports, model)
                     state.changeViewer?.let { viewer ->
                         state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.let { manifest ->
                             key(viewer.runtimeId, viewer.summary.versionKey) { FileChangeViewerSheet(viewer, manifest,
@@ -321,6 +334,8 @@ internal fun RemoteApp(
     pairingInProgress: Boolean,
     model: RemoteViewModel,
     homeUi: HomeUiSnapshot? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
 ) {
     val actionHaptic = rememberActionHaptic()
     val permanentDirectory = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
@@ -414,6 +429,7 @@ internal fun RemoteApp(
                 preparedCatalog = homeUi?.catalog,
                 preparedSync = homeUi?.sync,
                 preparedDownloadCount = homeUi?.activeDownloads,
+                importCount = importCount, onOpenImports = onOpenImports,
                 onOpenRuntime = { hostId, runtimeId ->
                     cancelLaunchIntro()
                     allDownloadsOpen = false
@@ -528,6 +544,7 @@ internal fun RemoteApp(
                 model.pair(relayUrl, code, qrRaw) { addingHost = false }
             },
             clearError = { model.clearPairingError(); model.clearError() },
+            importCount = importCount, onOpenImports = onOpenImports,
             onCancel = if (hosts.isNotEmpty()) {
                 { addingHost = false; model.clearPairingError() }
             } else null,
@@ -666,6 +683,8 @@ private fun PairingScreen(
     pair: (String, String, String?) -> Unit,
     clearError: () -> Unit,
     onCancel: (() -> Unit)? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
 ) {
     var scannerOpen by remember { mutableStateOf(false) }
     var manualOpen by remember { mutableStateOf(false) }
@@ -689,6 +708,7 @@ private fun PairingScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Orbis", fontWeight = FontWeight.SemiBold) },
+                actions = { ExternalImportButton(importCount, onOpenImports) },
                 navigationIcon = {
                     if (onCancel != null && !pairingInProgress) {
                         NeumorphIconButton(
@@ -881,6 +901,8 @@ internal fun RuntimeListScreen(
     preparedCatalog: List<CachedHostGroup>? = null,
     preparedSync: HomeSyncStatus? = null,
     preparedDownloadCount: Int? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
     permanentDirectory: Boolean = false,
     draftOpen: Boolean = false,
     onToggleDraft: () -> Unit = {},
@@ -982,6 +1004,7 @@ internal fun RuntimeListScreen(
                     },
                     actions = {
                         SelectionToolbar(selecting = selecting, contentAlignment = Alignment.CenterEnd, normal = {
+                            ExternalImportButton(importCount, onOpenImports)
                             // New session rises from the source list instead of creating an empty remote session.
                             DownloadStatusButton(
                                 activeCount = preparedDownloadCount ?: state.downloads.count { it.value.status in setOf("queued", "downloading") },

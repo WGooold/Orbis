@@ -8,6 +8,17 @@
 
 /* Begin PBXBuildFile section */
 		F08900010000000000000001 /* AGENT-ICON-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = F08910010000000000000001; };
+        F08600010000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000001; };
+        F08600010000000000000002 /* ExternalImportStore.swift in Share Extension Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000001; };
+        F08600010000000000000003 /* ExternalImportLabels.swift in Share Extension Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000005; };
+        F08600010000000000000009 /* ExternalImportLabels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000005; };
+        F08600010000000000000004 /* ExternalShareReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000006; };
+        F08600010000000000000005 /* ExternalShareSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000007; };
+        F08600010000000000000006 /* Localization.swift in Share Extension Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000001; };
+        F08600010000000000000007 /* LocalizationCatalog.swift in Share Extension Sources */ = {isa = PBXBuildFile; fileRef = C06310010000000000000002; };
+        F08600010000000000000008 /* OrbisShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F08610010000000000000004; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
+        F08500010000000000000001 /* ExternalImportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000001; };
+        F08500010000000000000002 /* ExternalImportInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000002; };
         A11100010000000000000001 /* NotificationSource in App */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
         A11100010000000000000002 /* NotificationSource in Widget */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
         A11100010000000000000003 /* NotificationSource in Service */ = {isa = PBXBuildFile; fileRef = A11110010000000000000001; };
@@ -29,7 +40,7 @@
         BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABA69147CCA95C8B28B5ECA9; };
         64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2CC3A7FB21F94C1E8CEFC97; };
         48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5204809A5B06BD2744B651E; };
-        A11130010000000000000001 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000002; };
+        F08700010000000000000001 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000002; };
         A11130010000000000000003 /* VoiceTextCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000004; };
         A11130010000000000000005 /* VoiceCleanupSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000006; };
         7A8339F274E140F2938BADA5 /* ChatTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C54B3BAF4E82D69C4D2724; };
@@ -107,6 +118,15 @@
 
 /* Begin PBXFileReference section */
 		F08910010000000000000001 /* AGENT-ICON-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "AGENT-ICON-NOTICES.txt"; sourceTree = SOURCE_ROOT; };
+        F08610010000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+        F08610010000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+        F08610010000000000000003 /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
+        F08610010000000000000004 /* OrbisShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OrbisShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+        F08610010000000000000005 /* ExternalImportLabels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalImportLabels.swift; sourceTree = "<group>"; };
+        F08610010000000000000006 /* ExternalShareReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShareReader.swift; sourceTree = "<group>"; };
+        F08610010000000000000007 /* ExternalShareSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShareSelection.swift; sourceTree = "<group>"; };
+        F08510010000000000000001 /* ExternalImportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalImportStore.swift; sourceTree = "<group>"; };
+        F08510010000000000000002 /* ExternalImportInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalImportInboxView.swift; sourceTree = "<group>"; };
         A11110010000000000000001 /* NotificationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSource.swift; sourceTree = "<group>"; };
         A11110010000000000000002 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
         A11110010000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -220,6 +240,7 @@
 		};
         B00140010000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
         C06440010000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        F08640010000000000000002 /* Share Extension Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -254,6 +275,11 @@
 				C06410010000000000000010 /* RelaySocket.swift */,
 				A00110010000000000000009 /* OrbisStore.swift */,
 				A0011001000000000000000A /* ContentView.swift */,
+                F08510010000000000000001 /* ExternalImportStore.swift */,
+                F08510010000000000000002 /* ExternalImportInboxView.swift */,
+                F08610010000000000000005 /* ExternalImportLabels.swift */,
+                F08610010000000000000006 /* ExternalShareReader.swift */,
+                F08610010000000000000007 /* ExternalShareSelection.swift */,
 				A0011001000000000000000B /* PairingScannerView.swift */,
 				A0011001000000000000000C /* Assets.xcassets */,
 				A0011001000000000000000D /* Info.plist */,
@@ -335,6 +361,7 @@
 				A0011001000000000000000E /* Orbis.app */,
                 A08710010000000000000007 /* OrbisLiveActivity.appex */,
                 A11110010000000000000005 /* OrbisNotifications.appex */,
+                F08610010000000000000004 /* OrbisShareExtension.appex */,
                 B00110010000000000000002,
                 C06410010000000000000002,
 			);
@@ -347,14 +374,17 @@
 				A00120010000000000000002 /* Orbis */,
 				A08720010000000000000001 /* LiveActivityWidget */,
                 A11120010000000000000001 /* NotificationService */,
+                F08620010000000000000001 /* ShareExtension */,
 				A00120010000000000000003 /* Products */,
 			);
 			name = Orbis;
 			sourceTree = "<group>";
 		};
+        F08620010000000000000001 /* ShareExtension */ = {isa = PBXGroup; children = (F08610010000000000000001 /* ShareViewController.swift */, F08610010000000000000002 /* Info.plist */, F08610010000000000000003 /* ShareExtension.entitlements */); path = ShareExtension; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+        F08630010000000000000001 /* OrbisShareExtension */ = {isa = PBXNativeTarget; buildConfigurationList = F08650010000000000000001; buildPhases = (F08640010000000000000001, F08640010000000000000002, F08640010000000000000003); buildRules = (); dependencies = (); name = OrbisShareExtension; productName = OrbisShareExtension; productReference = F08610010000000000000004; productType = "com.apple.product-type.app-extension"; };
         A11130010000000000000001 /* OrbisNotifications */ = {isa = PBXNativeTarget; buildConfigurationList = A11150010000000000000001; buildPhases = (A11140010000000000000001, A11140010000000000000002, A11140010000000000000003); buildRules = (); dependencies = (); name = OrbisNotifications; productName = OrbisNotifications; productReference = A11110010000000000000005; productType = "com.apple.product-type.app-extension"; };
         A08730010000000000000001 /* OrbisLiveActivity */ = {
             isa = PBXNativeTarget;
@@ -382,6 +412,7 @@
 			dependencies = (
 				A08760010000000000000002 /* OrbisLiveActivity */,
                 A11160010000000000000002 /* OrbisNotifications */,
+                F08660010000000000000002 /* OrbisShareExtension */,
 			);
 			name = Orbis;
 			productName = Orbis;
@@ -415,6 +446,7 @@
 					};
                     A08730010000000000000001 = { CreatedOnToolsVersion = 16.0; };
                     A11130010000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
+                    F08630010000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
 				};
 			};
 			buildConfigurationList = A00150010000000000000002 /* Build configuration list for PBXProject "Orbis" */;
@@ -433,6 +465,7 @@
 				A00130010000000000000001 /* Orbis */,
                 A08730010000000000000001 /* OrbisLiveActivity */,
                 A11130010000000000000001 /* OrbisNotifications */,
+                F08630010000000000000001 /* OrbisShareExtension */,
                 B00130010000000000000001,
                 C06430010000000000000001,
 			);
@@ -440,6 +473,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+        F08640010000000000000003 /* Share Extension Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
         A11140010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
         A08740010000000000000003 /* Widget Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000007 /* Assets.xcassets in Widget Resources */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000002 /* Resources */ = {
@@ -473,6 +507,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+        F08640010000000000000001 /* Share Extension Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F08600010000000000000001 /* ShareViewController.swift in Sources */, F08600010000000000000002 /* ExternalImportStore.swift in Share Extension Sources */, F08600010000000000000003 /* ExternalImportLabels.swift in Share Extension Sources */, F08600010000000000000004 /* ExternalShareReader.swift in Sources */, F08600010000000000000005 /* ExternalShareSelection.swift in Sources */, F08600010000000000000006 /* Localization.swift in Share Extension Sources */, F08600010000000000000007 /* LocalizationCatalog.swift in Share Extension Sources */); runOnlyForDeploymentPostprocessing = 0; };
         A11140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A11100010000000000000003, A11100010000000000000004); runOnlyForDeploymentPostprocessing = 0; };
         A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */, A11100010000000000000002 /* NotificationSource in Widget */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000001 /* Sources */ = {
@@ -480,6 +515,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00100010000000000000001 /* OrbisApp.swift in Sources */,
+                F08500010000000000000001 /* ExternalImportStore.swift in Sources */,
+                F08500010000000000000002 /* ExternalImportInboxView.swift in Sources */,
+                F08600010000000000000009 /* ExternalImportLabels.swift in Sources */,
 				C06300010000000000000001 /* Localization.swift in Sources */,
 				C06300010000000000000002 /* LocalizationCatalog.swift in Sources */,
 				A00100010000000000000002 /* Models.swift in Sources */,
@@ -539,7 +577,7 @@
                 C98200020000000000000002 /* ChatNativeTranscriptEnvironment.swift in Sources */,
                 C98200020000000000000003 /* ChatTranscriptInteractionState.swift in Sources */,
                 48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */,
-                A11130010000000000000001 /* VoiceInputController.swift in Sources */,
+                F08700010000000000000001 /* VoiceInputController.swift in Sources */,
                 A11130010000000000000003 /* VoiceTextCleanup.swift in Sources */,
                 A11130010000000000000005 /* VoiceCleanupSettings.swift in Sources */,
                 64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */,
@@ -572,6 +610,8 @@
 			sourceTree = "<group>";
 		};
 /* End PBXVariantGroup section */
+        F08660010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = F08630010000000000000001; remoteInfo = OrbisShareExtension; };
+        F08660010000000000000002 = {isa = PBXTargetDependency; target = F08630010000000000000001; targetProxy = F08660010000000000000001; };
         A11160010000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00160010000000000000001; proxyType = 1; remoteGlobalIDString = A11130010000000000000001; remoteInfo = OrbisNotifications; };
         A11160010000000000000002 = {isa = PBXTargetDependency; target = A11130010000000000000001; targetProxy = A11160010000000000000001; };
         A08740010000000000000004 /* Embed App Extensions */ = {
@@ -579,7 +619,7 @@
             buildActionMask = 2147483647;
             dstPath = "";
             dstSubfolderSpec = 13;
-            files = (A08700010000000000000008 /* OrbisLiveActivity.appex in Embed App Extensions */, A11100010000000000000005 /* OrbisNotifications.appex in Embed App Extensions */);
+            files = (A08700010000000000000008 /* OrbisLiveActivity.appex in Embed App Extensions */, A11100010000000000000005 /* OrbisNotifications.appex in Embed App Extensions */, F08600010000000000000008 /* OrbisShareExtension.appex in Embed App Extensions */);
             name = "Embed App Extensions";
             runOnlyForDeploymentPostprocessing = 0;
         };
@@ -590,6 +630,28 @@
 
 
 /* Begin XCBuildConfiguration section */
+        F08670010000000000000001 /* Share Extension Debug */ = {isa = XCBuildConfiguration; buildSettings = {
+            APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
+            CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+            LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+            MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+            PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER).ShareExtension"; PRODUCT_NAME = "$(TARGET_NAME)";
+            SDKROOT = iphoneos; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+            SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";
+        }; name = Debug; };
+        F08670010000000000000002 /* Share Extension Release */ = {isa = XCBuildConfiguration; buildSettings = {
+            APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
+            CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+            LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+            MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
+            PRODUCT_BUNDLE_IDENTIFIER = "$(ORBIS_APP_BUNDLE_IDENTIFIER).ShareExtension"; PRODUCT_NAME = "$(TARGET_NAME)";
+            SDKROOT = iphoneos; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+            SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2";
+        }; name = Release; };
         A11170010000000000000001 /* Notifications Debug */ = {isa = XCBuildConfiguration; buildSettings = {
             APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
             CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
@@ -743,6 +805,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+        F08650010000000000000001 /* Share Extension Configurations */ = {isa = XCConfigurationList; buildConfigurations = (F08670010000000000000001, F08670010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
         A11150010000000000000001 = {isa = XCConfigurationList; buildConfigurations = (A11170010000000000000001, A11170010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
         A08750010000000000000001 /* Widget Configurations */ = {isa = XCConfigurationList; buildConfigurations = (A08770010000000000000001, A08770010000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		A00150010000000000000001 /* Build configuration list for PBXNativeTarget "Orbis" */ = {

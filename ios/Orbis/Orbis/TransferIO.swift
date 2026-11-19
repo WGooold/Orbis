@@ -117,6 +117,19 @@ actor TransferDiskWorker {
 
     /// Security-scoped input is copied and hashed in bounded chunks. A cancelled preparation
     /// removes only its own staging file; it cannot replace a newer generation's upload source.
+    /// The app owns this immutable, already-copied source; hash it without another copy.
+    func inspectImport(generation: UUID, expectedBytes: Int64) throws -> TransferPreparedUpload {
+        try fence.check(generation)
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.size] as? NSNumber)?.int64Value == expectedBytes, expectedBytes > 0,
+              expectedBytes <= 100 * 1024 * 1024 else { throw transferDiskError(L10n.tr("上传源文件格式或大小无效")) }
+        let result = try inspect(file, generation: generation)
+        guard result.size == expectedBytes else { throw transferDiskError(L10n.tr("上传源文件在复制期间改变")) }
+        try fence.check(generation)
+        return result
+    }
+
     func prepareUpload(source: URL, generation: UUID, maximumBytes: Int64? = nil) throws -> TransferPreparedUpload {
         try fence.check(generation)
         let access = source.startAccessingSecurityScopedResource()

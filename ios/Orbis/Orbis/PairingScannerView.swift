@@ -21,7 +21,7 @@ struct PairingEntryView: View {
                 if let onCancel { OrbisIconButton(symbol: "xmark", label: L10n.tr("取消添加电脑"), action: onCancel) }
             } title: {
                 Text("Orbis").font(.orbisTitle())
-            } trailing: { EmptyView() }
+            } trailing: { ExternalImportInboxButton() }
             GeometryReader { geometry in
                 ScrollView {
                     VStack(spacing: 0) {

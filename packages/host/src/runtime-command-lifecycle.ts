@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import type { RuntimeCommand, RuntimeEvent } from "@orbis/protocol";
+import type { ExternalImportTarget, RuntimeCommand, RuntimeEvent } from "@orbis/protocol";
 
 type Receipt = Extract<RuntimeEvent, { type: "command.result" | "runtime.error" }>;
 export type RuntimeCommandRecord = {
   deviceId: string; runtimeId: string; commandId: string; requestId?: string;
   at: number; fingerprint: string; terminal: boolean; receipt: Receipt;
 };
-type Entry = RuntimeCommandRecord & { messageKey?: string; deadline: number; timer?: ReturnType<typeof setTimeout> };
+type Entry = RuntimeCommandRecord & { importTarget?: ExternalImportTarget; messageKey?: string; deadline: number; timer?: ReturnType<typeof setTimeout> };
 
 /** Device-private admission and receipts. A timeout ends waiting, never proves non-execution. */
 export class RuntimeCommandLifecycle {
@@ -30,12 +30,12 @@ export class RuntimeCommandLifecycle {
 
   values(): IterableIterator<RuntimeCommandRecord> { return this.#entries.values(); }
 
-  begin(deviceId: string, runtimeId: string, commandId: string, command: RuntimeCommand, sessionScope = runtimeId):
+  begin(deviceId: string, runtimeId: string, commandId: string, command: RuntimeCommand, sessionScope = runtimeId, importTarget?: ExternalImportTarget):
     { kind: "new" | "replay"; record: RuntimeCommandRecord } | { kind: "reject"; error: "command_id_conflict" | "message_id_conflict" | "host_busy" } {
     if (this.#closed) return { kind: "reject", error: "host_busy" };
     this.sweep();
     const key = this.#key(runtimeId, commandId);
-    const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify(importTarget === undefined ? command : [importTarget.sessionId, importTarget.cwd, command])).digest("hex");
     const previous = this.#entries.get(key);
     if (previous) return previous.deviceId === deviceId && previous.fingerprint === fingerprint
       ? { kind: "replay", record: previous } : { kind: "reject", error: "command_id_conflict" };
@@ -44,6 +44,7 @@ export class RuntimeCommandLifecycle {
     if (this.#entries.size >= this.#capacity) return { kind: "reject", error: "host_busy" };
     const at = this.#now();
     const entry: Entry = { deviceId, runtimeId, commandId, fingerprint, at, terminal: false,
+      ...(importTarget === undefined ? {} : { importTarget }),
       ...(command.type === "interaction.respond" ? { requestId: command.requestId } : {}),
       receipt: { type: "command.result", commandId, ok: true, status: "pending" }, deadline: at + this.#timeout };
     this.#entries.set(key, entry);
@@ -51,6 +52,13 @@ export class RuntimeCommandLifecycle {
     entry.timer = setTimeout(() => this.#unconfirm(entry, "命令结果尚未确认，请核对会话"), this.#timeout);
     entry.timer.unref();
     return { kind: "new", record: entry };
+  }
+
+  importReceipt(deviceId: string, runtimeId: string, commandId: string, target: ExternalImportTarget): Receipt | undefined {
+    this.sweep();
+    const entry = this.#entries.get(this.#key(runtimeId, commandId));
+    return entry?.deviceId === deviceId && entry.importTarget?.sessionId === target.sessionId && entry.importTarget.cwd === target.cwd
+      ? entry.receipt : undefined;
   }
 
   /** Definite terminals cannot regress; an unknown result can still be resolved by native evidence. */

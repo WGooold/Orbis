@@ -13,9 +13,10 @@
  * - **校验权在接收方**：`finished` 只在 Host 自己算完 sha256 之后才发。手机说的哈希不算数。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { extname, isAbsolute, join } from "node:path";
+import { basename, extname, isAbsolute, join } from "node:path";
 
 import {
   ARTIFACT_CHUNK_BYTES,
@@ -24,6 +25,7 @@ import {
   decodeArtifactChunkFrame,
   type ArtifactChunkFrame,
   type DeviceE2ePayload,
+  type ExternalImportTarget,
   type DeviceTransferItem,
   type DeviceTransfersState,
   type RelayToDeviceMessage,
@@ -92,6 +94,8 @@ type ActiveUpload = {
   writing: boolean;
   /** 落地校验进行中：之后的重复应答一律忽略，别把落地完的传输再翻出来写。 */
   completing: boolean;
+  /** Import uploads retain the scope check; ordinary legacy transfers stay unchanged. */
+  importScope?: { target: ExternalImportTarget; isCurrent: () => boolean };
 };
 
 /** 未完成上传的持久记录：Host 重启后靠它续传。 */
@@ -150,12 +154,65 @@ async function uniqueTargetPath(directory: string, fileName: string): Promise<st
   }
 }
 
+// The project itself may have a symlink alias; never follow a redirect within its upload area.
+async function importDirectory(cwd: string, sha256: string, create = false): Promise<string> {
+  let directory = await realpath(cwd);
+  for (const name of [".orbis-uploads", sha256]) {
+    directory = join(directory, name);
+    if (create) await mkdir(directory, { mode: 0o700 }).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    });
+    if (!(await lstat(directory)).isDirectory()) throw new Error("unsafe import directory");
+  }
+  return directory;
+}
+
+// Untrusted display names must also work on Windows (including reserved device names and ADS).
+function portableImportName(raw: string): string {
+  let name = raw.replace(/[<>:"|?*]/gu, "_").replace(/[. ]+$/u, "");
+  if (!name || /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]) *(?:\.|$)/iu.test(name)) name = `file-${name}`;
+  const suffix = extname(name);
+  const extension = Buffer.byteLength(suffix) <= 32 ? suffix : "";
+  let stem = "";
+  for (const char of name.slice(0, name.length - extension.length)) {
+    if (Buffer.byteLength(stem + char + extension) > 200) break;
+    stem += char;
+  }
+  return (stem || "file") + extension;
+}
+
+const MAX_IMPORT_ATTACHMENTS = 4096;
+
 export class HostUploadService {
   readonly #options: HostUploadServiceOptions;
   /** uploadId → 进行中。 */
   readonly #uploads = new Map<string, ActiveUpload>();
   /** partKey → 未完成记录（含没有活句柄的）。 */
   readonly #index = new Map<string, IndexedUpload>();
+  readonly #importInits = new Set<string>();
+  readonly #importAttachments = new Map<string, { deviceId: string; target: ExternalImportTarget; sha256: string; size: number }>();
+
+  /** Only the device and project for which this Host verified and placed the upload may attach it. */
+  async ownsImportAttachments(deviceId: string, target: ExternalImportTarget, paths: readonly string[]): Promise<boolean> {
+    return (await Promise.all(paths.map(async path => {
+      const item = this.#importAttachments.get(path);
+      if (!item || item.deviceId !== deviceId || item.target.sessionId !== target.sessionId || item.target.cwd !== target.cwd) return false;
+      try {
+        if (join(await importDirectory(target.cwd, item.sha256), basename(path)) !== path) return false;
+        const file = await lstat(path);
+        return file.isFile() && file.size === item.size;
+      } catch { return false; }
+    }))).every(Boolean);
+  }
+
+  forgetImportAttachments(deviceId: string): void {
+    for (const [path, item] of this.#importAttachments) if (item.deviceId === deviceId) this.#importAttachments.delete(path);
+  }
+
+  #transferLog(active: ActiveUpload, message: () => string): void {
+    if (!active.importScope) this.#options.log?.(message());
+  }
+
   /**
    * 所有**脱离调用栈**的后台工作（索引写盘、句柄关闭）都串在这一条链上。
    *
@@ -288,7 +345,22 @@ export class HostUploadService {
    * 续传判据是**内容身份**而不是 `uploadId`：同一次上传在手机重试、Host 重启之后会拿到
    * 新的 `uploadId`，但内容身份不变，于是命中同一个 `.part`，从它的长度接着写。
    */
-  async handleInit(deviceId: string, message: UploadInit): Promise<void> {
+  async handleInit(deviceId: string, message: UploadInit, isCurrent?: () => boolean): Promise<void> {
+    if (!message.importTarget) return this.#init(deviceId, message);
+    const key = JSON.stringify([deviceId, message.importTarget.sessionId, message.importTarget.cwd,
+      message.runtimeId, message.fileName, message.size, message.sha256]);
+    if (!isCurrent || this.#importInits.has(key)) {
+      this.#options.publishMessage(deviceId, { type: "file.upload.failed", protocolVersion: PROTOCOL_VERSION,
+        requestId: message.requestId, code: "upload_busy", message: "此附件正在上传，请稍后重试" });
+      return;
+    }
+    this.#importInits.add(key);
+    try { await this.#init(deviceId, message, { target: message.importTarget, isCurrent }); }
+    finally { this.#importInits.delete(key); }
+  }
+
+  async #init(deviceId: string, message: UploadInit, importScope?: ActiveUpload["importScope"]): Promise<void> {
+    const isCurrent = importScope?.isCurrent;
     // 与下载的 `offerDownload` 同一手法：不做常驻定时器，新上传来了就顺手清扫一下
     // 再也不会继续的那些句柄。
     this.#sweepIdle(Date.now());
@@ -301,6 +373,7 @@ export class HostUploadService {
         message: text,
       });
     };
+    if (isCurrent && !isCurrent()) { fail("import_target_changed", "所选会话已不可用"); return; }
     if (message.size > MAX_UPLOAD_BYTES) {
       fail("upload_too_large", `文件超过 ${Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024))} MB 上限`);
       return;
@@ -311,24 +384,34 @@ export class HostUploadService {
     }
     let directory: string;
     try {
-      // 手机给的是 `<cwd>/.orbis-uploads`，这一层通常还不存在。
-      await mkdir(message.directory, { recursive: true });
-      const info = await stat(message.directory);
-      if (!info.isDirectory()) throw new Error("not a directory");
-      directory = message.directory;
+      if (importScope) directory = await importDirectory(importScope.target.cwd, message.sha256, true);
+      else {
+        await mkdir(message.directory, { recursive: true });
+        if (!(await stat(message.directory)).isDirectory()) throw new Error("not a directory");
+        directory = message.directory;
+      }
     } catch (error) {
-      this.#options.log?.(`上传落地目录不可用 ${message.directory}：${describe(error)}`);
+      if (!importScope) this.#options.log?.(`上传落地目录不可用 ${message.directory}：${describe(error)}`);
       fail("invalid_request", "落地目录不可用");
       return;
     }
 
-    const partKey = partKeyFor({
-      runtimeId: message.runtimeId,
-      directory,
-      fileName: message.fileName,
-      size: message.size,
-      sha256: message.sha256,
-    });
+    const fileName = importScope ? portableImportName(message.fileName) : message.fileName;
+    const partKey = importScope ? createHash("sha256").update(JSON.stringify(["external-import", deviceId,
+      importScope.target, message.runtimeId, directory, message.fileName, message.size, message.sha256])).digest("hex")
+      : partKeyFor({ runtimeId: message.runtimeId, directory, fileName, size: message.size, sha256: message.sha256 });
+    if (importScope) {
+      // A retry can replace an interrupted pull, but not a verified file being placed.
+      for (const active of this.#uploads.values()) {
+        if (active.partKey !== partKey) continue;
+        if (active.completing) { fail("upload_busy", "此附件正在上传，请稍后重试"); return; }
+        active.cancelled = true;
+        this.#uploads.delete(active.uploadId);
+        await active.handle.close().catch(() => {});
+        await active.writeChain;
+      }
+      if (!importScope.isCurrent()) { fail("import_target_changed", "所选会话已不可用"); return; }
+    }
     const partPath = this.#partPath(partKey);
     let receivedBytes = 0;
     try {
@@ -340,7 +423,7 @@ export class HostUploadService {
       receivedBytes = 0;
     }
 
-    let handle: FileHandle;
+    let handle: FileHandle | undefined;
     try {
       await mkdir(this.#partsDirectory(), { recursive: true });
       handle = await open(partPath, "r+").catch(async () => {
@@ -350,7 +433,8 @@ export class HostUploadService {
       if (receivedBytes === 0) await handle.truncate(0);
       else await handle.truncate(receivedBytes);
     } catch (error) {
-      this.#options.log?.(`上传临时文件不可写 ${partPath}：${describe(error)}`);
+      await handle?.close().catch(() => {});
+      if (!importScope) this.#options.log?.(`上传临时文件不可写 ${partPath}：${describe(error)}`);
       fail("write_failed", "电脑端无法创建临时文件");
       return;
     }
@@ -362,6 +446,11 @@ export class HostUploadService {
       await active.handle.close().catch(() => {});
     }
 
+    if (isCurrent && !isCurrent()) {
+      await handle.close().catch(() => {});
+      fail("import_target_changed", "所选会话已不可用"); return;
+    }
+
     const uploadId = randomUUID();
     const now = Date.now();
     this.#uploads.set(uploadId, {
@@ -369,7 +458,7 @@ export class HostUploadService {
       uploadId,
       runtimeId: message.runtimeId,
       directory,
-      fileName: message.fileName,
+      fileName,
       mimeType: message.mimeType,
       size: message.size,
       sha256: message.sha256,
@@ -387,13 +476,14 @@ export class HostUploadService {
       outstanding: undefined,
       writing: false,
       completing: false,
+      ...(importScope === undefined ? {} : { importScope }),
     });
     this.#index.set(partKey, {
       partKey,
       deviceId,
       runtimeId: message.runtimeId,
       directory,
-      fileName: message.fileName,
+      fileName,
       ...(message.mimeType === undefined ? {} : { mimeType: message.mimeType }),
       size: message.size,
       sha256: message.sha256,
@@ -411,7 +501,7 @@ export class HostUploadService {
       chunkSize: ARTIFACT_CHUNK_BYTES,
       receivedBytes,
     });
-    this.#options.log?.(
+    if (!importScope) this.#options.log?.(
       `上传受理：${message.fileName}（${message.size} 字节，从 ${receivedBytes} 开始，uploadId=${uploadId}）`,
     );
     this.#notify(deviceId);
@@ -443,7 +533,7 @@ export class HostUploadService {
       });
       return;
     }
-    if (active.cancelled || active.completing) return;
+    if (active.cancelled || active.completing || active.importScope && decoded.runtimeId !== active.runtimeId) return;
     const outstanding = active.outstanding;
     if (outstanding === undefined || decoded.offset !== outstanding.offset) {
       // 迟到/重复的应答：这块不是当前要的。拉取循环自己会对齐，不用回话。
@@ -456,7 +546,7 @@ export class HostUploadService {
     active.writeChain = active.writeChain
       .then(() => this.#acceptChunk(active, decoded))
       .catch((error: unknown) => {
-        this.#options.log?.(`上传数据处理失败 ${active.fileName}：${describe(error)}`);
+        this.#transferLog(active, () => `上传数据处理失败 ${active.fileName}：${describe(error)}`);
       })
       .finally(() => { active.writing = false; });
   }
@@ -472,6 +562,9 @@ export class HostUploadService {
     const now = Date.now();
     for (const active of this.#uploads.values()) {
       if (active.cancelled || active.completing || active.writing) continue;
+      if (active.importScope && !active.importScope.isCurrent()) {
+        this.#failActive(active, "import_target_changed", "所选会话已不可用"); continue;
+      }
       // 完整前缀也可能来自续传或空文件，不能等「下一片」才触发收尾。
       if (active.durableBytes >= active.size) {
         this.#track(this.#finalize(active));
@@ -494,9 +587,12 @@ export class HostUploadService {
   /** 在串行链上判定偏移并写入。只有这里能推进 `durableBytes`。 */
   async #acceptChunk(active: ActiveUpload, frame: ArtifactChunkFrame): Promise<void> {
     if (active.cancelled || active.completing) return;
+    if (active.importScope && !active.importScope.isCurrent()) {
+      this.#failActive(active, "import_target_changed", "所选会话已不可用"); return;
+    }
     const end = frame.offset + frame.data.byteLength;
     if (end > active.size) {
-      this.#options.log?.(`上传数据越界：${active.fileName} offset=${frame.offset} 超出 ${active.size}`);
+      this.#transferLog(active, () => `上传数据越界：${active.fileName} offset=${frame.offset} 超出 ${active.size}`);
       return;
     }
     if (frame.offset !== active.durableBytes) {
@@ -510,12 +606,13 @@ export class HostUploadService {
     try {
       await active.handle.write(Buffer.from(frame.data), 0, frame.data.byteLength, active.durableBytes);
     } catch (error) {
-      this.#options.log?.(`上传写盘失败 ${active.fileName}：${describe(error)}`);
+      this.#transferLog(active, () => `上传写盘失败 ${active.fileName}：${describe(error)}`);
       this.#failActive(active, "write_failed", "电脑端写盘失败");
       return;
     }
     // 句柄拿到了字节，但「持久前缀」是在这里才推进的：write 成功返回说明数据已交给内核。
     // 真正的内容正确性由收尾时的 sha256 兜底。
+    if (active.cancelled && active.importScope) return;
     active.durableBytes += frame.data.byteLength;
     this.#index.set(active.partKey, { ...this.#index.get(active.partKey)!, durableBytes: active.durableBytes, updatedAt: Date.now() });
     this.#publishProgress(active);
@@ -549,18 +646,26 @@ export class HostUploadService {
   async #finalize(active: ActiveUpload): Promise<void> {
     if (active.completing) return;
     active.completing = true;
-    const deviceId = active.deviceId;
     const uploadId = active.uploadId;
     // 先把写链排空：最后一片的 await write 可能还没回来。
     await active.writeChain.catch(() => {});
     await active.handle.close().catch(() => {});
-    this.#uploads.delete(uploadId);
+    if (!active.importScope) this.#uploads.delete(uploadId);
+    try { await this.#verifyAndPlace(active); }
+    finally { if (active.importScope) this.#uploads.delete(uploadId); }
+  }
 
+  async #verifyAndPlace(active: ActiveUpload): Promise<void> {
+    const { deviceId, uploadId, importScope } = active;
+    if (importScope && (active.cancelled || !importScope.isCurrent())) {
+      if (!active.cancelled) this.#failActive(active, "import_target_changed", "所选会话已不可用");
+      return;
+    }
     let actual: string;
     try {
       actual = await this.#sha256File(active.partPath);
     } catch (error) {
-      this.#options.log?.(`上传校验读盘失败 ${active.fileName}：${describe(error)}`);
+      this.#transferLog(active, () => `上传校验读盘失败 ${active.fileName}：${describe(error)}`);
       this.#options.publishMessage(deviceId, {
         type: "file.upload.failed",
         protocolVersion: PROTOCOL_VERSION,
@@ -575,7 +680,7 @@ export class HostUploadService {
       this.#index.delete(active.partKey);
       await rm(active.partPath, { force: true }).catch(() => {});
       this.#persistIndex();
-      this.#options.log?.(`上传校验失败：${active.fileName} 期望 ${active.sha256} 实际 ${actual}`);
+      this.#transferLog(active, () => `上传校验失败：${active.fileName} 期望 ${active.sha256} 实际 ${actual}`);
       this.#options.publishMessage(deviceId, {
         type: "file.upload.failed",
         protocolVersion: PROTOCOL_VERSION,
@@ -588,18 +693,43 @@ export class HostUploadService {
 
     let path: string;
     try {
-      path = await uniqueTargetPath(active.directory, active.fileName);
-      try {
-        await rename(active.partPath, path);
-      } catch (error) {
-        // Windows 的 rename 不能跨盘（EXDEV）：`.part` 存放在 Host 自己的目录（通常 C 盘），
-        // 落盘目标在 runtime 的 cwd（这里就是 D 盘）。跨盘时复制再删源，语义等价。
-        if ((error as { code?: unknown }).code !== "EXDEV") throw error;
-        await copyFile(active.partPath, path);
-        await rm(active.partPath, { force: true });
+      if (importScope) {
+        const check = async () => !active.cancelled && importScope.isCurrent()
+          && await importDirectory(importScope.target.cwd, active.sha256) === active.directory;
+        const extension = extname(active.fileName), stem = active.fileName.slice(0, active.fileName.length - extension.length);
+        for (let n = 0; ; n++) {
+          if (!await check() || !importScope.isCurrent() || active.cancelled) {
+            this.#failActive(active, "import_target_changed", "所选会话已不可用"); return;
+          }
+          if (n > 1024) throw new Error("import filename limit");
+          path = join(active.directory, n === 0 ? active.fileName : `${stem} (${n})${extension}`);
+          try { await copyFile(active.partPath, path, constants.COPYFILE_EXCL); break; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+        }
+        if (!await check().catch(() => false) || !importScope.isCurrent() || active.cancelled) {
+          await rm(path, { force: true }).catch(() => {});
+          this.#failActive(active, "import_target_changed", "所选会话已不可用"); return;
+        }
+        // Keep the active reservation until the part is gone; a retry must not open a file being removed.
+        await rm(active.partPath, { force: true }).catch(() => {});
+        if (active.cancelled || !importScope.isCurrent()) {
+          await rm(path, { force: true }).catch(() => {});
+          this.#index.delete(active.partKey); this.#persistIndex();
+          this.#failActive(active, "import_target_changed", "所选会话已不可用"); return;
+        }
+        this.#importAttachments.set(path, { deviceId, target: importScope.target, sha256: active.sha256, size: active.size });
+        if (this.#importAttachments.size > MAX_IMPORT_ATTACHMENTS) this.#importAttachments.delete(this.#importAttachments.keys().next().value!);
+      } else {
+        path = await uniqueTargetPath(active.directory, active.fileName);
+        try { await rename(active.partPath, path); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+          await copyFile(active.partPath, path);
+          await rm(active.partPath, { force: true });
+        }
       }
     } catch (error) {
-      this.#options.log?.(`上传落地失败 ${active.fileName}：${describe(error)}`);
+      this.#transferLog(active, () => `上传落地失败 ${active.fileName}：${describe(error)}`);
       this.#options.publishMessage(deviceId, {
         type: "file.upload.failed",
         protocolVersion: PROTOCOL_VERSION,
@@ -614,7 +744,7 @@ export class HostUploadService {
 
     const elapsed = Date.now() - active.startedAt;
     const seconds = Math.max(elapsed, 1) / 1000;
-    this.#options.log?.(
+    if (!importScope) this.#options.log?.(
       `上传完成：${active.fileName} ${active.size} 字节，${active.chunks} 次拉取，` +
       `${elapsed}ms，${Math.round(active.size / seconds / 1024)} KiB/s，落盘 ${path}`,
     );
@@ -636,12 +766,13 @@ export class HostUploadService {
     const active = this.#uploads.get(uploadId);
     if (active === undefined || active.deviceId !== deviceId) return;
     active.cancelled = true;
+    if (active.importScope && active.completing) return; // The finalizer owns cleanup until its file operation settles.
     this.#uploads.delete(uploadId);
     await active.handle.close().catch(() => {});
     this.#index.delete(active.partKey);
     await rm(active.partPath, { force: true }).catch(() => {});
     this.#persistIndex();
-    this.#options.log?.(`上传取消：${active.fileName}`);
+    this.#transferLog(active, () => `上传取消：${active.fileName}`);
     this.#notify(deviceId);
   }
 
@@ -653,9 +784,11 @@ export class HostUploadService {
   releaseDevice(deviceId: string, reason: string): void {
     for (const [uploadId, active] of [...this.#uploads]) {
       if (active.deviceId !== deviceId) continue;
+      if (active.importScope && active.completing) { active.cancelled = true; continue; }
       this.#uploads.delete(uploadId);
       this.#track(active.handle.close());
-      this.#options.log?.(
+      if (active.importScope) active.cancelled = true;
+      else this.#options.log?.(
         `设备离线，暂停上传 ${active.fileName}（${active.durableBytes}/${active.size} 字节，保留待续传）：${reason}`,
       );
     }
@@ -667,10 +800,11 @@ export class HostUploadService {
   #sweepIdle(now: number): void {
     const timeout = this.#options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
     for (const [uploadId, active] of [...this.#uploads]) {
-      if (now - active.lastActivityAt < timeout) continue;
+      if (now - active.lastActivityAt < timeout || active.importScope && active.completing) continue;
+      if (active.importScope) active.cancelled = true;
       this.#uploads.delete(uploadId);
       this.#track(active.handle.close());
-      this.#options.log?.(
+      if (!active.importScope) this.#options.log?.(
         `上传空闲回收：${active.fileName}（${active.durableBytes}/${active.size} 字节，保留待续传）`,
       );
       this.#notify(active.deviceId);

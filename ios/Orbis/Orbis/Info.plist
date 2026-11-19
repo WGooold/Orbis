@@ -4,6 +4,34 @@
 <dict>
 	<key>OrbisNotificationAppGroup</key>
 	<string>group.$(ORBIS_APP_BUNDLE_IDENTIFIER).notifications</string>
+	<key>OrbisImportAppGroup</key>
+	<string>group.$(ORBIS_APP_BUNDLE_IDENTIFIER).imports</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Documents and images</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.adobe.pdf</string>
+				<string>com.microsoft.word.doc</string>
+				<string>com.microsoft.excel.xls</string>
+				<string>com.microsoft.powerpoint.ppt</string>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>org.openxmlformats.spreadsheetml.sheet</string>
+				<string>org.openxmlformats.presentationml.presentation</string>
+				<string>public.plain-text</string>
+				<string>public.comma-separated-values-text</string>
+				<string>net.daringfireball.markdown</string>
+				<string>public.zip-archive</string>
+				<string>public.image</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleLocalizations</key>

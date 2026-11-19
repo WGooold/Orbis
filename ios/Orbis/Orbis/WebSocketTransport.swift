@@ -131,6 +131,7 @@ protocol OrbisTransport: AnyObject {
     func connect(pairing: HostPairing, identity: DeviceIdentity, receive: @escaping ([String: Any], String?) -> Void, state: @escaping (ConnectionState, String?) -> Void)
     func disconnect()
     @discardableResult func send(_ object: [String: Any]) -> Bool
+    var allowsExternalImports: Bool { get }
     @discardableResult func sendBinary(_ data: Data) -> Bool
     func setRelayTransportMode(_ mode: RelayTransportMode)
 }
@@ -140,6 +141,7 @@ extension OrbisTransport {
     var feedbackCondition: FeedbackCondition? { nil }
     var relayTransportKind: RelayTransportKind? { nil }
     var relayTransportMode: RelayTransportMode { .auto }
+    var allowsExternalImports: Bool { true } // Injected transports are also gated by the Store's authenticated ready.
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
     func setRelayTransportMode(_ mode: RelayTransportMode) {}
 }
@@ -235,6 +237,11 @@ final class RelayTransport: NSObject, OrbisTransport {
     var relayTransportKind: RelayTransportKind? { socket?.kind }
     var relayTransportMode: RelayTransportMode { desiredRelayMode }
     private var bootstrapReady = false
+    private var relayAllowsExternalImports = false
+    var allowsExternalImports: Bool {
+        if activePath == "lan", let lan, lan.isReady { return lan.allowsExternalImports }
+        return bootstrapReady && relayAllowsExternalImports
+    }
     private var credential: RelayCredential?
     private var pairing: HostPairing?
     private var identity: DeviceIdentity?
@@ -364,7 +371,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     }
 
     private func resetChannel() {
-        bootstrapReady = false
+        bootstrapReady = false; relayAllowsExternalImports = false
         socket?.setBusinessReady(false)
         outboundGeneration = UUID()
         channel = nil
@@ -701,6 +708,9 @@ final class RelayTransport: NSObject, OrbisTransport {
                 }
             case "data":
                 guard let message else { return }
+                if message["type"] as? String == "device.ready", header.ch == "ctl" {
+                    relayAllowsExternalImports = Self.externalImportCapability(message)
+                }
                 if header.ch != "ctl" || !handlePathControl(message) { deliver(payload, channel: header.ch, message: message) }
             case "bin": deliver(payload, channel: header.ch, binary: true)
             default: break
@@ -708,6 +718,11 @@ final class RelayTransport: NSObject, OrbisTransport {
         }
     }
 
+
+    fileprivate static func externalImportCapability(_ ready: [String: Any]) -> Bool {
+        ready["protocolVersion"] as? Int == orbisProtocolVersion &&
+            (ready["hostFeatures"] as? [String])?.contains("external-import.target-v1") == true
+    }
 
     private func activateRelay() {
         bootstrapReady = true; socket?.setBusinessReady(true)
@@ -935,6 +950,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     var receive: ((Data, String?, Bool, [String: Any]?) -> Void)?
     var state: ((Bool) -> Void)?
     var isReady: Bool { channel != nil }
+    private(set) var allowsExternalImports = false
     private let urls: [URL]
     private let hostId: String
     private let deviceId: String
@@ -981,7 +997,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil
         let old = socket; socket = nil
-        channel = nil; handshake = nil; queue = []; queuedBytes = 0; sending = false; decoder = InboundFrameDecoder()
+        channel = nil; allowsExternalImports = false; handshake = nil; queue = []; queuedBytes = 0; sending = false; decoder = InboundFrameDecoder()
         old?.cancel(with: .goingAway, reason: nil)
         session?.invalidateAndCancel(); session = nil
     }
@@ -1119,7 +1135,11 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
                 guard queueEncrypted(data: bytes, kind: "ping", lane: "ctl", keys: channel.keys) else {
                     throw PairingError.relay(L10n.tr("加密心跳回应未能排队"))
                 }
-            case "data": receive?(bytes, header.ch, false, message)
+            case "data":
+                if let message, message["type"] as? String == "device.ready", header.ch == "ctl" {
+                    allowsExternalImports = RelayTransport.externalImportCapability(message)
+                }
+                receive?(bytes, header.ch, false, message)
             case "bin": receive?(bytes, header.ch, true, nil)
             default: break
             }
@@ -1142,7 +1162,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         guard socket === task, !closed else { return }
         let wasReady = isReady
         outboundGeneration = UUID()
-        socket = nil; channel = nil; handshake = nil; decoder = InboundFrameDecoder()
+        socket = nil; channel = nil; allowsExternalImports = false; handshake = nil; decoder = InboundFrameDecoder()
         queue = []; queuedBytes = 0; sending = false
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil

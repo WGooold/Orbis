@@ -65,6 +65,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     onCancel: () -> Unit = {}, drafts: SessionDraftStore? = null,
     onLoadConfiguration: (String, String) -> Unit = { _, _ -> },
     onSaveConfiguration: (SessionConfigurationValues) -> Unit = {},
+    importMode: Boolean = false,
     onSubmit: (String, String, String, Rect, Rect) -> Boolean) {
     val localStore = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
     val draft = remember(state.hostId, drafts) { (drafts ?: localStore).draft(state.hostId) }
@@ -93,7 +94,8 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     }
     val canStart = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
-        (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null)
+        (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null) &&
+        (!importMode || config?.snapshot != null && config.requestId == null && config.error == null)
     fun submit() {
         if (canStart && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
@@ -107,21 +109,21 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
             pressed = false
             delay(InteractionMotion.duration(120).toLong())
             appearance.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.State)))
-            focus.requestFocus()
+            if (!importMode) focus.requestFocus()
         } else {
             appearance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.State)))
             pressed = true
         }
     }
     LaunchedEffect(open, presetCwd, state.hostId) {
-        if (open) {
+        if (open && !importMode) {
             if (presetCwd != null) cwd = presetCwd
             if (cwd.isBlank()) cwd = state.runtimes.values.firstOrNull()?.cwd
                 ?: state.sessions.values.firstOrNull { it.cwd.isNotBlank() }?.cwd.orEmpty()
             if (cwd.isBlank() && state.sessionBrowse == null) onBrowse(null)
         }
     }
-    LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
+    LaunchedEffect(state.sessionBrowse?.path) { if (!importMode && cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
     LaunchedEffect(supported, kinds) { if (supported != null && (kind !in supported || agentFamily(kind) !in kinds))
         kind = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND)
             .firstOrNull { it in supported && agentFamily(it) in kinds } ?: "pi"
@@ -241,9 +243,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = { if (fieldValue.composition == null) submit() }))
                     NeumorphIconButton(onClick = ::submit,
-                        icon = if (text.isBlank()) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
-                        contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
-                    enabled = canStart,
+                        icon = if (text.isBlank() && !importMode) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
+                        contentDescription = L10n.tr(if (text.isBlank() && !importMode) "启动" else "发出第一句话并创建会话"),
+                        enabled = canStart,
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }
 

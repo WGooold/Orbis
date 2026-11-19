@@ -17,6 +17,8 @@ private final class MultiHostTransport: OrbisTransport {
     var relayTransportKind: RelayTransportKind?
     var relayTransportMode: RelayTransportMode = .auto
     var sent: [[String: Any]] = []
+    var binary: [Data] = []
+    var allowsExternalImports = true
     var connectCount = 0
     var disconnectCount = 0
     var receive: (([String: Any], String?) -> Void)?
@@ -31,11 +33,21 @@ private final class MultiHostTransport: OrbisTransport {
     }
     func disconnect() { disconnectCount += 1 }
     func send(_ object: [String: Any]) -> Bool { sent.append(object); return true }
+    func sendBinary(_ data: Data) -> Bool { binary.append(data); return true }
     func emit(_ object: [String: Any], channel: String = "ctl") async { receive?(object, channel); await drain?() }
-    func ready() async {
-        await emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": [[
-            "runtimeId": "shared-runtime", "name": "Shared runtime", "cwd": "/repo", "status": "idle", "sessionId": "shared-session"
+    func ready(imports: Bool = false, status: String = "idle") async {
+        await emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion,
+                    "hostFeatures": imports ? ["external-import.target-v1"] : [], "runtimes": [[
+            "runtimeId": "shared-runtime", "name": "Shared runtime", "cwd": "/repo", "status": status, "sessionId": "shared-session"
         ]]])
+    }
+    func awaitWire(_ predicate: ([String: Any]) -> Bool) async throws -> [String: Any] {
+        for _ in 0..<100 {
+            if let frame = sent.first(where: predicate) { return frame }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let frame = sent.first(where: predicate)
+        return try #require(frame)
     }
     var lastHistoryInterest: [String: Any]? { sent.last { $0["type"] as? String == "session.history.interest" } }
     func enableHistoryWindow() async throws {
@@ -94,6 +106,142 @@ private final class MultiHostFixture {
 
 @Suite("Independent always-on Hosts") @MainActor
 struct MultiHostTests {
+    // IMPORT-06: target selection stays scoped to authenticated pairing / session / project.
+    // Opening the picker or revalidating a row must not send anything to either Host.
+    @Test func externalImportDestinationIsNotRetargetedBySelectionOrReconnect() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.store.connection(for: "host-1"))
+        let second = try #require(fixture.store.connection(for: "host-2"))
+        let transport = try #require(fixture.transports["host-1"])
+        let otherTransport = try #require(fixture.transports["host-2"])
+        let offered = try #require(first.externalImportDestinations().first)
+        fixture.store.selectHost("host-2")
+        let baseline = (transport.sent.count, otherTransport.sent.count)
+        #expect(first.externalImportRuntime(offered.target)?.sessionId == "shared-session")
+        #expect(second.externalImportRuntime(offered.target) == nil)
+        let wrongProject = ExternalImportTarget(hostId: "host-1", pairingKey: offered.target.pairingKey,
+            sessionId: "shared-session", cwd: "/different")
+        #expect(first.externalImportRuntime(wrongProject) == nil)
+        let oldPairing = ExternalImportTarget(hostId: "host-1", pairingKey: "old-pairing",
+            sessionId: "shared-session", cwd: "/repo")
+        #expect(first.externalImportRuntime(oldPairing) == nil)
+        #expect(transport.sent.count == baseline.0 && otherTransport.sent.count == baseline.1)
+        transport.state?(.offline, nil)
+        #expect(first.externalImportRuntime(offered.target) == nil)
+    }
+
+    // IMPORT-06: no legacy fallback, no early command, exact upload verification,
+    // and a read-only recovery after the original command loses its connection.
+    @Test func externalImportSendsOnlyAfterVerifiedUploadAndRecoversWithoutReplay() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let first = try #require(fixture.store.connection(for: "host-1"))
+        let transport = try #require(fixture.transports["host-1"])
+        let other = try #require(fixture.transports["host-2"])
+        let destination = try #require(first.externalImportDestinations().first)
+        let inbox = ExternalImportStore(root: fixture.root.appendingPathComponent("inbox"))
+        let stage = try inbox.begin(); defer { inbox.discard(stage) }
+        let bytes = Data([31, 26, 80, 1])
+        let source = fixture.root.appendingPathComponent("from-provider.pdf")
+        try bytes.write(to: source)
+        let file = try inbox.copy(source, into: stage, index: 0, used: 0)
+        let batch = try inbox.assign(inbox.publish(stage, text: "/not-a-command", files: [file]).id, to: destination)
+        fixture.store.selectHost("host-2")
+        let otherBaseline = other.sent.count
+        await #expect(throws: ExternalImportProblem.hostUpgrade) { try await first.sendExternalImport(batch, from: inbox, instruction: "") }
+        #expect(try inbox.list() == [batch])
+        #expect(!transport.sent.contains { $0["type"] as? String == "file.upload.init" })
+        await transport.ready(imports: true, status: "running")
+        transport.allowsExternalImports = false
+        await #expect(throws: ExternalImportProblem.hostUpgrade) { try await first.sendExternalImport(batch, from: inbox, instruction: "") }
+        transport.allowsExternalImports = true
+        let delivery = Task { try await first.sendExternalImport(batch, from: inbox, instruction: "") }
+        let initFrame = try await transport.awaitWire { $0["type"] as? String == "file.upload.init" }
+        #expect((initFrame["importTarget"] as? [String: String])?["sessionId"] == destination.target.sessionId)
+        #expect(initFrame["fileName"] as? String == "from-provider.pdf")
+        #expect(try inbox.list() == [batch])
+        #expect(!transport.commands.contains { $0["type"] as? String == "user_message" })
+        await transport.emit(["type": "file.upload.ready", "requestId": try #require(initFrame["requestId"]), "uploadId": "upload-1", "receivedBytes": 0])
+        await transport.emit(["type": "file.upload.read", "uploadId": "upload-1", "offset": 0, "length": bytes.count])
+        #expect(try ArtifactChunk.decode(#require(transport.binary.last)).bytes == bytes)
+        #expect(!transport.commands.contains { $0["type"] as? String == "user_message" })
+        await transport.emit(["type": "file.upload.finished", "uploadId": "upload-1", "sha256": try #require(initFrame["sha256"]),
+                              "size": bytes.count, "path": "/repo/.orbis-uploads/from-provider.pdf"])
+        let sent = try await transport.awaitWire { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" }
+        let command = try #require(sent["command"] as? [String: Any])
+        let attempt = try #require(inbox.list().first?.attempt)
+        #expect(attempt.receipt == .pending)
+        #expect(sent["commandId"] as? String == attempt.id.uuidString)
+        #expect(command["messageId"] as? String == attempt.id.uuidString)
+        #expect(command["delivery"] as? String == "followUp")
+        #expect((command["text"] as? String)?.hasSuffix("\n\n/not-a-command") == true)
+        #expect(command["attachments"] as? [String] == ["/repo/.orbis-uploads/from-provider.pdf"])
+        transport.state?(.offline, nil)
+        try await delivery.value
+        let waiting = try #require(inbox.list().first)
+        #expect(waiting.attempt?.receipt == .unconfirmed)
+        await transport.ready()
+        await #expect(throws: ExternalImportProblem.targetUnavailable) { try await first.checkExternalImport(waiting, in: inbox) }
+        await transport.ready(imports: true)
+        let query = Task { try await first.checkExternalImport(waiting, in: inbox) }
+        let read = try await transport.awaitWire { $0["type"] as? String == "external-import.result.read" }
+        #expect(read["commandId"] as? String == attempt.id.uuidString)
+        await transport.emit(["type": "external-import.result", "commandId": attempt.id.uuidString, "runtimeId": attempt.runtimeId,
+                              "importTarget": ["sessionId": destination.target.sessionId, "cwd": destination.target.cwd], "status": "accepted"])
+        try await query.value
+        #expect(try inbox.list().first?.attempt?.receipt == .accepted)
+        #expect(transport.commands.filter { $0["type"] as? String == "user_message" }.count == 1)
+        #expect(other.sent.count == otherBaseline)
+    }
+
+    // IMPORT-07: only the original ready launch can bind the first message, even after a lost reply.
+    @Test func externalImportLaunchDoesNotCreateAgainAfterReconnect() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let connection = try #require(fixture.store.connection(for: "host-1"))
+        let transport = try #require(fixture.transports["host-1"])
+        let inbox = ExternalImportStore(root: fixture.root.appendingPathComponent("inbox"))
+        let stage = try inbox.begin(); defer { inbox.discard(stage) }
+        let batch = try inbox.publish(stage, text: "first message", files: [])
+        let cwd = "/repo"
+        let old = ["runtimeId": "shared-runtime", "name": "Existing", "cwd": cwd, "status": "idle", "sessionId": "old-session", "agentKind": "pi"]
+        let new = ["runtimeId": "new-runtime", "name": "New", "cwd": cwd, "status": "idle", "sessionId": "new-session", "agentKind": "pi"]
+        func ready(_ runtimes: [[String: String]]) async {
+            await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion,
+                "hostFeatures": ["external-import.target-v1"], "sessionConfiguration": 1, "agents": ["pi"], "runtimes": runtimes])
+        }
+        await ready([old])
+        connection.loadSessionConfiguration(agent: "pi", cwd: cwd)
+        let config = try await transport.awaitWire { $0["type"] as? String == "session.configuration.read" }
+        await transport.emit(["type": "session.configuration.result", "requestId": try #require(config["requestId"]), "agentKind": "pi", "cwd": cwd,
+            "binding": "configuration", "revision": 1, "values": [:], "catalog": ["binding": "configuration", "defaults": [:], "models": [], "permissions": []]])
+        let creating = Task { try await connection.launchExternalImport(batch, from: inbox, agent: "pi", cwd: cwd, instruction: "") }
+        let create = try await transport.awaitWire { $0["type"] as? String == "session.launch" }
+        let launch = try #require(inbox.list().first?.launch)
+        #expect(create["launchId"] as? String == launch.id)
+        await transport.emit(["type": "runtime.online", "runtime": new])
+        #expect(try inbox.list().first?.destination == nil)
+        #expect(!transport.commands.contains { $0["type"] as? String == "user_message" })
+        transport.state?(.offline, nil)
+        try await creating.value
+        await ready([old, new])
+        let saved = try #require(inbox.list().first)
+        let recovering = Task { try await connection.recoverExternalLaunch(saved, in: inbox) }
+        let read = try await transport.awaitWire { $0["type"] as? String == "session.launch.read" }
+        #expect(read["launchId"] as? String == launch.id)
+        await transport.emit(["type": "session.launch.result", "requestId": try #require(read["requestId"]), "launchId": launch.id,
+            "phase": "ready", "agentKind": "pi", "cwd": cwd, "sessionId": "new-session"])
+        let sent = try await transport.awaitWire { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" }
+        #expect(sent["runtimeId"] as? String == "new-runtime")
+        #expect((sent["importTarget"] as? [String: String])?["sessionId"] == "new-session")
+        #expect(transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 1)
+        await transport.emit(["type": "runtime.event", "runtimeId": "new-runtime", "event": ["type": "command.result",
+            "commandId": try #require(sent["commandId"]), "status": "success", "ok": true]])
+        try await recovering.value
+        #expect(try inbox.list().first?.attempt?.receipt == .accepted)
+    }
+
     // S29 / SC49: all three modes are saved per Host; policy changes retain the live adapter.
     @Test func relayTransportModeIsSavedPerSelectedHostWithoutReplacingTheActiveLink() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
