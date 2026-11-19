@@ -68,6 +68,29 @@ describe("RelayRuntimeTransport", () => {
     return { url: `ws://127.0.0.1:${address.port}`, connection };
   };
 
+  // MSG-RENDER-01: the new Pi producer advertises no new enum to an older strict Host.
+  it.each([false, true])("selects the message rendering format for the actual Host socket (%s)", async supported => {
+    const relay = await listen(), connected = vi.fn();
+    wss!.on("headers", headers => { if (supported) headers.push("X-Orbis-Message-Render: 1"); });
+    transport = new RelayRuntimeTransport({ relayUrl: relay.url, credential: "runtime-secret", reconnect: false });
+    await transport.start(metadata, { connected, resync: vi.fn(), command: vi.fn() });
+    const socket = await relay.connection;
+    await once(socket, "message");
+    socket.send(JSON.stringify({ type: "runtime.ready", protocolVersion: PROTOCOL_VERSION, runtimeId: metadata.runtimeId }));
+    await vi.waitFor(() => expect(connected).toHaveBeenCalledOnce());
+    const rich = { type: "render", renderKind: "image", text: "图片内容暂不可显示" } as const;
+    const body = { messageId: "media", role: "assistant", timestamp: 1, content: [rich] } as const;
+    const fixture = RuntimeEventSchema.parse({ ...sourceCompletion("session.patch"), display: { projectionVersion: 4, windowStart: null,
+      entries: [{ displayId: "entry", entryId: "entry", nativeType: "message", kind: "message", reason: null, message: body }] },
+      live: { complete: true, turn: null, tools: [], messages: [{ message: body, finished: true, contentComplete: true }] } });
+    const received = once(socket, "message");
+    transport.publish(fixture);
+    const [raw] = await received;
+    const block = supported ? rich : { type: "text", text: rich.text };
+    expect(JSON.parse(raw.toString()).event).toMatchObject({ display: { projectionVersion: supported ? 4 : 3,
+      entries: [{ message: { content: [block] } }] }, live: { messages: [{ message: { content: [block] } }] } });
+  });
+
   // SC81: prevent same-version additions from breaking authentication or later metadata;
   // compatibility projection must leave local facts and arbitrary tool data intact.
   it.each([undefined, "0", "1"])("projects model metadata using the peer's exact capability header %s", async header => {

@@ -1,5 +1,7 @@
 import {
   decodeJson,
+  downgradeMessageForLegacy,
+  LEGACY_DISPLAY_PROJECTION_VERSION,
   PROTOCOL_VERSION,
   PROTOCOL_VERSION_ERROR_CODE,
   RelayToRuntimeMessageSchema,
@@ -97,6 +99,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
   #ready = false;
   #sessionTurnOutcome = false;
   #runtimeModelState = false;
+  #messageRender = false;
   #closed = false;
   #reconnectDelayMs: number;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,7 +157,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
         delete turn.outcome;
         projected = { ...event, live: { ...event.live, turn } };
       }
-      const safeEvent = safeValue(projected);
+      const safeEvent = safeValue(this.#messageRender ? projected : legacyDisplayEvent(projected));
       this.#socket.send(JSON.stringify({
         type: "runtime.event",
         protocolVersion: PROTOCOL_VERSION,
@@ -183,6 +186,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#ready = false;
     this.#sessionTurnOutcome = false;
     this.#runtimeModelState = false;
+    this.#messageRender = false;
     this.#options.onConnectionStateChange?.("closed");
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
@@ -237,6 +241,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
     this.#socket = socket;
     this.#sessionTurnOutcome = false;
     this.#runtimeModelState = false;
+    this.#messageRender = false;
     let advertisedSessionTurnOutcome = false;
     this.#startReadyTimer(socket);
 
@@ -246,6 +251,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       // Registration itself contains metadata, so project it before runtime.ready.
       // This capability only selects wire fields; authenticated readiness still gates events.
       this.#runtimeModelState = response.headers["x-orbis-runtime-model-state"] === "1";
+      this.#messageRender = response.headers["x-orbis-message-render"] === "1";
     });
 
     socket.on("open", () => {
@@ -324,6 +330,7 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       this.#ready = false;
       this.#sessionTurnOutcome = false;
       this.#runtimeModelState = false;
+    this.#messageRender = false;
       this.#handlers?.disconnected?.();
       if (!this.#closed) this.#options.onConnectionStateChange?.("reconnecting");
       this.#scheduleReconnect();
@@ -396,4 +403,19 @@ export class RelayRuntimeTransport implements RuntimeBridgeTransport {
       this.#options.maxReconnectDelayMs ?? 30_000,
     );
   }
+}
+
+/** A released Host still parses every embedded live/display ChatMessage strictly. */
+function legacyDisplayEvent(event: RuntimeEvent): RuntimeEvent {
+  if (event.type === "message.started" || event.type === "message.finished") {
+    const message = downgradeMessageForLegacy(event.message);
+    return message === event.message ? event : { ...event, message };
+  }
+  if (event.type !== "session.snapshot" && event.type !== "session.patch") return event;
+  const display = event.display && { ...event.display,
+    projectionVersion: LEGACY_DISPLAY_PROJECTION_VERSION,
+    entries: event.display.entries.map(row => row.message ? { ...row, message: downgradeMessageForLegacy(row.message) } : row),
+  };
+  const live = event.live && { ...event.live, messages: event.live.messages.map(row => ({ ...row, message: downgradeMessageForLegacy(row.message) })) };
+  return { ...event, ...(display ? { display } : {}), ...(live ? { live } : {}) };
 }

@@ -204,7 +204,7 @@ const contentBlocks = (message: PiMessage): RemoteContent[] => {
       }];
     }
     if (block.type === "image") {
-      return [{ type: "text", text: `[Image omitted${typeof block.mimeType === "string" ? `: ${block.mimeType}` : ""}]` }];
+      return [{ type: "render", renderKind: "image", text: "图片内容暂不可显示" }];
     }
     return [];
   });

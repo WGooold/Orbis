@@ -601,6 +601,8 @@ describe("Remote context snapshot", () => {
   it("projects image blocks to a bounded reference without base64", () => {
     const data = "A".repeat(4 * 1024 * 1024);
     const image = { type: "image", data, mimeType: "image/png" };
+    expect(messageToRemote("image-message", { role: "assistant", content: [image] }).content)
+      .toEqual([{ type: "render", renderKind: "image", text: "图片内容暂不可显示" }]);
     const entries = sessionEntriesFromEntries([{
       type: "message", id: "e1", parentId: null, timestamp: new Date(0).toISOString(),
       message: { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "Read image file" }, image] },
