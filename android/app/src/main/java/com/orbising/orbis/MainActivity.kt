@@ -100,6 +100,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Psychology
@@ -176,6 +177,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
@@ -1792,6 +1795,108 @@ internal fun ChatScreen(
     var commandFeedback by remember(runtimeId) { mutableStateOf<String?>(null) }
     var commandFeedbackTransient by remember(runtimeId) { mutableStateOf(false) }
     var showDeliveryChoices by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val voiceInput = remember(context, runtimeId, sessionId) { VoiceInputController(context) }
+    DisposableEffect(voiceInput) { onDispose { voiceInput.destroy() } }
+    val voiceLifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(voiceLifecycle, voiceInput) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE && voiceInput.phase == VoiceCapturePhase.Listening) {
+                voiceInput.stop()
+            }
+        }
+        voiceLifecycle.addObserver(observer)
+        onDispose { voiceLifecycle.removeObserver(observer) }
+    }
+    val voiceApiStore = remember(context) { VoiceCleanupApiStore(context) }
+    var voiceCleanupJob by remember(state.hostId, runtimeId, sessionId) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var voiceCleanupInProgress by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var voiceCleanupStatus by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voiceCleanupRawDraft by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voiceCleanupCleanedDraft by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voicePermissionError by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var showVoicePrivacyNotice by remember { mutableStateOf(false) }
+    var systemSpeechExplained by rememberSaveable { mutableStateOf(false) }
+    fun cancelVoiceCleanup() {
+        voiceCleanupJob?.cancel()
+        voiceCleanupJob = null
+        voiceCleanupInProgress = false
+        voiceCleanupStatus = null
+        voiceCleanupRawDraft = null
+        voiceCleanupCleanedDraft = null
+    }
+    DisposableEffect(state.hostId, runtimeId, sessionId) {
+        onDispose { cancelVoiceCleanup() }
+    }
+    val beginVoiceRecognition: () -> Unit = {
+        voicePermissionError = null
+        showDeliveryChoices = false
+        focusManager.clearFocus()
+        cancelVoiceCleanup()
+        val expectedHost = state.hostId
+        voiceInput.start { recognized ->
+            if (model.state.value.hostId == expectedHost && model.state.value.selectedRuntimeId == runtimeId) {
+                val base = input
+                val prefix = base + if (base.isBlank() || base.endsWith("\n")) "" else "\n"
+                val rawDraft = prefix + recognized
+                input = rawDraft
+                model.saveDraft(runtimeId, rawDraft)
+                if (!matchesSelectedSlashCommand(rawDraft, selectedSlashCommandName)) selectedSlashCommandName = null
+                voiceCleanupJob = scope.launch {
+                    val config = try { voiceApiStore.load() }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                    if (input != rawDraft || model.state.value.hostId != expectedHost) return@launch
+                    voiceCleanupInProgress = config != null
+                    val provider = config?.provider
+                    val result = if (provider != null) {
+                        try {
+                            val reply = model.requestVoiceProvider(provider, "clean", config.model, recognized)
+                            val text = (reply["text"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                            VoiceTextCleanupResult(requireNotNull(text?.takeIf { it.isNotBlank() }), VoiceCleanupMethod.Api)
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (_: Exception) { VoiceTextCleanupResult(VoiceTextCleanupRules.clean(recognized), VoiceCleanupMethod.ApiFallback) }
+                    } else VoiceTextCleanupApi.shared.clean(recognized, config)
+                    voiceCleanupInProgress = false
+                    val current = model.state.value
+                    if (current.hostId != expectedHost || current.selectedRuntimeId != runtimeId ||
+                        current.runtimes[runtimeId]?.sessionId != sessionId || input != rawDraft) return@launch
+                    if (result.text != recognized) {
+                        val cleanedDraft = prefix + result.text
+                        input = cleanedDraft
+                        model.saveDraft(runtimeId, cleanedDraft)
+                        voiceCleanupRawDraft = rawDraft
+                        voiceCleanupCleanedDraft = cleanedDraft
+                    }
+                    voiceCleanupStatus = when (result.method) {
+                        VoiceCleanupMethod.ApiFallback -> "模型不可用，已使用手机本地规则"
+                        VoiceCleanupMethod.Api -> "已用自定义模型清理口述".takeIf { result.text != recognized }
+                        VoiceCleanupMethod.Rules -> "已去除明显口癖".takeIf { result.text != recognized }
+                    }
+                }
+            }
+        }
+    }
+    val voicePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) beginVoiceRecognition() else voicePermissionError = "请在系统设置中允许麦克风权限"
+    }
+    val requestVoicePermission: () -> Unit = {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            beginVoiceRecognition()
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val startVoiceInput: () -> Unit = {
+        if (!VoiceInputController.hasOnDeviceRecognition(context) && !systemSpeechExplained) {
+            showVoicePrivacyNotice = true
+        } else {
+            requestVoicePermission()
+        }
+    }
     // 这个 composer 上挂着的上传任务（taskId）。只有传完的才能随消息发出。
     // 关联记在 ViewModel（按会话）：退出会话窗口再回来，chip 原样恢复——上传不因退出窗口取消。
     val sessionKey = "$runtimeId/$sessionId"
@@ -1841,6 +1946,7 @@ internal fun ChatScreen(
     }
     fun submitMessage(commandId: String?) {
         if (commandId == null) return
+        cancelVoiceCleanup()
         animateSend(commandId)
         actionHaptic()
         commandFeedback = null
@@ -1850,6 +1956,7 @@ internal fun ChatScreen(
     }
     fun trackSubmission(commandId: String?) {
         if (commandId == null) return
+        cancelVoiceCleanup()
         actionHaptic()
         val submittedText = input
         commandFeedback = null
@@ -2306,6 +2413,56 @@ internal fun ChatScreen(
                             },
                         )
                     }
+                    if (voiceInput.phase != VoiceCapturePhase.Idle || voicePermissionError != null || voiceInput.errorKey != null || voiceCleanupInProgress || voiceCleanupStatus != null) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                Modifier.padding(top = 6.dp).size(8.dp).clip(CircleShape)
+                                    .background(if (voicePermissionError != null || voiceInput.errorKey != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
+                            )
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                val status = when {
+                                    voicePermissionError != null -> voicePermissionError!!
+                                    voiceInput.errorKey != null -> voiceInput.errorKey!!
+                                    voiceInput.phase == VoiceCapturePhase.Finishing -> "正在整理语音"
+                                    voiceCleanupInProgress -> "正在去除口癖"
+                                    voiceCleanupStatus != null -> voiceCleanupStatus!!
+                                    voiceInput.isOnDevice -> "正在聆听 · 本机识别，不会自动发送"
+                                    else -> "正在聆听 · 系统识别，不会自动发送"
+                                }
+                                Text(L10n.tr(status), Modifier.semantics {
+                                    liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite
+                                }, style = MaterialTheme.typography.labelSmall,
+                                    color = if (voicePermissionError != null || voiceInput.errorKey != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (voiceCleanupInProgress) {
+                                    Text(L10n.tr("仅将本次识别文字发送到自定义 API"),
+                                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                } else if (voiceInput.phase != VoiceCapturePhase.Idle) {
+                                    Text(L10n.tr("请勿口述密码等敏感信息"), style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (voiceInput.phase == VoiceCapturePhase.Listening && voiceInput.transcript.isNotBlank()) {
+                                    Text(voiceInput.transcript, style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (voiceCleanupCleanedDraft == input && voiceCleanupRawDraft != null) {
+                                    TextButton(onClick = {
+                                        val original = voiceCleanupRawDraft ?: return@TextButton
+                                        input = original
+                                        model.saveDraft(runtimeId, original)
+                                        voiceCleanupStatus = null
+                                        voiceCleanupRawDraft = null
+                                        voiceCleanupCleanedDraft = null
+                                    }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                                        Text(L10n.tr("还原识别原文"), style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Row(
                         Modifier.fillMaxWidth().navigationBarsPadding()
                             .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
@@ -2325,6 +2482,7 @@ internal fun ChatScreen(
                         value = input,
                         onValueChange = { value ->
                             showDeliveryChoices = false
+                            cancelVoiceCleanup()
                             input = value
                             model.saveDraft(runtimeId, value)
                             if (!matchesSelectedSlashCommand(value, selectedSlashCommandName)) {
@@ -2333,7 +2491,28 @@ internal fun ChatScreen(
                         },
                         modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
                         placeholder = { Text(L10n.tr(if (openClawComposer) "发给 {0}" else "发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        enabled = runtime != null || launchOpen,
+                        trailingIcon = {
+                            NeumorphIconButton(
+                                onClick = {
+                                    when (voiceInput.phase) {
+                                        VoiceCapturePhase.Listening -> voiceInput.stop()
+                                        VoiceCapturePhase.Idle -> startVoiceInput()
+                                        VoiceCapturePhase.Finishing -> Unit
+                                    }
+                                },
+                                icon = if (voiceInput.phase == VoiceCapturePhase.Listening) Icons.Rounded.StopCircle else Icons.Rounded.Mic,
+                                contentDescription = L10n.tr(when (voiceInput.phase) {
+                                    VoiceCapturePhase.Listening -> "结束语音输入"
+                                    VoiceCapturePhase.Finishing -> "正在整理语音"
+                                    VoiceCapturePhase.Idle -> "开始语音输入"
+                                }),
+                                enabled = (runtime != null || launchOpen) && voiceInput.phase != VoiceCapturePhase.Finishing,
+                                tint = if (voiceInput.phase == VoiceCapturePhase.Listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                compact = true,
+                                modifier = Modifier.testTag("chat-voice-input"),
+                            )
+                        },
+                        enabled = (runtime != null || launchOpen) && voiceInput.phase == VoiceCapturePhase.Idle,
                         minLines = 1,
                         maxLines = 5,
                     )
@@ -2666,6 +2845,21 @@ internal fun ChatScreen(
         },
         content = historyPage,
     )
+    if (showVoicePrivacyNotice) {
+        AlertDialog(
+            onDismissRequest = { showVoicePrivacyNotice = false },
+            title = { Text(L10n.tr("语音识别说明")) },
+            text = { Text(L10n.tr("此设备没有可用的本机语音识别服务。继续后，Android 系统语音服务可能通过网络处理音频。请勿口述密码等敏感信息。识别结果只写入当前草稿，不会自动发送。")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    systemSpeechExplained = true
+                    showVoicePrivacyNotice = false
+                    requestVoicePermission()
+                }) { Text(L10n.tr("继续")) }
+            },
+            dismissButton = { TextButton(onClick = { showVoicePrivacyNotice = false }) { Text(L10n.tr("取消")) } },
+        )
+    }
 
 }
 
@@ -3240,7 +3434,7 @@ internal fun StatusScreen(
     onBack: () -> Unit,
     root: Boolean = false,
 ) {
-    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode)
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model)
 }
 
 

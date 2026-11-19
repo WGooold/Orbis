@@ -135,6 +135,7 @@ struct ChatComposerView: View, Equatable {
     let fallbackRuntime: RuntimeSummary
     private var target: ChatActionContext { actions.target }
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisFoldReading) private var foldReading
     let composerFocus: ChatComposerFocus
     let sendFlight: MessageSendFlight
@@ -147,6 +148,12 @@ struct ChatComposerView: View, Equatable {
     @State private var draftStorage = ComposerDraftStorage()
     @State private var draftPresentation: ComposerDraftPresentation?
     @State private var fileSelection: ChatFileSelection?
+    @State private var voiceInput = VoiceInputController()
+    @State private var voiceCleanupInProgress = false
+    @State private var voiceCleanupStatus: String?
+    @State private var voiceCleanupTask: Task<Void, Never>?
+    @State private var voiceCleanupRawDraft: String?
+    @State private var voiceCleanupCleanedDraft: String?
 
     private var facts: ChatComposerState { model.composer }
     private var runtime: ChatComposerRuntimeFacts { facts.runtime ?? ChatComposerRuntimeFacts(fallbackRuntime) }
@@ -260,6 +267,42 @@ struct ChatComposerView: View, Equatable {
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
                 HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
             }
+            if voiceInput.isListening || voiceInput.isFinishing || voiceInput.errorMessage != nil || voiceCleanupInProgress || voiceCleanupStatus != nil {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: voiceInput.errorMessage == nil ? (voiceCleanupInProgress ? "sparkles" : "waveform") : "exclamationmark.circle")
+                        .foregroundStyle(voiceInput.errorMessage == nil ? accent : p.error)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(voiceInput.errorMessage.map { L10n.tr($0) } ?? L10n.tr(
+                            voiceInput.isFinishing ? "正在整理语音" : voiceCleanupInProgress ? "正在去除口癖" :
+                                voiceCleanupStatus ?? "正在聆听 · 结束后可编辑，不会自动发送"))
+                            .font(.orbisCaption()).foregroundStyle(voiceInput.errorMessage == nil ? p.secondary : p.error)
+                        if voiceCleanupInProgress {
+                            Text(L10n.tr("仅将本次识别文字发送到自定义 API"))
+                                .font(.orbisCaption()).foregroundStyle(p.secondary)
+                        } else if voiceInput.isListening || voiceInput.isFinishing {
+                            Text(L10n.tr("请勿口述密码等敏感信息"))
+                                .font(.orbisCaption()).foregroundStyle(p.secondary)
+                        }
+                        if voiceInput.isListening && !voiceInput.transcript.isEmpty {
+                            Text(voiceInput.transcript).font(.orbisCaption()).foregroundStyle(p.text).lineLimit(2)
+                        }
+                        if voiceCleanupCleanedDraft == currentDraft, let original = voiceCleanupRawDraft {
+                            Button(L10n.tr("还原识别原文")) {
+                                setProgrammaticDraft(original)
+                                voiceCleanupCleanedDraft = nil
+                                voiceCleanupRawDraft = nil
+                                voiceCleanupStatus = nil
+                            }
+                            .font(.orbisCaption(.medium)).foregroundStyle(accent)
+                            .accessibilityIdentifier("voice-cleanup-restore")
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20).padding(.top, 6)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("voice-input-status")
+            }
             if !textOnly { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
             if slash && !textOnly { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
@@ -287,10 +330,55 @@ struct ChatComposerView: View, Equatable {
                                  onEdit: { text, marked, height in handleUserDraftEdit(text, marked: marked, height: height) },
                                  onSubmit: handleReturnSubmit,
                                  onCancel: { composerFocus.focused = false })
-                    .padding(.horizontal, 16).padding(.vertical, 16)
+                    .allowsHitTesting(!voiceInput.isListening && !voiceInput.isFinishing)
+                    .padding(.horizontal, 16).padding(.vertical, 16).padding(.trailing, 40)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 56)
                     .orbisField(focused: focused).orbisAnchor(sendFlight.composer)
+                    .overlay(alignment: .trailing) {
+                        OrbisIconButton(symbol: voiceInput.isListening || voiceInput.isFinishing ? "stop.fill" : "mic.fill",
+                                        label: L10n.tr(voiceInput.isListening ? "结束语音输入" : voiceInput.isFinishing ? "正在整理语音" : "开始语音输入"),
+                                        tint: voiceInput.isListening ? p.error : accent,
+                                        compact: true) {
+                            guard actions.isCurrent else { return }
+                            composerFocus.focused = false
+                            if voiceInput.isListening {
+                                voiceInput.stop()
+                            } else if !voiceInput.isFinishing {
+                                cancelVoiceCleanup()
+                                voiceInput.start { recognizedText in
+                                    guard actions.isCurrent else { return }
+                                    let existing = currentDraft
+                                    let prefix = existing.isEmpty || existing.hasSuffix("\n") ? existing : existing + "\n"
+                                    let rawDraft = prefix + recognizedText
+                                    setProgrammaticDraft(rawDraft)
+                                    let config = try? SecureStore.shared.voiceCleanupAPIConfig()
+                                    voiceCleanupInProgress = config != nil
+                                    voiceCleanupTask = Task { @MainActor in
+                                        let result = await VoiceTextCleanupAPI.clean(recognizedText, config: config)
+                                        guard !Task.isCancelled else { return }
+                                        voiceCleanupTask = nil
+                                        voiceCleanupInProgress = false
+                                        guard actions.isCurrent, currentDraft == rawDraft else { return }
+                                        let changed = result.text != recognizedText
+                                        if changed {
+                                            let cleanedDraft = prefix + result.text
+                                            setProgrammaticDraft(cleanedDraft)
+                                            voiceCleanupRawDraft = rawDraft
+                                            voiceCleanupCleanedDraft = cleanedDraft
+                                        }
+                                        switch result.method {
+                                        case .rules: voiceCleanupStatus = changed ? "已去除明显口癖" : nil
+                                        case .api: voiceCleanupStatus = changed ? "已用自定义模型清理口述" : nil
+                                        case .apiFallback: voiceCleanupStatus = "模型不可用，已使用手机本地规则"
+                                        }
+                                    }
+                                }
+                            }
+                        }.disabled(!facts.canSend || voiceInput.isFinishing)
+                            .accessibilityIdentifier("chat-voice-input")
+                            .padding(.trailing, 2)
+                    }
                 if runtime.status == "running" && (textOnly || !hasText && attachments.isEmpty) {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if actions.isCurrent, actions.stopRuntime() { OrbisHaptics.commit() }
@@ -320,12 +408,33 @@ struct ChatComposerView: View, Equatable {
             .onChange(of: selectedCommand) { old, _ in
                 if actions.ownsRuntime, let old, target.runtimeId != nil { actions.cancelMenuOptions(old) }
             }
-            .onDisappear { if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) } }
+            .onDisappear {
+                voiceInput.cancel()
+                cancelVoiceCleanup()
+                if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) }
+            }
+            .onChange(of: facts.identity) { _, _ in
+                voiceInput.cancel()
+                cancelVoiceCleanup()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active && voiceInput.isListening { voiceInput.stop() }
+            }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
+    }
+
+    private func cancelVoiceCleanup() {
+        voiceCleanupTask?.cancel()
+        voiceCleanupTask = nil
+        voiceCleanupInProgress = false
+        voiceCleanupStatus = nil
+        voiceCleanupRawDraft = nil
+        voiceCleanupCleanedDraft = nil
     }
 
     private func handleUserDraftEdit(_ text: String, marked: Bool, height: Int) {
         guard actions.isCurrent else { return }
+        if text != currentDraft { cancelVoiceCleanup() }
         draftStorage.updateFromUser(identity: target.identity, draftRevision: facts.draftRevision, text: text, height: height)
         actions.editDraft(text, persist: !marked)
         reconcileDraftSideEffects(text)
@@ -391,6 +500,7 @@ struct ChatComposerView: View, Equatable {
         if slash, let command { accepted = actions.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : text) }
         else { accepted = actions.sendMessage(text.isEmpty ? "请查看附件。" : text, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
+            cancelVoiceCleanup()
             onAcceptedSend(existing)
             OrbisHaptics.commit()
             if !slash || messageSlash {

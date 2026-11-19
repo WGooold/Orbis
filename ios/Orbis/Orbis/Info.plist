@@ -63,6 +63,10 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>用于将您的语音转换为聊天草稿；不会自动发送。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>用于将语音转换为可编辑文字。识别由 Apple 提供；不可离线识别时，音频可能发送给 Apple 处理；请勿口述密码等敏感信息。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>用于扫描电脑上的 Orbis 配对二维码。</string>
 	<key>NSLocalNetworkUsageDescription</key>

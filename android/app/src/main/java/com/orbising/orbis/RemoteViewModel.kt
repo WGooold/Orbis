@@ -560,6 +560,27 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
 
 
+    internal suspend fun requestVoiceProvider(provider: VoiceCleanupProvider, action: String,
+        model: String? = null, text: String? = null): kotlinx.serialization.json.JsonObject =
+        requestVoiceProviderOn(provider.hostId, action, provider, model, text)
+
+    internal suspend fun discoverVoiceProviders(hostId: String): List<VoiceCleanupProvider> {
+        val host = requireNotNull(hosts.value.find { it.hostId == hostId })
+        val reply = requestVoiceProviderOn(hostId, "providers")
+        return kotlinx.serialization.json.Json.decodeFromJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(VoiceCleanupProvider.serializer()), requireNotNull(reply["providers"]),
+        ).map { it.copy(hostId = hostId, hostName = host.name) }
+    }
+
+    private suspend fun requestVoiceProviderOn(hostId: String, action: String, provider: VoiceCleanupProvider? = null,
+        model: String? = null, text: String? = null): kotlinx.serialization.json.JsonObject {
+        // The provider's computer is independent of the active chat. Never reroute to another Host.
+        val connection = requireNotNull(connectionFor(hostId))
+        return connection.requestVoiceProvider(action, provider, model, text).also {
+            check(connectionFor(hostId) === connection)
+        }
+    }
+
     private fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
 
     // ── Diagnostics ─────────────────────────────────────────────────────────
