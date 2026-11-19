@@ -11,7 +11,7 @@ import { ProviderError } from "./provider-error.js";
 import { backfillCodex, codexOfficial, defaultCodexPreferences, extractCodexCommon, prepareCodex, type CodexPreferences } from "./provider-codex.js";
 import { validateUsageScript, type UsageScript } from "./provider-usage.js";
 import { backfillCatalog, catalogFilename, catalogSpecs, ownedCatalog, prepareCatalog } from "./provider-catalog.js";
-import { CodexOAuthAccounts, managedAuthMarker, type ManagedAuthMarker } from "./provider-oauth.js";
+import { CodexOAuthAccounts, managedAuthMarker, tokenClaims, type ManagedAuthMarker } from "./provider-oauth.js";
 import { CodexProxy, type ProxySnapshot } from "./codex-proxy.js";
 import { defaultProxyPreferences, proxyPreferences, proxyRoute, projectProxy, restoreProxy, upstreamFormat, validateCodexRouting, type ProxyPreferences, type ProxyTakeover } from "./provider-proxy-config.js";
 import { publicProviderAuthentication, publicProviderHealth, publicProviderRouting, publicProviderUsage } from "./provider-public-state.js";
@@ -30,6 +30,17 @@ export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean
 const object = (value: unknown): value is ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
 const kinds = ["pi", "codex", "dsh", "claude"] as const;
+function sameManagedIdentity(marker: ManagedAuthMarker | undefined, auth: unknown): boolean {
+  if (!marker || !object(auth) || !object(auth.tokens)) return false;
+  const accountId = typeof auth.tokens.account_id === "string" ? auth.tokens.account_id : "";
+  const idToken = typeof auth.tokens.id_token === "string" ? auth.tokens.id_token : "";
+  const sub = typeof tokenClaims(idToken).sub === "string" ? String(tokenClaims(idToken).sub) : "";
+  return !!accountId && !!sub && marker.identity === `${accountId}:${sub}`;
+}
+function isJwtExpired(token: string, nowMs = Date.now()): boolean {
+  const exp = tokenClaims(token).exp;
+  return typeof exp === "number" && Number.isFinite(exp) && exp * 1000 <= nowMs + 30_000;
+}
 function subscriptionSupported(profile: ProviderProfile): boolean {
   if (profile.kind === "claude") return claudeOfficial(profile.config);
   if (profile.kind !== "codex" || !codexOfficial(profile.config)) return false;
@@ -331,16 +342,40 @@ export class ProviderManager {
         return querySubscriptionQuota("claude", credentials);
       }
       if (kind !== "codex") throw new ProviderError("此 Agent 不支持订阅配额查询");
-      if (process.env.OPENAI_BASE_URL || process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) throw new ProviderError("当前环境变量覆盖了 Codex 官方登录，请在电脑端检查配置");
+      const baseOverride = (process.env.OPENAI_BASE_URL ?? "").trim();
+      if (baseOverride && !/^https:\/\/api\.openai\.com(\/v1)?\/?$/.test(baseOverride)) {
+        throw new ProviderError("当前环境变量覆盖了 Codex 官方登录，请在电脑端检查配置");
+      }
       const doc = parseToml(String(live.config ?? ""));
-      // Query the CLI's current login, including independent native logins made since profile activation.
-      // A read must not rotate a managed refresh token behind the running CLI's back.
-      const credentials = await codexSubscriptionCredentials(this.paths.codex, doc.cli_auth_credentials_store, live.auth);
-      return querySubscriptionQuota("codex", credentials);
+      const liveTokens = object(live.auth) && object(live.auth.tokens) ? live.auth.tokens : undefined;
+      const liveHasTokens = typeof liveTokens?.access_token === "string" && !!liveTokens.access_token.trim();
+      const managedLive = !!profile.authBinding && (!liveHasTokens || sameManagedIdentity(store.managedAuth, live.auth));
+      // Prefer the CLI's current login (including independent logins made since activation).
+      // Only refresh a managed account if its token is missing, expired, or rejected with 401/403.
+      const credentials = await codexSubscriptionCredentials(this.paths.codex, doc.cli_auth_credentials_store, live.auth, managedLive && liveHasTokens);
+      const token = object(credentials.tokens) && typeof credentials.tokens.access_token === "string" ? credentials.tokens.access_token.trim() : "";
+      if (managedLive && (!token || isJwtExpired(token))) {
+        return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId);
+      }
+      try {
+        return await querySubscriptionQuota("codex", credentials);
+      } catch (error) {
+        if (managedLive && error instanceof ProviderError && error.message.includes("登录已失效")) {
+          return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId);
+        }
+        throw error;
+      }
     });
     this.#subscriptionQueries.set(key, work);
     void work.then(() => this.#subscriptionQueries.delete(key), () => this.#subscriptionQueries.delete(key));
     return work;
+  }
+  async #queryManagedCodexSubscription(store: Store, accountId: string | undefined): Promise<SubscriptionQuota> {
+    const managed = await this.#oauth.auth(accountId);
+    await atomicWrite(join(this.paths.codex, "auth.json"), json(managed.auth));
+    store.managedAuth = managedAuthMarker(managed.accountId, managed.auth);
+    await atomicWrite(this.#file, json(store));
+    return querySubscriptionQuota("codex", managed.auth);
   }
   save(kind: AgentKind, id: string, name: string, config: unknown, create = false, addToLive = true, metadata: ProviderMetadata = {}): Promise<ProviderSummary[]> {
     validateConfig(kind, config);
