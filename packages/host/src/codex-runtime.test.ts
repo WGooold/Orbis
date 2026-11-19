@@ -170,6 +170,35 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
+// MSG-RENDER-01: final plan text replaces deltas; checklist and review entry are control events.
+it("keeps Codex plans and final reviews in the live and persisted conversation", async () => {
+  const h = makeHarness();
+  await activate(h);
+  const route = { threadId: "th-1", turnId: "render-turn" };
+  h.notify("turn/started", { threadId: route.threadId, turn: { id: route.turnId } });
+  h.notify("turn/plan/updated", { ...route, explanation: "internal checklist", plan: [{ step: "work", status: "pending" }] });
+  h.notify("item/started", { ...route, item: { id: "plan", type: "plan", text: "" } });
+  h.notify("item/plan/delta", { ...route, itemId: "plan", delta: "First draft" });
+  expect(h.events).toContainEqual({ type: "message.delta", messageId: "plan", contentType: "text", delta: "First draft" });
+  const plan = { id: "plan", type: "plan", text: "## Final plan\n- Verify the result" };
+  const review = { id: "review", type: "exitedReviewMode", review: "**Reviewed**: the test passed." };
+  h.notify("item/completed", { ...route, item: plan });
+  h.notify("item/completed", { ...route, item: { id: "review", type: "enteredReviewMode", review: "local review target" } });
+  h.notify("item/completed", { ...route, item: review });
+  h.notify("item/completed", { ...route, item: { id: "internal", type: "unexpectedControl", text: "hidden" } });
+  const live = h.events.filter(e => e.type === "message.finished").map(e => e.message);
+  expect(live).toMatchObject([
+    { messageId: "plan", content: [{ type: "text", text: plan.text }] },
+    { messageId: "review", content: [{ type: "text", text: review.review }] },
+  ]);
+  const history = syncHistory(h)!;
+  expect(history.display?.entries.map(e => e.message?.content)).toEqual(live.map(message => message.content));
+  expect(history.entries.map(e => e.entryId)).toEqual(["plan", "review"]);
+  const replay = makeHarness({ initialTurns: [{ id: route.turnId, status: "completed", items: [plan, review] }] });
+  await activate(replay);
+  expect(syncHistory(replay)?.display?.entries.map(e => e.message?.content)).toEqual(live.map(message => message.content));
+});
+
 // Child lifecycles belong to execution.tasks for both native transports; main input stays independent.
 describe("Codex CLI/Desktop child task integration", () => {
   const tasks = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.tasks").at(-1)?.tasks;

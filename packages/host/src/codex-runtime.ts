@@ -1864,17 +1864,17 @@ export class CodexRuntime implements AgentBackend {
           if (observed !== undefined) record = observed.item;
           const orderOnly = !isToolItem(record) && itemToMessage(record) === undefined;
           const itemRunning = !observedComplete && !orderOnly && (record.status === "inProgress" || record.status === "in_progress"
-            || (turnRunning && !itemFinished && !knownCanonical && (record.type === "agentMessage" || isToolItem(record))));
+            || (turnRunning && !itemFinished && !knownCanonical && (isProseStream(record) || isToolItem(record))));
           record = this.#projectToolItem(thread, record, itemRunning ? "started" : "finished", owner);
           if (turnRunning && itemRunning) {
             const itemMessage = toolCallMessage(record) ?? itemToMessage(record);
             if (itemMessage !== undefined) {
-              if (record.type === "agentMessage" && typeof record.id === "string") thread.streamingMessageId = record.id;
+              if (isProseStream(record) && typeof record.id === "string") thread.streamingMessageId = record.id;
               const known = prior.liveMessages.get(itemMessage.messageId);
               thread.liveMessages.set(itemMessage.messageId, known ?? {
                 message: itemMessage,
                 finished: false,
-                contentComplete: record.type !== "agentMessage",
+                contentComplete: !isProseStream(record),
               });
             }
             const itemTool = toolCallInfo(record);
@@ -3691,7 +3691,7 @@ export class CodexRuntime implements AgentBackend {
           thread.activity.compaction = { phase: "running", ...(typeof record.turnId === "string" ? { turnId: record.turnId.slice(0, 256) } : {}) };
           this.#emit(thread.id, thread.activity);
         }
-        if (data.type === "agentMessage" || data.type === "reasoning") this.#settleCompactionProgress(thread, record.turnId);
+        if (isProseStream(data) || data.type === "reasoning") this.#settleCompactionProgress(thread, record.turnId);
         if (typeof data.type === "string" && data.type !== "userMessage") this.#clearRetryError(thread, record.turnId);
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         if ((data.type === "fileChange" || data.type === "commandExecution") && typeof data.id === "string") {
@@ -3713,7 +3713,7 @@ export class CodexRuntime implements AgentBackend {
           finished: false,
           contentComplete: true,
         });
-        if (data.type === "agentMessage" && typeof data.id === "string") thread.streamingMessageId = data.id;
+        if (isProseStream(data) && typeof data.id === "string") thread.streamingMessageId = data.id;
         // userMessage item（turn/start 带了 clientUserMessageId 时 clientId = App 的
         // messageId）在此处完成唯一一次上屏——本地不再合成回显。
         const message = withClientMessageId(data, raw);
@@ -3753,7 +3753,8 @@ export class CodexRuntime implements AgentBackend {
         }
         return;
       }
-      case "item/agentMessage/delta": {
+      case "item/agentMessage/delta":
+      case "item/plan/delta": {
         const delta = record.delta;
         if (typeof delta !== "string" || typeof record.itemId !== "string") return;
         if (delta.length > 0) {
@@ -3804,7 +3805,7 @@ export class CodexRuntime implements AgentBackend {
         }
         if (typeof record.turnId === "string") thread.asyncInputs.upsert(data, record.turnId);
         data = this.#projectToolItem(thread, data, "finished", typeof record.turnId === "string" ? record.turnId : undefined, true);
-        if (data.type === "agentMessage" && thread.streamingMessageId === data.id) {
+        if (isProseStream(data) && thread.streamingMessageId === data.id) {
           thread.streamingMessageId = undefined;
         }
         // item 通知自带 turnId（`ItemCompletedNotification` 的 required 字段），条目归属由此确定。
@@ -4792,6 +4793,10 @@ function messageText(message: ChatMessage | undefined): string {
     .trim();
 }
 
+function isProseStream(item: Record<string, unknown>): boolean {
+  return item.type === "agentMessage" || item.type === "plan";
+}
+
 function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
   const id = item.id;
   const type = item.type;
@@ -4806,6 +4811,12 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
       // 旧格式 rollout 的 AgentMessage 把文本放在 content[].type="Text"（大写 T）；
       // app-server v2 的在线 item/completed 用 item.text（字符串）。两种都兜。
       return { messageId: id, role: "assistant", content: [{ type: "text", text: codexAsyncQuestionText(item) || extractContentText(item) }], timestamp };
+    case "plan":
+      // Proposed plan prose is independent of the mutable checklist in turn/plan/updated.
+      return { messageId: id, role: "assistant", content: [{ type: "text", text: extractContentText(item) }], timestamp };
+    case "exitedReviewMode":
+      return typeof item.review === "string" && item.review.trim().length > 0
+        ? { messageId: id, role: "assistant", content: [{ type: "text", text: item.review }], timestamp } : undefined;
     case "reasoning":
       // Reasoning item 的摘要在 summary_text[]（字符串数组）；content/text 兜底。
       return { messageId: id, role: "assistant", content: [{ type: "thinking", text: extractReasoningText(item) }], timestamp };
@@ -4841,7 +4852,7 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
         timestamp,
       };
     default:
-      // webSearch / plan / todoList 等其余 item 类型先不上屏（§12：能力逐步声明）。
+      // Only items with known user-facing content enter the transcript.
       return undefined;
   }
 }
