@@ -83,15 +83,19 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var configurationPanel by remember { mutableStateOf<String?>(null) }
     var permissionCategory by remember { mutableStateOf<String?>(null) }
     var proposedPermissions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val supported = state.launchableAgents ?: state.supportedAgents
+    val openCode = state.openCodeAvailability.takeIf { state.e2eReady }
+    val showOpenCode = openCode != null || (state.e2eReady && supported?.contains("opencode") == true)
+    val canChooseOpenCode = state.e2eReady && openCode?.ready != false && supported?.contains("opencode") == true
+    val canUseSelectedAgent = kind != "opencode" || canChooseOpenCode
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
-    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported) {
-        if (open && state.e2eReady && state.sessionConfigurationSupported && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
+    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported, canUseSelectedAgent) {
+        if (open && state.e2eReady && state.sessionConfigurationSupported && cwd.isNotBlank() && canUseSelectedAgent) onLoadConfiguration(kind, cwd)
     }
     fun submit() {
-        if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
+        if (cwd.isNotBlank() && canUseSelectedAgent && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
-    val supported = state.launchableAgents ?: state.supportedAgents
-    val kinds = listOf("codex", "claude", "dsh", "pi", "opencode")
+    val kinds = listOf("codex", "claude", "dsh", "pi") + if (showOpenCode) listOf("opencode") else emptyList()
     val family = agentFamily(kind)
     /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
     fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
@@ -117,7 +121,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
-    LaunchedEffect(supported) { if (supported != null && kind !in supported)
+    LaunchedEffect(supported, openCode) { if (supported != null && kind !in supported && !(kind == "opencode" && openCode != null))
         kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "opencode")).firstOrNull { it in supported } ?: "pi"
     }
     AgentTheme(agentBrand(kind)) {
@@ -125,12 +129,34 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
             style = if (pressed) NeumorphStyle.Pressed else NeumorphStyle.Raised, contentPadding = 16.dp) {
             Column(Modifier.fillMaxWidth().graphicsLayer { alpha = appearance.value; translationY = 4.dp.toPx() * (1 - appearance.value) },
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val agentLabel: @Composable (Modifier) -> Unit = { modifier ->
+                    val hasVariants = agentVariants(family).size > 1
+                    val versionChoice = versionsAvailable(family)
+                    Row(modifier.heightIn(min = 48.dp)
+                        .testTag(if (family == "codex") "draft-codex-version" else if (hasVariants) "draft-$family-version" else "draft-agent-label")
+                        .then(if (versionChoice) Modifier.orbisKeyboardFocus().clickable(
+                            interactionSource = remember { MutableInteractionSource() }, indication = null,
+                            role = Role.Button,
+                        ) { agentMenu = family } else Modifier)
+                        .semantics {
+                            if (hasVariants) stateDescription = agentVariantTitle(kind)
+                        }, verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
+                        Text(if (family == "codex") "Codex" else agentBrand(kind).title,
+                            modifier = Modifier.weight(1f).testTag("draft-agent-name"), style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (hasVariants) Icon(when (kind) { "codexDesktop", "dshDesktop" -> OrbisSymbols.Computer; "dsh" -> Icons.Rounded.Language; else -> Icons.Rounded.Terminal },
+                            null, Modifier.size(18.dp).testTag(if (family == "codex") "draft-codex-mode-icon" else "draft-$family-mode-icon"), tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     kinds.forEach { agent ->
                         val brand = agentBrand(agent)
                         val variants = agentVariants(agent)
                         val selected = family == agent
-                        val enabled = supported == null || variants.any { it in supported }
+                        val enabled = if (agent == "opencode") canChooseOpenCode
+                            else supported == null || variants.any { it in supported }
                         val chooseCodexVersion = versionsAvailable(agent)
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -159,25 +185,12 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             }
                         }
                     }
-                    val hasVariants = agentVariants(family).size > 1
-                    val versionChoice = versionsAvailable(family)
-                    Row(Modifier.weight(1f).heightIn(min = 48.dp)
-                        .testTag(if (family == "codex") "draft-codex-version" else if (hasVariants) "draft-$family-version" else "draft-agent-label")
-                        .then(if (versionChoice) Modifier.orbisKeyboardFocus().clickable(
-                            interactionSource = remember { MutableInteractionSource() }, indication = null,
-                            role = Role.Button,
-                        ) { agentMenu = family } else Modifier)
-                        .semantics {
-                            if (hasVariants) stateDescription = agentVariantTitle(kind)
-                        }, verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
-                        Text(if (family == "codex") "Codex" else agentBrand(kind).title,
-                            modifier = Modifier.weight(1f).testTag("draft-agent-name"), style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (hasVariants) Icon(when (kind) { "codexDesktop", "dshDesktop" -> OrbisSymbols.Computer; "dsh" -> Icons.Rounded.Language; else -> Icons.Rounded.Terminal },
-                            null, Modifier.size(18.dp).testTag(if (family == "codex") "draft-codex-mode-icon" else "draft-$family-mode-icon"), tint = MaterialTheme.colorScheme.primary)
-                    }
+                    if (!showOpenCode) agentLabel(Modifier.weight(1f))
+                }
+                if (showOpenCode) agentLabel(Modifier.fillMaxWidth())
+                openCode?.message()?.let { message ->
+                    Text(message, Modifier.testTag("draft-opencode-unavailable"), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("draft-directory")
                     .orbisKeyboardFocus().clickable(role = Role.Button) { directoryOpen = true; onBrowse(cwd.takeIf(String::isNotBlank)) },
@@ -203,9 +216,11 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             DraftConfigurationButton(L10n.tr("思考深度"), thinking, panel = "thinking",
                                 enabled = config?.model?.thinking?.isNotEmpty() == true && config.requestId == null,
                                 modifier = Modifier.weight(1f), onClick = { configurationPanel = "thinking" })
-                            DraftConfigurationButton(L10n.tr("权限"), null, panel = "permissions", accessibilityValue = permissionSummary,
-                                enabled = config?.snapshot != null && config.requestId == null, modifier = Modifier.weight(1f),
-                                onClick = { proposedPermissions = config?.values?.permissions.orEmpty(); configurationPanel = "permissions" })
+                            if (kind != "opencode") {
+                                DraftConfigurationButton(L10n.tr("权限"), null, panel = "permissions", accessibilityValue = permissionSummary,
+                                    enabled = config?.snapshot != null && config.requestId == null, modifier = Modifier.weight(1f),
+                                    onClick = { proposedPermissions = config?.values?.permissions.orEmpty(); configurationPanel = "permissions" })
+                            }
                         }
                     }
                     config?.error?.let { StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true) }
@@ -230,7 +245,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     NeumorphIconButton(onClick = ::submit,
                         icon = if (text.isBlank()) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
                         contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
-                        enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
+                        enabled = cwd.isNotBlank() && canUseSelectedAgent && state.canCreateSessionOn(state.hostId),
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }
 

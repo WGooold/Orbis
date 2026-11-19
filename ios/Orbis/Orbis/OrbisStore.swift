@@ -140,6 +140,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var commands: [String: [SlashCommand]] = [:] { didSet { homeViewRevision &+= 1; chatRewindRevision &+= 1 } }
     @Published private(set) var supportedAgents: [String]?
     @Published private(set) var launchableAgents: [String]?
+    @Published private(set) var openCodeAvailability: OpenCodeAvailability?
     @Published private(set) var sessionConfigurationSupported = false
     @Published private(set) var sessionConfiguration: SessionConfigurationSnapshot?
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
@@ -758,6 +759,7 @@ final class HostConnection: ObservableObject {
                 // A missing list means unknown (no restriction), the same as Android; never "nothing can start".
                 self.supportedAgents = backends.value["agents"].isArray ? backends.value["agents"].array.compactMap(\.string) : nil
                 self.launchableAgents = backends.value["launchableAgents"].isArray ? backends.value["launchableAgents"].array.compactMap(\.string) : nil
+                self.openCodeAvailability = OpenCodeAvailability(backends: backends.value["backends"])
                 self.codexDesktop = backends.value["codexDesktop"].decoded(CodexDesktopAttach.self).flatMap { $0.valid ? $0 : nil }
             }
         }
@@ -1015,7 +1017,7 @@ final class HostConnection: ObservableObject {
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
-        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil
+        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; openCodeAvailability = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
         transport.connect(pairing: pairing, identity: identity, receive: { [weak self] message, channel in

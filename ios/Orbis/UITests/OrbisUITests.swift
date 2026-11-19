@@ -544,6 +544,28 @@ final class OrbisUITests: XCTestCase {
         agent.typeKey(.home, modifierFlags: [])
         capture("design-provider-keyboard-focus", app: app)
     }
+    func testOpenCodeDraftShowsReadyOrIncompatibleService() {
+        for ready in [false, true] {
+            let fixture = ready ? "--preview-opencode-ready" : "--preview-opencode-incompatible"
+            let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", fixture])
+            let newSession = app.buttons["home-new-session"]
+            XCTAssertTrue(newSession.waitForExistence(timeout: 8)); newSession.tap()
+            let openCode = app.buttons["draft-agent-opencode"]
+            XCTAssertTrue(openCode.waitForExistence(timeout: 5))
+            let unavailable = app.staticTexts["draft-opencode-unavailable"]
+            if ready {
+                XCTAssertTrue(openCode.isEnabled)
+                XCTAssertFalse(unavailable.exists)
+                openCode.tap()
+                XCTAssertTrue(openCode.isSelected)
+            } else {
+                XCTAssertFalse(openCode.isEnabled)
+                XCTAssertTrue(unavailable.waitForExistence(timeout: 2))
+            }
+            app.terminate()
+        }
+    }
+
     // SC55: native text submission must preserve Shift+Return as a newline.
     func testDraftHardwareReturnAndDesktopOnlySelection() {
         let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop-only"])

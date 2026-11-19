@@ -55,6 +55,33 @@ class DesignAlignmentInstrumentedTest {
         }
     }
 
+    @Test fun openCodeDraftRequiresAdvertisedReadyService() {
+        val baseline = ready()
+        val state = mutableStateOf(baseline)
+        val selections = mutableListOf<String>()
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, "/Projects/orbis", {}, {}, {}) { kind, _, _, _, _ ->
+                selections += kind; true
+            }
+        } }
+        val picker = compose.onNodeWithTag("draft-agent-opencode")
+        val status = compose.onNodeWithTag("draft-opencode-unavailable")
+        picker.assertDoesNotExist()
+        compose.runOnIdle { state.value = baseline.copy(openCodeAvailability = OpenCodeAvailability(false, "unsupported_version")) }
+        picker.assertIsNotEnabled()
+        status.assertIsDisplayed()
+        compose.runOnIdle {
+            state.value = baseline.copy(
+                openCodeAvailability = OpenCodeAvailability(true, null),
+                launchableAgents = baseline.launchableAgents.orEmpty() + "opencode",
+            )
+        }
+        status.assertDoesNotExist()
+        picker.assertIsEnabled().performClick()
+        compose.onNodeWithTag("draft-send").performClick()
+        compose.runOnIdle { assertEquals(listOf("opencode"), selections) }
+    }
+
     @Test fun protocolSelectionRequiresAnExplicitApplyAndRespectsOfflineDisablement() {
         val choices = mutableListOf<RelayTransportMode>()
         val enabled = mutableStateOf(true)

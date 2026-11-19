@@ -224,6 +224,8 @@ internal fun SessionDrawer(
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilter = drawerAgentFilter(agentFilterKey)
+    val openCodeUnavailable = state.openCodeAvailability
+        ?.takeIf { state.e2eReady && agentFilter == DrawerAgentFilter.OpenCode }?.message()
     val currentProvider = state.currentProviders[agentFilter.key]
     val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
     var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
@@ -480,7 +482,7 @@ internal fun SessionDrawer(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                if (searchTerm.isEmpty()) {
+                                openCodeUnavailable ?: if (searchTerm.isEmpty()) {
                                     if (showArchived) L10n.tr("没有已归档的会话")
                                     else if (agentFilter.hasProviderFilter && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) L10n.tr("尚未获取当前 provider")
                                     else if (agentFilter == DrawerAgentFilter.All) L10n.tr("还没有可显示的会话")

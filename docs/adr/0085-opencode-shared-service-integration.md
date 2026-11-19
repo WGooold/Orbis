@@ -74,6 +74,12 @@ Host 将经过验证的 OpenCode catalog、history、message、tool、execution�
 | OPENCODE-05 [#46](https://github.com/WGooold/Orbis/issues/46) | 输入、取消、工具内容、permission / question、模型与 agent configuration 的 Host 命令映射 | 声明的命令各有 API fixture 和生命周期测试；未实现原生能力不暴露在 App。 |
 | OPENCODE-06 [#47](https://github.com/WGooold/Orbis/issues/47) | 跨端回归、支持版本说明、真实共享服务验收 | Windows Node 工具链自动验证通过；旧客户端兼容测试通过；真实 OpenCode CLI / service 2.3.2 的实际结果有记录；扩大版本范围须另行验证。 |
 
+## 移动端 UI 补充（#43、#47）
+
+- Android / iOS 的新建面板根据 Host `backends` 投影决定是否显示 OpenCode；收到不可用状态时保留禁用入口并显示具体原因。会话列表保留 OpenCode 筛选；筛选结果为空且服务不可用时，优先说明服务状态。已有会话及历史仍使用 Orbis 的会话列表和聊天页。
+- 新建面板复用目录、模型和变体控件；不显示 OpenCode 未提供的持久权限配置。聊天会话配置仅在 Host 提供 `agent` 选项时显示切换 OpenCode Agent 的入口。单次权限请求继续使用通用交互界面，按钮明确标为「允许一次」和「拒绝」。
+- 此次补充不扩大 `2.3.2` 的支持范围，不新增工具原始内容读取、持久权限策略或复杂问卷字段。App 设备联调仍为验收项。
+
 ## 验证状态
 
 记录于 2026-11-19。以下为本分支的本地结果，不代表正式支持或发布。
