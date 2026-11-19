@@ -21,6 +21,11 @@ class KimiCodeTest {
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
     }
 
+    @Test fun `OpenCode declares its feature only to a Host that advertises it`() {
+        assertEquals(listOf("agent.dshDesktop", "agent.opencode"), deviceAgentFeatures(ready("""{"hostFeatures":["device.features","agent.opencode"]}""")))
+        assertEquals(emptyList<String>(), deviceAgentFeatures(ready("""{"hostFeatures":["agent.opencode"]}""")))
+    }
+
     @Test fun `one native row retires all merged optimistic sends but never another same-text send`() {
         val native = Json.decodeFromString(ChatMessage.serializer(),
             """{"messageId":"native","role":"user","content":[{"type":"text","text":"same"}],"timestamp":1,"clientMessageId":"a","clientMessageIds":["a","b"]}""")

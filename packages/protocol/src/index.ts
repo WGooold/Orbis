@@ -278,6 +278,7 @@ export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 /** ADR-0084: clients advertising this feature can consume normalized rich message blocks. */
 export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
+export const DEVICE_FEATURE_OPENCODE = "agent.opencode";
 export const DEVICE_FEATURE_KIMI_CODE = "agent.kimiCode";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 

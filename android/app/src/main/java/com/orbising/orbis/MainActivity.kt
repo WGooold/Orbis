@@ -2135,7 +2135,7 @@ internal fun ChatScreen(
             TopAppBar(
                 title = {
                     BoxWithConstraints(Modifier.testTag("session-model-entry").clickable(enabled = runtime != null,
-                        onClickLabel = L10n.tr("模型与深度")) { modelConfigurationOpen = true }) {
+                        onClickLabel = if (runtime?.agentKind == "opencode") L10n.tr("会话配置") else L10n.tr("模型与深度")) { modelConfigurationOpen = true }) {
                         val compactConfiguration = maxWidth < 200.dp * LocalDensity.current.fontScale
                         Column {
                         Row(
@@ -4562,7 +4562,7 @@ internal fun InteractionPanel(
                     }
                     if (request.kind == "confirm") {
                         NeumorphTextButton(
-                            text = request.cancelLabel ?: L10n.tr("拒绝"),
+                            text = if (request.extensionId == "opencode.permission") L10n.tr("拒绝") else request.cancelLabel ?: L10n.tr("拒绝"),
                             danger = true,
                             enabled = responseEnabled,
                             modifier = Modifier.weight(1f),
@@ -4571,7 +4571,7 @@ internal fun InteractionPanel(
                     }
                     when (request.kind) {
                         "confirm" -> NeumorphTextButton(
-                            text = request.confirmLabel ?: L10n.tr("允许"),
+                            text = if (request.extensionId == "opencode.permission") L10n.tr("允许一次") else request.confirmLabel ?: L10n.tr("允许"),
                             modifier = Modifier.weight(1f),
                             filled = true,
                             enabled = responseEnabled,

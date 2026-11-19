@@ -145,12 +145,12 @@ private struct InteractionRequestView: View {
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.frame(maxHeight: inSheet ? .infinity : 220).scrollBounceBehavior(.basedOnSize)
                         HStack(spacing: 12) {
-                            OrbisActionButton(title: request.cancelLabel ?? (request.kind == "confirm" ? L10n.tr("拒绝") : L10n.tr("取消"))) {
+                            OrbisActionButton(title: request.extensionId == "opencode.permission" ? L10n.tr("拒绝") : (request.cancelLabel ?? (request.kind == "confirm" ? L10n.tr("拒绝") : L10n.tr("取消")))) {
                                 guard actions.isCurrent else { return }
                                 let accepted = actions.respond(request, response: request.kind == "confirm" ? ["kind": "confirm", "value": false] : ["kind": "cancel"])
                                 if accepted && request.kind == "confirm" { OrbisHaptics.commit() }
                             }
-                            OrbisActionButton(title: request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交")), symbol: "checkmark") { submit() }.disabled(!valid)
+                            OrbisActionButton(title: request.extensionId == "opencode.permission" ? L10n.tr("允许一次") : (request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交"))), symbol: "checkmark") { submit() }.disabled(!valid)
                         }.disabled(pending || expired || !connected)
                     }.padding(.top, 8)
                 }

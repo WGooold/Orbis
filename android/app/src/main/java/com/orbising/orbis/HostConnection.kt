@@ -2708,7 +2708,7 @@ internal class HostConnection(
                     }
                     pendingFilteredReady = null
                     expectedMessageDisplayVersion = when {
-                        !render -> LEGACY_DISPLAY_PROJECTION_VERSION
+                        MESSAGE_RENDER_FEATURE !in features -> LEGACY_DISPLAY_PROJECTION_VERSION
                         incomingMessage.containsKey("dshDesktop") -> DISPLAY_PROJECTION_VERSION
                         else -> null  // The capability response may still be in flight.
                     }
