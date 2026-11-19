@@ -140,7 +140,7 @@ internal class HostConnection(
 
     fun loadSessionConfiguration(kind: String, cwd: String) {
         val current = mutableState.value
-        if (!current.sessionConfigurationSupported || cwd.isBlank()) return
+        if (!current.supportsSessionConfiguration(kind) || cwd.isBlank()) return
         val request = UUID.randomUUID().toString()
         configurationTimeout(request)
         updateState { it.copy(sessionConfiguration = SessionConfigurationState(kind, cwd, requestId = request)) }
@@ -153,6 +153,7 @@ internal class HostConnection(
     fun saveSessionConfiguration(values: SessionConfigurationValues) {
         val config = mutableState.value.sessionConfiguration
         val snapshot = config.snapshot ?: return
+        if (snapshot.agentKind == "openclaw" || !mutableState.value.supportsSessionConfiguration(snapshot.agentKind)) return
         val request = UUID.randomUUID().toString()
         configurationTimeout(request)
         updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null, launchError = null, waitingForLaunchJournal = false)) }
@@ -175,8 +176,9 @@ internal class HostConnection(
 
     private suspend fun recoverConfiguredLaunchInBackground(show: Boolean = false) {
         configuredLaunchJournal.awaitLoaded()
-        if (!mutableState.value.sessionConfigurationSupported) return
         val id = configuredLaunchId ?: return
+        val saved = configuredLaunchJournal.snapshot?.takeIf { it["launchId"]?.jsonPrimitive?.contentOrNull == id } ?: return
+        if (!mutableState.value.supportsSessionConfiguration(saved["agentKind"]?.jsonPrimitive?.contentOrNull ?: return)) return
         // Retry the same durable identity even if its first disk write failed. No native request
         // is allowed to overtake the journal, including recovery after an immediate disconnect.
         if (configuredLaunchJournal.update(id) { it }?.await() != true) {
@@ -184,7 +186,6 @@ internal class HostConnection(
             return
         }
         if (configuredLaunchId != id || !shouldConnect) return
-        val saved = configuredLaunchJournal.snapshot?.takeIf { it["launchId"]?.jsonPrimitive?.contentOrNull == id } ?: return
         val rejected = saved["rejected"]?.jsonPrimitive?.booleanOrNull == true
         if (mutableState.value.launching == null && (saved["sessionId"]?.jsonPrimitive?.contentOrNull == null ||
             mutableState.value.pendingSends[saved["firstMessageId"]?.jsonPrimitive?.contentOrNull] == null)) {
@@ -226,11 +227,7 @@ internal class HostConnection(
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
         val firstCommand = UUID.randomUUID().toString()
-        val payload = buildJsonObject {
-            put("type", "session.launch"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
-            put("agentKind", kind); put("cwd", cwd); put("binding", confirmed.binding); put("revision", confirmed.revision)
-            put("values", config.values.payload()); put("spawnMode", spawnMode)
-        }
+        val payload = configuredLaunchPayload(id, confirmed, config.values, spawnMode)
         // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
         val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
@@ -326,7 +323,6 @@ internal class HostConnection(
     private var modelInterests = ModelInterests()
     @Volatile private var preferCompactState = true
     /** ADR-0076: filtered device.ready answered with `device.features`; applied only if no full view follows. */
-    @Volatile private var pendingFilteredReady: String? = null
     @Volatile private var preferDeltaState = true
     private val menuOptions = MenuOptionsLoader()
     private val sharedSessionContent = SharedSessionContent()
@@ -855,6 +851,7 @@ internal class HostConnection(
         val state = mutableState.value
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
+        if (agentKind == "openclaw" && !state.openClawNegotiated) return
         if (state.connection != RelayConnection.ONLINE || state.hostId.isNullOrBlank()) {
             updateState { it.sessionFailure(sessionId, L10n.tr("尚未连接到电脑，连接建立后才能操作会话")) }
             return
@@ -936,6 +933,7 @@ internal class HostConnection(
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
     fun activateSession(sessionId: String) {
+        if (sessionId.startsWith("openclaw:") && !mutableState.value.openClawNegotiated) return
         mutableState.value.codexProviderMismatch(sessionId)?.let { reason ->
             updateState { it.sessionFailure(sessionId, reason) }
             return
@@ -960,12 +958,14 @@ internal class HostConnection(
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
     /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
-        if (!mutableState.value.sessionConfigurationSupported && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
+        if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
+        if (!mutableState.value.supportsSessionConfiguration(agentKind) && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
                 launchError = L10n.tr("请先核对上一次启动及首句结果"), waitingForLaunchJournal = true)) }; return false
         }
         if (!validateNewSessionTarget(expectedHostId)) return false
-        if (mutableState.value.sessionConfigurationSupported && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode)
+        if (agentKind == "openclaw") return createConfiguredSession(agentKind, cwd, "headless")
+        if (mutableState.value.supportsSessionConfiguration(agentKind) && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode)
         return activateTarget(buildJsonObject {
             put("type", "new")
             put("agentKind", agentKind)
@@ -1683,7 +1683,8 @@ internal class HostConnection(
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
-            if (!mutableState.value.sessionConfigurationSupported) updateState { it.copy(sessionConfiguration =
+            if (kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
+            if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
             // S49 / SC70: reuse the original windowed launch without a send operation.
             if (text.isBlank()) return@synchronized if (createSession(kind, cwd, expectedHost)) FirstSessionSubmission(null) else null
@@ -1693,8 +1694,8 @@ internal class HostConnection(
                 updateState { it.composerFailure(null, L10n.tr("待发送的消息过多，请稍后重试")) }
                 return@synchronized null
             }
-            if (mutableState.value.sessionConfigurationSupported) {
-                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, "tui", text)) return@synchronized null
+            if (mutableState.value.supportsSessionConfiguration(kind)) {
+                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, if (kind == "openclaw") "headless" else "tui", text)) return@synchronized null
                 val id = configuredLaunchId ?: return@synchronized null
                 return@synchronized FirstSessionSubmission(mutableState.value.pendingSends.values.firstOrNull { it.sessionId == "launch:$id" }?.commandId)
             }
@@ -1704,6 +1705,9 @@ internal class HostConnection(
 
     fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
         val runtimeId = mutableState.value.selectedRuntimeId ?: return null
+        if (mutableState.value.runtimes[runtimeId]?.agentKind == "openclaw" &&
+            (!mutableState.value.openClawNegotiated || delivery != null || attachments.isNotEmpty() || uploadTaskIds.isNotEmpty() ||
+                mutableState.value.runtimes[runtimeId]?.status == "running")) return null
         // 只剩附件没正文时也得发出：协议要求 text 非空，而用户确实想把这个文件交给 Pi。
         val attachmentCount = maxOf(attachments.size, uploadTaskIds.size)
         val trimmed = text.trim().ifBlank { if (attachmentCount == 0) "" else L10n.tr("已发送 {0} 个附件", attachmentCount) }
@@ -2612,6 +2616,7 @@ internal class HostConnection(
         reconnectJob?.cancel()
         relayEventJob?.cancel()
         val currentGeneration = ++generation
+        val filteredReady = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var stopReconnectOnClose = false
         // Relay closes immediately after protocol.error; the async reducer may run after onClosed.
         val protocolVersionMismatch = AtomicBoolean(false)
@@ -2650,29 +2655,28 @@ internal class HostConnection(
                 var payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
-                // ADR-0076: a Host that can show DeepSeek Desktop first sends the view released Apps parse
-                // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
-                // selected Desktop session is not dropped; the filtered view is applied only if none arrives.
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull == "device.ready") {
-                    val filtered = incomingMessage["hostFeatures"]?.let { it as? JsonArray }?.any { it.jsonPrimitive.contentOrNull == "device.features" } == true &&
-                        !incomingMessage.containsKey("dshDesktop") && !incomingMessage.containsKey("_orbisFilteredFallback")
-                    if (filtered && relay.sendDeviceMessage(buildJsonObject {
-                            put("type", "device.features")
-                            put("protocolVersion", PROTOCOL_VERSION)
-                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"))))
-                        })) {
-                        val fallback = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
-                        pendingFilteredReady = fallback
-                        scope.launch {
-                            delay(5_000)
-                            if (currentGeneration == generation && pendingFilteredReady == fallback) {
-                                pendingFilteredReady = null
-                                lanes.offer(fallback, interactiveChannel)
+                    // Wait for the acknowledged view without tying negotiation to whether Gateway is online.
+                    val fallback = "_orbisFilteredFallback" in incomingMessage
+                    if (fallback && filteredReady.get() != payload) continue
+                    val features = if (fallback) emptyList() else requestedAgentFeatures(incomingMessage)
+                    if (features.isNotEmpty()) {
+                        if (filteredReady.get() != null) continue
+                        if (relay.sendDeviceMessage(buildJsonObject {
+                                put("type", "device.features")
+                                put("protocolVersion", PROTOCOL_VERSION)
+                                put("features", JsonArray(features.map(::JsonPrimitive)))
+                            })) {
+                            val frame = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
+                            filteredReady.set(frame)
+                            scope.launch {
+                                delay(5_000)
+                                if (currentGeneration == generation && filteredReady.get() == frame) lanes.offer(frame, interactiveChannel)
                             }
+                            continue
                         }
-                        continue
                     }
-                    pendingFilteredReady = null
+                    filteredReady.set(null)
                 }
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull in setOf("agent.menu.options.page", "protocol.error") && menuOptions.owns(incomingMessage)) {
                     menuOptions.consume(incomingMessage, messageJson)?.let { result ->
@@ -2933,7 +2937,10 @@ internal class HostConnection(
                                     val graphRuntimes = next.sessionSyncRequests.mapNotNull(next.runtimes::get)
                                     scheduleSessionGraphLoad(pairedDevice, graphRuntimes)
                                 }
-                                if (messageType == "device.ready" && interactiveChannel != null) deviceReadyArrived = true
+                                if (messageType == "device.ready" && interactiveChannel != null) {
+                                    deviceReadyArrived = true
+                                    if (previous.openClawNegotiated != next.openClawNegotiated) catalogReads.resetProjection()
+                                }
                                 if (next.connection == RelayConnection.ONLINE) reconnectDelayMs = 500
                                 notifyNewInteractions(previous, next)
                             }
@@ -3031,6 +3038,7 @@ internal class HostConnection(
         }
         // Transport callbacks share the reducer lock so a late snapshot cannot revert readiness.
         relay.onE2eStateChanged = { ready ->
+            if (!ready) filteredReady.set(null)
             scope.launch {
                 relayStateLock.withLock {
                     if (currentGeneration != generation) return@launch
@@ -3947,6 +3955,7 @@ internal class HostConnection(
      */
     fun queueUpload(uri: Uri, runtimeId: String, onQueued: (String) -> Unit = {}) {
         val runtime = mutableState.value.runtimes[runtimeId]
+        if (runtime?.agentKind == "openclaw") return
         if (runtime == null) {
             updateState { it.composerFailure(runtimeId, L10n.tr("会话已离线，无法发送文件")) }
             return

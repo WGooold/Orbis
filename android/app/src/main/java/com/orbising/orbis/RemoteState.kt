@@ -595,6 +595,7 @@ data class RemoteState(
     /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
     val launchableAgents: Set<String>? = null,
     val sessionConfigurationSupported: Boolean = false,
+    val openClawNegotiated: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
@@ -776,7 +777,8 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         contextUsage = sameSession?.contextUsage,
         permissions = null,
         permissionManagement = sameSession?.permissionManagement,
-        agentKind = sameSession?.agentKind,
+        // This reserved Host route establishes OpenClaw identity before the model read.
+        agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") },
         domainAvailability = sameSession?.domainAvailability.orEmpty(),
     )
 }
@@ -2012,7 +2014,9 @@ class RelayReducer(
                 }
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
-                }.orEmpty().associateBy(RuntimeSummary::runtimeId)
+                }.orEmpty().map(RuntimeSummary::withOpenClawKind).associateBy(RuntimeSummary::runtimeId)
+                val openClawNegotiated = readyAdmitsOpenClaw(message)
+                val projectionChanged = state.openClawNegotiated != openClawNegotiated
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
                 // 显式 `null`（它不知道装没装 codex）；任何一种"不知道"都保持原判（未知 = 不限制）。
                 val supportedAgents = message["agents"]
@@ -2102,6 +2106,7 @@ class RelayReducer(
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     homeDirectoryReceived = true,
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
+                    openClawNegotiated = openClawNegotiated,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2110,13 +2115,15 @@ class RelayReducer(
                     pendingToolConversations = emptyMap(),
                     toolDetail = state.toolDetail?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     retiredAgentModelEpochs = state.retiredAgentModelEpochs + listOfNotNull(state.agentModelEpoch?.takeIf { it != message.string("modelEpoch") }),
-                    agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
+                    agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty()
+                        .filterValues { !projectionChanged || it.scope != "host" && it.scope != "device" },
                     agentStateRequests = emptySet(),
                     agentStateReads = emptyMap(),
-                    agentCatalogRange = state.agentCatalogRange?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    agentCatalogRange = state.agentCatalogRange?.takeIf { !projectionChanged && state.agentModelEpoch == message.string("modelEpoch") },
                     agentCatalogRangeRequest = null,
-                    supportedAgents = state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
-                    launchableAgents = state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    catalogQuery = state.catalogQuery.takeUnless { projectionChanged },
+                    supportedAgents = if (openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    launchableAgents = if (openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
@@ -2171,7 +2178,7 @@ class RelayReducer(
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                } ?: return state
+                }?.withOpenClawKind() ?: return state
                 val previousRuntime = state.runtimes[runtime.runtimeId]
                 val hasPreviousRuntime = previousRuntime != null ||
                     state.knownRuntimeSessions.containsKey(runtime.runtimeId)
@@ -2654,7 +2661,7 @@ class RelayReducer(
             "runtime.metadata" -> {
                 val metadata = event["metadata"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                } ?: return state
+                }?.withOpenClawKind() ?: return state
                 if (metadata.runtimeId != runtimeId) return state
                 val previousRuntime = state.runtimes[runtimeId]
                 val previousView = state.runtimeSessionViews[runtimeId]
@@ -3705,3 +3712,12 @@ internal fun runtimeStatusText(status: String): String = when (status) {
     "waiting_local_interaction" -> L10n.tr("等待电脑端交互")
     else -> L10n.tr("未知状态")
 }
+
+internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
+    sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated)
+
+internal fun RemoteState.canLaunchOpenClaw(): Boolean =
+    supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true
+
+private fun RuntimeSummary.withOpenClawKind(): RuntimeSummary =
+    if (agentKind == null && runtimeId.startsWith("openclaw:")) copy(agentKind = "openclaw") else this

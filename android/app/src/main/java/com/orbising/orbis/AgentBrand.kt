@@ -30,6 +30,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Codex("Codex", R.drawable.ic_agent_codex),
     DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
     Claude("Claude Code", R.drawable.ic_agent_claude),
+    OpenClaw("OpenClaw", R.drawable.ic_agent_openclaw),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
@@ -37,6 +38,7 @@ internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
+    "openclaw" -> AgentBrand.OpenClaw
     else -> AgentBrand.Pi
 }
 /** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
@@ -50,6 +52,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
     AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA9BBFF) else Color(0xFF3550CF)
     AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
+    AgentBrand.OpenClaw -> if (LocalOrbisDarkTheme.current) Color(0xFFFF8A75) else Color(0xFFA93531)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */
@@ -77,7 +80,7 @@ internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, descrip
         contentDescription = description,
         modifier = modifier.size(22.dp),
         tint = tintOverride ?: when (brand) {
-            AgentBrand.Pi, AgentBrand.Claude -> Color.Unspecified
+            AgentBrand.Pi, AgentBrand.Claude, AgentBrand.OpenClaw -> Color.Unspecified
             else -> brand.accent()
         },
     )

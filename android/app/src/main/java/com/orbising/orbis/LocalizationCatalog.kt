@@ -551,6 +551,7 @@ internal object LocalizationCatalog {
         "参数" to "Arguments",
         "参数接收中" to "Receiving arguments",
         "发出第一句话并创建会话" to "Send the first message and create the session",
+        "发给 {0}" to "Message {0}",
         "发给 {0}，/ 命令" to "Message {0}, / commands",
         "发送" to "Send",
         "发送中" to "Sending",

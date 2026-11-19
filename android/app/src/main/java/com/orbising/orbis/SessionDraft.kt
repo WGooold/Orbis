@@ -84,14 +84,16 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var permissionCategory by remember { mutableStateOf<String?>(null) }
     var proposedPermissions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
-    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported) {
-        if (open && state.e2eReady && state.sessionConfigurationSupported && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
-    }
-    fun submit() {
-        if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
+    LaunchedEffect(open, kind, cwd, state.e2eReady, state.supportsSessionConfiguration(kind)) {
+        if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
     }
     val supported = state.launchableAgents ?: state.supportedAgents
-    val kinds = listOf("codex", "claude", "dsh", "pi")
+    val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi").filter { it != "openclaw" || state.canLaunchOpenClaw() }
+    val canStart = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
+        (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null)
+    fun submit() {
+        if (canStart && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
+    }
     val family = agentFamily(kind)
     /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
     fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
@@ -117,8 +119,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
-    LaunchedEffect(supported) { if (supported != null && kind !in supported)
-        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi")).firstOrNull { it in supported } ?: "pi"
+    LaunchedEffect(supported, kinds) { if (supported != null && (kind !in supported || agentFamily(kind) !in kinds))
+        kind = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw")
+            .firstOrNull { it in supported && agentFamily(it) in kinds } ?: "pi"
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
@@ -188,7 +191,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (state.sessionConfigurationSupported) {
+                if (state.supportsSessionConfiguration(kind) && kind != "openclaw") {
                     val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
                         setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
                     }?.takeIf { it.isNotEmpty() }?.joinToString(" · ") { L10n.hostText(it) } ?: L10n.tr("电脑端默认")
@@ -211,6 +214,11 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     config?.error?.let { StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true) }
                     if (config?.requestId != null) Text(L10n.tr("正在确认配置…"), style = MaterialTheme.typography.labelMedium)
                     if (config?.error != null) NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
+                } else if (kind == "openclaw") {
+                    config?.error?.let {
+                        StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true)
+                        NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
+                    }
                 } else StatusWithInfo(L10n.tr("电脑端默认"), L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
                 config?.launchError?.let { error ->
                     val title = config.launchErrorTitle
@@ -230,7 +238,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     NeumorphIconButton(onClick = ::submit,
                         icon = if (text.isBlank()) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
                         contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
-                        enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
+                        enabled = canStart,
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }
 
@@ -319,5 +327,6 @@ internal fun agentVariantTitle(kind: String): String = when (kind) {
     "codexDesktop" -> L10n.tr("Codex 桌面版")
     "dsh" -> L10n.tr("DeepSeek 网页版")
     "dshDesktop" -> L10n.tr("DeepSeek 桌面版")
+    "openclaw" -> "OpenClaw"
     else -> agentBrand(kind).title
 }

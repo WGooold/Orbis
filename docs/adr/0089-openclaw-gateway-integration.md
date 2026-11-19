@@ -1,9 +1,9 @@
 # ADR-0089｜OpenClaw Gateway 接入
 
 - 日期：2026-11-19
-- 状态：分阶段实施；未发布，用户验收待完成
+- 状态：三阶段已实现；未发布，待用户验证
 - 范围：OPENCLAW-01（#39）、OPENCLAW-02（#40）、OPENCLAW-03（#41）
-- 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)
+- 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)
 
 ## OPENCLAW-01｜连接所有权与授权
 
@@ -26,3 +26,12 @@ Orbis 18／19 业务版本不变。通过既有 `hostFeatures` 字符串列表�
 实现：[`openclaw-backend.ts`](../../packages/host/src/openclaw-backend.ts)、[`openclaw-history.ts`](../../packages/host/src/openclaw-history.ts)、[`dsh-desktop-visibility.ts`](../../packages/host/src/dsh-desktop-visibility.ts)。自动验证：[`openclaw-backend.test.ts`](../../packages/host/src/openclaw-backend.test.ts)、[`host-protocol-compatibility.test.ts`](../../packages/host/src/host-protocol-compatibility.test.ts)、[`dsh-desktop-visibility.test.ts`](../../packages/host/src/dsh-desktop-visibility.test.ts)。`.artifacts/openclaw-20261119/` 保留 Host 与协议回归、`release-schema-matrix.log`（`v0.1.22` / `android-v0.1.60` 发布 tag 的严格协议解析及未过滤负对照，非旧包设备测试）、`backend-real-smoke-first.log`（隔离 Gateway：目录、创建、订阅、发送受理、历史对账、归档与恢复）。该 Gateway 没有可用模型，真实 turn 返回失败；成功流式回复和定向停止仅有合成测试证据。
 
 部署：未发布，未修改用户 Host、Relay 或 OpenClaw。设备／用户验收：待用户验证。
+
+
+## OPENCLAW-03｜移动端入口与验收
+
+iOS 和 Android 在加密握手内声明能力，按 Host 回显启用 OpenClaw；与 Gateway 当前是否在线分开判断。新建只显示可用的 Agent，目录沿用现有筛选、历史、恢复与归档，未获能力的 Host 不接收 OpenClaw 写操作。协商切换时清除旧投影的分页与基线，保留本机草稿。新建卡仍查询默认配置与启动绑定，但不显示模型、思考深度或权限编辑项，不尝试有头启动。聊天复用既有首句账本、文本输入与停止；不展示附件、斜杠菜单或忙时投递方式，模型和权限仍在 OpenClaw 管理。图标复用已入库的 Lobe Icons 资源，版权声明随两端打包。
+
+实现：iOS [`OrbisStore.swift`](../../ios/Orbis/Orbis/OrbisStore.swift) / [`SessionViews.swift`](../../ios/Orbis/Orbis/SessionViews.swift)，Android [`HostConnection.kt`](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt) / [`SessionDraft.kt`](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)。自动验证：iOS [`StoreTests.swift`](../../ios/Orbis/Tests/StoreTests.swift)、[`LaunchLedgerTests.swift`](../../ios/Orbis/Tests/LaunchLedgerTests.swift)；Android [`OpenClawIntegrationTest.kt`](../../android/app/src/test/java/com/orbising/orbis/OpenClawIntegrationTest.kt)。本机定向回归 iOS 173 项、Android 37 项通过；无签名 iOS Simulator 构建成功。Android 首次缺少 Go 路径、首轮运行首次身份投影失败及测试缺少 `ledgerWritten` 的证据保留，修正后同组选例通过。见 `.artifacts/openclaw-20261119/ios-swift-final/`、`ios-xcode-final/`、`android-unit-first/`、`android-unit-final/`、`android-unit-rerun/`。
+
+部署：未发布、未签发设备安装包。设备／用户验收：待用户验证；本轮未使用真机或模拟器。共享 `orbis-qa` 在本机配置端口拒绝连接，未登记或领取。恢复 QA 后，在同一候选轮次安装对应包、配对独立 Host 并连接带可用模型的隔离 Gateway；核对新建及首句、回复与停止、归档恢复、重连、旧 App／Host 回退与现有 Agent 对照。

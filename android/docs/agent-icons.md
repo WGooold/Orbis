@@ -1,6 +1,6 @@
-# Pi / Codex / DeepSeek / Claude 视觉标识
+# Pi / Codex / DeepSeek / Claude / OpenClaw 视觉标识
 
-四个 agent 标志都是随 APK 打包的 Android VectorDrawable，无需网络、图片服务或额外运行时依赖。
+各 agent 标志都是随 APK 打包的 Android VectorDrawable，无需网络、图片服务或额外运行时依赖。
 
 | 后端 | 素材来源 | 本地资源 | 处理 |
 | --- | --- | --- | --- |
@@ -8,8 +8,9 @@
 | Codex | [Lobe Icons Codex SVG](https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/codex.svg) | `app/src/main/res/drawable/ic_agent_codex.xml` | 保留终端与结形轮廓、even-odd 镂空；单色按当前明暗主题染色。将 SVG 压缩的弧线标志位与坐标逐项分隔，避免 Android PathParser 把 `0 013.046` 等写法解析成错误坐标。 |
 | DeepSeek Harness | [DeepSeek Harness 官方标志 SVG](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/apps/web/public/favicon.svg) | `app/src/main/res/drawable/ic_agent_dsh.xml` | 保留官方路径坐标与非零填充（鲸鱼的留白靠官方子路径定向挖出，改成 even-odd 会变实心）；只用平移裁去官方画布留白，不改造标志本体。 |
 | Claude Code | [Lobe Icons Claude SVG](https://github.com/lobehub/lobe-icons/blob/f25f22c0e7295a76077fe417d23deeb56eefdf3e/packages/static-svg/icons/claude-color.svg) | `app/src/main/res/drawable/ic_agent_claude.xml` | 使用 Claude 的不规则放射标，保留原路径、非零填充与橙色 `#D97757`；将弧线标志位和坐标逐项分隔以兼容 Android PathParser。iOS 的 `AgentClaude.svg` 使用相同路径和原色。 |
+| OpenClaw | [Lobe Icons](https://github.com/lobehub/lobe-icons) `openclaw-color.svg` | `app/src/main/res/drawable/ic_agent_openclaw.xml` | 复用官网推广页已有素材，保留路径和渐变；iOS 使用同源的 `AgentOpenClaw.svg`。 |
 
-四个标志的来源与权利声明放在 `app/src/main/assets/agent-icon-notices.txt`，随 APK 一并发布：Pi、Codex 与 Claude 标志来自 MIT 许可的图标源，产品名称与标志仅用于标识对应的第三方 agent；DeepSeek 鲸鱼图形是 DeepSeek 的商标，仅用于标识 Orbis 连接的 DeepSeek Harness，不表示官方背书或合作。
+标志的来源与权利声明放在 `app/src/main/assets/agent-icon-notices.txt`，随 APK 一并发布：Pi、Codex、Claude 与 OpenClaw 标志来自 MIT 许可的图标源，产品名称与标志仅用于标识对应的第三方 agent；DeepSeek 鲸鱼图形是 DeepSeek 的商标，仅用于标识 Orbis 连接的 DeepSeek Harness，不表示官方背书或合作。
 
 配对页使用通用电脑图标和「连接你的电脑」；Agent 扩展沿用会话身份标识。
 

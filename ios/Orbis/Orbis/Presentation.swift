@@ -213,6 +213,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if runtimeId.hasPrefix("dsh-desktop:") { return "dshDesktop" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
     if runtimeId.hasPrefix("claude:") { return "claude" }
+    if runtimeId.hasPrefix("openclaw:") { return "openclaw" }
     return nil
 }
 
