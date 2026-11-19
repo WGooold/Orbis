@@ -186,6 +186,7 @@ it("keeps Codex plans and final reviews in the live and persisted conversation",
   h.notify("item/completed", { ...route, item: { id: "review", type: "enteredReviewMode", review: "local review target" } });
   h.notify("item/completed", { ...route, item: review });
   h.notify("item/completed", { ...route, item: { id: "internal", type: "unexpectedControl", text: "hidden" } });
+  h.notify("turn/completed", { threadId: route.threadId, turn: { id: route.turnId, status: "completed" } });
   const live = h.events.filter(e => e.type === "message.finished").map(e => e.message);
   expect(live).toMatchObject([
     { messageId: "plan", content: [{ type: "text", text: plan.text }] },
@@ -197,6 +198,20 @@ it("keeps Codex plans and final reviews in the live and persisted conversation",
   const replay = makeHarness({ initialTurns: [{ id: route.turnId, status: "completed", items: [plan, review] }] });
   await activate(replay);
   expect(syncHistory(replay)?.display?.entries.map(e => e.message?.content)).toEqual(live.map(message => message.content));
+});
+
+it("shows the same-turn Codex review reply exactly once in live and replay", async () => {
+  const h = makeHarness(); await activate(h);
+  const route = { threadId: "th-1", turnId: "review-turn" };
+  const items = [{ id: "marker", type: "exitedReviewMode", review: "Reviewed." }, { id: "review-reply", type: "agentMessage", text: "Reviewed." }];
+  h.notify("turn/started", { threadId: route.threadId, turn: { id: route.turnId } });
+  for (const item of items) h.notify("item/completed", { ...route, item });
+  h.notify("turn/completed", { threadId: route.threadId, turn: { id: route.turnId, status: "completed" } });
+  expect(h.events.filter(e => e.type === "message.finished").map(e => e.message.messageId)).toEqual(["review-reply"]);
+  const replay = makeHarness({ initialTurns: [{ id: route.turnId, status: "completed", items }] });
+  await activate(replay);
+  expect(syncHistory(h)?.entries.map(e => e.entryId)).toEqual(["review-reply"]);
+  expect(syncHistory(replay)?.entries.map(e => e.entryId)).toEqual(["review-reply"]);
 });
 
 // MSG-RENDER-01: native media stays in source order without sending data or native paths.

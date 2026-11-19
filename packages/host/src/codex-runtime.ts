@@ -252,6 +252,7 @@ type ThreadState = {
   entryTurns: Map<string, string>;
   /** 轮次顺序（turn id，按时间）。助手回复要往后保留一轮时靠它找下一轮。 */
   turnOrder: string[];
+  pendingReview?: { item: Record<string, unknown>; turnId: string };
   turnInProgress: boolean;
   turnId: string | undefined;
   turnStartedAt: number | undefined;
@@ -1802,6 +1803,7 @@ export class CodexRuntime implements AgentBackend {
       liveMessages: thread.liveMessages,
       liveTools: thread.liveTools,
       historyError: thread.historyError,
+      pendingReview: thread.pendingReview,
       turnInProgress: thread.turnInProgress,
       turnId: thread.turnId,
       turnStartedAt: thread.turnStartedAt,
@@ -1816,6 +1818,7 @@ export class CodexRuntime implements AgentBackend {
     // Replace mutable indexes instead of clearing them in place. `prior` keeps the old Map
     // for conflict rollback; mutating it here would make rollback lose completed-item state.
     thread.completedItems = new Map();
+    delete thread.pendingReview;
     thread.committedItemCount = 0;
     thread.entryTurns = new Map();
     thread.turnOrder = [];
@@ -1851,6 +1854,7 @@ export class CodexRuntime implements AgentBackend {
       const turnId = (turn as { id?: unknown }).id;
       const owner = typeof turnId === "string" && turnId.length > 0 ? turnId : undefined;
       if (owner !== undefined && !thread.turnOrder.includes(owner)) thread.turnOrder.push(owner);
+      const reviewReplies = new Set(items.map(object).filter(item => item.type === "agentMessage").map(extractContentText));
       for (const item of items) {
         if (item !== null && typeof item === "object") {
           let record = item as Record<string, unknown>;
@@ -1869,6 +1873,13 @@ export class CodexRuntime implements AgentBackend {
           const observed = typeof record.id === "string" ? prior.completedItems.get(record.id) : undefined;
           const observedComplete = observed !== undefined;
           if (observed !== undefined) record = observed.item;
+          if (record.type === "exitedReviewMode" && (reviewReplies.has(String(record.review)) || turnRunning && !knownCanonical)) {
+            if (turnRunning && owner && !reviewReplies.has(String(record.review))) {
+              thread.pendingReview = { item: record, turnId: owner };
+              continue;
+            }
+            record = { ...record, review: undefined };
+          }
           const orderOnly = !isToolItem(record) && itemToMessage(record) === undefined;
           const itemRunning = !observedComplete && !orderOnly && (record.status === "inProgress" || record.status === "in_progress"
             || (turnRunning && !itemFinished && !knownCanonical && (isProseStream(record) || isToolItem(record))));
@@ -1924,6 +1935,8 @@ export class CodexRuntime implements AgentBackend {
       thread.itemOrder = prior.itemOrder;
       thread.committedItemCount = prior.committedItemCount;
       thread.completedItems = prior.completedItems;
+      if (prior.pendingReview) thread.pendingReview = prior.pendingReview;
+      else delete thread.pendingReview;
       thread.entryTurns = prior.entryTurns;
       thread.turnOrder = prior.turnOrder;
       thread.liveMessages = prior.liveMessages;
@@ -3805,6 +3818,16 @@ export class CodexRuntime implements AgentBackend {
         const item = record.item;
         if (item === null || typeof item !== "object") return;
         let data = item as Record<string, unknown>;
+        if (data.type === "exitedReviewMode" && typeof record.turnId === "string" && record.turnId === thread.turnId) {
+          this.#noteItem(thread, data);
+          thread.pendingReview = { item: data, turnId: record.turnId };
+          return;
+        }
+        const pendingReview = thread.pendingReview;
+        if (pendingReview && pendingReview.turnId === record.turnId && data.type === "agentMessage" && extractContentText(data) === pendingReview.item.review) {
+          delete thread.pendingReview;
+          this.#completeItem(thread, { ...pendingReview.item, review: undefined }, pendingReview.turnId);
+        }
         const tasks = thread.tasks.observeItem(data);
         if (tasks) this.#emit(thread.id, { type: "execution.tasks", tasks });
         if (data.type === "fileChange" && typeof data.id === "string" && typeof record.turnId === "string" && record.turnId === thread.turnId) {
@@ -3912,6 +3935,13 @@ export class CodexRuntime implements AgentBackend {
         const completed = turnRecord(record.turn);
         const completedTurn = object(record.turn);
         const completedTurnId = completed?.id ?? thread.turnId;
+        const pendingReview = thread.pendingReview;
+        if (pendingReview && pendingReview.turnId === completedTurnId) {
+          delete thread.pendingReview;
+          const review = itemToMessage(pendingReview.item);
+          this.#completeItem(thread, pendingReview.item, pendingReview.turnId);
+          if (review) this.#emit(thread.id, { type: "message.finished", message: review });
+        }
         for (const [id, target] of thread.pendingStops) if (target === completedTurnId) {
           thread.pendingStops.delete(id);
           const stopped = completedTurn.status === "interrupted";
