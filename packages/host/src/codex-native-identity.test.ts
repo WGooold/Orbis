@@ -90,8 +90,31 @@ describe("Codex canonical native item identity", () => {
     expect(h.logs.filter(line => line.includes("缓冲已满"))).toHaveLength(1);
     expect(h.read).toHaveBeenCalledTimes(3);
     expect(h.sync()?.source).toMatchObject({ ready: true });
-    expect(h.sync()?.source?.epoch).not.toBe(originalEpoch);
+    // Dropped notifications invalidate the read, not the committed graph: this repair only
+    // appends `native-final`, so the epoch must survive. Rotating it on every buffered burst
+    // is what produced the permanent handshake/patch-baseline rejections on busy sessions.
+    expect(h.sync()?.source?.epoch).toBe(originalEpoch);
     expect(h.sync()?.entries.some(entry => entry.entryId.startsWith("discarded-"))).toBe(false);
+  });
+
+  it("rotates the source epoch when an overflowing reread disagrees with the committed graph", async () => {
+    const h = harness();
+    await h.runtime.activate({ type: "resume", sessionId: "session" });
+    const originalEpoch = h.sync()?.source?.epoch;
+    let resolve!: (value: unknown) => void;
+    h.read.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    h.runtime.announce("session");
+    await vi.waitFor(() => expect(h.read).toHaveBeenCalledTimes(2));
+    for (let i = 0; i < 5000; ++i) h.notify("item/completed", {
+      threadId: "session", turnId: "turn", item: answer(`discarded-${i}`),
+    });
+    // The reread lost the answer row that the committed graph holds: a rewrite, not an append.
+    h.setNative([{ id: "turn", status: "completed", items: [user("uuid-user")] }]);
+    resolve({ data: turns(true) });
+    await vi.waitFor(() => expect(h.read).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(h.sync()?.source?.ready).toBe(true));
+    expect(h.sync()?.source?.epoch).not.toBe(originalEpoch);
+    expect(h.sync()?.entries.some(entry => entry.entryId === "native-final")).toBe(false);
   });
 
   it("repairs an overflowing desktop attach once instead of invalidating it for every incoming chunk", async () => {
