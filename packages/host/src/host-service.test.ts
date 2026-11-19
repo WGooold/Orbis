@@ -55,6 +55,7 @@ import {
 import { type RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessHostOptions, restartBusinessHostQUIC } from "./fixtures/relay-business-transport.js";
 
+import type { HermesGatewayRpcClient } from "./hermes-gateway-rpc.js";
 import { HostService, channelForDeviceMessage } from "./host-service.js";
 import { HostRelayClient } from "./relay-client.js";
 import * as pushRelayConfig from "./config.js";
@@ -3540,6 +3541,94 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const again = await until(message => message.type === "device.ready");
       expect((again.runtimes as RuntimeMetadata[]).map(row => row.runtimeId)).not.toContain("dsh-desktop:shared");
     } finally { await webRuntime.stop(); await desktopRuntime.stop(); }
+  });
+
+  // HERMES-GATEWAY-01 / HERMES-COMPAT-01: exercise the real E2E Host/Relay router without touching a user Gateway.
+  it("connects Hermes only for negotiated requests and resets its visibility on rehandshake", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-host-"));
+    relay = await startRelayLocal(stateDir);
+    const profile_id = join(stateDir, "fixture-hermes");
+    const sessionId = "hermes-private-id";
+    const endpoint = { profile_id, instance_id: "fixture", authority_epoch: 1, runtime_protocol: 1,
+      api_origin: "http://127.0.0.1:1", supervisor: "fixture", capabilities: ["session-authority-v1"] };
+    const close = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string, args: Record<string, unknown>) => {
+      if (method === "session.list") return { sessions: args.scope === "live" ? [] : [{ id: sessionId, title: "Synthetic Hermes", started_at: 1000 }] };
+      if (method === "session.resume") return { session_id: sessionId, stored_session_id: sessionId, running: false,
+        messages: [], prompts: [], last_sequence: 0, execution_generation: 0, replay_epoch: "initial", authority_epoch: 1,
+        info: { cwd: stateDir } };
+      throw new Error(`Unimplemented fixture method ${method}`);
+    });
+    const client = { request, close, closed: false, readyState: 1 } as unknown as HermesGatewayRpcClient;
+    const connectHermes = vi.fn(async () => ({ client, endpoint, serverRequests: [], runtime: {
+      ...endpoint, session_create: { sources: ["tui"], parameters: ["cwd"] },
+    } }));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+      hermes: { command: { command: "fixture-only", prefixArgs: [] }, connect: connectHermes } });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Hermes fixture" })).device;
+    const pskRoot = await device.pair(opened.payload);
+    const open = () => device!.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const next = async (predicate: (row: Record<string, unknown>) => boolean, inspect?: (row: Record<string, unknown>) => void) => {
+      for (let i = 0; i < 80; i++) {
+        const row = await device!.receiveMessage() as Record<string, unknown>;
+        inspect?.(row);
+        if (predicate(row)) return row;
+      }
+      throw new Error("Hermes fixture reply not received");
+    };
+    const send = (value: Record<string, unknown>) => sendRequest(device!, { protocolVersion: PROTOCOL_VERSION, ...value });
+    const lookup = (requestId: string, agentKind: string | null, cursor: string | null = null) => {
+      send({ type: "session.catalog.query", requestId, format: "v1", query: { text: "", agentKind, archived: false, provider: "all" }, cursor, limit: 1 });
+      return next(row => row.requestId === requestId);
+    };
+    const declare = (features: string[]) => {
+      send({ type: "device.features", features });
+      return next(row => row.type === "device.ready");
+    };
+    await open();
+    const legacy = await next(row => row.type === "device.ready");
+    expect(legacy.launchableAgents).not.toContain("hermes");
+    send({ type: "session.activate", requestId: "blocked", target: { type: "resume", sessionId, agentKind: "hermes" } });
+    expect(await next(row => row.requestId === "blocked")).toMatchObject({ type: "protocol.error", code: "agent_unsupported" });
+    expect(connectHermes).not.toHaveBeenCalled();
+
+    const hermesOnly = await declare(["agent.hermes"]);
+    expect(hermesOnly.launchableAgents).toContain("hermes");
+    expect(hermesOnly.agents).not.toContain("hermes");
+    expect(hermesOnly).not.toHaveProperty("dshDesktop");
+    expect(connectHermes).not.toHaveBeenCalled();
+    send({ type: "session.catalog.capabilities.request", requestId: "capabilities" });
+    await next(row => row.requestId === "capabilities");
+    expect(await lookup("hermes-catalog", "hermes")).toMatchObject({ type: "session.catalog.page", page: { sessions: [{ sessionId, agentKind: "hermes" }] } });
+    send({ type: "session.activate", requestId: "resume", target: { type: "resume", sessionId, agentKind: "hermes" } });
+    let runtimeId = "";
+    expect(await next(row => row.requestId === "resume", row => {
+      if (row.type === "runtime.online") runtimeId = (row.runtime as RuntimeMetadata).runtimeId;
+    })).toMatchObject({ type: "session.activated", agentKind: "hermes", sessionId, spawnMode: "headless" });
+    expect(runtimeId).toMatch(/^hermes:/u);
+    expect(connectHermes).toHaveBeenCalledTimes(1);
+
+    const both = await declare(["agent.hermes", "agent.dshDesktop"]);
+    expect(both.agents).toContain("hermes");
+    expect(both).toHaveProperty("dshDesktop", null);
+    const dshOnly = await declare(["agent.dshDesktop"]);
+    expect(dshOnly.agents).not.toContain("hermes");
+    expect(dshOnly.runtimes).not.toContainEqual(expect.objectContaining({ runtimeId }));
+    expect(dshOnly).toHaveProperty("dshDesktop", null);
+    expect(await lookup("not-visible", null)).toMatchObject({ type: "session.catalog.page", page: { sessions: [], totalSessions: 0 } });
+    await declare(["agent.hermes", "agent.dshDesktop"]);
+    await open();
+    const downgraded = await next(row => row.type === "device.ready");
+    expect(downgraded.agents).not.toContain("hermes");
+    send({ type: "runtime.command", runtimeId, commandId: "blocked-send", command: { type: "user_message", text: "must not send" } });
+    expect(await next(row => row.commandId === "blocked-send")).toMatchObject({ type: "protocol.error", code: "agent_unsupported" });
+    expect(request.mock.calls.every(([method]) => ["session.list", "session.resume"].includes(method))).toBe(true);
+    await host.stop(); host = undefined;
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("reopens a quit DSH browser session over E2E when Codex is also enabled", async () => {

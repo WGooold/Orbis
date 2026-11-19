@@ -65,3 +65,24 @@ describe("Desktop visibility for released Apps", () => {
       .toEqual({ type: "diagnostics.page", page: { records: [{ agentKind: null }], nextCursor: null, truncated: false } });
   });
 });
+
+// HERMES-COMPAT-01: filtered offsets must not cross any of the four feature views.
+it("binds cursor pages and totals to the independent Hermes and Desktop features", () => {
+  const registry = new AgentStateRegistry({ modelEpoch: "m" });
+  const facts = new HostStateFacts({ registry });
+  const kinds = ["pi", "hermes", "dshDesktop"] as const;
+  const all = Array.from({ length: 21 }, (_, index) => session(index, kinds[index % kinds.length]!));
+  facts.catalog({ totalSessions: all.length, truncated: false, sessions: all,
+    backends: kinds.map(kind => ({ kind, ready: true, complete: kind !== "hermes", sessions: 7, elapsedMs: 0 })) });
+  const views = [[], ["hermes"], ["dshDesktop"], ["dshDesktop", "hermes"]] as const;
+  for (const [index, hidden] of views.entries()) {
+    const expected = all.filter(row => !hidden.some(kind => row.agentKind === kind));
+    const first = facts.catalogRange({ limit: 2 }, hidden);
+    expect(first).toMatchObject({ totalSessions: expected.length, sessions: expected.slice(0, 2), complete: hidden.some(kind => kind === "hermes") });
+    const cursor = first.nextCursor!;
+    expect(facts.catalogRange({ cursor, limit: 2 }, hidden)).toMatchObject({ offset: 2, sessions: expected.slice(2, 4) });
+    views.forEach((other, otherIndex) => {
+      if (index !== otherIndex) expect(facts.catalogRange({ cursor }, other).error).toBe("invalid_cursor");
+    });
+  }
+});

@@ -198,6 +198,7 @@ async function runHost(
         if (runtime) dshRuntime = runtime;
         return runtime;
       },
+      ...(sessionsRoot === undefined ? { hermes: {} } : {}),
       dshLaunchable,
       dshDesktopLaunchable,
       dshDesktopStatus: () => dshDesktopLifecycle.status,

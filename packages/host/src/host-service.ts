@@ -23,6 +23,8 @@ import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inv
 import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 import { PushWakeReceipts } from "./push-wake.js";
+import { HermesHostConnection, type HermesHostOptions } from "./hermes-host-connection.js";
+import type { HermesAgentBackend } from "./hermes-agent-backend.js";
 import { LiveActivityPublisher } from "./live-activity.js";
 
 import {
@@ -43,6 +45,7 @@ import {
 import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_DSH_DESKTOP,
+  DEVICE_FEATURE_HERMES,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -98,7 +101,7 @@ import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, hiddenFromLegacy, isDshDesktopRuntime, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain, isHermesRuntime, type GatedKind } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -264,6 +267,7 @@ export type HostServiceOptions = {
    * Sessions appear only while an attached TUI reports in.
    */
   claude?: { configDir?: string; launcher?: ClaudeLauncher };
+  hermes?: HermesHostOptions;
   providers?: ProviderManager;
   providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
   managementBackends?: () => HostManagementState["backends"];
@@ -310,12 +314,15 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
+  readonly #hermes: HermesHostConnection | undefined;
+  #hermesMutation: Promise<void> = Promise.resolve();
+  readonly #hermesLaunches = new Map<string, Promise<void>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
   readonly #deviceFeatures = new Map<string, ReadonlySet<string>>();
-  /** Devices that read a host-scope view without `dshDesktop`; their cached revisions are not full views. */
-  readonly #legacyHostServed = new Set<string>();
+  /** Device projections can change while the shared Host revision stays the same. */
+  readonly #hostViewChanged = new Set<string>();
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -571,6 +578,7 @@ export class HostService {
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
     const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"];
+    if (this.#hermes?.installed) kinds.push("hermes");
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
@@ -579,12 +587,13 @@ export class HostService {
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const grouped = new Map<string, Set<string>>();
     for (const session of [...(this.#catalogCache?.sessions ?? []), ...runtimes]) {
-      if (!session.cwd) continue;
+      // Hermes workspaces are available through the per-device catalog, not the shared workspace index.
+      if (!session.cwd || ("agentKind" in session ? session.agentKind === "hermes" : isHermesRuntime(session.runtimeId))) continue;
       const keys = grouped.get(session.cwd) ?? new Set<string>(); keys.add(session.sessionId ?? "runtime:" + ("runtimeId" in session ? session.runtimeId : ""));
       grouped.set(session.cwd, keys);
     }
     const catalog = this.#hostStateFacts.read();
-    const catalogComplete = catalog?.backends.every(backend => backend.complete) === true && !catalog.truncated;
+    const catalogComplete = catalog?.backends.filter(backend => backend.kind !== "hermes").every(backend => backend.complete) === true && !catalog.truncated;
     facts.workspaces({ workspaces: [...grouped].slice(0, 256).map(([cwd, sessions]) => ({
       workspaceId: createHash("sha256").update(cwd).digest("hex"), cwd, sessionCount: sessions.size,
       git: this.#workspaceGit.get(cwd) ?? { availability: "unknown", branch: null, head: null, repoRoot: null },
@@ -612,7 +621,7 @@ export class HostService {
   }
 
   /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
-  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind): Promise<HostCatalogRange> {
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: readonly GatedKind[]): Promise<HostCatalogRange> {
     if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
     return this.#hostStateFacts.catalogRange(request, hide);
   }
@@ -720,7 +729,7 @@ export class HostService {
         const message = this.#runtimeEventMessage(runtimeId, event);
         assertToolWireBudget(message);
         const payload = this.#encodeMeasured(message), link = this.#links.get(deviceId);
-        if (!link) return false;
+        if (!link || !this.#visibleTo(deviceId, message)) return false;
         return event.type === "session.tool.content.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
           : link.send(payload, "ctl", outboundQueueSource(message, payload.byteLength));
@@ -858,6 +867,8 @@ export class HostService {
       this.#claudeBackend,
     ];
     this.#backends = backends;
+    this.#hermes = options.hermes ? new HermesHostConnection(options.hermes, identity.hostId,
+      (backend, retired) => this.#updateHermesBackend(backend, retired)) : undefined;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
     const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024 });
     const agentStateOptions = {
@@ -898,7 +909,7 @@ export class HostService {
     this.#fileChanges = new TurnFileChangeService({
       directory: join(stateDir, "turn-file-changes"), scope: changeScope,
       send: (deviceId, runtimeId, event) => {
-        const link = this.#links.get(deviceId); if (!link) return false;
+        const link = this.#links.get(deviceId); if (!link || !this.#visibleTo(deviceId, { runtimeId })) return false;
         const message = this.#runtimeEventMessage(runtimeId, event), payload = this.#encodeMeasured(message);
         return event.type === "session.change.detail.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
@@ -922,8 +933,8 @@ export class HostService {
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
-    this.#compactState = new CompactStateModel(agentStateRegistry,
-      value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND)));
+    this.#compactState = new CompactStateModel(agentStateRegistry, new Map(([ ["dshDesktop"], ["hermes"], ["dshDesktop", "hermes"] ] as const).map(hide =>
+      [hide.join(","), (value: unknown) => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, hide), hide)])));
     this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
@@ -934,6 +945,40 @@ export class HostService {
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
+  #updateHermesBackend(backend?: HermesAgentBackend, retired?: HermesAgentBackend): void {
+    if (this.#providerFactsClosing) return;
+    if (retired) {
+      this.#backends = this.#backends.filter(item => item !== retired);
+      for (const { runtimeId } of retired.directoryEntries()) {
+        this.#markRuntimeOffline(runtimeId, "hermes_gateway_disconnected");
+        this.#notifications.end(runtimeId);
+        this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason: "hermes_gateway_disconnected" });
+      }
+    }
+    if (backend && !this.#backends.includes(backend)) {
+      this.#backends.push(backend);
+      const announced = new Set<string>();
+      backend.setEventSink((event, runtimeId) => {
+        if (this.#providerFactsClosing || this.#hermes?.backend !== backend) return;
+        if (event.type === "runtime.metadata" && !announced.has(runtimeId)) {
+          announced.add(runtimeId);
+          this.#agentFacts.observe(runtimeId, event);
+          this.#broadcastDeviceMessage({ type: "runtime.online", runtime: event.metadata });
+        }
+        this.#publishRuntimeEvent(runtimeId, event);
+      });
+    }
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  async #ensureHermes(): Promise<HermesAgentBackend> {
+    try {
+      if (this.#hermes) return await this.#hermes.ensure();
+    } catch { /* Native details may contain private paths; do not relay them. */ }
+    throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请在电脑端核对 Hermes CLI 与 Gateway");
+  }
+
   #attachCodexBackend(codex: CodexRuntime): void {
     if (this.#backends.includes(codex)) return;
     if (this.#toolContentStore) codex.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
@@ -1267,15 +1312,15 @@ export class HostService {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
       return;
     }
-    // A device that has just declared `agent.dshDesktop` may hold revisions of the filtered view.
-    const known = scope.kind === "host" && this.#showsDshDesktop(deviceId) && this.#legacyHostServed.delete(deviceId) ? undefined : request.known;
+    // Feature changes invalidate equality/deltas against a different device projection.
+    const known = scope.kind === "host" && this.#hostViewChanged.delete(deviceId) ? undefined : request.known;
     for (const part of buildAgentStateSnapshotParts({
       registry,
       requestId: request.requestId,
       scope,
       identity,
       stateFormat: request.stateFormat,
-      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, !this.#showsDshDesktop(deviceId)) } : {}),
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, this.#hiddenKinds(deviceId).join(",") || undefined) } : {}),
       projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(known === undefined ? {} : { known }),
@@ -1284,20 +1329,23 @@ export class HostService {
     }
   }
 
-  #showsDshDesktop(deviceId: string): boolean {
-    return this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_DSH_DESKTOP) === true;
+  #hiddenKinds(deviceId: string): GatedKind[] {
+    const features = this.#deviceFeatures.get(deviceId);
+    return [
+      ...(features?.has(DEVICE_FEATURE_DSH_DESKTOP) ? [] : ["dshDesktop" as const]),
+      ...(features?.has(DEVICE_FEATURE_HERMES) ? [] : ["hermes" as const]),
+    ];
   }
 
-  /** Host-scope values for a device without `agent.dshDesktop` (ADR-0076 DSH-DESKTOP-06). */
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
-    if (scope.kind !== "host" || this.#showsDshDesktop(deviceId)) return value;
-    this.#legacyHostServed.add(deviceId);
-    return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND));
+    if (scope.kind !== "host") return value;
+    const hide = this.#hiddenKinds(deviceId);
+    return hide.length ? legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, hide), hide) : value;
   }
 
-  /** What one device may receive; `undefined` drops the message for that device. */
   #visibleTo(deviceId: string, message: object): object | undefined {
-    return this.#showsDshDesktop(deviceId) ? message : legacyDeviceMessage(message);
+    const hide = this.#hiddenKinds(deviceId);
+    return hide.length ? legacyDeviceMessage(message, hide) : message;
   }
 
   #resolveAgentStateScope(
@@ -1376,6 +1424,7 @@ export class HostService {
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if (this.#options.dshLaunchable === true && !agents.includes("dsh")) agents.push("dsh");
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
+    if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
     const desktop = this.#options.dshDesktopStatus?.()?.state;
     if (this.#options.dshDesktopLaunchable === true && !agents.includes("dshDesktop")
       && desktop !== "unsupported" && desktop !== "notInstalled" && desktop !== "incompatible") agents.push("dshDesktop");
@@ -1533,6 +1582,7 @@ export class HostService {
   }
 
   async start(): Promise<void> {
+    void this.#hermes?.discover().catch(() => undefined);
     this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
     this.#claudeModsSweep.unref();
     void this.#claudeBackend.launchable().then(launchable => {
@@ -1699,6 +1749,7 @@ export class HostService {
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
+    await this.#hermes?.close().catch(() => undefined);
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
@@ -1826,7 +1877,7 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
-    this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
+    this.#deviceFeatures.delete(deviceId); this.#hostViewChanged.delete(deviceId);
     this.#historyInterests.delete(deviceId);
     this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
@@ -1941,15 +1992,24 @@ export class HostService {
       return;
     }
     if (message.type === "device.features") {
-      const before = this.#showsDshDesktop(deviceId);
+      const before = this.#hiddenKinds(deviceId);
       this.#deviceFeatures.set(deviceId, new Set(message.features));
-      if (before === this.#showsDshDesktop(deviceId)) return;
-      // The filtered device.ready and notification snapshots of this handshake are replaced by the full view.
+      const after = this.#hiddenKinds(deviceId);
+      if (before.join(",") === after.join(",")) return;
+      this.#hostViewChanged.add(deviceId);
+      this.#compactStateSubscriptions.resetHostProjection(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
-        if (isDshDesktopRuntime(runtime.runtimeId)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+        if (hiddenFromLegacy({ runtimeId: runtime.runtimeId }, before) && !hiddenFromLegacy({ runtimeId: runtime.runtimeId }, after))
+          this.#sendNotificationSnapshot(deviceId, runtime.runtimeId);
       }
-      this.#dsh.dshDesktop.runtime?.announce();
+      if (before.includes("dshDesktop") && !after.includes("dshDesktop")) this.#dsh.dshDesktop.runtime?.announce();
+      return;
+    }
+    // Do not let an unnegotiated request start a backend, read its data or enter a side-channel service.
+    if (hiddenFromLegacy(message, this.#hiddenKinds(deviceId))) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "agent_unsupported", message: "当前客户端未启用此 Agent",
+        ...("requestId" in message ? { requestId: message.requestId } : {}), ...("commandId" in message ? { commandId: message.commandId } : {}) });
       return;
     }
     if (message.type === "device.version.report") {
@@ -1963,7 +2023,17 @@ export class HostService {
     }
     if (message.type === "session.configuration.read" || message.type === "session.configuration.save"
       || message.type === "session.launch" || message.type === "session.launch.read") {
-      if (message.type === "session.launch" || message.type === "session.launch.read") {
+      if (message.type === "session.launch" && message.agentKind === "hermes") {
+        const key = JSON.stringify([deviceId, message.launchId]);
+        const pending = this.#hermesMutation.then(() => {
+          if (!this.#providerFactsClosing && !hiddenFromLegacy(message, this.#hiddenKinds(deviceId))) return this.#handleSessionConfiguration(deviceId, message);
+        });
+        this.#hermesLaunches.set(key, pending);
+        this.#hermesMutation = pending.catch(() => undefined);
+        void this.#hermesMutation.then(() => { if (this.#hermesLaunches.get(key) === pending) this.#hermesLaunches.delete(key); });
+      } else if (message.type === "session.launch.read") {
+        void this.#readConfiguredLaunch(deviceId, message);
+      } else if (message.type === "session.launch") {
         this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
       } else void this.#handleSessionConfiguration(deviceId, message);
       return;
@@ -1976,15 +2046,23 @@ export class HostService {
     if (message.type === "session.catalog.query") {
       if (!this.#catalogQueryDevices.has(deviceId)) return;
       const link = this.#links.get(deviceId);
-      void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
+      const read = async () => {
+        if (message.cursor) return;
+        if (message.query.agentKind === "hermes") await this.#ensureHermes();
+        await this.#catalogWithCache();
+      };
+      void read().then(() => {
         if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
-        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#showsDshDesktop(deviceId) ? undefined : "dshDesktop"), protocolVersion: PROTOCOL_VERSION };
+        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#hiddenKinds(deviceId)), protocolVersion: PROTOCOL_VERSION };
         if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
           this.#sendToDevice(deviceId, { type: "protocol.error",
             requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
         }
         this.#sendToDevice(deviceId, response);
-      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
+      }).catch(error => {
+        if (error instanceof ActivationError) this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId, code: error.code, message: error.message });
+        else this.#options.onDeviceError?.(deviceId, error);
+      });
       return;
     }
     if (message.type === "session.history.capabilities.request") {
@@ -2048,6 +2126,12 @@ export class HostService {
       void this.#uploads.handleCancel(deviceId, message.uploadId);
       return;
     }
+    if (message.type === "session.activate" && message.target.agentKind === "hermes") {
+      this.#hermesMutation = this.#hermesMutation.then(() => {
+        if (!this.#providerFactsClosing && !hiddenFromLegacy(message, this.#hiddenKinds(deviceId))) return this.#handleSessionRequest(deviceId, message);
+      });
+      return;
+    }
     if (message.type === "session.activate" || message.type === "session.archive") {
       // Serialize activation with file moves, including the gap before a spawned Pi registers.
       this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionRequest(deviceId, message));
@@ -2066,8 +2150,9 @@ export class HostService {
     }
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
-      if (!this.#showsDshDesktop(deviceId)) this.#legacyHostServed.add(deviceId);
-      void this.readHostRange(message, this.#showsDshDesktop(deviceId) ? undefined : DSH_DESKTOP_KIND).then(page => {
+      const hide = this.#hiddenKinds(deviceId);
+      void this.readHostRange(message, hide).then(page => {
+        if (hide.join(",") !== this.#hiddenKinds(deviceId).join(",")) return;
         if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
           requestId: message.requestId, scope: "host", domain: "catalog", page });
@@ -2402,7 +2487,7 @@ export class HostService {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
         this.recordDiagnostic({
-          scope: "host", agentKind: null, sessionId: null, category: "catalog", severity: "error",
+          scope: "host", agentKind: backend.kind === "hermes" ? "hermes" : null, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
         backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
@@ -2410,12 +2495,11 @@ export class HostService {
     }
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
-    const limited = visible.slice(0, 2_000);
     if (epoch === this.#catalogEpoch && !this.#serviceClosed) {
       this.#hostStateFacts.catalog({ totalSessions: visible.length, truncated: false, backends,
         sessions: visible.map(entry => ({ ...entry, hostname: hostname() })), currentProviders: this.#hostStateFacts.read()?.currentProviders ?? [] });
     }
-    return limited;
+    return visible;
   }
 
   #recordDesktopThread(id: string): void {
@@ -2452,6 +2536,7 @@ export class HostService {
   }
 
   async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
+    if (kind === "hermes") return this.#ensureHermes();
     let backend = this.#backends.find(item => item.kind === kind);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
     if (kind === "codexDesktop" && !backend?.isReady()) {
@@ -2461,6 +2546,21 @@ export class HostService {
     backend = this.#backends.find(item => item.kind === kind);
     if (!backend?.isReady() || !backend.sessionConfiguration) throw new SessionConfigurationError("configuration_unavailable", "当前后端尚未提供新建配置，请检查电脑端连接");
     return backend;
+  }
+
+  async #readConfiguredLaunch(deviceId: string, message: Extract<DeviceE2ePayload, { type: "session.launch.read" }>): Promise<void> {
+    try {
+      const link = this.#links.get(deviceId);
+      const key = JSON.stringify([deviceId, message.launchId]);
+      await this.#hermesLaunches.get(key);
+      const prior = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+      if (this.#providerFactsClosing || link !== this.#links.get(deviceId)) return;
+      if (prior?.agentKind === "hermes") {
+        await this.#handleSessionConfiguration(deviceId, message);
+      } else {
+        this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
+      }
+    } catch (error) { this.#options.onDeviceError?.(deviceId, error); }
   }
 
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
@@ -2474,6 +2574,11 @@ export class HostService {
     try {
       if (message.type === "session.launch.read") {
         // Serialize with creation: a read must not report absence while the original create is queued.
+        const prior = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+        if (prior?.agentKind && this.#hiddenKinds(deviceId).includes(prior.agentKind as GatedKind)) {
+          this.#sendToDevice(deviceId, { type: "session.launch.result", requestId: message.requestId, launchId: message.launchId, phase: "absent" });
+          return;
+        }
         await this.#recoverSessionLaunch(deviceId, message.launchId);
         await sendLaunch(message.launchId); return;
       }
@@ -2601,7 +2706,7 @@ export class HostService {
   ): Promise<void> {
     const requestId = message.requestId;
     const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
-      message.target.type === "new" ? message.target.agentKind : null, message.target.type === "resume" ? message.target.sessionId : null)
+      message.target.agentKind ?? null, message.target.type === "resume" ? message.target.sessionId : null)
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
     this.#settleSharedOperation(sharedOperationId, "running");
     let sharedOperationFailed = false;
@@ -2639,7 +2744,7 @@ export class HostService {
         // 这里按 TTL 缓存 + 合并并发请求：同一时刻的多个 `session.list` 共享同一次扫描。
         const [{ sessions, cached }, providers] = await Promise.all([
           this.#catalogWithCache(),
-          Promise.all(this.#backends.filter((backend) => backend.isReady()).map(async (backend) => {
+          Promise.all(this.#backends.filter((backend) => backend.isReady() && !hiddenFromLegacy({ agentKind: backend.kind }, this.#hiddenKinds(deviceId))).map(async (backend) => {
             try {
               const provider = await backend.currentProvider?.();
               return provider === undefined ? [] : [{ agentKind: backend.kind, provider }];
@@ -2662,7 +2767,7 @@ export class HostService {
         const payload = {
           type: "session.list.result" as const,
           requestId,
-          sessions: sessions.map((entry) => ({ ...entry, hostname: localHostname })),
+          sessions: sessions.filter(entry => !hiddenFromLegacy(entry, this.#hiddenKinds(deviceId))).slice(0, 2000).map((entry) => ({ ...entry, hostname: localHostname })),
           currentProviders: providers.flat(),
         };
         this.#hostStateFacts.catalogProviders(payload.currentProviders);
@@ -2695,7 +2800,7 @@ export class HostService {
         ...(message.spawnMode === undefined ? {} : { spawnMode: message.spawnMode }),
       };
       if (target.type === "new") {
-        let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        let backend = target.agentKind === "hermes" ? await this.#ensureHermes() : this.#backends.find((candidate) => candidate.kind === target.agentKind);
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
           try {
             const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2738,6 +2843,7 @@ export class HostService {
       }
       const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
         : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
+      if (resumeKind === "hermes") await this.#ensureHermes();
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {
           const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2758,7 +2864,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop")) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === "hermes")) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -2805,6 +2911,7 @@ export class HostService {
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
     // Features belong to the App process on the other end; a new handshake may be a different (older) build.
     this.#deviceFeatures.delete(deviceId);
+    this.#hostViewChanged.add(deviceId);
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
@@ -3055,7 +3162,7 @@ export class HostService {
     if (!this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
-    const recipients = this.#store.devices.filter(device => !device.revoked).map(device => ({ device,
+    const recipients = this.#store.devices.filter(device => !device.revoked && !hiddenFromLegacy({ runtimeId }, this.#hiddenKinds(device.deviceId))).map(device => ({ device,
       link: this.#links.get(device.deviceId), interest: this.#historyInterests.get(device.deviceId) }));
     queueMicrotask(() => {
       void Promise.all(recipients.map(async ({ device, link, interest }) => {
@@ -3088,7 +3195,7 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    const hidden = hiddenFromLegacy(message);
+    const admits = (deviceId: string) => !hiddenFromLegacy(message, this.#hiddenKinds(deviceId));
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
       "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
     if (message.type === "runtime.event" && chatEvent) {
@@ -3098,7 +3205,7 @@ export class HostService {
         const interest = this.#historyInterests.get(deviceId);
         if (interest !== undefined &&
             (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (!admits(deviceId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
@@ -3108,14 +3215,14 @@ export class HostService {
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (!admits(deviceId)) continue;
         try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
       return;
     }
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength),
-      hidden ? deviceId => this.#showsDshDesktop(deviceId) : undefined);
+      admits);
   }
 
   /** 广播给所有握好手的设备。单台设备封帧失败不影响其他设备。 */

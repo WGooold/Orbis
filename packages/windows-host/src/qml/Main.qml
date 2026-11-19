@@ -57,7 +57,9 @@ ApplicationWindow {
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
             {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ]
+        ].concat(host.backends.some(function(b) { return b.kind === "hermes" })
+            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: true, broken: false, passive: true}]
+            : [])
     }
     // HOST-ACTIVITY-05: while the saved activation is still being read, "not activated" is not known yet.
     readonly property string nextStep: !host.activated ? (host.credentialsLoading ? "" : "activate")
@@ -113,7 +115,7 @@ ApplicationWindow {
         if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
-    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek"})[kind] || kind }
+    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek", hermes:"Hermes Agent"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
@@ -926,6 +928,7 @@ ApplicationWindow {
                                         }
                                         ActionButton {
                                             objectName: "overviewAgent-" + agentRow.modelData.kind
+                                            visible: agentRow.modelData.passive !== true
                                             Layout.preferredWidth: 112
                                             text: agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
                                             primary: agentRow.modelData.installed && (!agentRow.modelData.broken || agentRow.modelData.opensToFix === true) ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"

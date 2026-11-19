@@ -49,7 +49,7 @@ type HermesLiveTurn = {
   text: string;
   reasoning: string;
 };
-type UnconfirmedModel = { selection: HermesModelSelection; minRevision: number; minGeneration: number };
+export type UnconfirmedHermesModel = { selection: HermesModelSelection; minRevision: number; minGeneration: number };
 type HermesSession = {
   readonly runtimeId: string;
   readonly sessionId: string;
@@ -71,7 +71,7 @@ type HermesSession = {
   model?: string;
   thinkingLevel?: string;
   configurationChanging?: boolean;
-  modelUnconfirmed?: UnconfirmedModel;
+  modelUnconfirmed?: UnconfirmedHermesModel;
   modelOptions?: { at: number; commands: RuntimeCapabilities["commands"] };
   modelOptionsLoading?: boolean;
   canSwitchModel: boolean;
@@ -89,6 +89,7 @@ export type HermesGatewayBackendOptions = {
   runtime: HermesGatewayRuntimeDescriptor;
   hostname?: string;
   hostId: string;
+  modelFences?: Map<string, UnconfirmedHermesModel>;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
   onCommandResult?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "command.result" }>) => void;
   log?: (message: string) => void;
@@ -167,8 +168,8 @@ export class HermesAgentBackend implements AgentBackend {
     if (archived) return [];
     this.#assertReady();
     const [live, stored] = await Promise.all([
-      this.#request<{ sessions?: unknown }>("session.list", { scope: "live", limit: 200 }),
-      this.#request<{ sessions?: unknown }>("session.list", { scope: "stored", limit: 200 }),
+      this.#request<{ sessions?: unknown }>("session.list", { scope: "live", limit: 200 }, 2_000),
+      this.#request<{ sessions?: unknown }>("session.list", { scope: "stored", limit: 200 }, 2_000),
     ]);
     // This Gateway contract has a hard limit and no cursor. A full page cannot prove there are no later rows.
     this.#catalogComplete = Array.isArray(live.sessions) && Array.isArray(stored.sessions) &&
@@ -556,14 +557,15 @@ export class HermesAgentBackend implements AgentBackend {
     if (snapshot.session_id !== sessionId || snapshot.running !== false || revision === undefined || generation === undefined ||
         generation < session.executionGeneration || (Array.isArray(snapshot.pending) && snapshot.pending.length > 0)) return "failure";
 
-    const fence: UnconfirmedModel = { selection, minRevision: revision + 1, minGeneration: generation + 1 };
+    const fence: UnconfirmedHermesModel = { selection, minRevision: revision + 1, minGeneration: generation + 1 };
     let receivedReply = false;
+    this.#options.modelFences?.set(session.sessionId, fence);
     try {
       const result = asRecord(await this.#request("session.mutate", { session_id: sessionId, operation: "model", request_id: randomUUID(),
         expected_revision: revision, expected_generation: generation, payload: selection }));
       receivedReply = true;
       if (result.session_id === sessionId && result.operation === "model") {
-        if (result.status === "confirmation_required" || result.status === "refused") return "failure";
+        if (result.status === "confirmation_required" || result.status === "refused") { this.#options.modelFences?.delete(session.sessionId); return "failure"; }
         const committedRevision = finiteInteger(result.revision), committedGeneration = finiteInteger(result.execution_generation);
         // The checked contract's commit receipt has the effective model/provider, not a status field.
         if (result.status === undefined && committedRevision !== undefined && committedRevision >= fence.minRevision &&
@@ -573,6 +575,7 @@ export class HermesAgentBackend implements AgentBackend {
           const info = asRecord(await this.#request("session.info", { session_id: sessionId }));
           this.#assertSnapshotOwner({}, info);
           if (sameModel(info, selection)) {
+            this.#options.modelFences?.delete(session.sessionId);
             session.executionGeneration = committedGeneration;
             session.interactions.advance(committedGeneration);
             this.#applyInfo(session, info);
@@ -584,6 +587,7 @@ export class HermesAgentBackend implements AgentBackend {
     } catch (error) {
       // A refusal of the write is different from an error reading back an already committed write.
       if (!receivedReply && error instanceof HermesGatewayRpcError && (error.code === 4001 || error.code === -32601)) {
+        this.#options.modelFences?.delete(session.sessionId);
         if (error.code === -32601) {
           session.canSwitchModel = false;
           this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
@@ -946,6 +950,7 @@ export class HermesAgentBackend implements AgentBackend {
     if (fallbackSessionId) this.#bySessionId.set(fallbackSessionId, session);
     if (gatewaySessionId !== sessionId) this.#bySessionId.set(gatewaySessionId, session);
     this.#applyInfo(session, info);
+    this.#recoverModelFence(session, snapshot, info);
     this.#publishMetadata(session);
     session.interactions.adopt(snapshot.prompts, session.running ? session.executionGeneration : 0);
     session.source.flushPending();
@@ -988,11 +993,7 @@ export class HermesAgentBackend implements AgentBackend {
       session.source.setAvailability(true, snapshot.running !== true);
     });
     this.#applyInfo(session, info);
-    const fence = session.modelUnconfirmed;
-    if (fence && snapshot.running === false && (finiteInteger(snapshot.revision) ?? -1) >= fence.minRevision &&
-        (finiteInteger(snapshot.execution_generation) ?? -1) >= fence.minGeneration && sameModel(info, fence.selection)) {
-      delete session.modelUnconfirmed;
-    }
+    this.#recoverModelFence(session, snapshot, info);
     session.gatewaySessionId = gatewaySessionId;
     session.cwd = cwd;
     session.running = snapshot.running === true;
@@ -1008,6 +1009,15 @@ export class HermesAgentBackend implements AgentBackend {
     session.interactions.adopt(snapshot.prompts ?? [], session.running ? session.executionGeneration : 0);
     this.#publishMetadata(session);
     await this.#restoreActiveTools(session);
+  }
+
+  #recoverModelFence(session: HermesSession, snapshot: JsonRecord, info: JsonRecord): void {
+    const fence = session.modelUnconfirmed ?? this.#options.modelFences?.get(session.sessionId);
+    if (fence && snapshot.running === false && (finiteInteger(snapshot.revision) ?? -1) >= fence.minRevision &&
+        (finiteInteger(snapshot.execution_generation) ?? -1) >= fence.minGeneration && sameModel(info, fence.selection)) {
+      delete session.modelUnconfirmed;
+      this.#options.modelFences?.delete(session.sessionId);
+    } else if (fence) session.modelUnconfirmed = fence;
   }
 
   #assertSnapshotOwner(snapshot: JsonRecord, info: JsonRecord): void {
@@ -1085,8 +1095,8 @@ export class HermesAgentBackend implements AgentBackend {
 
   #hasCapability(capability: string): boolean { return this.#options.runtime.capabilities.includes(capability); }
 
-  #request<T>(method: string, params: JsonRecord): Promise<T> {
-    return this.#options.client.request<T>(method, params);
+  #request<T>(method: string, params: JsonRecord, timeoutMs?: number): Promise<T> {
+    return this.#options.client.request<T>(method, params, timeoutMs);
   }
 }
 

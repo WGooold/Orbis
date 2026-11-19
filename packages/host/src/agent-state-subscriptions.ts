@@ -42,6 +42,10 @@ export class AgentStateSubscriptions {
   clearDevice(deviceId: string): void {
     for (const [key, entry] of this.#entries) if (entry.deviceId === deviceId) this.#entries.delete(key);
   }
+  /** A feature change invalidates compact deltas from the previous device projection. */
+  resetHostProjection(deviceId: string): void {
+    for (const entry of this.#entries.values()) if (entry.deviceId === deviceId && entry.scope.kind === "host") entry.baseline.clear();
+  }
   interestedRuntimes(domain: string): Set<string> {
     return new Set([...this.#entries.values()].filter(entry => entry.scope.kind === "agent" &&
       (entry.request.domains === undefined || entry.request.domains.includes(domain))).flatMap(entry => entry.request.runtimeId ? [entry.request.runtimeId] : []));

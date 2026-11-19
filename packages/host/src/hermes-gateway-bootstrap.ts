@@ -55,6 +55,7 @@ export type HermesGatewayBootstrapOptions = {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   timeoutSeconds?: number;
+  expectedProfileId?: string;
   runEnsure?: HermesEnsureRunner;
   requestTicket?: typeof requestHermesGatewayTicket;
   connect?: typeof HermesGatewayRpcClient.connect;
@@ -89,6 +90,8 @@ export async function connectHermesGateway(options: HermesGatewayBootstrapOption
   const result = await runEnsure(command, timeoutSeconds * 1000, env, platform);
   const ensured = parseHermesGatewayEnsureResult(result.stdout, result.stderr, result.exitCode);
   const endpoint = ensured.endpoint;
+  if (options.expectedProfileId !== undefined && endpoint.profile_id !== options.expectedProfileId)
+    throw new HermesGatewayBootstrapError("gateway_identity_changed", "Hermes Gateway profile 已变化");
   if (ensured.clientCodeSha && endpoint.code_sha && ensured.clientCodeSha !== endpoint.code_sha)
     throw new HermesGatewayBootstrapError("gateway_code_mismatch", "Hermes Gateway 版本与当前 CLI 不一致");
 

@@ -184,6 +184,7 @@ struct OrbisPalette {
         switch kind {
         case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x00655D)
         case "dsh", "dshDesktop": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
+        case "hermes": return Color(hex: dark ? 0xF1D58A : 0x765519)
         case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
         default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
         }
@@ -2228,6 +2229,7 @@ func agentTitle(_ kind: String?) -> String {
     switch kind {
     case "codex", "codexDesktop": return "Codex"
     case "dsh", "dshDesktop": return "DeepSeek"
+    case "hermes": return "Hermes Agent"
     case "claude": return "Claude Code"
     default: return "Pi"
     }
@@ -2237,6 +2239,7 @@ private func agentAsset(_ kind: String?) -> String {
     switch kind {
     case "codex", "codexDesktop": return "AgentCodex"
     case "dsh", "dshDesktop": return "AgentDeepSeek"
+    case "hermes": return "AgentHermes"
     case "claude": return "AgentClaude"
     default: return "AgentPi"
     }

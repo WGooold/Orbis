@@ -16,11 +16,11 @@ export class CompactStateModel {
   // FT-G11: retained catalog versions let a read reconcile the client's applied
   // revision, rather than assuming the last publication was received. Bounded
   // independently of sessions; eviction simply returns a recovery snapshot.
-  readonly #catalogVersions = new Map<number, { state: DomainState<unknown>; projected?: DomainState<unknown>; bytes: number }>();
-  #projectedCatalog: DomainState<unknown> | undefined;
+  readonly #catalogVersions = new Map<number, { state: DomainState<unknown>; projected?: Map<string, DomainState<unknown>>; bytes: number }>();
+  #projectedCatalog: Map<string, DomainState<unknown>> | undefined;
   #catalogBytes = 0;
   readonly #unsubscribe: () => void;
-  constructor(readonly source: AgentStateRegistry, readonly catalogProjection?: (value: unknown) => unknown) {
+  constructor(readonly source: AgentStateRegistry, readonly catalogProjections: ReadonlyMap<string, (value: unknown) => unknown> = new Map()) {
     this.registry = new AgentStateRegistry({ modelEpoch: source.currentModelEpoch(), maxValueBytes: 4 * 1024 * 1024 });
     this.#unsubscribe = source.subscribe(change => {
       if (change.kind === "reset") { this.registry.beginModelEpoch(change.modelEpoch); this.#scopes.clear(); this.menuOptions.clear(); this.#catalogVersions.clear(); this.#projectedCatalog = undefined; this.#catalogBytes = 0; return; }
@@ -43,9 +43,9 @@ export class CompactStateModel {
     return this.registry;
   }
 
-  catalogBaseline(modelEpoch: string, revision: number, projected = false): DomainState<unknown> | undefined {
+  catalogBaseline(modelEpoch: string, revision: number, projection?: string): DomainState<unknown> | undefined {
     const entry = this.#catalogVersions.get(revision);
-    const state = projected ? entry?.projected : entry?.state;
+    const state = projection ? entry?.projected?.get(projection) : entry?.state;
     return state?.modelEpoch === modelEpoch ? structuredClone(state) : undefined;
   }
 
@@ -71,8 +71,8 @@ export class CompactStateModel {
       source: { ...state.source, sourceEpoch: createHash("sha256").update("compact-v1:" + state.source.sourceEpoch).digest("base64url") } });
     if (!result.ok) throw new Error(`Compact state rejected: ${result.code}`);
     if (previous && result.changed && !this.#catalogVersions.has(previous.revision)) {
-      const projected = this.#projectedCatalog?.revision === previous.revision ? this.#projectedCatalog : undefined;
-      const bytes = Buffer.byteLength(JSON.stringify(previous)) + (projected ? Buffer.byteLength(JSON.stringify(projected)) : 0);
+      const projected = this.#projectedCatalog;
+      const bytes = Buffer.byteLength(JSON.stringify(previous)) + (projected ? Buffer.byteLength(JSON.stringify([...projected.values()])) : 0);
       this.#catalogVersions.set(previous.revision, { state: previous, ...(projected ? { projected } : {}), bytes }); this.#catalogBytes += bytes;
       while (this.#catalogVersions.size > 16 || this.#catalogBytes > 4 * 1024 * 1024) {
         const oldest = this.#catalogVersions.keys().next().value!;
@@ -81,9 +81,9 @@ export class CompactStateModel {
     }
     // Preserve the exact filtered prefix while its source inventory is current.
     // Re-projecting a historical raw value after inventory replacement loses its cursor.
-    if (scope.kind === "host" && domain === "catalog" && this.catalogProjection && result.changed) {
+    if (scope.kind === "host" && domain === "catalog" && this.catalogProjections.size && result.changed) {
       const current = this.registry.read(scope, domain)!;
-      this.#projectedCatalog = { ...current, value: this.catalogProjection(current.value) };
+      this.#projectedCatalog = new Map([...this.catalogProjections].map(([key, project]) => [key, { ...current, value: project(current.value) }]));
     }
   }
 

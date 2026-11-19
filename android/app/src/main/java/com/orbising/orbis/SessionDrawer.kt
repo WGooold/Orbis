@@ -97,7 +97,8 @@ internal enum class DrawerAgentFilter(
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
-    Claude("claude", "Claude Code", "claude");
+    Claude("claude", "Claude Code", "claude"),
+    Hermes("hermes", "Hermes Agent", "hermes");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -116,6 +117,7 @@ private fun DrawerAgentFilterMenu(
     onSelectProvider: (String) -> Unit,
     onRequestProviders: () -> Unit,
     desktopDeepSeek: Boolean = false,
+    hermes: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -153,7 +155,11 @@ private fun DrawerAgentFilterMenu(
                 }
             } else {
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
-            DrawerAgentFilter.values().filter { it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected }.forEach { filter ->
+            DrawerAgentFilter.values().filter { filter -> filter == selected || when (filter) {
+                DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek
+                DrawerAgentFilter.Hermes -> hermes
+                else -> true
+            } }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -399,6 +405,8 @@ internal fun SessionDrawer(
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
+                        hermes = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "hermes" in it } ||
+                            state.sessions.values.any { it.agentKind == "hermes" },
                     )
 
                 }
@@ -791,6 +799,7 @@ private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteS
     !state.e2eReady -> L10n.tr("连接电脑后可操作")
     row.catalogEntry?.agentKind == null -> L10n.tr("尚未获取会话类型")
     row.sessionId in state.archivingSessionIds -> L10n.tr("处理中…")
+    row.agentKind == "hermes" -> L10n.tr("不支持归档")
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> L10n.tr("请先退出 Pi 会话")
     row.agentKind == "claude" -> L10n.tr("请先退出 Claude Code 会话")

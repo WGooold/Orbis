@@ -30,6 +30,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Codex("Codex", R.drawable.ic_agent_codex),
     DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
     Claude("Claude Code", R.drawable.ic_agent_claude),
+    Hermes("Hermes Agent", R.drawable.ic_agent_hermes),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
@@ -37,6 +38,7 @@ internal fun agentBrand(kind: String?) = when (kind) {
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
+    "hermes" -> AgentBrand.Hermes
     else -> AgentBrand.Pi
 }
 /** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
@@ -49,6 +51,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Codex -> if (LocalOrbisDarkTheme.current) Color(0xFF77D6C7) else Color(0xFF00655D)
     // DeepSeek brand blue; the dark theme keeps a light tint of the same hue for contrast.
     AgentBrand.DeepSeek -> if (LocalOrbisDarkTheme.current) Color(0xFFA9BBFF) else Color(0xFF3550CF)
+    AgentBrand.Hermes -> if (LocalOrbisDarkTheme.current) Color(0xFFF1D58A) else Color(0xFF765519)
     AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
 }
 

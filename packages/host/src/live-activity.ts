@@ -109,7 +109,8 @@ export class LiveActivityPublisher {
     this.#unsubscribe = options.registry.subscribe(change => {
       if (this.#closing || this.#closed) return;
       if (change.kind === "reset") { this.#queueCollection(); return; }
-      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId ||
+      // This Relay-wide Activity has no per-device feature negotiation. Hermes stays in E2E state.
+      if (change.scope.kind !== "agent" || change.scope.key.agentKind === "hermes" || change.scope.key.hostId !== options.hostId ||
           !["execution", "availability"].includes(change.domain)) return;
       const id = agentKeyId(change.scope.key);
       const tracked = this.#tracked.get(id);

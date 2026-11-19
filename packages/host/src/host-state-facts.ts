@@ -45,8 +45,12 @@ function boundedArray<T>(items: readonly T[], bytes: number, wrap: (items: T[]) 
 }
 
 /** A hidden-kind view (ADR-0076 DSH-DESKTOP-06) has its own cursor space; full and filtered offsets never mix. */
-const catalogCursor = (snapshotId: string, offset: number, hide?: AgentKind, queryHash?: string): string =>
-  Buffer.from(JSON.stringify([snapshotId, offset, ...(queryHash === undefined ? [] : [queryHash]), ...(hide === undefined ? [] : [`-${hide}`])])).toString("base64url");
+export type CatalogHiddenKinds = AgentKind | readonly AgentKind[];
+const hiddenKinds = (hide: CatalogHiddenKinds) => typeof hide === "string" ? [hide] : hide;
+const hideKey = (hide: CatalogHiddenKinds) => [...hiddenKinds(hide)].sort().join(",");
+const hasHiddenKinds = (hide: CatalogHiddenKinds | undefined): hide is CatalogHiddenKinds => hide !== undefined && hiddenKinds(hide).length > 0;
+const catalogCursor = (snapshotId: string, offset: number, hide?: CatalogHiddenKinds, queryHash?: string): string =>
+  Buffer.from(JSON.stringify([snapshotId, offset, ...(queryHash === undefined ? [] : [queryHash]), ...(!hasHiddenKinds(hide) ? [] : [`-${hideKey(hide)}`])])).toString("base64url");
 const queryKey = (query: CatalogQuery): string => createHash("sha256").update(JSON.stringify([
   query.text, query.agentKind, query.archived, query.provider, query.directory ?? null,
 ])).digest("hex");
@@ -195,10 +199,10 @@ export class HostStateFacts {
 
   /** Pages only expose the immutable inventory attached to the currently committed catalog version. */
   // ADR-0032 §7：分页不跨 snapshotId 拼接；别为省一次重读而混版本。
-  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}, hide?: AgentKind): HostCatalogRange {
+  catalogRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> & { query?: CatalogQuery } = {}, hide?: CatalogHiddenKinds): HostCatalogRange {
     const state = this.#registry.read<HostCatalogState>(this.#scope(), "catalog");
     const full = this.#catalogInventory;
-    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
+    const inventory = full && hasHiddenKinds(hide) ? this.#hiddenInventory(full, hide) : full;
     const empty = (error: NonNullable<HostCatalogRange["error"]>): HostCatalogRange => ({
       modelEpoch: this.#registry.currentModelEpoch(), revision: state?.revision ?? 0, snapshotId: state?.value?.snapshotId ?? null,
       offset: 0, totalSessions: inventory?.state.totalSessions ?? 0, sessions: [], nextCursor: null, complete: false, truncated: true, error,
@@ -212,9 +216,9 @@ export class HostStateFacts {
       let cursor: unknown;
       if (request.cursor.length > 512 || !/^[A-Za-z0-9_-]+$/.test(request.cursor)) return empty("invalid_cursor");
       try { cursor = JSON.parse(Buffer.from(request.cursor, "base64url").toString("utf8")); } catch { return empty("invalid_cursor"); }
-      if (!Array.isArray(cursor) || cursor.length !== 2 + (query ? 1 : 0) + (hide === undefined ? 0 : 1)
+      if (!Array.isArray(cursor) || cursor.length !== 2 + (query ? 1 : 0) + (hasHiddenKinds(hide) ? 1 : 0)
         || typeof cursor[0] !== "string" || !Number.isSafeInteger(cursor[1]) || cursor[1] < 0
-        || query && cursor[2] !== hash || hide !== undefined && cursor[query ? 3 : 2] !== `-${hide}`) return empty("invalid_cursor");
+        || query && cursor[2] !== hash || hasHiddenKinds(hide) && cursor[query ? 3 : 2] !== `-${hideKey(hide)}`) return empty("invalid_cursor");
       if (cursor[0] !== inventory.snapshotId) return empty("snapshot_changed");
       offset = cursor[1] as number;
       if (offset > matched.length) return empty("invalid_cursor");
@@ -236,17 +240,18 @@ export class HostStateFacts {
       complete, truncated: inventory.state.truncated };
   }
 
-  #hidden: { source: CatalogInventory; hide: AgentKind; view: CatalogInventory } | undefined;
+  #hidden: { source: CatalogInventory; key: string; view: CatalogInventory } | undefined;
   /** The committed inventory without one agent kind; the order is kept, so a filtered prefix is a prefix of this view. */
-  #hiddenInventory(inventory: CatalogInventory, hide: AgentKind): CatalogInventory {
-    if (this.#hidden?.source === inventory && this.#hidden.hide === hide) return this.#hidden.view;
-    const sessions = inventory.sessions.filter(session => session.agentKind !== hide);
-    const removed = Math.max(inventory.sessions.length - sessions.length, inventory.state.backends.find(backend => backend.kind === hide)?.sessions ?? 0);
-    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => backend.kind !== hide),
-      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => row.agentKind !== hide) }),
+  #hiddenInventory(inventory: CatalogInventory, hide: CatalogHiddenKinds): CatalogInventory {
+    const key = hideKey(hide), kinds = hiddenKinds(hide);
+    if (this.#hidden?.source === inventory && this.#hidden.key === key) return this.#hidden.view;
+    const sessions = inventory.sessions.filter(session => !kinds.includes(session.agentKind));
+    const removed = Math.max(inventory.sessions.length - sessions.length, inventory.state.backends.filter(backend => kinds.includes(backend.kind)).reduce((sum, backend) => sum + backend.sessions, 0));
+    const state: CatalogInput = { ...inventory.state, backends: inventory.state.backends.filter(backend => !kinds.includes(backend.kind)),
+      ...(inventory.state.currentProviders === undefined ? {} : { currentProviders: inventory.state.currentProviders.filter(row => !kinds.includes(row.agentKind)) }),
       totalSessions: inventory.state.truncated ? Math.max(sessions.length, inventory.state.totalSessions - removed) : sessions.length };
     const view = { ...inventory, state, sessions };
-    this.#hidden = { source: inventory, hide, view };
+    this.#hidden = { source: inventory, key, view };
     return view;
   }
 
@@ -254,10 +259,14 @@ export class HostStateFacts {
    * The committed catalog value as a device without `hide` sees it: same snapshot and revision,
    * sessions/rows of that kind removed, totals and next cursor from the filtered inventory.
    */
-  hiddenCatalog(value: Record<string, unknown>, hide: AgentKind): Record<string, unknown> {
+  hiddenCatalog(value: Record<string, unknown>, hide: CatalogHiddenKinds): Record<string, unknown> {
     const inventory = this.#catalogInventory;
-    const keep = (row: unknown): boolean => !(row !== null && typeof row === "object" && (row as { agentKind?: unknown; kind?: unknown }).agentKind === hide)
-      && !(row !== null && typeof row === "object" && (row as { kind?: unknown }).kind === hide);
+    const kinds = new Set<unknown>(hiddenKinds(hide));
+    const keep = (row: unknown): boolean => {
+      if (!row || typeof row !== "object") return true;
+      const { agentKind, kind } = row as { agentKind?: unknown; kind?: unknown };
+      return !kinds.has(agentKind) && !kinds.has(kind);
+    };
     const next: Record<string, unknown> = { ...value };
     if (Array.isArray(value.sessions)) next.sessions = value.sessions.filter(keep);
     if (Array.isArray(value.backends)) next.backends = value.backends.filter(keep);
@@ -273,10 +282,10 @@ export class HostStateFacts {
       nextCursor: count < view.sessions.length ? catalogCursor(inventory.snapshotId, count, hide) : null };
   }
 
-  catalogQuery(request: CatalogQueryRequest, hide?: AgentKind): CatalogQueryPage {
+  catalogQuery(request: CatalogQueryRequest, hide?: CatalogHiddenKinds): CatalogQueryPage {
     const page = this.catalogRange(request, hide);
     const full = this.#catalogInventory;
-    const inventory = full && hide !== undefined ? this.#hiddenInventory(full, hide) : full;
+    const inventory = full && hasHiddenKinds(hide) ? this.#hiddenInventory(full, hide) : full;
     const rows = inventory?.sessions.filter(row => request.query.agentKind === null || row.agentKind === request.query.agentKind) ?? [];
     const all = [...new Set(rows.flatMap(row => row.modelProvider ? [row.modelProvider] : []))].sort();
     const providers = boundedArray(all.slice(0, 64), 8 * 1024, providers => providers);

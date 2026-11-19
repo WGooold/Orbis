@@ -2958,7 +2958,7 @@ final class HostConnection: ObservableObject {
             // Declare the feature and wait for the full view, so a selected Desktop session is never dropped.
             if (message["hostFeatures"] as? [String])?.contains("device.features") == true, message["dshDesktop"] == nil,
                message["_orbisFilteredFallback"] == nil,
-               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": ["agent.dshDesktop"]]) {
+               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": ["agent.dshDesktop", "agent.hermes"]]) {
                 let id = UUID()
                 filteredReady = (id, message, channel)
                 Task { [weak self] in

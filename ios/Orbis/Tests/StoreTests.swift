@@ -1532,7 +1532,7 @@ struct StoreTests {
         await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
             "runtimes": [runtime("dsh:web")], "hostFeatures": ["device.features"]])
         let declaration = try #require(transport.sent.last { $0["type"] as? String == "device.features" })
-        #expect(declaration["features"] as? [String] == ["agent.dshDesktop"])
+        #expect(declaration["features"] as? [String] == ["agent.dshDesktop", "agent.hermes"])
         #expect(store.runtimes.isEmpty)
         await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
             "runtimes": [runtime("dsh:web"), runtime("dsh-desktop:desk")], "hostFeatures": ["device.features"],
@@ -1543,6 +1543,18 @@ struct StoreTests {
         // A Host without the negotiation is applied as before.
         await transport.ready([runtime("pi-a")])
         #expect(store.runtimes.map(\.runtimeId) == ["pi-a"])
+    }
+
+    // HERMES-UI-01: negotiated ready keeps the native Hermes identity rather than treating it as Pi.
+    @Test func appliesNegotiatedHermesRuntime() async throws {
+        let (store, transport) = setup()
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [], "hostFeatures": ["device.features"]])
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("hermes:fixture")], "hostFeatures": ["device.features"],
+            "dshDesktop": NSNull(), "launchableAgents": ["hermes"]])
+        #expect(store.launchableAgents == ["hermes"])
+        #expect(store.runtimes.map(\.runtimeId) == ["hermes:fixture"])
     }
 
     @Test func authenticatedDesktopAvailabilityClearsWhenOmitted() async throws {

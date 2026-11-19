@@ -210,6 +210,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     func owned(by prefix: String) -> Bool { runtimeId == prefix || runtimeId.hasPrefix(prefix + ":") }
     if owned(by: "codex-desktop") { return "codexDesktop" }
     if owned(by: "codex") { return "codex" }
+    if runtimeId.hasPrefix("hermes:") { return "hermes" }
     if runtimeId.hasPrefix("dsh-desktop:") { return "dshDesktop" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
     if runtimeId.hasPrefix("claude:") { return "claude" }

@@ -275,6 +275,7 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
+export const DEVICE_FEATURE_HERMES = "agent.hermes";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
